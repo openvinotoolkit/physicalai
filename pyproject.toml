@@ -14,7 +14,7 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3.12",
 ]
-dependencies = ["numpy>=1.24"]
+dependencies = ["numpy>=1.24", "loguru>=0.7"]
 
 [project.optional-dependencies]
 tests = ["pytest", "mypy"]
@@ -32,11 +32,13 @@ ur = []
 abb = []
 franka = []
 trossen = []
+so101 = ["feetech-servo-sdk"]
 robots = [
     "physicalai[ur]",
     "physicalai[abb]",
     "physicalai[franka]",
     "physicalai[trossen]",
+    "physicalai[so101]",
 ]
 
 [project.urls]
@@ -108,10 +110,7 @@ max-args = 15
 convention = "google"
 
 [tool.ruff.lint.flake8-copyright]
-notice-rgx = """
-# Copyright \(C\) (\d{4}(-\d{4})?) Intel Corporation
-# SPDX-License-Identifier: Apache-2\.0
-"""
+notice-rgx = '# Copyright \(C\) (\d{4}(-\d{4})?) Intel Corporation\n# SPDX-License-Identifier: Apache-2\.0'
 
 [tool.bandit]
 skips = ["B101"]
