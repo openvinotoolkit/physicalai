@@ -119,8 +119,8 @@ class TestSO101Construction:
         with pytest.raises(ValueError, match="Invalid role"):
             _create_robot(mock_sdk, role="invalid")
 
-    def test_default_servo_ids(self, mock_sdk: MagicMock) -> None:
-        """Default servo IDs are 1–6 in JOINT_ORDER."""
+    def test_servo_ids_derived_from_calibration(self, mock_sdk: MagicMock) -> None:
+        """Servo IDs are derived from calibration in calibrated mode."""
         robot = _create_robot(mock_sdk)
         assert robot.servo_ids == {
             "shoulder_pan": 1,
@@ -131,18 +131,27 @@ class TestSO101Construction:
             "gripper": 6,
         }
 
-    def test_custom_servo_ids(self, mock_sdk: MagicMock) -> None:
-        """Custom servo IDs are accepted."""
-        custom = {name: 10 + i for i, name in enumerate(["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"])}
-        with patch.dict("sys.modules", {"scservo_sdk": mock_sdk}):
-            from physicalai.robot.so101 import SO101, SO101Calibration
+    def test_calibration_rejects_non_positive_servo_id(self, mock_sdk: MagicMock) -> None:
+        """Calibration with a non-positive servo ID raises at parse time."""
+        bad_calibration = json.loads(json.dumps(SAMPLE_CALIBRATION))
+        bad_calibration["gripper"]["id"] = 0
 
-            robot = SO101(
-                port="/dev/ttyUSB0",
-                calibration=SO101Calibration.from_dict(SAMPLE_CALIBRATION),
-                servo_ids=custom,
-            )
-            assert robot.servo_ids == custom
+        with patch.dict("sys.modules", {"scservo_sdk": mock_sdk}):
+            from physicalai.robot.so101 import SO101Calibration
+
+            with pytest.raises(ValueError, match="positive integers"):
+                SO101Calibration.from_dict(bad_calibration)
+
+    def test_calibration_rejects_duplicate_servo_ids(self, mock_sdk: MagicMock) -> None:
+        """Calibration with duplicate servo IDs raises at parse time."""
+        bad_calibration = json.loads(json.dumps(SAMPLE_CALIBRATION))
+        bad_calibration["gripper"]["id"] = bad_calibration["wrist_roll"]["id"]
+
+        with patch.dict("sys.modules", {"scservo_sdk": mock_sdk}):
+            from physicalai.robot.so101 import SO101Calibration
+
+            with pytest.raises(ValueError, match="unique"):
+                SO101Calibration.from_dict(bad_calibration)
 
     def test_none_calibration_raises(self, mock_sdk: MagicMock) -> None:
         """Main constructor rejects missing calibration."""
@@ -161,6 +170,14 @@ class TestSO101Construction:
 
         assert robot.calibrated is False
         assert robot.unit == "ticks"
+        assert robot.servo_ids == {
+            "shoulder_pan": 1,
+            "shoulder_lift": 2,
+            "elbow_flex": 3,
+            "wrist_flex": 4,
+            "wrist_roll": 5,
+            "gripper": 6,
+        }
 
 
 # ---------------------------------------------------------------------------

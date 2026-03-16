@@ -114,7 +114,8 @@ class SO101Calibration:
 
         Raises:
             TypeError: If the calibration data is not a dict.
-            ValueError: If joints are missing or required keys are absent.
+            ValueError: If joints are missing, required keys are absent, or
+                servo IDs are not positive / unique.
         """
         if not isinstance(data, dict):
             msg = "Calibration file must be a JSON object mapping joint names to calibration data"
@@ -148,6 +149,14 @@ class SO101Calibration:
                 range_max=int(cal["range_max"]),
             )
 
+        # Validate servo IDs are positive and unique across all joints.
+        ids = [j.id for j in joints.values()]
+        if any(servo_id <= 0 for servo_id in ids):
+            bad = {n: j.id for n, j in joints.items() if j.id <= 0}
+            raise ValueError(f"All servo IDs must be positive integers, got: {bad}")
+        if len(set(ids)) != len(ids):
+            raise ValueError("All servo IDs must be unique across joints.")
+
         return cls(joints=joints)
 
 
@@ -159,8 +168,6 @@ class SO101:
         baudrate: Serial baudrate. Defaults to 1 000 000 (STS3215 factory default).
         role: ``"follower"`` (torque enabled, full control) or ``"leader"``
             (torque disabled, read-only for teleoperation).
-        servo_ids: Optional mapping from joint name to servo ID.  Defaults to
-            IDs 1-6 in ``JOINT_ORDER``.
         calibration: SO-101 calibration object or calibration JSON path.
             This is required for normal operation and defines the robot
             coordinate frame (radians).
@@ -178,7 +185,6 @@ class SO101:
         calibration: SO101Calibration | str | Path | None,
         baudrate: int = 1_000_000,
         role: str = "follower",
-        servo_ids: dict[str, int] | None = None,
         *,
         _allow_uncalibrated: bool = False,  # must be passed by keyword
     ) -> None:
@@ -192,6 +198,7 @@ class SO101:
 
         Raises:
             ValueError: If ``role`` is not ``"leader"`` or ``"follower"``.
+            ValueError: If resolved servo IDs are invalid.
         """
         if role not in _VALID_ROLES:
             msg = f"Invalid role {role!r}. Must be one of {sorted(_VALID_ROLES)}."
@@ -200,11 +207,6 @@ class SO101:
         self._port = port
         self._baudrate = baudrate
         self._role = role
-
-        # Servo ID mapping — default 1..6 in JOINT_ORDER
-        self.servo_ids: dict[str, int] = servo_ids or {
-            name: idx + 1 for idx, name in enumerate(self.JOINT_ORDER)
-        }
 
         # Calibration -------------------------------------------------------
         if calibration is None and not _allow_uncalibrated:
@@ -221,10 +223,15 @@ class SO101:
         self._calibration: SO101Calibration | None = calibration
         self._uncalibrated_mode = self._calibration is None
         self._warned_uncalibrated = False
-        if self._calibration is not None and servo_ids is None:
+        if self._calibration is not None:
             self.servo_ids = {
                 name: self._calibration.joints[name].id
                 for name in self.JOINT_ORDER
+            }
+        else:
+            # Explicit uncalibrated mode fallback — assumes canonical 1..6 mapping.
+            self.servo_ids = {
+                name: idx for idx, name in enumerate(self.JOINT_ORDER, 1)
             }
 
         # Connection state (set during connect()) --------------------------
@@ -242,7 +249,6 @@ class SO101:
         port: str,
         baudrate: int = 1_000_000,
         role: str = "follower",
-        servo_ids: dict[str, int] | None = None,
     ) -> "SO101":
         """Create an SO-101 instance in explicit raw-ticks mode.
 
@@ -257,7 +263,6 @@ class SO101:
             calibration=None,
             baudrate=baudrate,
             role=role,
-            servo_ids=servo_ids,
             _allow_uncalibrated=True,
         )
 
