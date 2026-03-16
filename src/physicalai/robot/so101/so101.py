@@ -379,30 +379,42 @@ class SO101:
 
         self._packet_handler = PacketHandler(_PROTOCOL_VERSION)
 
-        # Sync read / write groups -----------------------------------------
-        self._group_sync_read = GroupSyncRead(
-            self._port_handler,
-            self._packet_handler,
-            _ADDR_PRESENT_POSITION,
-            _LEN_PRESENT_POSITION,
-        )
-        for servo_id in self.servo_ids.values():
-            if not self._group_sync_read.addParam(servo_id):
-                msg = f"Failed to add servo {servo_id} to sync read group"
-                raise ConnectionError(msg)
+        try:
+            # Sync read / write groups -----------------------------------------
+            self._group_sync_read = GroupSyncRead(
+                self._port_handler,
+                self._packet_handler,
+                _ADDR_PRESENT_POSITION,
+                _LEN_PRESENT_POSITION,
+            )
+            for servo_id in self.servo_ids.values():
+                if not self._group_sync_read.addParam(servo_id):
+                    msg = f"Failed to add servo {servo_id} to sync read group"
+                    raise ConnectionError(msg)
 
-        self._group_sync_write = GroupSyncWrite(
-            self._port_handler,
-            self._packet_handler,
-            _ADDR_GOAL_POSITION,
-            _LEN_GOAL_POSITION,
-        )
+            self._group_sync_write = GroupSyncWrite(
+                self._port_handler,
+                self._packet_handler,
+                _ADDR_GOAL_POSITION,
+                _LEN_GOAL_POSITION,
+            )
 
-        # Ping all servos ---------------------------------------------------
-        self._ping_servos()
+            # Ping all servos ---------------------------------------------------
+            self._ping_servos()
 
-        # Configure torque based on role ------------------------------------
-        self._set_torque(enabled=self.role == "follower")
+            # Configure torque based on role ------------------------------------
+            self._set_torque(enabled=self.role == "follower")
+        except Exception:
+            if self._port_handler is not None:
+                try:
+                    self._port_handler.closePort()
+                except Exception:
+                    pass
+            self._group_sync_read = None
+            self._group_sync_write = None
+            self._packet_handler = None
+            self._port_handler = None
+            raise
 
         logger.info(f"SO-101 connected on {self.port} (role={self.role}, servos={self.servo_ids})")
 
@@ -433,14 +445,24 @@ class SO101:
         if self._port_handler is None:
             return  # not connected
 
-        if self._torque_on_disconnect:
-            self._hold_position()
-
-        self._group_sync_read = None
-        self._group_sync_write = None
-        self._packet_handler = None
-        self._port_handler.closePort()
-        self._port_handler = None
+        try:
+            if self._torque_on_disconnect:
+                self._hold_position()
+        except Exception:
+            logger.exception(
+                "Failed to hold position while disconnecting SO-101; proceeding to close port."
+            )
+        finally:
+            self._group_sync_read = None
+            self._group_sync_write = None
+            self._packet_handler = None
+            try:
+                self._port_handler.closePort()
+            except Exception:
+                logger.exception(
+                    "Error while closing SO-101 serial port; continuing cleanup."
+                )
+            self._port_handler = None
 
         logger.info(f"SO-101 disconnected from {self.port}")
 
