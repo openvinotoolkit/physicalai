@@ -197,9 +197,9 @@ class SO101:
             msg = f"Invalid role {role!r}. Must be one of {sorted(_VALID_ROLES)}."
             raise ValueError(msg)
 
-        self.port = port
-        self.baudrate = baudrate
-        self.role = role
+        self._port = port
+        self._baudrate = baudrate
+        self._role = role
 
         # Servo ID mapping — default 1..6 in JOINT_ORDER
         self.servo_ids: dict[str, int] = servo_ids or {
@@ -233,6 +233,9 @@ class SO101:
         self._group_sync_read: Any | None = None
         self._group_sync_write: Any | None = None
 
+        # Torque ON/OFF behavior on disconnect (default: True for follower, False for leader)
+        self._torque_on_disconnect: bool = role == "follower"
+
     @classmethod
     def uncalibrated(
         cls,
@@ -257,6 +260,39 @@ class SO101:
             servo_ids=servo_ids,
             _allow_uncalibrated=True,
         )
+
+    @property
+    def port(self) -> str:
+        """Serial port path."""
+        return self._port
+
+    @port.setter
+    def port(self, value: str) -> None:
+        self._port = value
+
+    @property
+    def baudrate(self) -> int:
+        """Serial baudrate."""
+        return self._baudrate
+
+    @baudrate.setter
+    def baudrate(self, value: int) -> None:
+        if value <= 0:
+            msg = f"baudrate must be a positive integer, got {value!r}"
+            raise ValueError(msg)
+        self._baudrate = value
+
+    @property
+    def role(self) -> str:
+        """Robot role: ``"follower"`` or ``"leader"``."""
+        return self._role
+
+    @role.setter
+    def role(self, value: str) -> None:
+        if value not in _VALID_ROLES:
+            msg = f"Invalid role {value!r}. Must be one of {sorted(_VALID_ROLES)}."
+            raise ValueError(msg)
+        self._role = value
 
     @property
     def calibrated(self) -> bool:
@@ -343,9 +379,6 @@ class SO101:
 
         self._packet_handler = PacketHandler(_PROTOCOL_VERSION)
 
-        # Ping all servos ---------------------------------------------------
-        self._ping_servos()
-
         # Sync read / write groups -----------------------------------------
         self._group_sync_read = GroupSyncRead(
             self._port_handler,
@@ -365,10 +398,29 @@ class SO101:
             _LEN_GOAL_POSITION,
         )
 
+        # Ping all servos ---------------------------------------------------
+        self._ping_servos()
+
         # Configure torque based on role ------------------------------------
         self._set_torque(enabled=self.role == "follower")
 
         logger.info(f"SO-101 connected on {self.port} (role={self.role}, servos={self.servo_ids})")
+
+    def set_torque_on_disconnect(self, torque: bool) -> None:
+        """Set whether torque should be enabled on disconnect.
+
+        Call before disconnect() to control the torque behavior after disconnecting.
+        Skips the hold-position safety behavior if torque is disabled.
+
+        Warning:
+            The arm will drop under gravity. Only use when the arm is
+            in a safe position or manually supported.
+        """
+        if self.role != "follower" and torque:
+            raise ValueError("Torque on disconnect can only be enabled for follower arms.")
+        elif not torque and self._torque_on_disconnect:
+            logger.warning("Disabling torque on disconnect will cause the arm to drop under gravity. Ensure this is intentional.")
+        self._torque_on_disconnect = torque
 
     def disconnect(self) -> None:
         """Disconnect from the robot, leaving it in a safe state.
@@ -381,7 +433,7 @@ class SO101:
         if self._port_handler is None:
             return  # not connected
 
-        if self.role == "follower":
+        if self._torque_on_disconnect:
             self._hold_position()
 
         self._group_sync_read = None
@@ -570,6 +622,9 @@ class SO101:
             ConnectionError: If sync write fails.
         """
         self._ensure_connected()
+
+        # Hardware safety clamp — STS3215 valid range is 0..4095
+        ticks = np.clip(ticks, 0, _TICKS_PER_REVOLUTION - 1)
 
         self._group_sync_write.clearParam()
 

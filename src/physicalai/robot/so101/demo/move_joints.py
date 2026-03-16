@@ -166,14 +166,12 @@ def main(argv: list[str] | None = None) -> None:
     except KeyboardInterrupt:
         print("\nInterrupted by user.")  # noqa: T201
     finally:
-        # Return to starting pose, then release torque
+        # Return to starting pose, then release torque on disconnect
         print("Returning to starting pose...")  # noqa: T201
         robot.send_action(start_pose)
         time.sleep(args.delay)
         print("Releasing torque (motors off)...")  # noqa: T201
-        robot._set_torque(enabled=False)  # noqa: SLF001
-        # Switch to leader so disconnect() won't re-enable torque via _hold_position()
-        robot.role = "leader"
+        robot.set_torque_on_disconnect(torque=False)
         robot.disconnect()
         print("Disconnected.")  # noqa: T201
 
