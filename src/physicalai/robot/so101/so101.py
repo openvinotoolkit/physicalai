@@ -15,14 +15,19 @@ The driver supports two roles:
 * **follower** (default) — torque enabled, used for inference / deployment.
 * **leader** — torque disabled, used for teleoperation (read-only).
 
-Calibration data can optionally be loaded from a JSON file so that joint
-positions are reported in radians rather than raw servo ticks.
+Calibration data can be loaded from a JSON file so that joint positions are
+reported in radians rather than raw servo ticks.
+
+By default, this driver requires calibration and uses radians for both state
+and action. A dedicated :meth:`SO101.uncalibrated` factory exists for explicit
+raw-ticks bringup/debug mode.
 """
 
 from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -37,6 +42,15 @@ _TICKS_PER_REVOLUTION = 4096
 """STS3215 encoder resolution: 4096 ticks per full 360° revolution."""
 
 _RADIANS_PER_TICK = 2.0 * np.pi / _TICKS_PER_REVOLUTION
+
+_SO101_JOINT_ORDER = (
+    "shoulder_pan",
+    "shoulder_lift",
+    "elbow_flex",
+    "wrist_flex",
+    "wrist_roll",
+    "gripper",
+)
 
 _VALID_ROLES = frozenset({"leader", "follower"})
 
@@ -53,6 +67,90 @@ _LEN_PRESENT_POSITION = 2
 _PROTOCOL_VERSION = 0
 
 
+@dataclass(frozen=True)
+class SO101JointCalibration:
+    """Calibration data for a single SO-101 joint."""
+
+    id: int
+    drive_mode: int
+    homing_offset: int
+    range_min: int
+    range_max: int
+
+    @property
+    def direction(self) -> int:
+        """Direction multiplier derived from drive mode."""
+        return -1 if self.drive_mode == 1 else 1
+
+
+@dataclass(frozen=True)
+class SO101Calibration:
+    """Calibration data for all SO-101 joints."""
+
+    joints: dict[str, SO101JointCalibration]
+
+    @classmethod
+    def from_path(cls, path: str | Path) -> "SO101Calibration":
+        """Load and validate a calibration JSON file from disk."""
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        return cls.from_dict(data)
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "SO101Calibration":
+        """Build a calibration object from parsed JSON data.
+
+        Supports the LeRobot calibration format::
+
+            {
+                "<joint_name>": {
+                    "id": <int>,
+                    "drive_mode": <0 | 1>,
+                    "homing_offset": <int>,
+                    "range_min": <int>,
+                    "range_max": <int>
+                },
+                ...
+            }
+
+        Raises:
+            TypeError: If the calibration data is not a dict.
+            ValueError: If joints are missing or required keys are absent.
+        """
+        if not isinstance(data, dict):
+            msg = "Calibration file must be a JSON object mapping joint names to calibration data"
+            raise TypeError(msg)
+
+        required_joints = set(_SO101_JOINT_ORDER)
+        missing = required_joints - data.keys()
+        if missing:
+            msg = f"Calibration file is missing joints: {sorted(missing)}"
+            raise ValueError(msg)
+
+        joints: dict[str, SO101JointCalibration] = {}
+        for name in _SO101_JOINT_ORDER:
+            cal = data[name]
+            if not isinstance(cal, dict):
+                msg = f"Joint '{name}' calibration must be a dict"
+                raise TypeError(msg)
+            for key in ("id", "drive_mode", "homing_offset", "range_min", "range_max"):
+                if key not in cal:
+                    msg = f"Joint '{name}' missing required calibration key '{key}'"
+                    raise ValueError(msg)
+            if cal["drive_mode"] not in {0, 1}:
+                msg = f"Joint '{name}' drive_mode must be 0 or 1, got {cal['drive_mode']}"
+                raise ValueError(msg)
+
+            joints[name] = SO101JointCalibration(
+                id=int(cal["id"]),
+                drive_mode=int(cal["drive_mode"]),
+                homing_offset=int(cal["homing_offset"]),
+                range_min=int(cal["range_min"]),
+                range_max=int(cal["range_max"]),
+            )
+
+        return cls(joints=joints)
+
+
 class SO101:
     """Driver for the SO-101 robot arm (6-DOF, Feetech STS3215 servos).
 
@@ -63,19 +161,12 @@ class SO101:
             (torque disabled, read-only for teleoperation).
         servo_ids: Optional mapping from joint name to servo ID.  Defaults to
             IDs 1-6 in ``JOINT_ORDER``.
-        calibration_path: Optional path to a JSON calibration file.  When
-            provided, joint positions are reported in radians.  When ``None``,
-            positions are raw servo ticks (0-4095) and a warning is logged once.
+        calibration: SO-101 calibration object or calibration JSON path.
+            This is required for normal operation and defines the robot
+            coordinate frame (radians).
     """
 
-    JOINT_ORDER: ClassVar[list[str]] = [
-        "shoulder_pan",
-        "shoulder_lift",
-        "elbow_flex",
-        "wrist_flex",
-        "wrist_roll",
-        "gripper",
-    ]
+    JOINT_ORDER: ClassVar[list[str]] = list(_SO101_JOINT_ORDER)
     """Canonical joint ordering (index 0 → first element of state vector)."""
 
     NUM_JOINTS: ClassVar[int] = 6
@@ -84,12 +175,20 @@ class SO101:
     def __init__(
         self,
         port: str,
+        calibration: SO101Calibration | str | Path | None,
         baudrate: int = 1_000_000,
         role: str = "follower",
         servo_ids: dict[str, int] | None = None,
-        calibration_path: str | Path | None = None,
+        *,
+        _allow_uncalibrated: bool = False,  # must be passed by keyword
     ) -> None:
         """Initialize the SO-101 driver (does not open the connection).
+
+        ``calibration`` may be:
+
+        * ``SO101Calibration`` — use an already loaded calibration object.
+        * ``str | Path`` — load LeRobot calibration JSON from disk.
+        * ``None`` — only allowed via :meth:`SO101.uncalibrated` for raw ticks.
 
         Raises:
             ValueError: If ``role`` is not ``"leader"`` or ``"follower"``.
@@ -108,22 +207,66 @@ class SO101:
         }
 
         # Calibration -------------------------------------------------------
-        self._calibration: dict[str, dict[str, Any]] | None = None
+        if calibration is None and not _allow_uncalibrated:
+            msg = (
+                "calibration is required for SO101. "
+                "Pass a calibration object/path, or use SO101.uncalibrated(...) "
+                "for explicit raw-ticks bringup mode."
+            )
+            raise ValueError(msg)
+
+        if isinstance(calibration, (str, Path)):
+            calibration = SO101Calibration.from_path(calibration)
+
+        self._calibration: SO101Calibration | None = calibration
+        self._uncalibrated_mode = self._calibration is None
         self._warned_uncalibrated = False
-        if calibration_path is not None:
-            self._calibration = self._load_calibration(Path(calibration_path))
-            # Use servo IDs from calibration when none were explicitly given.
-            if servo_ids is None:
-                self.servo_ids = {
-                    name: self._calibration[name]["id"]
-                    for name in self.JOINT_ORDER
-                }
+        if self._calibration is not None and servo_ids is None:
+            self.servo_ids = {
+                name: self._calibration.joints[name].id
+                for name in self.JOINT_ORDER
+            }
 
         # Connection state (set during connect()) --------------------------
         self._port_handler: Any | None = None
         self._packet_handler: Any | None = None
         self._group_sync_read: Any | None = None
         self._group_sync_write: Any | None = None
+
+    @classmethod
+    def uncalibrated(
+        cls,
+        port: str,
+        baudrate: int = 1_000_000,
+        role: str = "follower",
+        servo_ids: dict[str, int] | None = None,
+    ) -> "SO101":
+        """Create an SO-101 instance in explicit raw-ticks mode.
+
+        This mode is intended for bringup/debug only. Observations and actions
+        use raw servo ticks (0-4095), not radians.
+
+        Warning:
+            Uncalibrated mode is not suitable for policy inference/deployment.
+        """
+        return cls(
+            port=port,
+            calibration=None,
+            baudrate=baudrate,
+            role=role,
+            servo_ids=servo_ids,
+            _allow_uncalibrated=True,
+        )
+
+    @property
+    def calibrated(self) -> bool:
+        """Whether this driver is running with calibration (radian mode)."""
+        return self._calibration is not None
+
+    @property
+    def unit(self) -> str:
+        """Current state/action unit: ``"radians"`` or ``"ticks"``."""
+        return "radians" if self.calibrated else "ticks"
 
     def connect(self) -> None:
         """Open the serial port, ping all servos, and configure torque.
@@ -197,12 +340,7 @@ class SO101:
         # Configure torque based on role ------------------------------------
         self._set_torque(enabled=self.role == "follower")
 
-        logger.info(
-            "SO-101 connected on %s (role=%s, servos=%s)",
-            self.port,
-            self.role,
-            self.servo_ids,
-        )
+        logger.info(f"SO-101 connected on {self.port} (role={self.role}, servos={self.servo_ids})")
 
     def disconnect(self) -> None:
         """Disconnect from the robot, leaving it in a safe state.
@@ -224,7 +362,7 @@ class SO101:
         self._port_handler.closePort()
         self._port_handler = None
 
-        logger.info("SO-101 disconnected from %s", self.port)
+        logger.info(f"SO-101 disconnected from {self.port}")
 
     def get_observation(self) -> dict[str, Any]:
         """Read current joint positions from all servos.
@@ -233,7 +371,7 @@ class SO101:
             A dict with:
 
             * ``"state"``: ``np.ndarray`` of shape ``(6,)`` — joint positions
-              in radians (if calibrated) or raw ticks (if uncalibrated).
+                            in radians by default, or raw ticks in explicit uncalibrated mode.
             * ``"timestamp"``: ``float`` from ``time.monotonic()``.
         """
         raw_positions = self._read_joint_positions()
@@ -243,8 +381,9 @@ class SO101:
         else:
             if not self._warned_uncalibrated:
                 logger.warning(
-                    "No calibration file provided. Joint positions are in raw "
-                    "servo ticks (0-4095), not radians.",
+                    "SO101 running in explicit uncalibrated mode. Joint "
+                    "positions/actions are raw servo ticks (0-4095), not radians. "
+                    "Do not use uncalibrated mode for policy inference/deployment.",
                 )
                 self._warned_uncalibrated = True
             state = raw_positions.astype(np.float32)
@@ -259,7 +398,7 @@ class SO101:
 
         Args:
             action: Array of shape ``(6,)`` with target joint positions in
-                radians (calibrated) or raw ticks (uncalibrated).
+                radians by default, or raw ticks in explicit uncalibrated mode.
 
         Raises:
             RuntimeError: If the robot is in ``"leader"`` role.
@@ -277,61 +416,12 @@ class SO101:
             msg = f"Expected action shape {expected_shape}, got {action.shape}"
             raise ValueError(msg)
 
-        ticks = self._radians_to_ticks(action) if self._calibration is not None else np.round(action).astype(np.int32)
+        ticks = (
+            self._radians_to_ticks(action)
+            if self._calibration is not None
+            else np.round(action).astype(np.int32)
+        )
         self._write_joint_positions(ticks)
-
-    @staticmethod
-    def _load_calibration(path: Path) -> dict[str, dict[str, Any]]:
-        """Load and validate a calibration JSON file.
-
-        Supports the LeRobot calibration format::
-
-            {
-                "<joint_name>": {
-                    "id": <int>,
-                    "drive_mode": <0 | 1>,
-                    "homing_offset": <int>,
-                    "range_min": <int>,
-                    "range_max": <int>
-                },
-                ...
-            }
-
-        ``drive_mode`` controls direction: ``0`` = normal, ``1`` = reversed.
-        ``range_min`` and ``range_max`` are in raw servo ticks.
-
-        Args:
-            path: Path to the JSON calibration file.
-
-        Returns:
-            The joints dict from the calibration file.
-
-        Raises:
-            TypeError: If the calibration data is not a dict.
-            ValueError: If joints are missing or required keys are absent.
-        """
-        joints = json.loads(path.read_text(encoding="utf-8"))
-
-        if not isinstance(joints, dict):
-            msg = "Calibration file must be a JSON object mapping joint names to calibration data"
-            raise TypeError(msg)
-
-        required_joints = set(SO101.JOINT_ORDER)
-        missing = required_joints - joints.keys()
-        if missing:
-            msg = f"Calibration file is missing joints: {sorted(missing)}"
-            raise ValueError(msg)
-
-        for name, cal in joints.items():
-            for key in ("id", "drive_mode", "homing_offset", "range_min", "range_max"):
-                if key not in cal:
-                    msg = f"Joint '{name}' missing required calibration key '{key}'"
-                    raise ValueError(msg)
-            if cal["drive_mode"] not in {0, 1}:
-                msg = f"Joint '{name}' drive_mode must be 0 or 1, got {cal['drive_mode']}"
-                raise ValueError(msg)
-
-        return joints
 
     def _ticks_to_radians(self, ticks: np.ndarray) -> np.ndarray:
         """Convert raw servo ticks to radians using calibration data.
@@ -345,9 +435,8 @@ class SO101:
         assert self._calibration is not None  # noqa: S101
         result = np.empty(self.NUM_JOINTS, dtype=np.float32)
         for i, name in enumerate(self.JOINT_ORDER):
-            cal = self._calibration[name]
-            direction = -1 if cal["drive_mode"] == 1 else 1
-            result[i] = (ticks[i] - cal["homing_offset"]) * direction * _RADIANS_PER_TICK
+            cal = self._calibration.joints[name]
+            result[i] = (ticks[i] - cal.homing_offset) * cal.direction * _RADIANS_PER_TICK
         return result
 
     def _radians_to_ticks(self, radians: np.ndarray) -> np.ndarray:
@@ -362,10 +451,9 @@ class SO101:
         assert self._calibration is not None  # noqa: S101
         result = np.empty(self.NUM_JOINTS, dtype=np.int32)
         for i, name in enumerate(self.JOINT_ORDER):
-            cal = self._calibration[name]
-            direction = -1 if cal["drive_mode"] == 1 else 1
-            ticks_val = round(radians[i] / (direction * _RADIANS_PER_TICK) + cal["homing_offset"])
-            result[i] = int(np.clip(ticks_val, cal["range_min"], cal["range_max"]))
+            cal = self._calibration.joints[name]
+            ticks_val = round(radians[i] / (cal.direction * _RADIANS_PER_TICK) + cal.homing_offset)
+            result[i] = int(np.clip(ticks_val, cal.range_min, cal.range_max))
         return result
 
     def _ping_servos(self) -> None:
@@ -385,7 +473,7 @@ class SO101:
                 )
                 raise ConnectionError(msg)
             if error != 0:
-                logger.warning("Servo '%s' (ID %d) returned error: %d", name, servo_id, error)
+                logger.warning(f"Servo '{name}' (ID {servo_id}) returned error: {error}")
 
     def _set_torque(self, *, enabled: bool) -> None:
         """Enable or disable torque on all servos."""
@@ -400,9 +488,9 @@ class SO101:
                 value,
             )
             if comm_result != 0:
-                logger.warning("Failed to set torque on servo '%s' (ID %d): comm=%d", name, servo_id, comm_result)
+                logger.warning(f"Failed to set torque on servo '{name}' (ID {servo_id}): comm={comm_result}")
             if error != 0:
-                logger.warning("Torque write error on servo '%s' (ID %d): err=%d", name, servo_id, error)
+                logger.warning(f"Torque write error on servo '{name}' (ID {servo_id}): err={error}")
 
     def _hold_position(self) -> None:
         """Command all servos to hold their current position.

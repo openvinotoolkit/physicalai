@@ -79,19 +79,30 @@ def calibration_file(tmp_path: Path) -> Path:
     return path
 
 
+@pytest.fixture
+def calibration_obj() -> Any:
+    """Build a typed SO-101 calibration object from in-memory sample data."""
+    from physicalai.robot.so101 import SO101Calibration
+
+    return SO101Calibration.from_dict(SAMPLE_CALIBRATION)
+
+
 def _create_robot(
     mock_sdk: MagicMock,
     role: str = "follower",
-    calibration_path: Path | None = None,
+    calibration: Any | None = None,
 ) -> Any:
     """Import and instantiate SO101 with the mocked SDK."""
     with patch.dict("sys.modules", {"scservo_sdk": mock_sdk}):
-        from physicalai.robot.so101 import SO101
+        from physicalai.robot.so101 import SO101, SO101Calibration
+
+        if calibration is None:
+            calibration = SO101Calibration.from_dict(SAMPLE_CALIBRATION)
 
         return SO101(
             port="/dev/ttyUSB0",
             role=role,
-            calibration_path=calibration_path,
+            calibration=calibration,
         )
 
 
@@ -124,10 +135,32 @@ class TestSO101Construction:
         """Custom servo IDs are accepted."""
         custom = {name: 10 + i for i, name in enumerate(["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"])}
         with patch.dict("sys.modules", {"scservo_sdk": mock_sdk}):
+            from physicalai.robot.so101 import SO101, SO101Calibration
+
+            robot = SO101(
+                port="/dev/ttyUSB0",
+                calibration=SO101Calibration.from_dict(SAMPLE_CALIBRATION),
+                servo_ids=custom,
+            )
+            assert robot.servo_ids == custom
+
+    def test_none_calibration_raises(self, mock_sdk: MagicMock) -> None:
+        """Main constructor rejects missing calibration."""
+        with patch.dict("sys.modules", {"scservo_sdk": mock_sdk}):
             from physicalai.robot.so101 import SO101
 
-            robot = SO101(port="/dev/ttyUSB0", servo_ids=custom)
-            assert robot.servo_ids == custom
+            with pytest.raises(ValueError, match="calibration is required"):
+                SO101(port="/dev/ttyUSB0", calibration=None)
+
+    def test_uncalibrated_factory_sets_ticks_mode(self, mock_sdk: MagicMock) -> None:
+        """uncalibrated() creates an explicit raw-ticks mode robot."""
+        with patch.dict("sys.modules", {"scservo_sdk": mock_sdk}):
+            from physicalai.robot.so101 import SO101
+
+            robot = SO101.uncalibrated(port="/dev/ttyUSB0")
+
+        assert robot.calibrated is False
+        assert robot.unit == "ticks"
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +258,10 @@ class TestSO101Observation:
 
     def test_observation_structure_uncalibrated(self, mock_sdk: MagicMock) -> None:
         """Uncalibrated observation has correct structure and dtype."""
-        robot = _create_robot(mock_sdk)
+        with patch.dict("sys.modules", {"scservo_sdk": mock_sdk}):
+            from physicalai.robot.so101 import SO101
+
+            robot = SO101.uncalibrated(port="/dev/ttyUSB0")
 
         with patch.dict("sys.modules", {"scservo_sdk": mock_sdk}):
             robot.connect()
@@ -238,9 +274,9 @@ class TestSO101Observation:
         assert obs["state"].dtype == np.float32
         assert isinstance(obs["timestamp"], float)
 
-    def test_observation_calibrated(self, mock_sdk: MagicMock, calibration_file: Path) -> None:
+    def test_observation_calibrated(self, mock_sdk: MagicMock, calibration_obj: Any) -> None:
         """Calibrated observation returns radians."""
-        robot = _create_robot(mock_sdk, calibration_path=calibration_file)
+        robot = _create_robot(mock_sdk, calibration=calibration_obj)
 
         with patch.dict("sys.modules", {"scservo_sdk": mock_sdk}):
             robot.connect()
@@ -291,13 +327,13 @@ class TestSO101Action:
         with pytest.raises(ValueError, match="Expected action shape"):
             robot.send_action(np.zeros(3, dtype=np.float32))
 
-    def test_send_action_calibrated_clamps(self, mock_sdk: MagicMock, calibration_file: Path) -> None:
+    def test_send_action_calibrated_clamps(self, mock_sdk: MagicMock, calibration_obj: Any) -> None:
         """Calibrated send_action clamps to joint range limits."""
-        robot = _create_robot(mock_sdk, role="follower", calibration_path=calibration_file)
+        robot = _create_robot(mock_sdk, role="follower", calibration=calibration_obj)
 
         with patch.dict("sys.modules", {"scservo_sdk": mock_sdk}):
             robot.connect()
-            # gripper range_max is 1.57, sending 10.0 should clamp
+            # Large angle should clamp to calibration tick range
             action = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 10.0], dtype=np.float32)
             robot.send_action(action)
 
@@ -313,13 +349,17 @@ class TestSO101Action:
 class TestSO101Calibration:
     """Tests for calibration loading and conversion."""
 
-    def test_load_calibration_valid(self, mock_sdk: MagicMock, calibration_file: Path) -> None:
-        """Valid calibration file loads without error."""
-        robot = _create_robot(mock_sdk, calibration_path=calibration_file)
-        assert robot._calibration is not None  # noqa: SLF001
-        assert "shoulder_pan" in robot._calibration  # noqa: SLF001
+    def test_constructor_with_calibration_path_valid(self, mock_sdk: MagicMock, calibration_file: Path) -> None:
+        """Valid calibration path passed to constructor loads typed calibration."""
+        with patch.dict("sys.modules", {"scservo_sdk": mock_sdk}):
+            from physicalai.robot.so101 import SO101
 
-    def test_load_calibration_missing_joint(self, mock_sdk: MagicMock, tmp_path: Path) -> None:
+            robot = SO101(port="/dev/ttyUSB0", calibration=calibration_file)
+
+        assert robot._calibration is not None  # noqa: SLF001
+        assert "shoulder_pan" in robot._calibration.joints  # noqa: SLF001
+
+    def test_from_path_missing_joint(self, tmp_path: Path) -> None:
         """Calibration file missing a joint raises ValueError."""
         bad_cal = {
             "shoulder_pan": {"id": 1, "drive_mode": 0, "homing_offset": 2048, "range_min": 707, "range_max": 3439},
@@ -328,18 +368,22 @@ class TestSO101Calibration:
         path = tmp_path / "bad_cal.json"
         path.write_text(json.dumps(bad_cal), encoding="utf-8")
 
-        with pytest.raises(ValueError, match="missing joints"):
-            _create_robot(mock_sdk, calibration_path=path)
+        from physicalai.robot.so101 import SO101Calibration
 
-    def test_load_calibration_not_a_dict(self, mock_sdk: MagicMock, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="missing joints"):
+            SO101Calibration.from_path(path)
+
+    def test_from_path_not_a_dict(self, tmp_path: Path) -> None:
         """Calibration file that is a JSON array (not a dict) raises TypeError."""
         path = tmp_path / "bad_format.json"
         path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
 
-        with pytest.raises(TypeError, match="JSON object"):
-            _create_robot(mock_sdk, calibration_path=path)
+        from physicalai.robot.so101 import SO101Calibration
 
-    def test_load_calibration_bad_drive_mode(self, mock_sdk: MagicMock, tmp_path: Path) -> None:
+        with pytest.raises(TypeError, match="JSON object"):
+            SO101Calibration.from_path(path)
+
+    def test_from_path_bad_drive_mode(self, tmp_path: Path) -> None:
         """Calibration with drive_mode not in {0, 1} raises ValueError."""
         bad_cal = {
             name: {**v, "drive_mode": 2} if name == "shoulder_pan" else v
@@ -348,12 +392,14 @@ class TestSO101Calibration:
         path = tmp_path / "bad_drive_mode.json"
         path.write_text(json.dumps(bad_cal), encoding="utf-8")
 
-        with pytest.raises(ValueError, match="drive_mode must be 0 or 1"):
-            _create_robot(mock_sdk, calibration_path=path)
+        from physicalai.robot.so101 import SO101Calibration
 
-    def test_tick_radian_roundtrip(self, mock_sdk: MagicMock, calibration_file: Path) -> None:
+        with pytest.raises(ValueError, match="drive_mode must be 0 or 1"):
+            SO101Calibration.from_path(path)
+
+    def test_tick_radian_roundtrip(self, mock_sdk: MagicMock, calibration_obj: Any) -> None:
         """Converting ticks → radians → ticks should roundtrip."""
-        robot = _create_robot(mock_sdk, calibration_path=calibration_file)
+        robot = _create_robot(mock_sdk, calibration=calibration_obj)
 
         original_ticks = np.array([2048, 1524, 2048, 2048, 2048, 2200], dtype=np.int32)
         radians = robot._ticks_to_radians(original_ticks)  # noqa: SLF001
@@ -374,7 +420,7 @@ class TestSO101MissingSDK:
         with patch.dict("sys.modules", {"scservo_sdk": None}):
             from physicalai.robot.so101 import SO101
 
-            robot = SO101(port="/dev/ttyUSB0")
+            robot = SO101.uncalibrated(port="/dev/ttyUSB0")
 
             with pytest.raises(ImportError, match="pip install physicalai\\[so101\\]"):
                 robot.connect()

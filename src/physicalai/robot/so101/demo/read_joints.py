@@ -9,6 +9,7 @@ terminal so the user can verify communication and manually move the arm.
 Usage::
 
     python -m physicalai.robot.so101.check --port /dev/ttyUSB0
+    python -m physicalai.robot.so101.check --port /dev/ttyUSB0 --calibration cal.json
 """
 
 from __future__ import annotations
@@ -35,17 +36,28 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--port", required=True, help="Serial port, e.g. /dev/ttyUSB0")
     parser.add_argument("--baudrate", type=int, default=1_000_000, help="Serial baudrate (default: 1000000)")
     parser.add_argument("--hz", type=float, default=100.0, help="Read frequency in Hz (default: 100)")
-    parser.add_argument("--calibration", default=None, help="Path to calibration JSON file (optional)")
+    parser.add_argument("--calibration", default=None, help="Path to calibration JSON file")
     args = parser.parse_args(argv)
 
-    robot = SO101(
-        port=args.port,
-        baudrate=args.baudrate,
-        role="leader",
-        calibration_path=args.calibration,
-    )
+    if args.calibration:
+        robot = SO101(
+            port=args.port,
+            baudrate=args.baudrate,
+            role="leader",
+            calibration=args.calibration,
+        )
+    else:
+        print(
+            "WARNING: No calibration provided. Running in raw ticks mode; values are not radians. "
+            "Do not use uncalibrated mode for policy inference/deployment.",
+        )  # noqa: T201
+        robot = SO101.uncalibrated(
+            port=args.port,
+            baudrate=args.baudrate,
+            role="leader",
+        )
 
-    unit = "rad" if args.calibration else "ticks"
+    unit = robot.unit
     period = 1.0 / args.hz
 
     print(f"Connecting to SO-101 on {args.port} ...")  # noqa: T201
@@ -77,7 +89,7 @@ def main(argv: list[str] | None = None) -> None:
                 frame_count = 0
                 last_time = now
 
-            if args.calibration:
+            if robot.calibrated:
                 values = "  ".join(f"{v:>14.4f}" for v in state)
             else:
                 values = "  ".join(f"{v:>14.0f}" for v in state)
