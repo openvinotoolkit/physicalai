@@ -350,7 +350,7 @@ class TestSO101Action:
 
         with patch.dict("sys.modules", {"scservo_sdk": mock_sdk}):
             robot.connect()
-            # Large angle should clamp to calibration tick range
+            # gripper range_max is 3074 ticks; sending 10.0 rad should be clamped internally
             action = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 10.0], dtype=np.float32)
             robot.send_action(action)
 
