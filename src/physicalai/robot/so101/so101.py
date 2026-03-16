@@ -268,6 +268,34 @@ class SO101:
         """Current state/action unit: ``"radians"`` or ``"ticks"``."""
         return "radians" if self.calibrated else "ticks"
 
+    def _ensure_connected(self) -> None:
+        """Validate that all connection primitives are initialized.
+
+        Raises:
+            ConnectionError: If :meth:`connect` has not been called.
+        """
+        if (
+            self._packet_handler is None
+            or self._port_handler is None
+            or self._group_sync_read is None
+            or self._group_sync_write is None
+        ):
+            msg = "Robot is not connected. Call connect() first."
+            raise ConnectionError(msg)
+
+    def _ensure_calibrated(self) -> SO101Calibration:
+        """Validate that the robot is calibrated, or raise if running in uncalibrated mode.
+
+        Raises:
+            RuntimeError: If calibration data is unavailable.
+        """
+        if self._calibration is None:
+            msg = (
+                "Calibration is required for tick/radian conversion. "
+                "Provide calibration or avoid conversion methods in uncalibrated mode."
+            )
+            raise RuntimeError(msg)
+
     def connect(self) -> None:
         """Open the serial port, ping all servos, and configure torque.
 
@@ -432,7 +460,7 @@ class SO101:
         Returns:
             Float32 array of joint positions in radians, shape ``(6,)``.
         """
-        assert self._calibration is not None  # noqa: S101
+        self._ensure_calibrated()
         result = np.empty(self.NUM_JOINTS, dtype=np.float32)
         for i, name in enumerate(self.JOINT_ORDER):
             cal = self._calibration.joints[name]
@@ -448,7 +476,7 @@ class SO101:
         Returns:
             Int32 array of tick values, shape ``(6,)``.
         """
-        assert self._calibration is not None  # noqa: S101
+        self._ensure_calibrated()
         result = np.empty(self.NUM_JOINTS, dtype=np.int32)
         for i, name in enumerate(self.JOINT_ORDER):
             cal = self._calibration.joints[name]
@@ -462,9 +490,9 @@ class SO101:
         Raises:
             ConnectionError: If a servo does not respond.
         """
+        self._ensure_connected()
+
         for name, servo_id in self.servo_ids.items():
-            assert self._packet_handler is not None  # noqa: S101
-            assert self._port_handler is not None  # noqa: S101
             _, comm_result, error = self._packet_handler.ping(self._port_handler, servo_id)
             if comm_result != 0:
                 msg = (
@@ -477,8 +505,8 @@ class SO101:
 
     def _set_torque(self, *, enabled: bool) -> None:
         """Enable or disable torque on all servos."""
-        assert self._packet_handler is not None  # noqa: S101
-        assert self._port_handler is not None  # noqa: S101
+        self._ensure_connected()
+
         value = 1 if enabled else 0
         for name, servo_id in self.servo_ids.items():
             comm_result, error = self._packet_handler.write1ByteTxRx(
@@ -512,7 +540,8 @@ class SO101:
         Raises:
             ConnectionError: If sync read fails.
         """
-        assert self._group_sync_read is not None  # noqa: S101
+        self._ensure_connected()
+
         comm_result = self._group_sync_read.txRxPacket()
         if comm_result != 0:
             msg = f"Sync read failed with comm result {comm_result}"
@@ -540,7 +569,8 @@ class SO101:
         Raises:
             ConnectionError: If sync write fails.
         """
-        assert self._group_sync_write is not None  # noqa: S101
+        self._ensure_connected()
+
         self._group_sync_write.clearParam()
 
         for i, name in enumerate(self.JOINT_ORDER):
