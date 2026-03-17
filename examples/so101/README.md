@@ -1,4 +1,4 @@
-# SO-101 Demo Scripts
+# SO-101 Example Scripts
 
 Quick hardware verification scripts. No extra dependencies beyond `physicalai[so101]`.
 
@@ -7,7 +7,7 @@ Quick hardware verification scripts. No extra dependencies beyond `physicalai[so
 Read and display live joint positions. Torque is off — move the arm by hand to verify readings.
 
 ```bash
-python -m physicalai.robot.so101.demo.read_joints --port /dev/ttyUSB0
+python examples/so101/read_joints.py --port /dev/ttyUSB0
 ```
 
 ## move_joints
@@ -15,7 +15,7 @@ python -m physicalai.robot.so101.demo.read_joints --port /dev/ttyUSB0
 Move each joint by a small offset in radians (default ±0.08 rad) one at a time to verify actuation and wiring. Torque is released when done. A calibration file is required.
 
 ```bash
-python -m physicalai.robot.so101.demo.move_joints --port /dev/ttyUSB0 --calibration path/to/calibration.json
+python examples/so101/move_joints.py --port /dev/ttyUSB0 --calibration path/to/calibration.json
 ```
 
 Use `--offset 0.15` (radians) for larger movements or `--delay 1.0` for more time to observe.

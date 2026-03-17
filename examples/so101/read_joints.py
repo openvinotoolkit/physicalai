@@ -8,8 +8,8 @@ terminal so the user can verify communication and manually move the arm.
 
 Usage::
 
-    python -m physicalai.robot.so101.demo.read_joints --port /dev/ttyUSB0
-    python -m physicalai.robot.so101.demo.read_joints --port /dev/ttyUSB0 --calibration cal.json
+    python examples/so101/read_joints.py --port /dev/ttyUSB0
+    python examples/so101/read_joints.py --port /dev/ttyUSB0 --calibration cal.json
 """
 
 from __future__ import annotations

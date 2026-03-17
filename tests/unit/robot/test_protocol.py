@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 
-from physicalai.robot.protocol import Robot
+from physicalai.robot.interface import Robot
 
 
 class _ValidRobot:

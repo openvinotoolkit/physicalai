@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from physicalai.robot.utils import connect
+from physicalai.robot.connect import connect
 
 
 def _make_mock_robot() -> MagicMock:

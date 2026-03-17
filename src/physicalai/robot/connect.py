@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Generator
 
-    from physicalai.robot.protocol import Robot
+    from physicalai.robot.interface import Robot
 
 
 @contextmanager

@@ -57,6 +57,7 @@ include = [
     "LICENSE",
     "pyproject.toml",
     "docs/**",
+    "examples/**",
 ]
 
 [tool.mypy]

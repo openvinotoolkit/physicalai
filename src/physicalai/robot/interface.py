@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Robot Protocol definition.
+"""Robot Protocol-based interface definition.
 
 Defines the structural interface that all robot implementations must satisfy.
 Uses Python's Protocol for structural (duck) typing — no inheritance required.

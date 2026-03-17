@@ -9,9 +9,9 @@ works and that joint ordering matches the physical wiring.
 
 Usage::
 
-    python -m physicalai.robot.so101.demo.move_joints --port /dev/ttyUSB0
-    python -m physicalai.robot.so101.demo.move_joints --port /dev/ttyUSB0 --calibration cal.json
-    python -m physicalai.robot.so101.demo.move_joints --port /dev/ttyUSB0 --calibration cal.json --offset 0.15
+    python examples/so101/move_joints.py --port /dev/ttyUSB0
+    python examples/so101/move_joints.py --port /dev/ttyUSB0 --calibration cal.json
+    python examples/so101/move_joints.py --port /dev/ttyUSB0 --calibration cal.json --offset 0.15
 """
 
 from __future__ import annotations

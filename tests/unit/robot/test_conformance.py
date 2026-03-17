@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for check_robot_conformance()."""
+"""Tests for verify_robot()."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from physicalai.robot.testing import check_robot_conformance
+from physicalai.robot.verify import verify_robot
 
 
 class _ConformantRobot:
@@ -68,22 +68,22 @@ class _MissingStateRobot:
         pass
 
 
-class TestCheckRobotConformance:
-    """Tests for check_robot_conformance()."""
+class TestVerifyRobot:
+    """Tests for verify_robot()."""
 
     def test_conformant_robot_passes(self) -> None:
         """A conformant robot passes all checks."""
         robot = _ConformantRobot()
-        check_robot_conformance(robot)
+        verify_robot(robot)
 
     def test_missing_state_fails(self) -> None:
         """A robot missing 'state' in observation fails."""
         robot = _MissingStateRobot()
         with pytest.raises(AssertionError, match="observation must contain 'state'"):
-            check_robot_conformance(robot)
+            verify_robot(robot)
 
     def test_non_stationary_robot_fails(self) -> None:
         """A robot that drifts after disconnect fails stationarity check."""
         robot = _NonStationaryRobot()
         with pytest.raises(AssertionError, match="Robot must be stationary"):
-            check_robot_conformance(robot)
+            verify_robot(robot)

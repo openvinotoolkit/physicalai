@@ -5,21 +5,21 @@
 
 Public API::
 
-    from physicalai.robot import Robot, connect, check_robot_conformance
+    from physicalai.robot import Robot, connect, verify_robot
     from physicalai.robot import SO101  # requires: pip install physicalai[so101]
 """
 
 from __future__ import annotations
 
-from physicalai.robot.protocol import Robot
-from physicalai.robot.testing import check_robot_conformance
-from physicalai.robot.utils import connect
+from physicalai.robot.interface import Robot
+from physicalai.robot.verify import verify_robot
+from physicalai.robot.connect import connect
 
 __all__ = [  # noqa: F822, RUF022
     "Robot",
     "SO101",
-    "check_robot_conformance",
     "connect",
+    "verify_robot",
 ]
 
 
@@ -39,9 +39,18 @@ def __getattr__(name: str) -> object:
         AttributeError: If ``name`` does not match a known lazy-loaded symbol.
     """
     if name == "SO101":
-        from physicalai.robot.so101.so101 import SO101  # noqa: PLC0415
+        from physicalai.robot.so101 import SO101  # noqa: PLC0415
 
         return SO101
 
     msg = f"module {__name__!r} has no attribute {name!r}"
     raise AttributeError(msg)
+
+from physicalai.robot import verify_robot
+from physicalai.robot.so101.so101 import SO101
+robot = SO101(
+             port="/dev/tty.usbmodem5A7A0156901",
+             calibration="/Users/xiangxi2/.cache/huggingface/lerobot/calibration/robots/so_follower/my_awesome_follower_arm.json",
+             role="follower",
+         )
+verify_robot(robot)
