@@ -45,12 +45,3 @@ def __getattr__(name: str) -> object:
 
     msg = f"module {__name__!r} has no attribute {name!r}"
     raise AttributeError(msg)
-
-from physicalai.robot import verify_robot
-from physicalai.robot.so101.so101 import SO101
-robot = SO101(
-             port="/dev/tty.usbmodem5A7A0156901",
-             calibration="/Users/xiangxi2/.cache/huggingface/lerobot/calibration/robots/so_follower/my_awesome_follower_arm.json",
-             role="follower",
-         )
-verify_robot(robot)
