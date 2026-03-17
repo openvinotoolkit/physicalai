@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from physicalai.robot.verify import verify_robot
+from physicalai.robot.verify import RobotVerificationError, verify_robot
 
 
 class _ConformantRobot:
@@ -79,11 +79,11 @@ class TestVerifyRobot:
     def test_missing_state_fails(self) -> None:
         """A robot missing 'state' in observation fails."""
         robot = _MissingStateRobot()
-        with pytest.raises(AssertionError, match="observation must contain 'state'"):
+        with pytest.raises(RobotVerificationError, match="observation must contain 'state'"):
             verify_robot(robot)
 
     def test_non_stationary_robot_fails(self) -> None:
         """A robot that drifts after disconnect fails stationarity check."""
         robot = _NonStationaryRobot()
-        with pytest.raises(AssertionError, match="Robot must be stationary"):
+        with pytest.raises(RobotVerificationError, match="Robot must be stationary"):
             verify_robot(robot)
