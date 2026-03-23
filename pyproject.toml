@@ -124,6 +124,34 @@ notice-rgx = '# Copyright \(C\) (\d{4}(-\d{4})?) Intel Corporation\n# SPDX-Licen
 skips = ["B101"]
 exclude_dirs = ["tests"]
 
+[tool.markdownlint]
+default = true
+
+[tool.markdownlint.MD001]
+enabled = true
+
+[tool.markdownlint.MD013]
+line_length = 1000
+
+[tool.markdownlint.MD024]
+allow_different_nesting = true
+siblings_only = true
+
+[tool.markdownlint.MD033]
+enabled = false
+
+[tool.markdownlint.MD034]
+enabled = false
+
+[tool.markdownlint.MD036]
+enabled = false
+
+[tool.markdownlint.MD041]
+enabled = false
+
+[tool.markdownlint.MD042]
+enabled = false
+
 [tool.pytest.ini_options]
 addopts = ["--strict-markers", "--strict-config", "--showlocals", "-ra"]
 testpaths = "tests"
