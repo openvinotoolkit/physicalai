@@ -9,7 +9,7 @@
 We are an edge team. That single fact anchors every naming, packaging, and positioning decision in
 this document.
 
-```
+```text
 pip install physicalai        → edge runtime, no torch, runs exported models anywhere
 pip install physicalai-train  → full robotics ML SDK: policies, training, export, benchmarking
 ```
@@ -25,6 +25,7 @@ Runtime are all supported. This is a strength, not a caveat.
 Two repos, two PyPI packages, one shared `physicalai.*` namespace.
 
 **`physicalai-train`** (ships from `physical-ai-studio`) is a complete robotics ML SDK:
+
 - Export-friendly, hardware-agnostic reimplementations of SOTA policies: ACT, Pi0, Pi0.5, GR00T,
   SmolVLA — with XAI, LoRA, KV-cache, and no Flash Attention hard dependency
 - Thin PyTorch Lightning wrappers around 10+ LeRobot policies — zero reimplementation, full
@@ -33,6 +34,7 @@ Two repos, two PyPI packages, one shared `physicalai.*` namespace.
 - Lightning `Trainer` subclass, benchmark runners (LIBERO, PushT), gym wrappers, rollout eval
 
 **`physicalai`** (ships from `physicalai` repo) is the lightweight edge runtime:
+
 - `InferenceModel`: auto-detects backend from file extension, manages action queues, runs
   inference without torch
 - Multi-backend adapters: OpenVINO, ONNX Runtime, Torch Export IR, TensorRT, ExecuTorch
@@ -93,7 +95,7 @@ either distribution. A proof-of-concept validates this across single-repo and tw
 
 **LeRobot has no export path.** Every LeRobot user eventually hits the same wall:
 
-```
+```text
 Train with LeRobot                          ✓
 Export to ONNX / OpenVINO / TensorRT        ✗  dead end
 Deploy on non-CUDA hardware                 ✗  dead end
@@ -106,7 +108,7 @@ opening.
 
 We are not competing with LeRobot on training. We complete the pipeline they leave unfinished:
 
-```
+```text
 Data collection → LeRobot training → physicalai-train export → physicalai edge runtime
 ```
 
@@ -218,6 +220,7 @@ LeRobot is the training standard. We do not compete on training. We provide what
 export, hardware-agnostic deployment, and a production runtime.
 
 **Message hierarchy for LeRobot users — in order:**
+
 1. "physicalai runs your LeRobot models at the edge"
 2. "physicalai-train wraps LeRobot with Lightning and adds export"
 3. Never lead with: "we have ACT, Pi0, GR00T too"
@@ -329,13 +332,13 @@ Rationale:
 3. **Renaming now means renaming twice.** Once now, once at Phase 2 consolidation. Do it once.
    Until then, fix the `pyproject.toml` description — that is the immediate action:
 
-```toml
-# current — inaccurate
-description = "A package for training vision-action models"
+   ```toml
+   # current — inaccurate
+   description = "A package for training vision-action models"
 
-# correct
-description = "Robotics ML SDK: policies, training, export, and deployment for physical AI"
-```
+   # correct
+   description = "Robotics ML SDK: policies, training, export, and deployment for physical AI"
+   ```
 
 4. **The transition at rename time is clean.** We could publish `physicalai-sdk` as the new
    package, then make `physicalai-train` a thin metapackage that depends on `physicalai-sdk`.
@@ -353,6 +356,7 @@ to move it to the `physicalai` repo now, later, or never.
 **Option A: Keep SDK in `physical-ai-studio`**
 
 What the LeRobot community sees:
+
 - `physicalai` repo: inference, cameras, robots, benchmarks. Clearly a deployment tool. No policy
   implementations. No training code. Nothing that overlaps with LeRobot.
 - `physical-ai-studio` repo: a product — an application with a UI that includes a Python library.
@@ -368,6 +372,7 @@ standalone SDK repo.
 **Option B: Move SDK to `physicalai` repo**
 
 What the LeRobot community sees:
+
 - `physicalai` repo: contains `packages/physicalai/` (runtime) AND `packages/physicalai-train/`
   (full SDK with ACT, Pi0, GR00T, SmolVLA, LeRobot wrappers, Trainer, export). The repo README
   must describe both packages. The policies become top-level visible.
@@ -387,7 +392,7 @@ is a deployment runtime. The policies are part of our Studio product."
 
 ### Phase 1 — Now
 
-```
+```text
 physicalai repo  (private → going public)
 ├── pyproject.toml              name = "physicalai"
 └── src/physicalai/
@@ -416,7 +421,7 @@ makes the runtime real rather than scaffolding, and directly unblocks user stori
 All Python library code moves to `physical-ai`. Studio becomes a pure application. SDK is renamed
 from `physicalai-train` to `physicalai-sdk`.
 
-```
+```text
 physical-ai repo  (public)
 ├── packages/
 │   ├── physicalai/              runtime
@@ -433,6 +438,7 @@ PyPI:
 ```
 
 **Phase 2 gate conditions** — consolidate only after:
+
 1. The LeRobot export PR is merged upstream
 2. physicalai appears in LeRobot's docs or README as the deployment path
 3. At least one LeRobot tutorial or notebook references physicalai for deployment

@@ -61,10 +61,10 @@ physicalai provides the inference core, export pipeline, and runtime orchestrati
 
 The system has two packages:
 
-| Package | Purpose | Target Users |
-|---|---|---|
-| **Library** (`pip install physicalai`) | Inference, deployment | ML researchers, robotics engineers |
-| **Application** (Studio) | Data collection, teleoperation, GUI | Subject matter experts such as Lab operators, non-programmers |
+| Package                                | Purpose                             | Target Users                                                  |
+| -------------------------------------- | ----------------------------------- | ------------------------------------------------------------- |
+| **Library** (`pip install physicalai`) | Inference, deployment               | ML researchers, robotics engineers                            |
+| **Application** (Studio)               | Data collection, teleoperation, GUI | Subject matter experts such as Lab operators, non-programmers |
 
 The library handles inference and deployment. The application handles human interaction. Robot control currently exists only in the Application, tightly coupled to its backend.
 
@@ -72,10 +72,10 @@ The library handles inference and deployment. The application handles human inte
 
 A robotics engineer who exports a policy to ONNX/OpenVINO cannot easily deploy it:
 
-| Current Options | Problem |
-|---|---|
+| Current Options         | Problem             |
+| ----------------------- | ------------------- |
 | Run Application backend | Requires web server |
-| Write custom glue code | Duplicates effort |
+| Write custom glue code  | Duplicates effort   |
 
 ---
 
@@ -115,7 +115,6 @@ Protocols provide zero coupling for third parties (no import needed), avoid MRO 
 # physicalai/robot/protocol.py
 from typing import Any, Protocol
 import numpy as np
-
 
 class Robot(Protocol):
     """Structural interface for robot implementations.
@@ -184,7 +183,6 @@ The Protocol cannot provide default method implementations. Instead, `physicalai
 # physicalai/robot/utils.py
 from contextlib import contextmanager
 
-
 @contextmanager
 def connect(robot):
     """Context manager for safe robot lifecycle.
@@ -214,7 +212,6 @@ Adding a new robot is straightforward. Implement the four methods:
 # physicalai/robot/so100.py
 import time
 import numpy as np
-
 
 class SO100:
     """Concrete implementation for the SO-100 robot arm."""
@@ -389,12 +386,12 @@ class RobotWithCameras:
         }
 ```
 
-| | Separate (recommended) | Combined |
-|---|---|---|
-| Camera shared across robots | Works naturally | Ambiguous ownership |
+|                               | Separate (recommended)           | Combined                                |
+| ----------------------------- | -------------------------------- | --------------------------------------- |
+| Camera shared across robots   | Works naturally                  | Ambiguous ownership                     |
 | Different capture frequencies | Easy — read each at its own rate | Locked to `get_observation()` call rate |
-| Robot connect/disconnect | Only motors | Must also manage camera lifecycle |
-| Simplicity for simple setups | Slightly more user code | Fewer lines in the loop |
+| Robot connect/disconnect      | Only motors                      | Must also manage camera lifecycle       |
+| Simplicity for simple setups  | Slightly more user code          | Fewer lines in the loop                 |
 
 We recommend the separate approach as the default. The combined approach is available for cases where simplicity in the loop is preferred and the trade-offs are acceptable.
 
@@ -537,7 +534,6 @@ class InferenceModel:
 # physicalai/robot/testing.py
 import time
 import numpy as np
-
 
 def check_robot_conformance(robot, num_steps: int = 10):
     """Verify a robot implementation satisfies the Protocol contract.
@@ -703,15 +699,15 @@ pip install physicalai[robots]            # All supported robots
 
 ## physicalai vs Application
 
-| Component | Library | Application |
-|---|:---:|:---:|
-| Robot Protocol | ✓ | imports |
-| Concrete robots | ✓ | imports |
-| Inference loop | ✓ | uses |
-| Teleoperation | | ✓ |
-| Recording/upload | | ✓ |
-| Calibration | | ✓ |
-| GUI | | ✓ |
+| Component        | Library | Application |
+| ---------------- | :-----: | :---------: |
+| Robot Protocol   | ✓       | imports     |
+| Concrete robots  | ✓       | imports     |
+| Inference loop   | ✓       | uses        |
+| Teleoperation    |         | ✓           |
+| Recording/upload |         | ✓           |
+| Calibration      |         | ✓           |
+| GUI              |         | ✓           |
 
 The library provides building blocks. The application provides workflows. Both share the same robot interface.
 
@@ -756,18 +752,18 @@ class UR5e:
 
 ## Summary
 
-| Decision | Choice |
-|---|---|
-| Interface mechanism | `Protocol` (structural typing, no inheritance) |
-| Data types | `dict[str, Any]` for observations, `np.ndarray` for actions |
-| Context manager | `connect()` wrapper function |
-| Safety | `disconnect()` must leave robot stationary (documented contract, conformance test) |
-| Cameras | Separate from robot interface; user assembles observation |
-| Concurrency | Synchronous protocol, threads allowed internally |
-| Validation | Policy manifest is source of truth, validated on first observation |
-| Frequency control | Runtime episode loop, target from manifest |
-| Built-in robots | `physicalai` ships concrete implementations for supported hardware |
-| Third-party robots | Implement the four methods, no imports from `physicalai` required |
+| Decision            | Choice                                                                             |
+| ------------------- | ---------------------------------------------------------------------------------- |
+| Interface mechanism | `Protocol` (structural typing, no inheritance)                                     |
+| Data types          | `dict[str, Any]` for observations, `np.ndarray` for actions                        |
+| Context manager     | `connect()` wrapper function                                                       |
+| Safety              | `disconnect()` must leave robot stationary (documented contract, conformance test) |
+| Cameras             | Separate from robot interface; user assembles observation                          |
+| Concurrency         | Synchronous protocol, threads allowed internally                                   |
+| Validation          | Policy manifest is source of truth, validated on first observation                 |
+| Frequency control   | Runtime episode loop, target from manifest                                         |
+| Built-in robots     | `physicalai` ships concrete implementations for supported hardware                 |
+| Third-party robots  | Implement the four methods, no imports from `physicalai` required                  |
 
 ---
 
@@ -775,4 +771,3 @@ class UR5e:
 
 - [Strategy](../architecture/strategy.md) — Big-picture architecture
 - [Camera Interface Design](./camera-interface.md) — Camera interface specification
-

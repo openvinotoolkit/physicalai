@@ -14,24 +14,24 @@ Architecture and design documents for the physical‑AI runtime.
 
 ## Components
 
-| Component        | Document                                         | Purpose |
-| ---------------- | ------------------------------------------------ | ------- |
-| Inference Core   | [Inference Core](./components/inferencekit.md)   | Domain‑agnostic inference layer |
-| Robot Interface  | [Robot Interface](./components/robot-interface.md) | Robot Protocol and hardware integration |
-| Camera Interface | [Camera Interface](./components/camera-interface.md) | Capture API and camera backends |
-| Benchmarking     | [Benchmarking API](./components/benchmarking.md) | Benchmark protocols + runner |
+| Component        | Document                                             | Purpose                                 |
+| ---------------- | ---------------------------------------------------- | --------------------------------------- |
+| Inference Core   | [Inference Core](./components/inferencekit.md)       | Domain‑agnostic inference layer         |
+| Robot Interface  | [Robot Interface](./components/robot-interface.md)   | Robot Protocol and hardware integration |
+| Camera Interface | [Camera Interface](./components/camera-interface.md) | Capture API and camera backends         |
+| Benchmarking     | [Benchmarking API](./components/benchmarking.md)     | Benchmark protocols + runner            |
 
 ## Integrations
 
-| Integration      | Document                                  | Purpose |
-| ---------------- | ----------------------------------------- | ------- |
-| LeRobot          | [LeRobot Integration](./integrations/lerobot.md) | Loader integration for LeRobot exports |
+| Integration | Document                                         | Purpose                                |
+| ----------- | ------------------------------------------------ | -------------------------------------- |
+| LeRobot     | [LeRobot Integration](./integrations/lerobot.md) | Loader integration for LeRobot exports |
 
 ---
 
 ## Document Structure
 
-```
+```text
 docs/design/
 ├── README.md
 ├── architecture/

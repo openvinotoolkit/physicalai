@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -89,7 +89,7 @@ def calibration_obj() -> Any:
 
 def _create_robot(
     mock_sdk: MagicMock,
-    role: str = "follower",
+    role: Literal["leader", "follower"] = "follower",
     calibration: Any | None = None,
 ) -> Any:
     """Import and instantiate SO101 with the mocked SDK."""
@@ -117,7 +117,7 @@ class TestSO101Construction:
     def test_invalid_role_raises(self, mock_sdk: MagicMock) -> None:
         """An invalid role string raises ValueError at construction."""
         with pytest.raises(ValueError, match="Invalid role"):
-            _create_robot(mock_sdk, role="invalid")
+            _create_robot(mock_sdk, role="invalid")  # pyrefly: ignore[bad-argument-type]
 
     def test_servo_ids_derived_from_calibration(self, mock_sdk: MagicMock) -> None:
         """Servo IDs are derived from calibration in calibrated mode."""

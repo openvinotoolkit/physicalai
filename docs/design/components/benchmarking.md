@@ -92,7 +92,7 @@ The alternative — making the runner accept both torch and numpy types — woul
 
 ### Runtime Distribution (`physicalai`)
 
-```
+```text
 physicalai/
 └── benchmark/
     ├── __init__.py          # Public API re-exports
@@ -104,7 +104,7 @@ physicalai/
 
 ### Training Distribution (`physicalai-train`)
 
-```
+```text
 physicalai/
 └── benchmark/
     ├── adapters.py          # TorchPolicyAdapter, GymEnvAdapter

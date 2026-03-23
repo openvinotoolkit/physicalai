@@ -97,11 +97,11 @@ physical-ai/
 └── src/physicalai/
     └── capture/
         ├── __init__.py          # Public API: re-exports cameras, Frame, discover_all, read_cameras
-        ├── _frame.py            # Frame dataclass
-        ├── _camera.py           # Camera ABC
-        ├── _discovery.py        # DeviceInfo, discover_all()
-        ├── _sync.py             # read_cameras(), async_read_cameras()
-        ├── _errors.py           # Error hierarchy
+        ├── frame.py             # Frame dataclass
+        ├── camera.py            # Camera ABC
+        ├── discovery.py         # DeviceInfo, discover_all()
+        ├── sync.py              # read_cameras(), async_read_cameras()
+        ├── errors.py            # Error hierarchy
         ├── cameras/
         │   ├── __init__.py
         │   ├── opencv.py        # OpenCVCamera
@@ -152,7 +152,7 @@ can be introduced at that point to define the shared surface (`read()`, `connect
 
 ### Package Structure
 
-Internal modules use underscore prefix (`_frame.py`, `_camera.py`) to signal they are not public API. Users import from `physicalai.capture` directly.
+Users import from `physicalai.capture` directly; `__all__` in `__init__.py` defines the public API surface. Internal module names use plain names (no underscore prefix), consistent with the `physicalai.robot` package.
 
 Each camera backend is a separate module under `cameras/`. This keeps dependencies isolated: importing `OpenCVCamera` doesn't pull in `pypylon` or `pyrealsense2`.
 
@@ -417,9 +417,9 @@ class Camera(ABC):
 
 | `color_mode` | `read()` shape | dtype   | Notes                                               |
 | ------------ | -------------- | ------- | --------------------------------------------------- |
-| `RGB`        | `(H, W, 3)`   | `uint8` | Default. Converted from hardware native (e.g., BGR) |
-| `BGR`        | `(H, W, 3)`   | `uint8` | OpenCV native. Avoids conversion cost               |
-| `GRAY`       | `(H, W)`      | `uint8` | Monochrome. 2D array, **not** `(H, W, 1)`          |
+| `RGB`        | `(H, W, 3)`    | `uint8` | Default. Converted from hardware native (e.g., BGR) |
+| `BGR`        | `(H, W, 3)`    | `uint8` | OpenCV native. Avoids conversion cost               |
+| `GRAY`       | `(H, W)`       | `uint8` | Monochrome. 2D array, **not** `(H, W, 1)`           |
 
 `color_mode` applies only to color image reads (`read()`, `async_read()`, and the RGB
 portion of `read_rgbd()`). `read_depth()` always returns `(H, W)` `uint16` regardless
@@ -954,12 +954,12 @@ record_thread = Thread(target=record_loop, args=(cam,))
 Creating multiple `Camera` instances targeting the same physical device is **undefined
 behavior**. The outcome depends on the backend and OS:
 
-| Backend        | Typical behavior with duplicate open                      |
-| -------------- | --------------------------------------------------------- |
-| OpenCV / V4L2  | Second `connect()` fails or produces corrupt frames       |
-| RealSense      | Both pipelines connect but compete for USB bandwidth      |
-| Basler / GenICam | SDK rejects the second open with an access error        |
-| IP Camera      | Both instances connect (read-only RTSP allows it)         |
+| Backend          | Typical behavior with duplicate open                 |
+| ---------------- | ---------------------------------------------------- |
+| OpenCV / V4L2    | Second `connect()` fails or produces corrupt frames  |
+| RealSense        | Both pipelines connect but compete for USB bandwidth |
+| Basler / GenICam | SDK rejects the second open with an access error     |
+| IP Camera        | Both instances connect (read-only RTSP allows it)    |
 
 **Guidance:** Do not create multiple connected `Camera` instances for the same device.
 If you need multiple consumers, read from a single `Camera` and distribute frames in
@@ -1100,17 +1100,17 @@ The application backend currently uses FrameSource in 6 files. Migration swaps F
 
 ### Feature Parity Checklist
 
-| FrameSource API                               | physicalai.capture Equivalent                       | Status                                   |
-| --------------------------------------------- | --------------------------------------------------- | ---------------------------------------- |
-| `FrameSourceFactory.create(driver, **params)` | `OpenCVCamera(...)` or `create_camera(driver, ...)` | Direct replacement                       |
-| `.connect()`                                  | `.connect()`                                        | Same                                     |
-| `.read()` → `(success, frame)`                | `.read()` → `Frame`                                 | Returns `Frame` (raises on failure)      |
-| `.start_async()` + `.get_latest_frame()`      | `.read_latest()`                                    | Simplified to one call                   |
+| FrameSource API                               | physicalai.capture Equivalent                       | Status                                                |
+| --------------------------------------------- | --------------------------------------------------- | ----------------------------------------------------- |
+| `FrameSourceFactory.create(driver, **params)` | `OpenCVCamera(...)` or `create_camera(driver, ...)` | Direct replacement                                    |
+| `.connect()`                                  | `.connect()`                                        | Same                                                  |
+| `.read()` → `(success, frame)`                | `.read()` → `Frame`                                 | Returns `Frame` (raises on failure)                   |
+| `.start_async()` + `.get_latest_frame()`      | `.read_latest()`                                    | Simplified to one call                                |
 | `.stop()`                                     | (not needed)                                        | No separate start/stop; managed by connect/disconnect |
-| `.disconnect()`                               | `.disconnect()`                                     | Same                                     |
-| `FrameSourceFactory.discover_devices(driver)` | `discover_all()` or `Camera.discover()`             | Direct replacement                       |
-| `.get_supported_formats()`                    | `FormatDiscoveryMixin.get_supported_formats()`      | Via mixin                                |
-| `.attach_processor()`                         | Removed                                             | Was broken in production (commented out) |
+| `.disconnect()`                               | `.disconnect()`                                     | Same                                                  |
+| `FrameSourceFactory.discover_devices(driver)` | `discover_all()` or `Camera.discover()`             | Direct replacement                                    |
+| `.get_supported_formats()`                    | `FormatDiscoveryMixin.get_supported_formats()`      | Via mixin                                             |
+| `.attach_processor()`                         | Removed                                             | Was broken in production (commented out)              |
 
 ### API Migration Map
 
@@ -1211,12 +1211,12 @@ We adopted LeRobot's three-tier read model and explicit `connect/disconnect` lif
 default via `logger.disable("physicalai.capture")`. Applications opt in with
 `logger.enable("physicalai.capture")`.
 
-| Level   | What gets logged                                              |
-| ------- | ------------------------------------------------------------- |
-| DEBUG   | Every frame captured (sequence, timestamp)                    |
-| INFO    | Connect/disconnect, camera parameters applied                 |
-| WARNING | Frame drops (sequence gaps)                                   |
-| ERROR   | Capture failures, SDK exceptions, timeouts                    |
+| Level   | What gets logged                              |
+| ------- | --------------------------------------------- |
+| DEBUG   | Every frame captured (sequence, timestamp)    |
+| INFO    | Connect/disconnect, camera parameters applied |
+| WARNING | Frame drops (sequence gaps)                   |
+| ERROR   | Capture failures, SDK exceptions, timeouts    |
 
 The library **never** configures handlers or sets levels; that is the application's
 responsibility. By default, nothing is printed.

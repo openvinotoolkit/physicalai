@@ -41,6 +41,9 @@ robots = [
     "physicalai[so101]",
 ]
 
+[dependency-groups]
+dev = ["pytest", "mypy", "pyrefly", "ruff", "prek"]
+
 [project.urls]
 Homepage = "https://github.com/openvinotoolkit/physical-ai"
 Documentation = "https://github.com/openvinotoolkit/physical-ai"
@@ -60,10 +63,12 @@ include = [
     "examples/**",
 ]
 
-[tool.mypy]
-python_version = "3.12"
-ignore_missing_imports = true
-show_error_codes = true
+[tool.pyrefly]
+python-version = "3.12"
+ignore-missing-imports = ["*"]
+
+[tool.uv]
+default-groups = ["dev"]
 
 [tool.ruff]
 target-version = "py312"
@@ -75,7 +80,6 @@ exclude = [
     ".eggs",
     ".git",
     ".hg",
-    ".mypy_cache",
     ".nox",
     ".pants.d",
     ".pytype",
@@ -97,7 +101,10 @@ extend-exclude = ["docs", "examples", "tests", "notebooks"]
 
 [tool.ruff.lint]
 select = ["ALL"]
-ignore = []
+ignore = [
+    "COM812",  # Conflicts with Ruff formatter
+    "UP037",   # Removes quotes inside Literal[], breaking string literal values
+]
 fixable = ["ALL"]
 unfixable = []
 

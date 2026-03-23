@@ -65,7 +65,7 @@ Physical AI Runtime is licensed under the terms in [LICENSE](./LICENSE). By cont
 
 Please use the sign-off line at the end of the patch. Your signature certifies that you wrote the patch or otherwise have the right to pass it on as an open-source patch. The rules are pretty simple: if you can certify the below (from [developercertificate.org](http://developercertificate.org/)):
 
-```
+```text
 Developer Certificate of Origin
 Version 1.1
 
@@ -105,7 +105,7 @@ By making a contribution to this project, I certify that:
 
 Then you just add a line to every git commit message:
 
-```
+```text
 Signed-off-by: Joe Smith <joe.smith@email.com>
 ```
 

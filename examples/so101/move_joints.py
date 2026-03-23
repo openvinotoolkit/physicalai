@@ -171,7 +171,7 @@ def main(argv: list[str] | None = None) -> None:
         robot.send_action(start_pose)
         time.sleep(args.delay)
         print("Releasing torque (motors off)...")  # noqa: T201
-        robot.set_torque_on_disconnect(torque=False)
+        robot.torque_on_disconnect = False
         robot.disconnect()
         print("Disconnected.")  # noqa: T201
 

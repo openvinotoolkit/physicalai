@@ -131,7 +131,7 @@ outputs = model(inputs)
 
 ## Architecture
 
-```
+```text
                 physicalai (runtime)
                         │
           ┌─────────────┼─────────────┐
@@ -157,7 +157,7 @@ Two approaches for **camera + robot + inference interfaces**. Both are technical
 
 ### Option 1 — physicalai owns the interfaces (recommended)
 
-```
+```text
 physicalai
   ├─ camera interfaces (physicalai.capture)
   ├─ robot interfaces  (physicalai.robot)
@@ -177,7 +177,7 @@ physicalai
 
 **Dependency graph:**
 
-```
+```text
 physicalai-train → physicalai
                   │
                   ├── physicalai.capture     (clean subpackage)
@@ -192,7 +192,7 @@ physicalai-train → physicalai
 
 ### Option 2 — shared interfaces in separate packages
 
-```
+```text
 camera‑api   robot‑api   inferencekit (base)
     ▲            ▲              ▲
     │            │              │
@@ -220,7 +220,7 @@ physicalai-train   physicalai
 
 ### Dependency (who depends on whom)
 
-```
+```text
 physicalai-train → physicalai
 ```
 
@@ -230,7 +230,7 @@ physicalai loads models at runtime via format loaders (no install-time dependenc
 
 ### Runtime dataflow (what happens during inference)
 
-```
+```text
 camera → observation → preprocessor (built‑in or external)
      → runner.run(adapter, inputs) → postprocessor → action → robot
 ```
@@ -252,7 +252,7 @@ This section explains **how physicalai resolves format loaders, builds `Inferenc
 
 All models use `manifest.json` — a single, unified metadata format across physicalai-train, LeRobot, and custom models.
 
-```
+```text
 model path/URI
      │
      ▼
@@ -269,7 +269,7 @@ built‑in runner + pre/post (or external class_path if exotic)
 
 Runners and pre/post are wired by **class_path + init_args** in the manifest:
 
-```
+```text
 manifest.json
   ├─ runner.class_path
   ├─ preprocessors[].class_path
@@ -282,7 +282,7 @@ This allows **external plugins** (editable installs) without upstreaming. For mo
 
 `InferenceModel` composes a pipeline:
 
-```
+```text
 inputs
   ▼
 preprocessors (built‑in or external)
@@ -301,7 +301,7 @@ outputs / action
 
 ### 4) CLI → Config → Runtime Resolution
 
-```
+```text
 CLI flags ─┐
            ├─► config resolver ─► runtime config ─► InferenceModel
 deploy.yaml ┘
@@ -311,7 +311,7 @@ Priority: CLI > config file > defaults
 
 ### 5) Backend Selection Path
 
-```
+```text
 model.backend / model.device
           │
           ▼
@@ -346,15 +346,15 @@ physicalai is the **universal physical‑AI runtime** — not a thin shell that 
 
 ### Engine Capabilities
 
-| Capability                | What the runtime provides                                                                                             | What teams still own                                                                        |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| **Observation pipeline**  | Camera → observation dict. Standard image capture, buffering, timestamp alignment. Same for every policy.            | Custom observation transforms (e.g., cropping, proprioceptive features) go in preprocessors |
-| **Safety runtime**        | Action clamping, velocity limits, workspace bounds, emergency stop. First-class runtime layer, not a callback.       | Domain-specific safety constraints (e.g., force limits for specific robots)                 |
-| **Episode orchestration** | Run N episodes, reset between episodes, log results. The control loop is the same for every policy.                  | Episode termination conditions (policy-specific)                                            |
-| **Device management**     | Robot connection lifecycle, camera initialization, cleanup on error.                                                 | Robot/camera driver implementations (SDK-specific)                                          |
+| Capability                | What the runtime provides                                                                                                 | What teams still own                                                                        |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| **Observation pipeline**  | Camera → observation dict. Standard image capture, buffering, timestamp alignment. Same for every policy.                 | Custom observation transforms (e.g., cropping, proprioceptive features) go in preprocessors |
+| **Safety runtime**        | Action clamping, velocity limits, workspace bounds, emergency stop. First-class runtime layer, not a callback.            | Domain-specific safety constraints (e.g., force limits for specific robots)                 |
+| **Episode orchestration** | Run N episodes, reset between episodes, log results. The control loop is the same for every policy.                       | Episode termination conditions (policy-specific)                                            |
+| **Device management**     | Robot connection lifecycle, camera initialization, cleanup on error.                                                      | Robot/camera driver implementations (SDK-specific)                                          |
 | **Validation CLI**        | `physicalai validate ./exports/my_model` — verify manifest, check class_paths resolve, dry-run pipeline without hardware. | Model-specific validation (e.g., expected input shapes)                                     |
-| **Format loading**        | Manifest resolution (`manifest.json`), class_path instantiation, `policy.kind` → runner mapping.                     | External plugin code (exotic runners, pre/post processors)                                  |
-| **Unified API + CLI**     | `InferenceModel`, `physicalai run`, `physicalai serve`, config resolution.                                          | N/A                                                                                         |
+| **Format loading**        | Manifest resolution (`manifest.json`), class_path instantiation, `policy.kind` → runner mapping.                          | External plugin code (exotic runners, pre/post processors)                                  |
+| **Unified API + CLI**     | `InferenceModel`, `physicalai run`, `physicalai serve`, config resolution.                                                | N/A                                                                                         |
 
 ### What this means for teams
 
@@ -370,14 +370,14 @@ With the runtime, teams supply a `manifest.json` pointing to built‑in runners 
 
 ### Current vs Target State
 
-| Capability                    | Current state                     | Target state                                     |
-| ----------------------------- | --------------------------------- | ------------------------------------------------ |
-| Format loading + CLI + config | ✓ Designed                        | ✓ Ship as v1                                     |
-| Observation pipeline          | Missing                           | v1 — required for "immediate deployment" promise |
-| Safety runtime                | Partial (callback)                | v1 — promote to first-class runtime layer        |
-| Episode orchestration         | Hinted in CLI (`--episodes`)      | v1 — `EpisodeRunner` abstraction                 |
-| Device management             | Missing (lives in studio app)     | v1 — `DeviceManager` for robot/camera lifecycle  |
-| Validation CLI                | Missing                           | v1 — `physicalai validate`                       |
+| Capability                    | Current state                 | Target state                                     |
+| ----------------------------- | ----------------------------- | ------------------------------------------------ |
+| Format loading + CLI + config | ✓ Designed                    | ✓ Ship as v1                                     |
+| Observation pipeline          | Missing                       | v1 — required for "immediate deployment" promise |
+| Safety runtime                | Partial (callback)            | v1 — promote to first-class runtime layer        |
+| Episode orchestration         | Hinted in CLI (`--episodes`)  | v1 — `EpisodeRunner` abstraction                 |
+| Device management             | Missing (lives in studio app) | v1 — `DeviceManager` for robot/camera lifecycle  |
+| Validation CLI                | Missing                       | v1 — `physicalai validate`                       |
 
 ---
 
@@ -385,7 +385,7 @@ With the runtime, teams supply a `manifest.json` pointing to built‑in runners 
 
 Three `InferenceModel` classes exist across the stack. This is intentional — each layer adds domain-specific behavior.
 
-```
+```text
 physicalai.inference.InferenceModel      ← base: load model, run forward pass
         │
         │  subclasses / wraps
@@ -403,11 +403,11 @@ physicalai-train.inference.InferenceModel ← re-exports physicalai.InferenceMod
 
 **Which one do users import?**
 
-| Use case                           | Import                                             | Why                                                        |
-| ---------------------------------- | -------------------------------------------------- | ---------------------------------------------------------- |
-| Deploying any policy (recommended) | `from physicalai import InferenceModel`           | Full runtime: safety, observation pipeline, CLI integration |
-| Raw inference without runtime      | `from physicalai.inference import InferenceModel` | Just model + backend, no robotics concerns                 |
-| physicalai-train scripts           | `from physicalai-train.inference import InferenceModel`  | Convenience re-export; same as physicalai.InferenceModel  |
+| Use case                           | Import                                                  | Why                                                         |
+| ---------------------------------- | ------------------------------------------------------- | ----------------------------------------------------------- |
+| Deploying any policy (recommended) | `from physicalai import InferenceModel`                 | Full runtime: safety, observation pipeline, CLI integration |
+| Raw inference without runtime      | `from physicalai.inference import InferenceModel`       | Just model + backend, no robotics concerns                  |
+| physicalai-train scripts           | `from physicalai-train.inference import InferenceModel` | Convenience re-export; same as physicalai.InferenceModel    |
 
 ---
 
@@ -438,7 +438,7 @@ Built‑in runners, preprocessors, postprocessors, and callbacks cover most cust
 
 Subclass at the **lowest layer that gives you what you need**:
 
-```
+```text
 physicalai.inference.InferenceModel      ← subclass here for non-robotics domains
         │
         ▼
@@ -506,7 +506,7 @@ You need two things: an **export directory** with your model and metadata, and a
 
 If your model is a standard ONNX/OpenVINO model that takes inputs and produces outputs in one forward pass, you need **zero custom code**:
 
-```
+```text
 exports/my_model/
 ├── model.onnx
 └── manifest.json
@@ -543,7 +543,7 @@ Your model needs custom observation normalization and a non-standard execution p
 
 **Step 1 — Create a minimal plugin package:**
 
-```
+```text
 my_policy_plugin/
 ├── pyproject.toml
 └── my_policy_plugin/
@@ -684,11 +684,11 @@ The `class_path` mechanism means physicalai never needs to know about your code 
 
 ### Three levels of integration
 
-| Level                                    | What you do                                                          | Who can use it                           | Upstream needed?                                 |
-| ---------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------- | ------------------------------------------------ |
-| **Local (editable install)**             | `pip install -e ./my_plugin` + manifest.json with class_paths        | You and your team                        | No                                         |
-| **Published (PyPI / internal registry)** | `pip install my-policy-plugin` + manifest.json                       | Anyone who installs your package         | No                                         |
-| **Upstreamed (entry points)**            | Add `[project.entry-points."physicalai.plugins"]` to pyproject.toml | Auto-discovered by physicalai            | PR to register name, but code stays in your repo |
+| Level                                    | What you do                                                         | Who can use it                   | Upstream needed?                                 |
+| ---------------------------------------- | ------------------------------------------------------------------- | -------------------------------- | ------------------------------------------------ |
+| **Local (editable install)**             | `pip install -e ./my_plugin` + manifest.json with class_paths       | You and your team                | No                                               |
+| **Published (PyPI / internal registry)** | `pip install my-policy-plugin` + manifest.json                      | Anyone who installs your package | No                                               |
+| **Upstreamed (entry points)**            | Add `[project.entry-points."physicalai.plugins"]` to pyproject.toml | Auto-discovered by physicalai    | PR to register name, but code stays in your repo |
 
 ### Local → Published → Upstream workflow
 
@@ -927,14 +927,14 @@ pip install physicalai[all]
 
 ## Installation Matrix (What You Get)
 
-| Install command                | Includes                                                | Excludes          |
-| ----------------------------- | ------------------------------------------------------- | ----------------- |
-| `physicalai`                  | Core runtime + CLI + manifest loader + built‑in runners | No heavy backends |
-| `physicalai[openvino]`        | Core + OpenVINO runtime                                 | No other backends |
-| `physicalai[onnx-gpu]`        | Core + ONNX Runtime (GPU)                               | No other backends |
-| `physicalai[tensorrt]`        | Core + TensorRT                                         | No other backends |
-| `physicalai[executorch]`      | Core + ExecuTorch runtime                               | No other backends |
-| `physicalai[all]`             | Core + all backends                                     | —                 |
+| Install command          | Includes                                                | Excludes          |
+| ------------------------ | ------------------------------------------------------- | ----------------- |
+| `physicalai`             | Core runtime + CLI + manifest loader + built‑in runners | No heavy backends |
+| `physicalai[openvino]`   | Core + OpenVINO runtime                                 | No other backends |
+| `physicalai[onnx-gpu]`   | Core + ONNX Runtime (GPU)                               | No other backends |
+| `physicalai[tensorrt]`   | Core + TensorRT                                         | No other backends |
+| `physicalai[executorch]` | Core + ExecuTorch runtime                               | No other backends |
+| `physicalai[all]`        | Core + all backends                                     | —                 |
 
 **Note:** No `[train]` or `[lerobot]` extras exist. The unified `manifest.json` format and built‑in runners handle both frameworks natively. External plugins for exotic patterns are the user's own `pip install`.
 

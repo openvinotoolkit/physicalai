@@ -75,7 +75,7 @@
 
 inferencekit is the **foundation layer** in a layered architecture. Domain-specific systems build on top of it, each adding their own preprocessing, postprocessing, runners, and model types:
 
-```
+```text
 ┌───────────────────────────────────────────────────────────────────────────────┐
 │                       Domain Layers                                           │
 │                                                                               │
@@ -140,7 +140,7 @@ inferencekit is the **foundation layer** in a layered architecture. Domain-speci
 
 ### Package Structure
 
-```
+```text
 inferencekit/
 ├── __init__.py                              # Public API: InferenceModel
 ├── model.py                                 # InferenceModel - main entry point

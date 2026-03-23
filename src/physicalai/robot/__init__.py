@@ -11,9 +11,9 @@ Public API::
 
 from __future__ import annotations
 
+from physicalai.robot.connect import connect
 from physicalai.robot.interface import Robot
 from physicalai.robot.verify import verify_robot
-from physicalai.robot.connect import connect
 
 __all__ = [  # noqa: F822, RUF022
     "Robot",

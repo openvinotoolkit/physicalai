@@ -10,18 +10,27 @@ satisfies the :class:`~physicalai.robot.interface.Robot` protocol contract.
 from __future__ import annotations
 
 import time
+from typing import TYPE_CHECKING
 
 import numpy as np
 from loguru import logger
 
 from physicalai.robot.connect import connect
 
+if TYPE_CHECKING:
+    from physicalai.robot.interface import Robot
+
 
 class RobotVerificationError(ValueError):
     """Raised when a robot implementation violates the protocol contract."""
 
+    def __init__(self, message: str) -> None:
+        """Initialize the error and emit a verification failure log."""
+        logger.error("Verification failed: {}", message)
+        super().__init__(message)
 
-def verify_robot(robot: object, _num_steps: int = 10) -> None:
+
+def verify_robot(robot: Robot, _num_steps: int = 10) -> None:
     """Verify a robot implementation satisfies the Protocol contract.
 
     Runs a sequence of checks against a *real* (or sufficiently realistic mock)
@@ -47,39 +56,43 @@ def verify_robot(robot: object, _num_steps: int = 10) -> None:
     """
     logger.info("Verifying robot: {}", repr(robot))
 
-    def _fail(msg: str) -> None:
-        logger.error("Verification failed: {}", msg)
-        raise RobotVerificationError(msg)
-
     with connect(robot):
         logger.success("Check 1 passed: connect() lifecycle")
 
         obs = robot.get_observation()
         if not isinstance(obs, dict):
-            _fail("get_observation() must return a dict")
+            msg = "get_observation() must return a dict"
+            raise RobotVerificationError(msg)
         logger.debug("get_observation() returned dict")
 
         if "state" not in obs:
-            _fail("observation must contain 'state'")
+            msg = "observation must contain 'state'"
+            raise RobotVerificationError(msg)
         if not isinstance(obs["state"], np.ndarray):
-            _fail("state must be np.ndarray")
+            msg = "state must be np.ndarray"
+            raise RobotVerificationError(msg)
         logger.debug("state: shape={}, dtype={}", obs["state"].shape, obs["state"].dtype)
 
         if "timestamp" not in obs:
-            _fail("observation must contain 'timestamp'")
+            msg = "observation must contain 'timestamp'"
+            raise RobotVerificationError(msg)
         if not isinstance(obs["timestamp"], (int, float)):
-            _fail("timestamp must be numeric")
+            msg = "timestamp must be numeric"
+            raise RobotVerificationError(msg)
         logger.debug("timestamp: {}", obs["timestamp"])
         logger.success("Check 2 passed: observation contains valid 'state' and 'timestamp'")
 
         if "images" in obs:
             if not isinstance(obs["images"], dict):
-                _fail("images must be a dict")
+                msg = "images must be a dict"
+                raise RobotVerificationError(msg)
             for name, img in obs["images"].items():
                 if not isinstance(img, np.ndarray):
-                    _fail(f"image '{name}' must be np.ndarray")
-                if img.ndim != 3:
-                    _fail(f"image '{name}' must be 3D (C, H, W), got ndim={img.ndim}")
+                    msg = f"image '{name}' must be np.ndarray"
+                    raise RobotVerificationError(msg)
+                if img.ndim != 3:  # noqa: PLR2004
+                    msg = f"image '{name}' must be 3D (C, H, W), got ndim={img.ndim}"
+                    raise RobotVerificationError(msg)
                 logger.debug("image '{}': shape={}, dtype={}", name, img.shape, img.dtype)
             logger.success("Check 3 passed: images dict contains valid 3D arrays")
 
@@ -97,10 +110,8 @@ def verify_robot(robot: object, _num_steps: int = 10) -> None:
         obs2 = robot.get_observation()
 
         if not np.allclose(obs1["state"], obs2["state"], atol=0.01):
-            _fail(
-                f"Robot must be stationary after disconnect(). "
-                f"State changed from {obs1['state']} to {obs2['state']}"
-            )
+            msg = f"Robot must be stationary after disconnect(). State changed from {obs1['state']} to {obs2['state']}"
+            raise RobotVerificationError(msg)
         logger.success("Check 5 passed: robot is stationary after disconnect() -> connect()")
 
     logger.success("All checks passed for robot: {}", repr(robot))

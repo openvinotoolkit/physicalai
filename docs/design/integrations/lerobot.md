@@ -22,7 +22,7 @@ This document describes how **physicalai** integrates with LeRobot's proposed Po
 
 ## 1. Architecture Overview
 
-```
+```text
 ┌────────────────────────────────────────────────────────────────┐
 │                         physicalai                              │
 │                                                                │
@@ -71,7 +71,7 @@ def is_policy_package(path: Path) -> bool:
 
 ### Manifest Fields Used
 
-| Field           | physicalai Usage                                                            |
+| Field           | physicalai Usage                                                                       |
 | --------------- | -------------------------------------------------------------------------------------- |
 | `format`        | Package type detection                                                                 |
 | `version`       | Schema compatibility check                                                             |
@@ -306,12 +306,12 @@ physicalai-specific configuration can be embedded in the manifest under `x-physi
 
 ### Extension Schema
 
-| Field            | Type                          | Description             |
-| ---------------- | ----------------------------- | ----------------------- |
-| `callbacks`      | `list[str \| CallbackConfig]` | Callbacks to attach     |
-| `adapter`        | `dict`                        | Adapter/backend options |
-| `preprocessors`  | `list[PreprocessorConfig]`    | Input preprocessors     |
-| `postprocessors` | `list[PostprocessorConfig]`   | Output postprocessors   |
+| Field            | Type                        | Description             |                     |
+| ---------------- | --------------------------- | ----------------------- | ------------------- |
+| `callbacks`      | `list[str \                 | CallbackConfig]`        | Callbacks to attach |
+| `adapter`        | `dict`                      | Adapter/backend options |                     |
+| `preprocessors`  | `list[PreprocessorConfig]`  | Input preprocessors     |                     |
+| `postprocessors` | `list[PostprocessorConfig]` | Output postprocessors   |                     |
 
 **Note**: LeRobot ignores `x-physical-ai` fields entirely. They are only read by physicalai.
 
@@ -562,7 +562,7 @@ ik_model = InferenceModel(pi0_package_path)
 
 ### Dependency Direction
 
-```
+```text
 LeRobot ──────────────────────────────────────────────────┐
     │                                                      │
     │ defines (proposed)                                   │

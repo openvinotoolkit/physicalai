@@ -42,7 +42,7 @@ Training, data collection, teleoperation, and policy implementations live in **p
 
 ## Dependency Direction
 
-```
+```text
 physicalai-train  →  physicalai  →  numpy, opencv, etc.
 ```
 
@@ -52,7 +52,7 @@ physicalai-train  →  physicalai  →  numpy, opencv, etc.
 
 ## Runtime Architecture (High Level)
 
-```
+```text
 physicalai (runtime)
 ├── runtime      # orchestration + CLI + config
 ├── inference    # domain‑agnostic core

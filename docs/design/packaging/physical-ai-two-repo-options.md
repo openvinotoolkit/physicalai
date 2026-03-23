@@ -78,7 +78,7 @@ Timeline: when `physical-ai` repo goes public.
 
 Develop runtime modules **independently** in the `physical-ai` repo. Because `physical-ai-studio` is open-source, runtime modules (`inference/`, `capture/`, `robot/`, `benchmark/`) cannot be removed from studio — they must be **duplicated** in `physical-ai` and developed in parallel. `physicalai-train` stays in studio and declares `physicalai>=0.1.0` as a dependency.
 
-```
+```text
 physical-ai/                           # now public
 ├── pyproject.toml                     # name = "physicalai"
 └── src/physicalai/
@@ -195,7 +195,7 @@ physical-ai-studio/ (library/)         # frozen / archived
 
 Both distributions contribute subpackages under the `physicalai` namespace. Neither distribution owns the namespace root.
 
-```
+```text
 physicalai/                            # PEP 420 namespace — no __init__.py
 ├── inference/    → physicalai dist    # runtime
 ├── capture/      → physicalai dist
@@ -214,7 +214,7 @@ Training subpackages (`train/`, `policies/`, `data/`, etc.) are siblings under `
 
 ### Dependency Direction
 
-```
+```text
 physicalai-train  →  physicalai  →  (numpy, opencv, etc.)
      │                    │
      │                    └── no torch, no lightning
@@ -347,4 +347,4 @@ pip install physical-ai-studio-sdk  # training
 
 ---
 
-_Last Updated: 2026-02-26_
+*Last Updated: 2026-02-26*
