@@ -103,7 +103,6 @@ extend-exclude = ["docs", "examples", "tests", "notebooks"]
 select = ["ALL"]
 ignore = [
     "COM812",  # Conflicts with Ruff formatter
-    "UP037",   # Removes quotes inside Literal[], breaking string literal values
 ]
 fixable = ["ALL"]
 unfixable = []
