@@ -584,7 +584,7 @@ with OpenCVCamera(index=0) as cam:
 with OpenCVCamera(index=0) as cam:
     while running:
         frame = cam.read_latest()
-        action = policy.predict(frame.data)
+        action = model({"images": {"wrist": frame.data}})
         robot.send_action(action)
 ```
 
@@ -1049,16 +1049,17 @@ from physicalai.capture import RealSenseCamera
 
 camera = RealSenseCamera(fps=30)
 robot = SO101.from_config("robot.yaml")
-policy = InferenceModel.load("./exports/act_policy")
+model = InferenceModel.load("./exports/act_policy")
 
 with robot, camera:
     while True:
         frame = camera.read_latest()
         robot_obs = robot.get_observation()
-        action = policy.select_action({
+        obs = {
             "images": {"wrist": frame.data},
             "state": robot_obs["state"],
-        })
+        }
+        action = model(obs)
         robot.send_action(action)
 ```
 
