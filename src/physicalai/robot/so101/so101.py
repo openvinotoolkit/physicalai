@@ -184,7 +184,7 @@ class SO101:
         port: str,
         calibration: SO101Calibration | str | Path | None,
         baudrate: int = 1_000_000,
-        role: str = "follower",
+        role: Literal["leader", "follower"] = "follower",
         *,
         _allow_uncalibrated: bool = False,  # must be passed by keyword
     ) -> None:
