@@ -14,7 +14,11 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3.12",
 ]
-dependencies = ["numpy>=1.24", "loguru>=0.7", "PyTurboJPEG>=1.7; sys_platform == 'linux'"]
+dependencies = [
+    "numpy>=1.24",
+    "loguru>=0.7",
+    "PyTurboJPEG>=1.7; sys_platform == 'linux'",
+]
 
 [project.optional-dependencies]
 tests = ["pytest", "mypy"]

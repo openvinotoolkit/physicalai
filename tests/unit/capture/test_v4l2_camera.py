@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import ctypes
 import mmap as mmap_mod
-import importlib
 import sys
 from contextlib import contextmanager
 from unittest import mock
@@ -18,21 +17,13 @@ import pytest
 from physicalai.capture.camera import ColorMode
 from physicalai.capture.cameras.v4l2._camera import V4L2Camera
 
-try:
-    _v4l2_ioctl = importlib.import_module("physicalai.capture.cameras.v4l2._ioctl")
-    VIDIOC_G_FMT = _v4l2_ioctl.VIDIOC_G_FMT
-    v4l2_timecode = getattr(_v4l2_ioctl, "v4l2_timecode", None)
-    _NEW_EXPORTS_AVAILABLE = v4l2_timecode is not None
-except (ImportError, AttributeError):
-    v4l2_timecode = None
-    _NEW_EXPORTS_AVAILABLE = False
-
 from physicalai.capture.cameras.v4l2._ioctl import (
     V4L2_BUF_TYPE_VIDEO_CAPTURE,
     V4L2_CAP_STREAMING,
     V4L2_CAP_VIDEO_CAPTURE,
     V4L2_MEMORY_MMAP,
     VIDIOC_DQBUF,
+    VIDIOC_G_FMT,
     VIDIOC_QBUF,
     VIDIOC_QUERYCAP,
     VIDIOC_REQBUFS,
@@ -41,6 +32,7 @@ from physicalai.capture.cameras.v4l2._ioctl import (
     v4l2_buffer,
     v4l2_capability,
     v4l2_requestbuffers,
+    v4l2_timecode,
 )
 from physicalai.capture.discovery import DeviceInfo
 from physicalai.capture.errors import CaptureError, CaptureTimeoutError, NotConnectedError
@@ -469,9 +461,8 @@ def test_v4l2_format_fmt_offset() -> None:
     )
 
 
-@pytest.mark.skipif(not _NEW_EXPORTS_AVAILABLE, reason="v4l2_timecode not yet exported")
+@pytest.mark.skipif(not _IS_64BIT, reason="struct sizes differ on 32-bit")
 def test_v4l2_timecode_struct_size() -> None:
-    assert v4l2_timecode is not None
     assert ctypes.sizeof(v4l2_timecode) == 16, f"Expected 16, got {ctypes.sizeof(v4l2_timecode)}."
 
 
@@ -492,5 +483,4 @@ def test_ioctl_numbers_match_kernel() -> None:
     assert (VIDIOC_QUERYBUF & 0xFFFFFFFF) == 0xC0585609, f"VIDIOC_QUERYBUF: got 0x{VIDIOC_QUERYBUF & 0xFFFFFFFF:08X}"
     assert (VIDIOC_QBUF & 0xFFFFFFFF) == 0xC058560F, f"VIDIOC_QBUF: got 0x{VIDIOC_QBUF & 0xFFFFFFFF:08X}"
     assert (VIDIOC_DQBUF & 0xFFFFFFFF) == 0xC0585611, f"VIDIOC_DQBUF: got 0x{VIDIOC_DQBUF & 0xFFFFFFFF:08X}"
-    if _NEW_EXPORTS_AVAILABLE:
-        assert (VIDIOC_G_FMT & 0xFFFFFFFF) == 0xC0D05604, f"VIDIOC_G_FMT: got 0x{VIDIOC_G_FMT & 0xFFFFFFFF:08X}"
+    assert (VIDIOC_G_FMT & 0xFFFFFFFF) == 0xC0D05604, f"VIDIOC_G_FMT: got 0x{VIDIOC_G_FMT & 0xFFFFFFFF:08X}"
