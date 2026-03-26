@@ -14,11 +14,11 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3.12",
 ]
-dependencies = ["numpy>=1.24", "loguru>=0.7"]
+dependencies = ["numpy>=1.24", "loguru>=0.7", "PyTurboJPEG>=1.7; sys_platform == 'linux'"]
 
 [project.optional-dependencies]
 tests = ["pytest", "mypy"]
-opencv = []
+opencv = ["opencv-python", "cv2-enumerate-cameras"]
 realsense = []
 basler = []
 genicam = []
@@ -159,6 +159,7 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "requires_download: marks tests that require downloading external datasets",
     "integration: marks tests as integration tests",
+    "v4l2: marks tests requiring V4L2 mocking (Linux only)",
 ]
 
 [tool.coverage.report]

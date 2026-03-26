@@ -6,6 +6,7 @@
 import pytest
 
 from physicalai.capture.discovery import discover_all
+from physicalai.capture.errors import MissingDependencyError
 from physicalai.capture.factory import create_camera
 
 
@@ -18,9 +19,9 @@ class TestCreateCamera:
 
     def test_case_insensitive(self) -> None:
         # All concrete backends are not installed in test env, so we
-        # expect ImportError/ModuleNotFoundError (not ValueError).
-        with pytest.raises((ImportError, ModuleNotFoundError)):
-            create_camera("OpenCV", index=0)
+        # expect an import-related error (not ValueError).
+        with pytest.raises((ImportError, ModuleNotFoundError, MissingDependencyError)):
+            create_camera("OpenCV")
 
 
 class TestDiscoverAll:

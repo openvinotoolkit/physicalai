@@ -55,6 +55,11 @@ def discover_all() -> dict[str, list[DeviceInfo]]:
     results: dict[str, list[DeviceInfo]] = {}
 
     with contextlib.suppress(Exception):
+        from physicalai.capture.cameras.v4l2 import discover_v4l2  # noqa: PLC0415
+
+        results["v4l2"] = discover_v4l2()
+
+    with contextlib.suppress(Exception):
         from physicalai.capture.cameras.opencv import OpenCVCamera  # noqa: PLC0415
 
         results["opencv"] = OpenCVCamera.discover()

@@ -10,6 +10,7 @@ Public API::
     from physicalai.capture import create_camera, discover_all
     from physicalai.capture import DeviceInfo, DepthMixin
     from physicalai.capture import OpenCVCamera  # requires: opencv-python
+    from physicalai.capture import V4L2Camera    # requires: PyTurboJPEG (Linux)
 """
 
 from physicalai.capture.camera import Camera, ColorMode, Driver
@@ -48,6 +49,7 @@ __all__ = [  # noqa: F822, RUF022
     # Concrete cameras (lazy-loaded)
     "OpenCVCamera",
     "RealSenseCamera",
+    "V4L2Camera",
 ]
 
 
@@ -75,6 +77,11 @@ def __getattr__(name: str) -> object:
         from physicalai.capture.cameras.realsense import RealSenseCamera  # noqa: PLC0415
 
         return RealSenseCamera
+
+    if name == "V4L2Camera":
+        from physicalai.capture.cameras.v4l2 import V4L2Camera  # noqa: PLC0415
+
+        return V4L2Camera
 
     msg = f"module {__name__!r} has no attribute {name!r}"
     raise AttributeError(msg)

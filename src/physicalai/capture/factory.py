@@ -5,12 +5,30 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict, cast
 
-from physicalai.capture.camera import Driver
+from physicalai.capture.camera import ColorMode, Driver
 
 if TYPE_CHECKING:
     from physicalai.capture.camera import Camera
+
+
+class _V4L2CameraArgs(TypedDict):
+    device_path: str
+    width: int
+    height: int
+    fps: int
+    num_buffers: int
+    pixel_format: str
+    color_mode: ColorMode
+
+
+class _OpenCVCameraArgs(TypedDict):
+    device_id: int | str
+    width: int
+    height: int
+    fps: int
+    color_mode: ColorMode
 
 
 def create_camera(driver: str, **kwargs: object) -> Camera:
@@ -20,8 +38,9 @@ def create_camera(driver: str, **kwargs: object) -> Camera:
     dedicated camera classes for direct usage.
 
     Args:
-        driver: Camera type — one of ``"opencv"``, ``"realsense"``,
-            ``"basler"``, ``"genicam"``, ``"ip"``.  Case-insensitive.
+        driver: Camera type — one of ``"opencv"``, ``"v4l2"``,
+            ``"realsense"``, ``"basler"``, ``"genicam"``, ``"ip"``.
+            Case-insensitive.
         **kwargs: Forwarded to the camera constructor.
 
     Returns:
@@ -34,10 +53,31 @@ def create_camera(driver: str, **kwargs: object) -> Camera:
     # time.  Each camera module handles its own MissingDependencyError.
     driver = driver.lower()
 
+    if driver == Driver.V4L2:
+        from physicalai.capture.cameras.v4l2 import V4L2Camera  # noqa: PLC0415
+
+        v4l2_args: _V4L2CameraArgs = {
+            "device_path": cast("str", kwargs.get("device_path", "/dev/video0")),
+            "width": cast("int", kwargs.get("width", 640)),
+            "height": cast("int", kwargs.get("height", 480)),
+            "fps": cast("int", kwargs.get("fps", 30)),
+            "num_buffers": cast("int", kwargs.get("num_buffers", 4)),
+            "pixel_format": cast("str", kwargs.get("pixel_format", "mjpeg")),
+            "color_mode": cast("ColorMode", kwargs.get("color_mode", ColorMode.RGB)),
+        }
+        return V4L2Camera(**v4l2_args)
+
     if driver == Driver.OPENCV:
         from physicalai.capture.cameras.opencv import OpenCVCamera  # noqa: PLC0415
 
-        return OpenCVCamera(**kwargs)
+        opencv_args: _OpenCVCameraArgs = {
+            "device_id": cast("int | str", kwargs.get("device_id", 0)),
+            "width": cast("int", kwargs.get("width", 640)),
+            "height": cast("int", kwargs.get("height", 480)),
+            "fps": cast("int", kwargs.get("fps", 30)),
+            "color_mode": cast("ColorMode", kwargs.get("color_mode", ColorMode.RGB)),
+        }
+        return OpenCVCamera(**opencv_args)
 
     if driver == Driver.REALSENSE:
         from physicalai.capture.cameras.realsense import RealSenseCamera  # noqa: PLC0415
