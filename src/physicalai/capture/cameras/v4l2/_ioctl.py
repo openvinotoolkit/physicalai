@@ -14,7 +14,7 @@ import ctypes
 import errno
 import fcntl
 import struct
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from ctypes import Structure
@@ -33,126 +33,162 @@ _IOC_READ = 2
 
 
 class v4l2_capability(ctypes.Structure):  # noqa: N801
-    _fields_ = [  # noqa: RUF012
-        ("driver", ctypes.c_char * 16),
-        ("card", ctypes.c_char * 32),
-        ("bus_info", ctypes.c_char * 32),
-        ("version", ctypes.c_uint32),
-        ("capabilities", ctypes.c_uint32),
-        ("device_caps", ctypes.c_uint32),
-        ("reserved", ctypes.c_uint32 * 3),
-    ]
+    _fields_ = cast(
+        "Any",
+        [
+            ("driver", ctypes.c_char * 16),
+            ("card", ctypes.c_char * 32),
+            ("bus_info", ctypes.c_char * 32),
+            ("version", ctypes.c_uint32),
+            ("capabilities", ctypes.c_uint32),
+            ("device_caps", ctypes.c_uint32),
+            ("reserved", ctypes.c_uint32 * 3),
+        ],
+    )
 
 
 class v4l2_fmtdesc(ctypes.Structure):  # noqa: N801
-    _fields_ = [  # noqa: RUF012
-        ("index", ctypes.c_uint32),
-        ("type", ctypes.c_uint32),
-        ("flags", ctypes.c_uint32),
-        ("description", ctypes.c_char * 32),
-        ("pixelformat", ctypes.c_uint32),
-        ("mbus_code", ctypes.c_uint32),
-        ("reserved", ctypes.c_uint32 * 3),
-    ]
+    _fields_ = cast(
+        "Any",
+        [
+            ("index", ctypes.c_uint32),
+            ("type", ctypes.c_uint32),
+            ("flags", ctypes.c_uint32),
+            ("description", ctypes.c_char * 32),
+            ("pixelformat", ctypes.c_uint32),
+            ("mbus_code", ctypes.c_uint32),
+            ("reserved", ctypes.c_uint32 * 3),
+        ],
+    )
 
 
 class v4l2_pix_format(ctypes.Structure):  # noqa: N801
-    _fields_ = [  # noqa: RUF012
-        ("width", ctypes.c_uint32),
-        ("height", ctypes.c_uint32),
-        ("pixelformat", ctypes.c_uint32),
-        ("field", ctypes.c_uint32),
-        ("bytesperline", ctypes.c_uint32),
-        ("sizeimage", ctypes.c_uint32),
-        ("colorspace", ctypes.c_uint32),
-        ("priv", ctypes.c_uint32),
-        ("flags", ctypes.c_uint32),
-        ("ycbcr_enc", ctypes.c_uint32),
-        ("quantization", ctypes.c_uint32),
-        ("xfer_func", ctypes.c_uint32),
-    ]
+    _fields_ = cast(
+        "Any",
+        [
+            ("width", ctypes.c_uint32),
+            ("height", ctypes.c_uint32),
+            ("pixelformat", ctypes.c_uint32),
+            ("field", ctypes.c_uint32),
+            ("bytesperline", ctypes.c_uint32),
+            ("sizeimage", ctypes.c_uint32),
+            ("colorspace", ctypes.c_uint32),
+            ("priv", ctypes.c_uint32),
+            ("flags", ctypes.c_uint32),
+            ("ycbcr_enc", ctypes.c_uint32),
+            ("quantization", ctypes.c_uint32),
+            ("xfer_func", ctypes.c_uint32),
+        ],
+    )
 
 
 class _v4l2_format_union(ctypes.Union):  # noqa: N801
-    _fields_ = [  # noqa: RUF012
-        ("pix", v4l2_pix_format),
-        ("raw_data", ctypes.c_uint8 * 200),
-    ]
+    _fields_ = cast(
+        "Any",
+        [
+            ("pix", v4l2_pix_format),
+            ("raw_data", ctypes.c_uint8 * 200),
+        ],
+    )
 
 
 class v4l2_format(ctypes.Structure):  # noqa: N801
-    _fields_ = [  # noqa: RUF012
-        ("type", ctypes.c_uint32),
-        ("fmt", _v4l2_format_union),
-    ]
+    _fields_ = cast(
+        "Any",
+        [
+            ("type", ctypes.c_uint32),
+            ("fmt", _v4l2_format_union),
+        ],
+    )
 
 
 class v4l2_requestbuffers(ctypes.Structure):  # noqa: N801
-    _fields_ = [  # noqa: RUF012
-        ("count", ctypes.c_uint32),
-        ("type", ctypes.c_uint32),
-        ("memory", ctypes.c_uint32),
-        ("capabilities", ctypes.c_uint32),
-        ("flags", ctypes.c_uint8),
-        ("reserved", ctypes.c_uint8 * 3),
-    ]
+    _fields_ = cast(
+        "Any",
+        [
+            ("count", ctypes.c_uint32),
+            ("type", ctypes.c_uint32),
+            ("memory", ctypes.c_uint32),
+            ("capabilities", ctypes.c_uint32),
+            ("flags", ctypes.c_uint8),
+            ("reserved", ctypes.c_uint8 * 3),
+        ],
+    )
 
 
 class v4l2_timeval(ctypes.Structure):  # noqa: N801
-    _fields_ = [  # noqa: RUF012
-        ("tv_sec", ctypes.c_long),
-        ("tv_usec", ctypes.c_long),
-    ]
+    _fields_ = cast(
+        "Any",
+        [
+            ("tv_sec", ctypes.c_long),
+            ("tv_usec", ctypes.c_long),
+        ],
+    )
 
 
 class v4l2_buffer(ctypes.Structure):  # noqa: N801
-    _fields_ = [  # noqa: RUF012
-        ("index", ctypes.c_uint32),
-        ("type", ctypes.c_uint32),
-        ("bytesused", ctypes.c_uint32),
-        ("flags", ctypes.c_uint32),
-        ("field", ctypes.c_uint32),
-        ("timestamp", v4l2_timeval),
-        ("timecode", ctypes.c_uint8 * 16),
-        ("sequence", ctypes.c_uint32),
-        ("memory", ctypes.c_uint32),
-        ("m_offset", ctypes.c_uint32),
-        ("length", ctypes.c_uint32),
-        ("reserved2", ctypes.c_uint32),
-        ("request_fd", ctypes.c_int32),
-    ]
+    _fields_ = cast(
+        "Any",
+        [
+            ("index", ctypes.c_uint32),
+            ("type", ctypes.c_uint32),
+            ("bytesused", ctypes.c_uint32),
+            ("flags", ctypes.c_uint32),
+            ("field", ctypes.c_uint32),
+            ("timestamp", v4l2_timeval),
+            ("timecode", ctypes.c_uint8 * 16),
+            ("sequence", ctypes.c_uint32),
+            ("memory", ctypes.c_uint32),
+            ("m_offset", ctypes.c_uint32),
+            ("length", ctypes.c_uint32),
+            ("reserved2", ctypes.c_uint32),
+            ("request_fd", ctypes.c_int32),
+        ],
+    )
 
 
 class v4l2_fract(ctypes.Structure):  # noqa: N801
-    _fields_ = [  # noqa: RUF012
-        ("numerator", ctypes.c_uint32),
-        ("denominator", ctypes.c_uint32),
-    ]
+    _fields_ = cast(
+        "Any",
+        [
+            ("numerator", ctypes.c_uint32),
+            ("denominator", ctypes.c_uint32),
+        ],
+    )
 
 
 class v4l2_captureparm(ctypes.Structure):  # noqa: N801
-    _fields_ = [  # noqa: RUF012
-        ("capability", ctypes.c_uint32),
-        ("capturemode", ctypes.c_uint32),
-        ("timeperframe", v4l2_fract),
-        ("extendedmode", ctypes.c_uint32),
-        ("readbuffers", ctypes.c_uint32),
-        ("reserved", ctypes.c_uint32 * 4),
-    ]
+    _fields_ = cast(
+        "Any",
+        [
+            ("capability", ctypes.c_uint32),
+            ("capturemode", ctypes.c_uint32),
+            ("timeperframe", v4l2_fract),
+            ("extendedmode", ctypes.c_uint32),
+            ("readbuffers", ctypes.c_uint32),
+            ("reserved", ctypes.c_uint32 * 4),
+        ],
+    )
 
 
 class _v4l2_streamparm_union(ctypes.Union):  # noqa: N801
-    _fields_ = [  # noqa: RUF012
-        ("capture", v4l2_captureparm),
-        ("raw_data", ctypes.c_uint8 * 200),
-    ]
+    _fields_ = cast(
+        "Any",
+        [
+            ("capture", v4l2_captureparm),
+            ("raw_data", ctypes.c_uint8 * 200),
+        ],
+    )
 
 
 class v4l2_streamparm(ctypes.Structure):  # noqa: N801
-    _fields_ = [  # noqa: RUF012
-        ("type", ctypes.c_uint32),
-        ("parm", _v4l2_streamparm_union),
-    ]
+    _fields_ = cast(
+        "Any",
+        [
+            ("type", ctypes.c_uint32),
+            ("parm", _v4l2_streamparm_union),
+        ],
+    )
 
 
 def _IOC(dir_: int, type_char: str, nr: int, size: int) -> int:  # noqa: N802
