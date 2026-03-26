@@ -126,7 +126,7 @@ class V4L2Camera(Camera):
                 buf.index = index
                 xioctl(fd, VIDIOC_QUERYBUF, buf)
 
-                mm = mmap.mmap(fd, buf.length, offset=buf.m_offset)
+                mm = mmap.mmap(fd, buf.length, offset=buf.m.offset)
                 self._buffers.append((mm, buf.length))
 
                 xioctl(fd, VIDIOC_QBUF, buf)

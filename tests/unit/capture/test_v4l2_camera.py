@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ctypes
 import mmap as mmap_mod
+import importlib
 import sys
 from contextlib import contextmanager
 from unittest import mock
@@ -16,6 +17,16 @@ import pytest
 
 from physicalai.capture.camera import ColorMode
 from physicalai.capture.cameras.v4l2._camera import V4L2Camera
+
+try:
+    _v4l2_ioctl = importlib.import_module("physicalai.capture.cameras.v4l2._ioctl")
+    VIDIOC_G_FMT = _v4l2_ioctl.VIDIOC_G_FMT
+    v4l2_timecode = getattr(_v4l2_ioctl, "v4l2_timecode", None)
+    _NEW_EXPORTS_AVAILABLE = v4l2_timecode is not None
+except (ImportError, AttributeError):
+    v4l2_timecode = None
+    _NEW_EXPORTS_AVAILABLE = False
+
 from physicalai.capture.cameras.v4l2._ioctl import (
     V4L2_BUF_TYPE_VIDEO_CAPTURE,
     V4L2_CAP_STREAMING,
@@ -425,3 +436,61 @@ def test_color_mode_gray_produces_2d_array() -> None:
         frame = cam.read()
 
     assert frame.data.shape == (480, 640)
+
+
+_IS_64BIT = sys.maxsize > 2**32
+
+
+@pytest.mark.skipif(not _IS_64BIT, reason="struct sizes differ on 32-bit")
+def test_v4l2_format_struct_size() -> None:
+    from physicalai.capture.cameras.v4l2._ioctl import v4l2_format
+
+    assert ctypes.sizeof(v4l2_format) == 208, (
+        f"Expected 208, got {ctypes.sizeof(v4l2_format)}. "
+        "v4l2_format union must include v4l2_window (pointer alignment=8 forces 4-byte padding)."
+    )
+
+
+@pytest.mark.skipif(not _IS_64BIT, reason="struct sizes differ on 32-bit")
+def test_v4l2_buffer_struct_size() -> None:
+    assert ctypes.sizeof(v4l2_buffer) == 88, (
+        f"Expected 88, got {ctypes.sizeof(v4l2_buffer)}. "
+        "v4l2_buffer.m must be a Union with c_ulong userptr (8 bytes on 64-bit)."
+    )
+
+
+@pytest.mark.skipif(not _IS_64BIT, reason="struct offset differs on 32-bit")
+def test_v4l2_format_fmt_offset() -> None:
+    from physicalai.capture.cameras.v4l2._ioctl import v4l2_format
+
+    assert v4l2_format.fmt.offset == 8, (
+        f"Expected fmt at offset 8, got {v4l2_format.fmt.offset}. "
+        "Missing 4-byte alignment padding between type (uint32) and fmt (union with pointer)."
+    )
+
+
+@pytest.mark.skipif(not _NEW_EXPORTS_AVAILABLE, reason="v4l2_timecode not yet exported")
+def test_v4l2_timecode_struct_size() -> None:
+    assert v4l2_timecode is not None
+    assert ctypes.sizeof(v4l2_timecode) == 16, f"Expected 16, got {ctypes.sizeof(v4l2_timecode)}."
+
+
+@pytest.mark.skipif(not _IS_64BIT, reason="ioctl numbers differ on 32-bit")
+def test_ioctl_numbers_match_kernel() -> None:
+    from physicalai.capture.cameras.v4l2._ioctl import (
+        VIDIOC_DQBUF,
+        VIDIOC_QBUF,
+        VIDIOC_QUERYCAP,
+        VIDIOC_QUERYBUF,
+        VIDIOC_S_FMT,
+    )
+
+    assert (VIDIOC_QUERYCAP & 0xFFFFFFFF) == 0x80685600, f"VIDIOC_QUERYCAP: got 0x{VIDIOC_QUERYCAP & 0xFFFFFFFF:08X}"
+    assert (VIDIOC_S_FMT & 0xFFFFFFFF) == 0xC0D05605, (
+        f"VIDIOC_S_FMT: got 0x{VIDIOC_S_FMT & 0xFFFFFFFF:08X}, expected 0xC0D05605"
+    )
+    assert (VIDIOC_QUERYBUF & 0xFFFFFFFF) == 0xC0585609, f"VIDIOC_QUERYBUF: got 0x{VIDIOC_QUERYBUF & 0xFFFFFFFF:08X}"
+    assert (VIDIOC_QBUF & 0xFFFFFFFF) == 0xC058560F, f"VIDIOC_QBUF: got 0x{VIDIOC_QBUF & 0xFFFFFFFF:08X}"
+    assert (VIDIOC_DQBUF & 0xFFFFFFFF) == 0xC0585611, f"VIDIOC_DQBUF: got 0x{VIDIOC_DQBUF & 0xFFFFFFFF:08X}"
+    if _NEW_EXPORTS_AVAILABLE:
+        assert (VIDIOC_G_FMT & 0xFFFFFFFF) == 0xC0D05604, f"VIDIOC_G_FMT: got 0x{VIDIOC_G_FMT & 0xFFFFFFFF:08X}"

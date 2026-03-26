@@ -82,11 +82,52 @@ class v4l2_pix_format(ctypes.Structure):  # noqa: N801
     )
 
 
+class v4l2_rect(ctypes.Structure):  # noqa: N801
+    _fields_ = cast(
+        "Any",
+        [
+            ("left", ctypes.c_int32),
+            ("top", ctypes.c_int32),
+            ("width", ctypes.c_uint32),
+            ("height", ctypes.c_uint32),
+        ],
+    )
+
+
+class v4l2_clip(ctypes.Structure):  # noqa: N801
+    pass
+
+
+v4l2_clip._fields_ = cast(
+    "Any",
+    [
+        ("c", v4l2_rect),
+        ("next", ctypes.POINTER(v4l2_clip)),
+    ],
+)
+
+
+class v4l2_window(ctypes.Structure):  # noqa: N801
+    _fields_ = cast(
+        "Any",
+        [
+            ("w", v4l2_rect),
+            ("field", ctypes.c_uint32),
+            ("chromakey", ctypes.c_uint32),
+            ("clips", ctypes.POINTER(v4l2_clip)),
+            ("clipcount", ctypes.c_uint32),
+            ("bitmap", ctypes.c_void_p),
+            ("global_alpha", ctypes.c_uint8),
+        ],
+    )
+
+
 class _v4l2_format_union(ctypes.Union):  # noqa: N801
     _fields_ = cast(
         "Any",
         [
             ("pix", v4l2_pix_format),
+            ("win", v4l2_window),
             ("raw_data", ctypes.c_uint8 * 200),
         ],
     )
@@ -126,7 +167,33 @@ class v4l2_timeval(ctypes.Structure):  # noqa: N801
     )
 
 
+class v4l2_timecode(ctypes.Structure):  # noqa: N801
+    _fields_ = cast(
+        "Any",
+        [
+            ("type", ctypes.c_uint32),
+            ("flags", ctypes.c_uint32),
+            ("frames", ctypes.c_uint8),
+            ("seconds", ctypes.c_uint8),
+            ("minutes", ctypes.c_uint8),
+            ("hours", ctypes.c_uint8),
+            ("userbits", ctypes.c_uint8 * 4),
+        ],
+    )
+
+
 class v4l2_buffer(ctypes.Structure):  # noqa: N801
+    class _m(ctypes.Union):  # noqa: N801
+        _fields_ = cast(
+            "Any",
+            [
+                ("offset", ctypes.c_uint32),
+                ("userptr", ctypes.c_ulong),
+                ("planes", ctypes.c_void_p),
+                ("fd", ctypes.c_int32),
+            ],
+        )
+
     _fields_ = cast(
         "Any",
         [
@@ -136,10 +203,10 @@ class v4l2_buffer(ctypes.Structure):  # noqa: N801
             ("flags", ctypes.c_uint32),
             ("field", ctypes.c_uint32),
             ("timestamp", v4l2_timeval),
-            ("timecode", ctypes.c_uint8 * 16),
+            ("timecode", v4l2_timecode),
             ("sequence", ctypes.c_uint32),
             ("memory", ctypes.c_uint32),
-            ("m_offset", ctypes.c_uint32),
+            ("m", _m),
             ("length", ctypes.c_uint32),
             ("reserved2", ctypes.c_uint32),
             ("request_fd", ctypes.c_int32),
@@ -282,11 +349,15 @@ __all__ = [
     "v4l2_buffer",
     "v4l2_capability",
     "v4l2_captureparm",
+    "v4l2_clip",
     "v4l2_fmtdesc",
     "v4l2_format",
     "v4l2_pix_format",
+    "v4l2_rect",
     "v4l2_requestbuffers",
     "v4l2_streamparm",
+    "v4l2_timecode",
     "v4l2_timeval",
+    "v4l2_window",
     "xioctl",
 ]
