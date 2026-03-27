@@ -438,77 +438,169 @@ class Postprocessor(ABC):
 
 ### Manifest Format
 
-All exported models use a unified `manifest.json` format. The manifest uses `class_path` + `init_args` (following `jsonargparse` conventions) for component specification:
+All exported models use a unified `manifest.json` format. The manifest uses a nested structure that mirrors the `InferenceModel` class hierarchy, with logical sections for policy identity, inference configuration, hardware, and metadata:
+
+```text
+manifest.json
+├── format + version        (envelope)
+├── policy                  (identity — what policy is this?)
+│   ├── name                (human-readable name)
+│   └── source              (provenance: repo_id, class_path)
+├── inference               (InferenceModel — how to run it?)
+│   ├── n_obs_steps         (observation window)
+│   ├── runner              (execution pattern + params)
+│   ├── artifacts           (model files by named role)
+│   └── io                  (shapes, preprocessors, postprocessors)
+├── hardware                (deployment — what hardware?)
+│   ├── robots              (robot configurations)
+│   └── cameras             (camera configurations)
+└── metadata                (provenance — when/who created this?)
+```
 
 ```json
 {
   "format": "policy_package",
   "version": "1.0",
-  "robots": [
-    {
-      "name": "main",
-      "type": "Koch v1.1",
-      "state": { "shape": [14], "dtype": "float32" },
-      "action": { "shape": [14], "dtype": "float32" }
-    }
-  ],
-  "cameras": [
-    {
-      "name": "top",
-      "shape": [3, 480, 640],
-      "dtype": "uint8"
-    },
-    {
-      "name": "wrist",
-      "shape": [3, 480, 640],
-      "dtype": "uint8"
-    }
-  ],
   "policy": {
     "name": "my_model",
-    "kind": "single_pass"
-  },
-  "artifacts": {
-    "onnx": "model.onnx"
-  },
-  "runner": {
-    "class_path": "inferencekit.runners.SinglePassRunner",
-    "init_args": {}
-  },
-  "adapter": {
-    "class_path": "inferencekit.adapters.ONNXAdapter",
-    "init_args": {
-      "providers": ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    "source": {
+      "repo_id": "user/my_model",
+      "class_path": "mypackage.policies.MyPolicy"
     }
   },
-  "preprocessors": [
-    {
-      "class_path": "mypackage.preprocessors.ImageResize",
-      "init_args": {
-        "target_size": [640, 640]
-      }
+  "inference": {
+    "n_obs_steps": 1,
+    "runner": {
+      "type": "action_chunking",
+      "chunk_size": 100,
+      "n_action_steps": 100
+    },
+    "artifacts": {
+      "model": "model.onnx"
+    },
+    "io": {
+      "inputs": [
+        {"name": "observation.image", "dtype": "float32", "shape": ["B", 3, 96, 96]},
+        {"name": "observation.state", "dtype": "float32", "shape": ["B", 14]}
+      ],
+      "outputs": [
+        {"name": "action", "dtype": "float32", "shape": ["B", 100, 14]}
+      ],
+      "preprocessors": [
+        {
+          "type": "normalize",
+          "mode": "mean_std",
+          "artifact": "stats.safetensors",
+          "features": ["observation.state"]
+        }
+      ],
+      "postprocessors": [
+        {
+          "type": "denormalize",
+          "mode": "mean_std",
+          "artifact": "stats.safetensors",
+          "features": ["action"]
+        }
+      ]
     }
-  ],
-  "postprocessors": [
-    {
-      "class_path": "mypackage.postprocessors.NMS",
-      "init_args": {
-        "confidence_threshold": 0.5
-      }
-    }
-  ]
+  },
+  "hardware": {
+    "robots": [],
+    "cameras": []
+  },
+  "metadata": {
+    "created_at": "2026-03-27T12:00:00Z",
+    "created_by": "mypackage.export"
+  }
 }
 ```
 
+> **Note:** For the full manifest schema reference (all runner variants, field descriptions, and design rationale), see [LeRobot Integration Design](../integrations/lerobot.md#2-converged-manifest-format). The format is shared by both PhysicalAI and LeRobot exports.
+
+**PhysicalAI-native format (`class_path` + `init_args`):**
+
+PhysicalAI can also write manifests using the full `class_path` + `init_args` format for components. This gives full power over component instantiation (custom classes, nested configs) while remaining loadable by PhysicalAI's `ComponentRegistry`:
+
+```json
+{
+  "format": "policy_package",
+  "version": "1.0",
+  "policy": {
+    "name": "act",
+    "source": {
+      "repo_id": "lerobot/act_aloha_sim_transfer_cube_human",
+      "class_path": "physicalai.policies.act.policy.ACT"
+    }
+  },
+  "inference": {
+    "n_obs_steps": 1,
+    "runner": {
+      "class_path": "action_chunking",
+      "init_args": {
+        "chunk_size": 100,
+        "n_action_steps": 100
+      }
+    },
+    "artifacts": {
+      "model": "model.onnx"
+    },
+    "io": {
+      "inputs": [
+        {"name": "observation.image", "dtype": "float32", "shape": ["B", 3, 96, 96]},
+        {"name": "observation.state", "dtype": "float32", "shape": ["B", 14]}
+      ],
+      "outputs": [
+        {"name": "action", "dtype": "float32", "shape": ["B", 100, 14]}
+      ],
+      "preprocessors": [
+        {
+          "class_path": "normalize",
+          "init_args": {
+            "mode": "mean_std",
+            "stats_path": "stats.safetensors",
+            "features": ["observation.state"]
+          }
+        }
+      ],
+      "postprocessors": [
+        {
+          "class_path": "denormalize",
+          "init_args": {
+            "mode": "mean_std",
+            "stats_path": "stats.safetensors",
+            "features": ["action"]
+          }
+        }
+      ]
+    }
+  },
+  "hardware": {
+    "robots": [],
+    "cameras": []
+  },
+  "metadata": {
+    "created_at": "2026-03-27T12:00:00Z",
+    "created_by": "physicalai.export"
+  }
+}
+```
+
+> **Both formats resolve identically.** The `type`-based example above (used by LeRobot) and this `class_path`-based example both resolve to the same runner and processor instances through the `ComponentRegistry`. See [Dual Component Resolution](../integrations/lerobot.md#dual-component-resolution) for the full resolution algorithm.
+
 **How models are loaded:**
 
-The framework reads `manifest.json` and resolves the model configuration:
+The framework reads `manifest.json` and resolves the model configuration using **dual-path component resolution**:
 
-1. **Built‑in models** (physicalai-train, LeRobot): `policy.kind` maps to a built‑in runner. No `class_path` needed for the runner — the `kind` field is sufficient.
-2. **Custom/exotic models**: `runner.class_path` points to the user's runner class. The framework instantiates it dynamically.
-3. **Hardware validation**: `robots` and `cameras` sections declare expected shapes. The runtime validates observations against these on first contact.
+1. **Manifest parsing**: `manifest.json` is parsed directly into nested Pydantic models --- no flattening or normalization step.
+2. **Runner resolution**: Components support two formats that both resolve through the same `ComponentRegistry` + `instantiate_component()` pipeline:
+   - **`type` + flat params** (interoperable, written by LeRobot): `{"type": "action_chunking", "chunk_size": 100}` → registry lookup → `ComponentSpec` → `instantiate_component()`
+   - **`class_path` + `init_args`** (full-power, written by PhysicalAI): `{"class_path": "action_chunking", "init_args": {"chunk_size": 100}}` → `ComponentSpec` → `instantiate_component()`
+3. **Backend selection**: `inference.artifacts` maps named roles (e.g., `"model"`, `"encoder"`) to filenames. The first available backend is auto-selected, or the user can override at load time.
+4. **I/O pipeline**: `inference.io.preprocessors` and `inference.io.postprocessors` declare input/output transforms (normalization, denormalization) resolved via the same dual-path mechanism.
+5. **Hardware validation**: `hardware.robots` and `hardware.cameras` sections declare expected shapes. The runtime can validate observations against these.
+6. **Custom components**: Domain layers can extend the manifest with custom processor types or runner parameters without modifying inferencekit. Any component with a `class_path` is instantiated directly; any component with a `type` goes through the registry.
 
-The `class_path` + `init_args` pattern allows domain layers to specify their own components in the manifest without inferencekit needing to know about them.
+> **See also**: [LeRobot Integration Design — Runner Resolution](../integrations/lerobot.md#runner-resolution) for the full resolution algorithm and examples.
 
 ---
 
@@ -596,28 +688,41 @@ Domain layers can publish model packages to HuggingFace that include:
 {
   "format": "policy_package",
   "version": "1.0",
-  "robots": [...],
-  "cameras":[...],
   "policy": {
     "name": "my_model",
-    "kind": "custom"
-  },
-  "domain_package": "my-domain-inference",
-  "artifacts": {
-    "onnx": "model.onnx"
-  },
-  "runner": {
-    "class_path": "my_domain_inference.runners.MyDomainRunner",
-    "init_args": {
-      "param1": "value1"
+    "source": {
+      "class_path": "my_domain_inference.models.MyModel"
     }
   },
-  "preprocessors": [
-    {
-      "class_path": "my_domain_inference.preprocessors.MyPreprocessor",
-      "init_args": {}
+  "inference": {
+    "n_obs_steps": 1,
+    "runner": {
+      "type": "action_chunking",
+      "chunk_size": 1,
+      "n_action_steps": 1
+    },
+    "artifacts": {
+      "model": "model.onnx"
+    },
+    "io": {
+      "inputs": [
+        {"name": "input", "dtype": "float32", "shape": ["B", 3, 640, 640]}
+      ],
+      "outputs": [
+        {"name": "output", "dtype": "float32", "shape": ["B", 100, 6]}
+      ],
+      "preprocessors": [],
+      "postprocessors": []
     }
-  ]
+  },
+  "hardware": {
+    "robots": [],
+    "cameras": []
+  },
+  "metadata": {
+    "created_at": "2026-03-27T12:00:00Z",
+    "created_by": "my-domain-inference"
+  }
 }
 ```
 
@@ -1118,5 +1223,5 @@ Instead of replacing model_api, inferencekit provides the **foundation** that mo
 
 ---
 
-_Document Version: 3.0_
-_Last Updated: 2026-02-16_
+_Document Version: 5.0_
+_Last Updated: 2026-03-27_
