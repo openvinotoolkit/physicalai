@@ -17,17 +17,17 @@ classifiers = [
 dependencies = [
     "numpy>=1.24",
     "loguru>=0.7",
-    "PyTurboJPEG>=1.7; sys_platform == 'linux'",
+    # target PyTurboJPEG 1.x for libjpeg-turbo 2.x compatibility
+    "PyTurboJPEG<2; sys_platform == 'linux'",
+    "omni_camera @ git+https://github.com/ArendJanKramer/OmniCamera.git@master",
 ]
 
 [project.optional-dependencies]
 tests = ["pytest", "mypy"]
-opencv = ["opencv-python", "cv2-enumerate-cameras"]
 realsense = []
 basler = []
 genicam = []
 capture = [
-    "physicalai[opencv]",
     "physicalai[realsense]",
     "physicalai[basler]",
     "physicalai[genicam]",
@@ -47,6 +47,9 @@ robots = [
 
 [dependency-groups]
 dev = ["pytest", "mypy", "pyrefly", "ruff", "prek"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [project.urls]
 Homepage = "https://github.com/openvinotoolkit/physical-ai"
