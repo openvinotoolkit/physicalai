@@ -13,8 +13,8 @@ This document describes how **PhysicalAI** integrates with **LeRobot** exported 
 
 **Key principles:**
 
-1. **One schema, two expressiveness levels** --- The manifest schema supports two component formats: `type` + flat params (interoperable, used by LeRobot) and `class_path` + `init_args` (full-power, used by PhysicalAI). PhysicalAI reads both; LeRobot reads `type` only.
-2. **LeRobot is standalone** --- LeRobot's export system works perfectly without PhysicalAI installed. No PhysicalAI imports, no PhysicalAI class paths in manifests.
+1. **One schema, two expressiveness levels** --- The manifest supports two component formats: `type` + flat params (interoperable, used by LeRobot) and `class_path` + `init_args` (full-power, used by PhysicalAI). PhysicalAI reads both; LeRobot reads `type` only.
+2. **LeRobot is standalone** --- LeRobot's export system works without PhysicalAI installed. No PhysicalAI imports, no PhysicalAI class paths in manifests.
 3. **PhysicalAI loads LeRobot exports natively** --- `InferenceModel.load("./lerobot_export")` works out of the box. No adapter class, no special-casing.
 4. **Dependency is strictly one-way** --- LeRobot does not depend on PhysicalAI. PhysicalAI reads LeRobot's output (pure JSON) without importing LeRobot.
 
@@ -25,83 +25,35 @@ policy.export("./out") --produces-->    InferenceModel.load("./out")
                                             |
   Same manifest.json schema                 +-- reads manifest.json
   Writes: type + flat params                +-- resolves via type OR class_path
-  Own runners (numpy-only)                  +-- builds preprocessors/postprocessors from io
+  Own runners (numpy-only)                  +-- builds preprocessors/postprocessors
   Zero physicalai deps                      +-- runs inference through pipeline
 ```
-
-### Dual Component Resolution
-
-The manifest supports two ways to specify components (runners, preprocessors, postprocessors):
-
-| Format                         | Who writes                         | Who reads            | Example                                                               |
-| ------------------------------ | ---------------------------------- | -------------------- | --------------------------------------------------------------------- |
-| **`type` + flat params**       | LeRobot, simple PhysicalAI exports | Both (interoperable) | `{"type": "action_chunking", "chunk_size": 100}`                      |
-| **`class_path` + `init_args`** | PhysicalAI (full-power)            | PhysicalAI only      | `{"class_path": "physicalai.inference.runners.ActionChunkingRunner", "init_args": {"chunk_size": 100}}` |
-
-PhysicalAI resolves both through the same `ComponentRegistry` + `instantiate_component()` pipeline. LeRobot only reads `type` and maps to its own implementations. See [Runner Resolution](#runner-resolution) for the resolution algorithm.
 
 ---
 
 ## Table of Contents
 
-- [PhysicalAI: LeRobot Integration Design](#physicalai-lerobot-integration-design)
-  - [Executive Summary](#executive-summary)
-    - [Dual Component Resolution](#dual-component-resolution)
-  - [Table of Contents](#table-of-contents)
-  - [1. Architecture Overview](#1-architecture-overview)
-  - [2. Converged Manifest Format](#2-converged-manifest-format)
-    - [Schema Overview](#schema-overview)
-    - [Full Example: ACT Policy](#full-example-act-policy)
-    - [Runner Variants](#runner-variants)
-    - [Field Reference](#field-reference)
-      - [Top-Level Envelope](#top-level-envelope)
-      - [`policy` --- Identity](#policy-----identity)
-      - [`model` --- How to Run](#model-----how-to-run)
-      - [`hardware` --- Deployment](#hardware-----deployment)
-      - [`metadata` --- Provenance](#metadata-----provenance)
-      - [Preprocessor / Postprocessor Entry](#preprocessor--postprocessor-entry)
-    - [Design Decisions](#design-decisions)
-  - [3. How PhysicalAI Loads the Manifest](#3-how-physicalai-loads-the-manifest)
-    - [Loading Flow](#loading-flow)
-    - [Runner Resolution](#runner-resolution)
-    - [Preprocessor and Postprocessor Construction](#preprocessor-and-postprocessor-construction)
-  - [4. How LeRobot Uses the Manifest](#4-how-lerobot-uses-the-manifest)
-  - [5. Runner Mapping](#5-runner-mapping)
-    - [`model.runner.type` to Runner](#modelrunnertype-to-runner)
-    - [Runner Parameters (All in `model.runner`)](#runner-parameters-all-in-modelrunner)
-  - [6. Normalization Handling](#6-normalization-handling)
-    - [Problem](#problem)
-    - [Solution: Preprocessor and Postprocessor Entries](#solution-preprocessor-and-postprocessor-entries)
-    - [PhysicalAI Implementation](#physicalai-implementation)
-    - [Normalization Modes](#normalization-modes)
-    - [Stats File Format](#stats-file-format)
-  - [7. Usage Examples](#7-usage-examples)
-    - [Basic Usage](#basic-usage)
-    - [With Callbacks](#with-callbacks)
-    - [Override Runner Parameters](#override-runner-parameters)
-    - [Real-Time Control](#real-time-control)
-  - [8. Supported Policies](#8-supported-policies)
-  - [9. Testing Strategy](#9-testing-strategy)
-    - [Conformance Tests](#conformance-tests)
-    - [Parity Tests](#parity-tests)
-    - [Backward Compatibility Tests](#backward-compatibility-tests)
-  - [10. Migration from Legacy Formats](#10-migration-from-legacy-formats)
-    - [Migration Path](#migration-path)
-    - [Schema Enforcement](#schema-enforcement)
-  - [Appendix A: Design Rationale](#appendix-a-design-rationale)
-    - [Why One Format Instead of Two?](#why-one-format-instead-of-two)
-    - [Why `model` as a Container?](#why-model-as-a-container)
-    - [Why Not `model: null` for Single-Pass?](#why-not-model-null-for-single-pass)
-    - [Why Preprocessors Inside `io`?](#why-preprocessors-inside-io)
-    - [Why `policy.source.class_path`?](#why-policysourceclass_path)
-  - [Appendix B: Comparison with Previous Design](#appendix-b-comparison-with-previous-design)
-  - [Related Documents](#related-documents)
+- [Executive Summary](#executive-summary)
+- [1. Architecture Overview](#1-architecture-overview)
+- [2. Converged Manifest Format](#2-converged-manifest-format)
+  - [Schema Overview](#schema-overview)
+  - [Full Example: ACT Policy](#full-example-act-policy)
+  - [Runner Variants](#runner-variants)
+  - [Field Reference](#field-reference)
+  - [Dual Component Resolution](#dual-component-resolution)
+- [3. How PhysicalAI Loads the Manifest](#3-how-physicalai-loads-the-manifest)
+- [4. How LeRobot Uses the Manifest](#4-how-lerobot-uses-the-manifest)
+- [5. Runner Mapping](#5-runner-mapping)
+- [6. Normalization Handling](#6-normalization-handling)
+- [7. Usage Examples](#7-usage-examples)
+- [8. Supported Policies](#8-supported-policies)
+- [Related Documents](#related-documents)
 
 ---
 
 ## 1. Architecture Overview
 
-The integration is seamless because both frameworks share the same manifest schema. PhysicalAI's `InferenceModel` reads the manifest, resolves components (runner, preprocessors, postprocessors, adapter), and runs inference --- regardless of which framework produced the export.
+Both frameworks share the same manifest schema. PhysicalAI's `InferenceModel` reads the manifest, resolves components (runner, preprocessors, postprocessors, adapter), and runs inference --- regardless of which framework produced the export.
 
 ```text
 +-----------------------------------------------------------------------+
@@ -142,9 +94,7 @@ The integration is seamless because both frameworks share the same manifest sche
 | Feature                             | LeRobot Standalone | PhysicalAI             |
 | ----------------------------------- | ------------------ | ---------------------- |
 | Load exported policy                | Yes                | Yes                    |
-| Single-pass inference               | Yes                | Yes                    |
-| Iterative inference                 | Yes                | Yes                    |
-| Two-phase inference                 | Yes                | Yes                    |
+| Single-pass / iterative / two-phase | Yes                | Yes                    |
 | Action chunking                     | Yes                | Yes                    |
 | Callbacks (timing, logging, safety) | No                 | Yes                    |
 | Multi-backend with fallback         | ONNX + OpenVINO    | ONNX + OpenVINO + TRT  |
@@ -158,7 +108,7 @@ The integration is seamless because both frameworks share the same manifest sche
 
 ### Schema Overview
 
-The manifest mirrors PhysicalAI's `InferenceModel` class hierarchy, following the same philosophy as training configs (which split into `model`, `data`, `trainer` sections):
+The manifest mirrors PhysicalAI's `InferenceModel` class hierarchy:
 
 ```text
 manifest.json
@@ -170,7 +120,8 @@ manifest.json
 |   +-- n_obs_steps         (observation window size)
 |   +-- runner              (execution pattern + parameters)
 |   +-- artifacts           (model files by named role)
-|   +-- io                  (I/O contract: shapes, preprocessors, postprocessors)
+|   +-- preprocessors       (input transforms: normalize, etc.)
+|   +-- postprocessors      (output transforms: denormalize, etc.)
 +-- hardware                (deployment --- what hardware?)
 |   +-- robots              (robot configurations)
 |   +-- cameras             (camera configurations)
@@ -200,31 +151,22 @@ manifest.json
     "artifacts": {
       "model": "model.onnx"
     },
-    "io": {
-      "inputs": [
-        {"name": "observation.image", "dtype": "float32", "shape": ["B", 3, 96, 96]},
-        {"name": "observation.state", "dtype": "float32", "shape": ["B", 14]}
-      ],
-      "outputs": [
-        {"name": "action", "dtype": "float32", "shape": ["B", 100, 14]}
-      ],
-      "preprocessors": [
-        {
-          "type": "normalize",
-          "mode": "mean_std",
-          "artifact": "stats.safetensors",
-          "features": ["observation.state"]
-        }
-      ],
-      "postprocessors": [
-        {
-          "type": "denormalize",
-          "mode": "mean_std",
-          "artifact": "stats.safetensors",
-          "features": ["action"]
-        }
-      ]
-    }
+    "preprocessors": [
+      {
+        "type": "normalize",
+        "mode": "mean_std",
+        "artifact": "stats.safetensors",
+        "features": ["observation.state"]
+      }
+    ],
+    "postprocessors": [
+      {
+        "type": "denormalize",
+        "mode": "mean_std",
+        "artifact": "stats.safetensors",
+        "features": ["action"]
+      }
+    ]
   },
   "hardware": {
     "robots": [],
@@ -241,7 +183,7 @@ manifest.json
 
 ### Runner Variants
 
-The `model.runner` section is open-ended --- policy-specific parameters go directly in the runner object alongside `type`. This avoids the need for a rigid union schema. Each runner implementation declares its expected parameters and logs a warning for any unrecognized keys (see [Runner Parameter Validation](#runner-parameter-validation)).
+The `model.runner` section is open-ended --- policy-specific parameters go directly in the runner object alongside `type`.
 
 **ACT / VQBeT** (single-pass with action chunking):
 
@@ -267,8 +209,6 @@ The `model.runner` section is open-ended --- policy-specific parameters go direc
 
 **PI0** (two-phase: encode once + denoise iteratively):
 
-For two-phase policies, all model artifacts are listed in `model.artifacts` with named roles (`encoder`, `denoise`) rather than backend names. The runner references these roles:
-
 ```json
 "artifacts": {
   "encoder": "encoder.onnx",
@@ -280,33 +220,6 @@ For two-phase policies, all model artifacts are listed in `model.artifacts` with
   "n_action_steps": 50,
   "num_inference_steps": 10,
   "scheduler": "euler"
-}
-```
-
-**SmolVLA** (two-phase, no explicit scheduler):
-
-```json
-"artifacts": {
-  "encoder": "encoder.onnx",
-  "denoise": "denoise.onnx"
-},
-"runner": {
-  "type": "two_phase",
-  "chunk_size": 50,
-  "n_action_steps": 50,
-  "num_inference_steps": 10
-}
-```
-
-**TDMPC** (iterative with model-predictive control):
-
-```json
-"runner": {
-  "type": "iterative",
-  "horizon": 5,
-  "n_action_steps": 1,
-  "use_mpc": true,
-  "cem_iterations": 6
 }
 ```
 
@@ -330,17 +243,14 @@ For two-phase policies, all model artifacts are listed in `model.artifacts` with
 
 #### `model` --- How to Run
 
-| Field                         | Type   | Required | Description                                                                                                                                    |
-| ----------------------------- | ------ | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `model.n_obs_steps`       | int    | Yes      | Number of observation timesteps needed by the model (see [Design Decisions](#design-decisions))                               |
-| `model.runner`            | object | Yes      | Runner configuration (see variants)                                                                                                            |
-| `model.runner.type`       | string | Yes      | Runner type: `action_chunking`, `iterative`, `two_phase`                                                                                       |
-| `model.artifacts`         | object | Yes      | Map of artifact role to filename. Single-model: `{"model": "model.onnx"}`. Two-phase: `{"encoder": "encoder.onnx", "denoise": "denoise.onnx"}` |
-| `model.io`                | object | Yes      | I/O specification                                                                                                                              |
-| `model.io.inputs`         | array  | Yes      | Input tensor specifications                                                                                                                    |
-| `model.io.outputs`        | array  | Yes      | Output tensor specifications                                                                                                                   |
-| `model.io.preprocessors`  | array  | No       | Input transforms (normalize, etc.)                                                                                                             |
-| `model.io.postprocessors` | array  | No       | Output transforms (denormalize, etc.)                                                                                                          |
+| Field                      | Type   | Required | Description                                                                                                                                    |
+| -------------------------- | ------ | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `model.n_obs_steps`        | int    | Yes      | Number of observation timesteps needed by the model                                                                                            |
+| `model.runner`             | object | Yes      | Runner configuration (see [Runner Variants](#runner-variants))                                                                                 |
+| `model.runner.type`        | string | Yes      | Runner type: `action_chunking`, `iterative`, `two_phase`                                                                                       |
+| `model.artifacts`          | object | Yes      | Map of artifact role to filename. Single-model: `{"model": "model.onnx"}`. Two-phase: `{"encoder": "encoder.onnx", "denoise": "denoise.onnx"}` |
+| `model.preprocessors`      | array  | No       | Input transforms (normalize, etc.)                                                                                                             |
+| `model.postprocessors`     | array  | No       | Output transforms (denormalize, etc.)                                                                                                          |
 
 #### `hardware` --- Deployment
 
@@ -361,103 +271,24 @@ For two-phase policies, all model artifacts are listed in `model.artifacts` with
 | Field        | Type   | Required | Description                                                                                                                                          |
 | ------------ | ------ | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `type`       | string | Yes      | Processor type: `"normalize"`, `"denormalize"`, or custom                                                                                            |
-| `class_path` | string | No       | Python class path for custom processor types. Built-in types (`normalize`, `denormalize`) resolve by convention; unknown types require `class_path`. |
-| `mode`       | string | No       | Normalization mode: `"mean_std"`, `"min_max"`, `"identity"` (required for `normalize`/`denormalize`)                                                 |
-| `artifact`   | string | No       | Path to stats file (e.g., `"stats.safetensors"`) (required for `normalize`/`denormalize`)                                                            |
-| `features`   | array  | No       | Feature names to process (e.g., `["observation.state"]`) (required for `normalize`/`denormalize`)                                                    |
+| `class_path` | string | No       | Full Python class path (required for custom types; built-in types resolve by convention)                                                              |
+| `mode`       | string | No       | Normalization mode: `"mean_std"`, `"min_max"`, `"identity"`                                                                                          |
+| `artifact`   | string | No       | Path to stats file (e.g., `"stats.safetensors"`)                                                                                                     |
+| `features`   | array  | No       | Feature names to process (e.g., `["observation.state"]`)                                                                                             |
 
-Built-in types resolve by convention: `"normalize"` maps to `StatsNormalizer`, `"denormalize"` maps to `StatsDenormalizer`. For custom processor types, provide a `class_path`:
+### Dual Component Resolution
 
-```json
-{
-  "type": "clamp",
-  "class_path": "physicalai.inference.postprocessors.ActionClamp",
-  "min": -1.0,
-  "max": 1.0
-}
-```
+The manifest supports two ways to specify components (runners, preprocessors, postprocessors):
 
-### Design Decisions
+| Format                         | Who writes                         | Who reads            | Example                                                               |
+| ------------------------------ | ---------------------------------- | -------------------- | --------------------------------------------------------------------- |
+| **`type` + flat params**       | LeRobot, simple PhysicalAI exports | Both (interoperable) | `{"type": "action_chunking", "chunk_size": 100}`                      |
+| **`class_path` + `init_args`** | PhysicalAI (full-power)            | PhysicalAI only      | `{"class_path": "physicalai.inference.runners.ActionChunkingRunner", "init_args": {"chunk_size": 100}}` |
 
-| Decision                                   | Rationale                                                                                                                                                                                                                                                                                                                            |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **No `policy.type` field**                 | `model.runner.type` is the sole source of truth for runner construction. A separate `policy.type` would overlap without matching (e.g., ACT is `single_pass` but uses `action_chunking` runner), causing confusion. Eliminated to avoid ambiguity.                                                                               |
-| **`hardware` is top-level**                | Deployment needs hardware information even if LeRobot doesn't use it yet. Cheap future-proofing.                                                                                                                                                                                                                                     |
-| **Preprocessors inside `model.io`**    | They are I/O transforms, logically part of the I/O boundary. Not separate top-level sections.                                                                                                                                                                                                                                        |
-| **`format` + `version` kept**              | Cheap future-proofing for schema evolution. `format` enables detection, `version` enables migration.                                                                                                                                                                                                                                 |
-| **`model` is a container**             | Mirrors `InferenceModel` class hierarchy. Matches training config philosophy (`model`/`data`/`trainer`).                                                                                                                                                                                                                             |
-| **No separate `action` section**           | `chunk_size` and `n_action_steps` are runner behavioral params. `action_dim` is redundant with output shape.                                                                                                                                                                                                                         |
-| **`mode` per processor**                   | Different features may use different normalization modes (mean_std vs min_max).                                                                                                                                                                                                                                                      |
-| **Runner params are open with validation** | Policy-specific fields go directly in runner. Each runner declares expected params and warns on unknown keys (see [Runner Parameter Validation](#runner-parameter-validation)).                                                                                                                                                      |
-| **Named artifact roles**                   | `model.artifacts` uses role names (`model`, `encoder`, `denoise`) not backend names. This eliminates the split between `model.artifacts` and runner-level artifact refs for two-phase policies, giving a single authoritative location for all model files.                                                                  |
-| **Extensible processor types**             | Built-in types (`normalize`, `denormalize`) resolve by convention. Unknown types fall back to `class_path`, allowing custom processors without code changes to the loader.                                                                                                                                                           |
-| **`n_obs_steps` in `model`**           | Although `n_obs_steps` describes what the model expects (a contract), it is consumed during inference preparation --- the caller uses it to decide how many observation frames to collect before calling the model. It sits alongside other inference-time parameters rather than in `policy` (which is purely identity/provenance). |
-| **Shared JSON Schema for CI**              | Both projects validate exported manifests against a shared `manifest.schema.json` to prevent schema drift (see [Schema Enforcement](#schema-enforcement)).                                                                                                                                                                           |
-| **Dual component resolution**              | Components support both `type` + flat params (interoperable, LeRobot-compatible) and `class_path` + `init_args` (PhysicalAI full-power). Both resolve through the same `ComponentRegistry` + `instantiate_component()` pipeline. This avoids per-type if-chains while preserving the existing component system. See [Dual Component Resolution](#dual-component-resolution). |
-| **No `_normalize_metadata()`**             | The nested manifest structure is parsed directly into Pydantic models. No flattening shim needed --- both the schema and the loader are designed together. Legacy `metadata.yaml` files (pre-manifest era) are handled by `from_legacy_metadata()` only. |
+Both formats resolve through the same `ComponentRegistry` + `instantiate_component()` pipeline:
 
----
-
-## 3. How PhysicalAI Loads the Manifest
-
-### Loading Flow
-
-The manifest is parsed directly into nested Pydantic models --- no intermediate flattening or normalization step. The nested JSON maps 1:1 to the Pydantic model hierarchy:
-
-```python
-# In InferenceModel.load():
-raw = json.loads((path / "manifest.json").read_text())
-
-# Validate format
-if raw.get("format") != "policy_package":
-    msg = f"Unknown manifest format: {raw.get('format')}"
-    raise ValueError(msg)
-
-# Parse directly into nested Pydantic models
-manifest = Manifest.model_validate(raw)
-
-# Resolve components from typed manifest fields
-runner = resolve_runner(manifest.model.runner)
-adapter = create_adapter(manifest.model.artifacts, path)
-preprocessors = resolve_processors(manifest.model.io.preprocessors, path)
-postprocessors = resolve_processors(manifest.model.io.postprocessors, path)
-```
-
-> **Legacy `metadata.yaml` files** (pre-manifest era, before `manifest.json` existed) are handled separately by `from_legacy_metadata()` in `manifest.py`. This is unrelated to the manifest format --- it handles the old YAML-based metadata from early PhysicalAI exports.
-
-### Runner Resolution
-
-The runner factory uses **dual-path resolution** --- a single if-check, not an if-chain per type. If `class_path` is present, it goes straight to `ComponentSpec` instantiation. Otherwise, `type` is resolved through the same `ComponentRegistry` pipeline:
-
-```python
-def resolve_runner(runner_config: dict) -> InferenceRunner:
-    """Resolve runner from manifest config using dual-path resolution.
-
-    Path 1: class_path + init_args → ComponentSpec → instantiate_component()
-    Path 2: type + flat params → registry lookup → ComponentSpec → instantiate_component()
-
-    Both paths end at the same instantiate_component() call.
-    """
-    if "class_path" in runner_config:
-        # PhysicalAI-native: full ComponentSpec path
-        spec = ComponentSpec.model_validate(runner_config)
-        return instantiate_component(spec)
-
-    # Framework-agnostic: type → registry resolves short name to class_path
-    runner_type = runner_config["type"]
-    init_args = {k: v for k, v in runner_config.items() if k != "type"}
-    spec = ComponentSpec(class_path=runner_type, init_args=init_args)
-    return instantiate_component(spec)
-```
-
-**How `instantiate_component()` handles the two paths:**
-
-- **`class_path`** (full Python path, e.g., `"physicalai.inference.runners.ActionChunkingRunner"`) → direct import
-- **`type`** (short name, e.g., `"action_chunking"`) → `ComponentRegistry.resolve()` maps to full path → import
-
-`class_path` always uses the full Python class path for explicit, unambiguous resolution. `type` uses the registry as the single source of truth for mapping short names to classes.
-
-**Example: How the same runner loads from both formats:**
+- **`class_path`** (full Python path) → direct import → instantiate
+- **`type`** (short name) → registry lookup → resolve to full path → instantiate
 
 ```json
 // LeRobot writes (type + flat params):
@@ -466,123 +297,78 @@ def resolve_runner(runner_config: dict) -> InferenceRunner:
 // PhysicalAI writes (class_path + init_args):
 {"class_path": "physicalai.inference.runners.ActionChunkingRunner", "init_args": {"chunk_size": 100, "n_action_steps": 100}}
 
-// Both resolve to the same ActionChunkingRunner:
-// type path:       "action_chunking" → ComponentRegistry.resolve() → ActionChunkingRunner(...)
-// class_path path: "physicalai.inference.runners.ActionChunkingRunner" → direct import → ActionChunkingRunner(...)
+// Both resolve to the same ActionChunkingRunner(chunk_size=100, n_action_steps=100)
 ```
 
-### Runner Parameter Validation
+---
 
-Each runner declares the parameters it consumes. Unknown keys trigger a warning, catching typos without breaking forward compatibility:
+## 3. How PhysicalAI Loads the Manifest
+
+The manifest is parsed directly into nested Pydantic models --- no intermediate flattening step:
 
 ```python
-class IterativeRunner(InferenceRunner):
-    EXPECTED_PARAMS = {"type", "num_inference_steps", "scheduler", "horizon", "n_action_steps"}
+# In InferenceModel.load():
+raw = json.loads((path / "manifest.json").read_text())
+manifest = Manifest.model_validate(raw)
 
-    @classmethod
-    def from_config(cls, config: dict) -> "IterativeRunner":
-        unknown = set(config.keys()) - cls.EXPECTED_PARAMS
-        if unknown:
-            logger.warning("IterativeRunner: ignoring unknown params: %s", unknown)
-        return cls(
-            num_steps=config.get("num_inference_steps", 10),
-            scheduler=config.get("scheduler", "euler"),
-        )
+# Resolve components from typed manifest fields
+runner = resolve_runner(manifest.model.runner)
+adapter = create_adapter(manifest.model.artifacts, path)
+preprocessors = resolve_processors(manifest.model.preprocessors, path)
+postprocessors = resolve_processors(manifest.model.postprocessors, path)
 ```
 
-### Preprocessor and Postprocessor Construction
-
-Processors use the same dual-path resolution as runners. The `resolve_processor()` function handles both `class_path` + `init_args` (PhysicalAI-native) and `type` + flat params (interoperable):
+Runner and processor resolution both use **dual-path resolution** --- a single if-check, not an if-chain per type:
 
 ```python
-def resolve_processors(specs: list[dict], path: Path) -> list:
-    """Build processor chain from manifest specs using dual-path resolution.
+def resolve_runner(runner_config: dict) -> InferenceRunner:
+    if "class_path" in runner_config:
+        # PhysicalAI-native: class_path + init_args → ComponentSpec → instantiate
+        spec = ComponentSpec.model_validate(runner_config)
+        return instantiate_component(spec)
 
-    Each spec is resolved identically to runners:
-    - class_path present → ComponentSpec → instantiate_component()
-    - type present → registry lookup → ComponentSpec → instantiate_component()
-    """
-    processors = []
-    for spec in specs:
-        if "class_path" in spec:
-            # PhysicalAI-native: full ComponentSpec path
-            component_spec = ComponentSpec.model_validate(spec)
-            processors.append(instantiate_component(component_spec))
-        else:
-            # Framework-agnostic: type → registry → ComponentSpec
-            processor_type = spec["type"]
-            init_args = {k: v for k, v in spec.items() if k != "type"}
-            # Resolve relative artifact paths to absolute
-            if "artifact" in init_args:
-                init_args["stats_path"] = path / init_args.pop("artifact")
-            component_spec = ComponentSpec(class_path=processor_type, init_args=init_args)
-            processors.append(instantiate_component(component_spec))
-    return processors
+    # Framework-agnostic: type → registry lookup → instantiate
+    runner_type = runner_config["type"]
+    init_args = {k: v for k, v in runner_config.items() if k != "type"}
+    spec = ComponentSpec(class_path=runner_type, init_args=init_args)
+    return instantiate_component(spec)
 ```
 
-**Example: Normalize processor from both formats:**
+Processors follow the same pattern, with one addition: the `artifact` key in `type`-format specs is resolved to an absolute `stats_path` at load time.
 
-```json
-// LeRobot writes (type + flat params):
-{"type": "normalize", "mode": "mean_std", "artifact": "stats.safetensors", "features": ["observation.state"]}
-
-// PhysicalAI writes (class_path + init_args):
-{"class_path": "physicalai.inference.preprocessors.StatsNormalizer", "init_args": {"mode": "mean_std", "stats_path": "stats.safetensors", "features": ["observation.state"]}}
-
-// Both resolve to: StatsNormalizer(mode="mean_std", stats_path=..., features=["observation.state"])
-```
-
-> **Note:** The `artifact` → `stats_path` key rename happens during resolution for `type`-format specs. In `class_path` format, the key is already `stats_path` (matching the constructor parameter name).
+> **Legacy `metadata.yaml` files** (pre-manifest era) are handled separately by `from_legacy_metadata()` in `manifest.py`.
 
 ---
 
 ## 4. How LeRobot Uses the Manifest
 
-LeRobot reads the same `manifest.json` with its own tooling. It does NOT use pydantic --- it uses `draccus` dataclasses or plain `json.load()`.
+LeRobot reads the same `manifest.json` with its own tooling (no PhysicalAI dependency):
 
 ```python
-# LeRobot's own loading (no physicalai dependency)
 import json
 from pathlib import Path
 
 def load_exported_policy(path: str | Path) -> ExportedPolicy:
-    """Load an exported policy package."""
     path = Path(path)
     raw = json.loads((path / "manifest.json").read_text())
 
-    # Read runner config
-    runner_config = raw["model"]["runner"]
-    runner_type = runner_config["type"]
-
     # Build LeRobot's own runner (standalone, numpy-only)
-    if runner_type == "action_chunking":
-        runner = ActionChunkingWrapper(
-            SinglePassRunner(),
-            chunk_size=runner_config["chunk_size"],
-            n_action_steps=runner_config["n_action_steps"],
-        )
-    elif runner_type == "iterative":
-        runner = IterativeRunner(
-            num_steps=runner_config["num_inference_steps"],
-            scheduler=runner_config.get("scheduler", "euler"),
-        )
-    elif runner_type == "two_phase":
-        runner = TwoPhaseRunner(...)
-    ...
+    runner_config = raw["model"]["runner"]
+    runner = build_runner(runner_config)
 
-    # Load normalizer from io specs
-    preprocessors = raw["model"]["io"].get("preprocessors", [])
-    postprocessors = raw["model"]["io"].get("postprocessors", [])
+    # Load normalizer from manifest specs
+    preprocessors = raw["model"].get("preprocessors", [])
+    postprocessors = raw["model"].get("postprocessors", [])
     normalizer = Normalizer.from_specs(preprocessors + postprocessors, path)
 
-    # Load backend adapter (from named artifact role)
+    # Load backend adapter
     artifacts = raw["model"]["artifacts"]
     adapter = ONNXRuntimeAdapter(path / artifacts["model"])
 
     return ExportedPolicy(runner=runner, adapter=adapter, normalizer=normalizer)
 ```
 
-**Key point:** LeRobot's runners, normalizer, and adapters are its own implementations. They have zero overlap with PhysicalAI's implementations. The only shared artifact is the `manifest.json` file on disk.
+LeRobot's runners, normalizer, and adapters are its own implementations with zero overlap with PhysicalAI's. The only shared artifact is `manifest.json` on disk.
 
 ---
 
@@ -605,88 +391,33 @@ def load_exported_policy(path: str | Path) -> ExportedPolicy:
 | `num_inference_steps` | iterative, two_phase                  | Number of denoising steps               |
 | `scheduler`           | iterative, two_phase                  | Scheduler algorithm (euler, ddpm, ddim) |
 | `horizon`             | iterative                             | Planning horizon (Diffusion, TDMPC)     |
-| `use_mpc`             | iterative                             | Enable model-predictive control (TDMPC) |
-| `cem_iterations`      | iterative                             | CEM optimization iterations (TDMPC)     |
-
-> **Note:** Two-phase artifact paths (`encoder`, `denoise`) live in `model.artifacts`, not in the runner config. See [Runner Variants](#runner-variants) for examples.
 
 ---
 
 ## 6. Normalization Handling
 
-### Problem
-
-LeRobot policies operate on **normalized** inputs and produce **normalized** outputs. Normalization statistics are saved alongside the model in `stats.safetensors`. At inference time:
-
-1. **Observations must be normalized** before feeding to the model
-2. **Actions must be denormalized** after the model produces them
-
-### Solution: Preprocessor and Postprocessor Entries
-
-The manifest declares normalization as I/O transforms in `model.io.preprocessors` and `model.io.postprocessors`:
+LeRobot policies operate on **normalized** inputs and produce **normalized** outputs. The manifest declares normalization as transforms in `model.preprocessors` and `model.postprocessors`:
 
 ```json
-"io": {
-  "inputs": [...],
-  "outputs": [...],
-  "preprocessors": [
-    {
-      "type": "normalize",
-      "mode": "mean_std",
-      "artifact": "stats.safetensors",
-      "features": ["observation.state"]
-    }
-  ],
-  "postprocessors": [
-    {
-      "type": "denormalize",
-      "mode": "mean_std",
-      "artifact": "stats.safetensors",
-      "features": ["action"]
-    }
-  ]
-}
+"preprocessors": [
+  {
+    "type": "normalize",
+    "mode": "mean_std",
+    "artifact": "stats.safetensors",
+    "features": ["observation.state"]
+  }
+],
+"postprocessors": [
+  {
+    "type": "denormalize",
+    "mode": "mean_std",
+    "artifact": "stats.safetensors",
+    "features": ["action"]
+  }
+]
 ```
 
-### PhysicalAI Implementation
-
-Two pipeline components handle normalization:
-
-**`StatsNormalizer`** (preprocessor):
-
-```python
-class StatsNormalizer(Preprocessor):
-    """Normalize input features using saved statistics."""
-
-    def __init__(self, stats_path: Path, features: list[str], mode: str = "mean_std"):
-        self.stats = load_stats(stats_path)
-        self.features = features
-        self.mode = mode
-
-    def __call__(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-        for feature in self.features:
-            if feature in inputs:
-                inputs[feature] = self._normalize(inputs[feature], feature)
-        return inputs
-```
-
-**`StatsDenormalizer`** (postprocessor):
-
-```python
-class StatsDenormalizer(Postprocessor):
-    """Denormalize output features using saved statistics."""
-
-    def __init__(self, stats_path: Path, features: list[str], mode: str = "mean_std"):
-        self.stats = load_stats(stats_path)
-        self.features = features
-        self.mode = mode
-
-    def __call__(self, outputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-        for feature in self.features:
-            if feature in outputs:
-                outputs[feature] = self._denormalize(outputs[feature], feature)
-        return outputs
-```
+PhysicalAI resolves these to `StatsNormalizer` (preprocessor) and `StatsDenormalizer` (postprocessor), which load stats from `stats.safetensors` and apply per-feature transforms.
 
 ### Normalization Modes
 
@@ -696,9 +427,7 @@ class StatsDenormalizer(Postprocessor):
 | `min_max`  | `(x - min) / (max - min) * 2 - 1` | `(x + 1) / 2 * (max - min) + min` |
 | `identity` | passthrough                       | passthrough                       |
 
-### Stats File Format
-
-Normalization statistics are stored in `safetensors` format. Each feature has `{feature}/mean`, `{feature}/std`, `{feature}/min`, `{feature}/max` tensors as needed by the normalization mode.
+Statistics are stored in `safetensors` format with `{feature}/mean`, `{feature}/std`, `{feature}/min`, `{feature}/max` tensors.
 
 ---
 
@@ -712,7 +441,6 @@ from physicalai import InferenceModel
 # Load LeRobot-exported policy (detected automatically via manifest.json)
 model = InferenceModel("./act_exported")
 
-# Run inference
 observation = {
     "observation.image": image_array,      # float32, shape (1, 3, 96, 96)
     "observation.state": state_array,      # float32, shape (1, 14)
@@ -727,19 +455,13 @@ action = outputs["action"]  # float32, shape (1, 14)
 from physicalai import InferenceModel
 from physicalai.inference.callbacks import TimingCallback
 
-model = InferenceModel(
-    "./pi0_exported",
-    callbacks=[TimingCallback()],
-)
-
+model = InferenceModel("./pi0_exported", callbacks=[TimingCallback()])
 outputs = model(observation)
-# TimingCallback logs: "Inference: 12.3ms"
 ```
 
 ### Override Runner Parameters
 
 ```python
-# Override denoising steps at load time (no re-export needed)
 model = InferenceModel(
     "./diffusion_exported",
     num_steps=20,         # Override manifest default of 100
@@ -750,8 +472,6 @@ model = InferenceModel(
 ### Real-Time Control
 
 ```python
-from physicalai import InferenceModel
-
 policy = InferenceModel("./act_exported")
 policy.reset()
 
@@ -759,15 +479,12 @@ while not done:
     action = policy.select_action(observation)
     observation, reward, done, info = env.step(action)
 
-# Reset between episodes
 policy.reset()
 ```
 
 ---
 
 ## 8. Supported Policies
-
-All LeRobot policy types are supported through the converged runner system:
 
 | Policy    | `runner.type`   | Runner Stack                                 | Artifact Roles       |
 | --------- | --------------- | -------------------------------------------- | -------------------- |
@@ -780,188 +497,6 @@ All LeRobot policy types are supported through the converged runner system:
 
 ---
 
-## 9. Testing Strategy
-
-### Conformance Tests
-
-Verify that PhysicalAI correctly loads manifests produced by LeRobot:
-
-```python
-class TestConvergedManifestLoading:
-    """Verify PhysicalAI loads converged manifest format."""
-
-    def test_detect_policy_package(self, package_path):
-        """Detect exported package via format field."""
-        manifest = json.loads((package_path / "manifest.json").read_text())
-        assert manifest["format"] == "policy_package"
-
-    def test_load_action_chunking(self, act_package):
-        """Load ACT policy with action chunking runner."""
-        model = InferenceModel(act_package)
-        assert isinstance(model.runner, ActionChunkingRunner)
-
-    def test_load_iterative(self, diffusion_package):
-        """Load Diffusion policy with iterative runner."""
-        model = InferenceModel(diffusion_package)
-        assert isinstance(model.runner, IterativeRunner)
-
-    def test_load_two_phase(self, pi0_package):
-        """Load PI0 policy with two-phase runner."""
-        model = InferenceModel(pi0_package)
-        assert isinstance(model.runner, TwoPhaseRunner)
-
-    def test_preprocessors_created(self, act_package):
-        """Preprocessors auto-created from io.preprocessors."""
-        model = InferenceModel(act_package)
-        assert len(model.preprocessors) > 0
-        assert isinstance(model.preprocessors[0], StatsNormalizer)
-
-    def test_postprocessors_created(self, act_package):
-        """Postprocessors auto-created from io.postprocessors."""
-        model = InferenceModel(act_package)
-        assert len(model.postprocessors) > 0
-        assert isinstance(model.postprocessors[0], StatsDenormalizer)
-```
-
-### Parity Tests
-
-Verify PhysicalAI output matches LeRobot's standalone runtime:
-
-```python
-def test_parity_with_lerobot_runtime(pi0_package):
-    """Output matches LeRobot's own runtime (bit-for-bit with same seed)."""
-    # Load with PhysicalAI
-    pai_model = InferenceModel(pi0_package)
-
-    # Load with LeRobot standalone
-    from lerobot.export import load_exported_policy
-    lr_model = load_exported_policy(pi0_package)
-
-    # Compare outputs with same random seed
-    obs = generate_test_observation()
-    np.random.seed(42)
-    pai_output = pai_model(obs)
-    np.random.seed(42)
-    lr_output = lr_model.predict(obs)
-
-    np.testing.assert_allclose(pai_output["action"], lr_output["action"], rtol=1e-5)
-```
-
-### Backward Compatibility Tests
-
-Verify v1.0 (flat) manifests still load:
-
-```python
-def test_legacy_flat_manifest(legacy_package):
-    """v1.0 flat manifest loads without error."""
-    model = InferenceModel(legacy_package)
-    assert model.runner is not None
-    assert model.adapter is not None
-```
-
----
-
-## 10. Migration from Legacy Formats
-
-This is a **clean cut** to the nested manifest format. There is no `_normalize_metadata()` shim --- the nested Pydantic models are the only manifest representation. Two legacy scenarios are handled:
-
-### Legacy `metadata.yaml` (Pre-Manifest Era)
-
-Early PhysicalAI exports used a flat `metadata.yaml` file instead of `manifest.json`. The existing `from_legacy_metadata()` classmethod on `Manifest` handles this case:
-
-```python
-class Manifest(BaseModel):
-    @classmethod
-    def from_legacy_metadata(cls, metadata: dict) -> "Manifest":
-        """Convert old metadata.yaml fields to the nested Manifest structure.
-
-        This handles truly old exports that predate manifest.json entirely.
-        """
-        ...
-```
-
-This is the **only** backward compatibility code needed. It converts old YAML metadata to the new nested `Manifest` model once, at load time.
-
-### Migration Path
-
-| Step | Action | Breaking? | Target Version |
-| ---- | ------ | --------- | -------------- |
-| 1    | Implement nested `Manifest` Pydantic models (`manifest.py`) | No --- new code | v1.x (current) |
-| 2    | Update `mixin_policy.py` to write nested `manifest.json` | No --- new exports use new format | v1.x |
-| 3    | Update `model.py` and `factory.py` to use `Manifest` directly | No --- `from_legacy_metadata()` handles old YAML | v1.x |
-| 4    | Update LeRobot PR to write same nested format | No --- same schema | v1.x |
-| 5    | Add `manifest.schema.json` for CI validation in both repos | No --- additive | v1.x |
-
-> **Key point:** There is no flat-to-nested migration shim. All new manifests are nested from day one. Only pre-manifest `metadata.yaml` files need the legacy path, and that already exists.
-
-### Schema Enforcement
-
-To prevent schema drift between PhysicalAI and LeRobot, a shared `manifest.schema.json` (JSON Schema) is maintained and validated against in CI for both projects:
-
-```text
-manifest.schema.json          (shared, vendored into both repos)
-    |
-    +-- physicalai CI: validate exported manifests against schema
-    +-- lerobot CI: validate exported manifests against schema
-```
-
-This catches divergence at PR time rather than at runtime. The schema file is the single source of truth for manifest structure.
-
----
-
-## Appendix A: Design Rationale
-
-### Why One Format Instead of Two?
-
-The previous design (v1 plan) proposed two manifest formats: `lerobot_exported_policy` for LeRobot and `policy_package` for PhysicalAI, bridged by a `LeRobotManifestAdapter` class. This was rejected because:
-
-1. **Unnecessary complexity** --- An adapter class to translate between nearly-identical JSON schemas is pure overhead.
-2. **Divergence risk** --- Two formats inevitably drift apart over time, making the adapter increasingly complex.
-3. **Testing burden** --- Every feature needs testing against both formats.
-4. **User confusion** --- Which format should I use? Does it matter?
-
-The converged format eliminates all of these problems. One schema, two producers, zero translation.
-
-### Why `model` as a Container?
-
-The `model` section mirrors the `InferenceModel` class hierarchy:
-
-- `InferenceModel` composes runner, adapter, preprocessors, postprocessors
-- `model` contains runner, artifacts (for adapter), io (for pre/postprocessors)
-
-This follows the same pattern as training configs where the top-level sections (`model`, `data`, `trainer`) mirror the class hierarchy. It makes the manifest self-documenting: the JSON structure tells you the code structure.
-
-### Why Not `model: null` for Single-Pass?
-
-All policies need `n_obs_steps`, `artifacts`, and `io` regardless of runner type. Making `model` nullable would force these universal fields elsewhere (top-level or in `policy`), breaking the logical grouping. Instead, `model` is always present --- only the runner params differ between policy types.
-
-### Why Preprocessors Inside `io`?
-
-Preprocessors and postprocessors are I/O transforms --- they sit at the boundary between raw observations and model inputs. Placing them inside `io` (alongside `inputs` and `outputs`) makes this relationship explicit. The alternative (top-level `preprocessors`/`postprocessors`) separates logically related concepts.
-
-### Why `policy.source.class_path`?
-
-The `class_path` field enables PhysicalAI to instantiate the original policy class when the full PhysicalAI training framework is available. LeRobot ignores this field entirely. It is optional --- packages exported by LeRobot standalone may omit it or use a LeRobot-specific class path.
-
----
-
-## Appendix B: Comparison with Previous Design
-
-| Aspect             | Previous Design (v1)                               | Current Design (converged)                     |
-| ------------------ | -------------------------------------------------- | ---------------------------------------------- |
-| Manifest formats   | Two (`lerobot_exported_policy` + `policy_package`) | One (`policy_package`)                         |
-| Format adapter     | `LeRobotManifestAdapter` class (~100 lines)        | None --- direct Pydantic parsing               |
-| Format detection   | `if format == "lerobot_exported_policy"` branching | Not needed --- single format                   |
-| Schema maintenance | Two schemas to keep in sync                        | One shared `manifest.schema.json`              |
-| Test matrix        | 2x (each feature tested against both formats)      | 1x                                             |
-| Normalization      | Adapter auto-generates ComponentSpecs              | Manifest declares pre/postprocessors directly  |
-| Runner resolution  | `policy.kind` + separate `inference` block         | Dual-path: `class_path` OR `type` → registry → `instantiate_component()` |
-| Action params      | Separate `action` section                          | Params in `model.runner`                   |
-| Backward compat    | Format detection + adapter routing                 | `from_legacy_metadata()` for pre-manifest YAML only |
-| Component formats  | `class_path` + `init_args` only                    | Both `type` + flat params (interop) and `class_path` + `init_args` (full-power) |
-
----
-
 ## Related Documents
 
 - **[Inference Core Design](../components/inferencekit.md)** --- Domain-agnostic inference layer
@@ -970,5 +505,5 @@ The `class_path` field enables PhysicalAI to instantiate the original policy cla
 
 ---
 
-_Document version: 5.1_
+_Document version: 6.0_
 _Last updated: 2026-03-31_

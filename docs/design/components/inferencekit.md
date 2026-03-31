@@ -26,35 +26,14 @@
     - [Preprocessors and Postprocessors](#preprocessors-and-postprocessors)
     - [Manifest Format](#manifest-format)
   - [Extension \& Plugin System](#extension--plugin-system)
-    - [Backend Registry](#backend-registry)
-    - [Building a Custom Domain Layer](#building-a-custom-domain-layer)
-    - [Publishing to HuggingFace](#publishing-to-huggingface)
   - [Runners (Domain-Provided)](#runners-domain-provided)
-    - [Contrib Runners](#contrib-runners)
   - [Supported Backends](#supported-backends)
-  - [Domain Layer Examples](#domain-layer-examples)
-    - [Example 1: Vision (model_api)](#example-1-vision-model_api)
-    - [Example 2: Physical‑AI Plugins](#example-2-physicalai-plugins)
-    - [Example 3: Custom Domain](#example-3-custom-domain)
+  - [Domain Layer Example](#domain-layer-example)
   - [Usage Examples](#usage-examples)
     - [Basic usage](#basic-usage)
     - [With explicit backend](#with-explicit-backend)
     - [With callbacks](#with-callbacks)
     - [Context manager for resource cleanup](#context-manager-for-resource-cleanup)
-  - [API Reference](#api-reference)
-    - [Main Entry Point](#main-entry-point)
-    - [Runners](#runners)
-    - [Adapters](#adapters)
-    - [Callbacks](#callbacks)
-    - [Plugins](#plugins)
-    - [Extension Points](#extension-points)
-  - [Appendix: Design Rationale](#appendix-design-rationale)
-    - [Why a separate inference package?](#why-a-separate-inference-package)
-    - [Why inferencekit is a base layer, not a model_api replacement](#why-inferencekit-is-a-base-layer-not-a-model_api-replacement)
-    - [Migration path for model_api](#migration-path-for-model_api)
-    - [Why runners are separate from adapters?](#why-runners-are-separate-from-adapters)
-    - [Why callbacks instead of inheritance?](#why-callbacks-instead-of-inheritance)
-    - [Why a plugin system?](#why-a-plugin-system)
   - [Related Documents](#related-documents)
 
 ---
@@ -450,7 +429,8 @@ manifest.json
 │   ├── n_obs_steps         (observation window)
 │   ├── runner              (execution pattern + params)
 │   ├── artifacts           (model files by named role)
-│   └── io                  (shapes, preprocessors, postprocessors)
+│   ├── preprocessors       (input transforms: normalize, etc.)
+│   └── postprocessors      (output transforms: denormalize, etc.)
 ├── hardware                (deployment — what hardware?)
 │   ├── robots              (robot configurations)
 │   └── cameras             (camera configurations)
@@ -478,31 +458,22 @@ manifest.json
     "artifacts": {
       "model": "model.onnx"
     },
-    "io": {
-      "inputs": [
-        {"name": "observation.image", "dtype": "float32", "shape": ["B", 3, 96, 96]},
-        {"name": "observation.state", "dtype": "float32", "shape": ["B", 14]}
-      ],
-      "outputs": [
-        {"name": "action", "dtype": "float32", "shape": ["B", 100, 14]}
-      ],
-      "preprocessors": [
-        {
-          "type": "normalize",
-          "mode": "mean_std",
-          "artifact": "stats.safetensors",
-          "features": ["observation.state"]
-        }
-      ],
-      "postprocessors": [
-        {
-          "type": "denormalize",
-          "mode": "mean_std",
-          "artifact": "stats.safetensors",
-          "features": ["action"]
-        }
-      ]
-    }
+    "preprocessors": [
+      {
+        "type": "normalize",
+        "mode": "mean_std",
+        "artifact": "stats.safetensors",
+        "features": ["observation.state"]
+      }
+    ],
+    "postprocessors": [
+      {
+        "type": "denormalize",
+        "mode": "mean_std",
+        "artifact": "stats.safetensors",
+        "features": ["action"]
+      }
+    ]
   },
   "hardware": {
     "robots": [],
@@ -544,35 +515,26 @@ PhysicalAI can also write manifests using the full `class_path` + `init_args` fo
     "artifacts": {
       "model": "model.onnx"
     },
-    "io": {
-      "inputs": [
-        {"name": "observation.image", "dtype": "float32", "shape": ["B", 3, 96, 96]},
-        {"name": "observation.state", "dtype": "float32", "shape": ["B", 14]}
-      ],
-      "outputs": [
-        {"name": "action", "dtype": "float32", "shape": ["B", 100, 14]}
-      ],
-      "preprocessors": [
-        {
-          "class_path": "physicalai.inference.preprocessors.StatsNormalizer",
-          "init_args": {
-            "mode": "mean_std",
-            "stats_path": "stats.safetensors",
-            "features": ["observation.state"]
-          }
+    "preprocessors": [
+      {
+        "class_path": "physicalai.inference.preprocessors.StatsNormalizer",
+        "init_args": {
+          "mode": "mean_std",
+          "stats_path": "stats.safetensors",
+          "features": ["observation.state"]
         }
-      ],
-      "postprocessors": [
-        {
-          "class_path": "physicalai.inference.postprocessors.StatsDenormalizer",
-          "init_args": {
-            "mode": "mean_std",
-            "stats_path": "stats.safetensors",
-            "features": ["action"]
-          }
+      }
+    ],
+    "postprocessors": [
+      {
+        "class_path": "physicalai.inference.postprocessors.StatsDenormalizer",
+        "init_args": {
+          "mode": "mean_std",
+          "stats_path": "stats.safetensors",
+          "features": ["action"]
         }
-      ]
-    }
+      }
+    ]
   },
   "hardware": {
     "robots": [],
@@ -596,7 +558,7 @@ The framework reads `manifest.json` and resolves the model configuration using *
    - **`type` + flat params** (interoperable, written by LeRobot): `{"type": "action_chunking", "chunk_size": 100}` → registry lookup → `ComponentSpec` → `instantiate_component()`
    - **`class_path` + `init_args`** (full-power, written by PhysicalAI): `{"class_path": "physicalai.inference.runners.ActionChunkingRunner", "init_args": {"chunk_size": 100}}` → `ComponentSpec` → `instantiate_component()`
 3. **Backend selection**: `model.artifacts` maps named roles (e.g., `"model"`, `"encoder"`) to filenames. The first available backend is auto-selected, or the user can override at load time.
-4. **I/O pipeline**: `model.io.preprocessors` and `model.io.postprocessors` declare input/output transforms (normalization, denormalization) resolved via the same dual-path mechanism.
+4. **I/O pipeline**: `model.preprocessors` and `model.postprocessors` declare input/output transforms (normalization, denormalization) resolved via the same dual-path mechanism.
 5. **Hardware validation**: `hardware.robots` and `hardware.cameras` sections declare expected shapes. The runtime can validate observations against these.
 6. **Custom components**: Domain layers can extend the manifest with custom processor types or runner parameters without modifying inferencekit. Any component with a `class_path` is instantiated directly; any component with a `type` goes through the registry.
 
@@ -606,132 +568,33 @@ The framework reads `manifest.json` and resolves the model configuration using *
 
 ## Extension & Plugin System
 
-inferencekit only supports **backend adapters** as extensions. All domain plugins live above it (physical‑ai‑framework, model_api, custom layers).
+inferencekit supports **backend adapters** as extensions via a registry. Domain-specific plugins (runners, processors, models) live in their respective domain layers, not in inferencekit.
 
-### Backend Registry
+**Backend registry:** New backends implement `RuntimeAdapter` and register via Python entry points (`inferencekit.backends`). Domain layers register runners and processors via their own entry points (`inferencekit.runners`, `inferencekit.callbacks`).
 
-inferencekit exposes a backend registry for RuntimeAdapters. Domain plugins are not registered here.
-
-### Building a Custom Domain Layer
-
-Anyone can create a domain-specific inference layer on top of inferencekit. Here's the pattern:
-
-**Step 1: Define your domain model**
+**Building a custom domain layer:** Subclass `InferenceModel`, implement domain-specific runners and pre/postprocessors, and register via entry points:
 
 ```python
-# my_domain_inference/model.py
-from inferencekit import InferenceModel
-
+# my_domain/model.py — subclass InferenceModel
 class MyDomainModel(InferenceModel):
-    """Domain-specific inference model.
-
-    Extends InferenceModel with domain-specific methods,
-    preprocessing, and postprocessing.
-    """
-
     def __init__(self, path, **kwargs):
         super().__init__(path, **kwargs)
-        # Attach domain preprocessors/postprocessors
-        self.preprocessors = self._load_preprocessors(path)
-        self.postprocessors = self._load_postprocessors(path)
+        self.preprocessors = [MyPreprocessor()]
 
     def domain_predict(self, domain_inputs):
-        """Domain-specific prediction method."""
-        # Preprocess domain inputs -> generic inputs
         inputs = self._preprocess(domain_inputs)
-        # Run generic inference
-        outputs = self(inputs)
-        # Postprocess generic outputs -> domain outputs
-        return self._postprocess(outputs)
+        return self(inputs)
 ```
-
-**Step 2: Define domain-specific runners (if needed)**
-
-```python
-# my_domain_inference/runners.py
-from inferencekit.runners import InferenceRunner
-
-class MyDomainRunner(InferenceRunner):
-    """Runner for domain-specific inference patterns."""
-
-    def run(self, adapter, inputs):
-        # Implement domain-specific execution logic
-        ...
-```
-
-**Step 3: Register via entry points**
 
 ```toml
-# my_domain_inference/pyproject.toml
+# pyproject.toml — register custom runners
 [project.entry-points."inferencekit.runners"]
-my_domain_runner = "my_domain_inference.runners:MyDomainRunner"
+my_runner = "my_domain.runners:MyDomainRunner"
 ```
 
-**Step 4: Package and distribute**
-
-```bash
-# Publish to PyPI
-pip install my-domain-inference
-
-# Or publish to HuggingFace (see below)
-```
-
-### Publishing to HuggingFace
-
-Domain layers can publish model packages to HuggingFace that include:
-
-1. **Exported model artifacts** (ONNX, OpenVINO, etc.)
-2. **Manifest** (`manifest.json`) specifying the inferencekit runner, preprocessors, etc.
-3. **Domain package dependency** declared in the manifest
-
-```json
-{
-  "format": "policy_package",
-  "version": "1.0",
-  "policy": {
-    "name": "my_model",
-    "source": {
-      "class_path": "my_domain_inference.models.MyModel"
-    }
-  },
-  "model": {
-    "n_obs_steps": 1,
-    "runner": {
-      "type": "action_chunking",
-      "chunk_size": 1,
-      "n_action_steps": 1
-    },
-    "artifacts": {
-      "model": "model.onnx"
-    },
-    "io": {
-      "inputs": [
-        {"name": "input", "dtype": "float32", "shape": ["B", 3, 640, 640]}
-      ],
-      "outputs": [
-        {"name": "output", "dtype": "float32", "shape": ["B", 100, 6]}
-      ],
-      "preprocessors": [],
-      "postprocessors": []
-    }
-  },
-  "hardware": {
-    "robots": [],
-    "cameras": []
-  },
-  "metadata": {
-    "created_at": "2026-03-27T12:00:00Z",
-    "created_by": "my-domain-inference"
-  }
-}
-```
-
-**Loading from HuggingFace:**
+**HuggingFace publishing:** Domain layers can publish model packages to HuggingFace containing exported artifacts + `manifest.json`. Loading is automatic:
 
 ```python
-from inferencekit import InferenceModel
-
-# Auto-downloads model + resolves domain package
 model = InferenceModel("hf://username/my-model")
 outputs = model(inputs)
 ```
@@ -740,7 +603,13 @@ outputs = model(inputs)
 
 ## Runners (Domain-Provided)
 
-inferencekit defines the `InferenceRunner` interface. Domain layers implement concrete runners.
+inferencekit defines the `InferenceRunner` interface. Domain layers implement concrete runners:
+
+| Runner | Description | Stateful |
+| --- | --- | --- |
+| **SinglePassRunner** | Default. One forward pass per call. Covers 90% of use cases. | No |
+| **BatchRunner** | Splits inputs into batches for throughput optimization. | No |
+| **StreamingRunner** | Buffers inputs for real-time streaming applications. | Yes |
 
 ```python
 class SinglePassRunner(InferenceRunner):
@@ -748,96 +617,16 @@ class SinglePassRunner(InferenceRunner):
 
     def run(self, adapter: RuntimeAdapter, inputs: dict) -> dict:
         return adapter.predict(inputs)
-
-    def reset(self) -> None:
-        pass  # No state
-
-
-class BatchRunner(InferenceRunner):
-    """Batched inference for throughput optimization."""
-
-    def __init__(self, batch_size: int = 8):
-        self.batch_size = batch_size
-
-    def run(self, adapter: RuntimeAdapter, inputs: dict) -> dict:
-        # Split inputs into batches, run, merge results
-        ...
-
-
-class StreamingRunner(InferenceRunner):
-    """Streaming inference for real-time applications."""
-
-    def __init__(self, buffer_size: int = 1):
-        self.buffer_size = buffer_size
-
-    def run(self, adapter: RuntimeAdapter, inputs: dict) -> dict:
-        # Process streaming inputs with buffering
-        ...
 ```
 
-### Contrib Runners
+**Contrib runners** (`inferencekit.contrib`): Reference implementations for common patterns, shipped as optional extras:
 
-If desired, inferencekit can host a small `contrib` module for reference implementations, but it does not own domain logic.
+| Runner | Description | Use Case |
+| --- | --- | --- |
+| **IterativeRunner** | Multi-step denoising with configurable scheduler | Diffusion, flow-matching policies |
+| **TiledRunner** | Tile-based inference with overlap and merging | High-resolution images, satellite imagery |
 
-```python
-# inferencekit/contrib/iterative.py
-class IterativeRunner(InferenceRunner):
-    """Runner for iterative/flow-matching inference.
-
-    Performs multiple forward passes with denoising steps.
-    Used by diffusion models, flow-matching policies, etc.
-    """
-
-    def __init__(
-        self,
-        num_steps: int = 10,
-        scheduler: str = "euler",
-        timestep_spacing: str = "linear",
-    ):
-        self.num_steps = num_steps
-        self.scheduler = scheduler
-        self.timestep_spacing = timestep_spacing
-
-    def run(self, adapter: RuntimeAdapter, inputs: dict) -> dict:
-        x_t = np.random.randn(*self._infer_shape(inputs)).astype(np.float32)
-        timesteps = self._generate_timesteps()
-        dt = -1.0 / self.num_steps
-
-        for t in timesteps:
-            step_inputs = {**inputs, "x_t": x_t, "timestep": np.array([t])}
-            v_t = adapter.predict(step_inputs)["v_t"]
-            x_t = self._step(x_t, v_t, dt)
-
-        return {"output": x_t}
-```
-
-```python
-# inferencekit/contrib/tiled.py
-class TiledRunner(InferenceRunner):
-    """Runner for tile-based inference on large inputs.
-
-    Splits large inputs into overlapping tiles, runs inference
-    on each tile, and merges results. Useful for high-resolution
-    images, satellite imagery, medical imaging, etc.
-    """
-
-    def __init__(
-        self,
-        tile_size: tuple[int, int] = (640, 640),
-        overlap: float = 0.25,
-        merge_strategy: str = "average",
-    ):
-        self.tile_size = tile_size
-        self.overlap = overlap
-        self.merge_strategy = merge_strategy
-
-    def run(self, adapter: RuntimeAdapter, inputs: dict) -> dict:
-        tiles = self._split_into_tiles(inputs)
-        tile_results = [adapter.predict(tile) for tile in tiles]
-        return self._merge_results(tile_results)
-```
-
-Domain layers can also contribute runners back to `inferencekit.contrib` via pull request, or ship them in their own packages.
+Domain layers can contribute runners back to `inferencekit.contrib` via pull request, or ship them in their own packages.
 
 ---
 
@@ -854,103 +643,15 @@ Third-party backends can be added via the backend registry without modifying inf
 
 ---
 
-## Domain Layer Examples
+## Domain Layer Example
 
-These examples show how domain-specific libraries build on inferencekit's interfaces. Each example demonstrates the pattern; full implementations live in their respective packages.
-
-### Example 1: Vision (model_api)
-
-[model_api](https://github.com/open-edge-platform/model_api) provides vision-specific inference on top of inferencekit. It adds image preprocessing, task-specific model wrappers, and structured result types.
+This example shows how physicalai builds on inferencekit's interfaces. Policy-specific behavior (`select_action`, episode reset) is implemented in physical‑ai‑framework's `InferenceModel` wrapper:
 
 ```python
-# model_api wrapping inferencekit for vision inference
-from inferencekit import InferenceModel
-from inferencekit.runners import InferenceRunner, SinglePassRunner
-from inferencekit.preprocessors import Preprocessor
-from inferencekit.postprocessors import Postprocessor
-
-
-# Vision-specific preprocessor
-class ImagePreprocessor(Preprocessor):
-    """Resize, normalize, and layout-transform images."""
-
-    def __init__(self, target_size, mean, std, layout="NCHW"):
-        self.target_size = target_size
-        self.mean = np.array(mean)
-        self.std = np.array(std)
-        self.layout = layout
-
-    def __call__(self, inputs: dict) -> dict:
-        image = inputs["image"]
-        image = cv2.resize(image, self.target_size)
-        image = (image.astype(np.float32) / 255.0 - self.mean) / self.std
-        if self.layout == "NCHW":
-            image = image.transpose(2, 0, 1)
-        inputs["image"] = image[np.newaxis, ...]
-        return inputs
-
-
-# Vision-specific postprocessor (e.g., NMS for detection)
-class DetectionPostprocessor(Postprocessor):
-    """Decode detection outputs and apply NMS."""
-
-    def __init__(self, confidence_threshold=0.5, nms_threshold=0.45):
-        self.confidence_threshold = confidence_threshold
-        self.nms_threshold = nms_threshold
-
-    def __call__(self, outputs: dict) -> dict:
-        boxes, scores, labels = self._decode(outputs)
-        keep = self._nms(boxes, scores)
-        return {
-            "boxes": boxes[keep],
-            "scores": scores[keep],
-            "labels": labels[keep],
-        }
-
-
-# Vision model built on top of InferenceModel
-class DetectionModel(InferenceModel):
-    """YOLO/SSD/etc. detection model."""
-
-    def __init__(self, path, confidence=0.5, **kwargs):
-        super().__init__(path, **kwargs)
-        self.preprocessors = [
-            ImagePreprocessor(
-                target_size=(640, 640),
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225],
-            )
-        ]
-        self.postprocessors = [
-            DetectionPostprocessor(confidence_threshold=confidence)
-        ]
-
-    def detect(self, image: np.ndarray) -> dict:
-        """Convenience method for vision users."""
-        return self({"image": image})
-```
-
-**Usage:**
-
-```python
-from model_api import DetectionModel
-
-model = DetectionModel("./exports/yolo_v8", backend="openvino")
-detections = model.detect(image)
-print(detections["boxes"], detections["scores"])
-```
-
-### Example 2: Physical‑AI Plugins
-
-physicalai hosts policy plugins for physicalai-train, LeRobot, and custom frameworks. Each plugin supplies preprocessors, runners, and optional wrappers.
-
-```python
-# physical‑ai‑framework plugin example (policy-specific)
 from inferencekit import InferenceModel
 from inferencekit.runners import InferenceRunner
 
 
-# Policy-specific runner with action chunking
 class ActionChunkingRunner(InferenceRunner):
     """Runner that manages action chunk queues.
 
@@ -974,65 +675,9 @@ class ActionChunkingRunner(InferenceRunner):
 
     def reset(self):
         self._action_queue = []
-
-
 ```
 
-Policy‑specific behavior (e.g., `select_action`, episode reset) is implemented in physical‑ai‑framework’s `InferenceModel` wrapper, which subclasses inferencekit’s base `InferenceModel`.
-
-### Example 3: Custom Domain
-
-Anyone can build a domain layer. Here's a minimal example for audio inference:
-
-```python
-# audio_inference/model.py
-from inferencekit import InferenceModel
-from inferencekit.preprocessors import Preprocessor
-
-
-class AudioPreprocessor(Preprocessor):
-    """Convert audio to mel spectrogram."""
-
-    def __init__(self, sample_rate=16000, n_mels=80):
-        self.sample_rate = sample_rate
-        self.n_mels = n_mels
-
-    def __call__(self, inputs):
-        audio = inputs["audio"]
-        mel = librosa.feature.melspectrogram(
-            y=audio, sr=self.sample_rate, n_mels=self.n_mels
-        )
-        inputs["mel_spectrogram"] = mel
-        return inputs
-
-
-class AudioClassificationModel(InferenceModel):
-    """Audio classification on top of inferencekit."""
-
-    def __init__(self, path, **kwargs):
-        super().__init__(path, **kwargs)
-        self.preprocessors = [AudioPreprocessor()]
-
-    def classify(self, audio: np.ndarray) -> dict:
-        return self({"audio": audio})
-```
-
-**Package and publish:**
-
-```toml
-# audio_inference/pyproject.toml
-[project]
-name = "audio-inference-kit"
-dependencies = ["inferencekit", "librosa"]
-
-[project.entry-points."inferencekit.runners"]
-audio_streaming = "audio_inference.runners:AudioStreamingRunner"
-```
-
-```bash
-pip install audio-inference-kit
-# or publish to HuggingFace with model artifacts + metadata
-```
+Other domain layers (model_api for vision, custom audio/NLP packages) follow the same pattern: subclass `InferenceModel`, implement domain runners and pre/postprocessors, register via entry points.
 
 ---
 
@@ -1085,136 +730,6 @@ with InferenceModel("./exports/my_model") as model:
 
 ---
 
-## API Reference
-
-### Main Entry Point
-
-```python
-from inferencekit import InferenceModel
-
-model = InferenceModel("./exports/my_model")
-outputs = model(inputs)
-```
-
-### Runners
-
-```python
-from inferencekit.runners import (
-    InferenceRunner,      # ABC - subclass for custom runners
-    SinglePassRunner,     # Default - covers 90% of models
-    BatchRunner,          # Throughput-optimized batching
-    StreamingRunner,      # Real-time streaming
-)
-
-# Contrib runners (install with inferencekit[contrib])
-from inferencekit.contrib import (
-    IterativeRunner,      # Multi-step denoising / flow matching
-    TiledRunner,          # Tile-based for large inputs
-)
-```
-
-### Adapters
-
-```python
-from inferencekit.adapters import (
-    RuntimeAdapter,       # ABC
-    OpenVINOAdapter,      # Intel devices
-    ONNXAdapter,          # Cross-platform
-    TorchExportAdapter,   # PyTorch
-    get_adapter,          # Factory function
-)
-```
-
-### Callbacks
-
-```python
-from inferencekit.callbacks import (
-    Callback,             # ABC
-    TimingCallback,       # Performance profiling
-    LoggingCallback,      # Prediction logging
-)
-```
-
-### Plugins
-
-```python
-from inferencekit.plugins import registry
-
-# List available backends
-print(registry.backends.list())
-
-# Register custom backend
-registry.backends.register("my_backend", MyBackend)
-
-# Get a backend by name
-adapter = registry.backends.get("onnx", device="cuda")
-```
-
-### Extension Points
-
-| Extension        | How to Extend               | Registration                          |
-| ---------------- | --------------------------- | ------------------------------------- |
-| New backend      | Implement `RuntimeAdapter`  | Entry point: `inferencekit.backends`  |
-| New runner       | Implement `InferenceRunner` | Entry point: `inferencekit.runners`   |
-| New model format | Implement format plugin     | Entry point: `inferencekit.formats`   |
-| New callback     | Subclass `Callback`         | Entry point: `inferencekit.callbacks` |
-| Preprocessing    | Implement `Preprocessor`    | Via metadata `class_path`             |
-| Postprocessing   | Implement `Postprocessor`   | Via metadata `class_path`             |
-
----
-
-## Appendix: Design Rationale
-
-### Why a separate inference package?
-
-1. **Reusability**: Same core across vision (model_api), robotics (physicalai-train), audio, NLP, and custom domains
-2. **Clear boundaries**: Generic concerns (backends, metadata, plugins) separated from domain concerns (images, robots, audio)
-3. **Easier testing**: Domain-agnostic package has fewer dependencies
-4. **Ecosystem growth**: Anyone can build and publish domain layers without modifying inferencekit
-
-### Why inferencekit is a base layer, not a model_api replacement
-
-model_api provides rich vision-specific functionality: image preprocessing embedded in model graphs, task-specific wrappers (YOLO, SSD, SAM), result types, parameter validation, and tiling. These are vision concerns that don't belong in a generic inference framework.
-
-Instead of replacing model_api, inferencekit provides the **foundation** that model_api can build on:
-
-| Concern           | inferencekit provides                  | model_api adds                           |
-| ----------------- | -------------------------------------- | ---------------------------------------- |
-| Backend execution | RuntimeAdapter (OV, ONNX, TRT)         | Wraps RuntimeAdapter in InferenceAdapter |
-| Model loading     | Manifest-driven `InferenceModel(path)` | Vision-specific `Model.create_model()`   |
-| Preprocessing     | Preprocessor ABC                       | ImageResize, Normalize, LayoutTransform  |
-| Postprocessing    | Postprocessor ABC                      | NMS, BoxDecoder, MaskDecoder             |
-| Runners           | SinglePassRunner, BatchRunner          | TiledRunner (via contrib or own impl)    |
-| Result types      | `dict[str, Any]`                       | DetectionResult, ClassificationResult    |
-
-### Migration path for model_api
-
-1. **Phase 1 (compatibility)**: model_api wraps inferencekit's RuntimeAdapter inside its existing InferenceAdapter. No public API change.
-2. **Phase 2 (adoption)**: model_api adopts RuntimeAdapter directly, deprecates its own adapter layer.
-3. **Phase 3 (simplification)**: model_api becomes a pure domain layer on top of inferencekit.
-
-### Why runners are separate from adapters?
-
-- **Adapters** handle backend-specific execution (ONNX vs OpenVINO)
-- **Runners** handle algorithm-specific patterns (single-pass vs iterative)
-- This separation allows N backends × M inference patterns without N×M implementations
-
-### Why callbacks instead of inheritance?
-
-- **Composability**: Mix and match (timing + logging + safety)
-- **Reusability**: Same callback works across all models and domains
-- **Maintainability**: Add cross-cutting concerns without changing core code
-- **Familiarity**: Lightning users already understand this pattern
-
-### Why a plugin system?
-
-- **Ecosystem growth**: Third parties can extend without forking
-- **Clean dependencies**: inferencekit doesn't depend on domain packages
-- **Discoverability**: Entry points make extensions automatically available
-- **Publishability**: Domain layers can be packaged and shared independently
-
----
-
 ## Related Documents
 
 - **[Strategy](../architecture/strategy.md)** — Big-picture architecture and layering decisions
@@ -1223,5 +738,5 @@ Instead of replacing model_api, inferencekit provides the **foundation** that mo
 
 ---
 
-_Document Version: 5.1_
+_Document Version: 6.0_
 _Last Updated: 2026-03-31_
