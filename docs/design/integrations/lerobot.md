@@ -169,8 +169,26 @@ manifest.json
     ]
   },
   "hardware": {
-    "robots": [],
-    "cameras": []
+    "robots": [
+      {
+        "name": "main",
+        "type": "SO-100",
+        "state": {
+          "shape": [6],
+          "dtype": "float32",
+          "order": ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
+        },
+        "action": {
+          "shape": [6],
+          "dtype": "float32",
+          "order": ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
+        }
+      }
+    ],
+    "cameras": [
+      {"name": "top", "shape": [3, 480, 640], "dtype": "uint8"},
+      {"name": "wrist", "shape": [3, 480, 640], "dtype": "uint8"}
+    ]
   },
   "metadata": {
     "created_at": "2026-03-27T12:00:00Z",
@@ -254,10 +272,19 @@ The `model.runner` section is open-ended --- policy-specific parameters go direc
 
 #### `hardware` --- Deployment
 
-| Field              | Type  | Required | Description                      |
-| ------------------ | ----- | -------- | -------------------------------- |
-| `hardware.robots`  | array | No       | Robot configurations (optional)  |
-| `hardware.cameras` | array | No       | Camera configurations (optional) |
+| Field                           | Type   | Required | Description                                                        |
+| ------------------------------- | ------ | -------- | ------------------------------------------------------------------ |
+| `hardware.robots`               | array  | No       | Robot configurations                                               |
+| `hardware.robots[].name`        | string | Yes      | Logical name (e.g., `"main"`, `"left_arm"`)                        |
+| `hardware.robots[].type`        | string | No       | Robot model string (informational, e.g., `"SO-100"`)               |
+| `hardware.robots[].state`       | object | No       | Expected state tensor: `shape`, `dtype`, `order` (joint ordering)  |
+| `hardware.robots[].action`      | object | No       | Expected action tensor: `shape`, `dtype`, `order` (joint ordering) |
+| `hardware.cameras`              | array  | No       | Camera configurations                                              |
+| `hardware.cameras[].name`       | string | Yes      | Logical name matching training data keys (e.g., `"top"`, `"wrist"`) |
+| `hardware.cameras[].shape`      | array  | No       | `[C, H, W]` tensor shape (e.g., `[3, 480, 640]`)                  |
+| `hardware.cameras[].dtype`      | string | No       | Numpy dtype string (default: `"uint8"`)                            |
+
+The `order` field in robot specs declares joint ordering. This is critical for multi-arm setups where `[left, right]` vs `[right, left]` concatenation produces valid shapes with wrong semantics. When present, the runtime can compare declared order against the robot's actual joint order and catch mismatches at startup. Camera and robot `name` fields are **logical names** matching the keys used during training — at deployment, the user maps these to physical devices.
 
 #### `metadata` --- Provenance
 

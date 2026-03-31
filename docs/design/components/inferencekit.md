@@ -476,8 +476,26 @@ manifest.json
     ]
   },
   "hardware": {
-    "robots": [],
-    "cameras": []
+    "robots": [
+      {
+        "name": "main",
+        "type": "SO-100",
+        "state": {
+          "shape": [6],
+          "dtype": "float32",
+          "order": ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
+        },
+        "action": {
+          "shape": [6],
+          "dtype": "float32",
+          "order": ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
+        }
+      }
+    ],
+    "cameras": [
+      {"name": "top", "shape": [3, 480, 640], "dtype": "uint8"},
+      {"name": "wrist", "shape": [3, 480, 640], "dtype": "uint8"}
+    ]
   },
   "metadata": {
     "created_at": "2026-03-27T12:00:00Z",
@@ -485,6 +503,8 @@ manifest.json
   }
 }
 ```
+
+The `hardware` section declares what the policy **expects** at inference time — logical names, tensor shapes, and dtypes. These are the names used during training (e.g., `"top"`, `"wrist"` for cameras; `"main"` for the robot). At deployment, the user maps logical names to physical devices (e.g., `"top"` → `/dev/video0`). The `order` field in robot specs declares joint ordering — critical for multi-arm setups where `[left, right]` vs `[right, left]` concatenation produces valid shapes with wrong semantics.
 
 > **Note:** For the full manifest schema reference (all runner variants, field descriptions, and design rationale), see [LeRobot Integration Design](../integrations/lerobot.md#2-converged-manifest-format). The format is shared by both PhysicalAI and LeRobot exports.
 
@@ -537,8 +557,26 @@ PhysicalAI can also write manifests using the full `class_path` + `init_args` fo
     ]
   },
   "hardware": {
-    "robots": [],
-    "cameras": []
+    "robots": [
+      {
+        "name": "main",
+        "type": "SO-100",
+        "state": {
+          "shape": [6],
+          "dtype": "float32",
+          "order": ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
+        },
+        "action": {
+          "shape": [6],
+          "dtype": "float32",
+          "order": ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
+        }
+      }
+    ],
+    "cameras": [
+      {"name": "top", "shape": [3, 480, 640], "dtype": "uint8"},
+      {"name": "wrist", "shape": [3, 480, 640], "dtype": "uint8"}
+    ]
   },
   "metadata": {
     "created_at": "2026-03-27T12:00:00Z",
@@ -548,6 +586,30 @@ PhysicalAI can also write manifests using the full `class_path` + `init_args` fo
 ```
 
 > **Both formats resolve identically.** The `type`-based example above (used by LeRobot) and this `class_path`-based example both resolve to the same runner and processor instances through the `ComponentRegistry`. See [Dual Component Resolution](../integrations/lerobot.md#dual-component-resolution) for the full resolution algorithm.
+
+**Naming mapping between the two formats:**
+
+| `type` (short name) | `class_path` (full Python path) | Purpose |
+| --- | --- | --- |
+| `"action_chunking"` | `"physicalai.inference.runners.ActionChunkingRunner"` | Runner: returns a chunk of future actions per step |
+| `"single_pass"` | `"physicalai.inference.runners.SinglePassRunner"` | Runner: single forward pass per step |
+| `"normalize"` | `"physicalai.inference.preprocessors.StatsNormalizer"` | Preprocessor: normalizes observations using dataset stats |
+| `"denormalize"` | `"physicalai.inference.postprocessors.StatsDenormalizer"` | Postprocessor: denormalizes actions using dataset stats |
+
+- **`type` + flat params**: LeRobot writes this. Both frameworks can read it. Short name resolved via `ComponentRegistry`.
+- **`class_path` + `init_args`**: PhysicalAI writes this. Direct Python import — no registry lookup needed. Useful for custom/third-party components that aren't in the built-in registry.
+
+For example, these two `ComponentSpec`s resolve to the exact same object:
+
+```json
+// type format (LeRobot-compatible):
+{"type": "action_chunking", "chunk_size": 100, "n_action_steps": 100}
+
+// class_path format (PhysicalAI-native):
+{"class_path": "physicalai.inference.runners.ActionChunkingRunner", "init_args": {"chunk_size": 100, "n_action_steps": 100}}
+
+// Both → ActionChunkingRunner(chunk_size=100, n_action_steps=100)
+```
 
 **How models are loaded:**
 
