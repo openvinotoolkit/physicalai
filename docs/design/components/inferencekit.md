@@ -438,7 +438,7 @@ class Postprocessor(ABC):
 
 ### Manifest Format
 
-All exported models use a unified `manifest.json` format. The manifest uses a nested structure that mirrors the `InferenceModel` class hierarchy, with logical sections for policy identity, inference configuration, hardware, and metadata:
+All exported models use a unified `manifest.json` format. The manifest uses a nested structure that mirrors the `InferenceModel` class hierarchy, with logical sections for policy identity, model configuration, hardware, and metadata:
 
 ```text
 manifest.json
@@ -446,7 +446,7 @@ manifest.json
 ├── policy                  (identity — what policy is this?)
 │   ├── name                (human-readable name)
 │   └── source              (provenance: repo_id, class_path)
-├── inference               (InferenceModel — how to run it?)
+├── model                   (exported model — how to run it?)
 │   ├── n_obs_steps         (observation window)
 │   ├── runner              (execution pattern + params)
 │   ├── artifacts           (model files by named role)
@@ -468,7 +468,7 @@ manifest.json
       "class_path": "mypackage.policies.MyPolicy"
     }
   },
-  "inference": {
+  "model": {
     "n_obs_steps": 1,
     "runner": {
       "type": "action_chunking",
@@ -532,10 +532,10 @@ PhysicalAI can also write manifests using the full `class_path` + `init_args` fo
       "class_path": "physicalai.policies.act.policy.ACT"
     }
   },
-  "inference": {
+  "model": {
     "n_obs_steps": 1,
     "runner": {
-      "class_path": "action_chunking",
+      "class_path": "physicalai.inference.runners.ActionChunkingRunner",
       "init_args": {
         "chunk_size": 100,
         "n_action_steps": 100
@@ -554,7 +554,7 @@ PhysicalAI can also write manifests using the full `class_path` + `init_args` fo
       ],
       "preprocessors": [
         {
-          "class_path": "normalize",
+          "class_path": "physicalai.inference.preprocessors.StatsNormalizer",
           "init_args": {
             "mode": "mean_std",
             "stats_path": "stats.safetensors",
@@ -564,7 +564,7 @@ PhysicalAI can also write manifests using the full `class_path` + `init_args` fo
       ],
       "postprocessors": [
         {
-          "class_path": "denormalize",
+          "class_path": "physicalai.inference.postprocessors.StatsDenormalizer",
           "init_args": {
             "mode": "mean_std",
             "stats_path": "stats.safetensors",
@@ -594,9 +594,9 @@ The framework reads `manifest.json` and resolves the model configuration using *
 1. **Manifest parsing**: `manifest.json` is parsed directly into nested Pydantic models --- no flattening or normalization step.
 2. **Runner resolution**: Components support two formats that both resolve through the same `ComponentRegistry` + `instantiate_component()` pipeline:
    - **`type` + flat params** (interoperable, written by LeRobot): `{"type": "action_chunking", "chunk_size": 100}` → registry lookup → `ComponentSpec` → `instantiate_component()`
-   - **`class_path` + `init_args`** (full-power, written by PhysicalAI): `{"class_path": "action_chunking", "init_args": {"chunk_size": 100}}` → `ComponentSpec` → `instantiate_component()`
-3. **Backend selection**: `inference.artifacts` maps named roles (e.g., `"model"`, `"encoder"`) to filenames. The first available backend is auto-selected, or the user can override at load time.
-4. **I/O pipeline**: `inference.io.preprocessors` and `inference.io.postprocessors` declare input/output transforms (normalization, denormalization) resolved via the same dual-path mechanism.
+   - **`class_path` + `init_args`** (full-power, written by PhysicalAI): `{"class_path": "physicalai.inference.runners.ActionChunkingRunner", "init_args": {"chunk_size": 100}}` → `ComponentSpec` → `instantiate_component()`
+3. **Backend selection**: `model.artifacts` maps named roles (e.g., `"model"`, `"encoder"`) to filenames. The first available backend is auto-selected, or the user can override at load time.
+4. **I/O pipeline**: `model.io.preprocessors` and `model.io.postprocessors` declare input/output transforms (normalization, denormalization) resolved via the same dual-path mechanism.
 5. **Hardware validation**: `hardware.robots` and `hardware.cameras` sections declare expected shapes. The runtime can validate observations against these.
 6. **Custom components**: Domain layers can extend the manifest with custom processor types or runner parameters without modifying inferencekit. Any component with a `class_path` is instantiated directly; any component with a `type` goes through the registry.
 
@@ -694,7 +694,7 @@ Domain layers can publish model packages to HuggingFace that include:
       "class_path": "my_domain_inference.models.MyModel"
     }
   },
-  "inference": {
+  "model": {
     "n_obs_steps": 1,
     "runner": {
       "type": "action_chunking",
@@ -1223,5 +1223,5 @@ Instead of replacing model_api, inferencekit provides the **foundation** that mo
 
 ---
 
-_Document Version: 5.0_
-_Last Updated: 2026-03-27_
+_Document Version: 5.1_
+_Last Updated: 2026-03-31_
