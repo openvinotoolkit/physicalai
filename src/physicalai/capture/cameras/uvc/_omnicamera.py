@@ -7,10 +7,11 @@ import time
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
+import omni_camera
 
 from physicalai.capture.camera import Camera, ColorMode
 from physicalai.capture.cameras.uvc._camera_setting import CameraSetting  # noqa: PLC2701
-from physicalai.capture.errors import CaptureError, CaptureTimeoutError, MissingDependencyError, NotConnectedError
+from physicalai.capture.errors import CaptureError, CaptureTimeoutError, NotConnectedError
 from physicalai.capture.frame import Frame
 
 if TYPE_CHECKING:
@@ -19,11 +20,6 @@ if TYPE_CHECKING:
 
 _MISSING_DEP_PKG = "omni_camera"
 _MISSING_DEP_EXTRA = "capture"
-
-try:
-    import omni_camera  # type: ignore[import-not-found]
-except ImportError as err:
-    raise MissingDependencyError(_MISSING_DEP_PKG, _MISSING_DEP_EXTRA) from err
 
 
 class OmniCamera(Camera):

@@ -36,7 +36,7 @@ class UVCCamera(Camera):
         height: Requested frame height in pixels.
         fps: Requested frames per second.
         color_mode: Pixel format for returned frames.
-        backend: ``"auto"``, ``"v4l2"``, or ``"omnicamera"``.
+        backend: ``"v4l2"``, or ``"omnicamera"``.
         backend_options: Backend-specific overrides forwarded to the selected
             backend constructor.
     """
