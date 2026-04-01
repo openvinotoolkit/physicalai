@@ -41,9 +41,9 @@ def discover_uvc() -> list[DeviceInfo]:
 
     from physicalai.capture.errors import MissingDependencyError  # noqa: PLC0415
 
-    from ._omnicamera import OmniCameraBackend  # noqa: PLC0415
+    from ._omnicamera import OmniCamera  # noqa: PLC0415
 
     try:
-        return OmniCameraBackend.discover()
+        return OmniCamera.discover()
     except MissingDependencyError:
         return []

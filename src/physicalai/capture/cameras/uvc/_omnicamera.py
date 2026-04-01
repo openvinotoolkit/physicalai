@@ -26,7 +26,7 @@ except ImportError as err:
     raise MissingDependencyError(_MISSING_DEP_PKG, _MISSING_DEP_EXTRA) from err
 
 
-class OmniCameraBackend(Camera):
+class OmniCamera(Camera):
     _POLL_INTERVAL_S = 0.001
 
     def __init__(

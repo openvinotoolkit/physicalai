@@ -8,7 +8,7 @@ user-facing entry point for "standard USB video cameras" (UVC devices).
 
 Internally it delegates to one of:
   - :class:`~physicalai.capture.cameras.uvc.v4l2.V4L2Camera` on Linux
-  - :class:`~physicalai.capture.cameras.uvc._omnicamera.OmniCameraBackend` elsewhere
+  - :class:`~physicalai.capture.cameras.uvc._omnicamera.OmniCamera` elsewhere
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ from physicalai.capture.camera import Camera, ColorMode
 from physicalai.capture.cameras.uvc._camera_setting import CameraSetting  # noqa: PLC2701
 
 if TYPE_CHECKING:
-    from physicalai.capture.cameras.uvc._omnicamera import OmniCameraBackend
     from physicalai.capture.cameras.uvc.v4l2 import V4L2Camera
     from physicalai.capture.cameras.uvc.v4l2._controls import V4L2CameraControls
     from physicalai.capture.frame import Frame
@@ -67,7 +66,7 @@ class UVCCamera(Camera):
         else:
             self._device_path = f"/dev/video{device}"
 
-        self._inner: V4L2Camera | OmniCameraBackend
+        self._inner: V4L2Camera | OmniCamera
 
         if backend == "v4l2":
             from .v4l2 import V4L2Camera  # noqa: PLC0415
@@ -89,12 +88,12 @@ class UVCCamera(Camera):
                 **opts,
             )
         elif backend == "omnicamera":
-            from ._omnicamera import OmniCameraBackend  # noqa: PLC0415
+            from ._omnicamera import OmniCamera  # noqa: PLC0415
 
             # Forward OmniCamera-specific overrides while mapping facade
-            # ``device`` to OmniCameraBackend.device_id.
+            # ``device`` to OmniCamera.device_id.
             opts.setdefault("device_id", device)
-            self._inner = OmniCameraBackend(
+            self._inner = OmniCamera(
                 width=width,
                 height=height,
                 fps=fps,

@@ -644,8 +644,8 @@ line longer and gives the caller full control over error handling.
 USB webcams, built-in cameras, and UVC devices on **all platforms**.
 `UVCCamera` is a facade that delegates to a platform-specific backend:
 
-- **macOS/Windows/Linux**: `OmniCameraBackend` via [OmniCamera](https://github.com/ArendJanKramer/OmniCamera)
-- **Linux**(optional): `V4L2Camera` via native V4L2 ioctls
+- **macOS/Windows/Linux**: backend via [OmniCamera](https://github.com/ArendJanKramer/OmniCamera)
+- **Linux** (optional): native V4L2 backend via V4L2 ioctls
 
 The `backend` parameter selects the backend explicitly (`"v4l2"` or `"omnicamera"`); the default is `"omnicamera"`. On Linux, pass `backend="v4l2"` to use the native backend.
 
@@ -673,7 +673,7 @@ The `backend` parameter selects the backend explicitly (`"v4l2"` or `"omnicamera
 class UVCCamera(Camera):
     """Camera facade for UVC devices (USB Video Class).
 
-    Delegates to OmniCameraBackend (macOS/Windows) or V4L2Camera (Linux)
+    Delegates to OmniCamera (macOS/Windows) or V4L2Camera (Linux)
     based on the ``backend`` parameter.
 
     ``device`` is a unified selector: integer index (0, 1, ...) or
