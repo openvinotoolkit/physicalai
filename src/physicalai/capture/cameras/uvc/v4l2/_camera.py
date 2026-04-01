@@ -346,10 +346,11 @@ class V4L2Camera(Camera):
         Read-only, inactive, and valueless settings are silently skipped.
         """
         items = [settings] if isinstance(settings, CameraSetting) else settings
+        controls = self._ensure_controls()
         for setting in items:
             if setting.value is None or setting.read_only or setting.inactive:
                 continue
-            self._ensure_controls().set_control(int(setting.id), setting.value)
+            controls.set_control(int(setting.id), setting.value)
 
     @classmethod
     def discover(cls) -> list[DeviceInfo]:

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # ruff: noqa: S101, PLR2004
 
-"""Tests for OmniCameraBackend."""
+"""Tests for OmniCamera."""
 
 from __future__ import annotations
 
@@ -22,10 +22,10 @@ from physicalai.capture.frame import Frame
 
 @pytest.fixture
 def omnicamera_cls():  # noqa: ANN201
-    """Inject a mock omni_camera module and reload OmniCameraBackend with it.
+    """Inject a mock omni_camera module and reload OmniCamera with it.
 
     Yields:
-        Tuple of (OmniCameraBackend class, omni_camera mock object).
+        Tuple of (OmniCamera class, omni_camera mock object).
     """
     mock_omni_camera = mock.MagicMock()
 
@@ -61,7 +61,7 @@ def omnicamera_cls():  # noqa: ANN201
     sys.modules.pop("physicalai.capture.cameras.uvc._omnicamera", None)
 
     module = importlib.import_module("physicalai.capture.cameras.uvc._omnicamera")
-    camera_cls = module.OmniCameraBackend
+    camera_cls = module.OmniCamera
 
     yield camera_cls, mock_omni_camera
 
@@ -86,7 +86,7 @@ def test_import_raises_missing_dependency_without_omni_camera() -> None:
 
 
 def test_constructor_defaults(omnicamera_cls: tuple) -> None:
-    """OmniCameraBackend has expected default parameter values."""
+    """OmniCamera has expected default parameter values."""
     camera_cls, _ = omnicamera_cls
     cam = camera_cls()
     assert cam.device_id == "0"
