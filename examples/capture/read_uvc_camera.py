@@ -7,24 +7,29 @@
 
 import sys
 
-from physicalai.capture.cameras.uvc import UVCCamera, discover_uvc
+from physicalai.capture.cameras.uvc import UVCCamera
 
 
 def main() -> None:
-    devices = discover_uvc()
+    devices = UVCCamera.discover()
     for i, device in enumerate(devices):
-        sys.stdout.write(f"[{i}] {device.name} ({device.device_id})\n")
+        print(f"[{device.index}] {device.name} ({device.device_id})")
     if not devices:
-        sys.stdout.write("No cameras found.\n")
+        print("No cameras found.")
         return
 
-    device_index = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+    device_index = input(f"Select camera (index or path): ")
 
     with UVCCamera(device=device_index) as cam:
+        controls = cam.get_settings()
+        print(f"Camera settings:")
+        for ctrl in controls:
+            print(f"{ctrl}")
+        print("\nFrames:")
         for _ in range(10):
             frame = cam.read_latest()
-            sys.stdout.write(
-                f"shape={frame.data.shape} timestamp={frame.timestamp} sequence={frame.sequence}\n",
+            print(
+                f"shape={frame.data.shape} timestamp={frame.timestamp} sequence={frame.sequence}",
             )
 
 

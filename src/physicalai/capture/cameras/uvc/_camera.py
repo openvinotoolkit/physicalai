@@ -7,18 +7,22 @@ This module exposes :class:`~physicalai.capture.cameras.uvc.UVCCamera` as the
 user-facing entry point for "standard USB video cameras" (UVC devices).
 
 Internally it delegates to one of:
-  - :class:`~physicalai.capture.cameras.uvc._v4l2.V4L2Camera` on Linux
+  - :class:`~physicalai.capture.cameras.uvc.v4l2.V4L2Camera` on Linux
   - :class:`~physicalai.capture.cameras.uvc._omnicamera.OmniCameraBackend` elsewhere
 """
 
 from __future__ import annotations
 
 import sys
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from physicalai.capture.camera import Camera, ColorMode
+from physicalai.capture.cameras.uvc._camera_setting import CameraSetting  # noqa: PLC2701
 
 if TYPE_CHECKING:
+    from physicalai.capture.cameras.uvc._omnicamera import OmniCameraBackend
+    from physicalai.capture.cameras.uvc.v4l2 import V4L2Camera
+    from physicalai.capture.cameras.uvc.v4l2._controls import V4L2CameraControls
     from physicalai.capture.frame import Frame
 
 
@@ -46,27 +50,38 @@ class UVCCamera(Camera):
         height: int = 480,
         fps: int = 30,
         color_mode: ColorMode = ColorMode.RGB,
-        backend: str = "auto",
+        backend: Literal["v4l2", "omnicamera"] = "omnicamera",
         backend_options: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(color_mode=color_mode)
 
-        backend = backend.lower()
-        if backend == "auto":
-            backend = "v4l2" if sys.platform == "linux" else "omnicamera"
-
+        self._device = device
+        self._backend = backend
         opts = dict(backend_options or {})
 
+        # Resolve device path for V4L2 controls (used on Linux regardless of backend).
+        if isinstance(device, int) or (isinstance(device, str) and device.isdecimal()):
+            self._device_path: str = f"/dev/video{device}"
+        elif isinstance(device, str):
+            self._device_path = device
+        else:
+            self._device_path = f"/dev/video{device}"
+
+        self._inner: V4L2Camera | OmniCameraBackend
+
         if backend == "v4l2":
-            from ._v4l2 import V4L2Camera  # noqa: PLC0415
+            from .v4l2 import V4L2Camera  # noqa: PLC0415
 
             device_path: str
-            device_path = f"/dev/video{device}" if isinstance(device, int) else device
+            if isinstance(device, int) or (isinstance(device, str) and device.isdecimal()):
+                device_path = f"/dev/video{device}"
+            else:
+                device_path = device
 
             # Forward V4L2-specific overrides (e.g. num_buffers, pixel_format).
             # The facade's ``device`` maps to V4L2's ``device_path``.
             opts.setdefault("device_path", device_path)
-            self._inner: Camera = V4L2Camera(
+            self._inner = V4L2Camera(
                 width=width,
                 height=height,
                 fps=fps,
@@ -101,7 +116,6 @@ class UVCCamera(Camera):
         self._inner.connect(timeout=timeout)
 
     def _do_disconnect(self) -> None:
-        # Ensure we release the underlying hardware resources.
         self._inner.disconnect()
 
     # ------------------------------------------------------------------
@@ -135,6 +149,48 @@ class UVCCamera(Camera):
         from ._discover import discover_uvc  # noqa: PLC0415
 
         return discover_uvc()
+
+    # ------------------------------------------------------------------
+    # Camera Settings
+    # ------------------------------------------------------------------
+
+    def _get_v4l2_controls(self) -> V4L2CameraControls | None:
+        """Return a V4L2CameraControls instance on Linux, None otherwise.
+
+        If the inner backend is V4L2Camera, reuses its shared-fd controls.
+        If the inner backend is OmniCamera on Linux, returns a standalone
+        controls instance that opens/closes a fd per call.
+        """
+        if not sys.platform.startswith("linux"):
+            return None
+
+        from .v4l2 import V4L2CameraControls  # noqa: PLC0415
+
+        return V4L2CameraControls(self._device_path)
+
+    def get_settings(self) -> list[CameraSetting]:
+        """List all available camera settings.
+
+        Returns:
+            The available settings reported by the active backend.
+        """
+        if (v4l2 := self._get_v4l2_controls()) is not None:
+            return v4l2.list_controls()
+        return self._inner.get_settings()
+
+    def apply_settings(self, settings: CameraSetting | list[CameraSetting]) -> None:
+        """Apply one or more camera settings.
+
+        Read-only, inactive, and valueless settings are silently skipped.
+        """
+        items = [settings] if isinstance(settings, CameraSetting) else settings
+        if (v4l2 := self._get_v4l2_controls()) is not None:
+            for s in items:
+                if s.value is None or s.read_only or s.inactive:
+                    continue
+                v4l2.set_control(int(s.id), s.value)
+            return
+        self._inner.apply_settings(settings)
 
 
 __all__ = ["UVCCamera"]

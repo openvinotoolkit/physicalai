@@ -5,41 +5,23 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING
 
-from physicalai.capture.camera import ColorMode, Driver
+from physicalai.capture.camera import CameraType
 
 if TYPE_CHECKING:
     from physicalai.capture.camera import Camera
 
 
-class _V4L2CameraArgs(TypedDict):
-    device_path: str
-    width: int
-    height: int
-    fps: int
-    num_buffers: int
-    pixel_format: str
-    color_mode: ColorMode
-
-
-class _OpenCVCameraArgs(TypedDict):
-    device_id: int | str
-    width: int
-    height: int
-    fps: int
-    color_mode: ColorMode
-
-
-def create_camera(driver: str, **kwargs: object) -> Camera:
-    """Create a camera by driver name.
+def create_camera(camera_type: str, **kwargs) -> Camera:  # noqa: ANN003
+    """Create a camera by type name.
 
     Convenience function for config-driven instantiation.  Prefer
     dedicated camera classes for direct usage.
 
     Args:
-        driver: Camera type — one of ``"opencv"``, ``"v4l2"``,
-            ``"realsense"``, ``"basler"``, ``"genicam"``, ``"ip"``.
+        camera_type: Camera type — one of ``"uvc"``, ``"ip"``,
+            ``"realsense"``, ``"basler"``, ``"genicam"``.
             Case-insensitive.
         **kwargs: Forwarded to the camera constructor.
 
@@ -47,57 +29,34 @@ def create_camera(driver: str, **kwargs: object) -> Camera:
         A new camera instance.
 
     Raises:
-        ValueError: If *driver* is not a recognised name.
+        ValueError: If *camera_type* is not a recognised name.
     """
-    # Import lazily to avoid pulling in optional dependencies at import
-    # time.  Each camera module handles its own MissingDependencyError.
-    driver = driver.lower()
+    camera_type = camera_type.lower()
 
-    if driver == Driver.V4L2:
-        from physicalai.capture.cameras.v4l2 import V4L2Camera  # noqa: PLC0415
+    if camera_type == CameraType.UVC:
+        from physicalai.capture.cameras.uvc import UVCCamera  # noqa: PLC0415
 
-        v4l2_args: _V4L2CameraArgs = {
-            "device_path": cast("str", kwargs.get("device_path", "/dev/video0")),
-            "width": cast("int", kwargs.get("width", 640)),
-            "height": cast("int", kwargs.get("height", 480)),
-            "fps": cast("int", kwargs.get("fps", 30)),
-            "num_buffers": cast("int", kwargs.get("num_buffers", 4)),
-            "pixel_format": cast("str", kwargs.get("pixel_format", "mjpeg")),
-            "color_mode": cast("ColorMode", kwargs.get("color_mode", ColorMode.RGB)),
-        }
-        return V4L2Camera(**v4l2_args)
+        return UVCCamera(**kwargs)
 
-    if driver == Driver.OPENCV:
-        from physicalai.capture.cameras.opencv import OpenCVCamera  # noqa: PLC0415
-
-        opencv_args: _OpenCVCameraArgs = {
-            "device_id": cast("int | str", kwargs.get("device_id", 0)),
-            "width": cast("int", kwargs.get("width", 640)),
-            "height": cast("int", kwargs.get("height", 480)),
-            "fps": cast("int", kwargs.get("fps", 30)),
-            "color_mode": cast("ColorMode", kwargs.get("color_mode", ColorMode.RGB)),
-        }
-        return OpenCVCamera(**opencv_args)
-
-    if driver == Driver.REALSENSE:
-        from physicalai.capture.cameras.realsense import RealSenseCamera  # noqa: PLC0415
-
-        return RealSenseCamera(**kwargs)
-
-    if driver == Driver.BASLER:
-        from physicalai.capture.cameras.basler import BaslerCamera  # noqa: PLC0415
-
-        return BaslerCamera(**kwargs)
-
-    if driver == Driver.GENICAM:
-        from physicalai.capture.cameras.genicam import GenicamCamera  # noqa: PLC0415
-
-        return GenicamCamera(**kwargs)
-
-    if driver == Driver.IP:
+    if camera_type == CameraType.IP:
         from physicalai.capture.cameras.ip import IPCamera  # noqa: PLC0415
 
         return IPCamera(**kwargs)
 
-    msg = f"Unknown camera driver {driver!r}. Expected one of: {', '.join(Driver)}"
+    if camera_type == CameraType.REALSENSE:
+        from physicalai.capture.cameras.realsense import RealSenseCamera  # noqa: PLC0415
+
+        return RealSenseCamera(**kwargs)
+
+    if camera_type == CameraType.BASLER:
+        from physicalai.capture.cameras.basler import BaslerCamera  # noqa: PLC0415
+
+        return BaslerCamera(**kwargs)
+
+    if camera_type == CameraType.GENICAM:
+        from physicalai.capture.cameras.genicam import GenicamCamera  # noqa: PLC0415
+
+        return GenicamCamera(**kwargs)
+
+    msg = f"Unknown camera type {camera_type!r}. Expected one of: {', '.join(CameraType)}"
     raise ValueError(msg)

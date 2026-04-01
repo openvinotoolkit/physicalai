@@ -202,11 +202,11 @@ class SO101(Robot):
     def _require_connection(self) -> _SO101Connection:
         """Return the active connection, or raise if disconnected.
 
-        Raises:
-            ConnectionError: If :meth:`connect` has not been called.
-
         Returns:
             The active connection state.
+
+        Raises:
+            ConnectionError: If :meth:`connect` has not been called.
         """
         conn = self._connection
         if conn is None:
@@ -217,11 +217,11 @@ class SO101(Robot):
     def _require_calibration(self) -> SO101Calibration:
         """Return calibration data, or raise if running in uncalibrated mode.
 
-        Raises:
-            RuntimeError: If calibration data is unavailable.
-
         Returns:
             The loaded SO-101 calibration data.
+
+        Raises:
+            RuntimeError: If calibration data is unavailable.
         """
         if self._calibration is None:
             msg = (

@@ -6,6 +6,7 @@
 import time
 
 import numpy as np
+import pytest
 
 from physicalai.capture.frame import Frame
 
@@ -26,11 +27,8 @@ class TestFrame:
 
     def test_frozen_metadata(self) -> None:
         frame = Frame(data=np.zeros((1, 1), dtype=np.uint8), timestamp=1.0, sequence=0)
-        with np.testing.suppress_warnings():
-            import pytest
-
-            with pytest.raises(AttributeError):
-                frame.timestamp = 2.0  # type: ignore[misc]
+        with pytest.raises(AttributeError):
+            frame.timestamp = 2.0  # type: ignore[misc]
 
     def test_sequence_and_timestamp(self) -> None:
         t = time.monotonic()

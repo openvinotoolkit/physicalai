@@ -4,31 +4,17 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
 from physicalai.capture.camera import Camera, ColorMode
+from physicalai.capture.cameras.uvc._camera_setting import CameraSetting  # noqa: PLC2701
 from physicalai.capture.errors import CaptureError, CaptureTimeoutError, MissingDependencyError, NotConnectedError
 from physicalai.capture.frame import Frame
 
 if TYPE_CHECKING:
     from physicalai.capture.discovery import DeviceInfo
-
-
-class _CameraInfo(Protocol):
-    index: int
-    name: str
-    description: str
-    misc: str
-
-    def can_open(self) -> bool: ...
-
-
-class _CameraFormat(Protocol):
-    width: int
-    height: int
-    frame_rate: int
 
 
 _MISSING_DEP_PKG = "omni_camera"
@@ -64,11 +50,17 @@ class OmniCameraBackend(Camera):
         self._last_frame: np.ndarray | None = None
 
     @staticmethod
-    def _resolve_device_info(infos: list[_CameraInfo], device_id: int | str) -> _CameraInfo:
+    def _resolve_device_info(infos: list[omni_camera.CameraInfo], device_id: int | str) -> omni_camera.CameraInfo:
         normalized_device_id: int
         if isinstance(device_id, str):
             if device_id.isdecimal():
                 normalized_device_id = int(device_id)
+            elif device_id.startswith("/dev/video"):
+                suffix = device_id.removeprefix("/dev/video")
+                if not suffix.isdecimal():
+                    msg = f"Invalid device path: {device_id}"
+                    raise ValueError(msg)
+                normalized_device_id = int(suffix)
             else:
                 msg = (
                     "OmniCamera backend does not support device path strings on this platform. "
@@ -87,31 +79,32 @@ class OmniCameraBackend(Camera):
             raise CaptureError(msg)
         return info
 
-    def _resolve_format(self) -> _CameraFormat:
+    def _resolve_format(self) -> omni_camera.CameraFormat:
         if self._cam is None:
             msg = "Camera cannot be opened"
             raise CaptureError(msg)
         try:
             opts = self._cam.get_format_options()
-            opts = opts.prefer_width_range(min_width=self._width, max_width=self._width)
-            opts = opts.prefer_height_range(min_height=self._height, max_height=self._height)
-            opts = opts.prefer_fps_range(min_fps=self._fps, max_fps=self._fps)
-            return cast("_CameraFormat", opts.resolve(key=lambda x: x.width))
+            # noqa: TD002, TD003, FIX002 # TODO: Switch back to keyword args when omni_camera type stubs support them.
+            opts = opts.prefer_width_range(self._width, self._width)
+            opts = opts.prefer_height_range(self._height, self._height)
+            opts = opts.prefer_fps_range(self._fps, self._fps)
+            return opts.resolve(key=lambda x: x.width)
         except (RuntimeError, ValueError, TypeError):
             try:
                 opts2 = self._cam.get_format_options()
-                opts2 = opts2.prefer_width_range(max_width=self._width)
-                opts2 = opts2.prefer_height_range(max_height=self._height)
-                return cast("_CameraFormat", opts2.resolve())
+                opts2 = opts2.prefer_width_range(self._width)
+                opts2 = opts2.prefer_height_range(self._height)
+                return opts2.resolve()
             except (RuntimeError, ValueError, TypeError):
                 try:
-                    return cast("_CameraFormat", self._cam.get_format_options().resolve_default())
+                    return self._cam.get_format_options().resolve_default()
                 except (RuntimeError, ValueError, TypeError) as err:
                     msg = "No compatible camera format found"
                     raise CaptureError(msg) from err
 
     def connect(self, timeout: float = 5.0) -> None:
-        infos = cast("list[_CameraInfo]", omni_camera.query(only_usable=True))
+        infos = omni_camera.query(only_usable=True)
         info = self._resolve_device_info(infos, self._device_id_raw)
 
         self._cam = omni_camera.Camera(info)
@@ -214,10 +207,11 @@ class OmniCameraBackend(Camera):
     def discover(cls) -> list[DeviceInfo]:
         from physicalai.capture.discovery import DeviceInfo  # noqa: PLC0415
 
-        infos = cast("list[_CameraInfo]", omni_camera.query(only_usable=True))
+        infos = omni_camera.query(only_usable=True)
         return [
             DeviceInfo(
                 device_id=str(info.index),
+                index=info.index,
                 name=info.name,
                 driver="uvc",
                 hardware_id="",
@@ -232,3 +226,44 @@ class OmniCameraBackend(Camera):
             for info in infos
             if info.can_open()
         ]
+
+    def get_settings(self) -> list[CameraSetting]:
+        if not self._connected or self._cam is None:
+            raise NotConnectedError
+
+        get_controls = getattr(self._cam, "get_controls", None)
+        if not callable(get_controls):
+            msg = "get_settings is not available for this OmniCamera build."
+            raise NotImplementedError(msg)
+
+        raw_controls = get_controls()
+        if not isinstance(raw_controls, dict):
+            raw_controls = dict(cast("Any", raw_controls))
+
+        controls: list[CameraSetting] = []
+        for name, ctrl in raw_controls.items():
+            vr = ctrl.value_range
+            has_range = len(vr) > 0
+
+            controls.append(
+                CameraSetting(
+                    id=name,
+                    name=name,
+                    setting_type="integer",
+                    min=vr.start if has_range else None,
+                    max=vr[-1] if has_range else None,
+                    step=vr.step if has_range else None,
+                    default=None,
+                    value=None,
+                    inactive=not ctrl.is_active,
+                    read_only=False,
+                )
+            )
+        return controls
+
+    def apply_settings(self, settings: CameraSetting | list[CameraSetting]) -> None:
+        """Apply one or more camera settings.
+
+        Read-only, inactive, and valueless settings are silently skipped.
+        """
+        raise NotImplementedError

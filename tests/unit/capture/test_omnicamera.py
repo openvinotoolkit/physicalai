@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from physicalai.capture.camera import ColorMode
+from physicalai.capture.cameras.uvc._camera_setting import CameraSetting
 from physicalai.capture.discovery import DeviceInfo
 from physicalai.capture.errors import CaptureError, CaptureTimeoutError, MissingDependencyError, NotConnectedError
 from physicalai.capture.frame import Frame
@@ -400,7 +401,7 @@ def test_context_manager_connects_and_disconnects(omnicamera_cls: tuple) -> None
 
 
 def test_discover_returns_device_info(omnicamera_cls: tuple) -> None:
-    """discover() returns a list of DeviceInfo with driver='uvc'."""
+    """discover() returns a list of DeviceInfo with index and backend metadata."""
     camera_cls, mock_omni_camera = omnicamera_cls
     mock_camera_info = mock_omni_camera.query.return_value[0]
     mock_camera_info.index = 0
@@ -414,8 +415,10 @@ def test_discover_returns_device_info(omnicamera_cls: tuple) -> None:
     assert len(devices) == 1
     assert isinstance(devices[0], DeviceInfo)
     assert devices[0].device_id == "0"
+    assert devices[0].index == 0
     assert devices[0].name == "Test Camera"
     assert devices[0].driver == "uvc"
+    assert devices[0].model == "Test Camera"
 
 
 def test_discover_filters_unopenable(omnicamera_cls: tuple) -> None:
@@ -444,9 +447,127 @@ def test_discover_filters_unopenable(omnicamera_cls: tuple) -> None:
     assert devices[0].device_id == "0"
 
 
-def test_device_selector_path_string_raises_value_error(omnicamera_cls: tuple) -> None:
-    """connect() with a path-style string device_id raises ValueError."""
+def test_device_selector_path_string_maps_to_index(omnicamera_cls: tuple) -> None:
+    """connect() with /dev/videoN extracts N and uses it as the camera index."""
+    camera_cls, mock_omni_camera = omnicamera_cls
+
+    cam_info_2 = mock.MagicMock()
+    cam_info_2.index = 2
+    cam_info_2.name = "Camera Two"
+    cam_info_2.description = ""
+    cam_info_2.misc = ""
+    cam_info_2.can_open.return_value = True
+
+    mock_omni_camera.query.return_value = [
+        mock_omni_camera.query.return_value[0],  # index 0
+        cam_info_2,  # index 2
+    ]
+
+    cam = camera_cls(device_id="/dev/video2")
+    cam.connect()
+    assert cam.is_connected
+    mock_omni_camera.Camera.assert_called_with(cam_info_2)
+
+
+def test_device_selector_invalid_path_raises_value_error(omnicamera_cls: tuple) -> None:
+    """connect() with a non-video path string raises ValueError."""
     camera_cls, _ = omnicamera_cls
-    cam = camera_cls(device_id="/dev/video0")
+    cam = camera_cls(device_id="/dev/sda1")
     with pytest.raises(ValueError, match="integer camera index"):
         cam.connect()
+
+
+# ------------------------------------------------------------------
+# get_settings tests
+# ------------------------------------------------------------------
+
+
+def _make_mock_control(*, value_range: range, is_active: bool = True) -> mock.MagicMock:
+    """Create a mock omni_camera CameraControl."""
+    ctrl = mock.MagicMock()
+    ctrl.value_range = value_range
+    ctrl.is_active = is_active
+    return ctrl
+
+
+def test_get_settings_parses_dict(omnicamera_cls: tuple) -> None:
+    """get_settings() correctly parses Dict[str, CameraControl] from get_controls()."""
+    camera_cls, mock_omni_camera = omnicamera_cls
+    mock_cam = mock_omni_camera.Camera.return_value
+
+    mock_cam.get_controls.return_value = {
+        "Brightness": _make_mock_control(value_range=range(0, 256, 1), is_active=True),
+        "Exposure": _make_mock_control(value_range=range(0, 0), is_active=True),
+        "Gain": _make_mock_control(value_range=range(0, 128, 2), is_active=False),
+    }
+
+    cam = camera_cls()
+    cam.connect()
+    controls = cam.get_settings()
+
+    assert len(controls) == 3
+
+    brightness = next(c for c in controls if c.name == "Brightness")
+    assert brightness.id == "Brightness"
+    assert brightness.setting_type == "integer"
+    assert brightness.min == 0
+    assert brightness.max == 255
+    assert brightness.step == 1
+    assert brightness.default is None
+    assert brightness.value is None
+    assert brightness.inactive is False
+
+    exposure = next(c for c in controls if c.name == "Exposure")
+    assert exposure.id == "Exposure"
+    assert exposure.min is None
+    assert exposure.max is None
+    assert exposure.step is None
+    assert exposure.inactive is False
+
+    gain = next(c for c in controls if c.name == "Gain")
+    assert gain.id == "Gain"
+    assert gain.min == 0
+    assert gain.max == 126
+    assert gain.step == 2
+    assert gain.inactive is True
+
+
+def test_get_settings_empty_dict(omnicamera_cls: tuple) -> None:
+    """get_settings() returns empty list when get_controls() returns empty dict."""
+    camera_cls, mock_omni_camera = omnicamera_cls
+    mock_cam = mock_omni_camera.Camera.return_value
+    mock_cam.get_controls.return_value = {}
+
+    cam = camera_cls()
+    cam.connect()
+    controls = cam.get_settings()
+    assert controls == []
+
+
+def test_get_settings_not_connected_raises(omnicamera_cls: tuple) -> None:
+    """get_settings() raises NotConnectedError before connect()."""
+    camera_cls, _ = omnicamera_cls
+    cam = camera_cls()
+    with pytest.raises(NotConnectedError):
+        cam.get_settings()
+
+
+def test_get_settings_no_get_controls_raises(omnicamera_cls: tuple) -> None:
+    """get_settings() raises NotImplementedError when get_controls is unavailable."""
+    camera_cls, mock_omni_camera = omnicamera_cls
+    mock_cam = mock_omni_camera.Camera.return_value
+    del mock_cam.get_controls
+
+    cam = camera_cls()
+    cam.connect()
+    with pytest.raises(NotImplementedError, match="not available"):
+        cam.get_settings()
+
+
+def test_apply_settings_raises_not_implemented(omnicamera_cls: tuple) -> None:
+    """apply_settings() raises NotImplementedError on OmniCamera backend."""
+    camera_cls, _ = omnicamera_cls
+    cam = camera_cls()
+    cam.connect()
+    with pytest.raises(NotImplementedError):
+        cam.apply_settings(CameraSetting(id="Brightness", name="Brightness", setting_type="integer", value=128))

@@ -15,9 +15,9 @@ import numpy as np
 import pytest
 
 from physicalai.capture.camera import ColorMode
-from physicalai.capture.cameras.v4l2._camera import V4L2Camera
+from physicalai.capture.cameras.uvc.v4l2._camera import V4L2Camera
 
-from physicalai.capture.cameras.v4l2._ioctl import (
+from physicalai.capture.cameras.uvc.v4l2._ioctl import (
     V4L2_BUF_TYPE_VIDEO_CAPTURE,
     V4L2_CAP_STREAMING,
     V4L2_CAP_VIDEO_CAPTURE,
@@ -67,6 +67,8 @@ def _make_xioctl(num_buffers: int = 1, dqbuf_frame_data: bytes | None = None):
             buf.bytesused = len(dqbuf_frame_data)
             buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE
             buf.memory = V4L2_MEMORY_MMAP
+            buf.timestamp.tv_sec = 1000
+            buf.timestamp.tv_usec = 500000
             ctypes.memmove(
                 ctypes.addressof(arg),  # type: ignore[arg-type]
                 ctypes.addressof(buf),
@@ -118,18 +120,18 @@ def _mock_v4l2_device(
     xioctl_fn = _make_xioctl(num_buffers=num_buffers, dqbuf_frame_data=frame_data)
     tj_patch = _make_turbojpeg_mock(turbojpeg_output)
 
-    with mock.patch("physicalai.capture.cameras.v4l2._camera.os.open", return_value=_FAKE_FD):
-        with mock.patch("physicalai.capture.cameras.v4l2._camera.os.close") as mock_close:
+    with mock.patch("physicalai.capture.cameras.uvc.v4l2._camera.os.open", return_value=_FAKE_FD):
+        with mock.patch("physicalai.capture.cameras.uvc.v4l2._camera.os.close") as mock_close:
             with mock.patch(
-                "physicalai.capture.cameras.v4l2._camera.xioctl",
+                "physicalai.capture.cameras.uvc.v4l2._camera.xioctl",
                 side_effect=xioctl_fn,
             ) as mock_xi:
                 with mock.patch(
-                    "physicalai.capture.cameras.v4l2._camera.mmap.mmap",
+                    "physicalai.capture.cameras.uvc.v4l2._camera.mmap.mmap",
                     return_value=mock_mm,
                 ):
                     with mock.patch(
-                        "physicalai.capture.cameras.v4l2._camera.select.select",
+                        "physicalai.capture.cameras.uvc.v4l2._camera.select.select",
                         return_value=select_returns,
                     ):
                         with mock.patch.dict(sys.modules, tj_patch):
@@ -286,7 +288,7 @@ def test_read_timeout_raises() -> None:
     tj_patch = _make_turbojpeg_mock()
 
     with mock.patch(
-        "physicalai.capture.cameras.v4l2._camera.select.select",
+        "physicalai.capture.cameras.uvc.v4l2._camera.select.select",
         return_value=read_select,
     ):
         with mock.patch.dict(sys.modules, tj_patch):
@@ -340,18 +342,18 @@ def test_read_latest_drains_buffers() -> None:
     mm = _make_mmap_mock(frame_data)
     tj_patch = _make_turbojpeg_mock(expected_arr)
 
-    with mock.patch("physicalai.capture.cameras.v4l2._camera.os.open", return_value=_FAKE_FD):
-        with mock.patch("physicalai.capture.cameras.v4l2._camera.os.close"):
+    with mock.patch("physicalai.capture.cameras.uvc.v4l2._camera.os.open", return_value=_FAKE_FD):
+        with mock.patch("physicalai.capture.cameras.uvc.v4l2._camera.os.close"):
             with mock.patch(
-                "physicalai.capture.cameras.v4l2._camera.xioctl",
+                "physicalai.capture.cameras.uvc.v4l2._camera.xioctl",
                 side_effect=xioctl_fn,
             ):
                 with mock.patch(
-                    "physicalai.capture.cameras.v4l2._camera.mmap.mmap",
+                    "physicalai.capture.cameras.uvc.v4l2._camera.mmap.mmap",
                     return_value=mm,
                 ):
                     with mock.patch(
-                        "physicalai.capture.cameras.v4l2._camera.select.select",
+                        "physicalai.capture.cameras.uvc.v4l2._camera.select.select",
                         side_effect=select_side_effects,
                     ):
                         with mock.patch.dict(sys.modules, tj_patch):
@@ -402,7 +404,7 @@ def test_context_manager() -> None:
 def test_discover_delegates_to_discover_v4l2() -> None:
     """V4L2Camera.discover() delegates to discover_v4l2 and returns its result."""
     mock_devices = [mock.MagicMock(spec=DeviceInfo)]
-    with mock.patch("physicalai.capture.cameras.v4l2._discover.discover_v4l2", return_value=mock_devices):
+    with mock.patch("physicalai.capture.cameras.uvc.v4l2._discover.discover_v4l2", return_value=mock_devices):
         result = V4L2Camera.discover()
     assert result == mock_devices
 
@@ -435,7 +437,7 @@ _IS_64BIT = sys.maxsize > 2**32
 
 @pytest.mark.skipif(not _IS_64BIT, reason="struct sizes differ on 32-bit")
 def test_v4l2_format_struct_size() -> None:
-    from physicalai.capture.cameras.v4l2._ioctl import v4l2_format
+    from physicalai.capture.cameras.uvc.v4l2._ioctl import v4l2_format
 
     assert ctypes.sizeof(v4l2_format) == 208, (
         f"Expected 208, got {ctypes.sizeof(v4l2_format)}. "
@@ -453,7 +455,7 @@ def test_v4l2_buffer_struct_size() -> None:
 
 @pytest.mark.skipif(not _IS_64BIT, reason="struct offset differs on 32-bit")
 def test_v4l2_format_fmt_offset() -> None:
-    from physicalai.capture.cameras.v4l2._ioctl import v4l2_format
+    from physicalai.capture.cameras.uvc.v4l2._ioctl import v4l2_format
 
     assert v4l2_format.fmt.offset == 8, (
         f"Expected fmt at offset 8, got {v4l2_format.fmt.offset}. "
@@ -468,7 +470,7 @@ def test_v4l2_timecode_struct_size() -> None:
 
 @pytest.mark.skipif(not _IS_64BIT, reason="ioctl numbers differ on 32-bit")
 def test_ioctl_numbers_match_kernel() -> None:
-    from physicalai.capture.cameras.v4l2._ioctl import (
+    from physicalai.capture.cameras.uvc.v4l2._ioctl import (
         VIDIOC_DQBUF,
         VIDIOC_QBUF,
         VIDIOC_QUERYCAP,
@@ -484,3 +486,72 @@ def test_ioctl_numbers_match_kernel() -> None:
     assert (VIDIOC_QBUF & 0xFFFFFFFF) == 0xC058560F, f"VIDIOC_QBUF: got 0x{VIDIOC_QBUF & 0xFFFFFFFF:08X}"
     assert (VIDIOC_DQBUF & 0xFFFFFFFF) == 0xC0585611, f"VIDIOC_DQBUF: got 0x{VIDIOC_DQBUF & 0xFFFFFFFF:08X}"
     assert (VIDIOC_G_FMT & 0xFFFFFFFF) == 0xC0D05604, f"VIDIOC_G_FMT: got 0x{VIDIOC_G_FMT & 0xFFFFFFFF:08X}"
+
+
+# ---------------------------------------------------------------------------
+# Buffer timestamp tests
+# ---------------------------------------------------------------------------
+
+
+def test_read_uses_kernel_buffer_timestamp() -> None:
+    """read() uses buf.timestamp from kernel instead of time.monotonic()."""
+    frame_data = b"\xff\xd8\xff" + b"\x00" * 97
+    expected_arr = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    with _mock_v4l2_device(
+        num_buffers=1,
+        frame_data=frame_data,
+        turbojpeg_output=expected_arr,
+    ):
+        cam = V4L2Camera(num_buffers=1)
+        cam.connect()
+        frame = cam.read()
+
+    # The mock sets tv_sec=1000, tv_usec=500000 → 1000.5
+    assert frame.timestamp == pytest.approx(1000.5)
+
+
+# ---------------------------------------------------------------------------
+# Controls tests
+# ---------------------------------------------------------------------------
+
+
+def test_controls_applied_at_connect() -> None:
+    """Controls dict passed to constructor is applied during connect()."""
+    from physicalai.capture.cameras.uvc.v4l2._ioctl import VIDIOC_S_CTRL  # noqa: PLC0415
+
+    s_ctrl_count = 0
+
+    def _counting_xioctl(fd: int, request: int, arg: object) -> int:
+        nonlocal s_ctrl_count
+        base = _make_xioctl(num_buffers=1)
+        result = base(fd, request, arg)
+        if request == VIDIOC_S_CTRL:
+            s_ctrl_count += 1
+        return result
+
+    with mock.patch("physicalai.capture.cameras.uvc.v4l2._camera.os.open", return_value=_FAKE_FD):
+        with mock.patch("physicalai.capture.cameras.uvc.v4l2._camera.os.close"):
+            with mock.patch(
+                "physicalai.capture.cameras.uvc.v4l2._camera.xioctl",
+                side_effect=_counting_xioctl,
+            ):
+                with mock.patch(
+                    "physicalai.capture.cameras.uvc.v4l2._controls.xioctl",
+                    side_effect=_counting_xioctl,
+                ):
+                    with mock.patch(
+                        "physicalai.capture.cameras.uvc.v4l2._camera.mmap.mmap",
+                        return_value=_make_mmap_mock(),
+                    ):
+                        with mock.patch(
+                            "physicalai.capture.cameras.uvc.v4l2._camera.select.select",
+                            return_value=([_FAKE_FD], [], []),
+                        ):
+                            cam = V4L2Camera(
+                                num_buffers=1,
+                                controls={0x009a0901: 1, 0x009a0902: 100},
+                            )
+                            cam.connect()
+
+    assert s_ctrl_count == 2  # noqa: PLR2004

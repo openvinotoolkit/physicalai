@@ -20,6 +20,7 @@ dependencies = [
     # target PyTurboJPEG 1.x for libjpeg-turbo 2.x compatibility
     "PyTurboJPEG<2; sys_platform == 'linux'",
     "omni_camera @ git+https://github.com/ArendJanKramer/OmniCamera.git@master",
+    "pydantic==2.12.5",
 ]
 
 [project.optional-dependencies]

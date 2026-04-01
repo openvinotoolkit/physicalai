@@ -10,15 +10,16 @@ import ctypes
 import mmap
 import os
 import select
-import time
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
 
 from physicalai.capture.camera import Camera, ColorMode
+from physicalai.capture.cameras.uvc._camera_setting import CameraSetting  # noqa: PLC2701
 from physicalai.capture.errors import CaptureError, CaptureTimeoutError, NotConnectedError
 from physicalai.capture.frame import Frame
 
+from ._controls import V4L2CameraControls
 from ._ioctl import (
     V4L2_BUF_TYPE_VIDEO_CAPTURE,
     V4L2_CAP_STREAMING,
@@ -62,6 +63,7 @@ class V4L2Camera(Camera):
         num_buffers: int = 4,
         pixel_format: str = "mjpeg",
         color_mode: ColorMode = ColorMode.RGB,
+        controls: dict[int, int] | None = None,
     ) -> None:
         if pixel_format not in {"mjpeg", "yuyv"}:
             msg = f"Unsupported pixel_format {pixel_format!r}; use 'mjpeg' or 'yuyv'"
@@ -74,12 +76,14 @@ class V4L2Camera(Camera):
         self._fps = fps
         self._num_buffers = num_buffers
         self._pixel_format = pixel_format
+        self._initial_controls = controls or {}
 
         self._connected: bool = False
         self._sequence: int = 0
         self._fd: int | None = None
         self._buffers: list[tuple[mmap.mmap, int]] = []
         self._jpeg: TurboJPEG | None = None
+        self._controls: V4L2CameraControls | None = None
 
     @property
     def is_connected(self) -> bool:
@@ -139,6 +143,10 @@ class V4L2Camera(Camera):
 
             self._connected = True
             self._sequence = 0
+            self._controls = V4L2CameraControls(self._device_path, fd=self._fd)
+
+            for ctrl_id, ctrl_value in self._initial_controls.items():
+                self._controls.set_control(ctrl_id, ctrl_value)
         except Exception as exc:
             self._cleanup_connection()
             if isinstance(exc, CaptureTimeoutError):
@@ -206,6 +214,8 @@ class V4L2Camera(Camera):
             buf.memory = V4L2_MEMORY_MMAP
             xioctl(self._fd, VIDIOC_DQBUF, buf)
 
+            acquired_at = buf.timestamp.tv_sec + buf.timestamp.tv_usec / 1_000_000
+
             mm, _ = self._buffers[buf.index]
             raw = bytes(mm[: buf.bytesused])
             xioctl(self._fd, VIDIOC_QBUF, buf)
@@ -219,7 +229,7 @@ class V4L2Camera(Camera):
         else:
             frame = Frame(
                 data=decoded,
-                timestamp=time.monotonic(),
+                timestamp=acquired_at,
                 sequence=self._sequence,
             )
             self._sequence += 1
@@ -231,6 +241,7 @@ class V4L2Camera(Camera):
             raise NotConnectedError(msg)
 
         latest_raw: bytes | None = None
+        acquired_at: float = 0.0
         decoded: NDArray[np.uint8]
 
         try:
@@ -243,6 +254,8 @@ class V4L2Camera(Camera):
                 buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE
                 buf.memory = V4L2_MEMORY_MMAP
                 xioctl(self._fd, VIDIOC_DQBUF, buf)
+
+                acquired_at = buf.timestamp.tv_sec + buf.timestamp.tv_usec / 1_000_000
 
                 mm, _ = self._buffers[buf.index]
                 latest_raw = bytes(mm[: buf.bytesused])
@@ -261,7 +274,7 @@ class V4L2Camera(Camera):
         else:
             frame = Frame(
                 data=decoded,
-                timestamp=time.monotonic(),
+                timestamp=acquired_at,
                 sequence=self._sequence,
             )
             self._sequence += 1
@@ -313,6 +326,31 @@ class V4L2Camera(Camera):
         if self._color_mode == ColorMode.BGR:
             return np.stack([b, g, r], axis=2)
         return np.stack([r, g, b], axis=2)
+
+    # ------------------------------------------------------------------
+    # V4L2 Controls (delegated to V4L2CameraControls)
+    # ------------------------------------------------------------------
+
+    def _ensure_controls(self) -> V4L2CameraControls:
+        if self._controls is None:
+            msg = "Cannot access controls: camera is not connected."
+            raise NotConnectedError(msg)
+        return self._controls
+
+    def get_settings(self) -> list[CameraSetting]:
+        return self._ensure_controls().list_controls()
+
+    def apply_settings(self, settings: CameraSetting | list[CameraSetting]) -> None:
+        """Apply one or more camera settings.
+
+        Read-only, inactive, and valueless settings are silently skipped.
+        """
+        settings_ = [settings] if isinstance(settings, CameraSetting) else settings
+        controls = self._ensure_controls()
+        for setting in settings_:
+            if setting.value is None or setting.inactive:
+                continue
+            controls.set_control(int(setting.id), setting.value)
 
     @classmethod
     def discover(cls) -> list[DeviceInfo]:

@@ -14,14 +14,15 @@ class TestCreateCamera:
     """create_camera() driver dispatch."""
 
     def test_unknown_driver_raises_value_error(self) -> None:
-        with pytest.raises(ValueError, match="Unknown camera driver"):
+        with pytest.raises(ValueError, match="Unknown camera type"):
             create_camera("nonexistent")
 
     def test_case_insensitive(self) -> None:
-        # All concrete backends are not installed in test env, so we
-        # expect an import-related error (not ValueError).
-        with pytest.raises((ImportError, ModuleNotFoundError, MissingDependencyError)):
-            create_camera("OpenCV")
+        # Ensure camera type dispatch is case-insensitive.
+        from physicalai.capture.cameras.uvc import UVCCamera
+
+        cam = create_camera("UVC", backend="v4l2")
+        assert isinstance(cam, UVCCamera)
 
 
 class TestDiscoverAll:

@@ -26,15 +26,18 @@ class ColorMode(StrEnum):
     GRAY = "gray"
 
 
-class Driver(StrEnum):
-    """Known camera driver names for :func:`create_camera`."""
+class CameraType(StrEnum):
+    """Known camera type names for :func:`create_camera`."""
 
-    OPENCV = "opencv"
-    V4L2 = "v4l2"
-    REALSENSE = "realsense"
-    BASLER = "basler"
-    GENICAM = "genicam"
+    UVC = "uvc"
     IP = "ip"
+    REALSENSE = "realsense"
+    GENICAM = "genicam"
+    BASLER = "basler"
+
+
+# Backward-compat alias — will be removed in a future version.
+Driver = CameraType
 
 
 class Camera(ABC):

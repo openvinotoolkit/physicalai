@@ -290,7 +290,114 @@ V4L2_FIELD_NONE = 1
 V4L2_PIX_FMT_MJPEG = struct.unpack("<I", b"MJPG")[0]
 V4L2_PIX_FMT_YUYV = struct.unpack("<I", b"YUYV")[0]
 V4L2_CAP_VIDEO_CAPTURE = 0x00000001
+V4L2_CAP_META_CAPTURE = 0x00800000
 V4L2_CAP_STREAMING = 0x04000000
+V4L2_CAP_DEVICE_CAPS = 0x80000000
+
+V4L2_CTRL_FLAG_NEXT_CTRL = 0x80000000
+V4L2_CTRL_FLAG_DISABLED = 0x0001
+V4L2_CTRL_FLAG_GRABBED = 0x0002
+V4L2_CTRL_FLAG_READ_ONLY = 0x0004
+V4L2_CTRL_FLAG_UPDATE = 0x0008
+V4L2_CTRL_FLAG_INACTIVE = 0x0010
+V4L2_CTRL_FLAG_WRITE_ONLY = 0x0020
+V4L2_CTRL_FLAG_VOLATILE = 0x0040
+V4L2_CTRL_FLAG_SLIDER = 0x1000
+
+V4L2_CTRL_TYPE_INTEGER = 1
+V4L2_CTRL_TYPE_BOOLEAN = 2
+V4L2_CTRL_TYPE_MENU = 3
+V4L2_CTRL_TYPE_BUTTON = 4
+V4L2_CTRL_TYPE_INTEGER64 = 5
+V4L2_CTRL_TYPE_CTRL_CLASS = 6
+V4L2_CTRL_TYPE_STRING = 7
+V4L2_CTRL_TYPE_BITMASK = 8
+V4L2_CTRL_TYPE_COMPOUND = 0x0100
+
+CTRL_TYPE_NAMES: dict[int, str] = {
+    V4L2_CTRL_TYPE_INTEGER: "integer",
+    V4L2_CTRL_TYPE_BOOLEAN: "boolean",
+    V4L2_CTRL_TYPE_MENU: "menu",
+    V4L2_CTRL_TYPE_BUTTON: "button",
+    V4L2_CTRL_TYPE_INTEGER64: "integer64",
+    V4L2_CTRL_TYPE_CTRL_CLASS: "ctrl_class",
+    V4L2_CTRL_TYPE_STRING: "string",
+    V4L2_CTRL_TYPE_BITMASK: "bitmask",
+    V4L2_CTRL_TYPE_COMPOUND: "compound",
+}
+
+CTRL_FLAG_BITS: list[tuple[int, str]] = [
+    (V4L2_CTRL_FLAG_DISABLED, "disabled"),
+    (V4L2_CTRL_FLAG_GRABBED, "grabbed"),
+    (V4L2_CTRL_FLAG_READ_ONLY, "read_only"),
+    (V4L2_CTRL_FLAG_UPDATE, "update"),
+    (V4L2_CTRL_FLAG_INACTIVE, "inactive"),
+    (V4L2_CTRL_FLAG_WRITE_ONLY, "write_only"),
+    (V4L2_CTRL_FLAG_VOLATILE, "volatile"),
+    (V4L2_CTRL_FLAG_SLIDER, "slider"),
+]
+
+
+def decode_ctrl_flags(flags: int) -> list[str]:
+    """Decode a V4L2 control flags bitmask into human-readable names.
+
+    Args:
+        flags: V4L2 control flag bitmask.
+
+    Returns:
+        The decoded flag names present in ``flags``.
+    """
+    return [name for bit, name in CTRL_FLAG_BITS if flags & bit]
+
+
+class v4l2_control(ctypes.Structure):  # noqa: N801
+    _fields_ = cast(
+        "Any",
+        [
+            ("id", ctypes.c_uint32),
+            ("value", ctypes.c_int32),
+        ],
+    )
+
+
+class v4l2_queryctrl(ctypes.Structure):  # noqa: N801
+    _fields_ = cast(
+        "Any",
+        [
+            ("id", ctypes.c_uint32),
+            ("type", ctypes.c_uint32),
+            ("name", ctypes.c_char * 32),
+            ("minimum", ctypes.c_int32),
+            ("maximum", ctypes.c_int32),
+            ("step", ctypes.c_int32),
+            ("default_value", ctypes.c_int32),
+            ("flags", ctypes.c_uint32),
+            ("reserved", ctypes.c_uint32 * 2),
+        ],
+    )
+
+
+class _v4l2_querymenu_union(ctypes.Union):  # noqa: N801
+    _fields_ = cast(
+        "Any",
+        [
+            ("name", ctypes.c_char * 32),
+            ("value", ctypes.c_int64),
+        ],
+    )
+
+
+class v4l2_querymenu(ctypes.Structure):  # noqa: N801
+    _fields_ = cast(
+        "Any",
+        [
+            ("id", ctypes.c_uint32),
+            ("index", ctypes.c_uint32),
+            ("u", _v4l2_querymenu_union),
+            ("reserved", ctypes.c_uint32),
+        ],
+    )
+
 
 VIDIOC_QUERYCAP = _IOR("V", 0, v4l2_capability)
 VIDIOC_ENUM_FMT = _IOWR("V", 2, v4l2_fmtdesc)
@@ -303,6 +410,10 @@ VIDIOC_DQBUF = _IOWR("V", 17, v4l2_buffer)
 VIDIOC_STREAMON = _IOW("V", 18, ctypes.c_int)
 VIDIOC_STREAMOFF = _IOW("V", 19, ctypes.c_int)
 VIDIOC_S_PARM = _IOWR("V", 22, v4l2_streamparm)
+VIDIOC_G_CTRL = _IOWR("V", 27, v4l2_control)
+VIDIOC_S_CTRL = _IOWR("V", 28, v4l2_control)
+VIDIOC_QUERYCTRL = _IOWR("V", 36, v4l2_queryctrl)
+VIDIOC_QUERYMENU = _IOWR("V", 37, v4l2_querymenu)
 
 
 def xioctl(fd: int, request: int, arg: Structure) -> int:
@@ -328,31 +439,61 @@ def xioctl(fd: int, request: int, arg: Structure) -> int:
 
 
 __all__ = [
+    "CTRL_FLAG_BITS",
+    "CTRL_TYPE_NAMES",
     "V4L2_BUF_TYPE_VIDEO_CAPTURE",
+    "V4L2_CAP_DEVICE_CAPS",
+    "V4L2_CAP_META_CAPTURE",
     "V4L2_CAP_STREAMING",
     "V4L2_CAP_VIDEO_CAPTURE",
+    "V4L2_CTRL_FLAG_DISABLED",
+    "V4L2_CTRL_FLAG_GRABBED",
+    "V4L2_CTRL_FLAG_INACTIVE",
+    "V4L2_CTRL_FLAG_NEXT_CTRL",
+    "V4L2_CTRL_FLAG_READ_ONLY",
+    "V4L2_CTRL_FLAG_SLIDER",
+    "V4L2_CTRL_FLAG_UPDATE",
+    "V4L2_CTRL_FLAG_VOLATILE",
+    "V4L2_CTRL_FLAG_WRITE_ONLY",
+    "V4L2_CTRL_TYPE_BITMASK",
+    "V4L2_CTRL_TYPE_BOOLEAN",
+    "V4L2_CTRL_TYPE_BUTTON",
+    "V4L2_CTRL_TYPE_COMPOUND",
+    "V4L2_CTRL_TYPE_CTRL_CLASS",
+    "V4L2_CTRL_TYPE_INTEGER",
+    "V4L2_CTRL_TYPE_INTEGER64",
+    "V4L2_CTRL_TYPE_MENU",
+    "V4L2_CTRL_TYPE_STRING",
     "V4L2_FIELD_NONE",
     "V4L2_MEMORY_MMAP",
     "V4L2_PIX_FMT_MJPEG",
     "V4L2_PIX_FMT_YUYV",
     "VIDIOC_DQBUF",
     "VIDIOC_ENUM_FMT",
+    "VIDIOC_G_CTRL",
     "VIDIOC_G_FMT",
     "VIDIOC_QBUF",
     "VIDIOC_QUERYBUF",
     "VIDIOC_QUERYCAP",
+    "VIDIOC_QUERYCTRL",
+    "VIDIOC_QUERYMENU",
     "VIDIOC_REQBUFS",
     "VIDIOC_STREAMOFF",
     "VIDIOC_STREAMON",
+    "VIDIOC_S_CTRL",
     "VIDIOC_S_FMT",
     "VIDIOC_S_PARM",
+    "decode_ctrl_flags",
     "v4l2_buffer",
     "v4l2_capability",
     "v4l2_captureparm",
     "v4l2_clip",
+    "v4l2_control",
     "v4l2_fmtdesc",
     "v4l2_format",
     "v4l2_pix_format",
+    "v4l2_queryctrl",
+    "v4l2_querymenu",
     "v4l2_rect",
     "v4l2_requestbuffers",
     "v4l2_streamparm",
