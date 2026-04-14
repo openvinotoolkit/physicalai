@@ -15,9 +15,8 @@ from physicalai.robot.connect import connect
 from physicalai.robot.interface import Robot
 from physicalai.robot.verify import verify_robot
 
-__all__ = [  # noqa: F822, RUF022
+__all__ = [
     "Robot",
-    "SO101",
     "connect",
     "verify_robot",
 ]
