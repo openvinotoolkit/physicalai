@@ -6,7 +6,8 @@
 Public API::
 
     from physicalai.robot import Robot, connect, verify_robot
-    from physicalai.robot import SO101  # requires: pip install physicalai[so101]
+    from physicalai.robot import SO101      # requires: pip install physicalai[so101]
+    from physicalai.robot import WidowXAI   # requires: pip install physicalai[trossen]
 """
 
 from __future__ import annotations
@@ -41,6 +42,11 @@ def __getattr__(name: str) -> object:
         from physicalai.robot.so101 import SO101  # noqa: PLC0415
 
         return SO101
+
+    if name == "WidowXAI":
+        from physicalai.robot.trossen import WidowXAI  # noqa: PLC0415
+
+        return WidowXAI
 
     msg = f"module {__name__!r} has no attribute {name!r}"
     raise AttributeError(msg)
