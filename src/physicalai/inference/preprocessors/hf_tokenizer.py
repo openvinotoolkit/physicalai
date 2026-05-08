@@ -48,7 +48,7 @@ class HFTokenizer(Preprocessor):
         try:
             from transformers import AutoTokenizer  # noqa: PLC0415
 
-            self._tokenizer = AutoTokenizer.from_pretrained(  # nosec B615
+            self._tokenizer = AutoTokenizer.from_pretrained(
                 tokenizer_name,
                 revision=revision,
                 use_fast=True,
