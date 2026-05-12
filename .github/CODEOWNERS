@@ -1,0 +1,12 @@
+# Default ownership for repository changes.
+* @openvinotoolkit/physicalai-maintain
+
+# GitHub automation and workflows.
+.github/ @openvinotoolkit/physicalai-ci @openvinotoolkit/physicalai-maintain
+
+# Documentation and contributor guidance.
+*.md @openvinotoolkit/physicalai-maintain
+docs/ @openvinotoolkit/physicalai-maintain
+
+# Security policy changes should include the security team.
+SECURITY.md @openvinotoolkit/physicalai-ci @openvinotoolkit/physicalai-maintain

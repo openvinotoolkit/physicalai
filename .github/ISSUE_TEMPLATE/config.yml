@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Support guidance
+    url: https://github.com/openvinotoolkit/physicalai/blob/main/SUPPORT.md
+    about: Read the support guide before opening a question.
+  - name: Security policy
+    url: https://github.com/openvinotoolkit/physicalai/blob/main/SECURITY.md
+    about: Report security vulnerabilities privately using the process in SECURITY.md.

@@ -1,0 +1,34 @@
+cff-version: 1.2.0
+title: >-
+  OpenVINO™ Physical AI: Deploy production-grade Physical AI
+  models on Intel hardware
+message: >-
+  If you use this software, please cite it using the
+  metadata below.
+type: software
+authors:
+  - name: Intel Corporation
+identifiers:
+  - type: url
+    value: 'https://github.com/openvinotoolkit/physicalai'
+repository-code: 'https://github.com/openvinotoolkit/physicalai'
+url: 'https://github.com/openvinotoolkit/physicalai'
+abstract: >-
+  OpenVINO™ Physical AI is a unified, production-ready
+  framework for deploying Vision-Language-Action (VLA)
+  models on Intel hardware. It provides a seamless inference
+  pipeline for robotics applications, supporting model
+  architectures such as ACT, SmolVLA, and PI0.5 with
+  optimized execution across CPU, GPU, and NPU via OpenVINO,
+  ONNX, and PyTorch backends.
+license: Apache-2.0
+preferred-citation:
+  type: software
+  authors:
+    - name: Intel Corporation
+  title: >-
+    OpenVINO™ Physical AI: Deploy production-grade Physical AI models on Intel
+    hardware
+  year: 2026
+  notes: Source code repository
+  url: 'https://github.com/openvinotoolkit/physicalai'

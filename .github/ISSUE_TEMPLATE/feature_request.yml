@@ -1,0 +1,36 @@
+name: Feature request
+description: Propose an enhancement for Physical AI.
+title: "feat: "
+labels:
+  - status:planned
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for product or developer experience improvements.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What problem are you trying to solve?
+      placeholder: Describe the pain point or missing capability.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the change you would like to see.
+      placeholder: Outline the API, workflow, or behavior you are proposing.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workarounds or other solutions have you considered?
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add links, examples, or related issues.

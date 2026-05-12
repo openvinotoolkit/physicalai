@@ -1,0 +1,25 @@
+name: Usage question
+description: Ask for help with setup or usage.
+title: "question: "
+labels:
+  - question
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For general usage questions, include enough context for others to help.
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What are you trying to do, and where are you blocked?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Relevant context
+      description: Share code snippets, configuration, logs, and environment details.
+      render: shell
+    validations:
+      required: true

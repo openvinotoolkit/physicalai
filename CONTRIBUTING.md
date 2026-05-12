@@ -50,6 +50,14 @@ Write clear, concise messages. Reference issue numbers when applicable.
 - Fill out the PR template completely
 - Provide usage examples for new features
 - Note any breaking changes
+- Link the relevant issue when applicable
+- Sign commits with `git commit -s`
+
+## Getting Help
+
+- For setup and usage questions, use the GitHub issue form for support requests.
+- For security vulnerabilities, follow [SECURITY.md](./SECURITY.md) and do not open a public issue.
+- Participate according to the [Code of Conduct](./CODE_OF_CONDUCT.md).
 
 ## Coding Standards
 
