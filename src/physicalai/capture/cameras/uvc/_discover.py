@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from physicalai.capture.cameras.uvc.v4l2 import discover_v4l2
+from ._omnicamera import OmniCamera
 
 if TYPE_CHECKING:
     from physicalai.capture.discovery import DeviceInfo
@@ -28,22 +28,9 @@ __all__ = ["discover_uvc"]
 def discover_uvc() -> list[DeviceInfo]:
     """Discover UVC devices for the current platform.
 
-    On Linux this uses native V4L2/sysfs discovery.
-    On other platforms it falls back to OmniCamera discovery.
-
     Returns:
         List of discovered UVC devices for the current platform.
     """
-    import sys  # noqa: PLC0415
-
-    if sys.platform == "linux":
-        return discover_v4l2()
-
-    from physicalai.capture.errors import MissingDependencyError  # noqa: PLC0415
-
-    from ._omnicamera import OmniCamera  # noqa: PLC0415
-
-    try:
-        return OmniCamera.discover()
-    except MissingDependencyError:
-        return []
+    # Use omnicamera/pynokhwa's discovery on all platforms.
+    # V4L2 offers richer information but does not check camera can be opened.
+    return OmniCamera.discover()

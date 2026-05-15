@@ -42,7 +42,7 @@ class _ConformantRobot:
     def get_observation(self) -> _Obs:
         return _Obs(joint_positions=self._state.copy(), timestamp=123.456)
 
-    def send_action(self, action: np.ndarray) -> None:
+    def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None:
         pass
 
     def is_connected(self) -> bool:
@@ -88,7 +88,7 @@ class _InvalidJointPositionsRobot:
     def get_observation(self) -> _InvalidObs:
         return _InvalidObs(joint_positions=[0.0, 1.0], timestamp=0.0)
 
-    def send_action(self, action: np.ndarray) -> None:
+    def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None:
         pass
 
     def is_connected(self) -> bool:

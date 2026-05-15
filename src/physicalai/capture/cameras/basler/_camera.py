@@ -207,11 +207,10 @@ class BaslerCamera(Camera):
     def device_id(self) -> str:
         return f"basler:{self._serial_number}"
 
-    def read(self, timeout: float | None = None) -> Frame:
+    def read(self, timeout: float = 2.0) -> Frame:
         camera, converter = self._ensure_connected()
 
-        timeout_s = timeout if timeout is not None else 5.0
-        deadline = time.monotonic() + timeout_s
+        deadline = time.monotonic() + timeout
         last_error = ""
 
         while time.monotonic() < deadline:
@@ -219,7 +218,7 @@ class BaslerCamera(Camera):
             try:
                 grab_result = camera.RetrieveResult(remaining_ms, pylon.TimeoutHandling_ThrowException)
             except genicam.TimeoutException as err:
-                msg = f"Timed out waiting for frame after {timeout_s}s"
+                msg = f"Timed out waiting for frame after {timeout}s"
                 raise CaptureTimeoutError(msg) from err
 
             if grab_result.GrabSucceeded():

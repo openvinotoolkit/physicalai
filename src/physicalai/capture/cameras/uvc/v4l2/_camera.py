@@ -198,7 +198,7 @@ class V4L2Camera(Camera):
         msg = f"Timed out waiting for frame from {self._device_path}"
         raise CaptureTimeoutError(msg)
 
-    def read(self, timeout: float | None = None) -> Frame:
+    def read(self, timeout: float = 2.0) -> Frame:
         if not self._connected or self._fd is None:
             msg = "Cannot read: camera is not connected. Call connect() first."
             raise NotConnectedError(msg)

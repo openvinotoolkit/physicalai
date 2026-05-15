@@ -27,6 +27,11 @@ class DeviceInfo(BaseModel):
     )
     manufacturer: str | None = Field(default=None, description="Device manufacturer (e.g. 'Intel', 'Basler').")
     model: str | None = Field(default=None, description="Device model when available.")
+    id_stable: bool = Field(
+        default=False,
+        description="True when device_id (or hardware_id) survives reboot/replug/port-change. "
+        "Callers may persist device_id only when this is True.",
+    )
     metadata: dict[str, Any] | None = Field(default=None, description="Backend-specific extras.")
 
 

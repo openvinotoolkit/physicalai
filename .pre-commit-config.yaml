@@ -11,7 +11,7 @@ default_language_version:
 repos:
   # Ruff - Python linter and formatter
   - repo: https://github.com/charliermarsh/ruff-pre-commit
-    rev: v0.11.13
+    rev: v0.15.12
     hooks:
       - id: ruff-check
         args: [--fix, --unsafe-fixes]

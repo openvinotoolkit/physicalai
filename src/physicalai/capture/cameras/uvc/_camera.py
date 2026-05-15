@@ -121,7 +121,7 @@ class UVCCamera(Camera):
     # Reading
     # ------------------------------------------------------------------
 
-    def read(self, timeout: float | None = None) -> Frame:
+    def read(self, timeout: float = 2.0) -> Frame:
         return self._inner.read(timeout=timeout)
 
     def read_latest(self) -> Frame:
@@ -148,6 +148,20 @@ class UVCCamera(Camera):
         from ._discover import discover_uvc  # noqa: PLC0415
 
         return discover_uvc()
+
+    @classmethod
+    def query_formats(cls, device_id: str) -> list[tuple[int, int, int]]:
+        """Query supported formats without opening a stream.
+
+        Args:
+            device_id: Device index or unique_id string.
+
+        Returns:
+            Sorted list of ``(width, height, fps)`` tuples.
+        """
+        from ._omnicamera import OmniCamera  # noqa: PLC0415
+
+        return OmniCamera.query_formats(device_id)
 
     # ------------------------------------------------------------------
     # Camera Settings

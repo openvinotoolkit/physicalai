@@ -34,6 +34,7 @@ def discover_realsense() -> list[DeviceInfo]:
                 name=name,
                 driver="realsense",
                 hardware_id=serial,
+                id_stable=True,
                 manufacturer="RealSense",
                 model=name,
             )

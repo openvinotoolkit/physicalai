@@ -32,6 +32,7 @@ def discover_basler() -> list[DeviceInfo]:
                     name=dev.GetUserDefinedName(),
                     driver="basler",
                     hardware_id=serial,
+                    id_stable=True,
                     manufacturer=dev.GetVendorName(),
                     model=dev.GetModelName(),
                     metadata={"address": dev.GetAddress()},

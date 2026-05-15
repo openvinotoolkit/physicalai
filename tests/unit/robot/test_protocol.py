@@ -36,7 +36,7 @@ class _ValidRobot:
     def get_observation(self) -> _Obs:
         return _Obs(joint_positions=np.zeros(6, dtype=np.float32), timestamp=0.0)
 
-    def send_action(self, action: np.ndarray) -> None:
+    def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None:
         pass
 
     def is_connected(self) -> bool:
@@ -56,7 +56,7 @@ class _MissingConnect:
     def get_observation(self) -> _Obs:
         return _Obs(joint_positions=np.zeros(6, dtype=np.float32), timestamp=0.0)
 
-    def send_action(self, action: np.ndarray) -> None:
+    def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None:
         pass
 
     def is_connected(self) -> bool:

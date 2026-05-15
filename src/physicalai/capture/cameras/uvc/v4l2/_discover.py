@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
-# ruff: noqa: DOC201, PLR0914
+# ruff: noqa: DOC201, PLR0914, PLR0915
 
 """V4L2 device enumeration via sysfs and QUERYCAP ioctl.
 
@@ -143,8 +143,13 @@ def discover_v4l2() -> list[DeviceInfo]:
             by_id = _find_symlink(_V4L_BY_ID, device_path)
             by_path = _find_symlink(_V4L_BY_PATH, device_path)
 
-            # Prefer by-id (includes serial) for hardware_id, fall back to bus_info
-            hardware_id = by_id or bus_info
+            if by_id:
+                hardware_id = f"/dev/v4l/by-id/{by_id}"
+                id_stable = True
+            else:
+                hardware_id = bus_info or None
+                id_stable = False
+
             devices.append(
                 DeviceInfo(
                     device_id=device_path,
@@ -152,6 +157,7 @@ def discover_v4l2() -> list[DeviceInfo]:
                     name=card_name,
                     driver="v4l2",
                     hardware_id=hardware_id,
+                    id_stable=id_stable,
                     manufacturer=manufacturer,
                     model=product or card_name,
                     metadata={

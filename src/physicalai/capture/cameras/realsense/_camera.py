@@ -44,6 +44,7 @@ class RealSenseCamera(DepthMixin, Camera):
         self._connected = False
         self._sequence = 0
         self._depth_sequence = 0
+        self._last_timestamp: float = 0.0
         self._pipeline: Any | None = None
         self._config: Any | None = None
         self._align: Any | None = None
@@ -123,7 +124,7 @@ class RealSenseCamera(DepthMixin, Camera):
         """
         return f"realsense:{self._serial_number}"
 
-    def read(self, timeout: float | None = None) -> Frame:
+    def read(self, timeout: float = 2.0) -> Frame:
         """Read the next aligned color frame.
 
         Returns:
@@ -137,7 +138,7 @@ class RealSenseCamera(DepthMixin, Camera):
         if not self._connected or self._pipeline is None or self._align is None:
             raise NotConnectedError
 
-        timeout_ms = int(timeout * 1000) if timeout is not None else 15000
+        timeout_ms = int(timeout * 1000)
         try:
             frameset = self._pipeline.wait_for_frames(timeout_ms)
         except RuntimeError as err:
@@ -154,7 +155,8 @@ class RealSenseCamera(DepthMixin, Camera):
         converted = self._convert_color(color_data)
         self._last_frameset = frameset
         self._sequence += 1
-        return Frame(data=converted, timestamp=time.monotonic(), sequence=self._sequence)
+        self._last_timestamp = time.monotonic()
+        return Frame(data=converted, timestamp=self._last_timestamp, sequence=self._sequence)
 
     def read_latest(self) -> Frame:
         """Read the freshest aligned color frame without blocking.
@@ -186,7 +188,8 @@ class RealSenseCamera(DepthMixin, Camera):
             converted = self._convert_color(color_data)
             self._last_frameset = latest_frameset
             self._sequence += 1
-            return Frame(data=converted, timestamp=time.monotonic(), sequence=self._sequence)
+            self._last_timestamp = time.monotonic()
+            return Frame(data=converted, timestamp=self._last_timestamp, sequence=self._sequence)
 
         if self._last_frameset is None:
             msg = "No frame available"
@@ -198,7 +201,7 @@ class RealSenseCamera(DepthMixin, Camera):
             raise CaptureError(msg)
         color_data = np.asanyarray(color_frame.get_data())
         converted = self._convert_color(color_data)
-        return Frame(data=converted, timestamp=time.monotonic(), sequence=self._sequence)
+        return Frame(data=converted, timestamp=self._last_timestamp, sequence=self._sequence)
 
     def read_depth(self) -> Frame:
         """Read the next aligned depth frame.
@@ -229,7 +232,8 @@ class RealSenseCamera(DepthMixin, Camera):
         depth_data = np.asanyarray(depth_frame.get_data())
         self._last_frameset = frameset
         self._depth_sequence += 1
-        return Frame(data=depth_data, timestamp=time.monotonic(), sequence=self._depth_sequence)
+        self._last_timestamp = time.monotonic()
+        return Frame(data=depth_data, timestamp=self._last_timestamp, sequence=self._depth_sequence)
 
     def read_rgbd(self) -> tuple[Frame, Frame]:
         """Read aligned RGB and depth frames from one capture.
@@ -292,3 +296,36 @@ class RealSenseCamera(DepthMixin, Camera):
         from ._discover import discover_realsense  # noqa: PLC0415
 
         return discover_realsense()
+
+    @classmethod
+    def query_formats(cls, device_id: str) -> list[tuple[int, int, int]]:
+        """Query supported color stream formats for a RealSense device.
+
+        Args:
+            device_id: Serial number of the device.
+
+        Returns:
+            Sorted list of ``(width, height, fps)`` tuples.
+        """
+        rs_any = cast("Any", rs)
+        ctx = rs_any.context()
+
+        target_dev = None
+        for dev in ctx.query_devices():
+            serial = dev.get_info(rs_any.camera_info.serial_number)
+            if serial == str(device_id):
+                target_dev = dev
+                break
+
+        if target_dev is None:
+            return []
+
+        formats: set[tuple[int, int, int]] = set()
+        for sensor in target_dev.query_sensors():
+            for profile in sensor.get_stream_profiles():
+                if profile.stream_type() != rs_any.stream.color:
+                    continue
+                vp = profile.as_video_stream_profile()
+                formats.add((vp.width(), vp.height(), vp.fps()))
+
+        return sorted(formats)

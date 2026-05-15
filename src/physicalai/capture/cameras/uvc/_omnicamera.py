@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
+import contextlib
+import re
+import sys
 import time
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
-import omni_camera
+import pynokhwa as omni_camera  # rename omni_camera references
 
 from physicalai.capture.camera import Camera, ColorMode
 from physicalai.capture.cameras.uvc._camera_setting import CameraSetting  # noqa: PLC2701
@@ -47,6 +50,13 @@ class OmniCamera(Camera):
 
     @staticmethod
     def _resolve_device_info(infos: list[omni_camera.CameraInfo], device_id: int | str) -> omni_camera.CameraInfo:
+        # Try unique_id match first for string identifiers.
+        if isinstance(device_id, str) and device_id:
+            match = next((c for c in infos if c.unique_id and c.unique_id == device_id), None)
+            if match is not None:
+                return match
+
+        # Fall back to index-based resolution.
         normalized_device_id: int
         if isinstance(device_id, str):
             if device_id.isdecimal():
@@ -60,7 +70,7 @@ class OmniCamera(Camera):
             else:
                 msg = (
                     "OmniCamera backend does not support device path strings on this platform. "
-                    "Use an integer camera index instead."
+                    "Use an integer camera index or a stable unique_id instead."
                 )
                 raise ValueError(msg)
         else:
@@ -70,67 +80,85 @@ class OmniCamera(Camera):
         if info is None:
             msg = f"No camera found at index {normalized_device_id}"
             raise CaptureError(msg)
-        if not info.can_open():
-            msg = "Camera cannot be opened"
-            raise CaptureError(msg)
         return info
 
     def _resolve_format(self) -> omni_camera.CameraFormat:
         if self._cam is None:
             msg = "Camera cannot be opened"
             raise CaptureError(msg)
-        try:
-            opts = self._cam.get_format_options()
-            # noqa: TD002, TD003, FIX002 # TODO: Switch back to keyword args when omni_camera type stubs support them.
-            opts = opts.prefer_width_range(self._width, self._width)
-            opts = opts.prefer_height_range(self._height, self._height)
-            opts = opts.prefer_fps_range(self._fps, self._fps)
-            return opts.resolve(key=lambda x: x.width)
-        except (RuntimeError, ValueError, TypeError):
-            try:
-                opts2 = self._cam.get_format_options()
-                opts2 = opts2.prefer_width_range(self._width)
-                opts2 = opts2.prefer_height_range(self._height)
-                return opts2.resolve()
-            except (RuntimeError, ValueError, TypeError):
-                try:
-                    return self._cam.get_format_options().resolve_default()
-                except (RuntimeError, ValueError, TypeError) as err:
-                    msg = "No compatible camera format found"
-                    raise CaptureError(msg) from err
+
+        fmts = self._cam.get_format_options()
+        if not fmts:
+            msg = (
+                "Camera reports no supported formats. This typically means the device "
+                "only outputs formats unsupported by the nokhwa backend (e.g. BGRA from "
+                "a virtual camera like OBS Virtual Camera)."
+            )
+            raise CaptureError(msg)
+
+        for f in fmts:
+            if f.width == self._width and f.height == self._height and round(f.frame_rate) == round(self._fps):
+                return f
+
+        available = sorted({(f.width, f.height, int(f.frame_rate)) for f in fmts})
+        available_str = ", ".join(f"{w}x{h}@{fps}" for w, h, fps in available)
+        msg = (
+            f"No camera format matching {self._width}x{self._height}@{self._fps}fps. Available formats: {available_str}"
+        )
+        raise CaptureError(msg)
 
     def connect(self, timeout: float = 5.0) -> None:
-        infos = omni_camera.query(only_usable=True)
+        # On macOS, nokhwa_initialize() fires an async AVFoundation permission
+        # request at module import. If we query before that callback resolves,
+        # the camera list may be empty. Retry briefly to give the TCC
+        # callback time to deliver.
+        # We use only_usable=False so that hardware indices match those
+        # returned by discover(). Unsupported devices (e.g. BGRA-only
+        # virtual cameras) are caught later in _resolve_format().
+        query_deadline = time.monotonic() + 2.0
+        infos = omni_camera.query(only_usable=False)
+        while not infos and time.monotonic() < query_deadline:
+            time.sleep(0.1)
+            infos = omni_camera.query(only_usable=False)
         info = self._resolve_device_info(infos, self._device_id_raw)
 
-        self._cam = omni_camera.Camera(info)
-        fmt = self._resolve_format()
+        try:
+            self._cam = omni_camera.Camera(info)
+            fmt = self._resolve_format()
 
-        if fmt.width != self._width or fmt.height != self._height or fmt.frame_rate != self._fps:
-            from loguru import logger  # noqa: PLC0415
-
-            logger.warning(
-                f"Requested {self._width}x{self._height}@{self._fps}fps, "
-                f"using {fmt.width}x{fmt.height}@{fmt.frame_rate}fps",
-            )
-
-        self._cam.open(fmt)
+            self._cam.open(fmt)
+        except RuntimeError as exc:
+            if "FourCharCode" in str(exc):
+                msg = (
+                    f"Camera at index {self._device_id_raw} uses an unsupported pixel "
+                    "format. This typically indicates a virtual or utility camera "
+                    "(e.g. Nikon Webcam Utility, OBS Virtual Camera) that is not "
+                    "compatible with the nokhwa backend."
+                )
+                raise CaptureError(msg) from exc
+            raise
 
         frame_data = None
+        seq = self._sequence
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            frame_data = self._cam.poll_frame_np()
-            if frame_data is not None:
+            # result could be None if camera is no connected yet
+            result = None
+            with contextlib.suppress(Exception):
+                result = self._cam.poll_frame_np_with_seq()
+            if result is not None:
+                frame_data, seq = result
                 break
-            time.sleep(self._POLL_INTERVAL_S)
+            time.sleep(1.0 / self._fps)
 
         if frame_data is None:
+            self._do_disconnect()
             msg = f"Timed out waiting for first frame after {timeout}s"
             raise CaptureTimeoutError(msg)
 
         self._last_frame = frame_data
         self._connected = True
-        self._sequence = 0
+        self._sequence = seq
 
     def _do_disconnect(self) -> None:
         if self._cam is not None:
@@ -147,22 +175,29 @@ class OmniCamera(Camera):
     def device_id(self) -> str:
         return str(self._device_id_raw)
 
-    def read(self, timeout: float | None = None) -> Frame:
+    def read(self, timeout: float = 2.0) -> Frame:
         if not self._connected or self._cam is None:
             err = NotConnectedError()
             raise err
 
-        deadline = time.monotonic() + timeout if timeout is not None else None
-
+        deadline = time.monotonic() + timeout
         while True:
-            frame_data = self._cam.poll_frame_np()
-            if frame_data is not None:
-                converted = self._convert_color(frame_data)
-                self._sequence += 1
-                self._last_frame = frame_data
-                return Frame(data=converted, timestamp=time.monotonic(), sequence=self._sequence)
+            try:
+                frame_data, seq = self._cam.poll_frame_np_with_seq()
+                if frame_data is not None and seq != self._sequence:
+                    converted = self._convert_color(frame_data)
+                    self._sequence = seq
+                    self._last_frame = frame_data
+                    return Frame(data=converted, timestamp=time.monotonic(), sequence=self._sequence)
+                last_error = None
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
 
-            if deadline is not None and time.monotonic() >= deadline:
+            if time.monotonic() >= deadline:
+                if last_error is not None:
+                    self._do_disconnect()
+                    msg = f"Failed to read frame from device {self.device_id} within {timeout}s: {last_error}"
+                    raise CaptureError(msg) from last_error
                 msg = f"Timed out waiting for frame after {timeout}s"
                 raise CaptureTimeoutError(msg)
 
@@ -173,12 +208,17 @@ class OmniCamera(Camera):
             err = NotConnectedError()
             raise err
 
-        frame_data = self._cam.poll_frame_np()
-        if frame_data is not None:
-            converted = self._convert_color(frame_data)
-            self._sequence += 1
-            self._last_frame = frame_data
-            return Frame(data=converted, timestamp=time.monotonic(), sequence=self._sequence)
+        try:
+            frame_data, seq = self._cam.poll_frame_np_with_seq()
+            if frame_data is not None:
+                converted = self._convert_color(frame_data)
+                self._sequence = seq
+                self._last_frame = frame_data
+                return Frame(data=converted, timestamp=time.monotonic(), sequence=self._sequence)
+        except Exception as exc:
+            self._do_disconnect()
+            msg = f"Failed to read frame from device: {self.device_id}"
+            raise CaptureError(msg) from exc
 
         if self._last_frame is not None:
             return Frame(
@@ -203,25 +243,72 @@ class OmniCamera(Camera):
     def discover(cls) -> list[DeviceInfo]:
         from physicalai.capture.discovery import DeviceInfo  # noqa: PLC0415
 
-        infos = omni_camera.query(only_usable=True)
-        return [
-            DeviceInfo(
-                device_id=str(info.index),
-                index=info.index,
-                name=info.name,
-                driver="uvc",
-                hardware_id="",
-                manufacturer="",
-                model=info.name,
-                metadata={
-                    "description": info.description,
-                    "misc": info.misc,
-                    "backend": "omnicamera",
-                },
+        infos = omni_camera.query(only_usable=False)
+
+        if sys.platform.startswith("linux"):
+            # V4L2 exposes multiple /dev/videoN nodes per physical camera
+            # (e.g. capture + metadata with distinct by-id paths like
+            # ...-video-index0 and ...-video-index1). Keep only the lowest-
+            # index node per physical device (index0 = capture, index1+ = metadata).
+            phys_best: dict[str, omni_camera.CameraInfo] = {}
+            for info in infos:
+                uid = info.unique_id or ""
+                phys_key = re.sub(r"-video-index\d+$", "", uid) if uid else str(info.index)
+                if phys_key not in phys_best or info.index < phys_best[phys_key].index:
+                    phys_best[phys_key] = info
+            infos = list(phys_best.values())
+
+        # Some vendors/models bake the same USB iSerial into every
+        # unit of a model. When a unique_id appears more than once it cannot
+        # identify a specific device, so demote those entries to index-based
+        # fingerprints and let the user manage cable-to-config mapping.
+        unique_id_counts: dict[str, int] = {}
+        for info in infos:
+            if info.unique_id:
+                unique_id_counts[info.unique_id] = unique_id_counts.get(info.unique_id, 0) + 1
+        colliding_ids = {uid for uid, count in unique_id_counts.items() if count > 1}
+
+        devices: list[DeviceInfo] = []
+        for info in infos:
+            has_collision = bool(info.unique_id) and info.unique_id in colliding_ids
+            stable = bool(info.id_stable and info.unique_id and not has_collision)
+            devices.append(
+                DeviceInfo(
+                    device_id=info.unique_id if stable else str(info.index),
+                    index=info.index,
+                    name=info.name,
+                    driver="uvc",
+                    hardware_id=info.unique_id or None,
+                    id_stable=stable,
+                    manufacturer="",
+                    model=info.name,
+                    metadata={
+                        "description": info.description,
+                        "misc": info.misc,
+                        "backend": "omnicamera",
+                        "unique_id": info.unique_id or "",
+                        "serial_collision": has_collision,
+                    },
+                )
             )
-            for info in infos
-            if info.can_open()
-        ]
+        return devices
+
+    @classmethod
+    def query_formats(cls, device_id: str) -> list[tuple[int, int, int]]:
+        """Query supported formats for a device without opening a stream.
+
+        Args:
+            device_id: Device index or unique_id string.
+
+        Returns:
+            Sorted list of ``(width, height, fps)`` tuples.
+        """
+        infos = omni_camera.query(only_usable=False)
+        resolved_id: int | str = int(device_id) if device_id.isdecimal() else device_id
+        info = cls._resolve_device_info(infos, resolved_id)
+        cam = omni_camera.Camera(info)
+        fmts = cam.get_format_options()
+        return sorted({(f.width, f.height, int(f.frame_rate)) for f in fmts})
 
     def get_settings(self) -> list[CameraSetting]:
         if not self._connected or self._cam is None:
