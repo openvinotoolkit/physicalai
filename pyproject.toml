@@ -61,7 +61,7 @@ robots = [
 ]
 
 [dependency-groups]
-dev = ["pytest", "mypy", "pyrefly", "ruff", "prek"]
+dev = ["pytest", "mypy", "pyrefly", "ruff>=0.15.12", "prek"]
 
 [tool.hatch.metadata]
 allow-direct-references = true

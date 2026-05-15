@@ -1229,7 +1229,7 @@ dev = [
     { name = "prek" },
     { name = "pyrefly" },
     { name = "pytest" },
-    { name = "ruff" },
+    { name = "ruff", specifier = ">=0.15.12" },
 ]
 
 [[package]]
