@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from physicalai.capture.cameras.basler import BaslerCamera
     from physicalai.capture.cameras.realsense import RealSenseCamera
     from physicalai.capture.cameras.uvc import UVCCamera
-    from physicalai.capture.transport import SharedCamera, create_shared_camera
+    from physicalai.capture.transport import SharedCamera
 
 __all__ = [  # noqa: RUF022
     # ABC & types
@@ -62,7 +62,6 @@ __all__ = [  # noqa: RUF022
     "BaslerCamera",
     "UVCCamera",
     "SharedCamera",
-    "create_shared_camera",
 ]
 
 
