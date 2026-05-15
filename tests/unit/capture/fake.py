@@ -34,12 +34,14 @@ class FakeCamera(Camera):
         *,
         width: int = 640,
         height: int = 480,
+        fps: int = 30,
         color_mode: ColorMode = ColorMode.RGB,
         device_name: str = "fake-0",
     ) -> None:
         super().__init__(color_mode=color_mode)
         self._width = width
         self._height = height
+        self.fps = fps
         self._device_name = device_name
         self._connected = False
         self._sequence = 0
