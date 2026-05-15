@@ -253,7 +253,14 @@ class OmniCamera(Camera):
             phys_best: dict[str, omni_camera.CameraInfo] = {}
             for info in infos:
                 uid = info.unique_id or ""
-                phys_key = re.sub(r"-video-index\d+$", "", uid) if uid else str(info.index)
+                # Only group by stripped key when the V4L2 multi-node
+                # suffix is present (e.g. ...-video-index0 / -video-index1).
+                # Cameras without that suffix keep their own index key so
+                # genuinely separate devices sharing a serial are not collapsed.
+                if uid and re.search(r"-video-index\d+$", uid):
+                    phys_key = re.sub(r"-video-index\d+$", "", uid)
+                else:
+                    phys_key = str(info.index)
                 if phys_key not in phys_best or info.index < phys_best[phys_key].index:
                     phys_best[phys_key] = info
             infos = list(phys_best.values())
