@@ -19,9 +19,9 @@ from physicalai.robot.verify import verify_robot
 
 __all__ = [
     "Robot",
+    "RobotObservation",
     "connect",
     "verify_robot",
-    "RobotObservation",
 ]
 
 
