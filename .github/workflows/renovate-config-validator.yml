@@ -63,7 +63,7 @@ jobs:
     name: Required Check renovate-config-validator
     needs:
       - check-paths
-      - validate
+      - validate-renovate-config
     runs-on: ubuntu-latest
     env:
       CHECKS: ${{ join(needs.*.result, ' ') }}
