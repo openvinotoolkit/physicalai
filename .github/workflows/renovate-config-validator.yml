@@ -39,7 +39,7 @@ jobs:
               - .github/workflows/renovate.yml
               - .github/workflows/renovate-config-validator.yml
 
-  validate:
+  validate-renovate-config:
     runs-on: ubuntu-latest
     needs: check-paths
     if: needs.check-paths.outputs.run_workflow == 'true'
