@@ -45,6 +45,13 @@ class ActionQueue:
             self._total_pops += 1
             return self._deque.popleft()
 
+    def peek_remaining(self) -> np.ndarray | None:
+        """Return copy of remaining actions without consuming them. Thread-safe."""
+        with self._lock:
+            if not self._deque:
+                return None
+            return np.stack(list(self._deque))
+
     @property
     def remaining(self) -> int:
         with self._lock:

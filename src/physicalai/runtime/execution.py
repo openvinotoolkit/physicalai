@@ -16,6 +16,7 @@ import numpy as np
 if TYPE_CHECKING:
     from physicalai.inference.model import InferenceModel
     from physicalai.runtime._action_queue import ActionQueue
+    from physicalai.runtime._telemetry import TelemetryEmitter
 
 logger = logging.getLogger(__name__)
 
@@ -111,11 +112,13 @@ class AsyncExecution(Execution):
         fps: int = 30,
         watchdog_timeout_s: float = 30.0,
         max_consecutive_holds: int | None = None,
+        telemetry: TelemetryEmitter | None = None,
     ) -> None:
         self._threshold_frac = threshold
         self._fps = fps
         self._watchdog_timeout_s = watchdog_timeout_s
         self._max_consecutive_holds = max_consecutive_holds or 3 * fps
+        self._telemetry = telemetry
 
         self._model: InferenceModel | None = None
         self._queue: ActionQueue | None = None
@@ -241,6 +244,9 @@ class AsyncExecution(Execution):
                 offset = int(latency * self._fps)
                 self._queue.push_chunk(actions, offset=offset)
                 self._inference_count += 1
+
+                if self._telemetry:
+                    self._telemetry.emit_inference(latency_s=latency, offset=offset, chunk=actions)
 
                 with self._lock:
                     self._running_inference = False

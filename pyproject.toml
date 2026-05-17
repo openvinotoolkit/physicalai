@@ -52,6 +52,7 @@ abb = []
 franka = []
 trossen = ["trossen-arm>=1.9.0"]
 so101 = ["feetech-servo-sdk"]
+telemetry = ["eclipse-zenoh>=1.0", "msgpack>=1.0"]
 robots = [
     "physicalai[ur]",
     "physicalai[abb]",
@@ -65,6 +66,9 @@ dev = ["pytest", "mypy", "pyrefly", "ruff>=0.15.12", "prek"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
+
+[project.scripts]
+physicalai = "physicalai.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/openvinotoolkit/physical-ai"

@@ -1,0 +1,14 @@
+model:
+  path: "./test_exports/act_policy"
+  backend: "auto"
+robot:
+  type: "mock"
+  port: "/dev/null"
+cameras:
+  overhead:
+    type: "mock"
+    device_id: "test_cam_0"
+execution:
+  mode: "sync"
+fps: 10.0
+duration_s: 1.0

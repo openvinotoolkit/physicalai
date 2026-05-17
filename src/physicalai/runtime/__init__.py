@@ -9,9 +9,11 @@ Public API::
     from physicalai.runtime import SyncExecution, AsyncExecution, Execution, WorkerDiedError
     from physicalai.runtime import ActionQueue
     from physicalai.runtime import ChunkSmoother, LerpSmoother, ReplaceSmoother
+    from physicalai.runtime import TelemetryEmitter
 """
 
 from physicalai.runtime._action_queue import ActionQueue  # noqa: PLC2701
+from physicalai.runtime._telemetry import TelemetryEmitter  # noqa: PLC2701
 from physicalai.runtime.execution import (
     AsyncExecution,
     Execution,
@@ -36,5 +38,6 @@ __all__ = [
     "RunStats",
     "RuntimeCallback",
     "SyncExecution",
+    "TelemetryEmitter",
     "WorkerDiedError",
 ]
