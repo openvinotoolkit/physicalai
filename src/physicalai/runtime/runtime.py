@@ -110,6 +110,7 @@ class PolicyRuntime:
         self._action_queue = action_queue or ActionQueue(smoother=LerpSmoother(duration_frames=_DEFAULT_LERP_FRAMES))
         self._obs_to_input = obs_to_input or default_observation_to_input
         self._callbacks = list(callbacks)
+        self._goal_time = (1.0 / fps) * 3
 
     def run(self, *, duration_s: float | None = None) -> RunStats:
         """Run the control loop.
@@ -166,7 +167,7 @@ class PolicyRuntime:
                 if modified is not None:
                     action = modified
 
-                self._robot.send_action(action)
+                self._robot.send_action(action, goal_time=self._goal_time)
                 self._invoke_callback("on_action_sent", action=action, step=step)
 
                 elapsed = time.perf_counter() - loop_start

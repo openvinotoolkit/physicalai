@@ -14,13 +14,14 @@ Public API::
 from __future__ import annotations
 
 from physicalai.robot.connect import connect
-from physicalai.robot.interface import Robot
+from physicalai.robot.interface import Robot, RobotObservation
 from physicalai.robot.verify import verify_robot
 
 __all__ = [
     "Robot",
     "connect",
     "verify_robot",
+    "RobotObservation",
 ]
 
 
