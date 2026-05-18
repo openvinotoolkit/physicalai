@@ -48,9 +48,10 @@ class ConsoleCallback:
 class JsonlCallback:
     """Append-only JSONL recording. Numpy arrays converted to lists."""
 
-    def __init__(self, path: str | Path) -> None:  # noqa: D107
+    def __init__(self, path: str | Path, *, record_chunks: bool = False) -> None:  # noqa: D107
         self._path = Path(path)
         self._file = self._path.open("a")
+        self._record_chunks = record_chunks
 
     def on_tick(self, event: TickEvent) -> None:  # noqa: D102
         self._write(
@@ -69,16 +70,16 @@ class JsonlCallback:
         )
 
     def on_inference(self, event: InferenceEvent) -> None:  # noqa: D102
-        self._write(
-            "inference",
-            {
-                "session_id": event.session_id,
-                "timestamp": event.timestamp,
-                "latency_s": event.latency_s,
-                "offset": event.offset,
-                "chunk_shape": list(event.chunk.shape),
-            },
-        )
+        payload: dict[str, Any] = {
+            "session_id": event.session_id,
+            "timestamp": event.timestamp,
+            "latency_s": event.latency_s,
+            "offset": event.offset,
+            "chunk_shape": list(event.chunk.shape),
+        }
+        if self._record_chunks:
+            payload["chunk"] = event.chunk.tolist()
+        self._write("inference", payload)
 
     def on_lifecycle(self, event: LifecycleEvent) -> None:  # noqa: D102
         self._write(
@@ -105,6 +106,10 @@ class ZenohCallback:
 
     Requires ``physicalai[telemetry]`` (zenoh + msgpack).  If not installed,
     construction raises ``ImportError``.
+
+    Note: ``zenoh.open()`` runs synchronously on the control thread during the
+    first ``on_lifecycle`` call.  This is typically <10ms but blocks the loop
+    until the zenoh session is established.
     """
 
     def __init__(self) -> None:  # noqa: D107
@@ -161,6 +166,12 @@ class AsyncCallback:
     """
 
     def __init__(self, inner: Any, max_queue: int = 1024) -> None:  # noqa: D107, ANN401
+        if hasattr(inner, "before_send_action"):
+            msg = (
+                f"{type(inner).__name__} defines before_send_action which requires "
+                "synchronous request-response semantics incompatible with AsyncCallback"
+            )
+            raise TypeError(msg)
         self._inner = inner
         self._queue: deque[tuple[str, Any]] = deque(maxlen=max_queue)
         self._stop = threading.Event()

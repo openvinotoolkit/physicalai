@@ -33,6 +33,11 @@ class Execution(ABC):
     _bus: _CallbackBus | None
     _session_id: str
 
+    def set_bus(self, bus: _CallbackBus, session_id: str) -> None:
+        """Inject callback bus and session ID before the control loop starts."""
+        self._bus = bus
+        self._session_id = session_id
+
     @abstractmethod
     def start(self, model: InferenceModel, action_queue: ActionQueue) -> None:
         """Bind to model and queue. Called once before the loop."""

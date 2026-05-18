@@ -38,6 +38,7 @@ _MAX_SEND_RETRIES = 2
 _RETRY_BACKOFF_S = 0.001
 _WARMUP_RETRIES = 5
 _WARMUP_BACKOFF_S = 1.0
+_GOAL_TIME_TICKS = 3
 
 
 def _import_class(class_path: str) -> type:
@@ -121,7 +122,7 @@ class PolicyRuntime:
         self._cameras: Mapping[str, Camera] = cameras or {}
         self._action_queue = action_queue or ActionQueue(smoother=LerpSmoother(duration_frames=_DEFAULT_LERP_FRAMES))
         self._bus = _CallbackBus(callbacks)
-        self._goal_time = (1.0 / fps) * 3
+        self._goal_time = (1.0 / fps) * _GOAL_TIME_TICKS
         self._connected = False
         self._last_robot_obs: RobotObservation | None = None
         self._last_camera_frames: dict[str, Frame] = {}
@@ -284,19 +285,22 @@ class PolicyRuntime:
             raise RuntimeError(msg)
 
         self._session_id = uuid.uuid4().hex[:8]
-        self._execution._bus = self._bus  # noqa: SLF001
-        self._execution._session_id = self._session_id  # noqa: SLF001
+        self._execution.set_bus(self._bus, self._session_id)
 
         self._execution.start(self._model, self._action_queue)
-        self._warmup_with_retry()
         self._bus.emit_lifecycle(
             LifecycleEvent(
                 session_id=self._session_id,
                 timestamp=time.time(),
                 event="start",
-                metadata={"fps": self._fps, "duration_s": duration_s},
+                metadata={
+                    "fps": self._fps,
+                    "duration_s": duration_s,
+                    "cameras": list(self._cameras.keys()),
+                },
             )
         )
+        self._warmup_with_retry()
 
         goal_time = 1.0 / self._fps
         step = 0
@@ -343,7 +347,7 @@ class PolicyRuntime:
                     TickEvent(
                         session_id=self._session_id,
                         step=step,
-                        timestamp=time.perf_counter(),
+                        timestamp=time.time(),
                         joint_positions=self._last_robot_obs.joint_positions if self._last_robot_obs else None,
                         action_sent=action,
                         queue_remaining=self._action_queue.remaining,
@@ -508,6 +512,18 @@ class PolicyRuntime:
                 return
 
         self._transient_errors += 1
+        self._consecutive_error_ticks += 1
+        if self._consecutive_error_ticks >= self._max_consecutive_error_ticks:
+            self._bus.emit_lifecycle(
+                LifecycleEvent(
+                    session_id=self._session_id,
+                    timestamp=time.time(),
+                    event="connection_lost",
+                    metadata={"error": str(last_error), "source": "send"},
+                )
+            )
+            msg = "Exceeded max consecutive send failures"
+            raise ConnectionError(msg) from last_error
         self._bus.emit_lifecycle(
             LifecycleEvent(
                 session_id=self._session_id,
@@ -537,6 +553,14 @@ class PolicyRuntime:
                 return
 
         msg = f"Warmup failed after {_WARMUP_RETRIES} attempts"
+        self._bus.emit_lifecycle(
+            LifecycleEvent(
+                session_id=self._session_id,
+                timestamp=time.time(),
+                event="warmup_failed",
+                metadata={"error": str(last_error), "attempts": _WARMUP_RETRIES},
+            )
+        )
         raise ConnectionError(msg) from last_error
 
     def _shutdown(self, step: int) -> None:

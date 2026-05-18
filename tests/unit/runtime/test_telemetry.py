@@ -281,7 +281,7 @@ class TestJsonlCallback:
 
 class TestAsyncCallback:
     def test_dispatches_events_asynchronously(self) -> None:
-        inner = MagicMock()
+        inner = MagicMock(spec=["on_tick", "on_inference", "on_lifecycle", "close"])
         cb = AsyncCallback(inner, max_queue=64)
         event = LifecycleEvent(session_id="t", timestamp=0.0, event="start", metadata={})
         cb.on_lifecycle(event)
@@ -290,7 +290,7 @@ class TestAsyncCallback:
         cb.close()
 
     def test_close_joins_thread(self) -> None:
-        inner = MagicMock()
+        inner = MagicMock(spec=["on_tick", "on_inference", "on_lifecycle", "close"])
         cb = AsyncCallback(inner)
         cb.close()
         assert not cb._thread.is_alive()

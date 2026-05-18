@@ -14,7 +14,10 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class TickEvent:
-    """Emitted once per control-loop tick."""
+    """Emitted once per control-loop tick.
+
+    All timestamps are wall-clock UTC seconds (``time.time()``).
+    """
 
     session_id: str
     step: int
@@ -29,7 +32,10 @@ class TickEvent:
 
 @dataclass(frozen=True, slots=True)
 class InferenceEvent:
-    """Emitted when an inference call completes (sync or async)."""
+    """Emitted when an inference call completes (sync or async).
+
+    All timestamps are wall-clock UTC seconds (``time.time()``).
+    """
 
     session_id: str
     timestamp: float
@@ -40,7 +46,10 @@ class InferenceEvent:
 
 @dataclass(frozen=True, slots=True)
 class LifecycleEvent:
-    """Emitted on session boundaries and error conditions."""
+    """Emitted on session boundaries and error conditions.
+
+    All timestamps are wall-clock UTC seconds (``time.time()``).
+    """
 
     session_id: str
     timestamp: float
