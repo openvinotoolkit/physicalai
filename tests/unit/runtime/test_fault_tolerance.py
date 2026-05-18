@@ -80,6 +80,7 @@ class TestResilientObserve:
         with patch("physicalai.runtime.runtime.time") as mock_time:
             mock_time.sleep = MagicMock()
             mock_time.perf_counter.return_value = 0.0
+            mock_time.time.return_value = 0.0
             result = rt._resilient_observe()
 
         assert result is not None
@@ -96,6 +97,7 @@ class TestResilientObserve:
         with patch("physicalai.runtime.runtime.time") as mock_time:
             mock_time.sleep = MagicMock()
             mock_time.perf_counter.return_value = 0.0
+            mock_time.time.return_value = 0.0
             result = rt._resilient_observe()
 
         assert result is not None
@@ -113,6 +115,7 @@ class TestResilientObserve:
 
         with patch("physicalai.runtime.runtime.time") as mock_time:
             mock_time.sleep = MagicMock()
+            mock_time.time.return_value = 0.0
             with pytest.raises(ConnectionError, match="Exceeded max consecutive"):
                 rt._resilient_observe()
 
@@ -125,6 +128,7 @@ class TestResilientObserve:
 
         with patch("physicalai.runtime.runtime.time") as mock_time:
             mock_time.sleep = MagicMock()
+            mock_time.time.return_value = 0.0
             with pytest.raises(ConnectionError, match="no stale observation"):
                 rt._resilient_observe()
 
@@ -152,6 +156,7 @@ class TestResilientObserveCameras:
         with patch("physicalai.runtime.runtime.time") as mock_time:
             mock_time.sleep = MagicMock()
             mock_time.perf_counter.return_value = 0.0
+            mock_time.time.return_value = 0.0
             result = rt._resilient_observe()
 
         assert "images.cam0" in result
@@ -166,6 +171,7 @@ class TestResilientObserveCameras:
         with patch("physicalai.runtime.runtime.time") as mock_time:
             mock_time.sleep = MagicMock()
             mock_time.perf_counter.return_value = 0.0
+            mock_time.time.return_value = 0.0
             with pytest.raises(CaptureError, match="no device"):
                 rt._resilient_observe()
 
@@ -180,6 +186,7 @@ class TestResilientSend:
 
         with patch("physicalai.runtime.runtime.time") as mock_time:
             mock_time.sleep = MagicMock()
+            mock_time.time.return_value = 0.0
             rt._resilient_send(action)
 
         assert robot.send_action.call_count == 2
@@ -195,6 +202,7 @@ class TestResilientSend:
 
         with patch("physicalai.runtime.runtime.time") as mock_time:
             mock_time.sleep = MagicMock()
+            mock_time.time.return_value = 0.0
             rt._resilient_send(action)
 
         assert robot.send_action.call_count == _MAX_SEND_RETRIES
@@ -219,6 +227,7 @@ class TestWarmupWithRetry:
         with patch("physicalai.runtime.runtime.time") as mock_time:
             mock_time.sleep = MagicMock()
             mock_time.perf_counter.return_value = 0.0
+            mock_time.time.return_value = 0.0
             rt._warmup_with_retry()
 
         assert execution.warmup.called
@@ -231,6 +240,7 @@ class TestWarmupWithRetry:
 
         with patch("physicalai.runtime.runtime.time") as mock_time:
             mock_time.sleep = MagicMock()
+            mock_time.time.return_value = 0.0
             with pytest.raises(ConnectionError, match=f"Warmup failed after {_WARMUP_RETRIES}"):
                 rt._warmup_with_retry()
 
@@ -247,6 +257,7 @@ class TestShutdownDrain:
         with patch("physicalai.runtime.runtime.time") as mock_time:
             mock_time.sleep = MagicMock()
             mock_time.perf_counter.return_value = 0.0
+            mock_time.time.return_value = 0.0
             rt._shutdown(step=10)
 
         assert rt._transient_errors > 0
@@ -276,6 +287,7 @@ class TestRunStatsWithFaults:
         with patch("physicalai.runtime.runtime.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
+            mock_time.time.return_value = 0.0
             stats = rt.run(duration_s=0.3)
 
         assert stats.stale_obs_ticks >= 1

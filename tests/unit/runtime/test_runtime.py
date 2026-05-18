@@ -87,6 +87,7 @@ class TestPolicyRuntime:
         with patch("physicalai.runtime.runtime.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
+            mock_time.time.return_value = 0.0
             stats = runtime.run(duration_s=0.5)
 
         assert stats.steps == 5
@@ -112,6 +113,7 @@ class TestPolicyRuntime:
         with patch("physicalai.runtime.runtime.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
+            mock_time.time.return_value = 0.0
             stats = runtime.run(duration_s=0.4)
 
         assert stats.steps == 4
@@ -141,6 +143,7 @@ class TestPolicyRuntime:
         with patch("physicalai.runtime.runtime.time") as mock_time, pytest.raises(WorkerDiedError, match="dead"):
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
+            mock_time.time.return_value = 0.0
             runtime.run(duration_s=1.0)
 
     def test_shutdown_does_not_disconnect(self) -> None:
@@ -158,6 +161,7 @@ class TestPolicyRuntime:
         with patch("physicalai.runtime.runtime.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
+            mock_time.time.return_value = 0.0
             runtime.run(duration_s=0.1)
 
         robot.disconnect.assert_not_called()
@@ -197,6 +201,7 @@ class TestRuntimeCallback:
         with patch("physicalai.runtime.runtime.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
+            mock_time.time.return_value = 0.0
             runtime.run(duration_s=0.2)
 
         assert callback.before_send_action.call_count == 2
@@ -219,6 +224,7 @@ class TestRuntimeCallback:
         with patch("physicalai.runtime.runtime.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
+            mock_time.time.return_value = 0.0
             stats = runtime.run(duration_s=0.3)
 
         assert stats.steps == 3
@@ -245,6 +251,7 @@ class TestRuntimeCallback:
         with patch("physicalai.runtime.runtime.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
+            mock_time.time.return_value = 0.0
             runtime.run(duration_s=0.3)
 
         assert callback.on_hold.call_count >= 1

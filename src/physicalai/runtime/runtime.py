@@ -8,6 +8,7 @@ from __future__ import annotations
 import importlib
 import logging
 import time
+import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, Self
 
@@ -15,6 +16,8 @@ import numpy as np
 
 from physicalai.capture.errors import CaptureError
 from physicalai.runtime._action_queue import ActionQueue  # noqa: PLC2701
+from physicalai.runtime._callback_bus import _CallbackBus  # noqa: PLC2701
+from physicalai.runtime.events import LifecycleEvent, TickEvent
 from physicalai.runtime.execution import Execution, WorkerDiedError
 from physicalai.runtime.smoothers import LerpSmoother
 
@@ -26,7 +29,6 @@ if TYPE_CHECKING:
     from physicalai.cli._config import RuntimeConfig
     from physicalai.inference.model import InferenceModel
     from physicalai.robot.interface import Robot, RobotObservation
-    from physicalai.runtime._telemetry import TelemetryEmitter
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +110,6 @@ class PolicyRuntime:
         cameras: Mapping[str, Camera] | None = None,
         action_queue: ActionQueue | None = None,
         callbacks: Sequence[RuntimeCallback] = (),
-        telemetry: TelemetryEmitter | None = None,
     ) -> None:
         if fps <= 0:
             msg = f"fps must be positive, got {fps}"
@@ -119,16 +120,16 @@ class PolicyRuntime:
         self._fps = fps
         self._cameras: Mapping[str, Camera] = cameras or {}
         self._action_queue = action_queue or ActionQueue(smoother=LerpSmoother(duration_frames=_DEFAULT_LERP_FRAMES))
-        self._callbacks = list(callbacks)
+        self._bus = _CallbackBus(callbacks)
         self._goal_time = (1.0 / fps) * 3
         self._connected = False
-        self._telemetry = telemetry
         self._last_robot_obs: RobotObservation | None = None
         self._last_camera_frames: dict[str, Frame] = {}
         self._consecutive_error_ticks: int = 0
         self._max_consecutive_error_ticks: int = int(3 * fps)
         self._stale_obs_ticks: int = 0
         self._transient_errors: int = 0
+        self._session_id: str = ""
 
     @property
     def robot(self) -> Robot:
@@ -141,7 +142,7 @@ class PolicyRuntime:
         return self._cameras
 
     @classmethod
-    def from_config(cls, config: RuntimeConfig) -> PolicyRuntime:
+    def from_config(cls, config: RuntimeConfig, callbacks: Sequence[RuntimeCallback] = ()) -> PolicyRuntime:
         """Construct a PolicyRuntime from a RuntimeConfig.
 
         Lazily imports InferenceModel, Camera, and robot classes.
@@ -149,6 +150,7 @@ class PolicyRuntime:
 
         Args:
             config: Validated runtime configuration.
+            callbacks: Optional callback sequence to attach.
 
         Returns:
             Configured PolicyRuntime instance.
@@ -202,6 +204,7 @@ class PolicyRuntime:
             action_queue=action_queue,
             cameras=cameras,
             fps=config.fps,
+            callbacks=callbacks,
         )
 
     def connect(self) -> None:
@@ -279,10 +282,21 @@ class PolicyRuntime:
         if not self._connected:
             msg = "PolicyRuntime.run() called before connect(). Use 'with runtime:' or call runtime.connect() first."
             raise RuntimeError(msg)
+
+        self._session_id = uuid.uuid4().hex[:8]
+        self._execution._bus = self._bus  # noqa: SLF001
+        self._execution._session_id = self._session_id  # noqa: SLF001
+
         self._execution.start(self._model, self._action_queue)
         self._warmup_with_retry()
-        if self._telemetry:
-            self._telemetry.emit_lifecycle("start", fps=self._fps, duration_s=duration_s)
+        self._bus.emit_lifecycle(
+            LifecycleEvent(
+                session_id=self._session_id,
+                timestamp=time.time(),
+                event="start",
+                metadata={"fps": self._fps, "duration_s": duration_s},
+            )
+        )
 
         goal_time = 1.0 / self._fps
         step = 0
@@ -315,15 +329,29 @@ class PolicyRuntime:
                     step += 1
                     continue
 
-                modified = self._invoke_callback("before_send_action", action=action, step=step)
-                if modified is not None:
-                    action = modified
+                action = self._bus.invoke_before_send_action(action=action, step=step)
 
                 self._resilient_send(action)
-                self._invoke_callback("on_action_sent", action=action, step=step)
-                elapsed, sleep_time = self._tick_sleep(loop_start, goal_time)
+                self._bus.invoke_on_action_sent(action=action, step=step)
 
-                self._emit_tick_telemetry(step, action, elapsed, sleep_time, stale_obs=stale_this_tick)
+                elapsed = time.perf_counter() - loop_start
+                sleep_time = goal_time - elapsed
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+
+                self._bus.emit_tick(
+                    TickEvent(
+                        session_id=self._session_id,
+                        step=step,
+                        timestamp=time.perf_counter(),
+                        joint_positions=self._last_robot_obs.joint_positions if self._last_robot_obs else None,
+                        action_sent=action,
+                        queue_remaining=self._action_queue.remaining,
+                        loop_duration_s=elapsed,
+                        sleep_time_s=max(sleep_time, 0.0),
+                        stale_obs=stale_this_tick,
+                    )
+                )
                 step += 1
 
         except KeyboardInterrupt:
@@ -343,29 +371,6 @@ class PolicyRuntime:
             stale_obs_ticks=self._stale_obs_ticks,
         )
 
-    def _emit_tick_telemetry(
-        self,
-        step: int,
-        action: np.ndarray,
-        elapsed: float,
-        sleep_time: float,
-        *,
-        stale_obs: bool,
-    ) -> None:
-        if not self._telemetry:
-            return
-        robot_obs = self._last_robot_obs
-        self._telemetry.emit_tick(
-            step=step,
-            timestamp=time.perf_counter(),
-            joint_positions=robot_obs.joint_positions if robot_obs else None,
-            action_sent=action,
-            queue_remaining=self._action_queue.remaining,
-            loop_duration_s=elapsed,
-            sleep_time_s=max(sleep_time, 0.0),
-            stale_obs=stale_obs,
-        )
-
     def _handle_hold(self, *, step: int) -> None:
         holds = self._action_queue.consecutive_holds
         if holds == 1:
@@ -378,7 +383,7 @@ class PolicyRuntime:
                     holds,
                     holds / self._fps,
                 )
-        self._invoke_callback("on_hold", step=step, holds=holds)
+        self._bus.invoke_on_hold(step=step, holds=holds)
 
     @staticmethod
     def _tick_sleep(loop_start: float, goal_time: float) -> tuple[float, float]:
@@ -423,21 +428,39 @@ class PolicyRuntime:
 
         if robot_obs is None:
             if self._last_robot_obs is None:
-                if self._telemetry:
-                    self._telemetry.emit_lifecycle("connection_lost", error=str(last_robot_error))
+                self._bus.emit_lifecycle(
+                    LifecycleEvent(
+                        session_id=self._session_id,
+                        timestamp=time.time(),
+                        event="connection_lost",
+                        metadata={"error": str(last_robot_error)},
+                    )
+                )
                 msg = "Robot observation failed and no stale observation available"
                 raise ConnectionError(msg) from last_robot_error
 
             self._consecutive_error_ticks += 1
             self._stale_obs_ticks += 1
             if self._consecutive_error_ticks >= self._max_consecutive_error_ticks:
-                if self._telemetry:
-                    self._telemetry.emit_lifecycle("connection_lost", error=str(last_robot_error))
+                self._bus.emit_lifecycle(
+                    LifecycleEvent(
+                        session_id=self._session_id,
+                        timestamp=time.time(),
+                        event="connection_lost",
+                        metadata={"error": str(last_robot_error)},
+                    )
+                )
                 msg = "Exceeded max consecutive robot observation failures"
                 raise ConnectionError(msg) from last_robot_error
 
-            if self._telemetry:
-                self._telemetry.emit_lifecycle("obs_error", error=str(last_robot_error), stale=True)
+            self._bus.emit_lifecycle(
+                LifecycleEvent(
+                    session_id=self._session_id,
+                    timestamp=time.time(),
+                    event="obs_error",
+                    metadata={"error": str(last_robot_error), "stale": True},
+                )
+            )
             robot_obs = self._last_robot_obs
         else:
             self._consecutive_error_ticks = 0
@@ -485,8 +508,14 @@ class PolicyRuntime:
                 return
 
         self._transient_errors += 1
-        if self._telemetry:
-            self._telemetry.emit_lifecycle("send_error", error=str(last_error))
+        self._bus.emit_lifecycle(
+            LifecycleEvent(
+                session_id=self._session_id,
+                timestamp=time.time(),
+                event="send_error",
+                metadata={"error": str(last_error)},
+            )
+        )
         logger.error(
             "Failed to send action after %d attempts; skipping tick: %s",
             _MAX_SEND_RETRIES,
@@ -521,14 +550,19 @@ class PolicyRuntime:
                 self._resilient_send(action)
                 time.sleep(1.0 / self._fps)
 
-        if self._telemetry:
-            self._telemetry.emit_lifecycle(
-                "shutdown",
-                steps=step,
-                transient_errors=self._transient_errors,
-                stale_obs_ticks=self._stale_obs_ticks,
+        self._bus.emit_lifecycle(
+            LifecycleEvent(
+                session_id=self._session_id,
+                timestamp=time.time(),
+                event="shutdown",
+                metadata={
+                    "steps": step,
+                    "transient_errors": self._transient_errors,
+                    "stale_obs_ticks": self._stale_obs_ticks,
+                },
             )
-            self._telemetry.close()
+        )
+        self._bus.close()
 
         logger.info(
             "Shutdown complete — %d steps, %d pops, %d holds",
@@ -536,18 +570,3 @@ class PolicyRuntime:
             self._action_queue.total_pops,
             self._action_queue.total_holds,
         )
-
-    def _invoke_callback(self, method: str, **kwargs: Any) -> Any:  # noqa: ANN401
-        result = None
-        for cb in self._callbacks:
-            fn = getattr(cb, method, None)
-            if fn is not None:
-                try:
-                    callback_result = fn(**kwargs)
-                    if callback_result is not None:
-                        result = callback_result
-                        if method == "before_send_action":
-                            kwargs["action"] = callback_result
-                except Exception:
-                    logger.exception("Callback %s.%s raised", type(cb).__name__, method)
-        return result

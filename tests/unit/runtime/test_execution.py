@@ -74,6 +74,20 @@ class TestSyncExecution:
         ex = SyncExecution()
         ex.stop()
 
+    def test_inference_count_increments(self) -> None:
+        chunk = np.random.randn(4, 2).astype(np.float32)
+        model = _make_mock_model(chunk)
+        queue = ActionQueue()
+        ex = SyncExecution()
+        obs = {"state": np.zeros(2)}
+
+        ex.start(model, queue)
+        ex.warmup(obs)
+        for _ in range(4):
+            queue.pop()
+        ex.maybe_request(obs)
+        assert ex.inference_count == 1
+
 
 class TestAsyncExecution:
     def test_start_spawns_thread(self) -> None:
@@ -208,7 +222,6 @@ class TestAsyncExecution:
         model = _make_mock_model(chunk)
 
         call_count = 0
-        original_side_effect = None
 
         def slow_predict(obs: dict) -> np.ndarray:
             nonlocal call_count

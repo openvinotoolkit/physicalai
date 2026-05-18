@@ -16,7 +16,7 @@ import numpy as np
 if TYPE_CHECKING:
     from physicalai.inference.model import InferenceModel
     from physicalai.runtime._action_queue import ActionQueue
-    from physicalai.runtime._telemetry import TelemetryEmitter
+    from physicalai.runtime._callback_bus import _CallbackBus
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +29,9 @@ class WorkerDiedError(RuntimeError):
 
 class Execution(ABC):
     """Decides when and where inference runs. Pushes results into ActionQueue."""
+
+    _bus: _CallbackBus | None
+    _session_id: str
 
     @abstractmethod
     def start(self, model: InferenceModel, action_queue: ActionQueue) -> None:
@@ -60,10 +63,14 @@ class Execution(ABC):
 class SyncExecution(Execution):
     """Synchronous inference in the control thread."""
 
-    def __init__(self) -> None:  # noqa: D107
+    def __init__(self, fps: int = 30) -> None:  # noqa: D107
         self._model: InferenceModel | None = None
         self._queue: ActionQueue | None = None
         self._chunk_size: int = 0
+        self._fps = fps
+        self._inference_count: int = 0
+        self._bus: _CallbackBus | None = None
+        self._session_id: str = ""
 
     def start(self, model: InferenceModel, action_queue: ActionQueue) -> None:
         """Bind model and queue."""
@@ -91,8 +98,24 @@ class SyncExecution(Execution):
         if self._model is None or self._queue is None:
             raise RuntimeError(_NOT_STARTED)
         if self._queue.below_threshold(1):
+            t0 = time.perf_counter()
             actions = self._model.predict_action_chunk(observation)
-            self._queue.push_chunk(actions, offset=0)
+            latency = time.perf_counter() - t0
+            offset = int(latency * self._fps)
+            self._queue.push_chunk(actions, offset=offset)
+            self._inference_count += 1
+            if self._bus:
+                from physicalai.runtime.events import InferenceEvent  # noqa: PLC0415
+
+                self._bus.emit_inference(
+                    InferenceEvent(
+                        session_id=self._session_id,
+                        timestamp=time.time(),
+                        latency_s=latency,
+                        offset=offset,
+                        chunk=actions,
+                    )
+                )
 
     def stop(self) -> None:
         """No-op for synchronous execution."""
@@ -101,6 +124,11 @@ class SyncExecution(Execution):
     def chunk_size(self) -> int:
         """Return discovered chunk size."""
         return self._chunk_size
+
+    @property
+    def inference_count(self) -> int:
+        """Number of completed inference calls."""
+        return self._inference_count
 
 
 class AsyncExecution(Execution):
@@ -112,13 +140,11 @@ class AsyncExecution(Execution):
         fps: int = 30,
         watchdog_timeout_s: float = 30.0,
         max_consecutive_holds: int | None = None,
-        telemetry: TelemetryEmitter | None = None,
     ) -> None:
         self._threshold_frac = threshold
         self._fps = fps
         self._watchdog_timeout_s = watchdog_timeout_s
         self._max_consecutive_holds = max_consecutive_holds or 3 * fps
-        self._telemetry = telemetry
 
         self._model: InferenceModel | None = None
         self._queue: ActionQueue | None = None
@@ -134,6 +160,8 @@ class AsyncExecution(Execution):
         self._thread: threading.Thread | None = None
         self._death_cause: BaseException | None = None
         self._inference_count: int = 0
+        self._bus: _CallbackBus | None = None
+        self._session_id: str = ""
 
     def start(self, model: InferenceModel, action_queue: ActionQueue) -> None:
         """Bind model/queue and spawn inference thread."""
@@ -245,8 +273,18 @@ class AsyncExecution(Execution):
                 self._queue.push_chunk(actions, offset=offset)
                 self._inference_count += 1
 
-                if self._telemetry:
-                    self._telemetry.emit_inference(latency_s=latency, offset=offset, chunk=actions)
+                if self._bus:
+                    from physicalai.runtime.events import InferenceEvent  # noqa: PLC0415
+
+                    self._bus.emit_inference(
+                        InferenceEvent(
+                            session_id=self._session_id,
+                            timestamp=time.time(),
+                            latency_s=latency,
+                            offset=offset,
+                            chunk=actions,
+                        )
+                    )
 
                 with self._lock:
                     self._running_inference = False

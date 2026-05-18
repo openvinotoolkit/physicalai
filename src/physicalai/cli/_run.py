@@ -20,6 +20,28 @@ def _load_config(path: str | Path) -> RuntimeConfig:
     return load_config(path)
 
 
+def _build_callbacks(args: argparse.Namespace) -> list:
+    from physicalai.runtime.callbacks import ConsoleCallback  # noqa: PLC0415
+
+    callbacks: list = [ConsoleCallback()]
+
+    try:
+        import zenoh  # noqa: PLC0415, F401
+
+        from physicalai.runtime.callbacks import ZenohCallback  # noqa: PLC0415
+
+        callbacks.append(ZenohCallback())
+    except ImportError:
+        pass
+
+    if getattr(args, "record", None):
+        from physicalai.runtime.callbacks import AsyncCallback, JsonlCallback  # noqa: PLC0415
+
+        callbacks.append(AsyncCallback(JsonlCallback(args.record)))
+
+    return callbacks
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="physicalai")
     subparsers = parser.add_subparsers(dest="command")
@@ -28,6 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--config", required=True, help="Path to YAML config file")
     run_parser.add_argument("--duration-s", type=float, help="Override YAML duration_s")
     run_parser.add_argument("--fps", type=float, help="Override YAML fps")
+    run_parser.add_argument("--record", type=str, default=None, help="Record session to JSONL file")
     run_parser.add_argument("--dry-run", action="store_true", help="Load config, print summary, exit")
     run_parser.set_defaults(func=handle_run)
 
@@ -55,7 +78,8 @@ def handle_run(args: argparse.Namespace) -> None:
 
     from physicalai.runtime.runtime import PolicyRuntime  # noqa: PLC0415
 
-    runtime = PolicyRuntime.from_config(config)
+    callbacks = _build_callbacks(args)
+    runtime = PolicyRuntime.from_config(config, callbacks=callbacks)
 
     try:
         runtime.robot.connect()
