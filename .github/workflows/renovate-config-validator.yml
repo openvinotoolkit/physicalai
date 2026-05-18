@@ -27,7 +27,7 @@ jobs:
       - name: Checkout configuration
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          persist-credentials: true # FIXME use false once repo make public
+          persist-credentials: false
 
       - name: Check paths
         id: check_paths
@@ -39,7 +39,7 @@ jobs:
               - .github/workflows/renovate.yml
               - .github/workflows/renovate-config-validator.yml
 
-  validate:
+  validate-renovate-config:
     runs-on: ubuntu-latest
     needs: check-paths
     if: needs.check-paths.outputs.run_workflow == 'true'
@@ -63,7 +63,7 @@ jobs:
     name: Required Check renovate-config-validator
     needs:
       - check-paths
-      - validate
+      - validate-renovate-config
     runs-on: ubuntu-latest
     env:
       CHECKS: ${{ join(needs.*.result, ' ') }}

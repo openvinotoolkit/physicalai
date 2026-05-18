@@ -22,13 +22,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      security-events: write # required to publish sarif
     steps:
       - &checkout
         name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          persist-credentials: true # FIXME use false once repo make public
-          fetch-depth: 0
+          persist-credentials: false
 
       - name: Run Zizmor scan
         uses: open-edge-platform/geti-ci/actions/zizmor@e80098b3d180db37914f11ff6021f9fa34d0bb9f # zizmor/v0.1.1
@@ -37,12 +37,12 @@ jobs:
           severity-level: ${{ github.event_name == 'pull_request' && 'MEDIUM' || 'LOW' }}
           confidence-level: ${{ github.event_name == 'pull_request' && 'MEDIUM' || 'LOW' }}
           fail-on-findings: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
-          output-format: "plain"
 
   bandit-scan:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      security-events: write # required to publish sarif
     steps:
       - *checkout
 
@@ -51,20 +51,20 @@ jobs:
         with:
           scan-scope: ${{ github.event_name == 'pull_request' && 'changed' || 'all' }}
           severity-level: ${{ github.event_name == 'pull_request' && 'MEDIUM' || 'LOW' }}
-          confidence-level: ${{ github.event_name == 'pull_request' && 'LOW' || 'LOW' }}
+          confidence-level: ${{ github.event_name == 'pull_request' && 'MEDIUM' || 'LOW' }}
           config_file: ".github/bandit_config.yml"
           fail-on-findings: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
-          output-format: "txt"
 
   semgrep-scan:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      security-events: write # required to publish sarif
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          persist-credentials: true # FIXME use false once repo make public
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Run Semgrep scan
@@ -73,4 +73,3 @@ jobs:
           scan-scope: ${{ github.event_name == 'pull_request' && 'changed' || 'all' }}
           severity: ${{ github.event_name == 'pull_request' && 'HIGH' || 'LOW' }}
           fail-on-findings: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
-          output-format: "text"

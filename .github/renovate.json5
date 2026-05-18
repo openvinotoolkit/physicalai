@@ -86,6 +86,15 @@
       matchDepNames: ["python"],
       matchDepTypes: ["uses-with"],
     },
+
+    // Use regex versioning for open-edge-platform/geti-ci actions to parse tags like zizmor/v0.1.1
+    {
+      enabled: true,
+      groupName: "GitHub Actions",
+      matchManagers: ["github-actions"],
+      matchDepNames: ["open-edge-platform/geti-ci"],
+      versioning: "regex:^(?:[^/]+/)?v?(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$",
+    },
   ],
 
   // Is used to upgrade Renovate version
