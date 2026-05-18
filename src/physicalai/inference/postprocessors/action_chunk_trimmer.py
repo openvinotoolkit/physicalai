@@ -26,14 +26,12 @@ class ActionChunkTrimmer(Postprocessor):
     """Trim action chunk to a specified length.
 
     Args:
-        action_key: Explicit adapter output key to treat as the action.
-            When ``None`` (default), uses the first key if ``"action"``
-            is not already present.
+        n_action_steps: Number of action steps to trim the action chunk to.
 
     Examples:
         >>> trimmer = ActionChunkTrimmer(n_action_steps=10)
-        >>> trimmer({"actions": np.zeros((1, 50, 6))}).shape
-        [1, 10, 6]
+        >>> trimmer(np.zeros((1, 50, 6))).shape
+        (1, 10, 6)
     """
 
     def __init__(self, n_action_steps: int) -> None:
