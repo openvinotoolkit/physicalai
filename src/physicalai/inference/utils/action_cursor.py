@@ -49,8 +49,16 @@ class ActionCursor:
                 chunk: Action array with shape ``(batch, T, action_dim)`` or
                         ``(T, action_dim)``.  Each of the ``T`` timestep slices is
                         enqueued individually.
+
+        Raises:
+                ValueError: If ``chunk.ndim`` is not 2 or 3.
         """
         min_batched_action_dim = 2
+        batched_temporal_dim = 3
+        if chunk.ndim not in {min_batched_action_dim, batched_temporal_dim}:
+            msg = f"Chunk must be a 2-D or 3-D array, got ndim={chunk.ndim}."
+            raise ValueError(msg)
+
         if chunk.ndim == min_batched_action_dim:
             # (T, action_dim) - no batch dimension
             self._queue.extend(chunk)

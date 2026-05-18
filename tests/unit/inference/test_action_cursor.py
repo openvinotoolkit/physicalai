@@ -92,3 +92,16 @@ class TestActionCursor:
         np.testing.assert_array_equal(cursor.pop(), np.array([[3.0, 3.0]], dtype=np.float32))
         np.testing.assert_array_equal(cursor.pop(), np.array([[4.0, 4.0]], dtype=np.float32))
         assert cursor.empty is True
+
+    @pytest.mark.parametrize(
+        "chunk",
+        [
+            np.array([1.0, 2.0], dtype=np.float32),
+            np.zeros((1, 2, 3, 4), dtype=np.float32),
+        ],
+    )
+    def test_push_chunk_invalid_ndim_raises_value_error(self, chunk: np.ndarray) -> None:
+        cursor = ActionCursor()
+
+        with pytest.raises(ValueError, match=r"chunk must be a 2-D or 3-D array, got ndim="):
+            cursor.push_chunk(chunk)
