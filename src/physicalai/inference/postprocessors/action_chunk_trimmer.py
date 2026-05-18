@@ -3,11 +3,11 @@
 
 """Action chunk trimmer postprocessor.
 
-Some policies are trained with longer chunk, than it's used un inference.
-Training with a longer chunk makes action sequence smoother, but
-on inference tail of a long chunk is mostly useless.
-This postprocessor trims action chunk to a specified length,
-following common `n_action_steps` notation from policies configs.
+Some policies are trained with a longer action chunk than is used during
+inference. Training with a longer chunk makes the action sequence smoother,
+but at inference time, the tail of a long chunk is mostly useless.
+This postprocessor trims the action chunk to a specified length,
+following the common `n_action_steps` notation used in policy configs.
 """
 
 from __future__ import annotations
