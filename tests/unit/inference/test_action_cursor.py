@@ -103,5 +103,5 @@ class TestActionCursor:
     def test_push_chunk_invalid_ndim_raises_value_error(self, chunk: np.ndarray) -> None:
         cursor = ActionCursor()
 
-        with pytest.raises(ValueError, match=r"chunk must be a 2-D or 3-D array, got ndim="):
+        with pytest.raises(ValueError, match=r"Chunk must be a 2-D or 3-D array, got ndim="):
             cursor.push_chunk(chunk)
