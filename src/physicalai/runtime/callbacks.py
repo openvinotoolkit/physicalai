@@ -165,11 +165,14 @@ class AsyncCallback:
     events are dropped.
     """
 
+    _ACTION_HOOKS = ("before_send_action", "on_action_sent", "on_hold")
+
     def __init__(self, inner: Any, max_queue: int = 1024) -> None:  # noqa: D107, ANN401
-        if hasattr(inner, "before_send_action"):
+        dropped = [h for h in self._ACTION_HOOKS if hasattr(inner, h)]
+        if dropped:
             msg = (
-                f"{type(inner).__name__} defines before_send_action which requires "
-                "synchronous request-response semantics incompatible with AsyncCallback"
+                f"{type(inner).__name__} defines action hooks {dropped} which "
+                "AsyncCallback does not forward (use synchronous attachment instead)"
             )
             raise TypeError(msg)
         self._inner = inner

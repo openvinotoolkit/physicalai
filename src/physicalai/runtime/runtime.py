@@ -571,7 +571,11 @@ class PolicyRuntime:
         for _ in range(drain_limit):
             action = self._action_queue.pop()
             if action is not None:
-                self._resilient_send(action)
+                try:
+                    self._resilient_send(action)
+                except ConnectionError:
+                    logger.warning("Send failed during drain; skipping remaining actions")
+                    break
                 time.sleep(1.0 / self._fps)
 
         self._bus.emit_lifecycle(
