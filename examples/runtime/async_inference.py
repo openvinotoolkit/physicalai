@@ -23,7 +23,6 @@ from __future__ import annotations
 import argparse
 
 import openvino as ov
-import numpy as np
 
 from physicalai.capture import discover_all
 from physicalai.capture.transport import SharedCamera
@@ -34,6 +33,7 @@ from physicalai.runtime import (
     AsyncExecution,
     LerpSmoother,
     PolicyRuntime,
+    RerunCallback,
 )
 
 
@@ -50,11 +50,27 @@ def main():
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--duration-s", type=float, default=60.0)
     parser.add_argument("--fps", type=float, default=30.0)
+    parser.add_argument(
+        "--rerun",
+        choices=("off", "spawn", "connect", "save"),
+        default="off",
+        help="Rerun viewer mode (off | spawn | connect | save)",
+    )
+    parser.add_argument(
+        "--rerun-addr",
+        default="127.0.0.1:9876",
+        help="Rerun TCP address for --rerun connect (default: 127.0.0.1:9876)",
+    )
+    parser.add_argument(
+        "--rerun-save-path",
+        default="run.rrd",
+        help="Output .rrd path for --rerun save",
+    )
     args = parser.parse_args()
 
     import openvino_tokenizers  # noqa: F401 — registers OV tokenizer ops
 
-    print(f"Available devices:")
+    print("Available devices:")
     core = ov.Core()
     devices = core.available_devices
     for dev in devices:
@@ -69,6 +85,18 @@ def main():
         "arm": SharedCamera("realsense", serial_number=args.arm_camera, width=args.width, height=args.height, fps=int(args.fps)),
     }
 
+    callbacks: list = []
+    if args.rerun != "off":
+        callbacks.append(
+            RerunCallback(
+                cameras=cameras,
+                image_decimation=3,
+                mode=args.rerun,
+                connect_addr=args.rerun_addr,
+                save_path=args.rerun_save_path if args.rerun == "save" else None,
+            )
+        )
+
     runtime = PolicyRuntime(
         robot=robot,
         model=model,
@@ -76,6 +104,7 @@ def main():
         action_queue=ActionQueue(smoother=LerpSmoother(duration_frames=5)),
         cameras=cameras,
         fps=args.fps,
+        callbacks=callbacks,
     )
 
     try:

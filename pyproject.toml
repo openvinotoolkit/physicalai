@@ -53,7 +53,7 @@ franka = []
 trossen = ["trossen-arm>=1.9.0"]
 so101 = ["feetech-servo-sdk"]
 telemetry = ["eclipse-zenoh>=1.0", "msgpack>=1.0"]
-observer-rerun = ["rerun-sdk>=0.18"]
+observer-rerun = ["rerun-sdk>=0.22"]  # in-process callback; no zenoh dep
 robots = [
     "physicalai[ur]",
     "physicalai[abb]",

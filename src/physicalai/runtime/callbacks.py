@@ -269,21 +269,21 @@ class RerunCallback:
         import rerun as rr  # noqa: PLC0415
 
         self._last_step = event.step
-        rr.set_time_sequence("step", event.step)
-        rr.set_time_seconds("wall", event.timestamp)
+        rr.set_time("step", sequence=event.step)
+        rr.set_time("wall", timestamp=event.timestamp)
 
         if event.joint_positions is not None:
             for i, val in enumerate(event.joint_positions):
-                rr.log(f"robot/joint/{i}", rr.Scalar(float(val)))
+                rr.log(f"robot/joint/{i}", rr.Scalars(float(val)))
 
         if event.action_sent is not None:
             for i, val in enumerate(event.action_sent):
-                rr.log(f"robot/action/{i}", rr.Scalar(float(val)))
+                rr.log(f"robot/action/{i}", rr.Scalars(float(val)))
 
-        rr.log("runtime/queue_remaining", rr.Scalar(float(event.queue_remaining)))
-        rr.log("runtime/loop_duration_s", rr.Scalar(event.loop_duration_s))
-        rr.log("runtime/sleep_time_s", rr.Scalar(event.sleep_time_s))
-        rr.log("runtime/stale_obs", rr.Scalar(float(event.stale_obs)))
+        rr.log("runtime/queue_remaining", rr.Scalars(float(event.queue_remaining)))
+        rr.log("runtime/loop_duration_s", rr.Scalars(event.loop_duration_s))
+        rr.log("runtime/sleep_time_s", rr.Scalars(event.sleep_time_s))
+        rr.log("runtime/stale_obs", rr.Scalars(float(event.stale_obs)))
 
         if event.step % self._image_decimation == 0:
             self._log_camera_frames()
@@ -295,10 +295,10 @@ class RerunCallback:
         start_step = self._last_step + 1
 
         for k in range(horizon):
-            rr.set_time_sequence("step", start_step + k)
-            rr.set_time_seconds("wall", event.timestamp + k / self._fps)
+            rr.set_time("step", sequence=start_step + k)
+            rr.set_time("wall", timestamp=event.timestamp + k / self._fps)
             for i in range(dof):
-                rr.log(f"robot/predicted/{i}", rr.Scalar(float(event.chunk[k, i])))
+                rr.log(f"robot/predicted/{i}", rr.Scalars(float(event.chunk[k, i])))
 
     def close(self) -> None:
         """Release independent camera subscribers."""
@@ -318,7 +318,11 @@ class RerunCallback:
         elif self._mode == "save":
             rr.save(self._save_path)
         elif self._mode == "connect":
-            rr.connect_tcp(self._connect_addr)
+            # Rerun 0.22+ uses gRPC. Address like "127.0.0.1:9876" is wrapped
+            # into the canonical rerun+http://host:port/proxy URL.
+            addr = self._connect_addr
+            url = addr if addr.startswith(("rerun+http://", "rerun+https://")) else f"rerun+http://{addr}/proxy"
+            rr.connect_grpc(url=url)
 
         self._fps = metadata.get("fps", 30)
         self._initialized = True
@@ -356,8 +360,8 @@ class RerunCallback:
     def _log_lifecycle_marker(self, event: LifecycleEvent) -> None:
         import rerun as rr  # noqa: PLC0415
 
-        rr.set_time_sequence("step", self._last_step)
-        rr.set_time_seconds("wall", event.timestamp)
+        rr.set_time("step", sequence=self._last_step)
+        rr.set_time("wall", timestamp=event.timestamp)
         rr.log(
             f"runtime/lifecycle/{event.event}",
             rr.TextLog(f"{event.event}: {event.metadata}"),
