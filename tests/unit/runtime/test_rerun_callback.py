@@ -263,9 +263,21 @@ class TestRerunCallbackImageDecimation:
         cb = make_callback(image_decimation=3)
         cb.on_lifecycle(_lifecycle_start())
 
+        mock_sub = MagicMock()
+        mock_frame = MagicMock()
+        mock_frame.data = np.zeros((480, 640, 3), dtype=np.uint8)
+        mock_sub.read_latest.return_value = mock_frame
+        cb._camera_subscribers = {"top": mock_sub}
+
+        image_logged_at: list[int] = []
         for step in range(6):
             mock_rerun.reset_mock()
             cb.on_tick(_tick(step=step))
+            log_calls = mock_rerun.log.call_args_list
+            if any("camera/top" in str(c.args[0]) for c in log_calls):
+                image_logged_at.append(step)
+
+        assert image_logged_at == [0, 3]
 
     def test_decimation_default_is_3(self, make_callback: Any) -> None:
         cb = make_callback()
