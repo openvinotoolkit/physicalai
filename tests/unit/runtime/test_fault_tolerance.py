@@ -160,7 +160,7 @@ class TestResilientObserveCameras:
             result = rt._resilient_observe()
 
         assert "images.cam0" in result
-        np.testing.assert_array_equal(result["images.cam0"], stale_frame.data)
+        np.testing.assert_array_equal(result["images.cam0"], stale_frame.data[np.newaxis])
 
     def test_camera_first_read_fails_raises(self) -> None:
         camera = MagicMock()
@@ -283,6 +283,7 @@ class TestRunStatsWithFaults:
 
         rt = _make_runtime(robot=robot)
         rt._last_robot_obs = obs
+        rt._connected = True
 
         with patch("physicalai.runtime.runtime.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0

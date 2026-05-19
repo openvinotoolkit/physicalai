@@ -39,30 +39,6 @@ _WARMUP_BACKOFF_S = 1.0
 _GOAL_TIME_TICKS = 3
 
 
-def default_observation_to_input(
-    robot_obs: RobotObservation,
-    camera_frames: dict[str, Frame],
-) -> dict[str, Any]:
-    """Convert robot observation and camera frames to model input dict.
-
-    Maps:
-        - ``robot_obs.joint_positions`` → ``"state"`` (as batch dim)
-        - ``frame.data`` per camera → ``"images.{name}"``
-
-    Returns:
-        Model input dictionary.
-    """
-    model_input: dict[str, Any] = {}
-
-    if robot_obs.joint_positions is not None:
-        model_input["state"] = np.array([robot_obs.joint_positions], dtype=np.float32)
-
-    for name, frame in camera_frames.items():
-        model_input[f"images.{name}"] = frame.data
-
-    return model_input
-
-
 class RuntimeCallback(Protocol):
     """Optional hook points in the PolicyRuntime control loop."""
 
@@ -201,7 +177,7 @@ class PolicyRuntime:
     def __exit__(self, *exc_info: object) -> None:  # noqa: D105
         self.disconnect()
 
-    def run(self, *, duration_s: float | None = None) -> RunStats:
+    def run(self, *, duration_s: float | None = None) -> RunStats:  # noqa: PLR0915
         """Run the control loop.
 
         Args:
