@@ -135,7 +135,9 @@ class Pi05Preprocessor(Preprocessor):
             if img.ndim == max_image_dim:
                 img = img[:, -1, :, :, :]
 
-            if img.dtype != np.float32:
+            if img.dtype == np.uint8:
+                img = img.astype(np.float32) / 255.0
+            elif img.dtype != np.float32:
                 img = img.astype(np.float32)
 
             # Detect layout: assume channels-first when dim-1 == 3
@@ -152,8 +154,8 @@ class Pi05Preprocessor(Preprocessor):
             # [0, 1] -> [-1, 1]
             img = img * 2.0 - 1.0
 
-            if channels_first:
-                img = np.transpose(img, (0, 3, 1, 2))  # -> (B, C, H, W)
+            # Output is always (B, C, H, W) — img is HWC at this point
+            img = np.transpose(img, (0, 3, 1, 2))
 
             bsize = img.shape[0]
             mask = np.ones(bsize, dtype=np.bool_)

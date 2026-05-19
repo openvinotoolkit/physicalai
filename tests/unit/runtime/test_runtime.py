@@ -16,7 +16,7 @@ import pytest
 
 from physicalai.runtime._action_queue import ActionQueue
 from physicalai.runtime.execution import SyncExecution, WorkerDiedError
-from physicalai.runtime.runtime import PolicyRuntime, RunStats, default_observation_to_input
+from physicalai.runtime.runtime import PolicyRuntime, RunStats
 
 from physicalai.capture import Frame
 
@@ -235,55 +235,3 @@ class TestRunStats:
         assert stats.total_pops == 8
         assert stats.total_holds == 2
         assert stats.inference_count == 3
-
-
-class TestDefaultObservationToInput:
-    def test_extracts_joint_positions(self) -> None:
-        positions = np.array([0.1, 0.2, 0.3], dtype=np.float32)
-        obs = FakeRobotObservation(
-            joint_positions=positions,
-            timestamp=0.0,
-            sensor_data=None,
-            images=None,
-        )
-
-        result = default_observation_to_input(obs, {})
-
-        assert "state" in result
-        np.testing.assert_array_equal(result["state"], np.array([positions], dtype=np.float32))
-
-    def test_extracts_frame_data(self) -> None:
-        obs = FakeRobotObservation(
-            joint_positions=np.zeros(3),
-            timestamp=0.0,
-            sensor_data=None,
-            images=None,
-        )
-        frame = Frame(data=np.zeros((480, 640, 3), dtype=np.uint8), timestamp=0.0, sequence=0)
-
-        result = default_observation_to_input(obs, camera_frames={"cam0": frame})
-
-        assert "images.cam0" in result
-        np.testing.assert_array_equal(result["images.cam0"], frame.data)
-
-    def test_custom_obs_to_input(self) -> None:
-        robot = _make_mock_robot()
-        model = _make_mock_model(chunk_size=10)
-        execution = SyncExecution()
-
-        custom_fn = MagicMock(return_value={"custom_key": np.zeros(3)})
-
-        runtime = PolicyRuntime(
-            robot=robot,
-            model=model,
-            execution=execution,
-            fps=10.0,
-            obs_to_input=custom_fn,
-        )
-
-        with patch("physicalai.runtime.runtime.time") as mock_time:
-            mock_time.perf_counter.return_value = 0.0
-            mock_time.sleep = MagicMock()
-            runtime.run(duration_s=0.1)
-
-        assert custom_fn.call_count >= 2

@@ -17,40 +17,16 @@ from physicalai.runtime.execution import Execution, WorkerDiedError
 from physicalai.runtime.smoothers import LerpSmoother
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Mapping, Sequence
 
     from physicalai.capture.camera import Camera
     from physicalai.capture.frame import Frame
     from physicalai.inference.model import InferenceModel
-    from physicalai.robot.interface import Robot, RobotObservation
+    from physicalai.robot.interface import Robot
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_LERP_FRAMES = 5
-
-
-def default_observation_to_input(
-    robot_obs: RobotObservation,
-    camera_frames: dict[str, Frame],
-) -> dict[str, Any]:
-    """Convert robot observation and camera frames to model input dict.
-
-    Maps:
-        - ``robot_obs.joint_positions`` → ``"state"`` (as batch dim)
-        - ``frame.data`` per camera → ``"images.{name}"``
-
-    Returns:
-        Model input dictionary.
-    """
-    model_input: dict[str, Any] = {}
-
-    if robot_obs.joint_positions is not None:
-        model_input["state"] = np.array([robot_obs.joint_positions], dtype=np.float32)
-
-    for name, frame in camera_frames.items():
-        model_input[f"images.{name}"] = frame.data
-
-    return model_input
 
 
 class RuntimeCallback(Protocol):
@@ -96,7 +72,6 @@ class PolicyRuntime:
         fps: float,
         cameras: Mapping[str, Camera] | None = None,
         action_queue: ActionQueue | None = None,
-        obs_to_input: Callable[[RobotObservation, dict[str, Frame]], dict[str, Any]] | None = None,
         callbacks: Sequence[RuntimeCallback] = (),
     ) -> None:
         if fps <= 0:
@@ -108,7 +83,6 @@ class PolicyRuntime:
         self._fps = fps
         self._cameras: Mapping[str, Camera] = cameras or {}
         self._action_queue = action_queue or ActionQueue(smoother=LerpSmoother(duration_frames=_DEFAULT_LERP_FRAMES))
-        self._obs_to_input = obs_to_input or default_observation_to_input
         self._callbacks = list(callbacks)
         self._goal_time = (1.0 / fps) * 3
 
@@ -194,8 +168,19 @@ class PolicyRuntime:
 
     def _build_model_input(self) -> dict[str, Any]:
         robot_obs = self._robot.get_observation()
-        camera_frames = {name: cam.read_latest() for name, cam in self._cameras.items()}
-        return self._obs_to_input(robot_obs, camera_frames)
+        model_input: dict[str, Any] = {}
+
+        if robot_obs.joint_positions is not None:
+            model_input["state"] = np.array([robot_obs.joint_positions], dtype=np.float32)
+
+        # Merge robot-embedded images and external cameras
+        if robot_obs.images:
+            for name, frame in robot_obs.images.items():
+                model_input[f"images.{name}"] = frame.data[np.newaxis]
+        for name, cam in self._cameras.items():
+            model_input[f"images.{name}"] = cam.read_latest().data[np.newaxis]
+
+        return model_input
 
     def _shutdown(self, step: int) -> None:
         self._execution.stop()

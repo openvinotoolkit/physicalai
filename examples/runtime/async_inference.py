@@ -21,41 +21,20 @@ python examples/runtime/async_inference.py \
 from __future__ import annotations
 
 import argparse
-from typing import Any
 
 import openvino as ov
 import numpy as np
-from numpy import core
 
-from physicalai.capture import Frame, discover_all
+from physicalai.capture import discover_all
 from physicalai.capture.transport import SharedCamera
 from physicalai.inference import InferenceModel
 from physicalai.robot import SO101
-from physicalai.robot.interface import RobotObservation
 from physicalai.runtime import (
     ActionQueue,
     AsyncExecution,
     LerpSmoother,
     PolicyRuntime,
 )
-
-
-def obs_to_input(
-    robot_obs: RobotObservation,
-    camera_frames: dict[str, Frame],
-) -> dict[str, Any]:
-    """Convert robot observation + camera frames to model input dict."""
-    state = np.asarray(robot_obs.joint_positions, dtype=np.float32)
-    if state.ndim == 1:
-        state = state[np.newaxis]  # (state_dim,) -> (1, state_dim)
-    model_input: dict[str, Any] = {
-        "state": state,
-    }
-    for name, frame in camera_frames.items():
-        # (H, W, C) -> (1, C, H, W) float32 [0, 1]
-        img = frame.data.transpose(2, 0, 1).astype(np.float32)[np.newaxis] / 255.0
-        model_input[f"images.{name}"] = img
-    return model_input
 
 
 def main():
@@ -97,7 +76,6 @@ def main():
         action_queue=ActionQueue(smoother=LerpSmoother(duration_frames=5)),
         cameras=cameras,
         fps=args.fps,
-        obs_to_input=obs_to_input,
     )
 
     robot.connect()
