@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, Self
 
 import numpy as np
 
@@ -61,7 +61,11 @@ class PolicyRuntime:
     """Runs a policy on robot hardware.
 
     Loop: observe → maybe_request → pop → send → sleep.
-    Robot and cameras must be connected before run(). Caller owns lifecycle.
+
+    Supports context manager for safe lifecycle management::
+
+        with PolicyRuntime(robot=robot, model=model, ...) as runtime:
+            stats = runtime.run(duration_s=60.0)
     """
 
     def __init__(  # noqa: D107
@@ -85,6 +89,66 @@ class PolicyRuntime:
         self._action_queue = action_queue or ActionQueue(smoother=LerpSmoother(duration_frames=_DEFAULT_LERP_FRAMES))
         self._callbacks = list(callbacks)
         self._goal_time = (1.0 / fps) * 3
+        self._connected = False
+
+    def connect(self) -> None:
+        """Connect robot and cameras.
+
+        Connects robot first, then cameras in dict order. On failure,
+        disconnects everything already connected and re-raises.
+
+        Idempotent — calling on an already-connected runtime is a no-op.
+        """
+        if self._connected:
+            logger.debug("connect() called but already connected — no-op")
+            return
+
+        self._robot.connect()
+        connected_cameras: list[str] = []
+        try:
+            for name, cam in self._cameras.items():
+                cam.connect()
+                connected_cameras.append(name)
+        except Exception:
+            for cam_name in connected_cameras:
+                try:
+                    self._cameras[cam_name].disconnect()
+                except Exception:
+                    logger.warning("Failed to disconnect camera '%s' during rollback", cam_name, exc_info=True)
+            try:
+                self._robot.disconnect()
+            except Exception:
+                logger.warning("Failed to disconnect robot during rollback", exc_info=True)
+            raise
+
+        self._connected = True
+
+    def disconnect(self) -> None:
+        """Disconnect cameras then robot. Never raises.
+
+        Idempotent — calling on an already-disconnected runtime is a no-op.
+        """
+        if not self._connected:
+            return
+
+        for name, cam in self._cameras.items():
+            try:
+                cam.disconnect()
+            except Exception:
+                logger.warning("Failed to disconnect camera '%s'", name, exc_info=True)
+        try:
+            self._robot.disconnect()
+        except Exception:
+            logger.warning("Failed to disconnect robot", exc_info=True)
+
+        self._connected = False
+
+    def __enter__(self) -> Self:
+        self.connect()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.disconnect()
 
     def run(self, *, duration_s: float | None = None) -> RunStats:
         """Run the control loop.
@@ -96,8 +160,12 @@ class PolicyRuntime:
             Statistics from the run session.
 
         Raises:
+            RuntimeError: If called before connect().
             WorkerDiedError: If the inference worker thread dies.
         """
+        if not self._connected:
+            msg = "PolicyRuntime.run() called before connect(). Use 'with runtime:' or call runtime.connect() first."
+            raise RuntimeError(msg)
         self._execution.start(self._model, self._action_queue)
         sample_obs = self._build_model_input()
         self._execution.warmup(sample_obs)

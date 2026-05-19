@@ -48,6 +48,13 @@ def _make_mock_model(chunk_size: int = 4, action_dim: int = 3) -> MagicMock:
     return model
 
 
+def _make_runtime(**kwargs: Any) -> PolicyRuntime:
+    """Create a PolicyRuntime with _connected=True for testing."""
+    runtime = PolicyRuntime(**kwargs)
+    runtime._connected = True  # noqa: SLF001
+    return runtime
+
+
 def _exhaustible_side_effect(
     initial_chunks: list[np.ndarray],
     action_dim: int = 2,
@@ -69,7 +76,7 @@ class TestPolicyRuntime:
         execution = SyncExecution()
         queue = ActionQueue()
 
-        runtime = PolicyRuntime(
+        runtime = _make_runtime(
             robot=robot,
             model=model,
             execution=execution,
@@ -94,7 +101,7 @@ class TestPolicyRuntime:
         execution = SyncExecution()
         queue = ActionQueue()
 
-        runtime = PolicyRuntime(
+        runtime = _make_runtime(
             robot=robot,
             model=model,
             execution=execution,
@@ -123,7 +130,7 @@ class TestPolicyRuntime:
         queue = ActionQueue()
         queue.push_chunk(np.random.randn(4, 3).astype(np.float32))
 
-        runtime = PolicyRuntime(
+        runtime = _make_runtime(
             robot=robot,
             model=model,
             execution=execution,
@@ -141,7 +148,7 @@ class TestPolicyRuntime:
         model = _make_mock_model()
         execution = SyncExecution()
 
-        runtime = PolicyRuntime(
+        runtime = _make_runtime(
             robot=robot,
             model=model,
             execution=execution,
@@ -155,6 +162,21 @@ class TestPolicyRuntime:
 
         robot.disconnect.assert_not_called()
 
+    def test_run_raises_if_not_connected(self) -> None:
+        robot = _make_mock_robot()
+        model = _make_mock_model()
+        execution = SyncExecution()
+
+        runtime = PolicyRuntime(
+            robot=robot,
+            model=model,
+            execution=execution,
+            fps=10.0,
+        )
+
+        with pytest.raises(RuntimeError, match="connect"):
+            runtime.run(duration_s=1.0)
+
 
 class TestRuntimeCallback:
     def test_before_send_action_called(self) -> None:
@@ -164,7 +186,7 @@ class TestRuntimeCallback:
         callback = MagicMock()
         callback.before_send_action.return_value = None
 
-        runtime = PolicyRuntime(
+        runtime = _make_runtime(
             robot=robot,
             model=model,
             execution=execution,
@@ -186,7 +208,7 @@ class TestRuntimeCallback:
         bad_callback = MagicMock()
         bad_callback.before_send_action.side_effect = RuntimeError("oops")
 
-        runtime = PolicyRuntime(
+        runtime = _make_runtime(
             robot=robot,
             model=model,
             execution=execution,
@@ -212,7 +234,7 @@ class TestRuntimeCallback:
         callback.before_send_action.return_value = None
         callback.on_hold.return_value = None
 
-        runtime = PolicyRuntime(
+        runtime = _make_runtime(
             robot=robot,
             model=model,
             execution=execution,

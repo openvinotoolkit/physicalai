@@ -78,16 +78,16 @@ def main():
         fps=args.fps,
     )
 
-    robot.connect()
+    try:
+        runtime.connect()
+    except Exception as e:
+        print(f"Failed to connect: {e}")
+        print("Available cameras:")
+        for c in discover_all():
+            print(f"  Driver: {c.driver}, Device: {c.device}, Info: {c.info}")
+        return
+
     for name, cam in cameras.items():
-        try:
-            cam.connect()
-        except Exception as e:
-            print(f"Failed to connect camera '{name}': {e}")
-            print("Available cameras:")
-            for c in discover_all():
-                print(f"Driver: {c.driver}, Device: {c.device}, Info: {c.info}")
-            return
         print(f"Camera '{name}' connected: {cam.actual_width}x{cam.actual_height} @ {cam.actual_fps}fps")
 
     print("Starting policy runtime...")
@@ -95,11 +95,8 @@ def main():
         stats = runtime.run(duration_s=args.duration_s)
         print(f"\nDone — {stats.steps} steps, {stats.inference_count} inferences, {stats.total_holds} holds")
     finally:
-        for name, cam in cameras.items():
-            cam.disconnect()
-            print(f"Camera '{name}' disconnected")
-        robot.disconnect()
-        print("Robot disconnected")
+        runtime.disconnect()
+        print("Disconnected")
 
 
 if __name__ == "__main__":
