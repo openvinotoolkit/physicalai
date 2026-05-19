@@ -280,7 +280,11 @@ class PolicyRuntime:
             fn = getattr(cb, method, None)
             if fn is not None:
                 try:
-                    result = fn(**kwargs)
+                    callback_result = fn(**kwargs)
+                    if callback_result is not None:
+                        result = callback_result
+                        if method == "before_send_action":
+                            kwargs["action"] = callback_result
                 except Exception:
                     logger.exception("Callback %s.%s raised", type(cb).__name__, method)
         return result
