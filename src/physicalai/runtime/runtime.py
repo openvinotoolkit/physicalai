@@ -20,7 +20,6 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from physicalai.capture.camera import Camera
-    from physicalai.capture.frame import Frame
     from physicalai.inference.model import InferenceModel
     from physicalai.robot.interface import Robot
 
@@ -143,11 +142,11 @@ class PolicyRuntime:
 
         self._connected = False
 
-    def __enter__(self) -> Self:
+    def __enter__(self) -> Self:  # noqa: D105
         self.connect()
         return self
 
-    def __exit__(self, *exc_info: object) -> None:
+    def __exit__(self, *exc_info: object) -> None:  # noqa: D105
         self.disconnect()
 
     def run(self, *, duration_s: float | None = None) -> RunStats:
@@ -189,25 +188,11 @@ class PolicyRuntime:
                     last_action = action
                 else:
                     action = last_action
-                    holds = self._action_queue.consecutive_holds
-                    if holds == 1:
-                        logger.warning("Queue empty — holding position")
-                    elif self._fps > 0:
-                        warning_interval = max(int(self._fps), 1)
-                        if holds % warning_interval == 0:
-                            logger.warning(
-                                "Queue starvation: %d consecutive holds (%.1fs)",
-                                holds,
-                                holds / self._fps,
-                            )
-                    self._invoke_callback("on_hold", step=step, holds=holds)
+                    self._handle_hold(step=step)
 
                 if action is None:
                     logger.error("No action available (warmup may have failed)")
-                    elapsed = time.perf_counter() - loop_start
-                    sleep_time = goal_time - elapsed
-                    if sleep_time > 0:
-                        time.sleep(sleep_time)
+                    self._tick_sleep(loop_start, goal_time)
                     step += 1
                     continue
 
@@ -217,11 +202,7 @@ class PolicyRuntime:
 
                 self._robot.send_action(action, goal_time=self._goal_time)
                 self._invoke_callback("on_action_sent", action=action, step=step)
-
-                elapsed = time.perf_counter() - loop_start
-                sleep_time = goal_time - elapsed
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
+                self._tick_sleep(loop_start, goal_time)
 
                 step += 1
 
@@ -239,6 +220,27 @@ class PolicyRuntime:
             total_holds=self._action_queue.total_holds,
             inference_count=getattr(self._execution, "inference_count", 0),
         )
+
+    def _handle_hold(self, *, step: int) -> None:
+        holds = self._action_queue.consecutive_holds
+        if holds == 1:
+            logger.warning("Queue empty — holding position")
+        elif self._fps > 0:
+            warning_interval = max(int(self._fps), 1)
+            if holds % warning_interval == 0:
+                logger.warning(
+                    "Queue starvation: %d consecutive holds (%.1fs)",
+                    holds,
+                    holds / self._fps,
+                )
+        self._invoke_callback("on_hold", step=step, holds=holds)
+
+    @staticmethod
+    def _tick_sleep(loop_start: float, goal_time: float) -> None:
+        elapsed = time.perf_counter() - loop_start
+        sleep_time = goal_time - elapsed
+        if sleep_time > 0:
+            time.sleep(sleep_time)
 
     def _build_model_input(self) -> dict[str, Any]:
         robot_obs = self._robot.get_observation()
