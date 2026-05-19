@@ -1163,6 +1163,8 @@ notebooks = [
     { name = "matplotlib-inline" },
 ]
 observer-rerun = [
+    { name = "eclipse-zenoh" },
+    { name = "msgpack" },
     { name = "rerun-sdk" },
 ]
 realsense = [
@@ -1218,6 +1220,7 @@ requires-dist = [
     { name = "physicalai", extras = ["genicam"], marker = "extra == 'capture'" },
     { name = "physicalai", extras = ["realsense"], marker = "extra == 'capture'" },
     { name = "physicalai", extras = ["so101"], marker = "extra == 'robots'" },
+    { name = "physicalai", extras = ["telemetry"], marker = "extra == 'observer-rerun'" },
     { name = "physicalai", extras = ["transport"], marker = "extra == 'capture'" },
     { name = "physicalai", extras = ["trossen"], marker = "extra == 'robots'" },
     { name = "physicalai", extras = ["ur"], marker = "extra == 'robots'" },
