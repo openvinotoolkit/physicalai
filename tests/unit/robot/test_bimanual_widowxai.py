@@ -14,6 +14,8 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+pytest.importorskip("trossen_arm", reason="trossen_arm SDK is not installed")
+
 # ---------------------------------------------------------------------------
 # Mock trossen_arm SDK (same pattern as test_widowxai.py)
 # ---------------------------------------------------------------------------
