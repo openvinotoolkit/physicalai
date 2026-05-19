@@ -67,9 +67,6 @@ dev = ["pytest", "mypy", "pyrefly", "ruff>=0.15.12", "prek"]
 [tool.hatch.metadata]
 allow-direct-references = true
 
-[project.scripts]
-physicalai = "physicalai.cli:main"
-
 [project.urls]
 Homepage = "https://github.com/openvinotoolkit/physical-ai"
 Documentation = "https://github.com/openvinotoolkit/physical-ai"

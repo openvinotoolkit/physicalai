@@ -1,5 +1,0 @@
-# Missing required model.path field
-robot:
-  type: "mock"
-  port: "/dev/null"
-fps: 10.0

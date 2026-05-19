@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import importlib
 import logging
 import time
 import uuid
@@ -26,7 +25,6 @@ if TYPE_CHECKING:
 
     from physicalai.capture.camera import Camera
     from physicalai.capture.frame import Frame
-    from physicalai.cli._config import RuntimeConfig
     from physicalai.inference.model import InferenceModel
     from physicalai.robot.interface import Robot, RobotObservation
 
@@ -41,26 +39,28 @@ _WARMUP_BACKOFF_S = 1.0
 _GOAL_TIME_TICKS = 3
 
 
-def _import_class(class_path: str) -> type:
-    """Import a class from a dotted path like ``package.module.ClassName``.
+def default_observation_to_input(
+    robot_obs: RobotObservation,
+    camera_frames: dict[str, Frame],
+) -> dict[str, Any]:
+    """Convert robot observation and camera frames to model input dict.
+
+    Maps:
+        - ``robot_obs.joint_positions`` → ``"state"`` (as batch dim)
+        - ``frame.data`` per camera → ``"images.{name}"``
 
     Returns:
-        The imported class object.
-
-    Raises:
-        ValueError: If *class_path* has no module component.
-        ImportError: If the class is not found in the module.
+        Model input dictionary.
     """
-    module_path, _, class_name = class_path.rpartition(".")
-    if not module_path:
-        msg = f"Invalid class_path: {class_path!r} — must be 'module.ClassName'"
-        raise ValueError(msg)
-    module = importlib.import_module(module_path)
-    cls = getattr(module, class_name, None)
-    if cls is None:
-        msg = f"{class_name!r} not found in {module_path!r}"
-        raise ImportError(msg)
-    return cls
+    model_input: dict[str, Any] = {}
+
+    if robot_obs.joint_positions is not None:
+        model_input["state"] = np.array([robot_obs.joint_positions], dtype=np.float32)
+
+    for name, frame in camera_frames.items():
+        model_input[f"images.{name}"] = frame.data
+
+    return model_input
 
 
 class RuntimeCallback(Protocol):
@@ -141,72 +141,6 @@ class PolicyRuntime:
     def cameras(self) -> Mapping[str, Camera]:
         """Camera instances managed by this runtime, keyed by name."""
         return self._cameras
-
-    @classmethod
-    def from_config(cls, config: RuntimeConfig, callbacks: Sequence[RuntimeCallback] = ()) -> PolicyRuntime:
-        """Construct a PolicyRuntime from a RuntimeConfig.
-
-        Lazily imports InferenceModel, Camera, and robot classes.
-        Robot config must include a ``class_path`` key (dotted import path).
-
-        Args:
-            config: Validated runtime configuration.
-            callbacks: Optional callback sequence to attach.
-
-        Returns:
-            Configured PolicyRuntime instance.
-
-        Raises:
-            ValueError: If robot config is missing ``class_path``.
-        """
-        from physicalai.capture.camera import Camera  # noqa: PLC0415
-        from physicalai.inference.model import InferenceModel  # noqa: PLC0415
-
-        model = InferenceModel(config.model.path, backend=config.model.backend, device=config.model.device)
-
-        robot_cfg = dict(config.robot)
-        class_path = robot_cfg.pop("class_path", None)
-        if class_path is None:
-            msg = "robot config must include 'class_path' (e.g. 'physicalai.robot.so101.SO101Follower')"
-            raise ValueError(msg)
-        robot_cls = _import_class(class_path)
-        robot = robot_cls(**robot_cfg)
-
-        cameras: dict[str, Camera] = {}
-        for name, cam_cfg in config.cameras.items():
-            cam_dict = cam_cfg.model_dump()
-            cameras[name] = Camera.from_config(cam_dict)
-
-        if config.execution.mode == "sync":
-            from physicalai.runtime.execution import SyncExecution  # noqa: PLC0415
-
-            execution: Execution = SyncExecution()
-        else:
-            from physicalai.runtime.execution import AsyncExecution  # noqa: PLC0415
-
-            execution = AsyncExecution(
-                threshold=config.execution.threshold,
-                fps=int(config.fps),
-                watchdog_timeout_s=config.execution.watchdog_timeout_s,
-            )
-
-        from physicalai.runtime.smoothers import ReplaceSmoother  # noqa: PLC0415
-
-        if config.smoother.type == "lerp":
-            smoother = LerpSmoother(duration_frames=config.smoother.duration_frames)
-        else:
-            smoother = ReplaceSmoother()
-        action_queue = ActionQueue(smoother=smoother)
-
-        return cls(
-            robot=robot,
-            model=model,
-            execution=execution,
-            action_queue=action_queue,
-            cameras=cameras,
-            fps=config.fps,
-            callbacks=callbacks,
-        )
 
     def connect(self) -> None:
         """Connect robot and cameras.
