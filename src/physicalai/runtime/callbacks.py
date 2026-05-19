@@ -237,8 +237,9 @@ class RerunCallback:
         *,
         cameras: Mapping[str, Camera] | None = None,
         image_decimation: int = 3,
-        mode: Literal["spawn", "save"] = "spawn",
+        mode: Literal["spawn", "save", "connect"] = "spawn",
         save_path: str | None = None,
+        connect_addr: str = "127.0.0.1:9876",
         application_id: str = "physicalai-runtime",
     ) -> None:
         if mode == "save" and save_path is None:
@@ -251,6 +252,7 @@ class RerunCallback:
         self._image_decimation = image_decimation
         self._mode = mode
         self._save_path = save_path
+        self._connect_addr = connect_addr
         self._application_id = application_id
 
         self._last_step: int = 0
@@ -315,6 +317,8 @@ class RerunCallback:
             rr.spawn()
         elif self._mode == "save":
             rr.save(self._save_path)
+        elif self._mode == "connect":
+            rr.connect_tcp(self._connect_addr)
 
         self._fps = metadata.get("fps", 30)
         self._initialized = True
