@@ -204,6 +204,10 @@ class PolicyRuntime:
 
                 if action is None:
                     logger.error("No action available (warmup may have failed)")
+                    elapsed = time.perf_counter() - loop_start
+                    sleep_time = goal_time - elapsed
+                    if sleep_time > 0:
+                        time.sleep(sleep_time)
                     step += 1
                     continue
 
