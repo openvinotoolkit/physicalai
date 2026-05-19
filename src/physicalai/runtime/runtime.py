@@ -192,12 +192,14 @@ class PolicyRuntime:
                     holds = self._action_queue.consecutive_holds
                     if holds == 1:
                         logger.warning("Queue empty — holding position")
-                    elif self._fps > 0 and holds % int(self._fps) == 0:
-                        logger.warning(
-                            "Queue starvation: %d consecutive holds (%.1fs)",
-                            holds,
-                            holds / self._fps,
-                        )
+                    elif self._fps > 0:
+                        warning_interval = max(int(self._fps), 1)
+                        if holds % warning_interval == 0:
+                            logger.warning(
+                                "Queue starvation: %d consecutive holds (%.1fs)",
+                                holds,
+                                holds / self._fps,
+                            )
                     self._invoke_callback("on_hold", step=step, holds=holds)
 
                 if action is None:
