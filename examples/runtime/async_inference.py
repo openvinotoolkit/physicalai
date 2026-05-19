@@ -83,8 +83,9 @@ def main():
     except Exception as e:
         print(f"Failed to connect: {e}")
         print("Available cameras:")
-        for c in discover_all():
-            print(f"  Driver: {c.driver}, Device: {c.device}, Info: {c.info}")
+        for driver, devices in discover_all().items():
+            for dev in devices:
+                print(f"  Driver: {driver}, Device: {dev.device_id}, Info: {dev.name}")
         return
 
     for name, cam in cameras.items():
