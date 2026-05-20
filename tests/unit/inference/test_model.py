@@ -795,7 +795,7 @@ class TestPolicyNameValidation:
         with pytest.raises(ValueError, match="invalid characters"):
             InferenceModel(export_dir, policy_name="../../etc/shadow", backend="onnx")
 
-@pytest.mark.parametrize(
+    @pytest.mark.parametrize(
         "name",
         [
             "pi0_fast",
