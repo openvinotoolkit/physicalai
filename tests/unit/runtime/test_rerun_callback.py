@@ -18,7 +18,7 @@ def mock_rerun() -> MagicMock:
     """Provide a mock rerun module injected into sys.modules."""
     rr = MagicMock()
     rr.__name__ = "rerun"
-    rr.Scalar = MagicMock(side_effect=lambda v: ("Scalar", v))
+    rr.Scalars = MagicMock(side_effect=lambda *a, **kw: ("Scalars", a, kw))
     rr.Image = MagicMock(side_effect=lambda d: ("Image", d))
     rr.TextLog = MagicMock(side_effect=lambda t: ("TextLog", t))
     return rr
@@ -147,8 +147,8 @@ class TestRerunCallbackTick:
         cb.on_tick(_tick(step=1, dof=3))
 
         log_calls = mock_rerun.log.call_args_list
-        joint_calls = [c for c in log_calls if "robot/joint/" in str(c.args[0])]
-        assert len(joint_calls) == 3
+        joint_calls = [c for c in log_calls if c.args[0] == "robot/joints"]
+        assert len(joint_calls) == 1
 
     def test_tick_logs_action_scalars(self, make_callback: Any, mock_rerun: MagicMock) -> None:
         cb = make_callback()
@@ -158,8 +158,8 @@ class TestRerunCallbackTick:
         cb.on_tick(_tick(step=1, dof=4))
 
         log_calls = mock_rerun.log.call_args_list
-        action_calls = [c for c in log_calls if "robot/action/" in str(c.args[0])]
-        assert len(action_calls) == 4
+        action_calls = [c for c in log_calls if c.args[0] == "robot/actions"]
+        assert len(action_calls) == 1
 
     def test_tick_logs_runtime_metrics(self, make_callback: Any, mock_rerun: MagicMock) -> None:
         cb = make_callback()
@@ -170,7 +170,7 @@ class TestRerunCallbackTick:
 
         log_calls = mock_rerun.log.call_args_list
         paths = [c.args[0] for c in log_calls]
-        assert "runtime/queue_remaining" in paths
+        assert "queue/remaining" in paths
         assert "runtime/loop_duration_s" in paths
         assert "runtime/sleep_time_s" in paths
         assert "runtime/stale_obs" in paths
@@ -189,8 +189,8 @@ class TestRerunCallbackTick:
         event = _tick(step=5)
         cb.on_tick(event)
 
-        mock_rerun.set_time_sequence.assert_called_with("step", 5)
-        mock_rerun.set_time_seconds.assert_called_with("wall", event.timestamp)
+        mock_rerun.set_time.assert_any_call("step", sequence=5)
+        mock_rerun.set_time.assert_any_call("wall", timestamp=event.timestamp)
 
     def test_none_joint_positions_skipped(self, make_callback: Any, mock_rerun: MagicMock) -> None:
         cb = make_callback()
@@ -211,7 +211,7 @@ class TestRerunCallbackTick:
         cb.on_tick(event)
 
         log_calls = mock_rerun.log.call_args_list
-        joint_calls = [c for c in log_calls if "robot/joint/" in str(c.args[0])]
+        joint_calls = [c for c in log_calls if c.args[0] == "robot/joints"]
         assert len(joint_calls) == 0
 
 
@@ -226,9 +226,10 @@ class TestRerunCallbackInference:
 
         cb.on_inference(_inference(horizon=5, dof=3))
 
-        set_time_calls = mock_rerun.set_time_sequence.call_args_list
-        step_values = [c.args[1] for c in set_time_calls if c.args[0] == "step"]
-        assert step_values == [11, 12, 13, 14, 15]
+        set_time_calls = mock_rerun.set_time.call_args_list
+        step_values = [c.kwargs["sequence"] for c in set_time_calls if c.args[0] == "step" and "sequence" in c.kwargs]
+        # on_inference logs steps 11-15 for the horizon, then resets to step 10
+        assert step_values == [11, 12, 13, 14, 15, 10]
 
     def test_ghost_trajectory_logs_predicted_scalars(self, make_callback: Any, mock_rerun: MagicMock) -> None:
         cb = make_callback()
@@ -239,8 +240,9 @@ class TestRerunCallbackInference:
         cb.on_inference(_inference(horizon=2, dof=3))
 
         log_calls = mock_rerun.log.call_args_list
-        predicted_calls = [c for c in log_calls if "robot/predicted/" in str(c.args[0])]
-        assert len(predicted_calls) == 2 * 3
+        predicted_calls = [c for c in log_calls if c.args[0] == "robot/predicted"]
+        # One log call per horizon step (each with all DOFs in Scalars)
+        assert len(predicted_calls) == 2
 
     def test_ghost_trajectory_wall_time_spacing(self, make_callback: Any, mock_rerun: MagicMock) -> None:
         cb = make_callback()
@@ -251,9 +253,10 @@ class TestRerunCallbackInference:
         event = _inference(horizon=3, dof=1)
         cb.on_inference(event)
 
-        wall_calls = mock_rerun.set_time_seconds.call_args_list
-        wall_values = [c.args[1] for c in wall_calls if c.args[0] == "wall"]
-        expected = [event.timestamp + k / 10 for k in range(3)]
+        wall_calls = mock_rerun.set_time.call_args_list
+        wall_values = [c.kwargs["timestamp"] for c in wall_calls if c.args[0] == "wall" and "timestamp" in c.kwargs]
+        # 3 horizon steps + 1 reset to event.timestamp
+        expected = [event.timestamp + k / 10 for k in range(3)] + [event.timestamp]
         assert wall_values == pytest.approx(expected)
 
 
