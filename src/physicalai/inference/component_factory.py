@@ -169,7 +169,6 @@ def _import_class(class_path: str) -> type:
 # recursion on a crafted manifest would exhaust the Python call stack.
 _MAX_COMPONENT_DEPTH = 10
 
-
 def instantiate_component(
     spec: ComponentSpec,
     *,

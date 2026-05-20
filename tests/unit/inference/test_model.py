@@ -6,13 +6,10 @@
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 from typing import override
 from unittest.mock import MagicMock, patch
 
-# cv2 is an optional heavy dependency not available in all dev environments.
-sys.modules.setdefault("cv2", MagicMock())
 
 import numpy as np
 import pytest
@@ -766,7 +763,7 @@ class TestPipelineWiring:
 
 @pytest.mark.usefixtures("_patch_adapter")
 class TestPolicyNameValidation:
-    """TM-010 — policy_name path traversal prevention."""
+    """Policy_name path traversal prevention."""
 
     def test_manifest_traversal_policy_name_raises(self, tmp_path: Path) -> None:
         """manifest.policy.name with ../ sequences is rejected at load time."""

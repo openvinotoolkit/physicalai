@@ -218,7 +218,7 @@ class TestInstantiateComponent:
         assert isinstance(runner, SinglePass)
 
     def test_depth_cap_raises_on_excess(self) -> None:
-        """TM-009: recursion exceeding _MAX_COMPONENT_DEPTH raises ValueError."""
+        """Recursion exceeding _MAX_COMPONENT_DEPTH raises ValueError."""
         from physicalai.inference.component_factory import _MAX_COMPONENT_DEPTH
 
         spec = ComponentSpec(class_path="physicalai.inference.runners.SinglePass", init_args={})
@@ -226,7 +226,7 @@ class TestInstantiateComponent:
             instantiate_component(spec, _depth=_MAX_COMPONENT_DEPTH)
 
     def test_depth_cap_not_triggered_at_limit_minus_one(self) -> None:
-        """TM-009: depth == _MAX_COMPONENT_DEPTH - 1 still succeeds."""
+        """depth == _MAX_COMPONENT_DEPTH - 1 still succeeds."""
         from physicalai.inference.component_factory import _MAX_COMPONENT_DEPTH
 
         spec = ComponentSpec(class_path="physicalai.inference.runners.SinglePass", init_args={})
