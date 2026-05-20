@@ -71,8 +71,9 @@ class SO101Calibration:
 
         Raises:
             TypeError: If the calibration data is not a dict.
-            ValueError: If joints are missing, required keys are absent, or
-                servo IDs are not positive / unique.
+            ValueError: If joints are missing, required keys are absent,
+                tick ranges are invalid or out of bounds, or servo IDs are
+                not positive / unique.
         """
         if not isinstance(data, dict):
             msg = "Calibration file must be a JSON object mapping joint names to calibration data"
@@ -98,34 +99,30 @@ class SO101Calibration:
                 msg = f"Joint '{name}' drive_mode must be 0 or 1, got {cal['drive_mode']}"
                 raise ValueError(msg)
 
-            joints[name] = SO101JointCalibration(
+            joint = SO101JointCalibration(
                 id=int(cal["id"]),
                 drive_mode=int(cal["drive_mode"]),
                 homing_offset=int(cal["homing_offset"]),
                 range_min=int(cal["range_min"]),
                 range_max=int(cal["range_max"]),
             )
-
-        # Validate range ordering and hardware encoder bounds.
-        for name, cal in joints.items():
-            if cal.range_min >= cal.range_max:
-                msg = (
-                    f"Joint '{name}': range_min ({cal.range_min}) must be "
-                    f"less than range_max ({cal.range_max})"
-                )
+            # Validate range ordering and hardware encoder bounds.
+            if joint.range_min >= joint.range_max:
+                msg = f"Joint '{name}': range_min ({joint.range_min}) must be less than range_max ({joint.range_max})"
                 raise ValueError(msg)
-            if not (0 <= cal.range_min < TICKS_PER_REVOLUTION):
+            if not (0 <= joint.range_min < TICKS_PER_REVOLUTION):
                 msg = (
-                    f"Joint '{name}': range_min ({cal.range_min}) is outside the valid "
+                    f"Joint '{name}': range_min ({joint.range_min}) is outside the valid "
                     f"STS3215 encoder range [0, {TICKS_PER_REVOLUTION - 1}]"
                 )
                 raise ValueError(msg)
-            if not (0 <= cal.range_max < TICKS_PER_REVOLUTION):
+            if not (0 <= joint.range_max < TICKS_PER_REVOLUTION):
                 msg = (
-                    f"Joint '{name}': range_max ({cal.range_max}) is outside the valid "
+                    f"Joint '{name}': range_max ({joint.range_max}) is outside the valid "
                     f"STS3215 encoder range [0, {TICKS_PER_REVOLUTION - 1}]"
                 )
                 raise ValueError(msg)
+            joints[name] = joint
 
         # Validate servo IDs are positive and unique across all joints.
         ids = [j.id for j in joints.values()]

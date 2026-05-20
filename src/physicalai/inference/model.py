@@ -28,13 +28,12 @@ if TYPE_CHECKING:
     from physicalai.inference.preprocessors.base import Preprocessor
     from physicalai.inference.runners.base import InferenceRunner
 
+
 # Policy names from the manifest are used to construct filesystem paths.
 # Restrict to safe characters to prevent "../" traversal attacks.
 def _is_safe_policy_name(name: str) -> bool:
-    """Return True if *name* contains only alphanumeric characters, hyphens, and underscores
-    and starts with an alphanumeric character."""
+    """Return True if *name* uses only alphanumeric, hyphen, and underscore, starts with alphanumeric."""
     return bool(name) and name[0].isalnum() and all(c.isalnum() or c in "-_" for c in name)
-
 
 
 class InferenceModel:
@@ -94,7 +93,8 @@ class InferenceModel:
             **adapter_kwargs: Backend-specific configuration options
 
         Raises:
-            FileNotFoundError: If export directory or required files don't exist
+            FileNotFoundError: If export directory or required files don't exist.
+            ValueError: If ``policy_name`` contains invalid characters.
         """
         self.export_dir = Path(export_dir)
         if not self.export_dir.exists():
