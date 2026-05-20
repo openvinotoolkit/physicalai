@@ -465,27 +465,27 @@ class TestGetRunnerFactory:
         assert isinstance(get_runner({"use_action_queue": True, "chunk_size": 5}), SinglePass)
 
     def test_manifest_runner_spec_single_pass(self) -> None:
-        metadata = {"runner": {"class_path": "physicalai.inference.runners.SinglePass", "init_args": {}}}
-        assert isinstance(get_runner(metadata), SinglePass)
+        manifest_dict = {"runner": {"class_path": "physicalai.inference.runners.SinglePass", "init_args": {}}}
+        assert isinstance(get_runner(manifest_dict), SinglePass)
 
 
-    def test_manifest_runner_spec_takes_priority_over_legacy(self) -> None:
-        metadata = {
+    def test_manifest_runner_spec_takes_priority_over_flat_kwargs(self) -> None:
+        manifest_dict = {
             "use_action_queue": True,
             "chunk_size": 99,
             "runner": {"class_path": "physicalai.inference.runners.SinglePass", "init_args": {}},
         }
-        assert isinstance(get_runner(metadata), SinglePass)
+        assert isinstance(get_runner(manifest_dict), SinglePass)
 
     def test_nested_model_runner_takes_priority_over_flat(self) -> None:
-        metadata = {
+        manifest_dict = {
             "use_action_queue": True,
             "chunk_size": 99,
             "model": {
                 "runner": {"class_path": "physicalai.inference.runners.SinglePass", "init_args": {}},
             },
         }
-        assert isinstance(get_runner(metadata), SinglePass)
+        assert isinstance(get_runner(manifest_dict), SinglePass)
 
     def test_manifest_object_without_runner(self) -> None:
         manifest = Manifest()

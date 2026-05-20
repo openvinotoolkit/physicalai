@@ -69,7 +69,7 @@ class InferenceModel:
         Args:
             export_dir: Directory containing exported policy files
             policy_name: Policy name (auto-detected if None)
-            backend: Backend to use, or 'auto' to detect from metadata/files
+            backend: Backend to use, or 'auto' to detect from manifest/files
             device: Device for inference ('auto', 'cpu', 'cuda', 'CPU', 'GPU', etc.)
             runner: Execution runner override. If None, auto-selected from manifest.
             preprocessors: Pipeline stages applied to observations before the
