@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import json
-import re
 import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
@@ -31,7 +30,11 @@ if TYPE_CHECKING:
 
 # Policy names from the manifest are used to construct filesystem paths.
 # Restrict to safe characters to prevent "../" traversal attacks.
-_SAFE_POLICY_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+def _is_safe_policy_name(name: str) -> bool:
+    """Return True if *name* contains only alphanumeric characters, hyphens, and underscores
+    and starts with an alphanumeric character."""
+    return bool(name) and name[0].isalnum() and all(c.isalnum() or c in "-_" for c in name)
+
 
 
 class InferenceModel:
@@ -102,7 +105,7 @@ class InferenceModel:
 
         if policy_name is None:
             policy_name = self._detect_policy_name()
-        elif not _SAFE_POLICY_NAME_RE.match(policy_name):
+        elif not _is_safe_policy_name(policy_name):
             msg = (
                 f"policy_name {policy_name!r} contains invalid characters; "
                 "only alphanumeric characters, hyphens, and underscores are allowed"
@@ -380,7 +383,7 @@ class InferenceModel:
         """
         if self.manifest.policy.name:
             name = self.manifest.policy.name
-            if not _SAFE_POLICY_NAME_RE.match(name):
+            if not _is_safe_policy_name(name):
                 msg = (
                     f"manifest policy.name {name!r} contains invalid characters; "
                     "only alphanumeric characters, hyphens, and underscores are allowed"

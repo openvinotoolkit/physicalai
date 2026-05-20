@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import override
 from unittest.mock import MagicMock, patch
 
-
 import numpy as np
 import pytest
 import yaml
