@@ -346,7 +346,7 @@ class RerunCallback:
         import rerun as rr  # noqa: PLC0415
 
         # Actions: solid, 2px, blue
-        rr.log("robot/actions", rr.SeriesLines(width=2.0, colors=[70, 130, 230, 255], names="actions"), static=True)
+        rr.log("robot/actions", rr.SeriesLines(widths=2.0, colors=[70, 130, 230, 255], names="actions"), static=True)
         # Predicted: large markers (circles), orange — clearly distinct from action lines
         rr.log(
             "robot/predicted",
@@ -354,9 +354,9 @@ class RerunCallback:
             static=True,
         )
         # Joints: default styling (thin lines)
-        rr.log("robot/joints", rr.SeriesLines(width=1.5), static=True)
+        rr.log("robot/joints", rr.SeriesLines(widths=1.5), static=True)
         # Queue: green line; inference events: red spikes
-        rr.log("queue/remaining", rr.SeriesLines(width=2.0, colors=[80, 200, 120, 255], names="queue"), static=True)
+        rr.log("queue/remaining", rr.SeriesLines(widths=2.0, colors=[80, 200, 120, 255], names="queue"), static=True)
         rr.log(
             "queue/inference",
             rr.SeriesPoints(marker_sizes=8.0, colors=[220, 50, 50, 255], names="inference"),
