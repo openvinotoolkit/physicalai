@@ -2,32 +2,42 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Async inference with PolicyRuntime.
+"""Run a trained policy on hardware with real-time Rerun visualization.
 
-python examples/runtime/async_inference.py \
-  --model ./exports/pi05_cans_openvino \
-  --device GPU.0 \
-  --port /dev/ttyACM0 \
-  --calibration /home/max/.cache/physicalai/robots/a8d8d997-a59e-4423-9006-5d991d223887/calibrations/0b2f185a-8ab2-4956-91c2-3a2ac2dbd8c1.json \
-  --overhead-camera /dev/v4l/by-id/usb-UGREEN_Camera_2K_UGREEN_Camera_2K_SN0001-video-index0 \
-  --arm-camera 353322271391 \
-  --front-camera /dev/v4l/by-id/usb-Innomaker_Innomaker-U20CAM-1080p-S1_SN0001-video-index0 \
-  --width 640 \
-  --height 480 \
-  --fps 30 \
-  --duration-s 60
+Examples:
+
+    # SO101 with 3 cameras, Rerun viewer auto-launched
+    python examples/runtime/async_inference.py \\
+      --robot so101 --port /dev/ttyACM0 --calibration ./cal.json \\
+      --model ./exports/my_model \\
+      --camera overhead:uvc:/dev/video0 \\
+      --camera arm:realsense:353322271391 \\
+      --camera front:uvc:/dev/video2 \\
+      --rerun spawn
+
+    # Trossen WidowXAI
+    python examples/runtime/async_inference.py \\
+      --robot widowxai --ip 192.168.1.2 \\
+      --model ./exports/my_model \\
+      --camera front:uvc:/dev/video0
+
+    # Bimanual Trossen WidowXAI
+    python examples/runtime/async_inference.py \\
+      --robot bimanual_widowxai --ip-left 192.168.1.2 --ip-right 192.168.1.3 \\
+      --model ./exports/my_model
+
+    # No --camera args → interactive selection
+    python examples/runtime/async_inference.py \\
+      --robot so101 --port /dev/ttyACM0 --calibration ./cal.json \\
+      --model ./exports/my_model --rerun spawn
 """
 
 from __future__ import annotations
 
 import argparse
 
-import openvino as ov
-
-from physicalai.capture import discover_all
-from physicalai.capture.transport import SharedCamera
+from physicalai.capture import select_cameras_interactive
 from physicalai.inference import InferenceModel
-from physicalai.robot import SO101
 from physicalai.runtime import (
     ActionQueue,
     AsyncExecution,
@@ -36,78 +46,69 @@ from physicalai.runtime import (
     RerunCallback,
 )
 
+from utils import build_robot, parse_camera_specs
 
-def main():
-    parser = argparse.ArgumentParser(description="Run policy with PolicyRuntime")
-    parser.add_argument("--model", required=True, help="Exported model directory")
-    parser.add_argument("--device", default="GPU.0", help="OpenVINO device")
-    parser.add_argument("--port", default="/dev/ttyACM0", help="Robot serial port")
-    parser.add_argument("--calibration", required=True, help="Robot calibration file")
-    parser.add_argument("--overhead-camera", required=True, help="Overhead camera device path")
-    parser.add_argument("--arm-camera", required=True, help="Arm camera serial number")
-    parser.add_argument("--front-camera", required=True, help="Front camera device path")
-    parser.add_argument("--width", type=int, default=640)
-    parser.add_argument("--height", type=int, default=480)
-    parser.add_argument("--duration-s", type=float, default=60.0)
-    parser.add_argument("--fps", type=float, default=30.0)
-    parser.add_argument(
-        "--rerun",
-        choices=("off", "spawn", "connect", "save"),
-        default="off",
-        help="Rerun viewer mode (off | spawn | connect | save)",
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Run a trained policy on hardware",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument(
-        "--rerun-addr",
-        default="127.0.0.1:9876",
-        help="Rerun TCP address for --rerun connect (default: 127.0.0.1:9876)",
+
+    # Robot
+    robot_group = parser.add_argument_group("robot")
+    robot_group.add_argument("--robot", required=True, choices=("so101", "widowxai", "bimanual_widowxai"))
+    robot_group.add_argument("--port", help="Serial port (so101)")
+    robot_group.add_argument("--calibration", help="Calibration JSON path (so101)")
+    robot_group.add_argument("--ip", help="Robot IP (widowxai)")
+    robot_group.add_argument("--ip-left", help="Left arm IP (bimanual_widowxai)")
+    robot_group.add_argument("--ip-right", help="Right arm IP (bimanual_widowxai)")
+
+    # Model
+    model_group = parser.add_argument_group("model")
+    model_group.add_argument("--model", required=True, help="Exported model directory")
+    model_group.add_argument("--device", default="GPU.0", help="OpenVINO device (default: GPU.0)")
+
+    # Cameras
+    cam_group = parser.add_argument_group("cameras")
+    cam_group.add_argument(
+        "--camera", action="append", dest="cameras", metavar="NAME:DRIVER:DEVICE",
+        help="Camera as name:driver:device_id (repeatable). Omit for interactive selection.",
     )
-    parser.add_argument(
-        "--rerun-save-path",
-        default="run.rrd",
-        help="Output .rrd path for --rerun save",
-    )
-    parser.add_argument(
-        "--rerun-no-images",
-        action="store_true",
-        help="Disable image logging (scalars only). Recommended for long runs.",
-    )
-    parser.add_argument(
-        "--rerun-image-decimation",
-        type=int,
-        default=3,
-        help="Log 1 image per N ticks (default: 3). Use 30 for ~1 fps.",
-    )
-    parser.add_argument(
-        "--rerun-jpeg-quality",
-        type=int,
-        default=None,
-        help="JPEG-encode images at this quality (1-100). Omit for raw RGB.",
-    )
-    parser.add_argument(
-        "--rerun-image-max-dim",
-        type=int,
-        default=None,
-        help="Downsample images so longer side <= N px before logging (e.g. 320).",
-    )
+    cam_group.add_argument("--cam-width", type=int, default=640, help="Camera width (default: 640)")
+    cam_group.add_argument("--cam-height", type=int, default=480, help="Camera height (default: 480)")
+    cam_group.add_argument("--cam-fps", type=int, default=30, help="Camera FPS (default: 30)")
+
+    # Runtime
+    rt_group = parser.add_argument_group("runtime")
+    rt_group.add_argument("--fps", type=float, default=30.0, help="Control loop FPS (default: 30)")
+    rt_group.add_argument("--duration-s", type=float, default=60.0, help="Duration in seconds")
+
+    # Rerun
+    rr_group = parser.add_argument_group("rerun")
+    rr_group.add_argument("--rerun", choices=("off", "spawn", "connect", "save"), default="off")
+    rr_group.add_argument("--rerun-addr", default="127.0.0.1:9876")
+    rr_group.add_argument("--rerun-save-path", default="run.rrd")
+    rr_group.add_argument("--rerun-no-images", action="store_true", help="Scalars only")
+    rr_group.add_argument("--rerun-image-decimation", type=int, default=3)
+    rr_group.add_argument("--rerun-jpeg-quality", type=int, default=None)
+    rr_group.add_argument("--rerun-image-max-dim", type=int, default=None)
+
     args = parser.parse_args()
 
+    # ── Load model ──
     import openvino_tokenizers  # noqa: F401 — registers OV tokenizer ops
 
-    print("Available devices:")
-    core = ov.Core()
-    devices = core.available_devices
-    for dev in devices:
-        print(f"  {dev}: {core.get_property(dev, 'FULL_DEVICE_NAME')}")
-    print(f"Selected device: {args.device}")
-
     model = InferenceModel.load(args.model, device=args.device)
-    robot = SO101(port=args.port, calibration=args.calibration, role="follower")
-    cameras = {
-        "overhead": SharedCamera("uvc", device=args.overhead_camera, width=args.width, height=args.height, fps=int(args.fps)),
-        "front": SharedCamera("uvc", device=args.front_camera, width=args.width, height=args.height, fps=int(args.fps)),
-        "arm": SharedCamera("realsense", serial_number=args.arm_camera, width=args.width, height=args.height, fps=int(args.fps)),
-    }
 
+    # ── Build robot & cameras ──
+    robot = build_robot(args)
+    if args.cameras:
+        cameras = parse_camera_specs(args.cameras, args.cam_width, args.cam_height, args.cam_fps)
+    else:
+        cameras = select_cameras_interactive(args.cam_width, args.cam_height, args.cam_fps)
+
+    # ── Callbacks ──
     callbacks: list = []
     if args.rerun != "off":
         callbacks.append(
@@ -123,6 +124,7 @@ def main():
             )
         )
 
+    # ── Run ──
     runtime = PolicyRuntime(
         robot=robot,
         model=model,
@@ -133,26 +135,16 @@ def main():
         callbacks=callbacks,
     )
 
-    try:
-        runtime.connect()
-    except Exception as e:
-        print(f"Failed to connect: {e}")
-        print("Available cameras:")
-        for driver, devices in discover_all().items():
-            for dev in devices:
-                print(f"  Driver: {driver}, Device: {dev.device_id}, Info: {dev.name}")
-        return
-
-    for name, cam in cameras.items():
-        print(f"Camera '{name}' connected: {cam.actual_width}x{cam.actual_height} @ {cam.actual_fps}fps")
-
-    print("Starting policy runtime...")
-    try:
+    with runtime:
+        for name, cam in cameras.items():
+            w = getattr(cam, "actual_width", None)
+            h = getattr(cam, "actual_height", None)
+            f = getattr(cam, "actual_fps", None)
+            print(f"  {name}: {w}x{h} @ {f}fps" if w and h else f"  {name}: connected")
+        print(f"Running at {args.fps} fps for {args.duration_s}s...")
         stats = runtime.run(duration_s=args.duration_s)
-        print(f"\nDone — {stats.steps} steps, {stats.inference_count} inferences, {stats.total_holds} holds")
-    finally:
-        runtime.disconnect()
-        print("Disconnected")
+
+    print(f"\nDone — {stats.steps} steps, {stats.inference_count} inferences, {stats.total_holds} holds")
 
 
 if __name__ == "__main__":
