@@ -65,5 +65,3 @@ physicalai run --config runtime.yaml --duration-s 60
 ```
 
 > **Note:** `PolicyRuntime` and the CLI are planned APIs. See [#121](https://github.com/openvinotoolkit/physicalai/issues/121) for status.
-
-
