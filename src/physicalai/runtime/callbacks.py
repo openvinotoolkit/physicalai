@@ -104,63 +104,6 @@ class JsonlCallback:
         self._file.flush()
 
 
-class ZenohCallback:
-    """Publishes events over zenoh pub-sub using the existing TelemetryEmitter.
-
-    Requires ``physicalai[telemetry]`` (zenoh + msgpack).  If not installed,
-    construction raises ``ImportError``.
-
-    Note: ``zenoh.open()`` runs synchronously on the control thread during the
-    first ``on_lifecycle`` call.  This is typically <10ms but blocks the loop
-    until the zenoh session is established.
-    """
-
-    def __init__(self) -> None:  # noqa: D107
-        # Verify zenoh is importable at construction time (fail fast).
-        from physicalai.runtime._telemetry import TelemetryEmitter  # noqa: PLC0415, PLC2701, F401
-
-        self._emitter: Any = None
-        self._initialized = False
-
-    def on_lifecycle(self, event: LifecycleEvent) -> None:  # noqa: D102
-        if not self._initialized:
-            self._init_emitter(event.session_id)
-        self._emitter.emit_lifecycle(event.event, **event.metadata)
-
-    def on_tick(self, event: TickEvent) -> None:  # noqa: D102
-        if not self._emitter or not self._emitter.enabled:
-            return
-        self._emitter.emit_tick(
-            step=event.step,
-            timestamp=event.timestamp,
-            joint_positions=event.joint_positions,
-            action_sent=event.action_sent,
-            queue_remaining=event.queue_remaining,
-            loop_duration_s=event.loop_duration_s,
-            sleep_time_s=event.sleep_time_s,
-            stale_obs=event.stale_obs,
-        )
-
-    def on_inference(self, event: InferenceEvent) -> None:  # noqa: D102
-        if not self._emitter or not self._emitter.enabled:
-            return
-        self._emitter.emit_inference(
-            latency_s=event.latency_s,
-            offset=event.offset,
-            chunk=event.chunk,
-        )
-
-    def close(self) -> None:  # noqa: D102
-        if self._emitter:
-            self._emitter.close()
-
-    def _init_emitter(self, session_id: str) -> None:
-        from physicalai.runtime._telemetry import TelemetryEmitter  # noqa: PLC0415, PLC2701
-
-        self._emitter = TelemetryEmitter(session_id=session_id)
-        self._initialized = True
-
-
 class AsyncCallback:
     """Wraps a callback so all hooks run on a dedicated background thread.
 

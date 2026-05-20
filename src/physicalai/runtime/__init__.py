@@ -10,7 +10,7 @@ Public API::
     from physicalai.runtime import ActionQueue
     from physicalai.runtime import ChunkSmoother, LerpSmoother, ReplaceSmoother
     from physicalai.runtime import TickEvent, InferenceEvent, LifecycleEvent
-    from physicalai.runtime import ConsoleCallback, JsonlCallback, ZenohCallback, AsyncCallback, RerunCallback
+    from physicalai.runtime import ConsoleCallback, JsonlCallback, AsyncCallback, RerunCallback
 """
 
 from physicalai.runtime._action_queue import ActionQueue  # noqa: PLC2701
@@ -19,7 +19,6 @@ from physicalai.runtime.callbacks import (
     ConsoleCallback,
     JsonlCallback,
     RerunCallback,
-    ZenohCallback,
 )
 from physicalai.runtime.events import InferenceEvent, LifecycleEvent, TickEvent
 from physicalai.runtime.execution import (
@@ -54,5 +53,4 @@ __all__ = [
     "SyncExecution",
     "TickEvent",
     "WorkerDiedError",
-    "ZenohCallback",
 ]
