@@ -286,6 +286,7 @@ class RerunCallback:
             rr.log("robot/actions", rr.Scalars([float(v) for v in event.action_sent]))
 
         rr.log("queue/remaining", rr.Scalars(float(event.queue_remaining)))
+        rr.log("queue/inference", rr.Scalars(0.0))
         rr.log("runtime/loop_duration_s", rr.Scalars(event.loop_duration_s))
         rr.log("runtime/sleep_time_s", rr.Scalars(event.sleep_time_s))
         rr.log("runtime/stale_obs", rr.Scalars(float(event.stale_obs)))
@@ -347,21 +348,17 @@ class RerunCallback:
 
         # Actions: solid, 2px, blue
         rr.log("robot/actions", rr.SeriesLines(widths=2.0, colors=[70, 130, 230, 255], names="actions"), static=True)
-        # Predicted: large markers (circles), orange — clearly distinct from action lines
+        # Predicted: small dots, orange, semi-transparent — visible but not dominant
         rr.log(
             "robot/predicted",
-            rr.SeriesPoints(marker_sizes=6.0, colors=[255, 140, 0, 230], names="predicted"),
+            rr.SeriesPoints(marker_sizes=2.0, colors=[255, 140, 0, 120], names="predicted"),
             static=True,
         )
         # Joints: default styling (thin lines)
         rr.log("robot/joints", rr.SeriesLines(widths=1.5), static=True)
-        # Queue: green line; inference events: red spikes
-        rr.log("queue/remaining", rr.SeriesLines(widths=2.0, colors=[80, 200, 120, 255], names="queue"), static=True)
-        rr.log(
-            "queue/inference",
-            rr.SeriesPoints(marker_sizes=8.0, colors=[220, 50, 50, 255], names="inference"),
-            static=True,
-        )
+        # Queue: thick green line (bar-like); inference: thin red vertical spikes
+        rr.log("queue/remaining", rr.SeriesLines(widths=8.0, colors=[80, 200, 120, 255], names="queue"), static=True)
+        rr.log("queue/inference", rr.SeriesLines(widths=1.5, colors=[220, 50, 50, 255], names="inference"), static=True)
 
     def _send_default_blueprint(self) -> None:
         """Send a default blueprint: actions+predicted overlaid, queue, joints, cameras."""
@@ -376,13 +373,13 @@ class RerunCallback:
 
         views: list[Any] = [
             rrb.TimeSeriesView(
+                origin="/queue",
+                name="Action Queue",
+            ),
+            rrb.TimeSeriesView(
                 origin="/robot",
                 contents=["/robot/actions", "/robot/predicted"],
                 name="Actions vs Predicted",
-            ),
-            rrb.TimeSeriesView(
-                origin="/queue",
-                name="Action Queue",
             ),
             rrb.TimeSeriesView(
                 origin="/robot/joints",
