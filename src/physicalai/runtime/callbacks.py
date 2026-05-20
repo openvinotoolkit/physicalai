@@ -279,12 +279,11 @@ class RerunCallback:
         rr.set_time("wall", timestamp=event.timestamp)
 
         if event.joint_positions is not None:
-            for i, val in enumerate(event.joint_positions):
-                rr.log(f"robot/joint/{i}", rr.Scalars(float(val)))
+            # One plot with N overlaid series instead of N separate plots.
+            rr.log("robot/joints", rr.Scalars([float(v) for v in event.joint_positions]))
 
         if event.action_sent is not None:
-            for i, val in enumerate(event.action_sent):
-                rr.log(f"robot/action/{i}", rr.Scalars(float(val)))
+            rr.log("robot/actions", rr.Scalars([float(v) for v in event.action_sent]))
 
         rr.log("runtime/queue_remaining", rr.Scalars(float(event.queue_remaining)))
         rr.log("runtime/loop_duration_s", rr.Scalars(event.loop_duration_s))
@@ -297,14 +296,13 @@ class RerunCallback:
     def on_inference(self, event: InferenceEvent) -> None:  # noqa: D102
         import rerun as rr  # noqa: PLC0415
 
-        horizon, dof = event.chunk.shape
+        horizon = event.chunk.shape[0]
         start_step = self._last_step + 1
 
         for k in range(horizon):
             rr.set_time("step", sequence=start_step + k)
             rr.set_time("wall", timestamp=event.timestamp + k / self._fps)
-            for i in range(dof):
-                rr.log(f"robot/predicted/{i}", rr.Scalars(float(event.chunk[k, i])))
+            rr.log("robot/predicted", rr.Scalars([float(v) for v in event.chunk[k]]))
 
     def close(self) -> None:
         """Release independent camera subscribers."""
@@ -334,6 +332,47 @@ class RerunCallback:
         self._initialized = True
 
         self._open_camera_subscribers()
+        self._send_default_blueprint()
+
+    def _send_default_blueprint(self) -> None:
+        """Send a default blueprint: actions+predicted overlaid, joints, cameras grid."""
+        try:
+            import rerun as rr  # noqa: PLC0415
+            import rerun.blueprint as rrb  # noqa: PLC0415
+        except ImportError:
+            logger.debug("rerun.blueprint not available; skipping default blueprint")
+            return
+
+        camera_names = list((self._cameras or {}).keys()) if self._log_images else []
+
+        views: list[Any] = [
+            rrb.TimeSeriesView(
+                origin="/robot",
+                contents=["/robot/actions", "/robot/predicted"],
+                name="Actions vs Predicted",
+            ),
+            rrb.TimeSeriesView(
+                origin="/robot/joints",
+                name="Joint state",
+            ),
+        ]
+        if camera_names:
+            views.append(
+                rrb.Grid(
+                    contents=[rrb.Spatial2DView(origin=f"/camera/{n}", name=n) for n in camera_names],
+                    name="Cameras",
+                )
+            )
+
+        blueprint = rrb.Blueprint(
+            rrb.Vertical(*views),
+            rrb.SelectionPanel(state="collapsed"),
+            rrb.TimePanel(state="collapsed"),
+        )
+        try:
+            rr.send_blueprint(blueprint, make_active=True, make_default=True)
+        except Exception:
+            logger.debug("Failed to send Rerun blueprint", exc_info=True)
 
     def _open_camera_subscribers(self) -> None:
         if not self._log_images:
