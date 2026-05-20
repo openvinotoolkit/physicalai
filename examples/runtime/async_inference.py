@@ -66,6 +66,29 @@ def main():
         default="run.rrd",
         help="Output .rrd path for --rerun save",
     )
+    parser.add_argument(
+        "--rerun-no-images",
+        action="store_true",
+        help="Disable image logging (scalars only). Recommended for long runs.",
+    )
+    parser.add_argument(
+        "--rerun-image-decimation",
+        type=int,
+        default=3,
+        help="Log 1 image per N ticks (default: 3). Use 30 for ~1 fps.",
+    )
+    parser.add_argument(
+        "--rerun-jpeg-quality",
+        type=int,
+        default=None,
+        help="JPEG-encode images at this quality (1-100). Omit for raw RGB.",
+    )
+    parser.add_argument(
+        "--rerun-image-max-dim",
+        type=int,
+        default=None,
+        help="Downsample images so longer side <= N px before logging (e.g. 320).",
+    )
     args = parser.parse_args()
 
     import openvino_tokenizers  # noqa: F401 — registers OV tokenizer ops
@@ -90,7 +113,10 @@ def main():
         callbacks.append(
             RerunCallback(
                 cameras=cameras,
-                image_decimation=3,
+                image_decimation=args.rerun_image_decimation,
+                log_images=not args.rerun_no_images,
+                image_jpeg_quality=args.rerun_jpeg_quality,
+                image_max_dim=args.rerun_image_max_dim,
                 mode=args.rerun,
                 connect_addr=args.rerun_addr,
                 save_path=args.rerun_save_path if args.rerun == "save" else None,

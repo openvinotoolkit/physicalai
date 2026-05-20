@@ -237,6 +237,9 @@ class RerunCallback:
         *,
         cameras: Mapping[str, Camera] | None = None,
         image_decimation: int = 3,
+        log_images: bool = True,
+        image_jpeg_quality: int | None = None,
+        image_max_dim: int | None = None,
         mode: Literal["spawn", "save", "connect"] = "spawn",
         save_path: str | None = None,
         connect_addr: str = "127.0.0.1:9876",
@@ -250,6 +253,9 @@ class RerunCallback:
 
         self._cameras = cameras
         self._image_decimation = image_decimation
+        self._log_images = log_images
+        self._image_jpeg_quality = image_jpeg_quality
+        self._image_max_dim = image_max_dim
         self._mode = mode
         self._save_path = save_path
         self._connect_addr = connect_addr
@@ -285,7 +291,7 @@ class RerunCallback:
         rr.log("runtime/sleep_time_s", rr.Scalars(event.sleep_time_s))
         rr.log("runtime/stale_obs", rr.Scalars(float(event.stale_obs)))
 
-        if event.step % self._image_decimation == 0:
+        if self._log_images and event.step % self._image_decimation == 0:
             self._log_camera_frames()
 
     def on_inference(self, event: InferenceEvent) -> None:  # noqa: D102
@@ -330,6 +336,8 @@ class RerunCallback:
         self._open_camera_subscribers()
 
     def _open_camera_subscribers(self) -> None:
+        if not self._log_images:
+            return
         from physicalai.capture.transport._shared_camera import SharedCamera  # noqa: PLC0415, PLC2701
 
         for name, cam in (self._cameras or {}).items():
@@ -353,7 +361,13 @@ class RerunCallback:
         for name, sub in self._camera_subscribers.items():
             try:
                 frame = sub.read_latest()
-                rr.log(f"camera/{name}", rr.Image(frame.data))
+                data = frame.data
+                if self._image_max_dim is not None:
+                    data = _downsample_to_max_dim(data, self._image_max_dim)
+                img = rr.Image(data)
+                if self._image_jpeg_quality is not None:
+                    img = img.compress(jpeg_quality=self._image_jpeg_quality)
+                rr.log(f"camera/{name}", img)
             except Exception:
                 logger.debug("RerunCallback: failed to read camera %r", name, exc_info=True)
 
@@ -372,6 +386,20 @@ def _np_to_list(arr: np.ndarray | None) -> list[float] | None:
     if arr is None:
         return None
     return arr.tolist()
+
+
+def _downsample_to_max_dim(data: np.ndarray, max_dim: int) -> np.ndarray:
+    """Subsample image so the longer side is <= ``max_dim``. No-op if already smaller.
+
+    Returns:
+        Subsampled image. Does not modify input.
+    """
+    h, w = data.shape[:2]
+    longer = max(h, w)
+    if longer <= max_dim:
+        return data
+    stride = (longer + max_dim - 1) // max_dim  # ceil-divide
+    return data[::stride, ::stride]
 
 
 def _json_default(obj: object) -> Any:  # noqa: ANN401
