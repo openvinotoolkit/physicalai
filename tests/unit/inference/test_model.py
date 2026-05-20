@@ -795,13 +795,23 @@ class TestPolicyNameValidation:
         with pytest.raises(ValueError, match="invalid characters"):
             InferenceModel(export_dir, policy_name="../../etc/shadow", backend="onnx")
 
-    def test_valid_policy_name_with_hyphens_and_underscores(self, tmp_path: Path) -> None:
-        """Policy names with hyphens and underscores are accepted."""
+@pytest.mark.parametrize(
+        "name",
+        [
+            "pi0_fast",
+            "pi05",
+            "smolvla",
+            "multi_task_dit",
+            "pi0-fast_v2",
+        ],
+    )
+    def test_valid_policy_name_accepts_real_world_names(self, tmp_path: Path, name: str) -> None:
+        """Policy names with hyphens, underscores, and digits are accepted."""
         export_dir = tmp_path / "exports"
         export_dir.mkdir()
-        manifest = {"policy": {"name": "my-act_policy"}, "model": {"artifacts": {"onnx": "my-act_policy.onnx"}}}
+        manifest = {"policy": {"name": name}, "model": {"artifacts": {"onnx": f"{name}.onnx"}}}
         (export_dir / "manifest.json").write_text(json.dumps(manifest))
-        (export_dir / "my-act_policy.onnx").touch()
+        (export_dir / f"{name}.onnx").touch()
 
         model = InferenceModel(export_dir)
-        assert model.policy_name == "my-act_policy"
+        assert model.policy_name == name
