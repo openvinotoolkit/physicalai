@@ -304,6 +304,11 @@ class RerunCallback:
             rr.set_time("wall", timestamp=event.timestamp + k / self._fps)
             rr.log("robot/predicted", rr.Scalars([float(v) for v in event.chunk[k]]))
 
+        # Mark the inference event on the queue timeline (shows as a spike/refill).
+        rr.set_time("step", sequence=self._last_step)
+        rr.set_time("wall", timestamp=event.timestamp)
+        rr.log("runtime/inference_event", rr.Scalars(float(horizon)))
+
     def close(self) -> None:
         """Release independent camera subscribers."""
         for sub in self._camera_subscribers.values():
@@ -331,11 +336,26 @@ class RerunCallback:
         self._fps = metadata.get("fps", 30)
         self._initialized = True
 
+        self._send_series_styles()
         self._open_camera_subscribers()
         self._send_default_blueprint()
 
+    @staticmethod
+    def _send_series_styles() -> None:
+        """Set static visual style for series: solid lines for actions, dots for predicted."""
+        import rerun as rr  # noqa: PLC0415
+
+        # Actions: solid, 2px, blue
+        rr.log("robot/actions", rr.SeriesLine(width=2.0, color=[70, 130, 230, 255]), static=True)
+        # Predicted: markers (dots), orange, semi-transparent
+        rr.log("robot/predicted", rr.SeriesPoint(marker_size=4.0, color=[255, 160, 50, 200]), static=True)
+        # Joints: default styling (thin lines)
+        rr.log("robot/joints", rr.SeriesLine(width=1.5), static=True)
+        # Queue: green fill-style line
+        rr.log("runtime/queue_remaining", rr.SeriesLine(width=2.0, color=[80, 200, 120, 255]), static=True)
+
     def _send_default_blueprint(self) -> None:
-        """Send a default blueprint: actions+predicted overlaid, joints, cameras grid."""
+        """Send a default blueprint: actions+predicted overlaid, queue, joints, cameras."""
         try:
             import rerun as rr  # noqa: PLC0415
             import rerun.blueprint as rrb  # noqa: PLC0415
@@ -352,8 +372,13 @@ class RerunCallback:
                 name="Actions vs Predicted",
             ),
             rrb.TimeSeriesView(
+                origin="/runtime",
+                contents=["/runtime/queue_remaining", "/runtime/inference_event"],
+                name="Action Queue",
+            ),
+            rrb.TimeSeriesView(
                 origin="/robot/joints",
-                name="Joint state",
+                name="Joint State",
             ),
         ]
         if camera_names:
