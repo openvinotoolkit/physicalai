@@ -463,7 +463,7 @@ All exported models — regardless of source framework — use the same `manifes
 
 ### Why One Format
 
-Previous designs had two formats: `metadata.yaml` for physicalai-train and `manifest.json` for LeRobot. This created unnecessary divergence:
+A single on-disk format avoids unnecessary divergence:
 
 - Two parsers to maintain
 - Two sets of schema conventions

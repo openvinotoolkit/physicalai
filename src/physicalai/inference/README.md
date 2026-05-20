@@ -263,10 +263,12 @@ From file extensions in export directory:
 - `.pte` → ExecuTorch
 - `.pt` → Torch
 
-Or from `metadata.yaml`:
+Or from `manifest.json`:
 
-```yaml
-backend: openvino
+```json
+{
+  "model": { "artifacts": { "openvino": "act.xml" } }
+}
 ```
 
 ### 2. Device
@@ -284,25 +286,44 @@ backend: openvino
 
 ### 3. Policy Configuration
 
-From `metadata.yaml`:
+From `manifest.json`:
 
-```yaml
-backend: openvino
-chunk_size: 100
-use_action_queue: true
-policy_class: physicalai.policies.act.ACT
+```json
+{
+  "policy": {
+    "name": "act",
+    "source": { "class_path": "physicalai.policies.act.ACT" }
+  },
+  "model": {
+    "artifacts": { "openvino": "act.xml" },
+    "runner": {
+      "class_path": "physicalai.inference.runners.SinglePass",
+      "init_args": {}
+    }
+  }
+}
 ```
 
-## Metadata Format
+## Manifest Format
 
-Export creates `metadata.yaml` with policy configuration:
+Export creates `manifest.json` with policy configuration:
 
-```yaml
-backend: openvino # Backend used for export
-chunk_size: 100 # Action chunk size
-use_action_queue: true # Whether to use action queue
-policy_class: physicalai.policies.act.ACT # Policy class path
-n_action_steps: 100 # Number of action steps (optional)
+```json
+{
+  "format": "policy_package",
+  "version": "1.0",
+  "policy": {
+    "name": "act",
+    "source": { "class_path": "physicalai.policies.act.ACT" }
+  },
+  "model": {
+    "artifacts": { "openvino": "act.xml" },
+    "runner": {
+      "class_path": "physicalai.inference.runners.SinglePass",
+      "init_args": {}
+    }
+  }
+}
 ```
 
 ## Performance Tips

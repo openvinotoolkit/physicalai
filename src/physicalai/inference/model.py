@@ -5,12 +5,8 @@
 
 from __future__ import annotations
 
-import json
-import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
-
-import yaml
 
 from physicalai.inference.adapters import adapter_registry, get_adapter
 from physicalai.inference.component_factory import instantiate_component, resolve_artifact
@@ -307,38 +303,15 @@ class InferenceModel:
         return inputs
 
     def _load_manifest(self) -> Manifest:
-        """Load export manifest from manifest.json, metadata.yaml, or metadata.json.
-
-        Tries ``manifest.json`` first (new format), then falls back to
-        ``metadata.yaml`` and ``metadata.json`` for backward compatibility.
+        """Load export manifest from ``manifest.json``.
 
         Returns:
-            Parsed Manifest instance.
+            Parsed Manifest instance, or an empty Manifest if no
+            ``manifest.json`` exists in the export directory.
         """
         manifest_path = self.export_dir / "manifest.json"
         if manifest_path.exists():
             return Manifest.load(manifest_path)
-
-        yaml_path = self.export_dir / "metadata.yaml"
-        json_path = self.export_dir / "metadata.json"
-        legacy_path = yaml_path if yaml_path.exists() else json_path if json_path.exists() else None
-
-        if legacy_path is not None:
-            warnings.warn(
-                f"Loading from '{legacy_path.name}' is deprecated. "
-                "Re-export your model to generate 'manifest.json'. "
-                "Legacy metadata support will be removed in a future release.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            if legacy_path.suffix == ".yaml":
-                with legacy_path.open(encoding="utf-8") as f:
-                    raw = yaml.safe_load(f) or {}
-            else:
-                with legacy_path.open(encoding="utf-8") as f:
-                    raw = json.load(f)
-            return Manifest.from_legacy_metadata(raw)
-
         return Manifest()
 
     def _load_processors(self, specs: list[ComponentSpec]) -> list[Any]:
@@ -388,7 +361,7 @@ class InferenceModel:
         raise ValueError(msg)
 
     def _detect_backend_from_manifest(self) -> str | None:
-        """Extract backend from manifest artifacts or legacy extra data.
+        """Extract backend from manifest artifacts.
 
         Returns:
             Backend string, or ``None`` if not found.
@@ -396,10 +369,6 @@ class InferenceModel:
         artifacts = self.manifest.model.artifacts
         if artifacts:
             return next(iter(artifacts))
-
-        legacy_backend = (self.manifest.model_extra or {}).get("backend")
-        if legacy_backend:
-            return str(legacy_backend)
 
         return None
 

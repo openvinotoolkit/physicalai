@@ -431,7 +431,7 @@ Built‑in runners, preprocessors, postprocessors, and callbacks cover most cust
 | ----------------------------------------------------------------------- | ----------------------------------------------------- |
 | Multi-model pipelines (model A feeds model B)                           | Orchestration _between_ pipeline steps changes        |
 | Domain-specific convenience API (`warm_up()`, `reset()`, `calibrate()`) | New lifecycle methods the base class doesn't have     |
-| Custom model loading that metadata.yaml can't express                   | Loading logic runs before components are instantiated |
+| Custom model loading that manifest.json can't express                  | Loading logic runs before components are instantiated |
 | Stateful inference across calls (episode buffer, history window)        | State lives outside the single-call pipeline          |
 
 ### Where to subclass

@@ -422,36 +422,6 @@ class TestManifestFromFile:
             Manifest.load(tmp_path)
 
 
-class TestManifestFromLegacyMetadata:
-    def test_single_pass_policy(self) -> None:
-        metadata = {
-            "policy_class": "physicalai.policies.act.policy.ACT",
-            "backend": "openvino",
-            "use_action_queue": False,
-            "chunk_size": 1,
-        }
-        manifest = Manifest.from_legacy_metadata(metadata)
-
-        assert manifest.policy.name == "policy"
-        assert manifest.policy.source.class_path == "physicalai.policies.act.policy.ACT"
-        assert manifest.model.runner is not None
-        assert "SinglePass" in manifest.model.runner.class_path
-
-    def test_legacy_extra_preserved(self) -> None:
-        metadata = {
-            "policy_class": "test.Policy",
-            "backend": "openvino",
-            "physicalai_train_version": "1.2.3",
-        }
-        manifest = Manifest.from_legacy_metadata(metadata)
-        assert manifest.model_extra is not None
-        assert manifest.model_extra["physicalai_train_version"] == "1.2.3"
-
-    def test_empty_metadata(self) -> None:
-        manifest = Manifest.from_legacy_metadata({})
-        assert manifest.model.runner is not None
-
-
 class TestManifestSerialization:
     def test_roundtrip(self, tmp_path: Path) -> None:
         original = Manifest(

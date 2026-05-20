@@ -75,19 +75,25 @@ def mock_adapter() -> MagicMock:
 
 @pytest.fixture
 def mock_export_dir(tmp_path: Path) -> Path:
-    import yaml
+    import json
 
     export_dir = tmp_path / "exports"
     export_dir.mkdir()
 
-    metadata = {
-        "policy_class": "physicalai.policies.act.ACT",
-        "backend": "openvino",
-        "use_action_queue": False,
-        "chunk_size": 1,
+    manifest = {
+        "format": "policy_package",
+        "version": "1.0",
+        "policy": {
+            "name": "act",
+            "source": {"class_path": "physicalai.policies.act.ACT"},
+        },
+        "model": {
+            "artifacts": {"openvino": "act.xml"},
+            "runner": {"class_path": "physicalai.inference.runners.SinglePass", "init_args": {}},
+        },
     }
-    with (export_dir / "metadata.yaml").open("w") as f:
-        yaml.dump(metadata, f)
+    with (export_dir / "manifest.json").open("w") as f:
+        json.dump(manifest, f)
 
     (export_dir / "act.xml").touch()
     (export_dir / "act.bin").touch()
