@@ -21,8 +21,7 @@ docs/
 ├── getting-started/  # tutorials
 ├── how-to/           # task guides
 ├── explanation/      # concepts and boundaries
-├── reference/        # exact commands, schemas, APIs
-└── design/           # detailed design notes
+└── reference/        # exact commands, schemas, APIs
 ```
 
 ## Workflow
@@ -67,6 +66,4 @@ physicalai run --config runtime.yaml --duration-s 60
 
 > **Note:** `PolicyRuntime` and the CLI are planned APIs. See [#121](https://github.com/openvinotoolkit/physicalai/issues/121) for status.
 
-## Notes
 
-- Detailed tradeoffs and phased design work remain in [Design Docs](design/README.md).

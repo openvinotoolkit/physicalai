@@ -14,5 +14,3 @@ Read these pages when you need the model behind the APIs rather than a step-by-s
 - [Inference](inference.md)
 - [Runtime](runtime.md)
 - [Manifests](manifests.md)
-
-Detailed tradeoffs and implementation history remain in [Design Docs](../design/README.md).
