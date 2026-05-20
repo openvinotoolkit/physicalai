@@ -217,6 +217,22 @@ class TestInstantiateComponent:
         runner = instantiate_component(spec)
         assert isinstance(runner, SinglePass)
 
+    def test_depth_cap_raises_on_excess(self) -> None:
+        """TM-009: recursion exceeding _MAX_COMPONENT_DEPTH raises ValueError."""
+        from physicalai.inference.component_factory import _MAX_COMPONENT_DEPTH
+
+        spec = ComponentSpec(class_path="physicalai.inference.runners.SinglePass", init_args={})
+        with pytest.raises(ValueError, match="nesting depth"):
+            instantiate_component(spec, _depth=_MAX_COMPONENT_DEPTH)
+
+    def test_depth_cap_not_triggered_at_limit_minus_one(self) -> None:
+        """TM-009: depth == _MAX_COMPONENT_DEPTH - 1 still succeeds."""
+        from physicalai.inference.component_factory import _MAX_COMPONENT_DEPTH
+
+        spec = ComponentSpec(class_path="physicalai.inference.runners.SinglePass", init_args={})
+        runner = instantiate_component(spec, _depth=_MAX_COMPONENT_DEPTH - 1)
+        assert isinstance(runner, SinglePass)
+
 
 class TestModelSpec:
     def test_defaults(self) -> None:
@@ -668,3 +684,16 @@ class TestResolveArtifact:
         resolved = resolve_artifact(spec, tmp_path)
         assert resolved.flat_params["mode"] == "mean_std"
         assert resolved.flat_params["artifact"] == str(tmp_path / "stats.safetensors")
+
+    def test_rejects_traversal_in_type_based_artifact(self, tmp_path: Path) -> None:
+        spec = ComponentSpec.model_validate({"type": "normalize", "artifact": "../../etc/passwd"})
+        with pytest.raises(ValueError, match="escapes the export directory"):
+            resolve_artifact(spec, tmp_path)
+
+    def test_rejects_traversal_in_class_path_based_artifact(self, tmp_path: Path) -> None:
+        spec = ComponentSpec.model_validate({
+            "class_path": "physicalai.inference.preprocessors.StatsNormalizer",
+            "init_args": {"artifact": "../../etc/passwd"},
+        })
+        with pytest.raises(ValueError, match="escapes the export directory"):
+            resolve_artifact(spec, tmp_path)

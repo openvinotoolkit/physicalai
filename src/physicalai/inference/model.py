@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
@@ -27,6 +28,10 @@ if TYPE_CHECKING:
     from physicalai.inference.postprocessors.base import Postprocessor
     from physicalai.inference.preprocessors.base import Preprocessor
     from physicalai.inference.runners.base import InferenceRunner
+
+# Policy names from the manifest are used to construct filesystem paths.
+# Restrict to safe characters to prevent "../" traversal attacks.
+_SAFE_POLICY_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
 class InferenceModel:
@@ -97,6 +102,12 @@ class InferenceModel:
 
         if policy_name is None:
             policy_name = self._detect_policy_name()
+        elif not _SAFE_POLICY_NAME_RE.match(policy_name):
+            msg = (
+                f"policy_name {policy_name!r} contains invalid characters; "
+                "only alphanumeric characters, hyphens, and underscores are allowed"
+            )
+            raise ValueError(msg)
         self.policy_name = policy_name
 
         if backend == "auto":
@@ -368,7 +379,14 @@ class InferenceModel:
             ValueError: If policy name cannot be determined
         """
         if self.manifest.policy.name:
-            return self.manifest.policy.name
+            name = self.manifest.policy.name
+            if not _SAFE_POLICY_NAME_RE.match(name):
+                msg = (
+                    f"manifest policy.name {name!r} contains invalid characters; "
+                    "only alphanumeric characters, hyphens, and underscores are allowed"
+                )
+                raise ValueError(msg)
+            return name
 
         class_path = self.manifest.policy.source.class_path
         if class_path:

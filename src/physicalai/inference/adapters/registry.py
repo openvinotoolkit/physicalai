@@ -166,6 +166,9 @@ class RuntimeAdapterRegistry:
 
         if name in self._lazy:
             module_path = self._lazy[name]
+            # _lazy is populated exclusively by register_lazy_module() (hardcoded library strings);
+            # no manifest or external input reaches this dict.
+            # nosemgrep: python.lang.security.audit.non-literal-import.non-literal-import
             importlib.import_module(module_path)
             if name in self._classes:
                 return self._classes[name]

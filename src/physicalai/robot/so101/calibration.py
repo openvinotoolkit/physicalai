@@ -14,7 +14,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from physicalai.robot.so101.constants import SO101_JOINT_ORDER
+from physicalai.robot.so101.constants import SO101_JOINT_ORDER, TICKS_PER_REVOLUTION
 
 
 @dataclass(frozen=True)
@@ -105,6 +105,27 @@ class SO101Calibration:
                 range_min=int(cal["range_min"]),
                 range_max=int(cal["range_max"]),
             )
+
+        # Validate range ordering and hardware encoder bounds.
+        for name, cal in joints.items():
+            if cal.range_min >= cal.range_max:
+                msg = (
+                    f"Joint '{name}': range_min ({cal.range_min}) must be "
+                    f"less than range_max ({cal.range_max})"
+                )
+                raise ValueError(msg)
+            if not (0 <= cal.range_min < TICKS_PER_REVOLUTION):
+                msg = (
+                    f"Joint '{name}': range_min ({cal.range_min}) is outside the valid "
+                    f"STS3215 encoder range [0, {TICKS_PER_REVOLUTION - 1}]"
+                )
+                raise ValueError(msg)
+            if not (0 <= cal.range_max < TICKS_PER_REVOLUTION):
+                msg = (
+                    f"Joint '{name}': range_max ({cal.range_max}) is outside the valid "
+                    f"STS3215 encoder range [0, {TICKS_PER_REVOLUTION - 1}]"
+                )
+                raise ValueError(msg)
 
         # Validate servo IDs are positive and unique across all joints.
         ids = [j.id for j in joints.values()]
