@@ -227,12 +227,22 @@ class InferenceModel:
 
         Returns:
             2-D action chunk with shape ``(chunk_size, action_dim)``.
+
+        Raises:
+            ValueError: If the output has a batch dimension greater than 1.
         """
         outputs = self(observation)
-        actions = np.asarray(outputs[ACTION])
-        # Drop the adapter's batch dimension so the return value matches
-        # the documented contract: a 2-D (chunk, action_dim) sequence.
-        return np.atleast_2d(np.squeeze(actions))
+        actions = outputs[ACTION]
+        # Strip the batch dimension; reject actual batches (batch > 1).
+        if actions.ndim == 3:  # noqa: PLR2004
+            if actions.shape[0] != 1:
+                msg = (
+                    f"Batched inference is not supported by predict_action_chunk: "
+                    f"expected batch dimension of 1, got shape {actions.shape}"
+                )
+                raise ValueError(msg)
+            actions = actions[0]
+        return np.atleast_2d(actions)
 
     def reset(self) -> None:
         """Reset policy state for new episode.
