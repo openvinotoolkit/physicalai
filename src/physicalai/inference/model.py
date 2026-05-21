@@ -1,24 +1,28 @@
-# Copyright (C) 2026 Intel Corporation
+# Copyright (C) 2025-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 """Production-ready inference model with unified API."""
 
 from __future__ import annotations
 
+import json
 import re
-from collections import deque
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
-import numpy as np
+import yaml
 
 from physicalai.inference.adapters import adapter_registry, get_adapter
 from physicalai.inference.component_factory import instantiate_component, resolve_artifact
 from physicalai.inference.constants import ACTION
 from physicalai.inference.manifest import ComponentSpec, Manifest
 from physicalai.inference.runners import get_runner
+from physicalai.inference.utils import ActionCursor
 
 if TYPE_CHECKING:
+    import numpy as np
+
     from physicalai.inference.adapters.base import RuntimeAdapter
     from physicalai.inference.callbacks.base import Callback
     from physicalai.inference.postprocessors.base import Postprocessor
@@ -80,7 +84,7 @@ class InferenceModel:
         Args:
             export_dir: Directory containing exported policy files
             policy_name: Policy name (auto-detected if None)
-            backend: Backend to use, or 'auto' to detect from manifest/files
+            backend: Backend to use, or 'auto' to detect from metadata/files
             device: Device for inference ('auto', 'cpu', 'cuda', 'CPU', 'GPU', etc.)
             runner: Execution runner override. If None, auto-selected from manifest.
             preprocessors: Pipeline stages applied to observations before the
@@ -139,7 +143,7 @@ class InferenceModel:
         for callback in self.callbacks:
             callback.on_load(self)
 
-        self._action_buffer: deque[np.ndarray] = deque()
+        self.cursor = ActionCursor()
 
     @property
     def chunk_size(self) -> int:
@@ -221,43 +225,31 @@ class InferenceModel:
             observation: Observation dict mapping names to numpy arrays.
 
         Returns:
-            1-D action vector with shape ``(action_dim,)``.
+            Action array to execute.
 
         Examples:
             >>> obs = env.reset()
             >>> action = policy.select_action(obs)
             >>> next_obs, reward, done = env.step(action)
         """
-        if not self._action_buffer:
-            self._action_buffer.extend(self.predict_action_chunk(observation))
-        return self._action_buffer.popleft()
+        if self.cursor.empty:
+            self.cursor.push_chunk(self(observation)[ACTION])
+
+        return self.cursor.pop()
 
     def predict_action_chunk(self, observation: dict[str, np.ndarray]) -> np.ndarray:
         """Predict a chunk of actions for the given observation.
 
-        Delegates to ``__call__`` and extracts the ``"action"`` key.
+        Delegates to ``__call__`` and extracts the ``"action_chunk"`` key.
 
         Args:
             observation: Observation dict mapping names to numpy arrays.
 
         Returns:
-            2-D action chunk with shape ``(chunk_size, action_dim)``.
-
-        Raises:
-            ValueError: If the output has a batch dimension greater than 1.
+            Chunk of actions to execute.
         """
         outputs = self(observation)
-        actions = outputs[ACTION]
-        # Strip the batch dimension; reject actual batches (batch > 1).
-        if actions.ndim == 3:  # noqa: PLR2004
-            if actions.shape[0] != 1:
-                msg = (
-                    f"Batched inference is not supported by predict_action_chunk: "
-                    f"expected batch dimension of 1, got shape {actions.shape}"
-                )
-                raise ValueError(msg)
-            actions = actions[0]
-        return np.atleast_2d(actions)
+        return outputs[ACTION]
 
     def reset(self) -> None:
         """Reset policy state for new episode.
@@ -276,7 +268,7 @@ class InferenceModel:
             ...         obs, reward, done = env.step(action)
         """
         self.runner.reset()
-        self._action_buffer.clear()
+        self.cursor.reset()
         for callback in self.callbacks:
             callback.on_reset()
 
@@ -333,15 +325,38 @@ class InferenceModel:
         return inputs
 
     def _load_manifest(self) -> Manifest:
-        """Load export manifest from ``manifest.json``.
+        """Load export manifest from manifest.json, metadata.yaml, or metadata.json.
+
+        Tries ``manifest.json`` first (new format), then falls back to
+        ``metadata.yaml`` and ``metadata.json`` for backward compatibility.
 
         Returns:
-            Parsed Manifest instance, or an empty Manifest if no
-            ``manifest.json`` exists in the export directory.
+            Parsed Manifest instance.
         """
         manifest_path = self.export_dir / "manifest.json"
         if manifest_path.exists():
             return Manifest.load(manifest_path)
+
+        yaml_path = self.export_dir / "metadata.yaml"
+        json_path = self.export_dir / "metadata.json"
+        legacy_path = yaml_path if yaml_path.exists() else json_path if json_path.exists() else None
+
+        if legacy_path is not None:
+            warnings.warn(
+                f"Loading from '{legacy_path.name}' is deprecated. "
+                "Re-export your model to generate 'manifest.json'. "
+                "Legacy metadata support will be removed in a future release.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if legacy_path.suffix == ".yaml":
+                with legacy_path.open(encoding="utf-8") as f:
+                    raw = yaml.safe_load(f) or {}
+            else:
+                with legacy_path.open(encoding="utf-8") as f:
+                    raw = json.load(f)
+            return Manifest.from_legacy_metadata(raw)
+
         return Manifest()
 
     def _load_processors(self, specs: list[ComponentSpec]) -> list[Any]:
@@ -398,7 +413,7 @@ class InferenceModel:
         raise ValueError(msg)
 
     def _detect_backend_from_manifest(self) -> str | None:
-        """Extract backend from manifest artifacts.
+        """Extract backend from manifest artifacts or legacy extra data.
 
         Returns:
             Backend string, or ``None`` if not found.
@@ -406,6 +421,10 @@ class InferenceModel:
         artifacts = self.manifest.model.artifacts
         if artifacts:
             return next(iter(artifacts))
+
+        legacy_backend = (self.manifest.model_extra or {}).get("backend")
+        if legacy_backend:
+            return str(legacy_backend)
 
         return None
 
