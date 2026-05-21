@@ -72,8 +72,9 @@ def _make_export_dir(
     }
     with (export_dir / "manifest.json").open("w") as f:
         json.dump(manifest, f)
-    (export_dir / "act.xml").touch()
-    (export_dir / "act.bin").touch()
+    (export_dir / artifact).touch()
+    if artifact.endswith(".xml"):
+        (export_dir / artifact.replace(".xml", ".bin")).touch()
     return export_dir
 
 
