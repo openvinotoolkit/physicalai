@@ -19,23 +19,6 @@ Examples:
       --camera front:uvc:/dev/video2 \\
       --rerun spawn
 
-    python examples/runtime/async_inference.py \
-        --robot so101 \
-        --model ./examples/runtime/exports/pi05_cans_openvino \
-        --device GPU.0 \
-        --port /dev/ttyACM0 \
-        --calibration /home/max/.cache/physicalai/robots/a8d8d997-a59e-4423-9006-5d991d223887/calibrations/0b2f185a-8ab2-4956-91c2-3a2ac2dbd8c1.json \
-        --camera overhead:uvc:/dev/v4l/by-id/usb-UGREEN_Camera_2K_UGREEN_Camera_2K_SN0001-video-index0 \
-        --camera arm:realsense:353322271391 \
-        --camera front:uvc:/dev/v4l/by-id/usb-Innomaker_Innomaker-U20CAM-1080p-S1_SN0001-video-index0 \
-        --fps 30 \
-        --duration-s 60 \
-        --rerun connect \
-        --rerun-addr 127.0.0.1:9877 \
-        --rerun-image-decimation 1 \
-        --rerun-jpeg-quality 75 \
-        --rerun-image-max-dim 480
-
     # Trossen WidowXAI
     python examples/runtime/async_inference.py \\
       --robot widowxai --ip 192.168.1.2 \\
