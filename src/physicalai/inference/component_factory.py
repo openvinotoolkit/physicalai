@@ -128,9 +128,9 @@ def resolve_artifact(spec: ComponentSpec, export_dir: Path) -> ComponentSpec:
         The spec with resolved artifact path, or the original spec
         unchanged if no resolution is needed.
     """
-    # resolve() normalises ".." before is_relative_to(), which alone is a
-    # string-prefix check that incorrectly accepts "sub/../../outside".
-    # Compute the canonical root once and reuse for both spec variants.
+    # Canonicalize the export root once before containment checks.  Using
+    # resolve() ensures `..` segments are collapsed and symlinks are followed
+    # so `is_relative_to()` is applied to the final filesystem locations.
     resolved_export = export_dir.resolve()
 
     def _safe_resolve(artifact: str) -> str:
