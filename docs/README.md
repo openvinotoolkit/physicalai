@@ -1,3 +1,5 @@
-# Documentation
+# PhysicalAI Documentation
 
-Design docs live in `docs/design/`.
+This directory contains the PhysicalAI documentation.
+
+Start with [Documentation Home](index.md).

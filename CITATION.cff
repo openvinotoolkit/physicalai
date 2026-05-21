@@ -10,9 +10,9 @@ authors:
   - name: Intel Corporation
 identifiers:
   - type: url
-    value: 'https://github.com/openvinotoolkit/physicalai'
-repository-code: 'https://github.com/openvinotoolkit/physicalai'
-url: 'https://github.com/openvinotoolkit/physicalai'
+    value: "https://github.com/openvinotoolkit/physicalai"
+repository-code: "https://github.com/openvinotoolkit/physicalai"
+url: "https://github.com/openvinotoolkit/physicalai"
 abstract: >-
   OpenVINO™ Physical AI is a unified, production-ready
   framework for deploying Vision-Language-Action (VLA)
@@ -31,4 +31,4 @@ preferred-citation:
     hardware
   year: 2026
   notes: Source code repository
-  url: 'https://github.com/openvinotoolkit/physicalai'
+  url: "https://github.com/openvinotoolkit/physicalai"

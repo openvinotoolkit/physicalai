@@ -15,6 +15,8 @@ from unittest.mock import MagicMock, call, patch
 import numpy as np
 import pytest
 
+pytest.importorskip("trossen_arm", reason="trossen_arm SDK is not installed")
+
 from physicalai.robot.trossen.constants import HOME_POSITION
 
 # ---------------------------------------------------------------------------

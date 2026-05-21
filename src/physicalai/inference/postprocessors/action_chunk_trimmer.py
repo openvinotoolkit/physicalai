@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, override
 
+from physicalai.inference.constants import ACTION
 from physicalai.inference.postprocessors.base import Postprocessor
 
 if TYPE_CHECKING:
@@ -30,7 +31,7 @@ class ActionChunkTrimmer(Postprocessor):
 
     Examples:
         >>> trimmer = ActionChunkTrimmer(n_action_steps=10)
-        >>> trimmer(np.zeros((1, 50, 6))).shape
+        >>> trimmer({"action": np.zeros((1, 50, 6))})["action"].shape
         (1, 10, 6)
     """
 
@@ -43,10 +44,11 @@ class ActionChunkTrimmer(Postprocessor):
         self._n_action_steps = n_action_steps
 
     @override
-    def __call__(self, actions: np.ndarray) -> np.ndarray:
+    def __call__(self, outputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        actions = outputs[ACTION]
         if actions.ndim == _NDIM_WITH_TEMPORAL and actions.shape[1] > self._n_action_steps:
-            actions = actions[:, : self._n_action_steps, :]
-        return actions
+            outputs[ACTION] = actions[:, : self._n_action_steps, :]
+        return outputs
 
     def __repr__(self) -> str:
         """Return string representation."""
