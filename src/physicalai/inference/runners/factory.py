@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 def get_runner(source: Manifest | dict[str, Any]) -> InferenceRunner:
     """Select and instantiate a runner from a manifest.
 
-    Supports three input shapes:
+    Supports three input formats:
 
     1. **Manifest object** — reads ``source.model.runner`` and
        instantiates via :func:`instantiate_component`.
