@@ -227,11 +227,14 @@ class InferenceModel:
 
         Returns:
             2-D action chunk with shape ``(chunk_size, action_dim)``.
+
+        Raises:
+            ValueError: If the output has a batch dimension greater than 1.
         """
         outputs = self(observation)
         actions = outputs[ACTION]
         # Strip the batch dimension; reject actual batches (batch > 1).
-        if actions.ndim == 3:
+        if actions.ndim == 3:  # noqa: N806
             if actions.shape[0] != 1:
                 msg = (
                     f"Batched inference is not supported by predict_action_chunk: "
