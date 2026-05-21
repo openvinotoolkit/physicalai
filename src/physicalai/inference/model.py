@@ -1,23 +1,23 @@
-# Copyright (C) 2025-2026 Intel Corporation
+# Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 """Production-ready inference model with unified API."""
 
 from __future__ import annotations
 
+from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
+
+import numpy as np
 
 from physicalai.inference.adapters import adapter_registry, get_adapter
 from physicalai.inference.component_factory import instantiate_component, resolve_artifact
 from physicalai.inference.constants import ACTION
 from physicalai.inference.manifest import ComponentSpec, Manifest
 from physicalai.inference.runners import get_runner
-from physicalai.inference.utils import ActionCursor
 
 if TYPE_CHECKING:
-    import numpy as np
-
     from physicalai.inference.adapters.base import RuntimeAdapter
     from physicalai.inference.callbacks.base import Callback
     from physicalai.inference.postprocessors.base import Postprocessor
@@ -121,7 +121,7 @@ class InferenceModel:
         for callback in self.callbacks:
             callback.on_load(self)
 
-        self.cursor = ActionCursor()
+        self._action_buffer: deque[np.ndarray] = deque()
 
     @property
     def chunk_size(self) -> int:
@@ -203,31 +203,43 @@ class InferenceModel:
             observation: Observation dict mapping names to numpy arrays.
 
         Returns:
-            Action array to execute.
+            1-D action vector with shape ``(action_dim,)``.
 
         Examples:
             >>> obs = env.reset()
             >>> action = policy.select_action(obs)
             >>> next_obs, reward, done = env.step(action)
         """
-        if self.cursor.empty:
-            self.cursor.push_chunk(self(observation)[ACTION])
-
-        return self.cursor.pop()
+        if not self._action_buffer:
+            self._action_buffer.extend(self.predict_action_chunk(observation))
+        return self._action_buffer.popleft()
 
     def predict_action_chunk(self, observation: dict[str, np.ndarray]) -> np.ndarray:
         """Predict a chunk of actions for the given observation.
 
-        Delegates to ``__call__`` and extracts the ``"action_chunk"`` key.
+        Delegates to ``__call__`` and extracts the ``"action"`` key.
 
         Args:
             observation: Observation dict mapping names to numpy arrays.
 
         Returns:
-            Chunk of actions to execute.
+            2-D action chunk with shape ``(chunk_size, action_dim)``.
+
+        Raises:
+            ValueError: If the output has a batch dimension greater than 1.
         """
         outputs = self(observation)
-        return outputs[ACTION]
+        actions = outputs[ACTION]
+        # Strip the batch dimension; reject actual batches (batch > 1).
+        if actions.ndim == 3:  # noqa: PLR2004
+            if actions.shape[0] != 1:
+                msg = (
+                    f"Batched inference is not supported by predict_action_chunk: "
+                    f"expected batch dimension of 1, got shape {actions.shape}"
+                )
+                raise ValueError(msg)
+            actions = actions[0]
+        return np.atleast_2d(actions)
 
     def reset(self) -> None:
         """Reset policy state for new episode.
@@ -246,7 +258,7 @@ class InferenceModel:
             ...         obs, reward, done = env.step(action)
         """
         self.runner.reset()
-        self.cursor.reset()
+        self._action_buffer.clear()
         for callback in self.callbacks:
             callback.on_reset()
 

@@ -13,12 +13,20 @@ Public API::
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from physicalai.robot.connect import connect
-from physicalai.robot.interface import Robot
+from physicalai.robot.interface import Robot, RobotObservation
 from physicalai.robot.verify import verify_robot
+
+if TYPE_CHECKING:
+    from physicalai.robot.so101 import SO101 as SO101
+    from physicalai.robot.trossen import BimanualWidowXAI as BimanualWidowXAI
+    from physicalai.robot.trossen import WidowXAI as WidowXAI
 
 __all__ = [
     "Robot",
+    "RobotObservation",
     "connect",
     "verify_robot",
 ]
