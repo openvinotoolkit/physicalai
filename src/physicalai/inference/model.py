@@ -32,8 +32,8 @@ if TYPE_CHECKING:
 # Policy names from the manifest are used to construct filesystem paths.
 # Restrict to safe characters to prevent "../" traversal attacks.
 def _is_safe_policy_name(name: str) -> bool:
-    """Return True if *name* uses only alphanumeric, hyphen, and underscore, starts with alphanumeric."""
-    return bool(name) and name[0].isalnum() and all(c.isalnum() or c in "-_" for c in name)
+    """Return True if *name* matches ``[a-zA-Z0-9][a-zA-Z0-9-_.]*``."""
+    return bool(name) and name[0].isalnum() and all(c.isalnum() or c in "-_." for c in name)
 
 
 class InferenceModel:
@@ -108,7 +108,7 @@ class InferenceModel:
         elif not _is_safe_policy_name(policy_name):
             msg = (
                 f"policy_name {policy_name!r} contains invalid characters; "
-                "only alphanumeric characters, hyphens, and underscores are allowed"
+                "only alphanumeric characters, hyphens, underscores, and dots are allowed"
             )
             raise ValueError(msg)
         self.policy_name = policy_name
@@ -386,7 +386,7 @@ class InferenceModel:
             if not _is_safe_policy_name(name):
                 msg = (
                     f"manifest policy.name {name!r} contains invalid characters; "
-                    "only alphanumeric characters, hyphens, and underscores are allowed"
+                    "only alphanumeric characters, hyphens, underscores, and dots are allowed"
                 )
                 raise ValueError(msg)
             return name

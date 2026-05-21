@@ -799,7 +799,7 @@ class TestPolicyNameValidation:
         "name",
         [
             "pi0_fast",
-            "pi05",
+            "pi0.5",
             "smolvla",
             "multi_task_dit",
             "pi0-fast_v2",
