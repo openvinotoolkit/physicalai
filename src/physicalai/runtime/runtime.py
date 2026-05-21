@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Protocol, Self
 import numpy as np
 
 from physicalai.runtime._action_queue import ActionQueue  # noqa: PLC2701
+from physicalai.runtime._rtc_action_queue import RTCActionQueue  # noqa: PLC2701
 from physicalai.runtime.execution import Execution, WorkerDiedError
 from physicalai.runtime.smoothers import LerpSmoother
 
@@ -74,7 +75,7 @@ class PolicyRuntime:
         execution: Execution,
         fps: float,
         cameras: Mapping[str, Camera] | None = None,
-        action_queue: ActionQueue | None = None,
+        action_queue: ActionQueue | RTCActionQueue | None = None,
         callbacks: Sequence[RuntimeCallback] = (),
     ) -> None:
         if fps <= 0:

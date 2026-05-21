@@ -1,0 +1,323 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+"""Real-Time Chunking (RTC) execution strategy.
+
+Runs inference in a background daemon thread, injecting RTC-specific
+inputs (noise, prev_chunk_left_over, inference_delay, etc.) and
+managing a dual-track action queue for continuous robot control.
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+import threading
+import time
+from copy import deepcopy
+from typing import TYPE_CHECKING, Any
+
+import numpy as np
+
+from physicalai.runtime._rtc_action_queue import RTCActionQueue
+from physicalai.runtime.execution import Execution, WorkerDiedError
+
+if TYPE_CHECKING:
+    from physicalai.inference.callbacks.rtc_latency import RTCLatencyTracker
+    from physicalai.inference.model import InferenceModel
+    from physicalai.inference.postprocessors.base import Postprocessor
+    from physicalai.runtime._action_queue import ActionQueue
+
+logger = logging.getLogger(__name__)
+
+_NOT_STARTED = "start() must be called before this method"
+_IDLE_SLEEP_S: float = 0.005
+_ERROR_RETRY_DELAY_S: float = 0.5
+_MAX_CONSECUTIVE_ERRORS: int = 10
+_JOIN_TIMEOUT_S: float = 5.0
+
+
+class RTCExecution(Execution):
+    """Async RTC execution strategy with background inference thread.
+
+    The background thread continuously predicts action chunks and
+    merges them into an :class:`RTCActionQueue`. The main thread pops
+    one action per tick — never blocking on inference.
+
+    RTC-specific inputs injected before each inference call:
+    - ``noise``: random noise for denoising (shape: 1×chunk×action_dim)
+    - ``prev_chunk_left_over``: unconsumed tail (shape: 1×chunk×action_dim)
+    - ``inference_delay``: integer derived from measured latency
+    - ``max_guidance_weight``: classifier-free guidance weight
+    - ``execution_horizon``: number of fresh actions per chunk
+
+    Args:
+        chunk_size: Number of actions per model output chunk.
+        execution_horizon: Fresh actions to execute per chunk.
+        fps: Robot control frequency in Hz.
+        max_action_dim: Model's internal action dimension (for noise/padding).
+        max_guidance_weight: Classifier-free guidance weight.
+        queue_threshold: Re-infer when queue drops below this level.
+        latency_tracker: Callback that measures inference latency.
+            If None, delay defaults to 0.
+        postprocessors: Denormalization pipeline applied to raw actions.
+            These run in the background thread to produce the processed
+            track stored in the queue.
+    """
+
+    def __init__(
+        self,
+        chunk_size: int = 50,
+        execution_horizon: int = 10,
+        fps: float = 30.0,
+        max_action_dim: int = 32,
+        max_guidance_weight: float = 10.0,
+        queue_threshold: int | None = None,
+        latency_tracker: RTCLatencyTracker | None = None,
+        postprocessors: list[Postprocessor] | None = None,
+    ) -> None:
+        self._chunk_size = chunk_size
+        self._execution_horizon = execution_horizon
+        self._fps = fps
+        self._max_action_dim = max_action_dim
+        self._max_guidance_weight = max_guidance_weight
+        self._queue_threshold = queue_threshold if queue_threshold is not None else execution_horizon * 3
+        self._latency_tracker = latency_tracker
+        self._postprocessors: list[Postprocessor] = postprocessors or []
+
+        self._rtc_queue: RTCActionQueue | None = None
+        self._model: InferenceModel | None = None
+        self._chunk_size_discovered: int = 0
+
+        # Thread state
+        self._obs_lock = threading.Lock()
+        self._obs_slot: dict[str, np.ndarray] | None = None
+        self._stop_event = threading.Event()
+        self._first_chunk_ready = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._death_cause: BaseException | None = None
+        self._inference_count: int = 0
+
+    @property
+    def chunk_size(self) -> int:
+        """Discovered chunk size (from warmup or config)."""
+        return self._chunk_size_discovered or self._chunk_size
+
+    @property
+    def inference_count(self) -> int:
+        """Number of completed inference calls."""
+        return self._inference_count
+
+    def start(self, model: InferenceModel, action_queue: ActionQueue) -> None:
+        """Bind model and queue, spawn background thread.
+
+        The ``action_queue`` parameter is accepted for interface
+        compatibility but ignored — RTCExecution uses its own
+        :class:`RTCActionQueue` (passed via constructor or created
+        internally). The ``PolicyRuntime`` should be given the same
+        ``RTCActionQueue`` instance.
+        """
+        self._model = model
+        # Accept RTCActionQueue from PolicyRuntime
+        if isinstance(action_queue, RTCActionQueue):
+            self._rtc_queue = action_queue
+        elif self._rtc_queue is None:
+            self._rtc_queue = RTCActionQueue()
+
+        self._stop_event.clear()
+        self._first_chunk_ready.clear()
+        self._thread = threading.Thread(
+            target=self._rtc_loop,
+            name="rtc-inference",
+            daemon=True,
+        )
+        self._thread.start()
+        logger.info(
+            "RTCExecution started (fps=%.1f, chunk=%d, horizon=%d, threshold=%d)",
+            self._fps, self._chunk_size, self._execution_horizon, self._queue_threshold,
+        )
+
+    def warmup(self, sample_observation: dict[str, np.ndarray]) -> None:
+        """Run one inference to seed the queue and discover chunk size.
+
+        Blocks until the first chunk is produced by the background
+        thread (or timeout).
+
+        Raises:
+            RuntimeError: If start() not called or thread dies during warmup.
+        """
+        if self._model is None or self._rtc_queue is None:
+            raise RuntimeError(_NOT_STARTED)
+
+        # Publish the sample observation for the background thread
+        with self._obs_lock:
+            self._obs_slot = deepcopy(sample_observation)
+
+        # Wait for the first chunk with a generous timeout
+        if not self._first_chunk_ready.wait(timeout=30.0):
+            if self._death_cause is not None:
+                msg = f"RTC thread died during warmup: {self._death_cause}"
+                raise WorkerDiedError(msg) from self._death_cause
+            msg = "RTCExecution warmup timed out waiting for first chunk"
+            raise RuntimeError(msg)
+
+        self._chunk_size_discovered = self._chunk_size
+        logger.info("RTCExecution warmup complete — chunk_size=%d", self._chunk_size_discovered)
+
+    def maybe_request(self, observation: dict[str, np.ndarray]) -> None:
+        """Publish latest observation for the background thread.
+
+        The background thread decides when to re-infer based on
+        queue threshold. This just updates the observation slot.
+
+        Raises:
+            WorkerDiedError: If the inference thread has died.
+        """
+        if self._thread is not None and not self._thread.is_alive() and self._death_cause is not None:
+            msg = f"RTC inference thread died: {self._death_cause}"
+            raise WorkerDiedError(msg) from self._death_cause
+
+        with self._obs_lock:
+            self._obs_slot = {
+                k: v.copy() if isinstance(v, np.ndarray) else v
+                for k, v in observation.items()
+            }
+
+    def stop(self) -> None:
+        """Signal shutdown and join the background thread."""
+        if self._thread is not None:
+            self._stop_event.set()
+            self._thread.join(timeout=_JOIN_TIMEOUT_S)
+            if self._thread.is_alive():
+                logger.warning("RTC thread did not join within %.1fs", _JOIN_TIMEOUT_S)
+            self._thread = None
+            logger.info("RTCExecution stopped (%d inferences)", self._inference_count)
+
+    def _rtc_loop(self) -> None:
+        """Background loop: infer chunks and merge into queue."""
+        assert self._model is not None  # noqa: S101
+        assert self._rtc_queue is not None  # noqa: S101
+        consecutive_errors = 0
+
+        while not self._stop_event.is_set():
+            # Only re-infer when queue is running low
+            if not self._rtc_queue.below_threshold(self._queue_threshold):
+                time.sleep(_IDLE_SLEEP_S)
+                continue
+
+            # Snapshot observation
+            with self._obs_lock:
+                if self._obs_slot is None:
+                    time.sleep(_IDLE_SLEEP_S)
+                    continue
+                inputs = deepcopy(self._obs_slot)
+
+            # Build RTC-specific inputs
+            inputs = self._inject_rtc_inputs(inputs)
+
+            # Snapshot cursor before inference
+            action_index_before = self._rtc_queue.get_action_index()
+
+            # Run inference (callbacks fire inside model.__call__)
+            try:
+                t0 = time.perf_counter()
+                outputs = self._model(inputs)
+                elapsed = time.perf_counter() - t0
+                consecutive_errors = 0
+            except Exception:
+                consecutive_errors += 1
+                logger.exception(
+                    "RTC inference error (%d/%d)",
+                    consecutive_errors, _MAX_CONSECUTIVE_ERRORS,
+                )
+                if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
+                    self._death_cause = RuntimeError("Too many consecutive RTC errors")
+                    logger.error("RTC thread shutting down after %d consecutive errors", consecutive_errors)
+                    return
+                time.sleep(_ERROR_RETRY_DELAY_S)
+                continue
+
+            self._inference_count += 1
+
+            # Extract raw actions: (1, chunk_size, action_dim) → (chunk_size, action_dim)
+            raw_actions = outputs["action"]
+            if raw_actions.ndim == 3:  # noqa: PLR2004
+                raw_actions = raw_actions[0]
+
+            # Postprocess (denormalize) for robot
+            processed_actions = self._postprocess(raw_actions)
+
+            # Compute real delay from actual elapsed time
+            real_delay = int(math.ceil(elapsed * self._fps))
+
+            # Merge into dual-track queue (queue clamps trim internally)
+            self._rtc_queue.merge(
+                raw_actions, 
+                processed_actions, 
+                real_delay,
+                action_index_before_inference=action_index_before,
+            )
+            self._first_chunk_ready.set()
+
+            logger.debug(
+                "RTC chunk: latency=%.3fs delay=%d remaining=%d",
+                elapsed, real_delay, self._rtc_queue.remaining,
+            )
+
+    def _inject_rtc_inputs(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        """Add RTC-specific model inputs."""
+        assert self._rtc_queue is not None  # noqa: S101
+
+        # prev_chunk_left_over from queue
+        prev_chunk = self._rtc_queue.get_left_over()
+        if prev_chunk is None:
+            prev_chunk_padded = np.zeros(
+                (1, self._chunk_size, self._max_action_dim),
+                dtype=np.float32,
+            )
+        else:
+            remaining = prev_chunk.shape[0]
+            out_dim = prev_chunk.shape[-1]
+
+            # Pad action dim to model's max_action_dim if needed
+            if out_dim < self._max_action_dim:
+                prev_chunk = np.pad(
+                    prev_chunk,
+                    ((0, 0), (0, self._max_action_dim - out_dim)),
+                )
+
+            # Reshape to (1, remaining, max_action_dim) and pad time to chunk_size
+            prev_chunk_padded = prev_chunk.reshape(1, remaining, self._max_action_dim)
+            pad_len = self._chunk_size - remaining
+            if pad_len > 0:
+                prev_chunk_padded = np.pad(prev_chunk_padded, ((0, 0), (0, pad_len), (0, 0)))
+
+        # Compute delay from latency tracker
+        if self._latency_tracker is not None:
+            delay = self._latency_tracker.compute_delay(self._fps)
+        else:
+            delay = 0
+
+        inputs["prev_chunk_left_over"] = prev_chunk_padded
+        inputs["inference_delay"] = np.int64(delay)
+        inputs["max_guidance_weight"] = np.float32(self._max_guidance_weight)
+        inputs["execution_horizon"] = np.int64(self._execution_horizon)
+
+        return inputs
+
+    def _postprocess(self, actions: np.ndarray) -> np.ndarray:
+        """Apply postprocessors (denormalization) to raw actions.
+
+        Args:
+            actions: Shape ``(chunk_size, action_dim)``.
+
+        Returns:
+            Postprocessed actions, same shape.
+        """
+        if not self._postprocessors:
+            return actions.copy()
+
+        outputs: dict[str, Any] = {"action": actions}
+        for pp in self._postprocessors:
+            outputs = pp(outputs)
+        return outputs["action"]

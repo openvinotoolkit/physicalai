@@ -12,12 +12,14 @@ Public API::
 """
 
 from physicalai.runtime._action_queue import ActionQueue  # noqa: PLC2701
+from physicalai.runtime._rtc_action_queue import RTCActionQueue  # noqa: PLC2701
 from physicalai.runtime.execution import (
     AsyncExecution,
     Execution,
     SyncExecution,
     WorkerDiedError,
 )
+from physicalai.runtime.rtc_execution import RTCExecution
 from physicalai.runtime.runtime import (
     PolicyRuntime,
     RunStats,
@@ -32,6 +34,8 @@ __all__ = [
     "Execution",
     "LerpSmoother",
     "PolicyRuntime",
+    "RTCActionQueue",
+    "RTCExecution",
     "ReplaceSmoother",
     "RunStats",
     "RuntimeCallback",
