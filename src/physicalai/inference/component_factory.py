@@ -174,6 +174,15 @@ def instantiate_component(
     spec: ComponentSpec,
     *,
     registry: ComponentRegistry | None = None,
+) -> object:
+    """Import the class described by *spec* and return a live instance."""
+    return _instantiate_component(spec, registry=registry, _depth=0)
+
+
+def _instantiate_component(
+    spec: ComponentSpec,
+    *,
+    registry: ComponentRegistry | None = None,
     _depth: int = 0,
 ) -> object:
     """Import the class described by *spec* and return a live instance.

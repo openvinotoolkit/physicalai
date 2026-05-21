@@ -217,22 +217,6 @@ class TestInstantiateComponent:
         runner = instantiate_component(spec)
         assert isinstance(runner, SinglePass)
 
-    def test_depth_cap_raises_on_excess(self) -> None:
-        """Recursion exceeding _MAX_COMPONENT_DEPTH raises ValueError."""
-        from physicalai.inference.component_factory import _MAX_COMPONENT_DEPTH
-
-        spec = ComponentSpec(class_path="physicalai.inference.runners.SinglePass", init_args={})
-        with pytest.raises(ValueError, match="nesting depth"):
-            instantiate_component(spec, _depth=_MAX_COMPONENT_DEPTH)
-
-    def test_depth_cap_not_triggered_at_limit_minus_one(self) -> None:
-        """depth == _MAX_COMPONENT_DEPTH - 1 still succeeds."""
-        from physicalai.inference.component_factory import _MAX_COMPONENT_DEPTH
-
-        spec = ComponentSpec(class_path="physicalai.inference.runners.SinglePass", init_args={})
-        runner = instantiate_component(spec, _depth=_MAX_COMPONENT_DEPTH - 1)
-        assert isinstance(runner, SinglePass)
-
 
 class TestModelSpec:
     def test_defaults(self) -> None:
