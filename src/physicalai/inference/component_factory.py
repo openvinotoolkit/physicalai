@@ -175,16 +175,6 @@ def instantiate_component(
     *,
     registry: ComponentRegistry | None = None,
 ) -> object:
-    """Import the class described by *spec* and return a live instance."""
-    return _instantiate_component(spec, registry=registry, _depth=0)
-
-
-def _instantiate_component(
-    spec: ComponentSpec,
-    *,
-    registry: ComponentRegistry | None = None,
-    _depth: int = 0,
-) -> object:
     """Import the class described by *spec* and return a live instance.
 
     Supports two resolution modes:
@@ -205,6 +195,20 @@ def _instantiate_component(
         spec: Component descriptor with type or class_path.
         registry: Optional registry for short-name resolution.
             Defaults to :data:`component_registry`.
+
+    Returns:
+        An instance of the resolved class.
+    """
+    return _instantiate_component(spec, registry=registry, _depth=0)
+
+
+def _instantiate_component(
+    spec: ComponentSpec,
+    *,
+    registry: ComponentRegistry | None = None,
+    _depth: int = 0,
+) -> object:
+    """Recursive implementation of :func:`instantiate_component`. Do not call directly.
 
     Returns:
         An instance of the resolved class.
@@ -229,7 +233,7 @@ def _instantiate_component(
         resolved_args: dict[str, object] = {}
         for key, value in spec.init_args.items():
             if isinstance(value, dict) and ("class_path" in value or "type" in value):
-                resolved_args[key] = instantiate_component(
+                resolved_args[key] = _instantiate_component(
                     type(spec).model_validate(value),
                     registry=reg,
                     _depth=_depth + 1,
@@ -245,7 +249,7 @@ def _instantiate_component(
     resolved_params: dict[str, object] = {}
     for key, value in spec.flat_params.items():
         if isinstance(value, dict) and ("class_path" in value or "type" in value):
-            resolved_params[key] = instantiate_component(
+            resolved_params[key] = _instantiate_component(
                 type(spec).model_validate(value),
                 registry=reg,
                 _depth=_depth + 1,
