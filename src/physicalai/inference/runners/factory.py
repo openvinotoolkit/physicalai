@@ -22,7 +22,8 @@ def get_runner(source: Manifest | dict[str, Any]) -> InferenceRunner:
     1. **Manifest object** — reads ``source.model.runner`` and
        instantiates via :func:`instantiate_component`.
     2. **Dict with runner spec** — raw manifest dict containing a
-       ``"model"`` section with a runner component spec.
+       runner component spec either under ``"model" -> "runner"``
+       or at the top-level ``"runner"`` key.
     3. **Dict without runner spec** — falls back to a plain ``SinglePass`` runner.
 
     Args:
