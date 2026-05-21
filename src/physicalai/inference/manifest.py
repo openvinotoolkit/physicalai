@@ -344,48 +344,6 @@ class Manifest(BaseModel):
         with p.open(encoding="utf-8") as fh:
             return cls.model_validate(json.load(fh))
 
-    @classmethod
-    def from_legacy_metadata(cls, metadata: dict[str, Any]) -> Manifest:
-        """Upgrade a legacy ``metadata.yaml`` dict to a ``Manifest``.
-
-        Maps flat keys (``policy_class``, ``backend``, ``use_action_queue``,
-        ``chunk_size``) into the structured manifest schema so that
-        downstream code can use a single Manifest type regardless of the
-        on-disk format.
-
-        Args:
-            metadata: Dict loaded from ``metadata.yaml`` or ``metadata.json``.
-
-        Returns:
-            A ``Manifest`` populated with as much information as the legacy
-            format provides.
-        """
-        policy_class = metadata.get("policy_class", "")
-        policy_name = _policy_name_from_class_path(policy_class)
-
-        from physicalai.inference.runners.single_pass import SinglePass  # noqa: PLC0415
-
-        runner = ComponentSpec.from_class(SinglePass)
-
-        backend = metadata.get("backend", "")
-        artifacts: dict[str, str] = {backend: ""} if backend else {}
-
-        return cls.model_validate({
-            "policy": {
-                "name": policy_name,
-                "source": {"class_path": policy_class},
-            },
-            "model": {
-                "runner": {"class_path": runner.class_path, "init_args": runner.init_args},
-                "artifacts": artifacts,
-            },
-            **{
-                k: v
-                for k, v in metadata.items()
-                if k not in {"policy_class", "backend", "use_action_queue", "chunk_size"}
-            },
-        })
-
     def save(self, path: str | Path) -> None:
         """Write the manifest as ``manifest.json``.
 

@@ -1,4 +1,4 @@
-# Copyright (C) 2025-2026 Intel Corporation
+# Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 """Unit tests for InferenceModel and inference runners."""
@@ -12,7 +12,6 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
-import yaml
 
 from physicalai.inference.adapters import RuntimeAdapter
 from physicalai.inference.manifest import ComponentSpec, Manifest, ModelSpec
@@ -48,26 +47,34 @@ class TestAdapter(RuntimeAdapter):
         return []
 
 
-def _make_legacy_export_dir(
+def _make_export_dir(
     tmp_path: Path,
     *,
-    use_action_queue: bool = True,
-    chunk_size: int = 10,
+    use_action_queue: bool = True,  # noqa: ARG001
+    chunk_size: int = 10,  # noqa: ARG001
     policy_class: str = "physicalai.policies.act.ACT",
     backend: str = "openvino",
 ) -> Path:
     export_dir = tmp_path / "exports"
     export_dir.mkdir(exist_ok=True)
-    metadata = {
-        "policy_class": policy_class,
-        "backend": backend,
-        "use_action_queue": use_action_queue,
-        "chunk_size": chunk_size,
+    artifact = "act.xml" if backend == "openvino" else f"act.{backend}"
+    manifest = {
+        "format": "policy_package",
+        "version": "1.0",
+        "policy": {
+            "name": "act",
+            "source": {"class_path": policy_class},
+        },
+        "model": {
+            "artifacts": {backend: artifact},
+            "runner": {"class_path": "physicalai.inference.runners.SinglePass", "init_args": {}},
+        },
     }
-    with (export_dir / "metadata.yaml").open("w") as f:
-        yaml.dump(metadata, f)
-    (export_dir / "act.xml").touch()
-    (export_dir / "act.bin").touch()
+    with (export_dir / "manifest.json").open("w") as f:
+        json.dump(manifest, f)
+    (export_dir / artifact).touch()
+    if artifact.endswith(".xml"):
+        (export_dir / artifact.replace(".xml", ".bin")).touch()
     return export_dir
 
 
@@ -131,13 +138,13 @@ def _patch_adapter(mock_adapter: MagicMock):
 
 @pytest.fixture
 def mock_export_dir_no_queue(tmp_path: Path) -> Path:
-    return _make_legacy_export_dir(tmp_path, use_action_queue=False, chunk_size=1)
+    return _make_export_dir(tmp_path, use_action_queue=False, chunk_size=1)
 
 
 @pytest.mark.usefixtures("_patch_adapter")
 class TestInferenceModelInit:
     def test_init_with_valid_directory(self, tmp_path: Path) -> None:
-        export_dir = _make_legacy_export_dir(tmp_path)
+        export_dir = _make_export_dir(tmp_path)
         model = InferenceModel(export_dir)
 
         assert model.export_dir == export_dir
@@ -166,23 +173,21 @@ class TestInferenceModelInit:
         export_dir = tmp_path / "exports"
         export_dir.mkdir()
         (export_dir / f"model{file_ext}").touch()
-        with (export_dir / "metadata.yaml").open("w") as f:
-            yaml.dump({"policy_class": "physicalai.policies.act.ACT"}, f)
 
         assert InferenceModel(export_dir, backend=backend_str).backend == expected
 
     def test_load_classmethod(self, tmp_path: Path) -> None:
-        model = InferenceModel.load(_make_legacy_export_dir(tmp_path))
+        model = InferenceModel.load(_make_export_dir(tmp_path))
         assert isinstance(model, InferenceModel)
         assert model.policy_name == "act"
 
     def test_init_auto_selects_single_pass_runner(self, tmp_path: Path) -> None:
-        export_dir = _make_legacy_export_dir(tmp_path, use_action_queue=False, chunk_size=1)
+        export_dir = _make_export_dir(tmp_path, use_action_queue=False, chunk_size=1)
         assert isinstance(InferenceModel(export_dir).runner, SinglePass)
 
     def test_init_with_explicit_runner(self, tmp_path: Path) -> None:
         explicit_runner = SinglePass()
-        model = InferenceModel(_make_legacy_export_dir(tmp_path), runner=explicit_runner)
+        model = InferenceModel(_make_export_dir(tmp_path), runner=explicit_runner)
         assert model.runner is explicit_runner
 
 
@@ -203,31 +208,6 @@ class TestManifestModelInit:
         assert model.backend == "onnx"
         assert isinstance(model.runner, SinglePass)
 
-    def test_manifest_takes_priority_over_metadata_yaml(self, tmp_path: Path) -> None:
-        export_dir = tmp_path / "exports_dual"
-        export_dir.mkdir()
-
-        with (export_dir / "metadata.yaml").open("w") as f:
-            yaml.dump({"policy_class": "physicalai.policies.old.Old", "backend": "onnx"}, f)
-
-        manifest = {
-            "format": "policy_package",
-            "version": "1.0",
-            "policy": {"name": "new_policy"},
-            "model": {
-                "artifacts": {"openvino": "model.xml"},
-                "runner": {"class_path": "physicalai.inference.runners.SinglePass", "init_args": {}},
-            },
-        }
-        with (export_dir / "manifest.json").open("w") as f:
-            json.dump(manifest, f)
-        (export_dir / "model.xml").touch()
-        (export_dir / "model.bin").touch()
-
-        model = InferenceModel(export_dir)
-        assert model.policy_name == "new_policy"
-        assert model.backend == "openvino"
-
     def test_backend_detected_from_manifest_artifacts(self, tmp_path: Path) -> None:
         export_dir = tmp_path / "exports_artifacts"
         export_dir.mkdir()
@@ -245,31 +225,8 @@ class TestManifestModelInit:
 
 
 @pytest.mark.usefixtures("_patch_adapter")
-class TestMetadataLoading:
-    def test_load_legacy_yaml_metadata(self, tmp_path: Path) -> None:
-        export_dir = tmp_path / "exports"
-        export_dir.mkdir()
-        with (export_dir / "metadata.yaml").open("w") as f:
-            yaml.dump({"policy_class": "physicalai.policies.dummy.Dummy", "chunk_size": 5}, f)
-        (export_dir / "dummy.xml").touch()
-
-        model = InferenceModel(export_dir)
-        assert model.manifest.policy.name == "dummy"
-        assert model.manifest.policy.source.class_path == "physicalai.policies.dummy.Dummy"
-
-    def test_load_legacy_json_metadata(self, tmp_path: Path) -> None:
-        export_dir = tmp_path / "exports"
-        export_dir.mkdir()
-        with (export_dir / "metadata.json").open("w") as f:
-            json.dump({"policy_class": "physicalai.policies.act.ACT", "backend": "onnx"}, f)
-        (export_dir / "act.onnx").touch()
-
-        model = InferenceModel(export_dir)
-        assert model.manifest.policy.name == "act"
-        assert model.manifest.policy.source.class_path == "physicalai.policies.act.ACT"
-        assert "onnx" in model.manifest.model.artifacts
-
-    def test_no_metadata_fallback(self, tmp_path: Path) -> None:
+class TestManifestLoading:
+    def test_no_manifest_fallback(self, tmp_path: Path) -> None:
         export_dir = tmp_path / "exports"
         export_dir.mkdir()
         (export_dir / "model.onnx").touch()
@@ -297,8 +254,14 @@ class TestAutoDetection:
     ) -> None:
         export_dir = tmp_path / "exports"
         export_dir.mkdir()
-        with (export_dir / "metadata.yaml").open("w") as f:
-            yaml.dump({"policy_class": policy_class}, f)
+        manifest = {
+            "format": "policy_package",
+            "version": "1.0",
+            "policy": {"name": expected_name, "source": {"class_path": policy_class}},
+            "model": {"artifacts": {"openvino": f"{expected_name}.xml"}},
+        }
+        with (export_dir / "manifest.json").open("w") as f:
+            json.dump(manifest, f)
         (export_dir / f"{expected_name}.xml").touch()
 
         with patch("physicalai.inference.model.get_adapter", return_value=mock_adapter):
@@ -365,7 +328,7 @@ class TestSelectAction:
         mock_adapter: MagicMock,
         sample_observation: dict[str, np.ndarray],
     ) -> None:
-        model = InferenceModel(_make_legacy_export_dir(tmp_path, use_action_queue=False, chunk_size=1))
+        model = InferenceModel(_make_export_dir(tmp_path, use_action_queue=False, chunk_size=1))
         mock_adapter.predict.return_value = {"actions": np.random.randn(1, 1, 2)}
 
         outputs = model(sample_observation)
@@ -379,7 +342,7 @@ class TestSelectAction:
         mock_adapter: MagicMock,
         sample_observation: dict[str, np.ndarray],
     ) -> None:
-        model = InferenceModel(_make_legacy_export_dir(tmp_path, use_action_queue=False, chunk_size=1))
+        model = InferenceModel(_make_export_dir(tmp_path, use_action_queue=False, chunk_size=1))
         mock_adapter.predict.return_value = {"actions": np.random.randn(1, 1, 2)}
         model.postprocessors = [ActionNormalizer()]
 
@@ -395,7 +358,7 @@ class TestSelectAction:
         mock_adapter: MagicMock,
         sample_observation: dict[str, np.ndarray],
     ) -> None:
-        model = InferenceModel(_make_legacy_export_dir(tmp_path, use_action_queue=False, chunk_size=1))
+        model = InferenceModel(_make_export_dir(tmp_path, use_action_queue=False, chunk_size=1))
         model.postprocessors = [ActionNormalizer()]
         fixed_output = np.random.randn(1, 1, 2)
 
@@ -412,7 +375,7 @@ class TestSelectAction:
 class TestInputPreparation:
     def test_filters_to_adapter_input_names(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
         mock_adapter.input_names = ["state", "images"]
-        model = InferenceModel(_make_legacy_export_dir(tmp_path))
+        model = InferenceModel(_make_export_dir(tmp_path))
 
         inputs = {
             "state": np.random.randn(1, 4).astype(np.float32),
@@ -427,13 +390,13 @@ class TestInputPreparation:
 
     def test_passthrough_when_no_input_names(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
         mock_adapter.input_names = []
-        model = InferenceModel(_make_legacy_export_dir(tmp_path))
+        model = InferenceModel(_make_export_dir(tmp_path))
         inputs = {"state": np.random.randn(1, 4).astype(np.float32)}
 
         assert model._prepare_inputs(inputs) is inputs
 
     def test_nested_payload_flattening(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
-        model = InferenceModel(_make_legacy_export_dir(tmp_path))
+        model = InferenceModel(_make_export_dir(tmp_path))
         mock_adapter.input_names = ["state", "images.top"]
 
         inputs = {
@@ -473,8 +436,13 @@ class TestModelPathResolution:
     def test_get_model_path_not_found(self, tmp_path: Path) -> None:
         export_dir = tmp_path / "exports"
         export_dir.mkdir()
-        with (export_dir / "metadata.yaml").open("w") as f:
-            yaml.dump({"policy_class": "physicalai.policies.act.ACT"}, f)
+        manifest = {
+            "format": "policy_package",
+            "version": "1.0",
+            "policy": {"name": "act", "source": {"class_path": "physicalai.policies.act.ACT"}},
+        }
+        with (export_dir / "manifest.json").open("w") as f:
+            json.dump(manifest, f)
 
         with pytest.raises(FileNotFoundError, match="No .* model file found"):
             InferenceModel(export_dir, backend="onnx")._get_model_path()
@@ -483,7 +451,7 @@ class TestModelPathResolution:
 @pytest.mark.usefixtures("_patch_adapter")
 class TestRepr:
     def test_repr(self, tmp_path: Path) -> None:
-        repr_str = repr(InferenceModel(_make_legacy_export_dir(tmp_path)))
+        repr_str = repr(InferenceModel(_make_export_dir(tmp_path)))
         assert all(s in repr_str for s in ("InferenceModel", "act", "openvino", "SinglePass"))
 
 
@@ -498,27 +466,27 @@ class TestGetRunnerFactory:
         assert isinstance(get_runner({"use_action_queue": True, "chunk_size": 5}), SinglePass)
 
     def test_manifest_runner_spec_single_pass(self) -> None:
-        metadata = {"runner": {"class_path": "physicalai.inference.runners.SinglePass", "init_args": {}}}
-        assert isinstance(get_runner(metadata), SinglePass)
+        manifest_dict = {"runner": {"class_path": "physicalai.inference.runners.SinglePass", "init_args": {}}}
+        assert isinstance(get_runner(manifest_dict), SinglePass)
 
 
-    def test_manifest_runner_spec_takes_priority_over_legacy(self) -> None:
-        metadata = {
+    def test_manifest_runner_spec_takes_priority_over_flat_kwargs(self) -> None:
+        manifest_dict = {
             "use_action_queue": True,
             "chunk_size": 99,
             "runner": {"class_path": "physicalai.inference.runners.SinglePass", "init_args": {}},
         }
-        assert isinstance(get_runner(metadata), SinglePass)
+        assert isinstance(get_runner(manifest_dict), SinglePass)
 
     def test_nested_model_runner_takes_priority_over_flat(self) -> None:
-        metadata = {
+        manifest_dict = {
             "use_action_queue": True,
             "chunk_size": 99,
             "model": {
                 "runner": {"class_path": "physicalai.inference.runners.SinglePass", "init_args": {}},
             },
         }
-        assert isinstance(get_runner(metadata), SinglePass)
+        assert isinstance(get_runner(manifest_dict), SinglePass)
 
     def test_manifest_object_without_runner(self) -> None:
         manifest = Manifest()

@@ -1,0 +1,62 @@
+site_name: PhysicalAI Documentation
+site_description: Runtime documentation for PhysicalAI inference and deployment
+repo_url: https://github.com/openvinotoolkit/physical-ai
+docs_dir: docs
+site_dir: site
+use_directory_urls: true
+
+theme:
+  name: material
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Overview: getting-started/README.md
+      - Installation: getting-started/installation.md
+      - Quickstart: getting-started/quickstart.md
+      - Run a Policy: getting-started/run-a-policy.md
+  - How-To:
+      - Overview: how-to/README.md
+      - Runtime:
+          - Run a Policy on a Robot: how-to/runtime/run-policy-on-robot.md
+          - Use Execution Modes: how-to/runtime/use-execution-modes.md
+          - Add Runtime Callbacks: how-to/runtime/add-runtime-callbacks.md
+      - Inference:
+          - Load an Exported Policy: how-to/inference/load-exported-policy.md
+          - Use a Manifest: how-to/inference/use-manifest.md
+          - Configure Preprocessing and Postprocessing: how-to/inference/configure-pre-post-processing.md
+      - Config:
+          - Write Runtime Config: how-to/config/write-runtime-config.md
+          - Write Inference Config: how-to/config/write-inference-config.md
+          - Instantiate Components: how-to/config/instantiate-components.md
+      - CLI:
+          - Run: how-to/cli/run.md
+          - Infer: how-to/cli/infer.md
+  - Explanation:
+      - Overview: explanation/README.md
+      - Architecture: explanation/architecture.md
+      - Inference: explanation/inference.md
+      - Runtime: explanation/runtime.md
+      - Configuration: explanation/configuration.md
+      - Manifests: explanation/manifests.md
+      - CLI: explanation/cli.md
+      - Robots: explanation/robots.md
+      - Cameras: explanation/cameras.md
+  - Reference:
+      - Overview: reference/README.md
+      - CLI: reference/cli.md
+      - Config Schema: reference/config-schema.md
+      - Manifest Schema: reference/manifest-schema.md
+      - Inference API: reference/inference-api.md
+      - Runtime API: reference/runtime-api.md
+      - Robot API: reference/robot-api.md
+      - Camera API: reference/camera-api.md

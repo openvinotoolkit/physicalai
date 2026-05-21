@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Runner factory for selecting inference runners from manifest or metadata."""
+"""Runner factory for selecting inference runners from a manifest."""
 
 from __future__ import annotations
 
@@ -15,18 +15,19 @@ if TYPE_CHECKING:
 
 
 def get_runner(source: Manifest | dict[str, Any]) -> InferenceRunner:
-    """Select and instantiate a runner from a manifest or legacy metadata.
+    """Select and instantiate a runner from a manifest.
 
-    Supports three formats:
+    Supports three input formats:
 
     1. **Manifest object** — reads ``source.model.runner`` and
        instantiates via :func:`instantiate_component`.
     2. **Dict with runner spec** — raw manifest dict containing a
-       ``"model"`` section with a runner component spec.
-    3. **Legacy dict** — falls back to a plain ``SinglePass`` runner.
+       runner component spec either under ``"model" -> "runner"``
+       or at the top-level ``"runner"`` key.
+    3. **Dict without runner spec** — falls back to a plain ``SinglePass`` runner.
 
     Args:
-        source: A :class:`Manifest` instance or a raw metadata dict.
+        source: A :class:`Manifest` instance or a raw manifest dict.
 
     Returns:
         Configured runner instance.
@@ -61,19 +62,19 @@ def get_runner(source: Manifest | dict[str, Any]) -> InferenceRunner:
     return SinglePass()
 
 
-def _extract_runner_spec(metadata: dict[str, Any]) -> dict[str, Any] | None:
-    """Extract a runner spec dict from nested or flat metadata.
+def _extract_runner_spec(manifest_dict: dict[str, Any]) -> dict[str, Any] | None:
+    """Extract a runner spec dict from nested or flat manifest data.
 
     Returns:
         Runner spec dict if found, otherwise ``None``.
     """
-    model_section = metadata.get("model", {})
+    model_section = manifest_dict.get("model", {})
     if isinstance(model_section, dict):
         runner = model_section.get("runner")
         if isinstance(runner, dict) and ("class_path" in runner or "type" in runner):
             return runner
 
-    runner = metadata.get("runner")
+    runner = manifest_dict.get("runner")
     if isinstance(runner, dict) and ("class_path" in runner or "type" in runner):
         return runner
 
