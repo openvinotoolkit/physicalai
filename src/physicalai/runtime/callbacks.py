@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import colorsys
 import json
 import logging
 import threading
@@ -206,8 +207,11 @@ class RerunCallback:
 
         self._last_step: int = 0
         self._fps: int = 30
+        self._pred_horizon: int = 0
         self._initialized = False
+        self._blueprint_updated = False
         self._camera_subscribers: dict[str, Any] = {}
+        self._latencies: deque[float] = deque(maxlen=200)
 
     def on_lifecycle(self, event: LifecycleEvent) -> None:  # noqa: D102
         if event.event == "start" and not self._initialized:
@@ -238,20 +242,51 @@ class RerunCallback:
             self._log_camera_frames()
 
     def on_inference(self, event: InferenceEvent) -> None:  # noqa: D102
+        import numpy as np  # noqa: PLC0415
         import rerun as rr  # noqa: PLC0415
 
         horizon = event.chunk.shape[0]
+        n_joints = event.chunk.shape[1]
         start_step = self._last_step + 1
 
-        for k in range(horizon):
-            rr.set_time("step", sequence=start_step + k)
-            rr.set_time("wall", timestamp=event.timestamp + k / self._fps)
-            rr.log("robot/predicted", rr.Scalars([float(v) for v in event.chunk[k]]))
+        # Clear previous predictions so stale trajectories don't linger.
+        if self._pred_horizon > 0:
+            rr.set_time("step", sequence=self._last_step)
+            rr.log("robot/predicted", rr.Clear(recursive=False))
+
+        self._pred_horizon = horizon
+
+        # Batch-log all prediction steps in one efficient send_columns call.
+        # send_columns bypasses the thread-local time context, so the viewer's
+        # "latest" cursor is not pushed to the last prediction step.
+        steps = np.arange(start_step, start_step + horizon, dtype=np.int64)
+        wall_times = event.timestamp + np.arange(horizon, dtype=np.float64) / self._fps
+
+        # Scalars expects one float per row when logging a single series,
+        # but for N joints we need N values per row → use partitioned columns.
+        flat_scalars = event.chunk.astype(np.float64).ravel()
+        rr.send_columns(
+            "robot/predicted",
+            indexes=[
+                rr.TimeColumn("step", sequence=steps),
+                rr.TimeColumn("wall", timestamp=wall_times),
+            ],
+            columns=rr.Scalars.columns(scalars=flat_scalars).partition(lengths=[n_joints] * horizon),
+        )
 
         # Mark the inference event on the queue timeline (shows as a spike/refill).
         rr.set_time("step", sequence=self._last_step)
         rr.set_time("wall", timestamp=event.timestamp)
         rr.log("queue/inference", rr.Scalars(float(horizon)))
+
+        # Inference latency stats as a live-updating table.
+        self._latencies.append(event.latency_s)
+        self._log_latency_table()
+
+        # Re-send blueprint with correct horizon on first inference.
+        if not self._blueprint_updated:
+            self._blueprint_updated = True
+            self._send_default_blueprint()
 
     def close(self) -> None:
         """Release independent camera subscribers."""
@@ -278,6 +313,7 @@ class RerunCallback:
             rr.connect_grpc(url=url)
 
         self._fps = metadata.get("fps", 30)
+        self._joint_names: list[str] = metadata.get("joint_names", [])
         self._initialized = True
 
         self._send_series_styles()
@@ -285,22 +321,42 @@ class RerunCallback:
         self._send_default_blueprint()
 
     @staticmethod
-    def _send_series_styles() -> None:
+    def _generate_joint_colors(n: int) -> list[list[int]]:
+        """Generate N perceptually distinct colors via evenly-spaced hues.
+
+        Returns:
+            List of RGBA colors with values in [0, 255].
+        """
+        colors = []
+        for i in range(n):
+            hue = i / n
+            r, g, b = colorsys.hsv_to_rgb(hue, 0.75, 0.85)
+            colors.append([int(r * 255), int(g * 255), int(b * 255), 255])
+        return colors
+
+    def _send_series_styles(self) -> None:
         """Set static visual style for series: solid lines for actions, dots for predicted."""
         import rerun as rr  # noqa: PLC0415
 
-        # Actions: solid, 2px, blue
-        rr.log("robot/actions", rr.SeriesLines(widths=2.0, colors=[70, 130, 230, 255], names="actions"), static=True)
-        # Predicted: small dots, orange, semi-transparent — visible but not dominant
+        names = self._joint_names or None
+        n_joints = len(self._joint_names) if self._joint_names else 0
+        joint_colors = self._generate_joint_colors(n_joints) if n_joints else None
+
+        # Actions: distinct color per joint so you can identify each line
+        action_names = [f"{n} (action)" for n in self._joint_names] if self._joint_names else None
+        rr.log("robot/actions", rr.SeriesLines(widths=2.0, colors=joint_colors, names=action_names), static=True)
+        # Predicted: same joint colors at lower alpha + cross markers to distinguish from action lines
+        pred_names = [f"{n} (pred)" for n in self._joint_names] if self._joint_names else None
+        pred_colors = [[r, g, b, 100] for r, g, b, _a in joint_colors] if joint_colors else None
         rr.log(
             "robot/predicted",
-            rr.SeriesPoints(marker_sizes=2.0, colors=[255, 140, 0, 120], names="predicted"),
+            rr.SeriesPoints(marker_sizes=4.0, colors=pred_colors, markers="cross", names=pred_names),
             static=True,
         )
-        # Joints: default styling (thin lines)
-        rr.log("robot/joints", rr.SeriesLines(widths=1.5), static=True)
-        # Queue: thick green line (bar-like); inference: thin red vertical spikes
-        rr.log("queue/remaining", rr.SeriesLines(widths=8.0, colors=[80, 200, 120, 255], names="queue"), static=True)
+        # Joints: same distinct colors as actions for consistency
+        rr.log("robot/joints", rr.SeriesLines(widths=1.5, colors=joint_colors, names=names), static=True)
+        # Queue: green line; inference: thin red vertical spikes
+        rr.log("queue/remaining", rr.SeriesLines(widths=3.0, colors=[80, 200, 120, 255], names="queue"), static=True)
         rr.log("queue/inference", rr.SeriesLines(widths=1.5, colors=[220, 50, 50, 255], names="inference"), static=True)
 
     def _send_default_blueprint(self) -> None:
@@ -313,29 +369,57 @@ class RerunCallback:
             return
 
         camera_names = list((self._cameras or {}).keys()) if self._log_images else []
+        fps = int(self._fps)
+        horizon = self._pred_horizon or int(fps * 1.5)  # best-guess until first inference
+
+        # The viewer's cursor tracks the latest logged "step" value.
+        # With send_columns, predictions are at [current+1 … current+horizon],
+        # so the cursor sits roughly `horizon` steps ahead of the actual tick.
+        # We size the visible window so actions and predictions get equal space:
+        # lookback = 2*horizon → horizon steps of history + horizon steps of predictions.
+        lookback = horizon * 2
+        actions_range = rrb.VisibleTimeRange(
+            timeline="step",
+            start=rrb.TimeRangeBoundary.cursor_relative(seq=-lookback),
+            end=rrb.TimeRangeBoundary.cursor_relative(seq=0),
+        )
+
+        latency_view = rrb.TextDocumentView(
+            origin="/inference/stats",
+            name="Inference Latency",
+        )
+        if camera_names:
+            top_row = rrb.Grid(
+                contents=[
+                    *[rrb.Spatial2DView(origin=f"/camera/{n}", name=n) for n in camera_names],
+                    latency_view,
+                ],
+            )
+        else:
+            top_row = latency_view
 
         views: list[Any] = [
+            top_row,
+            rrb.Tabs(
+                rrb.TimeSeriesView(
+                    origin="/robot",
+                    contents=["/robot/actions", "/robot/predicted"],
+                    name="Actions vs Predicted",
+                    time_ranges=actions_range,
+                ),
+                rrb.TimeSeriesView(
+                    origin="/robot/joints",
+                    name="Joint State",
+                    time_ranges=actions_range,
+                ),
+                active_tab="Actions vs Predicted",
+            ),
             rrb.TimeSeriesView(
                 origin="/queue",
                 name="Action Queue",
-            ),
-            rrb.TimeSeriesView(
-                origin="/robot",
-                contents=["/robot/actions", "/robot/predicted"],
-                name="Actions vs Predicted",
-            ),
-            rrb.TimeSeriesView(
-                origin="/robot/joints",
-                name="Joint State",
+                time_ranges=actions_range,
             ),
         ]
-        if camera_names:
-            views.append(
-                rrb.Grid(
-                    contents=[rrb.Spatial2DView(origin=f"/camera/{n}", name=n) for n in camera_names],
-                    name="Cameras",
-                )
-            )
 
         blueprint = rrb.Blueprint(
             rrb.Vertical(*views),
@@ -392,6 +476,33 @@ class RerunCallback:
             f"runtime/lifecycle/{event.event}",
             rr.TextLog(f"{event.event}: {event.metadata}"),
         )
+
+    def _log_latency_table(self) -> None:
+        import numpy as np  # noqa: PLC0415
+        import rerun as rr  # noqa: PLC0415
+
+        arr = np.array(self._latencies)
+        p50 = float(np.percentile(arr, 50))
+        p95 = float(np.percentile(arr, 95))
+        p99 = float(np.percentile(arr, 99))
+        last = float(arr[-1])
+        n = len(arr)
+        # Headroom = time the queue can sustain minus inference latency.
+        # Positive = safe; negative = queue starved before next chunk arrives.
+        queue_time = self._pred_horizon / self._fps if self._pred_horizon else 0
+        headroom = queue_time - p99
+
+        md = (
+            f"| Metric | Value |\n"
+            f"|--------|-------|\n"
+            f"| **Last** | {last * 1000:.1f} ms |\n"
+            f"| **p50** | {p50 * 1000:.1f} ms |\n"
+            f"| **p95** | {p95 * 1000:.1f} ms |\n"
+            f"| **p99** | {p99 * 1000:.1f} ms |\n"
+            f"| **Queue headroom** | {headroom * 1000:.0f} ms |\n"
+            f"| Samples | {n} |"
+        )
+        rr.log("inference/stats", rr.TextDocument(md, media_type=rr.MediaType.MARKDOWN))
 
 
 def _np_to_list(arr: np.ndarray | None) -> list[float] | None:

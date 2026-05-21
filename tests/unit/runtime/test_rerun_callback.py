@@ -19,8 +19,12 @@ def mock_rerun() -> MagicMock:
     rr = MagicMock()
     rr.__name__ = "rerun"
     rr.Scalars = MagicMock(side_effect=lambda *a, **kw: ("Scalars", a, kw))
+    rr.Scalars.columns = MagicMock(return_value=MagicMock())
     rr.Image = MagicMock(side_effect=lambda d: ("Image", d))
     rr.TextLog = MagicMock(side_effect=lambda t: ("TextLog", t))
+    rr.StateChange = MagicMock(side_effect=lambda *a, **kw: ("StateChange", a, kw))
+    rr.Clear = MagicMock(side_effect=lambda *a, **kw: ("Clear", a, kw))
+    rr.TimeColumn = MagicMock(side_effect=lambda *a, **kw: ("TimeColumn", a, kw))
     return rr
 
 
@@ -121,8 +125,8 @@ class TestRerunCallbackLifecycle:
         cb.on_lifecycle(_lifecycle_start())
 
         mock_rerun.log.assert_called()
-        calls = [c for c in mock_rerun.log.call_args_list if "lifecycle" in str(c)]
-        assert len(calls) > 0
+        lifecycle_calls = [c for c in mock_rerun.log.call_args_list if "lifecycle" in str(c)]
+        assert len(lifecycle_calls) > 0
 
     def test_second_start_does_not_reinitialize(self, make_callback: Any, mock_rerun: MagicMock) -> None:
         cb = make_callback()
@@ -217,7 +221,7 @@ class TestRerunCallbackTick:
 
 @pytest.mark.usefixtures("_patch_rerun")
 class TestRerunCallbackInference:
-    def test_ghost_trajectory_logs_at_future_steps(self, make_callback: Any, mock_rerun: MagicMock) -> None:
+    def test_send_columns_called_with_prediction_steps(self, make_callback: Any, mock_rerun: MagicMock) -> None:
         cb = make_callback()
         cb.on_lifecycle(_lifecycle_start(fps=30))
 
@@ -226,38 +230,57 @@ class TestRerunCallbackInference:
 
         cb.on_inference(_inference(horizon=5, dof=3))
 
-        set_time_calls = mock_rerun.set_time.call_args_list
-        step_values = [c.kwargs["sequence"] for c in set_time_calls if c.args[0] == "step" and "sequence" in c.kwargs]
-        # on_inference logs steps 11-15 for the horizon, then resets to step 10
-        assert step_values == [11, 12, 13, 14, 15, 10]
+        # Predictions are logged via send_columns, not individual log calls.
+        mock_rerun.send_columns.assert_called_once()
+        call_args = mock_rerun.send_columns.call_args
+        assert call_args.args[0] == "robot/predicted"
 
-    def test_ghost_trajectory_logs_predicted_scalars(self, make_callback: Any, mock_rerun: MagicMock) -> None:
+    def test_inference_logs_queue_spike(self, make_callback: Any, mock_rerun: MagicMock) -> None:
         cb = make_callback()
         cb.on_lifecycle(_lifecycle_start())
         cb.on_tick(_tick(step=0))
         mock_rerun.reset_mock()
 
-        cb.on_inference(_inference(horizon=2, dof=3))
+        cb.on_inference(_inference(horizon=5, dof=3))
 
         log_calls = mock_rerun.log.call_args_list
-        predicted_calls = [c for c in log_calls if c.args[0] == "robot/predicted"]
-        # One log call per horizon step (each with all DOFs in Scalars)
-        assert len(predicted_calls) == 2
+        queue_calls = [c for c in log_calls if c.args[0] == "queue/inference"]
+        assert len(queue_calls) == 1
 
-    def test_ghost_trajectory_wall_time_spacing(self, make_callback: Any, mock_rerun: MagicMock) -> None:
+    def test_inference_resets_time_to_current_step(self, make_callback: Any, mock_rerun: MagicMock) -> None:
         cb = make_callback()
         cb.on_lifecycle(_lifecycle_start(fps=10))
-        cb.on_tick(_tick(step=0))
+        cb.on_tick(_tick(step=5))
         mock_rerun.reset_mock()
 
-        event = _inference(horizon=3, dof=1)
-        cb.on_inference(event)
+        cb.on_inference(_inference(horizon=3, dof=1))
 
-        wall_calls = mock_rerun.set_time.call_args_list
-        wall_values = [c.kwargs["timestamp"] for c in wall_calls if c.args[0] == "wall" and "timestamp" in c.kwargs]
-        # 3 horizon steps + 1 reset to event.timestamp
-        expected = [event.timestamp + k / 10 for k in range(3)] + [event.timestamp]
-        assert wall_values == pytest.approx(expected)
+        # After send_columns, time is reset to current step for queue/inference log.
+        set_time_calls = mock_rerun.set_time.call_args_list
+        step_values = [c.kwargs["sequence"] for c in set_time_calls if c.args[0] == "step" and "sequence" in c.kwargs]
+        assert 5 in step_values
+
+    def test_stale_predictions_cleared(self, make_callback: Any, mock_rerun: MagicMock) -> None:
+        cb = make_callback()
+        cb.on_lifecycle(_lifecycle_start(fps=30))
+        cb.on_tick(_tick(step=5))
+        cb.on_inference(_inference(horizon=5, dof=3))
+        mock_rerun.reset_mock()
+
+        # Second inference should clear old predictions first.
+        cb.on_tick(_tick(step=10))
+        cb.on_inference(_inference(horizon=5, dof=3))
+
+        log_calls = mock_rerun.log.call_args_list
+        clear_calls = [c for c in log_calls if c.args[0] == "robot/predicted"]
+        assert len(clear_calls) >= 1  # At least the Clear call
+
+    def test_pred_horizon_tracked(self, make_callback: Any, mock_rerun: MagicMock) -> None:
+        cb = make_callback()
+        cb.on_lifecycle(_lifecycle_start(fps=30))
+        cb.on_tick(_tick(step=0))
+        cb.on_inference(_inference(horizon=50, dof=7))
+        assert cb._pred_horizon == 50
 
 
 @pytest.mark.usefixtures("_patch_rerun")

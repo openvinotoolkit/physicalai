@@ -207,6 +207,7 @@ class PolicyRuntime:
                     "fps": self._fps,
                     "duration_s": duration_s,
                     "cameras": list(self._cameras.keys()),
+                    "joint_names": self._robot.joint_names,
                 },
             )
         )

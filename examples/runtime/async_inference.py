@@ -19,6 +19,23 @@ Examples:
       --camera front:uvc:/dev/video2 \\
       --rerun spawn
 
+    python examples/runtime/async_inference.py \
+        --robot so101 \
+        --model ./examples/runtime/exports/pi05_cans_openvino \
+        --device GPU.0 \
+        --port /dev/ttyACM0 \
+        --calibration /home/max/.cache/physicalai/robots/a8d8d997-a59e-4423-9006-5d991d223887/calibrations/0b2f185a-8ab2-4956-91c2-3a2ac2dbd8c1.json \
+        --camera overhead:uvc:/dev/v4l/by-id/usb-UGREEN_Camera_2K_UGREEN_Camera_2K_SN0001-video-index0 \
+        --camera arm:realsense:353322271391 \
+        --camera front:uvc:/dev/v4l/by-id/usb-Innomaker_Innomaker-U20CAM-1080p-S1_SN0001-video-index0 \
+        --fps 30 \
+        --duration-s 60 \
+        --rerun connect \
+        --rerun-addr 127.0.0.1:9877 \
+        --rerun-image-decimation 1 \
+        --rerun-jpeg-quality 75 \
+        --rerun-image-max-dim 480
+
     # Trossen WidowXAI
     python examples/runtime/async_inference.py \\
       --robot widowxai --ip 192.168.1.2 \\
@@ -39,6 +56,8 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import os
+import signal
 
 from physicalai.capture import select_cameras_interactive
 from physicalai.inference import InferenceModel
@@ -54,6 +73,15 @@ from utils import build_robot, parse_camera_specs
 
 
 def main() -> None:
+    # Force-exit on second Ctrl+C (Rerun's blocked channels prevent clean shutdown)
+    def _handle_sigint(sig: int, frame: object) -> None:
+        # Restore default handler so next Ctrl+C kills immediately via OS signal
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        print("\nInterrupting... press Ctrl+C again to force kill.")
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGINT, _handle_sigint)
+
     parser = argparse.ArgumentParser(
         description="Run a trained policy on hardware",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -94,16 +122,18 @@ def main() -> None:
     rr_group.add_argument("--rerun-addr", default="127.0.0.1:9876")
     rr_group.add_argument("--rerun-save-path", default="run.rrd")
     rr_group.add_argument("--rerun-no-images", action="store_true", help="Scalars only")
-    rr_group.add_argument("--rerun-image-decimation", type=int, default=3)
-    rr_group.add_argument("--rerun-jpeg-quality", type=int, default=None)
-    rr_group.add_argument("--rerun-image-max-dim", type=int, default=None)
+    rr_group.add_argument("--rerun-image-decimation", type=int, default=1, help="Only send 1/N frames to Rerun")
+    rr_group.add_argument("--rerun-jpeg-quality", type=int, default=None, help="JPEG quality for Rerun images (0-100, default: no re-encoding)")
+    rr_group.add_argument("--rerun-image-max-dim", type=int, default=None, help="Max width/height for Rerun images (default: no resizing)")
 
     args = parser.parse_args()
 
     # ── Load model ──
     import openvino_tokenizers  # noqa: F401 — registers OV tokenizer ops
 
+    print(f"Loading model from {args.model} on {args.device} (this may take a minute)...", flush=True)
     model = InferenceModel.load(args.model, device=args.device)
+    print("Model loaded.")
 
     # ── Build robot & cameras ──
     robot = build_robot(args)
