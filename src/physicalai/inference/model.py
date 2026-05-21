@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
@@ -31,9 +32,12 @@ if TYPE_CHECKING:
 
 # Policy names from the manifest are used to construct filesystem paths.
 # Restrict to safe characters to prevent "../" traversal attacks.
+_SAFE_POLICY_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.\-]*$", re.ASCII)
+
+
 def _is_safe_policy_name(name: str) -> bool:
-    """Return True if *name* matches ``[a-zA-Z0-9][a-zA-Z0-9-_.]*``."""
-    return bool(name) and name[0].isalnum() and all(c.isalnum() or c in "-_." for c in name)
+    """Return True if *name* matches ``[a-zA-Z0-9][a-zA-Z0-9-_.]*`` (ASCII only)."""
+    return _SAFE_POLICY_NAME_RE.fullmatch(name) is not None
 
 
 class InferenceModel:
