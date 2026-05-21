@@ -4,6 +4,10 @@
 
 """Run a trained policy on hardware with real-time Rerun visualization.
 
+Prerequisites::
+
+    uv sync --extra capture --extra robots --extra observer-rerun
+
 Examples:
 
     # SO101 with 3 cameras, Rerun viewer auto-launched
