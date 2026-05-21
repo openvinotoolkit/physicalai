@@ -234,7 +234,7 @@ class InferenceModel:
         outputs = self(observation)
         actions = outputs[ACTION]
         # Strip the batch dimension; reject actual batches (batch > 1).
-        if actions.ndim == 3:  # noqa: N806
+        if actions.ndim == 3:  # noqa: PLR2004
             if actions.shape[0] != 1:
                 msg = (
                     f"Batched inference is not supported by predict_action_chunk: "
