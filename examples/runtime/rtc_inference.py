@@ -50,7 +50,7 @@ def main() -> None:
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=float, default=30.0)
-    parser.add_argument("--duration-s", type=float, default=60.0)
+    parser.add_argument("--duration-s", type=float, default=None, help="Run duration in seconds (default: run indefinitely)")
     # RTC parameters
     parser.add_argument("--chunk-size", type=int, default=50)
     parser.add_argument("--execution-horizon", type=int, default=10)
@@ -147,6 +147,17 @@ def main() -> None:
             f"p95={latency_tracker.percentile_s(95):.3f}s"
         )
     finally:
+        print("\nRobot is holding position (torque ON).")
+        try:
+            resp = input("Disable torque? The arm will drop under gravity. [y/N]: ").strip().lower()
+            if resp == "y":
+                robot.set_torque(enabled=False)
+                robot.torque_on_disconnect = False
+                print("Torque disabled — arm is free.")
+            else:
+                print("Torque remains enabled — arm holds position.")
+        except (KeyboardInterrupt, EOFError):
+            print("\nTorque remains enabled.")
         runtime.disconnect()
         print("Disconnected")
 

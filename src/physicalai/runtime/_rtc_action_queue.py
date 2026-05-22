@@ -104,32 +104,31 @@ class RTCActionQueue:
         self,
         raw: np.ndarray,
         processed: np.ndarray,
-        real_delay: int,
         action_index_before_inference: int | None = None,
     ) -> None:
-        """Replace queue contents, trimming the first ``real_delay`` actions.
+        """Replace queue contents, trimming actions consumed during inference.
+
+        Trim is derived from actual cursor movement (actions the robot
+        consumed from the previous chunk while inference was running).
+        For the first chunk, cursor hasn't moved so trim=0 and the
+        full chunk is kept.
 
         Args:
             raw: Raw model output, shape ``(chunk_size, action_dim)``.
             processed: Postprocessed actions, shape ``(chunk_size, robot_dof)``.
-            real_delay: Number of leading actions to discard (already
-                consumed during inference latency).
             action_index_before_inference: Cursor snapshot taken before
-                inference started. Used to compute additional actions
-                consumed while inference was running.
+                inference started. Used to compute how many actions were
+                consumed during inference.
         """
         with self._lock:
-            # Validate: warn if actual consumed differs from real_delay
+            # Trim = actual actions consumed during inference
             if action_index_before_inference is not None:
-                indexes_diff = max(0, self._cursor - action_index_before_inference)
-                if indexes_diff != real_delay:
-                    logger.warning(
-                        "Indexes diff != real delay: indexes_diff=%d, real_delay=%d",
-                        indexes_diff, real_delay,
-                    )
+                trim = max(0, self._cursor - action_index_before_inference)
+            else:
+                trim = 0
 
-            # Trim stale prefix (actions consumed during inference latency)
-            trim = max(0, min(real_delay, len(raw), len(processed)))
+            # Clamp to array length
+            trim = min(trim, len(raw), len(processed))
 
             self._raw = raw[trim:]
             self._processed = processed[trim:]
