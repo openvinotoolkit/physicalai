@@ -38,7 +38,7 @@ class LerpSmoother(ChunkSmoother):
     """Blend overlapping actions and append the incoming tail."""
 
     def __init__(self, duration_frames: int = 5) -> None:
-        """Create a smoother with a fallback lerp window."""
+        """Create a smoother with a lerp window."""
         self.duration_frames = duration_frames
 
     @override
@@ -50,10 +50,9 @@ class LerpSmoother(ChunkSmoother):
         """
         _validate_inputs(remaining, incoming)
 
-        lerp_dur = max(offset, 1) if offset > 0 else self.duration_frames
         incoming = incoming[offset:]
         n_remain = len(remaining)
-        lerp_dur = min(n_remain, lerp_dur)
+        lerp_dur = min(n_remain, self.duration_frames)
 
         weights = np.maximum(1.0 - np.arange(n_remain) / max(lerp_dur, 1), 0.0)
         weights = weights[:, np.newaxis]

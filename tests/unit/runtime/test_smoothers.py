@@ -56,15 +56,17 @@ class TestLerpSmoother:
         )
         np.testing.assert_array_equal(result, expected)
 
-    def test_offset_aware_duration(self) -> None:
+    def test_offset_slices_incoming_before_blend(self) -> None:
         smoother = LerpSmoother(duration_frames=99)
         remaining = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]], dtype=np.float32)
         incoming = np.array([[4.0, 4.0], [5.0, 5.0], [6.0, 6.0], [7.0, 7.0]], dtype=np.float32)
 
         result = smoother.merge(remaining, incoming, offset=2)
 
-        expected = np.array([[1.0, 1.0], [4.5, 4.5]], dtype=np.float32)
-        np.testing.assert_array_equal(result, expected)
+        # lerp_dur = min(n_remain=3, duration_frames=99) = 3
+        # weights = [1.0, 2/3, 1/3]; blends remaining[:2] with incoming[2:][:2] = [[6,6],[7,7]]
+        expected = np.array([[1.0, 1.0], [11.0 / 3, 11.0 / 3]], dtype=np.float32)
+        np.testing.assert_allclose(result, expected, rtol=1e-6)
 
     def test_edge_cases_empty_remaining_single_element_and_offset_beyond_chunk(self) -> None:
         smoother = LerpSmoother(duration_frames=5)
@@ -100,11 +102,13 @@ class TestLerpSmoother:
 
         result = smoother.merge(remaining, incoming, offset=1)
 
+        # lerp_dur = min(n_remain=3, duration_frames=5) = 3
+        # weights = [1.0, 2/3, 1/3]; incoming[1:] = [[2,2],[2,2],[2,2]]
         expected = np.array(
-            [[1.0, 1.0], [2.0, 2.0], [2.0, 2.0]],
+            [[1.0, 1.0], [4.0 / 3, 4.0 / 3], [5.0 / 3, 5.0 / 3]],
             dtype=np.float32,
         )
-        np.testing.assert_array_equal(result, expected)
+        np.testing.assert_allclose(result, expected, rtol=1e-6)
 
     def test_merge_is_stateless_for_same_arguments(self) -> None:
         smoother = LerpSmoother(duration_frames=5)

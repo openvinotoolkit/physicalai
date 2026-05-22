@@ -139,14 +139,25 @@ class SyncExecution(Execution):
 class AsyncExecution(Execution):
     """Async inference in a background thread with health monitoring."""
 
-    def __init__(  # noqa: D107
+    def __init__(
         self,
-        threshold: float = 0.5,
+        request_threshold: float = 0.5,
         fps: int = 30,
         watchdog_timeout_s: float = 30.0,
         max_consecutive_holds: int | None = None,
     ) -> None:
-        self._threshold_frac = threshold
+        """Configure the async execution strategy.
+
+        Args:
+            request_threshold: Queue fraction at which to request new inference.
+                When the action queue drops below this fraction of chunk_size,
+                a new inference is scheduled. E.g. 0.25 means "request when
+                only 25% of the chunk remains in the queue."
+            fps: Control loop frequency (used to compute offset from latency).
+            watchdog_timeout_s: If inference is stuck longer than this, force-reset.
+            max_consecutive_holds: Max ticks with empty queue before raising.
+        """
+        self._threshold_frac = request_threshold
         self._fps = fps
         self._watchdog_timeout_s = watchdog_timeout_s
         self._max_consecutive_holds = max_consecutive_holds or 3 * fps

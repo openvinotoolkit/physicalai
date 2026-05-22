@@ -117,7 +117,7 @@ class TestAsyncExecution:
         chunk = np.random.randn(10, 2).astype(np.float32)
         model = _make_mock_model(chunk)
         queue = ActionQueue()
-        ex = AsyncExecution(threshold=0.5, fps=10)
+        ex = AsyncExecution(request_threshold=0.5, fps=10)
 
         ex.start(model, queue)
         obs = {"state": np.zeros(2)}
@@ -138,7 +138,7 @@ class TestAsyncExecution:
         chunk = np.random.randn(4, 2).astype(np.float32)
         model = _make_mock_model(chunk)
         queue = ActionQueue()
-        ex = AsyncExecution(threshold=0.5, fps=10)
+        ex = AsyncExecution(request_threshold=0.5, fps=10)
 
         ex.start(model, queue)
         obs = {"state": np.zeros(2)}
@@ -165,7 +165,7 @@ class TestAsyncExecution:
             ValueError("model exploded"),
         ]
         queue = ActionQueue()
-        ex = AsyncExecution(threshold=0.5, fps=10)
+        ex = AsyncExecution(request_threshold=0.5, fps=10)
 
         ex.start(model, queue)
         obs = {"state": np.zeros(2)}
@@ -232,7 +232,7 @@ class TestAsyncExecution:
 
         model.predict_action_chunk.side_effect = slow_predict
         queue = ActionQueue()
-        ex = AsyncExecution(threshold=0.5, fps=10, watchdog_timeout_s=0.1)
+        ex = AsyncExecution(request_threshold=0.5, fps=10, watchdog_timeout_s=0.1)
 
         ex.start(model, queue)
         obs = {"state": np.zeros(2)}
