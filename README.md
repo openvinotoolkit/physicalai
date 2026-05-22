@@ -2,6 +2,10 @@
   <img src="docs/assets/physicalai.png" alt="Physical AI" width="100%">
 </p>
 
+<p align="center">
+  <img src="docs/assets/inference_rerun.gif" alt="Inference demo" width="100%">
+</p>
+
 <div align="center">
 
 **Runtime package for deploying robot policies trained with [Physical AI Studio](https://github.com/open-edge-platform/physical-ai-studio)**
