@@ -2,10 +2,6 @@
   <img src="docs/assets/physicalai.png" alt="Physical AI" width="100%">
 </p>
 
-<p align="center">
-  <img src="docs/assets/inference_rerun.gif" alt="Inference demo" width="100%">
-</p>
-
 <div align="center">
 
 **Runtime package for deploying robot policies trained with [Physical AI Studio](https://github.com/open-edge-platform/physical-ai-studio)**
@@ -28,6 +24,10 @@ Physical AI Runtime provides the deployment-side components for running trained 
 - **Robot Protocol** — Structural typing for any robot; no inheritance required
 - **Inference Engine** — Load exported policies from Studio with auto-detected backends
 - **Policy Runtime** — Control loop with observation building and action dispatch
+
+<p align="center">
+  <img src="docs/assets/inference_rerun.gif" alt="Inference demo" width="100%">
+</p>
 
 ## Installation
 
