@@ -25,8 +25,9 @@ class ActionQueue:
     def push_chunk(self, chunk: np.ndarray, offset: int = 0) -> None:
         """Push an action chunk, blending with remaining actions via the smoother."""
         with self._lock:
+            incoming = chunk[offset:]
             remaining = np.stack(list(self._deque)) if self._deque else np.empty((0, chunk.shape[1]), dtype=chunk.dtype)
-            merged = self._smoother.merge(remaining, chunk, offset)
+            merged = self._smoother.merge(remaining, incoming)
             self._deque.clear()
             self._deque.extend(merged)
 

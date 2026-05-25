@@ -19,19 +19,19 @@ class ChunkSmoother(ABC):
     """Merges a new action chunk into remaining actions from the previous chunk."""
 
     @abstractmethod
-    def merge(self, remaining: np.ndarray, incoming: np.ndarray, offset: int = 0) -> np.ndarray:
+    def merge(self, remaining: np.ndarray, incoming: np.ndarray) -> np.ndarray:
         """Merge a previous remainder with a new incoming chunk."""
         raise NotImplementedError
 
 
 class ReplaceSmoother(ChunkSmoother):
-    """Replace remaining actions with the incoming tail."""
+    """Replace remaining actions with the incoming chunk."""
 
     @override
-    def merge(self, remaining: np.ndarray, incoming: np.ndarray, offset: int = 0) -> np.ndarray:
-        """Return the incoming chunk after skipping the offset."""
+    def merge(self, remaining: np.ndarray, incoming: np.ndarray) -> np.ndarray:
+        """Return the incoming chunk (remaining is discarded)."""
         _validate_inputs(remaining, incoming)
-        return incoming[offset:]
+        return incoming
 
 
 class LerpSmoother(ChunkSmoother):
@@ -42,7 +42,7 @@ class LerpSmoother(ChunkSmoother):
         self.duration_frames = duration_frames
 
     @override
-    def merge(self, remaining: np.ndarray, incoming: np.ndarray, offset: int = 0) -> np.ndarray:
+    def merge(self, remaining: np.ndarray, incoming: np.ndarray) -> np.ndarray:
         """Merge chunks using queue-mixer-style linear interpolation.
 
         Returns:
@@ -50,7 +50,6 @@ class LerpSmoother(ChunkSmoother):
         """
         _validate_inputs(remaining, incoming)
 
-        incoming = incoming[offset:]
         n_remain = len(remaining)
         lerp_dur = min(n_remain, self.duration_frames)
 

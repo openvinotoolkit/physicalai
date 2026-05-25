@@ -188,6 +188,7 @@ class AsyncExecution(Execution):
         self._obs_ready = threading.Event()
         self._running_inference = False
         self._request_time: float = 0.0
+        self._pops_at_request: int = 0
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._death_cause: BaseException | None = None
@@ -237,6 +238,7 @@ class AsyncExecution(Execution):
             with self._lock:
                 self._obs_slot = snapshot
                 self._request_time = time.perf_counter()
+                self._pops_at_request = self._queue.total_pops
             self._obs_ready.set()
 
     def stop(self) -> None:
@@ -301,7 +303,11 @@ class AsyncExecution(Execution):
                 actions = self._model.predict_action_chunk(obs)
                 latency = time.perf_counter() - t0
 
-                offset = int(latency * self._fps)
+                # Offset = actions actually sent since the observation was
+                # captured. This is exact (no fps estimation error).
+                with self._lock:
+                    pops_since = self._queue.total_pops - self._pops_at_request
+                offset = min(max(pops_since, 0), len(actions) - 1)
                 self._queue.push_chunk(actions, offset=offset)
                 self._inference_count += 1
 
