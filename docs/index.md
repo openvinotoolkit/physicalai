@@ -9,6 +9,7 @@ PhysicalAI provides runtime components for working with exported robot policies.
 | Install the package     | [Installation](getting-started/installation.md)         |
 | Run first inference     | [Quickstart](getting-started/quickstart.md)             |
 | Run a policy on a robot | [Run a Policy](getting-started/run-a-policy.md)         |
+| Teleoperate a robot     | [Teleoperate](how-to/runtime/teleoperate-a-robot.md)    |
 | Write runtime YAML      | [Runtime Config](how-to/config/write-runtime-config.md) |
 | Use the runtime CLI     | [CLI Run](how-to/cli/run.md)                            |
 | Understand architecture | [Architecture](explanation/architecture.md)             |

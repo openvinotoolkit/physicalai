@@ -28,6 +28,7 @@ nav:
       - Overview: how-to/README.md
       - Runtime:
           - Run a Policy on a Robot: how-to/runtime/run-policy-on-robot.md
+          - Teleoperate a Robot: how-to/runtime/teleoperate-a-robot.md
           - Use Execution Modes: how-to/runtime/use-execution-modes.md
           - Add Runtime Callbacks: how-to/runtime/add-runtime-callbacks.md
       - Inference:

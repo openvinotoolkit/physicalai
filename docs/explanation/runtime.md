@@ -11,13 +11,14 @@ runtime.run(duration_s=60)
 
 ## Responsibilities
 
-| Component        | Owns                                                       | Does not own      |
-| ---------------- | ---------------------------------------------------------- | ----------------- |
-| `InferenceModel` | model load, preprocess, inference, postprocess             | robot loop timing |
-| `Execution`      | where inference runs                                       | robot IO          |
-| `ActionQueue`    | action chunks and buffering                                | model inference   |
-| `PolicyRuntime`  | observe, request inference, send action, callbacks, timing | policy math       |
-| `Robot`          | hardware connection, observations, actions                 | policy inference  |
+| Component            | Owns                                                       | Does not own      |
+| -------------------- | ---------------------------------------------------------- | ----------------- |
+| `InferenceModel`     | model load, preprocess, inference, postprocess             | robot loop timing |
+| `TeleoperatorPolicy` | reading a leader robot and producing action chunks         | follower robot IO |
+| `Execution`          | where policy evaluation runs                               | robot IO          |
+| `ActionQueue`        | action chunks and buffering                                | model inference   |
+| `PolicyRuntime`      | observe, request inference, send action, callbacks, timing | policy math       |
+| `Robot`              | hardware connection, observations, actions                 | policy inference  |
 
 ## Loop
 
@@ -33,6 +34,8 @@ while running:
 ```
 
 The exact observation structure and merging strategy may change as the API stabilizes.
+
+`PolicyRuntime` accepts any policy-like object with `predict_action_chunk()`. A trained `InferenceModel` is one implementation. `TeleoperatorPolicy` is another implementation that reads a leader robot and returns the leader joint positions as a one-step action chunk for the follower.
 
 ## Execution Modes
 

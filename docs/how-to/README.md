@@ -5,6 +5,7 @@ This section contains task-oriented guides for common runtime workflows.
 ## Runtime
 
 - [Run a policy on a robot](runtime/run-policy-on-robot.md)
+- [Teleoperate a robot](runtime/teleoperate-a-robot.md)
 - [Use execution modes](runtime/use-execution-modes.md)
 - [Add runtime callbacks](runtime/add-runtime-callbacks.md)
 
