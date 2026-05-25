@@ -101,7 +101,7 @@ def main() -> None:
     rt_group.add_argument("--task", type=str, default=None, help="Task string for the model (e.g. 'pick up the can')")
     rt_group.add_argument("--shared-camera", action="store_true", help="Use shared memory cameras (iceoryx2) — faster but incompatible with debugger")
     rt_group.add_argument("--request-threshold", type=float, default=0.75, help="Request new inference when queue drops below this fraction of chunk_size (default: 0.75 = trigger when 75%% of actions remain)")
-    rt_group.add_argument("--lerp-frames", type=int, default=10, help="LerpSmoother blend duration in frames (default: 10)")
+    rt_group.add_argument("--lerp-frames", type=int, default=3, help="LerpSmoother blend duration in frames (default: 3)")
 
     # Rerun
     rr_group = parser.add_argument_group("rerun")
