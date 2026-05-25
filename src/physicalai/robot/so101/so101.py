@@ -81,6 +81,11 @@ class SO101Observation:
     sensor_data: dict[str, np.ndarray] | None = None  # no extra sensors available on SO-101
     images: dict[str, Frame] | None = None  # no built-in camera implementation
 
+    @property
+    def state(self) -> np.ndarray:
+        """State vector: joint positions (6,)."""
+        return self.joint_positions
+
 
 class SO101(Robot):
     """Driver for the SO-101 robot arm (6-DOF, Feetech STS3215 servos).

@@ -49,6 +49,13 @@ class BimanualWidowXAIObservation:
     sensor_data: dict[str, np.ndarray] | None = None
     images: dict[str, Frame] | None = None
 
+    @property
+    def state(self) -> np.ndarray:
+        """State vector: positions (14) + velocities (14) = (28,)."""
+        if self.sensor_data and "velocities" in self.sensor_data:
+            return np.concatenate([self.joint_positions, self.sensor_data["velocities"]])
+        return self.joint_positions
+
 
 class BimanualWidowXAI(Robot):
     """Two-arm WidowX AI driver composing a left and right :class:`WidowXAI`.
@@ -135,28 +142,29 @@ class BimanualWidowXAI(Robot):
         )
 
     def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None:
-        """Send a 14-DOF joint position command (follower only).
+        """Send joint position command (follower only).
 
         Args:
-            action: Array of shape ``(14,)`` — left (7) then right (7) target
-                positions in degrees for non-gripper joints, and native scalar
-                values for grippers.
+            action: Array of shape ``(N,)`` where N >= 14. Only the first 14
+                elements (left 7 + right 7 positions) are used; extra
+                dimensions (e.g. predicted velocities) are ignored.
             goal_time: Minimum time (seconds) for the arms to reach the target.
 
         Raises:
             RuntimeError: If called on a leader robot.
-            ValueError: If action shape is not ``(14,)``.
+            ValueError: If action has fewer than 14 elements.
         """
         if self.role == "leader":
             msg = "Cannot send actions to a leader robot."
             raise RuntimeError(msg)
 
         n = self._left.NUM_JOINTS
-        expected_shape = (2 * n,)
-        if action.shape != expected_shape:
-            msg = f"Expected action shape {expected_shape}, got {action.shape}"
+        min_dims = 2 * n
+        if action.shape[0] < min_dims:
+            msg = f"Expected at least {min_dims} action dims, got {action.shape}"
             raise ValueError(msg)
 
+        action = action[:min_dims]
         self._left.send_action(action[:n], goal_time=goal_time)
         self._right.send_action(action[n:], goal_time=goal_time)
 

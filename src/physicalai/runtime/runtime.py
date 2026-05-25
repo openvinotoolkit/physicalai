@@ -87,6 +87,7 @@ class PolicyRuntime:
         cameras: Mapping[str, Camera] | None = None,
         action_queue: ActionQueue | None = None,
         callbacks: Sequence[RuntimeCallback] = (),
+        task: str | None = None,
     ) -> None:
         if fps <= 0:
             msg = f"fps must be positive, got {fps}"
@@ -99,6 +100,7 @@ class PolicyRuntime:
         self._action_queue = action_queue or ActionQueue(smoother=LerpSmoother(duration_frames=_DEFAULT_LERP_FRAMES))
         self._bus = _CallbackBus(callbacks)
         self._goal_time = (1.0 / fps) * _GOAL_TIME_TICKS
+        self._task = task
         self._connected = False
         self._last_robot_obs: RobotObservation | None = None
         self._last_camera_frames: dict[str, Frame] = {}
@@ -310,10 +312,7 @@ class PolicyRuntime:
 
     def _build_model_input(self) -> dict[str, Any]:
         robot_obs = self._robot.get_observation()
-        model_input: dict[str, Any] = {}
-
-        if robot_obs.joint_positions is not None:
-            model_input["state"] = np.array([robot_obs.joint_positions], dtype=np.float32)
+        model_input: dict[str, Any] = {"state": np.array([robot_obs.state], dtype=np.float32)}
 
         # Merge robot-embedded images and external cameras
         if robot_obs.images:
@@ -321,6 +320,9 @@ class PolicyRuntime:
                 model_input[f"images.{name}"] = frame.data[np.newaxis]
         for name, cam in self._cameras.items():
             model_input[f"images.{name}"] = cam.read_latest().data[np.newaxis]
+
+        if self._task is not None:
+            model_input["task"] = [self._task]
 
         return model_input
 
@@ -398,14 +400,14 @@ class PolicyRuntime:
                 )
                 camera_frames[name] = stale_frame
 
-        model_input: dict[str, Any] = {}
-        if robot_obs is not None and robot_obs.joint_positions is not None:
-            model_input["state"] = np.array([robot_obs.joint_positions], dtype=np.float32)
-        if robot_obs is not None and robot_obs.images:
+        model_input: dict[str, Any] = {"state": np.array([robot_obs.state], dtype=np.float32)}
+        if robot_obs.images:
             for name, frame in robot_obs.images.items():
                 model_input[f"images.{name}"] = frame.data[np.newaxis]
         for name, frame in camera_frames.items():
             model_input[f"images.{name}"] = frame.data[np.newaxis]
+        if self._task is not None:
+            model_input["task"] = [self._task]
         return model_input
 
     def _resilient_send(self, action: np.ndarray) -> None:

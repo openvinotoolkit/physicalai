@@ -30,6 +30,10 @@ class FakeRobotObservation:
     sensor_data: dict[str, np.ndarray] | None
     images: dict | None
 
+    @property
+    def state(self) -> np.ndarray:
+        return self.joint_positions
+
 
 def _make_obs(positions: np.ndarray | None = None) -> FakeRobotObservation:
     if positions is None:

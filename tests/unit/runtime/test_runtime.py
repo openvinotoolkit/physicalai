@@ -28,6 +28,10 @@ class FakeRobotObservation:
     sensor_data: dict[str, np.ndarray] | None
     images: dict | None
 
+    @property
+    def state(self) -> np.ndarray:
+        return self.joint_positions
+
 
 def _make_mock_robot(joint_positions: np.ndarray | None = None) -> MagicMock:
     robot = MagicMock()

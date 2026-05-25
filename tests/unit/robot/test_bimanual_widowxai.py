@@ -267,7 +267,7 @@ class TestBimanualWidowXAISendAction:
 
     def test_wrong_shape_raises(self, mock_trossen_arm: MagicMock) -> None:
         robot = _make_bimanual(mock_trossen_arm, role="follower")
-        with pytest.raises(ValueError, match="Expected action shape"):
+        with pytest.raises(ValueError, match="Expected at least"):
             robot.send_action(np.zeros(7, dtype=np.float32))
 
     def test_leader_raises(self, mock_trossen_arm: MagicMock) -> None:
