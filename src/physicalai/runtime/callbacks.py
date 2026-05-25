@@ -289,8 +289,12 @@ class RerunCallback:
             self._send_default_blueprint()
 
     def close(self) -> None:
-        """Release independent camera subscribers."""
+        """Release independent camera subscribers (SharedCamera only)."""
+        from physicalai.capture.transport._shared_camera import SharedCamera  # noqa: PLC0415, PLC2701
+
         for sub in self._camera_subscribers.values():
+            if not isinstance(sub, SharedCamera):
+                continue
             try:
                 sub.disconnect()
             except Exception:
@@ -446,10 +450,8 @@ class RerunCallback:
                 sub.connect()
                 self._camera_subscribers[name] = sub
             else:
-                logger.warning(
-                    "RerunCallback: camera %r is not SharedCamera-backed; skipping image logging",
-                    name,
-                )
+                # Direct camera — read from it on tick (no separate subscriber needed)
+                self._camera_subscribers[name] = cam
 
     def _log_camera_frames(self) -> None:
         import rerun as rr  # noqa: PLC0415

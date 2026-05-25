@@ -68,11 +68,27 @@ class Execution(ABC):
 class SyncExecution(Execution):
     """Synchronous inference in the control thread."""
 
-    def __init__(self, fps: int = 30) -> None:  # noqa: D107
+    def __init__(
+        self,
+        fps: int = 30,
+        *,
+        request_threshold: float = 0.5,
+    ) -> None:
+        """Configure synchronous execution.
+
+        Args:
+            fps: Control loop frequency.
+            request_threshold: Re-infer when queue drops below this fraction
+                of chunk_size. E.g. 0.5 means re-infer after consuming half
+                the chunk (discards the stale tail). Set to 0.0 to drain
+                the entire chunk before re-inferring.
+        """
         self._model: InferenceModel | None = None
         self._queue: ActionQueue | None = None
         self._chunk_size: int = 0
         self._fps = fps
+        self._threshold_frac = request_threshold
+        self._threshold_count: int = 0
         self._inference_count: int = 0
         self._bus: _CallbackBus | None = None
         self._session_id: str = ""
@@ -92,22 +108,22 @@ class SyncExecution(Execution):
             raise RuntimeError(_NOT_STARTED)
         actions = self._model.predict_action_chunk(sample_observation)
         self._chunk_size = actions.shape[0]
+        self._threshold_count = max(1, int(self._chunk_size * self._threshold_frac))
         self._queue.push_chunk(actions, offset=0)
 
     def maybe_request(self, observation: dict[str, np.ndarray]) -> None:
-        """Refill queue synchronously when empty.
+        """Refill queue synchronously when below threshold.
 
         Raises:
             RuntimeError: If start() has not been called.
         """
         if self._model is None or self._queue is None:
             raise RuntimeError(_NOT_STARTED)
-        if self._queue.below_threshold(1):
+        if self._queue.below_threshold(self._threshold_count):
             t0 = time.perf_counter()
             actions = self._model.predict_action_chunk(observation)
             latency = time.perf_counter() - t0
-            offset = int(latency * self._fps)
-            self._queue.push_chunk(actions, offset=offset)
+            self._queue.push_chunk(actions, offset=0)
             self._inference_count += 1
             if self._bus:
                 from physicalai.runtime.events import InferenceEvent  # noqa: PLC0415
@@ -117,7 +133,7 @@ class SyncExecution(Execution):
                         session_id=self._session_id,
                         timestamp=time.time(),
                         latency_s=latency,
-                        offset=offset,
+                        offset=0,
                         chunk=actions,
                     )
                 )

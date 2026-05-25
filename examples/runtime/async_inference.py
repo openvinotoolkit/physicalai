@@ -82,7 +82,7 @@ def main() -> None:
     # Model
     model_group = parser.add_argument_group("model")
     model_group.add_argument("--model", required=True, help="Exported model directory")
-    model_group.add_argument("--device", default="GPU.0", help="OpenVINO device (default: GPU.0)")
+    model_group.add_argument("--device", default="GPU", help="OpenVINO device (default: GPU)")
 
     # Cameras
     cam_group = parser.add_argument_group("cameras")
@@ -98,6 +98,10 @@ def main() -> None:
     rt_group = parser.add_argument_group("runtime")
     rt_group.add_argument("--fps", type=float, default=30.0, help="Control loop FPS (default: 30)")
     rt_group.add_argument("--duration-s", type=float, default=60.0, help="Duration in seconds")
+    rt_group.add_argument("--task", type=str, default=None, help="Task string for the model (e.g. 'pick up the can')")
+    rt_group.add_argument("--shared-camera", action="store_true", help="Use shared memory cameras (iceoryx2) — faster but incompatible with debugger")
+    rt_group.add_argument("--request-threshold", type=float, default=0.75, help="Request new inference when queue drops below this fraction of chunk_size (default: 0.75 = trigger when 75%% of actions remain)")
+    rt_group.add_argument("--lerp-frames", type=int, default=10, help="LerpSmoother blend duration in frames (default: 10)")
 
     # Rerun
     rr_group = parser.add_argument_group("rerun")
@@ -121,7 +125,7 @@ def main() -> None:
     # ── Build robot & cameras ──
     robot = build_robot(args)
     if args.cameras:
-        cameras = parse_camera_specs(args.cameras, args.cam_width, args.cam_height, args.cam_fps)
+        cameras = parse_camera_specs(args.cameras, args.cam_width, args.cam_height, args.cam_fps, shared=args.shared_camera)
     else:
         cameras = select_cameras_interactive(args.cam_width, args.cam_height, args.cam_fps)
 
@@ -145,11 +149,12 @@ def main() -> None:
     runtime = PolicyRuntime(
         robot=robot,
         model=model,
-        execution=AsyncExecution(request_threshold=0.75, fps=int(args.fps)),
-        action_queue=ActionQueue(smoother=LerpSmoother(duration_frames=10)),
+        execution=AsyncExecution(request_threshold=args.request_threshold, fps=int(args.fps)),
+        action_queue=ActionQueue(smoother=LerpSmoother(duration_frames=args.lerp_frames)),
         cameras=cameras,
         fps=args.fps,
         callbacks=callbacks,
+        task=args.task,
     )
 
     with runtime:

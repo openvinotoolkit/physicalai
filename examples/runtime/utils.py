@@ -47,12 +47,18 @@ def parse_camera_specs(
     width: int,
     height: int,
     fps: int,
+    *,
+    shared: bool = True,
 ) -> dict[str, Camera]:
-    """Parse CLI camera specs into a SharedCamera dict.
+    """Parse CLI camera specs into a camera dict.
 
     Each spec is "name:driver:device_id", e.g.:
         --camera overhead:uvc:/dev/video0
         --camera arm:realsense:353322271391
+
+    Args:
+        shared: Use SharedCamera (iceoryx2 transport). Set False for
+            direct camera API (recommended with debugger).
     """
     from physicalai.capture import create_camera
 
@@ -67,5 +73,5 @@ def parse_camera_specs(
             kwargs["serial_number"] = device_id
         else:
             kwargs["device"] = device_id
-        cameras[name] = create_camera(driver, shared=True, **kwargs)
+        cameras[name] = create_camera(driver, shared=shared, **kwargs)
     return cameras
