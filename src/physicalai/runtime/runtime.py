@@ -25,8 +25,8 @@ if TYPE_CHECKING:
 
     from physicalai.capture.camera import Camera
     from physicalai.capture.frame import Frame
-    from physicalai.inference.model import InferenceModel
     from physicalai.robot.interface import Robot, RobotObservation
+    from physicalai.runtime.policies import RuntimePolicy
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +81,7 @@ class PolicyRuntime:
     def __init__(  # noqa: D107
         self,
         robot: Robot,
-        model: InferenceModel,
+        model: RuntimePolicy,
         execution: Execution,
         fps: float,
         cameras: Mapping[str, Camera] | None = None,

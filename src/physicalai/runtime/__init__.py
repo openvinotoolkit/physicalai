@@ -6,6 +6,7 @@
 Public API::
 
     from physicalai.runtime import PolicyRuntime, RunStats, RuntimeCallback
+    from physicalai.runtime import RuntimePolicy, TeleoperatorPolicy
     from physicalai.runtime import SyncExecution, AsyncExecution, Execution, WorkerDiedError
     from physicalai.runtime import ActionQueue
     from physicalai.runtime import ChunkSmoother, LerpSmoother, ReplaceSmoother
@@ -27,6 +28,7 @@ from physicalai.runtime.execution import (
     SyncExecution,
     WorkerDiedError,
 )
+from physicalai.runtime.policies import RuntimePolicy, TeleoperatorPolicy
 from physicalai.runtime.runtime import (
     PolicyRuntime,
     RunStats,
@@ -50,7 +52,9 @@ __all__ = [
     "RerunCallback",
     "RunStats",
     "RuntimeCallback",
+    "RuntimePolicy",
     "SyncExecution",
+    "TeleoperatorPolicy",
     "TickEvent",
     "WorkerDiedError",
 ]

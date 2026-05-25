@@ -14,9 +14,9 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
-    from physicalai.inference.model import InferenceModel
     from physicalai.runtime._action_queue import ActionQueue
     from physicalai.runtime._callback_bus import _CallbackBus
+    from physicalai.runtime.policies import RuntimePolicy
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ class Execution(ABC):
         self._session_id = session_id
 
     @abstractmethod
-    def start(self, model: InferenceModel, action_queue: ActionQueue) -> None:
+    def start(self, model: RuntimePolicy, action_queue: ActionQueue) -> None:
         """Bind to model and queue. Called once before the loop."""
         ...
 
@@ -83,7 +83,7 @@ class SyncExecution(Execution):
                 the chunk (discards the stale tail). Set to 0.0 to drain
                 the entire chunk before re-inferring.
         """
-        self._model: InferenceModel | None = None
+        self._model: RuntimePolicy | None = None
         self._queue: ActionQueue | None = None
         self._chunk_size: int = 0
         self._fps = fps
@@ -93,7 +93,7 @@ class SyncExecution(Execution):
         self._bus: _CallbackBus | None = None
         self._session_id: str = ""
 
-    def start(self, model: InferenceModel, action_queue: ActionQueue) -> None:
+    def start(self, model: RuntimePolicy, action_queue: ActionQueue) -> None:
         """Bind model and queue."""
         self._model = model
         self._queue = action_queue
@@ -178,7 +178,7 @@ class AsyncExecution(Execution):
         self._watchdog_timeout_s = watchdog_timeout_s
         self._max_consecutive_holds = max_consecutive_holds or 3 * fps
 
-        self._model: InferenceModel | None = None
+        self._model: RuntimePolicy | None = None
         self._queue: ActionQueue | None = None
         self._chunk_size: int = 0
         self._threshold_count: int = 0
@@ -196,7 +196,7 @@ class AsyncExecution(Execution):
         self._bus: _CallbackBus | None = None
         self._session_id: str = ""
 
-    def start(self, model: InferenceModel, action_queue: ActionQueue) -> None:
+    def start(self, model: RuntimePolicy, action_queue: ActionQueue) -> None:
         """Bind model/queue and spawn inference thread."""
         self._model = model
         self._queue = action_queue
