@@ -1,18 +1,15 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Input data sources for inference benchmarks.
+"""Synthetic input data sources for inference benchmarks.
 
-An input source is any iterable yielding input dicts compatible with
-:class:`~physicalai.inference.InferenceModel`. Wrapping the source
-behind a small abstraction lets the benchmark consume samples from a
-recorded dataset, a live capture pipeline, or a synthetic generator
-without changing its measurement logic.
+These helpers generate input payloads compatible with
+:class:`~physicalai.inference.InferenceModel` from exported feature
+descriptors so benchmarks can run without a recorded dataset.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -20,16 +17,18 @@ import numpy as np
 from physicalai.inference.data.features import InferenceFeatureType
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from physicalai.inference.data.features import InferenceFeature
 
 
 class RandomInputSource:
     """Generate random inputs from :class:`InferenceFeature` descriptors.
 
-    Visual features are sampled as ``uint8`` arrays in ``[0, 255]``; all
-    other feature types are sampled as ``float32`` standard-normal arrays.
-    A leading batch dimension of size 1 is prepended to each feature's
-    declared shape.
+    Tensor-valued features are sampled as ``float32`` standard-normal
+    arrays with a leading batch dimension of size 1 prepended to each
+    feature's declared shape. ``LANGUAGE`` features are sampled as random
+    strings.
 
     Examples:
         >>> source = RandomInputSource(model.input_features, seed=0)
@@ -51,6 +50,9 @@ class RandomInputSource:
                 ``None`` selects a fresh, non-deterministic seed.
             num_samples: Maximum number of samples to yield. ``None``
                 yields an unbounded stream.
+
+        Raises:
+            ValueError: If ``features`` is empty.
         """
         if not features:
             msg = "RandomInputSource requires at least one InferenceFeature"
@@ -60,6 +62,7 @@ class RandomInputSource:
         self._num_samples = num_samples
 
     def __iter__(self) -> Iterator[dict[str, np.ndarray | str]]:
+        """Yield randomly generated benchmark samples."""
         rng = np.random.default_rng(self._seed)
         count = 0
         while self._num_samples is None or count < self._num_samples:
@@ -73,6 +76,12 @@ class RandomInputSource:
 
     @staticmethod
     def _sample(feature: InferenceFeature, rng: np.random.Generator) -> np.ndarray | str:
+        """Generate one random value compatible with ``feature`` metadata.
+
+        Returns:
+            A random sample matching the feature type: a ``float32`` numpy
+            array for tensor-valued features, or a string for ``LANGUAGE``.
+        """
         shape = (1, *feature.shape)
         if feature.ftype is InferenceFeatureType.VISUAL:
             return rng.standard_normal(size=shape, dtype=np.float32)

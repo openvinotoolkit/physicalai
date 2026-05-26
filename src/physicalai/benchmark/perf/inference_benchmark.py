@@ -8,6 +8,8 @@ from collections.abc import Iterable
 from itertools import islice
 from statistics import median, pstdev
 
+import numpy as np
+
 from physicalai.benchmark.perf.input_sources import RandomInputSource
 from physicalai.inference import InferenceModel
 
@@ -43,7 +45,11 @@ class InferenceBenchmark:
         self.warmup_iters = warmup_iters
         self.max_duration = max_duration
 
-    def run(self, model: InferenceModel, inputs: Iterable[dict] | None = None) -> dict[str, float]:
+    def run(
+        self,
+        model: InferenceModel,
+        inputs: Iterable[dict[str, np.ndarray | str]] | None = None,
+    ) -> dict[str, float]:
         """Run the benchmark against ``model`` using samples from ``inputs``.
 
         The iterable is consumed once: the first ``warmup_iters`` items are
@@ -54,8 +60,10 @@ class InferenceBenchmark:
         Args:
             model: Loaded inference model invoked via ``model(sample)``.
             inputs: Iterable yielding input dicts compatible with ``model``.
-                Must contain at least ``warmup_iters`` items plus at least
-                one measured sample. When ``None``, a
+                Values may be numpy arrays or strings, depending on the
+                model's declared input features. Must contain at least
+                ``warmup_iters`` items plus at least one measured sample.
+                When ``None``, a
                 :class:`~physicalai.benchmark.perf.input_sources.RandomInputSource`
                 is built from ``model.input_features``.
 
