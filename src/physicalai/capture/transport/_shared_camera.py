@@ -270,6 +270,7 @@ class SharedCamera(Camera):
             if sample is None:
                 break
             newest_sample = sample
+            sample = None
 
         if newest_sample is not None:
             header, frame = self._decode_sample(newest_sample)
@@ -297,6 +298,7 @@ class SharedCamera(Camera):
             if sample is None:
                 break
             newest_sample = sample
+            sample = None
 
         if newest_sample is not None:
             header, frame = self._decode_sample(newest_sample)

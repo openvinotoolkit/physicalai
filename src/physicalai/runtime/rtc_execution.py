@@ -11,7 +11,6 @@ managing a dual-track action queue for continuous robot control.
 from __future__ import annotations
 
 import logging
-import math
 import threading
 import time
 from copy import deepcopy
@@ -59,6 +58,9 @@ class RTCExecution(Execution):
         queue_threshold: Re-infer when queue drops below this level.
         latency_tracker: Callback that measures inference latency.
             If None, delay defaults to 0.
+        warmup_inferences: Number of initial inferences treated as warmup.
+            The latency tracker is reset after these to discard
+            compilation/kernel-build overhead (e.g. OpenVINO first-run).
         postprocessors: Denormalization pipeline applied to raw actions.
             These run in the background thread to produce the processed
             track stored in the queue.
@@ -73,6 +75,7 @@ class RTCExecution(Execution):
         max_guidance_weight: float = 10.0,
         queue_threshold: int | None = None,
         latency_tracker: RTCLatencyTracker | None = None,
+        warmup_inferences: int = 2,
         postprocessors: list[Postprocessor] | None = None,
     ) -> None:
         self._chunk_size = chunk_size
@@ -82,6 +85,7 @@ class RTCExecution(Execution):
         self._max_guidance_weight = max_guidance_weight
         self._queue_threshold = queue_threshold if queue_threshold is not None else execution_horizon * 3
         self._latency_tracker = latency_tracker
+        self._warmup_inferences = max(1, warmup_inferences)
         self._postprocessors: list[Postprocessor] = postprocessors or []
 
         self._rtc_queue: RTCActionQueue | None = None
@@ -151,7 +155,7 @@ class RTCExecution(Execution):
             self._obs_slot = deepcopy(sample_observation)
 
         # Wait for the first chunk with a generous timeout
-        if not self._first_chunk_ready.wait(timeout=30.0):
+        if not self._first_chunk_ready.wait(timeout=120.0):
             if self._death_cause is not None:
                 msg = f"RTC thread died during warmup: {self._death_cause}"
                 raise WorkerDiedError(msg) from self._death_cause
@@ -234,6 +238,17 @@ class RTCExecution(Execution):
 
             self._inference_count += 1
 
+            # Reset latency tracker after warmup inferences to discard
+            # compilation overhead (e.g. OpenVINO first-run latency).
+            if self._inference_count <= self._warmup_inferences and self._latency_tracker is not None:
+                self._latency_tracker.on_reset()
+                logger.info(
+                    "Warmup inference %d/%d complete (%.2fs) — latency tracker reset",
+                    self._inference_count,
+                    self._warmup_inferences,
+                    elapsed,
+                )
+
             # Extract raw actions: (1, chunk_size, action_dim) → (chunk_size, action_dim)
             raw_actions = outputs["action"]
             if raw_actions.ndim == 3:  # noqa: PLR2004
@@ -242,22 +257,20 @@ class RTCExecution(Execution):
             # Postprocess (denormalize) for robot
             processed_actions = self._postprocess(raw_actions)
 
-            # Compute real delay from actual elapsed time
-            real_delay = math.ceil(elapsed * self._fps)
-
-            # Merge into dual-track queue (queue clamps trim internally)
+            # Merge into dual-track queue — trim is based on actual
+            # actions consumed (cursor movement) during inference, NOT
+            # wall-clock time.  For the first chunk nothing was consumed
+            # so trim=0 and the full chunk is kept.
             self._rtc_queue.merge(
                 raw_actions,
                 processed_actions,
-                real_delay,
                 action_index_before_inference=action_index_before,
             )
             self._first_chunk_ready.set()
 
             logger.debug(
-                "RTC chunk: latency=%.3fs delay=%d remaining=%d",
+                "RTC chunk: latency=%.3fs remaining=%d",
                 elapsed,
-                real_delay,
                 self._rtc_queue.remaining,
             )
 
