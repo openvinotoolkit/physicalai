@@ -638,3 +638,16 @@ class TestResolveArtifact:
         resolved = resolve_artifact(spec, tmp_path)
         assert resolved.flat_params["mode"] == "mean_std"
         assert resolved.flat_params["artifact"] == str(tmp_path / "stats.safetensors")
+
+    def test_rejects_traversal_in_type_based_artifact(self, tmp_path: Path) -> None:
+        spec = ComponentSpec.model_validate({"type": "normalize", "artifact": "../../etc/passwd"})
+        with pytest.raises(ValueError, match="escapes the export directory"):
+            resolve_artifact(spec, tmp_path)
+
+    def test_rejects_traversal_in_class_path_based_artifact(self, tmp_path: Path) -> None:
+        spec = ComponentSpec.model_validate({
+            "class_path": "physicalai.inference.preprocessors.StatsNormalizer",
+            "init_args": {"artifact": "../../etc/passwd"},
+        })
+        with pytest.raises(ValueError, match="escapes the export directory"):
+            resolve_artifact(spec, tmp_path)

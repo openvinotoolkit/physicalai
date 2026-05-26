@@ -497,6 +497,28 @@ class TestSO101Calibration:
         with pytest.raises(ValueError, match="drive_mode must be 0 or 1"):
             SO101Calibration.from_path(path)
 
+    def test_from_dict_rejects_inverted_range(self) -> None:
+        """range_min >= range_max raises ValueError."""
+        bad_calibration = json.loads(json.dumps(SAMPLE_CALIBRATION))
+        # Swap elbow_flex min/max so the range is inverted.
+        bad_calibration["elbow_flex"]["range_min"] = SAMPLE_CALIBRATION["elbow_flex"]["range_max"]
+        bad_calibration["elbow_flex"]["range_max"] = SAMPLE_CALIBRATION["elbow_flex"]["range_min"]
+
+        from physicalai.robot.so101.calibration import SO101Calibration
+
+        with pytest.raises(ValueError, match="range_min"):
+            SO101Calibration.from_dict(bad_calibration)
+
+    def test_from_dict_rejects_out_of_bounds_tick(self) -> None:
+        """Tick value outside the STS3215 encoder range [0, 4095] raises ValueError."""
+        bad_calibration = json.loads(json.dumps(SAMPLE_CALIBRATION))
+        bad_calibration["wrist_roll"]["range_max"] = 4096  # one above valid max
+
+        from physicalai.robot.so101.calibration import SO101Calibration
+
+        with pytest.raises(ValueError, match="encoder range"):
+            SO101Calibration.from_dict(bad_calibration)
+
     def test_tick_normalized_roundtrip(self, mock_sdk: MagicMock, calibration_obj: Any) -> None:
         """Converting ticks → normalized → ticks should roundtrip."""
         from physicalai.robot.so101 import SO101

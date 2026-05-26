@@ -726,3 +726,60 @@ class TestPipelineWiring:
             call_args = mock_adapter.predict.call_args[0][0]
             np.testing.assert_array_almost_equal(call_args["state"], np.array([10.0]))
             np.testing.assert_array_almost_equal(outputs["action"], np.array([[1.0]]))
+
+
+@pytest.mark.usefixtures("_patch_adapter")
+class TestPolicyNameValidation:
+    """Policy_name path traversal prevention."""
+
+    def test_manifest_traversal_policy_name_raises(self, tmp_path: Path) -> None:
+        """manifest.policy.name with ../ sequences is rejected at load time."""
+        export_dir = tmp_path / "exports"
+        export_dir.mkdir()
+        manifest = {"policy": {"name": "../../etc/shadow"}, "model": {"artifacts": {"onnx": "act.onnx"}}}
+        (export_dir / "manifest.json").write_text(json.dumps(manifest))
+        (export_dir / "act.onnx").touch()
+
+        with pytest.raises(ValueError, match="invalid characters"):
+            InferenceModel(export_dir)
+
+    def test_manifest_policy_name_with_slash_raises(self, tmp_path: Path) -> None:
+        """manifest.policy.name containing a slash is rejected."""
+        export_dir = tmp_path / "exports"
+        export_dir.mkdir()
+        manifest = {"policy": {"name": "sub/act"}, "model": {"artifacts": {"onnx": "act.onnx"}}}
+        (export_dir / "manifest.json").write_text(json.dumps(manifest))
+        (export_dir / "act.onnx").touch()
+
+        with pytest.raises(ValueError, match="invalid characters"):
+            InferenceModel(export_dir)
+
+    def test_explicit_traversal_policy_name_raises(self, tmp_path: Path) -> None:
+        """policy_name passed directly with ../ sequences is rejected."""
+        export_dir = tmp_path / "exports"
+        export_dir.mkdir()
+        (export_dir / "act.onnx").touch()
+
+        with pytest.raises(ValueError, match="invalid characters"):
+            InferenceModel(export_dir, policy_name="../../etc/shadow", backend="onnx")
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "pi0_fast",
+            "pi0.5",
+            "smolvla",
+            "multi_task_dit",
+            "pi0-fast_v2",
+        ],
+    )
+    def test_valid_policy_name_accepts_real_world_names(self, tmp_path: Path, name: str) -> None:
+        """Policy names with hyphens, underscores, and digits are accepted."""
+        export_dir = tmp_path / "exports"
+        export_dir.mkdir()
+        manifest = {"policy": {"name": name}, "model": {"artifacts": {"onnx": f"{name}.onnx"}}}
+        (export_dir / "manifest.json").write_text(json.dumps(manifest))
+        (export_dir / f"{name}.onnx").touch()
+
+        model = InferenceModel(export_dir)
+        assert model.policy_name == name

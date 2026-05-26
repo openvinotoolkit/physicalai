@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
@@ -24,6 +25,16 @@ if TYPE_CHECKING:
     from physicalai.inference.postprocessors.base import Postprocessor
     from physicalai.inference.preprocessors.base import Preprocessor
     from physicalai.inference.runners.base import InferenceRunner
+
+
+# Policy names from the manifest are used to construct filesystem paths.
+# Restrict to safe characters to prevent "../" traversal attacks.
+_SAFE_POLICY_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.\-]*$", re.ASCII)
+
+
+def _is_safe_policy_name(name: str) -> bool:
+    """Return True if *name* matches ``[a-zA-Z0-9][a-zA-Z0-9-_.]*`` (ASCII only)."""
+    return _SAFE_POLICY_NAME_RE.fullmatch(name) is not None
 
 
 class InferenceModel:
@@ -83,7 +94,8 @@ class InferenceModel:
             **adapter_kwargs: Backend-specific configuration options
 
         Raises:
-            FileNotFoundError: If export directory or required files don't exist
+            FileNotFoundError: If export directory or required files don't exist.
+            ValueError: If ``policy_name`` contains invalid characters.
         """
         self.export_dir = Path(export_dir)
         if not self.export_dir.exists():
@@ -94,6 +106,12 @@ class InferenceModel:
 
         if policy_name is None:
             policy_name = self._detect_policy_name()
+        elif not _is_safe_policy_name(policy_name):
+            msg = (
+                f"policy_name {policy_name!r} contains invalid characters; "
+                "only alphanumeric characters, hyphens, underscores, and dots are allowed"
+            )
+            raise ValueError(msg)
         self.policy_name = policy_name
 
         if backend == "auto":
@@ -380,7 +398,14 @@ class InferenceModel:
             ValueError: If policy name cannot be determined
         """
         if self.manifest.policy.name:
-            return self.manifest.policy.name
+            name = self.manifest.policy.name
+            if not _is_safe_policy_name(name):
+                msg = (
+                    f"manifest policy.name {name!r} contains invalid characters; "
+                    "only alphanumeric characters, hyphens, underscores, and dots are allowed"
+                )
+                raise ValueError(msg)
+            return name
 
         class_path = self.manifest.policy.source.class_path
         if class_path:
