@@ -8,6 +8,7 @@ from collections.abc import Iterable
 from itertools import islice
 from statistics import median, pstdev
 
+from physicalai.benchmark.perf.input_sources import RandomInputSource
 from physicalai.inference import InferenceModel
 
 
@@ -42,7 +43,7 @@ class InferenceBenchmark:
         self.warmup_iters = warmup_iters
         self.max_duration = max_duration
 
-    def run(self, model: InferenceModel, inputs: Iterable[dict] | None) -> dict[str, float]:
+    def run(self, model: InferenceModel, inputs: Iterable[dict] | None = None) -> dict[str, float]:
         """Run the benchmark against ``model`` using samples from ``inputs``.
 
         The iterable is consumed once: the first ``warmup_iters`` items are
@@ -54,7 +55,9 @@ class InferenceBenchmark:
             model: Loaded inference model invoked via ``model(sample)``.
             inputs: Iterable yielding input dicts compatible with ``model``.
                 Must contain at least ``warmup_iters`` items plus at least
-                one measured sample.
+                one measured sample. When ``None``, a
+                :class:`~physicalai.benchmark.perf.input_sources.RandomInputSource`
+                is built from ``model.input_features``.
 
         Returns:
             Dictionary of latency metrics (seconds):
@@ -68,12 +71,15 @@ class InferenceBenchmark:
               per-iteration times (``0.0`` when only a single iteration ran).
 
         Raises:
-            ValueError: If ``inputs`` is ``None``, is exhausted during warmup,
-                or yields no measured iterations.
+            ValueError: If ``inputs`` is ``None`` and the model declares no
+                input features, is exhausted during warmup, or yields no
+                measured iterations.
         """
         if inputs is None:
-            msg = "inputs should be provided: the input model doesn't contain inputs information"
-            raise ValueError(msg)
+            if not model.input_features:
+                msg = "inputs should be provided: the input model doesn't contain inputs information"
+                raise ValueError(msg)
+            inputs = RandomInputSource(model.input_features)
 
         results: dict[str, float] = {}
 
