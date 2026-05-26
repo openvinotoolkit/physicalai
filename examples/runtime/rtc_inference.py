@@ -36,7 +36,6 @@ from physicalai.runtime import (
 )
 from physicalai.inference.component_factory import instantiate_component, resolve_artifact
 from physicalai.inference.manifest import Manifest
-import openvino_tokenizers  # noqa: F401 — registers OV tokenizer ops
 
 
 def main() -> None:
