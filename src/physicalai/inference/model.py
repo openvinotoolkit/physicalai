@@ -161,7 +161,7 @@ class InferenceModel:
         """
         return cls(export_dir=export_dir, **kwargs)
 
-    def __call__(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    def __call__(self, inputs: dict[str, np.ndarray | str]) -> dict[str, np.ndarray]:
         """Run the full inference pipeline and return model outputs.
 
         Pipeline: callbacks(start) → preprocessors → _prepare_inputs →
@@ -353,15 +353,16 @@ class InferenceModel:
         Returns:
             List of materialised :class:`InferenceFeature` instances,
             preserving the declared order.
+
+        Raises:
+            TypeError: If any instantiated component is not an
+                :class:`InferenceFeature` instance.
         """
         features: list[InferenceFeature] = []
         for spec in specs:
-            component = instantiate_component(spec)
+            component = instantiate_component(resolve_artifact(spec, self.export_dir))
             if not isinstance(component, InferenceFeature):
-                msg = (
-                    f"Expected an InferenceFeature instance from spec, "
-                    f"got {type(component).__name__}"
-                )
+                msg = f"Expected an InferenceFeature instance from spec, got {type(component).__name__}"
                 raise TypeError(msg)
             features.append(component)
         return features
