@@ -260,6 +260,8 @@ class ModelSpec(BaseModel):
             *before* the runner.
         postprocessors: Pipeline stages applied to runner output
             *after* inference.
+        input_features: Declared input feature descriptors.
+        output_features: Declared output feature descriptors.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -268,6 +270,8 @@ class ModelSpec(BaseModel):
     artifacts: dict[str, str] = Field(default_factory=dict)
     preprocessors: list[ComponentSpec] = Field(default_factory=list)
     postprocessors: list[ComponentSpec] = Field(default_factory=list)
+    input_features: list[ComponentSpec] = Field(default_factory=list)
+    output_features: list[ComponentSpec] = Field(default_factory=list)
 
 
 class HardwareSpec(BaseModel):
