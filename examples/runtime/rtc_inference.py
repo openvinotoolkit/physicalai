@@ -75,7 +75,7 @@ def main() -> None:
     # the processed (denormalized) track for the robot.
 
     manifest = Manifest.load(f"{args.model}/manifest.json")
-    rtc_postprocessors = [
+    rtc_postprocessors: list = [
         instantiate_component(resolve_artifact(spec, args.model))
         for spec in manifest.model.postprocessors
     ]

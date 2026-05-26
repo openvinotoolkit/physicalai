@@ -19,14 +19,13 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from physicalai.runtime._rtc_action_queue import RTCActionQueue
 from physicalai.runtime.execution import Execution, WorkerDiedError
 
 if TYPE_CHECKING:
     from physicalai.inference.callbacks.rtc_latency import RTCLatencyTracker
     from physicalai.inference.model import InferenceModel
     from physicalai.inference.postprocessors.base import Postprocessor
-    from physicalai.runtime._action_queue import ActionQueue
+    from physicalai.runtime._rtc_action_queue import RTCActionQueue
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +44,8 @@ class RTCExecution(Execution):
     one action per tick — never blocking on inference.
 
     RTC-specific inputs injected before each inference call:
-    - ``noise``: random noise for denoising (shape: 1×chunk×action_dim)
-    - ``prev_chunk_left_over``: unconsumed tail (shape: 1×chunk×action_dim)
+    - ``noise``: random noise for denoising (shape: 1 x chunk x action_dim)
+    - ``prev_chunk_left_over``: unconsumed tail (shape: 1 x chunk x action_dim)
     - ``inference_delay``: integer derived from measured latency
     - ``max_guidance_weight``: classifier-free guidance weight
     - ``execution_horizon``: number of fresh actions per chunk
@@ -65,7 +64,7 @@ class RTCExecution(Execution):
             track stored in the queue.
     """
 
-    def __init__(
+    def __init__(  # noqa: D107
         self,
         chunk_size: int = 50,
         execution_horizon: int = 10,
@@ -108,21 +107,15 @@ class RTCExecution(Execution):
         """Number of completed inference calls."""
         return self._inference_count
 
-    def start(self, model: InferenceModel, action_queue: ActionQueue) -> None:
+    def start(self, model: InferenceModel, action_queue: RTCActionQueue) -> None:  # type: ignore[override]
         """Bind model and queue, spawn background thread.
 
-        The ``action_queue`` parameter is accepted for interface
-        compatibility but ignored — RTCExecution uses its own
-        :class:`RTCActionQueue` (passed via constructor or created
-        internally). The ``PolicyRuntime`` should be given the same
-        ``RTCActionQueue`` instance.
+        Args:
+            model: The inference model.
+            action_queue: The RTC dual-track action queue.
         """
         self._model = model
-        # Accept RTCActionQueue from PolicyRuntime
-        if isinstance(action_queue, RTCActionQueue):
-            self._rtc_queue = action_queue
-        elif self._rtc_queue is None:
-            self._rtc_queue = RTCActionQueue()
+        self._rtc_queue = action_queue
 
         self._stop_event.clear()
         self._first_chunk_ready.clear()
@@ -134,7 +127,10 @@ class RTCExecution(Execution):
         self._thread.start()
         logger.info(
             "RTCExecution started (fps=%.1f, chunk=%d, horizon=%d, threshold=%d)",
-            self._fps, self._chunk_size, self._execution_horizon, self._queue_threshold,
+            self._fps,
+            self._chunk_size,
+            self._execution_horizon,
+            self._queue_threshold,
         )
 
     def warmup(self, sample_observation: dict[str, np.ndarray]) -> None:
@@ -145,6 +141,7 @@ class RTCExecution(Execution):
 
         Raises:
             RuntimeError: If start() not called or thread dies during warmup.
+            WorkerDiedError: If the RTC thread dies during warmup.
         """
         if self._model is None or self._rtc_queue is None:
             raise RuntimeError(_NOT_STARTED)
@@ -178,10 +175,7 @@ class RTCExecution(Execution):
             raise WorkerDiedError(msg) from self._death_cause
 
         with self._obs_lock:
-            self._obs_slot = {
-                k: v.copy() if isinstance(v, np.ndarray) else v
-                for k, v in observation.items()
-            }
+            self._obs_slot = {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in observation.items()}
 
     def stop(self) -> None:
         """Signal shutdown and join the background thread."""
@@ -228,11 +222,12 @@ class RTCExecution(Execution):
                 consecutive_errors += 1
                 logger.exception(
                     "RTC inference error (%d/%d)",
-                    consecutive_errors, _MAX_CONSECUTIVE_ERRORS,
+                    consecutive_errors,
+                    _MAX_CONSECUTIVE_ERRORS,
                 )
                 if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
                     self._death_cause = RuntimeError("Too many consecutive RTC errors")
-                    logger.error("RTC thread shutting down after %d consecutive errors", consecutive_errors)
+                    logger.exception("RTC thread shutting down after %d consecutive errors", consecutive_errors)
                     return
                 time.sleep(_ERROR_RETRY_DELAY_S)
                 continue
@@ -248,12 +243,12 @@ class RTCExecution(Execution):
             processed_actions = self._postprocess(raw_actions)
 
             # Compute real delay from actual elapsed time
-            real_delay = int(math.ceil(elapsed * self._fps))
+            real_delay = math.ceil(elapsed * self._fps)
 
             # Merge into dual-track queue (queue clamps trim internally)
             self._rtc_queue.merge(
-                raw_actions, 
-                processed_actions, 
+                raw_actions,
+                processed_actions,
                 real_delay,
                 action_index_before_inference=action_index_before,
             )
@@ -261,11 +256,17 @@ class RTCExecution(Execution):
 
             logger.debug(
                 "RTC chunk: latency=%.3fs delay=%d remaining=%d",
-                elapsed, real_delay, self._rtc_queue.remaining,
+                elapsed,
+                real_delay,
+                self._rtc_queue.remaining,
             )
 
     def _inject_rtc_inputs(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-        """Add RTC-specific model inputs."""
+        """Add RTC-specific model inputs.
+
+        Returns:
+            Updated inputs dict with RTC keys added.
+        """
         assert self._rtc_queue is not None  # noqa: S101
 
         # prev_chunk_left_over from queue
@@ -293,10 +294,7 @@ class RTCExecution(Execution):
                 prev_chunk_padded = np.pad(prev_chunk_padded, ((0, 0), (0, pad_len), (0, 0)))
 
         # Compute delay from latency tracker
-        if self._latency_tracker is not None:
-            delay = self._latency_tracker.compute_delay(self._fps)
-        else:
-            delay = 0
+        delay = self._latency_tracker.compute_delay(self._fps) if self._latency_tracker is not None else 0
 
         inputs["prev_chunk_left_over"] = prev_chunk_padded
         inputs["inference_delay"] = np.int64(delay)

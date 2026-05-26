@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, Any, Protocol, Self
 import numpy as np
 
 from physicalai.runtime._action_queue import ActionQueue  # noqa: PLC2701
-from physicalai.runtime._rtc_action_queue import RTCActionQueue  # noqa: PLC2701
 from physicalai.runtime.execution import Execution, WorkerDiedError
 from physicalai.runtime.smoothers import LerpSmoother
 
@@ -23,6 +22,7 @@ if TYPE_CHECKING:
     from physicalai.capture.camera import Camera
     from physicalai.inference.model import InferenceModel
     from physicalai.robot.interface import Robot
+    from physicalai.runtime._rtc_action_queue import RTCActionQueue
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +166,7 @@ class PolicyRuntime:
         if not self._connected:
             msg = "PolicyRuntime.run() called before connect(). Use 'with runtime:' or call runtime.connect() first."
             raise RuntimeError(msg)
-        self._execution.start(self._model, self._action_queue)
+        self._execution.start(self._model, self._action_queue)  # type: ignore[arg-type]
         sample_obs = self._build_model_input()
         self._execution.warmup(sample_obs)
 

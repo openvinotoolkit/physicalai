@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import logging
 import threading
+from typing import TYPE_CHECKING
 
-import numpy as np
+if TYPE_CHECKING:
+    import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +67,11 @@ class RTCActionQueue:
             return max(0, len(self._processed) - self._cursor)
 
     def get_action_index(self) -> int:
-        """Current consumption cursor (snapshot for delay cross-check)."""
+        """Current consumption cursor (snapshot for delay cross-check).
+
+        Returns:
+            The current cursor position.
+        """
         with self._lock:
             return self._cursor
 
@@ -98,7 +104,7 @@ class RTCActionQueue:
         with self._lock:
             if self._raw is None or self._cursor >= len(self._raw):
                 return None
-            return self._raw[self._cursor:].copy()
+            return self._raw[self._cursor :].copy()
 
     def merge(
         self,
@@ -125,7 +131,8 @@ class RTCActionQueue:
                 if indexes_diff != real_delay:
                     logger.warning(
                         "Indexes diff != real delay: indexes_diff=%d, real_delay=%d",
-                        indexes_diff, real_delay,
+                        indexes_diff,
+                        real_delay,
                     )
 
             # Trim stale prefix (actions consumed during inference latency)
@@ -137,11 +144,16 @@ class RTCActionQueue:
 
             logger.debug(
                 "RTCActionQueue.merge: trim=%d, remaining=%d",
-                trim, len(self._processed),
+                trim,
+                len(self._processed),
             )
 
     def below_threshold(self, threshold: int) -> bool:
-        """Check if remaining actions are below threshold."""
+        """Check if remaining actions are below threshold.
+
+        Returns:
+            True if remaining actions are fewer than threshold.
+        """
         with self._lock:
             if self._processed is None:
                 return True

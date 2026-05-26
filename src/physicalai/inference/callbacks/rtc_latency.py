@@ -37,7 +37,7 @@ class RTCLatencyTracker(Callback):
         >>> delay = tracker.compute_delay(fps=30, chunk_size=50, execution_horizon=10)
     """
 
-    def __init__(self, window_size: int = 100) -> None:
+    def __init__(self, window_size: int = 100) -> None:  # noqa: D107
         self._window: deque[float] = deque(maxlen=window_size)
         self._start_time: float = 0.0
 
@@ -97,7 +97,7 @@ class RTCLatencyTracker(Callback):
         """
         if self.max_latency_s <= 0:
             return 0
-        return int(math.ceil(self.max_latency_s * fps))
+        return math.ceil(self.max_latency_s * fps)
 
     @override
     def __repr__(self) -> str:
