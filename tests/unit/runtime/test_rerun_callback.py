@@ -319,7 +319,8 @@ class TestRerunCallbackCameraSubscribers:
         cb = make_callback(cameras={"top": fake_camera})
         cb.on_lifecycle(_lifecycle_start())
 
-        assert cb._camera_subscribers == {}
+        # Non-shared cameras are stored directly for reading on tick
+        assert cb._camera_subscribers == {"top": fake_camera}
 
     def test_shared_camera_subscriber_logs_frames(self, make_callback: Any, mock_rerun: MagicMock) -> None:
         cb = make_callback(image_decimation=1)
@@ -339,18 +340,24 @@ class TestRerunCallbackCameraSubscribers:
         assert len(image_calls) == 1
 
     def test_close_disconnects_subscribers(self, make_callback: Any) -> None:
+        from physicalai.capture.transport._shared_camera import SharedCamera  # noqa: PLC0415
+
         cb = make_callback()
-        mock_sub = MagicMock()
-        cb._camera_subscribers = {"cam1": mock_sub, "cam2": MagicMock()}
+        mock_sub = MagicMock(spec=SharedCamera)
+        mock_sub2 = MagicMock(spec=SharedCamera)
+        cb._camera_subscribers = {"cam1": mock_sub, "cam2": mock_sub2}
 
         cb.close()
 
         mock_sub.disconnect.assert_called_once()
+        mock_sub2.disconnect.assert_called_once()
         assert cb._camera_subscribers == {}
 
     def test_close_handles_disconnect_error(self, make_callback: Any) -> None:
+        from physicalai.capture.transport._shared_camera import SharedCamera  # noqa: PLC0415
+
         cb = make_callback()
-        mock_sub = MagicMock()
+        mock_sub = MagicMock(spec=SharedCamera)
         mock_sub.disconnect.side_effect = RuntimeError("connection lost")
         cb._camera_subscribers = {"cam1": mock_sub}
 
