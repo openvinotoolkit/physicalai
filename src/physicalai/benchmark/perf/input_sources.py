@@ -75,7 +75,7 @@ class RandomInputSource:
     )
 
     @staticmethod
-    def _sample(feature: InferenceFeature, rng: np.random.Generator) -> np.ndarray | str:
+    def _sample(feature: InferenceFeature, rng: np.random.Generator) -> np.ndarray | list[str]:
         """Generate one random value compatible with ``feature`` metadata.
 
         Returns:
@@ -86,13 +86,13 @@ class RandomInputSource:
         Raises:
             ValueError: If the feature declares an unsupported dtype.
         """
-        if feature.dtype is InferenceFeatureDtype.STRING:
+        if feature.dtype == InferenceFeatureDtype.STRING:
             chars = rng.choice(RandomInputSource._LANGUAGE_ALPHABET, size=RandomInputSource._LANGUAGE_SAMPLE_LENGTH)
-            return "".join(chars.tolist())
+            return ["".join(chars.tolist())]
         shape = (1, *feature.shape)
-        if feature.dtype is InferenceFeatureDtype.FLOAT32:
+        if feature.dtype == InferenceFeatureDtype.FLOAT32:
             return rng.standard_normal(size=shape, dtype=np.float32)
-        if feature.dtype is InferenceFeatureDtype.INT64:
+        if feature.dtype == InferenceFeatureDtype.INT64:
             return rng.integers(low=0, high=2, size=shape, dtype=np.int64)
         msg = f"Unsupported feature dtype: {feature.dtype!r}"
         raise ValueError(msg)
