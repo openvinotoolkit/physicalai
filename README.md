@@ -362,6 +362,10 @@ runtime.run(duration_s=60)
 
 ---
 
+> **Full walkthrough:** See [`examples/collect_train_deploy.ipynb`](./examples/collect_train_deploy.ipynb) for a complete collect → train → deploy guide.
+
+---
+
 ## Documentation
 
 [Home](./docs/index.md) • [Getting Started](./docs/getting-started/) • [How-To Guides](./docs/how-to/) • [Concepts](./docs/explanation/) • [API Reference](./docs/reference/)
