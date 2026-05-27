@@ -11,18 +11,24 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import numpy as np
 
+    from physicalai.capture.frame import Frame
+    from physicalai.robot.interface import RobotObservation
+
 
 @dataclass(frozen=True, slots=True)
 class TickEvent:
     """Emitted once per control-loop tick.
 
-    All timestamps are wall-clock UTC seconds (``time.time()``).
+    Timestamps:
+        - ``timestamp``: wall-clock UTC seconds (``time.time()``) when the event was emitted.
+        - ``robot_observation.timestamp``: monotonic time when joints were read.
     """
 
     session_id: str
     step: int
     timestamp: float
-    joint_positions: np.ndarray | None
+    robot_observation: RobotObservation
+    camera_frames: dict[str, Frame]
     action_sent: np.ndarray | None
     queue_remaining: int
     loop_duration_s: float

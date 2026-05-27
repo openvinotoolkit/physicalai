@@ -228,10 +228,10 @@ class PolicyRuntime:
                 loop_start = time.perf_counter()
                 stale_this_tick = False
 
-                obs = self._resilient_observe()
+                robot_obs, camera_frames = self._resilient_observe()
                 if self._consecutive_error_ticks > 0:
                     stale_this_tick = True
-                self._execution.maybe_request(obs)
+                self._execution.maybe_request(self._build_model_input_from(robot_obs, camera_frames))
 
                 action = self._action_queue.pop()
                 if action is not None:
@@ -261,7 +261,8 @@ class PolicyRuntime:
                         session_id=self._session_id,
                         step=step,
                         timestamp=time.time(),
-                        joint_positions=self._last_robot_obs.joint_positions if self._last_robot_obs else None,
+                        robot_observation=robot_obs,
+                        camera_frames=camera_frames,
                         action_sent=action,
                         queue_remaining=self._action_queue.remaining,
                         loop_duration_s=elapsed,
@@ -340,7 +341,17 @@ class PolicyRuntime:
                 break
         return robot_obs, last_error
 
-    def _resilient_observe(self) -> dict[str, Any]:
+    def _resilient_observe(self) -> tuple[RobotObservation, dict[str, Frame]]:
+        """Read robot observation and camera frames with retry and stale fallback.
+
+        Returns:
+            Tuple of (robot observation, camera frames keyed by name).
+
+        Raises:
+            ConnectionError: If robot observation fails with no stale fallback or
+                max consecutive errors exceeded.
+            CaptureError: If a camera read fails and no stale frame is available.
+        """
         robot_obs, last_robot_error = self._retry_robot_obs()
 
         if robot_obs is None:
@@ -400,6 +411,14 @@ class PolicyRuntime:
                 )
                 camera_frames[name] = stale_frame
 
+        return robot_obs, camera_frames
+
+    def _build_model_input_from(self, robot_obs: RobotObservation, camera_frames: dict[str, Frame]) -> dict[str, Any]:
+        """Assemble model input dict from observation and camera frames.
+
+        Returns:
+            Dictionary ready to pass to the inference model.
+        """
         model_input: dict[str, Any] = {"state": np.array([robot_obs.state], dtype=np.float32)}
         if robot_obs.images:
             for name, frame in robot_obs.images.items():

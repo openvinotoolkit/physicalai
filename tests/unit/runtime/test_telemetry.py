@@ -16,6 +16,7 @@ from physicalai.runtime._callback_bus import _CallbackBus
 from physicalai.runtime._telemetry import TelemetryEmitter, _decode_numpy, _encode_numpy
 from physicalai.runtime.callbacks import AsyncCallback, ConsoleCallback, JsonlCallback
 from physicalai.runtime.events import InferenceEvent, LifecycleEvent, TickEvent
+from tests.unit.runtime.conftest import FakeRobotObservation
 
 
 class TestNumpyEncoding:
@@ -126,7 +127,8 @@ class TestCallbackBus:
             session_id="test",
             step=step,
             timestamp=0.0,
-            joint_positions=None,
+            robot_observation=FakeRobotObservation(joint_positions=np.zeros(3)),
+            camera_frames={},
             action_sent=np.zeros(3),
             queue_remaining=5,
             loop_duration_s=0.03,
@@ -228,7 +230,8 @@ class TestConsoleCallback:
                     session_id="t",
                     step=i,
                     timestamp=0.0,
-                    joint_positions=None,
+                    robot_observation=FakeRobotObservation(joint_positions=np.zeros(3)),
+                    camera_frames={},
                     action_sent=np.zeros(3),
                     queue_remaining=5,
                     loop_duration_s=0.03,
@@ -251,7 +254,10 @@ class TestJsonlCallback:
                 session_id="s1",
                 step=0,
                 timestamp=1.0,
-                joint_positions=np.array([0.1, 0.2]),
+                robot_observation=FakeRobotObservation(
+                    joint_positions=np.array([0.1, 0.2]),
+                ),
+                camera_frames={},
                 action_sent=np.array([0.3, 0.4]),
                 queue_remaining=5,
                 loop_duration_s=0.03,
