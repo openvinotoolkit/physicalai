@@ -70,14 +70,12 @@ class SyncExecution(Execution):
 
     def __init__(
         self,
-        fps: int = 30,
         *,
         request_threshold: float = 0.5,
     ) -> None:
         """Configure synchronous execution.
 
         Args:
-            fps: Control loop frequency.
             request_threshold: Re-infer when queue drops below this fraction
                 of chunk_size. E.g. 0.5 means re-infer after consuming half
                 the chunk (discards the stale tail). Set to 0.0 to drain
@@ -86,7 +84,6 @@ class SyncExecution(Execution):
         self._model: InferenceModel | None = None
         self._queue: ActionQueue | None = None
         self._chunk_size: int = 0
-        self._fps = fps
         self._threshold_frac = request_threshold
         self._threshold_count: int = 0
         self._inference_count: int = 0
@@ -158,9 +155,7 @@ class AsyncExecution(Execution):
     def __init__(
         self,
         request_threshold: float = 0.5,
-        fps: int = 30,
         watchdog_timeout_s: float = 30.0,
-        max_consecutive_holds: int | None = None,
     ) -> None:
         """Configure the async execution strategy.
 
@@ -169,14 +164,10 @@ class AsyncExecution(Execution):
                 When the action queue drops below this fraction of chunk_size,
                 a new inference is scheduled. E.g. 0.25 means "request when
                 only 25% of the chunk remains in the queue."
-            fps: Control loop frequency (used to compute offset from latency).
             watchdog_timeout_s: If inference is stuck longer than this, force-reset.
-            max_consecutive_holds: Max ticks with empty queue before raising.
         """
         self._threshold_frac = request_threshold
-        self._fps = fps
         self._watchdog_timeout_s = watchdog_timeout_s
-        self._max_consecutive_holds = max_consecutive_holds or 3 * fps
 
         self._model: InferenceModel | None = None
         self._queue: ActionQueue | None = None

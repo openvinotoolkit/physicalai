@@ -149,7 +149,7 @@ def main() -> None:
     runtime = PolicyRuntime(
         robot=robot,
         model=model,
-        execution=AsyncExecution(request_threshold=args.request_threshold, fps=int(args.fps)),
+        execution=AsyncExecution(request_threshold=args.request_threshold),
         action_queue=ActionQueue(smoother=LerpSmoother(duration_frames=args.lerp_frames)),
         cameras=cameras,
         fps=args.fps,

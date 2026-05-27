@@ -126,7 +126,7 @@ def main() -> None:
     runtime = PolicyRuntime(
         robot=robot,
         model=model,
-        execution=SyncExecution(fps=int(args.fps), request_threshold=args.request_threshold),
+        execution=SyncExecution(request_threshold=args.request_threshold),
         action_queue=ActionQueue(),  # no smoother — raw chunk playback
         cameras=cameras,
         fps=args.fps,
