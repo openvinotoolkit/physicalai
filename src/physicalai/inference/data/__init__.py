@@ -3,6 +3,6 @@
 
 """Data structures shared across the inference package."""
 
-from physicalai.inference.data.features import InferenceFeature, InferenceFeatureType
+from physicalai.inference.data.features import InferenceFeature, InferenceFeatureDtype, InferenceFeatureType
 
-__all__ = ["InferenceFeature", "InferenceFeatureType"]
+__all__ = ["InferenceFeature", "InferenceFeatureDtype", "InferenceFeatureType"]
