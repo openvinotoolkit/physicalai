@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import tempfile
-import time
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -288,10 +288,12 @@ class TestJsonlCallback:
 class TestAsyncCallback:
     def test_dispatches_events_asynchronously(self) -> None:
         inner = MagicMock(spec=["on_tick", "on_inference", "on_lifecycle", "close"])
+        called = threading.Event()
+        inner.on_lifecycle.side_effect = lambda e: called.set()
         cb = AsyncCallback(inner, max_queue=64)
         event = LifecycleEvent(session_id="t", timestamp=0.0, event="start", metadata={})
         cb.on_lifecycle(event)
-        time.sleep(0.1)
+        assert called.wait(timeout=2.0), "on_lifecycle not called within timeout"
         inner.on_lifecycle.assert_called_once_with(event)
         cb.close()
 

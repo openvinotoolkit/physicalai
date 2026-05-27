@@ -78,3 +78,11 @@ class ActionQueue:
         with self._lock:
             self._deque.clear()
             self._consecutive_holds = 0
+
+    def reset(self) -> None:
+        """Clear queue and reset all counters for a fresh session."""
+        with self._lock:
+            self._deque.clear()
+            self._consecutive_holds = 0
+            self._total_holds = 0
+            self._total_pops = 0

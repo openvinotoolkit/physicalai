@@ -26,9 +26,9 @@ class _CallbackBus:
     - Fire-and-forget (emit_*): telemetry hooks, exceptions isolated.
     - Request-response (invoke_*): action hooks, chained return values.
 
-    Thread safety: only ``emit_inference`` is called from the inference thread.
-    It appends to a bounded deque (CPython atomic). All other methods run on
-    the control thread.
+    Thread safety: ``emit_inference`` may be called from either the control
+    thread (SyncExecution) or the inference thread (AsyncExecution). All other
+    methods run on the control thread only.
     """
 
     def __init__(self, callbacks: Sequence[Any]) -> None:

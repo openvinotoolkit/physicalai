@@ -196,9 +196,9 @@ class PolicyRuntime:
             msg = "PolicyRuntime.run() called before connect(). Use 'with runtime:' or call runtime.connect() first."
             raise RuntimeError(msg)
 
-        self._session_id = uuid.uuid4().hex[:8]
-        self._execution.set_bus(self._bus, self._session_id)
+        self._reset_session()
 
+        self._execution.set_bus(self._bus, self._session_id)
         self._execution.start(self._model, self._action_queue)
         self._bus.emit_lifecycle(
             LifecycleEvent(
@@ -302,6 +302,16 @@ class PolicyRuntime:
                     holds / self._fps,
                 )
         self._bus.invoke_on_hold(step=step, holds=holds)
+
+    def _reset_session(self) -> None:
+        """Reset all session-scoped state for a fresh run."""
+        self._session_id = uuid.uuid4().hex[:8]
+        self._last_robot_obs = None
+        self._last_camera_frames = {}
+        self._consecutive_error_ticks = 0
+        self._stale_obs_ticks = 0
+        self._transient_errors = 0
+        self._action_queue.reset()
 
     @staticmethod
     def _tick_sleep(loop_start: float, goal_time: float) -> tuple[float, float]:

@@ -272,13 +272,16 @@ class TestRunStatsWithFaults:
         obs = _make_obs()
         robot = _make_mock_robot(obs)
 
-        warmup_call = [0]
+        call_count = [0]
 
         def get_obs_with_loop_errors():
-            warmup_call[0] += 1
-            if warmup_call[0] <= 1:
+            call_count[0] += 1
+            # Call 1: warmup (_build_model_input)
+            # Call 2: first tick (_resilient_observe) — sets _last_robot_obs
+            if call_count[0] <= 2:
                 return obs
-            if warmup_call[0] <= 1 + _MAX_OBS_RETRIES:
+            # Calls 3..5: second tick retries all fail — uses stale fallback
+            if call_count[0] <= 2 + _MAX_OBS_RETRIES:
                 raise ConnectionError("flake")
             return obs
 
@@ -286,7 +289,6 @@ class TestRunStatsWithFaults:
         robot.send_action.return_value = None
 
         rt = _make_runtime(robot=robot)
-        rt._last_robot_obs = obs
         rt._connected = True
 
         with patch("physicalai.runtime.runtime.time") as mock_time:

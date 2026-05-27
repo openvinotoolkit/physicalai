@@ -39,7 +39,6 @@ Examples:
 from __future__ import annotations
 
 import argparse
-import os
 import signal
 
 from physicalai.capture import select_cameras_interactive
