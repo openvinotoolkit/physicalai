@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from physicalai.inference.data.features import InferenceFeatureType
+from physicalai.inference.data.features import InferenceFeatureDtype
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -25,10 +25,10 @@ if TYPE_CHECKING:
 class RandomInputSource:
     """Generate random inputs from :class:`InferenceFeature` descriptors.
 
-    Tensor-valued features are sampled as ``float32`` standard-normal
-    arrays with a leading batch dimension of size 1 prepended to each
-    feature's declared shape. ``LANGUAGE`` features are sampled as random
-    strings.
+    Tensor-valued features are sampled with a leading batch dimension of
+    size 1 prepended to each feature's declared shape, using the dtype
+    declared by the feature (``float32`` standard-normal or ``int64``
+    uniform integers). ``STRING`` features are sampled as random strings.
 
     Examples:
         >>> source = RandomInputSource(model.input_features, seed=0)
@@ -79,13 +79,20 @@ class RandomInputSource:
         """Generate one random value compatible with ``feature`` metadata.
 
         Returns:
-            A random sample matching the feature type: a ``float32`` numpy
-            array for tensor-valued features, or a string for ``LANGUAGE``.
+            A random sample matching the feature's declared dtype: a numpy
+            array for tensor-valued features, or a string for ``STRING``
+            dtype features.
+
+        Raises:
+            ValueError: If the feature declares an unsupported dtype.
         """
-        shape = (1, *feature.shape)
-        if feature.ftype is InferenceFeatureType.VISUAL:
-            return rng.standard_normal(size=shape, dtype=np.float32)
-        if feature.ftype is InferenceFeatureType.LANGUAGE:
+        if feature.dtype is InferenceFeatureDtype.STRING:
             chars = rng.choice(RandomInputSource._LANGUAGE_ALPHABET, size=RandomInputSource._LANGUAGE_SAMPLE_LENGTH)
             return "".join(chars.tolist())
-        return rng.standard_normal(size=shape, dtype=np.float32)
+        shape = (1, *feature.shape)
+        if feature.dtype is InferenceFeatureDtype.FLOAT32:
+            return rng.standard_normal(size=shape, dtype=np.float32)
+        if feature.dtype is InferenceFeatureDtype.INT64:
+            return rng.integers(low=0, high=2, size=shape, dtype=np.int64)
+        msg = f"Unsupported feature dtype: {feature.dtype!r}"
+        raise ValueError(msg)
