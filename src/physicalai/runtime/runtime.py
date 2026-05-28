@@ -60,6 +60,10 @@ class ActionQueue(Protocol):
         """Total number of actions popped."""
         ...
 
+    def push_chunk(self, chunk: np.ndarray, offset: int = 0) -> None:
+        """Push a chunk of actions into the queue."""
+        ...
+
     def below_threshold(self, threshold: int) -> bool:
         """Check if remaining actions are below threshold."""
         ...
@@ -126,7 +130,9 @@ class PolicyRuntime:
         self._execution = execution
         self._fps = fps
         self._cameras: Mapping[str, Camera] = cameras or {}
-        self._action_queue = action_queue or ChunkedActionQueue(smoother=LerpSmoother(duration_frames=_DEFAULT_LERP_FRAMES))
+        self._action_queue = action_queue or ChunkedActionQueue(
+            smoother=LerpSmoother(duration_frames=_DEFAULT_LERP_FRAMES)
+        )
         self._callbacks = list(callbacks)
         self._goal_time = (1.0 / fps) * 3
         self._connected = False

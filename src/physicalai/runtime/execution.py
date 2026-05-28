@@ -15,7 +15,7 @@ import numpy as np
 
 if TYPE_CHECKING:
     from physicalai.inference.model import InferenceModel
-    from physicalai.runtime._action_queue import ChunkedActionQueue as ActionQueue
+    from physicalai.runtime.runtime import ActionQueue
 
 logger = logging.getLogger(__name__)
 
