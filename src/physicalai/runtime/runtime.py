@@ -60,10 +60,6 @@ class ActionQueue(Protocol):
         """Total number of actions popped."""
         ...
 
-    def push_chunk(self, chunk: np.ndarray, offset: int = 0) -> None:
-        """Push a chunk of actions into the queue."""
-        ...
-
     def below_threshold(self, threshold: int) -> bool:
         """Check if remaining actions are below threshold."""
         ...
