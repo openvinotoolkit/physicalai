@@ -8,11 +8,11 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol, Self
+from typing import TYPE_CHECKING, Any, Protocol, Self, runtime_checkable
 
 import numpy as np
 
-from physicalai.runtime._action_queue import ActionQueue  # noqa: PLC2701
+from physicalai.runtime._action_queue import ChunkedActionQueue  # noqa: PLC2701
 from physicalai.runtime.execution import Execution, WorkerDiedError
 from physicalai.runtime.smoothers import LerpSmoother
 
@@ -22,11 +22,51 @@ if TYPE_CHECKING:
     from physicalai.capture.camera import Camera
     from physicalai.inference.model import InferenceModel
     from physicalai.robot.interface import Robot
-    from physicalai.runtime._rtc_action_queue import RTCActionQueue
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_LERP_FRAMES = 5
+
+
+@runtime_checkable
+class ActionQueue(Protocol):
+    """Protocol for a thread-safe action queue."""
+
+    def pop(self) -> np.ndarray | None:
+        """Pop the next action.
+
+        Returns:
+            Single action vector, or None if empty.
+        """
+        ...
+
+    @property
+    def remaining(self) -> int:
+        """Number of unconsumed actions in the queue."""
+        ...
+
+    @property
+    def consecutive_holds(self) -> int:
+        """Number of consecutive holds (resets on successful pop)."""
+        ...
+
+    @property
+    def total_holds(self) -> int:
+        """Total number of hold events (pop on empty queue)."""
+        ...
+
+    @property
+    def total_pops(self) -> int:
+        """Total number of actions popped."""
+        ...
+
+    def below_threshold(self, threshold: int) -> bool:
+        """Check if remaining actions are below threshold."""
+        ...
+
+    def clear(self) -> None:
+        """Clear all state from the queue."""
+        ...
 
 
 class RuntimeCallback(Protocol):
@@ -75,7 +115,7 @@ class PolicyRuntime:
         execution: Execution,
         fps: float,
         cameras: Mapping[str, Camera] | None = None,
-        action_queue: ActionQueue | RTCActionQueue | None = None,
+        action_queue: ActionQueue | None = None,
         callbacks: Sequence[RuntimeCallback] = (),
     ) -> None:
         if fps <= 0:
@@ -86,7 +126,7 @@ class PolicyRuntime:
         self._execution = execution
         self._fps = fps
         self._cameras: Mapping[str, Camera] = cameras or {}
-        self._action_queue = action_queue or ActionQueue(smoother=LerpSmoother(duration_frames=_DEFAULT_LERP_FRAMES))
+        self._action_queue = action_queue or ChunkedActionQueue(smoother=LerpSmoother(duration_frames=_DEFAULT_LERP_FRAMES))
         self._callbacks = list(callbacks)
         self._goal_time = (1.0 / fps) * 3
         self._connected = False
