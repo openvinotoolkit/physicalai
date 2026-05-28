@@ -60,3 +60,4 @@ nav:
       - Runtime API: reference/runtime-api.md
       - Robot API: reference/robot-api.md
       - Camera API: reference/camera-api.md
+      - Benchmark API: reference/benchmark-api.md

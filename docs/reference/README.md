@@ -11,3 +11,4 @@ This section provides exact lookup material for commands, schemas, and public co
 - [Runtime API](runtime-api.md)
 - [Robot API](robot-api.md)
 - [Camera API](camera-api.md)
+- [Benchmark API](benchmark-api.md)
