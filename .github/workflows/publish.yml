@@ -45,7 +45,7 @@ jobs:
           python-version: "3.12"
 
       - name: Download distributions
-        uses: actions/download-artifact@b14a5cd0d6e6ae92d0f7e6f06c5fef7dfd951c2f # v5.0.0
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: python-package-distributions
           path: dist/
@@ -79,7 +79,7 @@ jobs:
       url: https://pypi.org/p/physicalai
     steps:
       - name: Download distributions
-        uses: actions/download-artifact@b14a5cd0d6e6ae92d0f7e6f06c5fef7dfd951c2f # v5.0.0
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: python-package-distributions
           path: dist/
