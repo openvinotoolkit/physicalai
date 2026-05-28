@@ -200,7 +200,7 @@ verify_robot(robot)  # Interactive joint-by-joint check
 
 ## Inference
 
-Load exported policies from [Physical AI Studio](https://github.com/open-edge-platform/physical-ai-studio). The `InferenceModel` class auto-detects the backend (OpenVINO or ONNX in this package) and handles action chunking automatically.
+Load exported policies from [Physical AI Studio](https://github.com/open-edge-platform/physical-ai-studio). The `InferenceModel` class auto-detects the backend (OpenVINO or ONNX in this package; companion distributions may contribute additional adapters such as ExecuTorch) and handles action chunking automatically.
 
 ```python
 from physicalai.inference import InferenceModel
