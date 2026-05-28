@@ -50,12 +50,20 @@ class RTCExecution(Execution):
     - ``execution_horizon``: number of fresh actions per chunk
 
     Args:
-        chunk_size: Number of actions per model output chunk.
-        execution_horizon: Fresh actions to execute per chunk.
+        chunk_size: Number of actions per model output chunk. If None, is
+            automatically inferred from the model's manifest or model metadata.
+        execution_horizon: Fresh actions to execute per chunk (range: typically
+            5 to 15, default 10). Low values speed up response but consume more
+            CPU, high values tolerate higher latency spikes.
         fps: Robot control frequency in Hz.
         max_action_dim: Model's internal action dimension (for noise/padding).
-        max_guidance_weight: Classifier-free guidance weight.
-        queue_threshold: Re-infer when queue drops below this level.
+            If None, is automatically inferred from the model's manifest or
+            defaulted to 32.
+        max_guidance_weight: Classifier-free guidance scale weight (range:
+            typically 1.0 to 15.0, default 10.0) injected into diffusion models.
+        queue_threshold: Re-infer when queue drops below this level. If None,
+            is dynamically computed as ``execution_horizon + latency_delay_actions``
+            derived from worst-case inference latency and robot control rate (fps).
         latency_tracker: Callback that measures inference latency.
             If None, delay defaults to 0.
         warmup_inferences: Number of initial inferences treated as warmup.
@@ -63,33 +71,38 @@ class RTCExecution(Execution):
             compilation/kernel-build overhead (e.g. OpenVINO first-run).
         postprocessors: Denormalization pipeline applied to raw actions.
             These run in the background thread to produce the processed
-            track stored in the queue.
+            track stored in the queue. If None, is automatically populated from
+            the model's postprocessors.
     """
 
     def __init__(  # noqa: D107
         self,
-        chunk_size: int = 50,
+        chunk_size: int | None = None,
         execution_horizon: int = 10,
         fps: float = 30.0,
-        max_action_dim: int = 32,
+        max_action_dim: int | None = None,
         max_guidance_weight: float = 10.0,
         queue_threshold: int | None = None,
         latency_tracker: RTCLatencyTracker | None = None,
         warmup_inferences: int = 2,
         postprocessors: list[Postprocessor] | None = None,
     ) -> None:
-        self._chunk_size = chunk_size
+        self._chunk_size_param = chunk_size
         self._execution_horizon = execution_horizon
         self._fps = fps
-        self._max_action_dim = max_action_dim
+        self._max_action_dim_param = max_action_dim
         self._max_guidance_weight = max_guidance_weight
-        self._queue_threshold = queue_threshold if queue_threshold is not None else execution_horizon * 3
+        self._queue_threshold_param = queue_threshold
         self._latency_tracker = latency_tracker
         self._warmup_inferences = max(1, warmup_inferences)
         self._postprocessors: list[Postprocessor] = postprocessors or []
 
         self._rtc_queue: RTCActionQueue | None = None
         self._model: InferenceModel | None = None
+
+        # Discovered/inferred state
+        self._chunk_size: int = 50
+        self._max_action_dim: int = 32
         self._chunk_size_discovered: int = 0
 
         # Thread state
@@ -107,6 +120,20 @@ class RTCExecution(Execution):
         return self._chunk_size_discovered or self._chunk_size
 
     @property
+    def queue_threshold(self) -> int:
+        """Threshold below which a new chunk inference is requested.
+
+        If not explicitly passed during initialization, is dynamically computed
+        as ``execution_horizon + latency_delay_actions``, where
+        ``latency_delay_actions`` is derived from the measured worst-case
+        inference latency and robot control rate of the loop.
+        """
+        if self._queue_threshold_param is not None:
+            return self._queue_threshold_param
+        delay = self._latency_tracker.compute_delay(self._fps) if self._latency_tracker is not None else 0
+        return self._execution_horizon + delay
+
+    @property
     def inference_count(self) -> int:
         """Number of completed inference calls."""
         return self._inference_count
@@ -121,6 +148,41 @@ class RTCExecution(Execution):
         self._model = model
         self._rtc_queue = action_queue
 
+        # 1. Infer chunk_size
+        if self._chunk_size_param is not None:
+            self._chunk_size = self._chunk_size_param
+        else:
+            rtc_config = model.manifest.model_extra.get("rtc", {}) if hasattr(model, "manifest") else {}
+            if isinstance(rtc_config, dict) and "chunk_size" in rtc_config:
+                self._chunk_size = int(rtc_config["chunk_size"])
+            elif hasattr(model, "chunk_size"):
+                self._chunk_size = model.chunk_size
+            else:
+                self._chunk_size = 50
+
+        # 2. Infer max_action_dim
+        if self._max_action_dim_param is not None:
+            self._max_action_dim = self._max_action_dim_param
+        else:
+            rtc_config = model.manifest.model_extra.get("rtc", {}) if hasattr(model, "manifest") else {}
+            if isinstance(rtc_config, dict) and "max_action_dim" in rtc_config:
+                self._max_action_dim = int(rtc_config["max_action_dim"])
+            elif (
+                hasattr(model, "manifest")
+                and model.manifest.hardware.robots
+                and model.manifest.hardware.robots[0].action is not None
+                and model.manifest.hardware.robots[0].action.shape
+            ):
+                self._max_action_dim = model.manifest.hardware.robots[0].action.shape[-1]
+            else:
+                self._max_action_dim = 32
+
+        # 3. Automatically discover postprocessors from model if empty/not provided
+        if not self._postprocessors and hasattr(model, "postprocessors") and model.postprocessors:
+            logger.info("Moving postprocessors from InferenceModel to RTCExecution for async background execution")
+            self._postprocessors = model.postprocessors
+            model.postprocessors = []  # Clear from model so they aren't run twice
+
         self._stop_event.clear()
         self._first_chunk_ready.clear()
         self._thread = threading.Thread(
@@ -134,7 +196,7 @@ class RTCExecution(Execution):
             self._fps,
             self._chunk_size,
             self._execution_horizon,
-            self._queue_threshold,
+            self.queue_threshold,
         )
 
     def warmup(self, sample_observation: dict[str, np.ndarray]) -> None:
@@ -199,7 +261,7 @@ class RTCExecution(Execution):
 
         while not self._stop_event.is_set():
             # Only re-infer when queue is running low
-            if not self._rtc_queue.below_threshold(self._queue_threshold):
+            if not self._rtc_queue.below_threshold(self.queue_threshold):
                 time.sleep(_IDLE_SLEEP_S)
                 continue
 

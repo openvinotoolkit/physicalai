@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from physicalai.runtime._action_queue import ActionQueue
+from physicalai.runtime._action_queue import ChunkedActionQueue as ActionQueue
 from physicalai.runtime.execution import SyncExecution, WorkerDiedError
 from physicalai.runtime.runtime import PolicyRuntime, RunStats
 

@@ -34,8 +34,6 @@ from physicalai.runtime import (
     RTCActionQueue,
     RTCExecution,
 )
-from physicalai.inference.component_factory import instantiate_component, resolve_artifact
-from physicalai.inference.manifest import Manifest
 import openvino_tokenizers  # noqa: F401 — registers OV tokenizer ops
 
 
@@ -62,37 +60,26 @@ def main() -> None:
     # --- Latency tracker callback (lives on the model) ---
     latency_tracker = RTCLatencyTracker(window_size=100)
 
-    # --- Load model WITHOUT postprocessors (RTCExecution owns denorm) ---
+    # --- Load model ---
+    # RTCExecution automatically discovers parameters and takes ownership of
+    # postprocessors from the loaded model instance.
     model = InferenceModel.load(
         args.model,
         device=args.device,
-        postprocessors=[],  # skip manifest denorm — execution handles it
         callbacks=[latency_tracker],
     )
-
-    # --- Load denormalization postprocessors from manifest ---
-    # RTCExecution applies these in its background thread to produce
-    # the processed (denormalized) track for the robot.
-
-    manifest = Manifest.load(f"{args.model}/manifest.json")
-    rtc_postprocessors: list = [
-        instantiate_component(resolve_artifact(spec, args.model))
-        for spec in manifest.model.postprocessors
-    ]
 
     # --- RTC queue (shared between execution and runtime) ---
     rtc_queue = RTCActionQueue()
 
     # --- RTC execution strategy ---
+    # Automatically derives chunk_size, max_action_dim, postprocessors and
+    # a dynamic queue_threshold.
     execution = RTCExecution(
-        chunk_size=args.chunk_size,
         execution_horizon=args.execution_horizon,
         fps=args.fps,
-        max_action_dim=args.max_action_dim,
         max_guidance_weight=args.max_guidance_weight,
-        queue_threshold=args.queue_threshold,
         latency_tracker=latency_tracker,
-        postprocessors=rtc_postprocessors,
     )
 
     # --- Hardware ---
