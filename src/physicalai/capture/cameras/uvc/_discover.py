@@ -25,12 +25,18 @@ if TYPE_CHECKING:
 __all__ = ["discover_uvc"]
 
 
-def discover_uvc() -> list[DeviceInfo]:
+def discover_uvc(*, only_usable: bool = True) -> list[DeviceInfo]:
     """Discover UVC devices for the current platform.
+
+    Args:
+        only_usable: When True (default), only return devices that can
+            actually be opened.  Cameras already in use by another
+            process will not appear in the results.  Set to False to
+            include all detected devices regardless of availability.
 
     Returns:
         List of discovered UVC devices for the current platform.
     """
     # Use omnicamera/pynokhwa's discovery on all platforms.
     # V4L2 offers richer information but does not check camera can be opened.
-    return OmniCamera.discover()
+    return OmniCamera.discover(only_usable=only_usable)

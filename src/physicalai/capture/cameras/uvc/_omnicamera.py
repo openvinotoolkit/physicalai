@@ -240,10 +240,10 @@ class OmniCamera(Camera):
         return frame
 
     @classmethod
-    def discover(cls) -> list[DeviceInfo]:
+    def discover(cls, *, only_usable: bool = True) -> list[DeviceInfo]:
         from physicalai.capture.discovery import DeviceInfo  # noqa: PLC0415
 
-        infos = omni_camera.query(only_usable=False)
+        infos = omni_camera.query(only_usable=only_usable)
 
         if sys.platform.startswith("linux"):
             # V4L2 exposes multiple /dev/videoN nodes per physical camera

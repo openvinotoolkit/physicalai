@@ -144,10 +144,10 @@ class UVCCamera(Camera):
     # ------------------------------------------------------------------
 
     @classmethod
-    def discover(cls) -> list[Any]:  # pragma: no cover - wrapper uses typed DeviceInfo
+    def discover(cls, *, only_usable: bool = True) -> list[Any]:  # pragma: no cover - wrapper uses typed DeviceInfo
         from ._discover import discover_uvc  # noqa: PLC0415
 
-        return discover_uvc()
+        return discover_uvc(only_usable=only_usable)
 
     @classmethod
     def query_formats(cls, device_id: str) -> list[tuple[int, int, int]]:
