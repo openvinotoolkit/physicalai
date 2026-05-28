@@ -1,7 +1,5 @@
 # Run a Policy on a Robot
 
-> **Note:** The Python `PolicyRuntime` API is available now. The config and CLI examples below remain preview/planned APIs.
-
 ## Python API
 
 ```python
@@ -26,7 +24,7 @@ with runtime:
 
 ## From Config
 
-> **Preview:** Config-driven runtime construction is not yet implemented.
+> **Preview:** Config-driven runtime construction and the CLI are not yet implemented.
 
 Write a runtime configuration file.
 

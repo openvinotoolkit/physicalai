@@ -1,7 +1,5 @@
 # Runtime API Reference
 
-`PolicyRuntime`, `SyncExecution`, `AsyncExecution`, and `ActionQueue` are available now. Config-driven construction and remote execution remain preview/planned APIs.
-
 ## `PolicyRuntime`
 
 `PolicyRuntime` is the main orchestrator for running a policy on hardware.
@@ -52,7 +50,7 @@ The execution implementations shipped today are listed below.
 | `SyncExecution`  | runs inference in the runtime thread  |
 | `AsyncExecution` | runs inference in a background thread |
 
-`RemoteExecution` is a planned API and is not part of the current package release.
+> **Preview:** `RemoteExecution` is a planned API and is not part of the current package release.
 
 ## `ActionQueue`
 

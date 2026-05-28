@@ -1,7 +1,5 @@
 # Runtime
 
-`PolicyRuntime` is available now. Config-driven construction and remote execution remain preview/planned APIs.
-
 `PolicyRuntime` runs a policy on robot hardware. It owns the control loop, the callback lifecycle, and the interaction between observations, inference requests, and actions.
 
 ```python
@@ -42,6 +40,8 @@ while running:
 The exact observation structure and merging strategy may change as the API stabilizes.
 
 ## Execution Modes
+
+> **Preview:** `RemoteExecution` is a planned API.
 
 | Mode                     | Where inference runs | Use                              |
 | ------------------------ | -------------------- | -------------------------------- |

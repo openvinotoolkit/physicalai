@@ -237,8 +237,6 @@ model = InferenceModel.load(
 
 The `PolicyRuntime` orchestrates the full control loop: connecting hardware, reading cameras, building observations, running inference, and dispatching actions to the robot.
 
-> **Note:** `PolicyRuntime`, `SyncExecution`, and `AsyncExecution` are available now. Config-driven construction, the CLI, and remote execution remain preview/planned APIs.
-
 ```python
 from physicalai.runtime import PolicyRuntime, SyncExecution
 from physicalai.inference import InferenceModel

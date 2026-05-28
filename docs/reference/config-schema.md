@@ -1,6 +1,6 @@
 # Config Schema Reference
 
-> **Preview:** The config system is a planned API. `PolicyRuntime` itself is available now; the schemas below document the target config design.
+> **Preview:** The config system is a planned API. The schemas below document the target config design.
 
 Config files use `class_path` and `init_args` to describe explicit component construction.
 

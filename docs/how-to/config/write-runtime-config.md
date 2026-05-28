@@ -1,6 +1,6 @@
 # Write Runtime Config
 
-> **Preview:** The config system is a planned API. `PolicyRuntime` is available now; the examples below document the target config design.
+> **Preview:** The config system is a planned API. The examples below document the target config design.
 
 A runtime config describes a robot control workflow before execution starts.
 

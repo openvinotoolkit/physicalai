@@ -1,7 +1,5 @@
 # Add Runtime Callbacks
 
-`PolicyRuntime` callbacks are available now.
-
 Use callbacks when you need product-specific behavior around the runtime loop.
 
 The following example records observations and actions.

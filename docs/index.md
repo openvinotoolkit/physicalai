@@ -59,10 +59,10 @@ with runtime:
     runtime.run(duration_s=60)
 ```
 
+> **Preview:** The CLI remains a planned API. See [#121](https://github.com/openvinotoolkit/physicalai/issues/121) for status.
+
 CLI example:
 
 ```bash
 physicalai run --config runtime.yaml --duration-s 60
 ```
-
-> **Note:** `PolicyRuntime` is available now. The CLI remains a planned API. See [#121](https://github.com/openvinotoolkit/physicalai/issues/121) for status.

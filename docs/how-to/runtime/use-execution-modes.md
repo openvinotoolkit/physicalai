@@ -1,7 +1,5 @@
 # Use Execution Modes
 
-> **Note:** `SyncExecution` and `AsyncExecution` are available now. Remote execution remains a planned API.
-
 The `Execution` component decides where inference runs and how requests are scheduled.
 
 ## Synchronous
