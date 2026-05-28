@@ -43,7 +43,7 @@ runtime.run(duration_s=60)
 You can also run the same config from the CLI.
 
 ```bash
-physicalai run --config runtime.yaml --duration-s 60
+physicalai run --config runtime.yaml --run.duration_s=60
 ```
 
 Nested components use the same `class_path` and `init_args` shape.

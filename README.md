@@ -300,11 +300,13 @@ runtime:
 <details>
 <summary><strong>CLI</strong></summary>
 
-> **Preview:** This API is not yet implemented.
-
 ```bash
-physicalai run --config runtime.yaml --duration-s 60
+physicalai run --config runtime.yaml --run.duration_s=60
 ```
+
+The runtime package owns the shared `physicalai` executable. Training packages
+can add subcommands such as `fit` and `benchmark` through the
+`physicalai.cli.subcommands` entry-point group.
 
 </details>
 

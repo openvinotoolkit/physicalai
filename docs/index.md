@@ -64,5 +64,5 @@ with runtime:
 CLI example:
 
 ```bash
-physicalai run --config runtime.yaml --duration-s 60
+physicalai run --config runtime.yaml --run.duration_s=60
 ```

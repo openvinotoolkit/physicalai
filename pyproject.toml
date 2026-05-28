@@ -29,7 +29,11 @@ dependencies = [
     "onnxruntime",
     "openvino>=2026.0",
     "openvino_tokenizers>=2026.0",
+    "jsonargparse[signatures]>=4.36",
 ]
+
+[project.scripts]
+physicalai = "physicalai.cli.main:main"
 
 [project.optional-dependencies]
 tests = ["pytest", "mypy"]
@@ -131,6 +135,9 @@ fixable = ["ALL"]
 unfixable = []
 
 [tool.ruff.lint.per-file-ignores]
+# physicalai.cli is intentionally a PEP 420 namespace package (no __init__.py)
+# so the runtime and studio distributions can each contribute subcommands.
+"src/physicalai/cli/*.py" = ["INP001"]
 "src/physicalai/capture/transport/_header.py" = ["RUF012"]
 "src/physicalai/capture/transport/_publisher.py" = ["S603"]
 

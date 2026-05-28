@@ -28,6 +28,9 @@ uv run pytest
 
 Training commands may be provided by a separate training distribution or by plugin entry points.
 
+When installed together with the coordinated `physicalai-train` release, the
+shared `physicalai` executable also exposes training and benchmark subcommands.
+
 ## Check the Install
 
 ```python

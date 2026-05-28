@@ -67,7 +67,7 @@ runtime.run(duration_s=60)
 Or run from the CLI.
 
 ```bash
-physicalai run --config runtime.yaml --duration-s 60
+physicalai run --config runtime.yaml --run.duration_s=60
 ```
 
 ## Component Responsibilities

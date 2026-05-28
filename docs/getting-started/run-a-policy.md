@@ -31,7 +31,7 @@ with runtime:
 The equivalent CLI command uses the same runtime configuration.
 
 ```bash
-physicalai run --config runtime.yaml --duration-s 60
+physicalai run --config runtime.yaml --run.duration_s=60
 ```
 
 The minimal runtime configuration looks like this.
