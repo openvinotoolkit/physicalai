@@ -250,6 +250,33 @@ class TestRuntimeCallback:
         assert callback.on_hold.call_count >= 1
 
 
+class TestLowPassFilterCallback:
+    def test_low_pass_filtering_values(self) -> None:
+        from physicalai.runtime.runtime import LowPassFilterCallback
+
+        cb = LowPassFilterCallback(alpha=0.6)
+
+        # First step: initialize
+        act1 = np.array([1.0, 2.0], dtype=np.float32)
+        res1 = cb.before_send_action(action=act1, step=0)
+        assert np.allclose(res1, act1)
+
+        # Second step: verify formula y_t = alpha * x_t + (1 - alpha) * y_t-1
+        # y_1 = 0.6 * [3.0, 4.0] + 0.4 * [1.0, 2.0] = [1.8 + 0.4, 2.4 + 0.8] = [2.2, 3.2]
+        act2 = np.array([3.0, 4.0], dtype=np.float32)
+        res2 = cb.before_send_action(action=act2, step=1)
+        assert np.allclose(res2, np.array([2.2, 3.2], dtype=np.float32))
+
+    def test_low_pass_invalid_alpha(self) -> None:
+        from physicalai.runtime.runtime import LowPassFilterCallback
+
+        with pytest.raises(ValueError, match="alpha"):
+            LowPassFilterCallback(alpha=0.0)
+
+        with pytest.raises(ValueError, match="alpha"):
+            LowPassFilterCallback(alpha=1.1)
+
+
 class TestRunStats:
     def test_fields_populated(self) -> None:
         stats = RunStats(steps=10, total_pops=8, total_holds=2, inference_count=3)

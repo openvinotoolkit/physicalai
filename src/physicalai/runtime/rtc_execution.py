@@ -351,6 +351,9 @@ class RTCExecution(Execution):
                 (1, self._chunk_size, self._max_action_dim),
                 dtype=np.float32,
             )
+            # Suppress correction on the first step since there's no real previous trajectory
+            max_guidance_weight = 0.0
+            execution_horizon = 0
         else:
             remaining = prev_chunk.shape[0]
             out_dim = prev_chunk.shape[-1]
@@ -368,13 +371,16 @@ class RTCExecution(Execution):
             if pad_len > 0:
                 prev_chunk_padded = np.pad(prev_chunk_padded, ((0, 0), (0, pad_len), (0, 0)))
 
+            max_guidance_weight = self._max_guidance_weight
+            execution_horizon = self._execution_horizon
+
         # Compute delay from latency tracker
         delay = self._latency_tracker.compute_delay(self._fps) if self._latency_tracker is not None else 0
 
         inputs["prev_chunk_left_over"] = prev_chunk_padded
         inputs["inference_delay"] = np.int64(delay)
-        inputs["max_guidance_weight"] = np.float32(self._max_guidance_weight)
-        inputs["execution_horizon"] = np.int64(self._execution_horizon)
+        inputs["max_guidance_weight"] = np.float32(max_guidance_weight)
+        inputs["execution_horizon"] = np.int64(execution_horizon)
 
         return inputs
 

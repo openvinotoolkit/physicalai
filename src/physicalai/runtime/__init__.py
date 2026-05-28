@@ -22,6 +22,7 @@ from physicalai.runtime.execution import (
 from physicalai.runtime.rtc_execution import RTCExecution
 from physicalai.runtime.runtime import (
     ActionQueue,
+    LowPassFilterCallback,
     PolicyRuntime,
     RunStats,
     RuntimeCallback,
@@ -35,6 +36,7 @@ __all__ = [
     "ChunkedActionQueue",
     "Execution",
     "LerpSmoother",
+    "LowPassFilterCallback",
     "PolicyRuntime",
     "RTCActionQueue",
     "RTCExecution",

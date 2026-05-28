@@ -30,6 +30,7 @@ from physicalai.inference import InferenceModel
 from physicalai.inference.callbacks import RTCLatencyTracker
 from physicalai.robot import SO101
 from physicalai.runtime import (
+    LowPassFilterCallback,
     PolicyRuntime,
     RTCActionQueue,
     RTCExecution,
@@ -55,6 +56,7 @@ def main() -> None:
     parser.add_argument("--max-action-dim", type=int, default=32)
     parser.add_argument("--max-guidance-weight", type=float, default=10.0)
     parser.add_argument("--queue-threshold", type=int, default=30)
+    parser.add_argument("--low-pass-alpha", type=float, default=None, help="Alpha parameter for stateful LowPassFilterCallback. E.g. 0.5. Defaults to None (disabled).")
     args = parser.parse_args()
 
     # --- Latency tracker callback (lives on the model) ---
@@ -96,6 +98,11 @@ def main() -> None:
     }
 
     # --- PolicyRuntime ---
+    callbacks = []
+    if args.low_pass_alpha is not None:
+        print(f"Applying LowPassFilterCallback with alpha={args.low_pass_alpha}")
+        callbacks.append(LowPassFilterCallback(alpha=args.low_pass_alpha))
+
     runtime = PolicyRuntime(
         robot=robot,
         model=model,
@@ -103,6 +110,7 @@ def main() -> None:
         action_queue=rtc_queue,
         cameras=cameras,
         fps=args.fps,
+        callbacks=callbacks,
     )
 
     try:
