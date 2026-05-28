@@ -9,6 +9,9 @@ from pathlib import Path
 
 import numpy as np
 
+# Note: this import initializes OV tokenizers runtime extension
+import openvino_tokenizers  # noqa: F401
+
 from physicalai.inference.adapters import OpenVINOAdapter
 from physicalai.inference.constants import TASK, TOKENIZED_PROMPT, TOKENIZED_PROMPT_MASK
 from physicalai.inference.preprocessors import Preprocessor
