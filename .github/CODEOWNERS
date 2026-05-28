@@ -5,8 +5,8 @@
 .github/ @openvinotoolkit/physicalai-ci @openvinotoolkit/physicalai-maintain
 
 # Documentation and contributor guidance.
-*.md @openvinotoolkit/physicalai-maintain
-docs/ @openvinotoolkit/physicalai-maintain
+*.md @openvinotoolkit/physicalai-maintain @openvinotoolkit/physicalai-doc-write
+docs/ @openvinotoolkit/physicalai-maintain @openvinotoolkit/physicalai-doc-write
 
 # Security policy changes should include the security team.
 SECURITY.md @openvinotoolkit/physicalai-ci @openvinotoolkit/physicalai-maintain
