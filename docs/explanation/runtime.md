@@ -43,11 +43,11 @@ The exact observation structure and merging strategy may change as the API stabi
 
 ## Execution Modes
 
-| Mode                                  | Where inference runs | Use                                      |
-| ------------------------------------- | -------------------- | ---------------------------------------- |
-| `SyncExecution()`                     | runtime thread       | simple deployments and debugging         |
-| `AsyncExecution(fps=30)`              | worker thread        | avoid blocking the control loop          |
-| `RemoteExecution`                     | remote server        | planned API                              |
+| Mode                     | Where inference runs | Use                              |
+| ------------------------ | -------------------- | -------------------------------- |
+| `SyncExecution()`        | runtime thread       | simple deployments and debugging |
+| `AsyncExecution(fps=30)` | worker thread        | avoid blocking the control loop  |
+| `RemoteExecution`        | remote server        | planned API                      |
 
 ## Product Workflows
 
