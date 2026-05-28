@@ -11,28 +11,28 @@ Prerequisites::
 Examples:
 
     # SO101 with 3 cameras, Rerun viewer auto-launched
-    python examples/runtime/async_inference.py \\
-      --robot so101 --port /dev/ttyACM0 --calibration ./cal.json \\
-      --model ./exports/my_model \\
-      --camera overhead:uvc:/dev/video0 \\
-      --camera arm:realsense:353322271391 \\
-      --camera front:uvc:/dev/video2 \\
+    python examples/runtime/async_inference.py \
+      --robot so101 --port /dev/ttyACM0 --calibration ./cal.json \
+      --model ./exports/my_model \
+      --camera overhead:uvc:/dev/video0 \
+      --camera arm:realsense:353322271391 \
+      --camera front:uvc:/dev/video2 \
       --rerun spawn
 
     # Trossen WidowXAI
-    python examples/runtime/async_inference.py \\
-      --robot widowxai --ip 192.168.1.2 \\
-      --model ./exports/my_model \\
+    python examples/runtime/async_inference.py \
+      --robot widowxai --ip 192.168.1.2 \
+      --model ./exports/my_model \
       --camera front:uvc:/dev/video0
 
     # Bimanual Trossen WidowXAI
-    python examples/runtime/async_inference.py \\
-      --robot bimanual_widowxai --ip-left 192.168.1.2 --ip-right 192.168.1.3 \\
+    python examples/runtime/async_inference.py \
+      --robot bimanual_widowxai --ip-left 192.168.1.2 --ip-right 192.168.1.3 \
       --model ./exports/my_model
 
     # No --camera args → interactive selection
-    python examples/runtime/async_inference.py \\
-      --robot so101 --port /dev/ttyACM0 --calibration ./cal.json \\
+    python examples/runtime/async_inference.py \
+      --robot so101 --port /dev/ttyACM0 --calibration ./cal.json \
       --model ./exports/my_model --rerun spawn
 """
 
