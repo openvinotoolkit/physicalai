@@ -237,7 +237,7 @@ model = InferenceModel.load(
 
 The `PolicyRuntime` orchestrates the full control loop: connecting hardware, reading cameras, building observations, running inference, and dispatching actions to the robot.
 
-> **Preview:** This API is work in progress
+> **Note:** `PolicyRuntime`, `SyncExecution`, and `AsyncExecution` are available now. Config-driven construction, the CLI, and remote execution remain preview/planned APIs.
 
 ```python
 from physicalai.runtime import PolicyRuntime, SyncExecution
@@ -253,10 +253,11 @@ runtime = PolicyRuntime(
         "wrist": UVCCamera(device="/dev/video0", width=640, height=480),
         "overhead": RealSenseCamera(serial_number="123456789"),
     },
-    execution=SyncExecution(mode="chunk"),
+    execution=SyncExecution(),
 )
 
-runtime.run(duration_s=60)
+with runtime:
+    runtime.run(duration_s=60)
 ```
 
 <details>
@@ -314,8 +315,6 @@ physicalai run --config runtime.yaml --duration-s 60
 
 Async execution runs inference in a background thread while the main loop handles camera reads and robot commands at a fixed frequency. Useful when inference is slower than the control rate.
 
-> **Preview:** This API is not yet implemented.
-
 ```python
 from physicalai.runtime import PolicyRuntime, AsyncExecution
 
@@ -324,10 +323,11 @@ runtime = PolicyRuntime(
     robot=robot,
     model=model,
     cameras=cameras,
-    execution=AsyncExecution(),
+    execution=AsyncExecution(fps=30),
 )
 
-runtime.run(duration_s=60)
+with runtime:
+    runtime.run(duration_s=60)
 ```
 
 </details>

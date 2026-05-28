@@ -52,10 +52,11 @@ runtime = PolicyRuntime(
     robot=robot,
     model=model,
     cameras=cameras,
-    execution=SyncExecution(mode="chunk"),
+    execution=SyncExecution(),
 )
 
-runtime.run(duration_s=60)
+with runtime:
+    runtime.run(duration_s=60)
 ```
 
 CLI example:
@@ -64,4 +65,4 @@ CLI example:
 physicalai run --config runtime.yaml --duration-s 60
 ```
 
-> **Note:** `PolicyRuntime` and the CLI are planned APIs. See [#121](https://github.com/openvinotoolkit/physicalai/issues/121) for status.
+> **Note:** `PolicyRuntime` is available now. The CLI remains a planned API. See [#121](https://github.com/openvinotoolkit/physicalai/issues/121) for status.

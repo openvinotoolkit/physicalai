@@ -1,6 +1,6 @@
 # Run a Policy on a Robot
 
-> **Preview:** `PolicyRuntime` and the CLI are planned APIs. The examples below document the target design.
+> **Note:** The Python `PolicyRuntime` API is available now. The config and CLI examples below remain preview/planned APIs.
 
 ## Python API
 
@@ -17,13 +17,16 @@ runtime = PolicyRuntime(
     cameras={
         "wrist": UVCCamera(device="/dev/video0", width=640, height=480),
     },
-    execution=SyncExecution(mode="chunk"),
+    execution=SyncExecution(),
 )
 
-runtime.run(duration_s=60)
+with runtime:
+    runtime.run(duration_s=60)
 ```
 
 ## From Config
+
+> **Preview:** Config-driven runtime construction is not yet implemented.
 
 Write a runtime configuration file.
 
