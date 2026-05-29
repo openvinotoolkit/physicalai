@@ -155,10 +155,10 @@ class RTCExecution(Execution):
             rtc_config = model.manifest.model_extra.get("rtc", {}) if hasattr(model, "manifest") else {}
             if isinstance(rtc_config, dict) and "chunk_size" in rtc_config:
                 self._chunk_size = int(rtc_config["chunk_size"])
-            elif hasattr(model, "chunk_size"):
+            elif model.chunk_size > 1:
                 self._chunk_size = model.chunk_size
             else:
-                self._chunk_size = 50
+                self._chunk_size = 50  # fallback default to Pi05 chunk size
 
         # 2. Infer max_action_dim
         if self._max_action_dim_param is not None:
