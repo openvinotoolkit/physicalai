@@ -40,14 +40,6 @@ Optional but **recommended**: [Physical AI Studio](https://github.com/open-edge-
 - [Physical AI Studio](https://github.com/open-edge-platform/physical-ai-studio) (web UI, recommended)
 - [LeRobot](https://github.com/huggingface/lerobot) (CLI)
 
-### Time budget
-
-| Stage                      | Wall time |
-| -------------------------- | --------- |
-| Data collection            | 30–60 min |
-| Training (A100, 30 epochs) | 2–4 h     |
-| Export + deployment setup  | 15 min    |
-
 ### Related documentation
 
 - [Run a Policy on a Robot](../../docs/how-to/runtime/run-policy-on-robot.md)
