@@ -51,7 +51,7 @@ from physicalai.runtime import (
     RerunCallback,
 )
 
-from utils import build_robot, parse_camera_specs
+from utils import build_robot, parse_camera_specs, prompt_torque_disable
 
 
 def main() -> None:
@@ -164,8 +164,8 @@ def main() -> None:
             print(f"  {name}: {w}x{h} @ {f}fps" if w and h else f"  {name}: connected")
         print(f"Running at {args.fps} fps for {args.duration_s}s...")
         stats = runtime.run(duration_s=args.duration_s)
-
-    print(f"\nDone — {stats.steps} steps, {stats.inference_count} inferences, {stats.total_holds} holds")
+        print(f"\nDone — {stats.steps} steps, {stats.inference_count} inferences, {stats.total_holds} holds")
+        prompt_torque_disable(robot)
 
 
 if __name__ == "__main__":
