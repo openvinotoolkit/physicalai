@@ -360,7 +360,7 @@ runtime.run(duration_s=60)
 
 ---
 
-> **Full walkthrough:** See [`examples/collect_train_deploy.ipynb`](./examples/collect_train_deploy.ipynb) for a complete collect → train → deploy guide.
+> **Full walkthrough:** See [`examples/tutorials/collect_train_deploy.ipynb`](./examples/tutorials/collect_train_deploy.ipynb) for a complete collect → train → deploy guide.
 
 ---
 
