@@ -46,8 +46,6 @@ You can also run the same config from the CLI.
 physicalai run --config runtime.yaml --run.duration_s=60
 ```
 
-The CLI also accepts `--duration_s=60` for backward compatibility.
-
 Nested components use the same `class_path` and `init_args` shape.
 
 ```yaml

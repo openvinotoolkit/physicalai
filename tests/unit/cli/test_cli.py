@@ -229,12 +229,6 @@ class TestRunParser:
         cfg = parser.parse_args([f"--config={cfg_file}", "--runtime.fps=60"])
         assert cfg.runtime.fps == 60
 
-    def test_legacy_duration_alias_maps_to_run_namespace(self) -> None:
-        parser = run_module.build_parser()
-        cfg = parser.parse_args([*list(_MINIMAL_ARGV), "--duration_s=7"])
-        assert cfg.duration_s == 7
-        assert cfg.run.duration_s is None
-
 
 class TestRunDispatcher:
     """``physicalai run`` dispatcher: parser.instantiate + runtime.run."""
@@ -329,22 +323,6 @@ class TestMainDispatch:
         with pytest.raises(SystemExit) as exc:
             main(["run", "--help"])
         assert exc.value.code == 0
-
-    def test_legacy_duration_alias_dispatches(self) -> None:
-        fake = MagicMock(spec=PolicyRuntime)
-        fake.__enter__ = MagicMock(return_value=fake)
-        fake.__exit__ = MagicMock(return_value=None)
-        fake.run.return_value = RunStats(steps=0, total_pops=0, total_holds=0, inference_count=0)
-
-        parser = run_module.build_parser()
-        cfg = parser.parse_args([*list(_MINIMAL_ARGV), "--duration_s=1"])
-
-        with patch.object(parser, "instantiate") as inst:
-            inst.return_value = MagicMock(runtime=fake)
-            exit_code = run_module.run(parser, cfg)
-
-        assert exit_code == 0
-        fake.run.assert_called_once_with(duration_s=1)
 
     def test_builtins_contain_run_only(self) -> None:
         assert list(main_module._BUILTINS) == ["run"]  # noqa: SLF001

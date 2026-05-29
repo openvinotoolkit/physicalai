@@ -6,8 +6,6 @@ The CLI is a thin wrapper over the same config APIs used by Python.
 physicalai run --config runtime.yaml --run.duration_s=60
 ```
 
-The runtime also accepts `--duration_s=60` as a compatibility alias.
-
 Equivalent Python:
 
 ```python

@@ -70,8 +70,6 @@ Or run from the CLI.
 physicalai run --config runtime.yaml --run.duration_s=60
 ```
 
-`--duration_s=60` remains available as a compatibility alias.
-
 ## Component Responsibilities
 
 | Object           | Owns                  |

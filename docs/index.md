@@ -66,5 +66,3 @@ CLI example:
 ```bash
 physicalai run --config runtime.yaml --run.duration_s=60
 ```
-
-`--duration_s=60` remains accepted for compatibility with older examples.
