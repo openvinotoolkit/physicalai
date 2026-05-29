@@ -179,7 +179,7 @@ class InferenceModel:
         """
         return cls(export_dir=export_dir, **kwargs)
 
-    def __call__(self, inputs: dict[str, np.ndarray | str]) -> dict[str, np.ndarray]:
+    def __call__(self, inputs: dict[str, np.ndarray | list[str]]) -> dict[str, np.ndarray]:
         """Run the full inference pipeline and return model outputs.
 
         Pipeline: callbacks(start) → preprocessors → _prepare_inputs →
@@ -189,7 +189,7 @@ class InferenceModel:
         dict without assuming any domain-specific keys.
 
         Args:
-            inputs: Input payload as a dict mapping names to numpy arrays.
+            inputs: Input payload as a dict mapping names to numpy arrays or lists of strings.
 
         Returns:
             Model outputs after runner execution and postprocessing.

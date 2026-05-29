@@ -48,8 +48,8 @@ class InferenceBenchmark:
     def run(
         self,
         model: InferenceModel,
-        inputs: Iterable[dict[str, np.ndarray | str]] | None = None,
-    ) -> dict[str, float]:
+        inputs: Iterable[dict[str, np.ndarray | list[str]]] | None = None,
+    ) -> dict[str, float | int]:
         """Run the benchmark against ``model`` using samples from ``inputs``.
 
         The iterable is consumed once: the first ``warmup_iters`` items are
@@ -60,7 +60,7 @@ class InferenceBenchmark:
         Args:
             model: Loaded inference model invoked via ``model(sample)``.
             inputs: Iterable yielding input dicts compatible with ``model``.
-                Values may be numpy arrays or strings, depending on the
+                Values may be numpy arrays or lists of strings, depending on the
                 model's declared input features. Must contain at least
                 ``warmup_iters`` items plus at least one measured sample.
                 When ``None``, a
@@ -126,7 +126,7 @@ class InferenceBenchmark:
             msg = "no inference iterations were executed; check inputs, max_iters, and max_duration"
             raise ValueError(msg)
 
-        results["num_iters"] = float(len(iter_times))
+        results["num_iters"] = len(iter_times)
         results["min_iter_time"] = min(iter_times)
         results["max_iter_time"] = max(iter_times)
         results["median_iter_time"] = median(iter_times)

@@ -61,7 +61,7 @@ class RandomInputSource:
         self._seed = seed
         self._num_samples = num_samples
 
-    def __iter__(self) -> Iterator[dict[str, np.ndarray | str]]:
+    def __iter__(self) -> Iterator[dict[str, np.ndarray | list[str]]]:
         """Yield randomly generated benchmark samples."""
         rng = np.random.default_rng(self._seed)
         count = 0
@@ -80,7 +80,7 @@ class RandomInputSource:
 
         Returns:
             A random sample matching the feature's declared dtype: a numpy
-            array for tensor-valued features, or a string for ``STRING``
+            array for tensor-valued features, or a list of strings for ``STRING``
             dtype features.
 
         Raises:
