@@ -37,6 +37,7 @@ training package
   test
   predict
   benchmark
+  export
 ```
 
 ## Design Rules
