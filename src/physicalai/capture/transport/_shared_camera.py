@@ -125,7 +125,8 @@ class SharedCamera(Camera):
         validate_on_connect: bool = False,
         overwrite_settings: bool = False,
         idle_timeout: float = 5.0,
-        **camera_kwargs: object,
+        camera_kwargs: Mapping[str, object] | None = None,
+        **extra_camera_kwargs: object,
     ) -> None:
         try:
             camera_type = CameraType(camera_type) if camera_type is not None else None
@@ -138,15 +139,17 @@ class SharedCamera(Camera):
             msg = "must provide camera_type or service_name"
             raise ValueError(msg)
 
+        merged_camera_kwargs: dict[str, object] = {**(camera_kwargs or {}), **extra_camera_kwargs}
+
         if camera_type is not None:
-            service_name = _derive_service_name(camera_type, camera_kwargs)
+            service_name = _derive_service_name(camera_type, merged_camera_kwargs)
         elif service_name is None:
             msg = "service_name must be provided if camera_type is None"
             raise ValueError(msg)
 
         super().__init__(color_mode=color_mode)
         self._camera_type = camera_type
-        self._camera_kwargs = camera_kwargs
+        self._camera_kwargs = merged_camera_kwargs
         self._service_name: str = service_name
         self._zero_copy = zero_copy
         self._validate_on_connect = validate_on_connect

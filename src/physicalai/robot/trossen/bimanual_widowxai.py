@@ -27,6 +27,7 @@ from physicalai.robot import Robot
 
 if TYPE_CHECKING:
     from physicalai.capture.frame import Frame
+    from physicalai.robot.interface import RobotObservation
     from physicalai.robot.trossen.widowxai import WidowXAI
 
 
@@ -116,7 +117,7 @@ class BimanualWidowXAI(Robot):
         """Return ``True`` when both arms are connected."""
         return self._left.is_connected() and self._right.is_connected()
 
-    def get_observation(self) -> BimanualWidowXAIObservation:
+    def get_observation(self) -> RobotObservation:
         """Read and merge observations from both arms.
 
         Returns:

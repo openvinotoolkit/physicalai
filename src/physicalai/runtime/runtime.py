@@ -181,7 +181,7 @@ class PolicyRuntime:
         fps: float,
         cameras: Mapping[str, Camera] | None = None,
         action_queue: ActionQueue | None = None,
-        callbacks: Sequence[RuntimeCallback] = (),
+        callbacks: Sequence[Any] = (),
         task: str | None = None,
     ) -> None:
         if fps <= 0:

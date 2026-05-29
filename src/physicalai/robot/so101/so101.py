@@ -24,11 +24,13 @@ body joints use ``[-100, 100]`` and gripper uses ``[0, 100]``. A dedicated
 :meth:`SO101.uncalibrated` factory exists for explicit raw-ticks bringup/debug mode.
 """
 
+from __future__ import annotations
+
 import contextlib
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import numpy as np
 from loguru import logger
@@ -39,7 +41,6 @@ from scservo_sdk import (
     PortHandler,
 )
 
-from physicalai.capture.frame import Frame
 from physicalai.robot import Robot
 from physicalai.robot.so101.calibration import SO101Calibration
 from physicalai.robot.so101.constants import (
@@ -52,6 +53,10 @@ from physicalai.robot.so101.constants import (
     STS3215Addr,
     STS3215Len,
 )
+
+if TYPE_CHECKING:
+    from physicalai.capture.frame import Frame
+    from physicalai.robot.interface import RobotObservation
 
 SO101Unit = Literal["ticks", "normalized"]
 
@@ -176,7 +181,7 @@ class SO101(Robot):
         baudrate: int = 1_000_000,
         role: Literal["leader", "follower"] = "follower",
         unit: SO101Unit = "ticks",
-    ) -> "SO101":
+    ) -> SO101:
         """Create an SO-101 instance in explicit raw-ticks mode.
 
         This mode is intended for bringup/debug only. Observations and actions
@@ -457,7 +462,7 @@ class SO101(Robot):
 
         logger.info(f"SO-101 disconnected from {self.port}")
 
-    def get_observation(self) -> SO101Observation:
+    def get_observation(self) -> RobotObservation:
         """Read current joint positions from all servos.
 
         Returns:

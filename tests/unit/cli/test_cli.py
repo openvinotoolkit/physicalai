@@ -41,6 +41,10 @@ class _FakeObservation:
         self.sensor_data = None
         self.images = None
 
+    @property
+    def state(self) -> np.ndarray:
+        return self.joint_positions
+
 
 class FakeRobot:
     """Minimal Robot Protocol implementation usable as a class_path target."""

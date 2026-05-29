@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from trossen_arm import TrossenArmDriver
 
     from physicalai.capture.frame import Frame
+    from physicalai.robot.interface import RobotObservation
 
 
 @dataclass
@@ -194,7 +195,7 @@ class WidowXAI(Robot):
             logger.warning("Capped widowxai goal delta to max_relative_target={}", max_relative_target)
         return present_position + capped_delta
 
-    def get_observation(self) -> WidowXAIObservation:
+    def get_observation(self) -> RobotObservation:
         """Read current joint state and auxiliary sensor data.
 
         Returns:
