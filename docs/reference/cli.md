@@ -18,10 +18,14 @@ Arguments:
 | `--config`         | yes      | Runtime config YAML                      |
 | `--run.duration_s` | no       | Stop after the given duration in seconds |
 
-The equivalent Python call is shown below.
+The same duration limit is available from the current Python API after you
+construct a runtime directly.
 
 ```python
-PolicyRuntime.from_config("runtime.yaml").run(duration_s=60)
+runtime = PolicyRuntime(...)
+
+with runtime:
+    runtime.run(duration_s=60)
 ```
 
 ## Shell Completion

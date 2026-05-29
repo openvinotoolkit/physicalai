@@ -12,14 +12,16 @@ You can limit the run duration when needed.
 physicalai run --config runtime.yaml --run.duration_s=60
 ```
 
-The equivalent Python call is shown below.
+The same duration limit is available from the current Python API after you
+construct a runtime directly.
 
 ```python
 from physicalai.runtime import PolicyRuntime
 
-PolicyRuntime.from_config("runtime.yaml").run(duration_s=60)
-```
+runtime = PolicyRuntime(...)
 
-The CLI uses the same config schema as the Python APIs.
+with runtime:
+    runtime.run(duration_s=60)
+```
 
 Runtime commands live in the `physicalai` package. Training commands should be provided by training packages or plugin entry points so the runtime package stays lightweight.

@@ -24,8 +24,6 @@ with runtime:
 
 ## From Config
 
-> **Preview:** Config-driven runtime construction and the CLI are not yet implemented.
-
 Write a runtime configuration file.
 
 ```yaml
@@ -55,16 +53,7 @@ runtime:
         mode: chunk
 ```
 
-Load and run from Python.
-
-```python
-from physicalai.runtime import PolicyRuntime
-
-runtime = PolicyRuntime.from_config("runtime.yaml")
-runtime.run(duration_s=60)
-```
-
-Or run from the CLI.
+Run it from the CLI.
 
 ```bash
 physicalai run --config runtime.yaml --run.duration_s=60

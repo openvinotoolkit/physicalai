@@ -27,7 +27,7 @@ import pathlib
 import sys
 from typing import TYPE_CHECKING, cast
 
-from jsonargparse import ArgumentParser, set_parsing_settings
+from jsonargparse import ArgumentParser
 
 from physicalai.cli import run as run_cmd
 from physicalai.cli._discovery import discover_subcommands  # noqa: PLC2701
@@ -38,8 +38,6 @@ if TYPE_CHECKING:
     from importlib.metadata import EntryPoint
 
 logger = logging.getLogger(__name__)
-
-set_parsing_settings(add_print_completion_argument=True)
 
 # Built-in subcommands shipped by the runtime distribution. Each maps a name to
 # its ``register()`` callable; help text is kept alongside so the top-level
@@ -186,6 +184,9 @@ def _print_completion(argv: Sequence[str], entry_points: dict[str, EntryPoint], 
     """
     parser = ArgumentParser(prog=f"{prog} completion", description=_BUILTIN_HELP["completion"])
     parser.add_argument("shell", choices=sorted(_COMPLETION_SHELLS), help="Shell to generate completion for.")
+    if not argv:
+        parser.print_help()
+        return 0
     cfg = parser.parse_args(argv)
     host = _build_host_parser(_subcommand_help(entry_points), prog)
     sys.stdout.write(_completion_script(host, cfg.shell, prog))

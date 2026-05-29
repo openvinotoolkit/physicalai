@@ -1,7 +1,5 @@
 # Write Runtime Config
 
-> **Preview:** The config system is a planned API. The examples below document the target config design.
-
 A runtime config describes a robot control workflow before execution starts.
 
 ```yaml
@@ -31,16 +29,7 @@ runtime:
         mode: chunk
 ```
 
-You can load the same file from Python.
-
-```python
-from physicalai.runtime import PolicyRuntime
-
-runtime = PolicyRuntime.from_config("runtime.yaml")
-runtime.run(duration_s=60)
-```
-
-You can also run the same config from the CLI.
+Run the same config from the CLI:
 
 ```bash
 physicalai run --config runtime.yaml --run.duration_s=60

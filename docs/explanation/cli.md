@@ -9,10 +9,13 @@ installed and behaves identically.
 physicalai run --config runtime.yaml --run.duration_s=60
 ```
 
-Equivalent Python:
+Equivalent Python control flow:
 
 ```python
-PolicyRuntime.from_config("runtime.yaml").run(duration_s=60)
+runtime = PolicyRuntime(...)
+
+with runtime:
+    runtime.run(duration_s=60)
 ```
 
 Shell completion is available through `jsonargparse` + `shtab`. Print a shell
