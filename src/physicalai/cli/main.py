@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import pathlib
 import sys
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from jsonargparse import ArgumentParser
 
@@ -36,6 +36,7 @@ from physicalai.cli._spec import SubcommandSpec  # noqa: PLC2701
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
     from importlib.metadata import EntryPoint
+    from types import ModuleType
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ _BUILTIN_HELP: dict[str, str] = {
     "run": run_cmd.HELP,
 }
 _COMPLETION_SHELLS = frozenset({"bash", "zsh", "fish"})
+_HELP_FLAGS = frozenset({"-h", "--help"})
 
 
 def _resolve_register(
@@ -87,6 +89,43 @@ def _load_spec(name: str, entry_points: dict[str, EntryPoint]) -> SubcommandSpec
         msg = f"Subcommand '{name}' returned SubcommandSpec(name={spec.name!r}); name mismatch."
         raise ValueError(msg)
     return spec
+
+
+def _load_subcommand_module(name: str, entry_points: dict[str, EntryPoint]) -> ModuleType | None:
+    """Load the selected subcommand module without building its parser.
+
+    Returns:
+        Imported subcommand module when available, otherwise ``None``.
+    """
+    if name == "run":
+        return run_cmd
+
+    try:
+        register = entry_points[name].load()
+    except Exception:
+        logger.debug("Failed to load entry point '%s' for fast help", name, exc_info=True)
+        return None
+    return sys.modules.get(getattr(register, "__module__", ""))
+
+
+def _print_fast_help(name: str, entry_points: dict[str, EntryPoint], prog: str) -> bool:
+    """Print lightweight subcommand help when the module provides it.
+
+    Returns:
+        ``True`` if help was printed, otherwise ``False`` so the caller can fall
+        back to the full parser.
+    """
+    module = _load_subcommand_module(name, entry_points)
+    print_help = getattr(module, "print_help", None)
+    if not callable(print_help):
+        return False
+    print_help(f"{prog} {name}")
+    return True
+
+
+def _is_help_request(argv: Sequence[str]) -> bool:
+    """Return whether ``argv`` asks for subcommand help."""
+    return any(token in _HELP_FLAGS for token in argv)
 
 
 def _ep_help(ep: EntryPoint) -> str:
@@ -239,11 +278,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         host.parse_args(argv_list)
         msg = "Host parser returned without selecting a subcommand."
         raise AssertionError(msg)
-    selected_name = cast("str", selected)
+    selected_name = selected
     sub_argv = argv_list[argv_list.index(selected_name) + 1 :]
 
     if selected_name == "completion":
         return _print_completion(sub_argv, entry_points, prog)
+
+    if _is_help_request(sub_argv) and _print_fast_help(selected_name, entry_points, prog):
+        return 0
 
     spec = _load_spec(selected_name, entry_points)
     cfg = spec.parser.parse_args(sub_argv)

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import io
 import logging
+import sys
+import types
 from contextlib import redirect_stdout
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, patch
@@ -359,9 +361,40 @@ class TestMainDispatch:
         assert '_shtab_pai "$@"' not in output
 
     def test_run_help_exits_zero(self) -> None:
-        with pytest.raises(SystemExit) as exc:
-            main(["run", "--help"])
-        assert exc.value.code == 0
+        exit_code = main(["run", "--help"])
+        assert exit_code == 0
+
+    def test_run_help_uses_fast_help_without_building_parser(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with patch.object(run_module, "build_parser", side_effect=AssertionError("should not build parser")):
+            exit_code = main(["run", "--help"])
+        assert exit_code == 0
+        assert "usage:" in capsys.readouterr().out
+
+    def test_third_party_help_uses_fast_help_without_registering(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        module = types.ModuleType("fake_cli_fit")
+
+        def print_help(prog: str) -> None:
+            print(f"fast help for {prog}")
+
+        def register() -> SubcommandSpec:
+            raise AssertionError("should not register")
+
+        register.__module__ = module.__name__
+        setattr(module, "print_help", print_help)
+        setattr(module, "register", register)
+        sys.modules[module.__name__] = module
+        ep = _fake_ep("fit", dist_name="studio")
+        ep.load = MagicMock(return_value=register)
+        try:
+            with patch("physicalai.cli.main.discover_subcommands", return_value={"fit": ep}):
+                exit_code = main(["fit", "--help"])
+        finally:
+            sys.modules.pop(module.__name__, None)
+        assert exit_code == 0
+        assert "fast help for pytest fit" in capsys.readouterr().out
 
     def test_builtins_contain_run_only(self) -> None:
         assert list(main_module._BUILTINS) == ["run"]  # noqa: SLF001

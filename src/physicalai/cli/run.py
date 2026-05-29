@@ -20,6 +20,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 HELP = "Run a trained policy on robot hardware via PolicyRuntime."
+_HELP_TEMPLATE = """usage: {prog} --config CONFIG [--run.duration_s SECONDS]
+
+{description}
+
+options:
+  -h, --help                    Show this help message and exit.
+  --config CONFIG               YAML/JSON runtime config file.
+  --run.duration_s SECONDS      Stop after the given duration in seconds.
+
+Runtime constructor arguments are available under --runtime.* when executing
+the command. Use --print_config with a complete command to inspect the full
+jsonargparse schema.
+"""
 
 
 def build_parser() -> ArgumentParser:
@@ -38,6 +51,11 @@ def build_parser() -> ArgumentParser:
     parser.add_class_arguments(PolicyRuntime, "runtime")
     parser.add_method_arguments(PolicyRuntime, "run", "run")
     return parser
+
+
+def print_help(prog: str) -> None:
+    """Print lightweight help without building the full runtime parser."""
+    print(_HELP_TEMPLATE.format(prog=prog, description=HELP))  # noqa: T201
 
 
 def run(parser: ArgumentParser, cfg: Namespace) -> int:
