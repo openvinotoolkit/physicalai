@@ -23,4 +23,3 @@ This section contains task-oriented guides for common runtime workflows.
 ## CLI
 
 - [Run](cli/run.md)
-- [Infer](cli/infer.md)

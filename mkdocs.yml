@@ -40,7 +40,6 @@ nav:
           - Instantiate Components: how-to/config/instantiate-components.md
       - CLI:
           - Run: how-to/cli/run.md
-          - Infer: how-to/cli/infer.md
   - Explanation:
       - Overview: explanation/README.md
       - Architecture: explanation/architecture.md
