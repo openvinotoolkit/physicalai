@@ -237,12 +237,12 @@ model = InferenceModel.load(
 ```python
 import json
 
-from physicalai.benchmark.performance import InferenceBenchmark
+from physicalai.benchmark.performance import InferenceLatencyBenchmark
 from physicalai.inference import InferenceModel
 
 model = InferenceModel.load("./exports/act_policy")
 model.reset()
-benchmark = InferenceBenchmark(
+benchmark = InferenceLatencyBenchmark(
         max_iters=100,
         warmup_iters=2,
         max_duration=10000,

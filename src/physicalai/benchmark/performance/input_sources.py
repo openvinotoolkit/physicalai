@@ -32,7 +32,7 @@ class RandomInputSource:
 
     Examples:
         >>> source = RandomInputSource(model.input_features, seed=0)
-        >>> metrics = InferenceBenchmark().run(model, source)
+        >>> metrics = InferenceLatencyBenchmark().run(model, source)
     """
 
     def __init__(

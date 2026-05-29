@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for InferenceBenchmark."""
+"""Unit tests for InferenceLatencyBenchmark."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import time
 import numpy as np
 import pytest
 
-from physicalai.benchmark.performance.inference_benchmark import InferenceBenchmark
+from physicalai.benchmark.performance.inference_benchmark import InferenceLatencyBenchmark
 from physicalai.inference.data.features import (
     InferenceFeature,
     InferenceFeatureDtype,
@@ -65,10 +65,10 @@ def features() -> list[InferenceFeature]:
     ]
 
 
-class TestInferenceBenchmark:
+class TestInferenceLatencyBenchmark:
     def test_run_with_random_inputs_returns_expected_metrics(self, features: list[InferenceFeature]) -> None:
         model = FakeModel(input_features=features)
-        benchmark = InferenceBenchmark(max_iters=5, warmup_iters=2, max_duration=None)
+        benchmark = InferenceLatencyBenchmark(max_iters=5, warmup_iters=2, max_duration=None)
 
         metrics = benchmark.run(model)
 
@@ -86,7 +86,7 @@ class TestInferenceBenchmark:
 
     def test_random_inputs_match_feature_shapes_and_dtypes(self, features: list[InferenceFeature]) -> None:
         model = FakeModel(input_features=features)
-        benchmark = InferenceBenchmark(max_iters=1, warmup_iters=1, max_duration=None)
+        benchmark = InferenceLatencyBenchmark(max_iters=1, warmup_iters=1, max_duration=None)
 
         benchmark.run(model)
 
@@ -103,7 +103,7 @@ class TestInferenceBenchmark:
     def test_run_with_explicit_inputs_consumes_iterable_once(self, features: list[InferenceFeature]) -> None:
         model = FakeModel(input_features=features)
         inputs = [{"observation.state": np.full((1, 6), i, dtype=np.float32)} for i in range(6)]
-        benchmark = InferenceBenchmark(max_iters=None, warmup_iters=2, max_duration=None)
+        benchmark = InferenceLatencyBenchmark(max_iters=None, warmup_iters=2, max_duration=None)
 
         metrics = benchmark.run(model, iter(inputs))
 
@@ -115,7 +115,7 @@ class TestInferenceBenchmark:
 
     def test_max_iters_bounds_measured_loop(self, features: list[InferenceFeature]) -> None:
         model = FakeModel(input_features=features)
-        benchmark = InferenceBenchmark(max_iters=3, warmup_iters=1, max_duration=None)
+        benchmark = InferenceLatencyBenchmark(max_iters=3, warmup_iters=1, max_duration=None)
 
         metrics = benchmark.run(model)
 
@@ -124,7 +124,7 @@ class TestInferenceBenchmark:
 
     def test_max_duration_bounds_measured_loop(self, features: list[InferenceFeature]) -> None:
         model = FakeModel(input_features=features, sleep_s=0.02)
-        benchmark = InferenceBenchmark(max_iters=None, warmup_iters=1, max_duration=50)
+        benchmark = InferenceLatencyBenchmark(max_iters=None, warmup_iters=1, max_duration=50)
 
         start = time.perf_counter()
         metrics = benchmark.run(model)
@@ -136,7 +136,7 @@ class TestInferenceBenchmark:
 
     def test_std_iter_time_is_zero_for_single_iteration(self, features: list[InferenceFeature]) -> None:
         model = FakeModel(input_features=features)
-        benchmark = InferenceBenchmark(max_iters=1, warmup_iters=1, max_duration=None)
+        benchmark = InferenceLatencyBenchmark(max_iters=1, warmup_iters=1, max_duration=None)
 
         metrics = benchmark.run(model)
 
@@ -145,21 +145,21 @@ class TestInferenceBenchmark:
 
     def test_run_without_inputs_raises_when_model_has_no_features(self) -> None:
         model = FakeModel(input_features=[])
-        benchmark = InferenceBenchmark(max_iters=1, warmup_iters=1, max_duration=None)
+        benchmark = InferenceLatencyBenchmark(max_iters=1, warmup_iters=1, max_duration=None)
 
         with pytest.raises(ValueError, match="inputs should be provided"):
             benchmark.run(model)
 
     def test_inputs_exhausted_during_warmup_raises(self, features: list[InferenceFeature]) -> None:
         model = FakeModel(input_features=features)
-        benchmark = InferenceBenchmark(max_iters=5, warmup_iters=3, max_duration=None)
+        benchmark = InferenceLatencyBenchmark(max_iters=5, warmup_iters=3, max_duration=None)
 
         with pytest.raises(ValueError, match="inputs exhausted during warmup"):
             benchmark.run(model, iter([{"observation.state": np.zeros((1, 6), dtype=np.float32)}]))
 
     def test_no_measured_iterations_raises(self, features: list[InferenceFeature]) -> None:
         model = FakeModel(input_features=features)
-        benchmark = InferenceBenchmark(max_iters=5, warmup_iters=1, max_duration=None)
+        benchmark = InferenceLatencyBenchmark(max_iters=5, warmup_iters=1, max_duration=None)
 
         warmup_only = [{"observation.state": np.zeros((1, 6), dtype=np.float32)}]
         with pytest.raises(ValueError, match="no inference iterations were executed"):

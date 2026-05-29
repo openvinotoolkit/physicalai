@@ -14,7 +14,7 @@ from physicalai.benchmark.performance.input_sources import RandomInputSource
 from physicalai.inference import InferenceModel
 
 
-class InferenceBenchmark:
+class InferenceLatencyBenchmark:
     """Measure per-iteration inference latency of an :class:`InferenceModel`.
 
     The benchmark runs a configurable number of warmup iterations followed by
@@ -23,7 +23,7 @@ class InferenceBenchmark:
     summarized into a metrics dict.
 
     Examples:
-        >>> benchmark = InferenceBenchmark(max_iters=500, warmup_iters=5)
+        >>> benchmark = InferenceLatencyBenchmark(max_iters=500, warmup_iters=5)
         >>> metrics = benchmark.run(model, inputs)
         >>> metrics["median_iter_time"]
     """

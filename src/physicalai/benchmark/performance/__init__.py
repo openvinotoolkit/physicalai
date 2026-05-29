@@ -5,9 +5,9 @@
 
 Public API::
 
-    from physicalai.benchmark.performance import InferenceBenchmark
+    from physicalai.benchmark.performance import InferenceLatencyBenchmark
 """
 
-from physicalai.benchmark.performance.inference_benchmark import InferenceBenchmark
+from physicalai.benchmark.performance.inference_benchmark import InferenceLatencyBenchmark
 
-__all__ = ["InferenceBenchmark"]
+__all__ = ["InferenceLatencyBenchmark"]

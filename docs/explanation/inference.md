@@ -56,14 +56,14 @@ PolicyRuntime
 
 ## Performance Evaluation
 
-`InferenceBenchmark` measures per-chunk latency of an `InferenceModel` outside the runtime loop. It is intended for backend, device, and export-configuration comparisons; it is not a robot-loop profiler.
+`InferenceLatencyBenchmark` measures per-chunk latency of an `InferenceModel` outside the runtime loop. It is intended for backend, device, and export-configuration comparisons; it is not a robot-loop profiler.
 
 ```python
-from physicalai.benchmark.performance.inference_benchmark import InferenceBenchmark
+from physicalai.benchmark.performance.inference_benchmark import InferenceLatencyBenchmark
 from physicalai.inference import InferenceModel
 
 model = InferenceModel("./exports/act_policy", device="CPU")
-metrics = InferenceBenchmark(max_iters=500, warmup_iters=5).run(model)
+metrics = InferenceLatencyBenchmark(max_iters=500, warmup_iters=5).run(model)
 ```
 
 The run consists of a warmup phase followed by a measured loop bounded by both an iteration cap and a wall-clock budget, whichever is reached first.

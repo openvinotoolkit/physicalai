@@ -1,9 +1,9 @@
 # Benchmark API Reference
 
-## `InferenceBenchmark`
+## `InferenceLatencyBenchmark`
 
 ```python
-InferenceBenchmark(
+InferenceLatencyBenchmark(
     max_iters: int | None = 1000,
     warmup_iters: int = 1,
     max_duration: int | None = 60000,
