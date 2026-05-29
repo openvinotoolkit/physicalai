@@ -28,6 +28,7 @@ Training commands should come from training packages or entry-point plugins.
 [project.entry-points."physicalai.cli.subcommands"]
 fit = "physicalai.cli.fit:register"
 benchmark = "physicalai.cli.benchmark:register"
+export = "physicalai.cli.export:register"
 ```
 
 Importing `physicalai` should not pull in training dependencies.

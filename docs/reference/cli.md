@@ -35,4 +35,5 @@ validate = "physicalai.cli.validate:register"
 test = "physicalai.cli.test:register"
 predict = "physicalai.cli.predict:register"
 benchmark = "physicalai.cli.benchmark:register"
+export = "physicalai.cli.export:register"
 ```
