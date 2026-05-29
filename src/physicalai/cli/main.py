@@ -23,10 +23,11 @@ distribution ``Summary`` is used as a fallback.
 from __future__ import annotations
 
 import logging
+import pathlib
 import sys
 from typing import TYPE_CHECKING, cast
 
-from jsonargparse import ArgumentParser
+from jsonargparse import ArgumentParser, set_parsing_settings
 
 from physicalai.cli import run as run_cmd
 from physicalai.cli._discovery import discover_subcommands  # noqa: PLC2701
@@ -38,6 +39,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+set_parsing_settings(add_print_completion_argument=True)
+
 # Built-in subcommands shipped by the runtime distribution. Each maps a name to
 # its ``register()`` callable; help text is kept alongside so the top-level
 # ``--help`` listing never has to build (or import) a parser.
@@ -45,8 +48,10 @@ _BUILTINS: dict[str, Callable[[], SubcommandSpec]] = {
     "run": run_cmd.register,
 }
 _BUILTIN_HELP: dict[str, str] = {
+    "completion": "Print a shell completion script.",
     "run": run_cmd.HELP,
 }
+_COMPLETION_SHELLS = frozenset({"bash", "zsh", "fish"})
 
 
 def _resolve_register(
@@ -133,22 +138,23 @@ def _subcommand_help(entry_points: dict[str, EntryPoint]) -> dict[str, str]:
     return helps
 
 
-def _build_host_parser(helps: dict[str, str]) -> ArgumentParser:
+def _build_host_parser(helps: dict[str, str], prog: str) -> ArgumentParser:
     """Build a top-level parser exposing only subcommand *names* (no builders).
 
     Args:
         helps: ``{name: help}`` for every available subcommand.
+        prog: Program name to display in help and completion output.
 
     Returns:
         Parser whose ``--help`` lists every available subcommand without
         importing their parser builders.
     """
-    parser = ArgumentParser(prog="physicalai", description="PhysicalAI runtime CLI.")
+    parser = ArgumentParser(prog=prog, description="PhysicalAI runtime CLI.")
     subcommands = parser.add_subcommands(required=True)
     for name, help_text in helps.items():
         subcommands.add_subcommand(
             name,
-            ArgumentParser(prog=f"physicalai {name}", description=help_text),
+            ArgumentParser(prog=f"{prog} {name}", description=help_text),
             help=help_text,
         )
     return parser
@@ -167,6 +173,48 @@ def _select_subcommand(argv: Sequence[str], known: set[str]) -> str | None:
     return None
 
 
+def _print_completion(argv: Sequence[str], entry_points: dict[str, EntryPoint], prog: str) -> int:
+    """Print a shell completion script for the top-level CLI.
+
+    Args:
+        argv: Arguments after the ``completion`` subcommand.
+        entry_points: Discovered plugin subcommands to include in the script.
+        prog: Program name to register in the generated completion script.
+
+    Returns:
+        Process exit code.
+    """
+    parser = ArgumentParser(prog=f"{prog} completion", description=_BUILTIN_HELP["completion"])
+    parser.add_argument("shell", choices=sorted(_COMPLETION_SHELLS), help="Shell to generate completion for.")
+    cfg = parser.parse_args(argv)
+    host = _build_host_parser(_subcommand_help(entry_points), prog)
+    sys.stdout.write(_completion_script(host, cfg.shell, prog))
+    return 0
+
+
+def _completion_script(parser: ArgumentParser, shell: str, prog: str) -> str:
+    """Return a shell completion script suitable for interactive sourcing.
+
+    Args:
+        parser: Host parser to generate completion for.
+        shell: Shell name (`bash`, `zsh`, or `fish`).
+        prog: Program name being registered.
+
+    Returns:
+        Completion script text.
+    """
+    script = parser.get_completion_script(f"shtab-{shell}")
+    if shell != "zsh":
+        return script
+
+    register_block = f"\n\ntypeset -A opt_args\n\ncompdef _shtab_{prog} -N {prog}\n"
+    marker = "\n\ntypeset -A opt_args\n\nif [[ $zsh_eval_context[-1] == eval ]]; then\n"
+    if marker not in script:
+        return script
+    prefix = script.split(marker, maxsplit=1)[0]
+    return prefix + register_block
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Parse arguments and dispatch to the selected subcommand.
 
@@ -180,19 +228,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         AssertionError: If host parsing returns without selecting a subcommand.
     """
     argv_list = list(sys.argv[1:] if argv is None else argv)
-    entry_points = discover_subcommands(frozenset(_BUILTINS))
-    known = set(_BUILTINS) | set(entry_points)
+    prog = pathlib.Path(sys.argv[0]).name or "physicalai"
+    entry_points = discover_subcommands(frozenset(_BUILTIN_HELP))
+    known = set(_BUILTIN_HELP) | set(entry_points)
     selected = _select_subcommand(argv_list, known)
 
     if selected is None:
-        host = _build_host_parser(_subcommand_help(entry_points))
+        host = _build_host_parser(_subcommand_help(entry_points), prog)
         host.parse_args(argv_list)
         msg = "Host parser returned without selecting a subcommand."
         raise AssertionError(msg)
     selected_name = cast("str", selected)
+    sub_argv = argv_list[argv_list.index(selected_name) + 1 :]
+
+    if selected_name == "completion":
+        return _print_completion(sub_argv, entry_points, prog)
 
     spec = _load_spec(selected_name, entry_points)
-    sub_argv = argv_list[argv_list.index(selected_name) + 1 :]
     cfg = spec.parser.parse_args(sub_argv)
     return spec.dispatch(spec.parser, cfg)
 

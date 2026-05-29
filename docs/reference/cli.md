@@ -2,6 +2,9 @@
 
 The runtime CLI commands use the same schemas as the Python APIs.
 
+The canonical command is `physicalai`. A shorthand alias `pai` is also
+installed and behaves identically.
+
 ## `physicalai run`
 
 ```bash
@@ -19,6 +22,17 @@ The equivalent Python call is shown below.
 
 ```python
 PolicyRuntime.from_config("runtime.yaml").run(duration_s=60)
+```
+
+## Shell Completion
+
+Shell completion scripts can be printed directly from the CLI and sourced in
+your shell. Completion includes any installed plugin subcommands, such as the
+studio training commands.
+
+```bash
+source <(physicalai completion zsh)
+source <(pai completion bash)
 ```
 
 ## Plugin Commands

@@ -29,11 +29,12 @@ dependencies = [
     "onnxruntime",
     "openvino>=2026.0",
     "openvino_tokenizers>=2026.0",
-    "jsonargparse[signatures]>=4.36",
+    "jsonargparse[signatures,shtab]>=4.36",
 ]
 
 [project.scripts]
 physicalai = "physicalai.cli.main:main"
+pai = "physicalai.cli.main:main"
 
 [project.optional-dependencies]
 tests = ["pytest", "mypy"]
