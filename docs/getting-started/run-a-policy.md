@@ -34,6 +34,8 @@ The equivalent CLI command uses the same runtime configuration.
 physicalai run --config runtime.yaml --run.duration_s=60
 ```
 
+You can also use `--duration_s=60` as a shorthand compatibility alias.
+
 The minimal runtime configuration looks like this.
 
 ```yaml

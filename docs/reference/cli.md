@@ -8,12 +8,15 @@ The runtime CLI commands use the same schemas as the Python APIs.
 physicalai run --config runtime.yaml [--run.duration_s=60]
 ```
 
+`--duration_s=60` is also accepted as a backward-compatible alias.
+
 Arguments:
 
 | Argument           | Required | Description                              |
 | ------------------ | -------- | ---------------------------------------- |
 | `--config`         | yes      | Runtime config YAML                      |
 | `--run.duration_s` | no       | Stop after the given duration in seconds |
+| `--duration_s`     | no       | Backward-compatible alias for the same option |
 
 The equivalent Python call is shown below.
 

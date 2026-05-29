@@ -12,6 +12,8 @@ You can limit the run duration when needed.
 physicalai run --config runtime.yaml --run.duration_s=60
 ```
 
+If you have older examples, `--duration_s=60` still works as an alias.
+
 The equivalent Python call is shown below.
 
 ```python

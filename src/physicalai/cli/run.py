@@ -37,6 +37,12 @@ def build_parser() -> ArgumentParser:
     parser.add_argument("--config", action=ActionConfigFile, help="YAML/JSON config file.")
     parser.add_class_arguments(PolicyRuntime, "runtime")
     parser.add_method_arguments(PolicyRuntime, "run", "run")
+    parser.add_argument(
+        "--duration_s",
+        type=float,
+        default=None,
+        help="Compatibility alias for --run.duration_s.",
+    )
     return parser
 
 
@@ -53,6 +59,8 @@ def run(parser: ArgumentParser, cfg: Namespace) -> int:
     init = parser.instantiate(cfg)
     runtime: PolicyRuntime = init.runtime
     run_kwargs = cfg.run.as_dict() if hasattr(cfg, "run") else {}
+    if getattr(cfg, "duration_s", None) is not None and run_kwargs.get("duration_s") is None:
+        run_kwargs["duration_s"] = cfg.duration_s
 
     with runtime:
         stats = runtime.run(**run_kwargs)
