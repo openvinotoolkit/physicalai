@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from physicalai.runtime._action_queue import ChunkedActionQueue as ActionQueue
+from physicalai.runtime._action_queue import ChunkedActionQueue as ActionQueue, ChunkedActionQueue
 from physicalai.runtime.execution import SyncExecution, WorkerDiedError
 from physicalai.runtime.runtime import PolicyRuntime, RunStats
 
@@ -27,6 +27,10 @@ class FakeRobotObservation:
     timestamp: float
     sensor_data: dict[str, np.ndarray] | None
     images: dict | None
+
+    @property
+    def state(self) -> np.ndarray:
+        return self.joint_positions
 
 
 def _make_mock_robot(joint_positions: np.ndarray | None = None) -> MagicMock:
@@ -74,7 +78,7 @@ class TestPolicyRuntime:
         robot = _make_mock_robot()
         model = _make_mock_model(chunk_size=20, action_dim=3)
         execution = SyncExecution()
-        queue = ActionQueue()
+        queue=ChunkedActionQueue()
 
         runtime = _make_runtime(
             robot=robot,
@@ -87,6 +91,7 @@ class TestPolicyRuntime:
         with patch("physicalai.runtime.runtime.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
+            mock_time.time.return_value = 0.0
             stats = runtime.run(duration_s=0.5)
 
         assert stats.steps == 5
@@ -99,7 +104,7 @@ class TestPolicyRuntime:
         model.predict_action_chunk.side_effect = _exhaustible_side_effect([chunk], action_dim=2)
 
         execution = SyncExecution()
-        queue = ActionQueue()
+        queue=ChunkedActionQueue()
 
         runtime = _make_runtime(
             robot=robot,
@@ -112,6 +117,7 @@ class TestPolicyRuntime:
         with patch("physicalai.runtime.runtime.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
+            mock_time.time.return_value = 0.0
             stats = runtime.run(duration_s=0.4)
 
         assert stats.steps == 4
@@ -127,7 +133,7 @@ class TestPolicyRuntime:
         execution.maybe_request.side_effect = WorkerDiedError("dead")
         execution.stop = MagicMock()
 
-        queue = ActionQueue()
+        queue=ChunkedActionQueue()
         queue.push_chunk(np.random.randn(4, 3).astype(np.float32))
 
         runtime = _make_runtime(
@@ -141,6 +147,7 @@ class TestPolicyRuntime:
         with patch("physicalai.runtime.runtime.time") as mock_time, pytest.raises(WorkerDiedError, match="dead"):
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
+            mock_time.time.return_value = 0.0
             runtime.run(duration_s=1.0)
 
     def test_shutdown_does_not_disconnect(self) -> None:
@@ -158,6 +165,7 @@ class TestPolicyRuntime:
         with patch("physicalai.runtime.runtime.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
+            mock_time.time.return_value = 0.0
             runtime.run(duration_s=0.1)
 
         robot.disconnect.assert_not_called()
@@ -197,6 +205,7 @@ class TestRuntimeCallback:
         with patch("physicalai.runtime.runtime.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
+            mock_time.time.return_value = 0.0
             runtime.run(duration_s=0.2)
 
         assert callback.before_send_action.call_count == 2
@@ -219,6 +228,7 @@ class TestRuntimeCallback:
         with patch("physicalai.runtime.runtime.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
+            mock_time.time.return_value = 0.0
             stats = runtime.run(duration_s=0.3)
 
         assert stats.steps == 3
@@ -245,6 +255,7 @@ class TestRuntimeCallback:
         with patch("physicalai.runtime.runtime.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
+            mock_time.time.return_value = 0.0
             runtime.run(duration_s=0.3)
 
         assert callback.on_hold.call_count >= 1

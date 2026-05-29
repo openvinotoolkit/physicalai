@@ -25,6 +25,12 @@ Physical AI Runtime provides the deployment-side components for running trained 
 - **Inference Engine** — Load exported policies from Studio with auto-detected backends
 - **Policy Runtime** — Control loop with observation building and action dispatch
 
+---
+
+<p align="center">
+  <img src="docs/assets/inference_rerun.gif" alt="Inference demo" width="100%">
+</p>
+
 ## Installation
 
 ```bash

@@ -7,12 +7,16 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, Self, runtime_checkable
 
 import numpy as np
 
+from physicalai.capture.errors import CaptureError
 from physicalai.runtime._action_queue import ChunkedActionQueue  # noqa: PLC2701
+from physicalai.runtime._callback_bus import _CallbackBus  # noqa: PLC2701
+from physicalai.runtime.events import LifecycleEvent, TickEvent
 from physicalai.runtime.execution import Execution, WorkerDiedError
 from physicalai.runtime.smoothers import LerpSmoother
 
@@ -20,12 +24,19 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from physicalai.capture.camera import Camera
+    from physicalai.capture.frame import Frame
     from physicalai.inference.model import InferenceModel
-    from physicalai.robot.interface import Robot
+    from physicalai.robot.interface import Robot, RobotObservation
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_LERP_FRAMES = 5
+_MAX_OBS_RETRIES = 3
+_MAX_SEND_RETRIES = 2
+_RETRY_BACKOFF_S = 0.001
+_WARMUP_RETRIES = 5
+_WARMUP_BACKOFF_S = 1.0
+_GOAL_TIME_TICKS = 3
 
 
 @runtime_checkable
@@ -66,6 +77,14 @@ class ActionQueue(Protocol):
 
     def clear(self) -> None:
         """Clear all state from the queue."""
+        ...
+
+    def push_chunk(self, chunk: np.ndarray, offset: int = 0) -> None:
+        """Push an action chunk into the queue."""
+        ...
+
+    def reset(self) -> None:
+        """Clear queue and reset all counters for a fresh session."""
         ...
 
 
@@ -163,6 +182,7 @@ class PolicyRuntime:
         cameras: Mapping[str, Camera] | None = None,
         action_queue: ActionQueue | None = None,
         callbacks: Sequence[RuntimeCallback] = (),
+        task: str | None = None,
     ) -> None:
         if fps <= 0:
             msg = f"fps must be positive, got {fps}"
@@ -175,9 +195,27 @@ class PolicyRuntime:
         self._action_queue = action_queue or ChunkedActionQueue(
             smoother=LerpSmoother(duration_frames=_DEFAULT_LERP_FRAMES)
         )
-        self._callbacks = list(callbacks)
-        self._goal_time = (1.0 / fps) * 3
+        self._bus = _CallbackBus(callbacks)
+        self._goal_time = (1.0 / fps) * _GOAL_TIME_TICKS
+        self._task = task
         self._connected = False
+        self._last_robot_obs: RobotObservation | None = None
+        self._last_camera_frames: dict[str, Frame] = {}
+        self._consecutive_error_ticks: int = 0
+        self._max_consecutive_error_ticks: int = int(3 * fps)
+        self._stale_obs_ticks: int = 0
+        self._transient_errors: int = 0
+        self._session_id: str = ""
+
+    @property
+    def robot(self) -> Robot:
+        """The robot instance managed by this runtime."""
+        return self._robot
+
+    @property
+    def cameras(self) -> Mapping[str, Camera]:
+        """Camera instances managed by this runtime, keyed by name."""
+        return self._cameras
 
     def connect(self) -> None:
         """Connect robot and cameras.
@@ -238,7 +276,7 @@ class PolicyRuntime:
     def __exit__(self, *exc_info: object) -> None:  # noqa: D105
         self.disconnect()
 
-    def run(self, *, duration_s: float | None = None) -> RunStats:
+    def run(self, *, duration_s: float | None = None) -> RunStats:  # noqa: PLR0915
         """Run the control loop.
 
         Args:
@@ -254,13 +292,30 @@ class PolicyRuntime:
         if not self._connected:
             msg = "PolicyRuntime.run() called before connect(). Use 'with runtime:' or call runtime.connect() first."
             raise RuntimeError(msg)
+
+        self._reset_session()
+
+        self._execution.set_bus(self._bus, self._session_id)
         self._execution.start(self._model, self._action_queue)  # type: ignore[arg-type]
-        sample_obs = self._build_model_input()
-        self._execution.warmup(sample_obs)
+        self._bus.emit_lifecycle(
+            LifecycleEvent(
+                session_id=self._session_id,
+                timestamp=time.time(),
+                event="start",
+                metadata={
+                    "fps": self._fps,
+                    "duration_s": duration_s,
+                    "cameras": list(self._cameras.keys()),
+                    "joint_names": self._robot.joint_names,
+                },
+            )
+        )
+        self._warmup_with_retry()
 
         goal_time = 1.0 / self._fps
         step = 0
         last_action: np.ndarray | None = None
+        stale_this_tick = False
 
         try:
             while True:
@@ -268,9 +323,12 @@ class PolicyRuntime:
                     break
 
                 loop_start = time.perf_counter()
+                stale_this_tick = False
 
-                obs = self._build_model_input()
-                self._execution.maybe_request(obs)
+                robot_obs, camera_frames = self._resilient_observe()
+                if self._consecutive_error_ticks > 0:
+                    stale_this_tick = True
+                self._execution.maybe_request(self._build_model_input_from(robot_obs, camera_frames))
 
                 action = self._action_queue.pop()
                 if action is not None:
@@ -285,14 +343,30 @@ class PolicyRuntime:
                     step += 1
                     continue
 
-                modified = self._invoke_callback("before_send_action", action=action, step=step)
-                if modified is not None:
-                    action = modified
+                action = self._bus.invoke_before_send_action(action=action, step=step)
 
-                self._robot.send_action(action, goal_time=self._goal_time)
-                self._invoke_callback("on_action_sent", action=action, step=step)
-                self._tick_sleep(loop_start, goal_time)
+                self._resilient_send(action)
+                self._bus.invoke_on_action_sent(action=action, step=step)
 
+                elapsed = time.perf_counter() - loop_start
+                sleep_time = goal_time - elapsed
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+
+                self._bus.emit_tick(
+                    TickEvent(
+                        session_id=self._session_id,
+                        step=step,
+                        timestamp=time.time(),
+                        robot_observation=robot_obs,
+                        camera_frames=camera_frames,
+                        action_sent=action,
+                        queue_remaining=self._action_queue.remaining,
+                        loop_duration_s=elapsed,
+                        sleep_time_s=max(sleep_time, 0.0),
+                        stale_obs=stale_this_tick,
+                    )
+                )
                 step += 1
 
         except KeyboardInterrupt:
@@ -308,6 +382,8 @@ class PolicyRuntime:
             total_pops=self._action_queue.total_pops,
             total_holds=self._action_queue.total_holds,
             inference_count=getattr(self._execution, "inference_count", 0),
+            transient_errors=self._transient_errors,
+            stale_obs_ticks=self._stale_obs_ticks,
         )
 
     def _handle_hold(self, *, step: int) -> None:
@@ -322,21 +398,29 @@ class PolicyRuntime:
                     holds,
                     holds / self._fps,
                 )
-        self._invoke_callback("on_hold", step=step, holds=holds)
+        self._bus.invoke_on_hold(step=step, holds=holds)
+
+    def _reset_session(self) -> None:
+        """Reset all session-scoped state for a fresh run."""
+        self._session_id = uuid.uuid4().hex[:8]
+        self._last_robot_obs = None
+        self._last_camera_frames = {}
+        self._consecutive_error_ticks = 0
+        self._stale_obs_ticks = 0
+        self._transient_errors = 0
+        self._action_queue.reset()
 
     @staticmethod
-    def _tick_sleep(loop_start: float, goal_time: float) -> None:
+    def _tick_sleep(loop_start: float, goal_time: float) -> tuple[float, float]:
         elapsed = time.perf_counter() - loop_start
         sleep_time = goal_time - elapsed
         if sleep_time > 0:
             time.sleep(sleep_time)
+        return elapsed, sleep_time
 
     def _build_model_input(self) -> dict[str, Any]:
         robot_obs = self._robot.get_observation()
-        model_input: dict[str, Any] = {}
-
-        if robot_obs.joint_positions is not None:
-            model_input["state"] = np.array([robot_obs.joint_positions], dtype=np.float32)
+        model_input: dict[str, Any] = {"state": np.array([robot_obs.state], dtype=np.float32)}
 
         # Merge robot-embedded images and external cameras
         if robot_obs.images:
@@ -345,7 +429,178 @@ class PolicyRuntime:
         for name, cam in self._cameras.items():
             model_input[f"images.{name}"] = cam.read_latest().data[np.newaxis]
 
+        if self._task is not None:
+            model_input["task"] = [self._task]
+
         return model_input
+
+    def _retry_robot_obs(self) -> tuple[RobotObservation | None, ConnectionError | OSError | None]:
+        robot_obs: RobotObservation | None = None
+        last_error: ConnectionError | OSError | None = None
+        for attempt in range(_MAX_OBS_RETRIES):
+            try:
+                robot_obs = self._robot.get_observation()
+            except (ConnectionError, OSError) as exc:
+                last_error = exc
+                if attempt + 1 < _MAX_OBS_RETRIES:
+                    time.sleep(_RETRY_BACKOFF_S)
+            else:
+                break
+        return robot_obs, last_error
+
+    def _resilient_observe(self) -> tuple[RobotObservation, dict[str, Frame]]:
+        """Read robot observation and camera frames with retry and stale fallback.
+
+        Returns:
+            Tuple of (robot observation, camera frames keyed by name).
+
+        Raises:
+            ConnectionError: If robot observation fails with no stale fallback or
+                max consecutive errors exceeded.
+            CaptureError: If a camera read fails and no stale frame is available.
+        """
+        robot_obs, last_robot_error = self._retry_robot_obs()
+
+        if robot_obs is None:
+            if self._last_robot_obs is None:
+                self._bus.emit_lifecycle(
+                    LifecycleEvent(
+                        session_id=self._session_id,
+                        timestamp=time.time(),
+                        event="connection_lost",
+                        metadata={"error": str(last_robot_error)},
+                    )
+                )
+                msg = "Robot observation failed and no stale observation available"
+                raise ConnectionError(msg) from last_robot_error
+
+            self._consecutive_error_ticks += 1
+            self._stale_obs_ticks += 1
+            if self._consecutive_error_ticks >= self._max_consecutive_error_ticks:
+                self._bus.emit_lifecycle(
+                    LifecycleEvent(
+                        session_id=self._session_id,
+                        timestamp=time.time(),
+                        event="connection_lost",
+                        metadata={"error": str(last_robot_error)},
+                    )
+                )
+                msg = "Exceeded max consecutive robot observation failures"
+                raise ConnectionError(msg) from last_robot_error
+
+            self._bus.emit_lifecycle(
+                LifecycleEvent(
+                    session_id=self._session_id,
+                    timestamp=time.time(),
+                    event="obs_error",
+                    metadata={"error": str(last_robot_error), "stale": True},
+                )
+            )
+            robot_obs = self._last_robot_obs
+        else:
+            self._consecutive_error_ticks = 0
+            self._last_robot_obs = robot_obs
+
+        camera_frames: dict[str, Frame] = {}
+        for name, camera in self._cameras.items():
+            try:
+                frame = camera.read_latest()
+                camera_frames[name] = frame
+                self._last_camera_frames[name] = frame
+            except CaptureError as exc:
+                stale_frame = self._last_camera_frames.get(name)
+                if stale_frame is None:
+                    raise
+                logger.warning(
+                    "Camera %s read failed — using stale frame: %s",
+                    name,
+                    exc,
+                )
+                camera_frames[name] = stale_frame
+
+        return robot_obs, camera_frames
+
+    def _build_model_input_from(self, robot_obs: RobotObservation, camera_frames: dict[str, Frame]) -> dict[str, Any]:
+        """Assemble model input dict from observation and camera frames.
+
+        Returns:
+            Dictionary ready to pass to the inference model.
+        """
+        model_input: dict[str, Any] = {"state": np.array([robot_obs.state], dtype=np.float32)}
+        if robot_obs.images:
+            for name, frame in robot_obs.images.items():
+                model_input[f"images.{name}"] = frame.data[np.newaxis]
+        for name, frame in camera_frames.items():
+            model_input[f"images.{name}"] = frame.data[np.newaxis]
+        if self._task is not None:
+            model_input["task"] = [self._task]
+        return model_input
+
+    def _resilient_send(self, action: np.ndarray) -> None:
+        last_error: ConnectionError | OSError | None = None
+
+        for attempt in range(_MAX_SEND_RETRIES):
+            try:
+                self._robot.send_action(action, goal_time=self._goal_time)
+            except (ConnectionError, OSError) as exc:
+                last_error = exc
+                if attempt + 1 < _MAX_SEND_RETRIES:
+                    time.sleep(_RETRY_BACKOFF_S)
+            else:
+                self._consecutive_error_ticks = 0
+                return
+
+        self._transient_errors += 1
+        self._consecutive_error_ticks += 1
+        if self._consecutive_error_ticks >= self._max_consecutive_error_ticks:
+            self._bus.emit_lifecycle(
+                LifecycleEvent(
+                    session_id=self._session_id,
+                    timestamp=time.time(),
+                    event="connection_lost",
+                    metadata={"error": str(last_error), "source": "send"},
+                )
+            )
+            msg = "Exceeded max consecutive send failures"
+            raise ConnectionError(msg) from last_error
+        self._bus.emit_lifecycle(
+            LifecycleEvent(
+                session_id=self._session_id,
+                timestamp=time.time(),
+                event="send_error",
+                metadata={"error": str(last_error)},
+            )
+        )
+        logger.error(
+            "Failed to send action after %d attempts; skipping tick: %s",
+            _MAX_SEND_RETRIES,
+            last_error,
+        )
+
+    def _warmup_with_retry(self) -> None:
+        last_error: ConnectionError | OSError | None = None
+
+        for attempt in range(_WARMUP_RETRIES):
+            try:
+                sample_obs = self._build_model_input()
+                self._execution.warmup(sample_obs)
+            except (ConnectionError, OSError) as exc:
+                last_error = exc
+                if attempt + 1 < _WARMUP_RETRIES:
+                    time.sleep(_WARMUP_BACKOFF_S)
+            else:
+                return
+
+        msg = f"Warmup failed after {_WARMUP_RETRIES} attempts"
+        self._bus.emit_lifecycle(
+            LifecycleEvent(
+                session_id=self._session_id,
+                timestamp=time.time(),
+                event="warmup_failed",
+                metadata={"error": str(last_error), "attempts": _WARMUP_RETRIES},
+            )
+        )
+        raise ConnectionError(msg) from last_error
 
     def _shutdown(self, step: int) -> None:
         self._execution.stop()
@@ -355,8 +610,26 @@ class PolicyRuntime:
         for _ in range(drain_limit):
             action = self._action_queue.pop()
             if action is not None:
-                self._robot.send_action(action)
+                try:
+                    self._resilient_send(action)
+                except ConnectionError:
+                    logger.warning("Send failed during drain; skipping remaining actions")
+                    break
                 time.sleep(1.0 / self._fps)
+
+        self._bus.emit_lifecycle(
+            LifecycleEvent(
+                session_id=self._session_id,
+                timestamp=time.time(),
+                event="shutdown",
+                metadata={
+                    "steps": step,
+                    "transient_errors": self._transient_errors,
+                    "stale_obs_ticks": self._stale_obs_ticks,
+                },
+            )
+        )
+        self._bus.close()
 
         logger.info(
             "Shutdown complete — %d steps, %d pops, %d holds",
@@ -364,18 +637,3 @@ class PolicyRuntime:
             self._action_queue.total_pops,
             self._action_queue.total_holds,
         )
-
-    def _invoke_callback(self, method: str, **kwargs: Any) -> Any:  # noqa: ANN401
-        result = None
-        for cb in self._callbacks:
-            fn = getattr(cb, method, None)
-            if fn is not None:
-                try:
-                    callback_result = fn(**kwargs)
-                    if callback_result is not None:
-                        result = callback_result
-                        if method == "before_send_action":
-                            kwargs["action"] = callback_result
-                except Exception:
-                    logger.exception("Callback %s.%s raised", type(cb).__name__, method)
-        return result

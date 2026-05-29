@@ -23,7 +23,10 @@ from physicalai.capture.errors import (
     MissingDependencyError,
     NotConnectedError,
 )
-from physicalai.capture.factory import create_camera
+from physicalai.capture.factory import (
+    create_camera,
+    select_cameras_interactive,
+)
 from physicalai.capture.frame import Frame
 from physicalai.capture.mixins import DepthMixin
 from physicalai.capture.multi import SyncedFrames, async_read_cameras, read_cameras
@@ -56,6 +59,7 @@ __all__ = [  # noqa: RUF022
     "create_camera",
     "discover_all",
     "read_cameras",
+    "select_cameras_interactive",
     # Concrete cameras (lazy-loaded)
     "IPCamera",
     "RealSenseCamera",

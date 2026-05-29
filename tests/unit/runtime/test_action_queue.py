@@ -56,6 +56,35 @@ class TestChunkedActionQueue:
         queue.pop()
         assert queue.remaining == 1
 
+    def test_peek_remaining_returns_copy(self) -> None:
+        queue=ChunkedActionQueue()
+        chunk = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
+        queue.push_chunk(chunk)
+
+        peeked = queue.peek_remaining()
+
+        assert peeked is not None
+        np.testing.assert_array_equal(peeked, chunk)
+        assert queue.remaining == 2
+
+        action = queue.pop()
+        assert action is not None
+        np.testing.assert_array_equal(action, chunk[0])
+
+    def test_peek_remaining_empty_returns_none(self) -> None:
+        queue=ChunkedActionQueue()
+        assert queue.peek_remaining() is None
+
+    def test_peek_remaining_shape(self) -> None:
+        queue=ChunkedActionQueue()
+        chunk = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
+        queue.push_chunk(chunk)
+
+        peeked = queue.peek_remaining()
+
+        assert peeked is not None
+        assert peeked.shape == (2, 3)
+
     def test_below_threshold(self) -> None:
         queue = ChunkedActionQueue()
         assert queue.below_threshold(1) is True

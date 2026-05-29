@@ -52,6 +52,7 @@ abb = []
 franka = []
 trossen = ["trossen-arm>=1.9.0"]
 so101 = ["feetech-servo-sdk"]
+observer-rerun = ["rerun-sdk>=0.22"]
 robots = [
     "physicalai[ur]",
     "physicalai[abb]",

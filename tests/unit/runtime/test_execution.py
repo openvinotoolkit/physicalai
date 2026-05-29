@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from physicalai.runtime._action_queue import ChunkedActionQueue as ActionQueue
+from physicalai.runtime._action_queue import ChunkedActionQueue as ActionQueue, ChunkedActionQueue
 from physicalai.runtime.execution import AsyncExecution, SyncExecution, WorkerDiedError
 
 
@@ -23,7 +23,7 @@ class TestSyncExecution:
     def test_warmup_seeds_queue_and_discovers_chunk_size(self) -> None:
         chunk = np.random.randn(8, 3).astype(np.float32)
         model = _make_mock_model(chunk)
-        queue = ActionQueue()
+        queue=ChunkedActionQueue()
         ex = SyncExecution()
         obs = {"state": np.zeros(3)}
 
@@ -37,7 +37,7 @@ class TestSyncExecution:
     def test_maybe_request_refills_when_empty(self) -> None:
         chunk = np.random.randn(4, 2).astype(np.float32)
         model = _make_mock_model(chunk)
-        queue = ActionQueue()
+        queue=ChunkedActionQueue()
         ex = SyncExecution()
         obs = {"state": np.zeros(2)}
 
@@ -58,7 +58,7 @@ class TestSyncExecution:
     def test_maybe_request_does_not_refill_when_nonempty(self) -> None:
         chunk = np.random.randn(4, 2).astype(np.float32)
         model = _make_mock_model(chunk)
-        queue = ActionQueue()
+        queue=ChunkedActionQueue()
         ex = SyncExecution()
         obs = {"state": np.zeros(2)}
 
@@ -74,12 +74,26 @@ class TestSyncExecution:
         ex = SyncExecution()
         ex.stop()
 
+    def test_inference_count_increments(self) -> None:
+        chunk = np.random.randn(4, 2).astype(np.float32)
+        model = _make_mock_model(chunk)
+        queue=ChunkedActionQueue()
+        ex = SyncExecution()
+        obs = {"state": np.zeros(2)}
+
+        ex.start(model, queue)
+        ex.warmup(obs)
+        for _ in range(4):
+            queue.pop()
+        ex.maybe_request(obs)
+        assert ex.inference_count == 1
+
 
 class TestAsyncExecution:
     def test_start_spawns_thread(self) -> None:
         model = _make_mock_model()
-        queue = ActionQueue()
-        ex = AsyncExecution(fps=10)
+        queue=ChunkedActionQueue()
+        ex = AsyncExecution()
 
         ex.start(model, queue)
         assert ex.alive is True
@@ -88,8 +102,8 @@ class TestAsyncExecution:
     def test_warmup_seeds_queue(self) -> None:
         chunk = np.random.randn(6, 4).astype(np.float32)
         model = _make_mock_model(chunk)
-        queue = ActionQueue()
-        ex = AsyncExecution(fps=10)
+        queue=ChunkedActionQueue()
+        ex = AsyncExecution()
 
         ex.start(model, queue)
         obs = {"state": np.zeros(4)}
@@ -102,8 +116,8 @@ class TestAsyncExecution:
     def test_maybe_request_submits_when_below_threshold(self) -> None:
         chunk = np.random.randn(10, 2).astype(np.float32)
         model = _make_mock_model(chunk)
-        queue = ActionQueue()
-        ex = AsyncExecution(threshold=0.5, fps=10)
+        queue=ChunkedActionQueue()
+        ex = AsyncExecution(request_threshold=0.5)
 
         ex.start(model, queue)
         obs = {"state": np.zeros(2)}
@@ -123,8 +137,8 @@ class TestAsyncExecution:
     def test_defensive_copy_of_observation(self) -> None:
         chunk = np.random.randn(4, 2).astype(np.float32)
         model = _make_mock_model(chunk)
-        queue = ActionQueue()
-        ex = AsyncExecution(threshold=0.5, fps=10)
+        queue=ChunkedActionQueue()
+        ex = AsyncExecution(request_threshold=0.5)
 
         ex.start(model, queue)
         obs = {"state": np.zeros(2)}
@@ -150,8 +164,8 @@ class TestAsyncExecution:
             np.random.randn(4, 2).astype(np.float32),
             ValueError("model exploded"),
         ]
-        queue = ActionQueue()
-        ex = AsyncExecution(threshold=0.5, fps=10)
+        queue=ChunkedActionQueue()
+        ex = AsyncExecution(request_threshold=0.5)
 
         ex.start(model, queue)
         obs = {"state": np.zeros(2)}
@@ -170,8 +184,8 @@ class TestAsyncExecution:
 
     def test_stop_signals_and_joins(self) -> None:
         model = _make_mock_model()
-        queue = ActionQueue()
-        ex = AsyncExecution(fps=10)
+        queue=ChunkedActionQueue()
+        ex = AsyncExecution()
 
         ex.start(model, queue)
         assert ex.alive is True
@@ -183,8 +197,8 @@ class TestAsyncExecution:
     def test_health_properties(self) -> None:
         chunk = np.random.randn(4, 2).astype(np.float32)
         model = _make_mock_model(chunk)
-        queue = ActionQueue()
-        ex = AsyncExecution(fps=10)
+        queue=ChunkedActionQueue()
+        ex = AsyncExecution()
 
         ex.start(model, queue)
         obs = {"state": np.zeros(2)}
@@ -208,7 +222,6 @@ class TestAsyncExecution:
         model = _make_mock_model(chunk)
 
         call_count = 0
-        original_side_effect = None
 
         def slow_predict(obs: dict) -> np.ndarray:
             nonlocal call_count
@@ -218,8 +231,8 @@ class TestAsyncExecution:
             return chunk
 
         model.predict_action_chunk.side_effect = slow_predict
-        queue = ActionQueue()
-        ex = AsyncExecution(threshold=0.5, fps=10, watchdog_timeout_s=0.1)
+        queue=ChunkedActionQueue()
+        ex = AsyncExecution(request_threshold=0.5, watchdog_timeout_s=0.1)
 
         ex.start(model, queue)
         obs = {"state": np.zeros(2)}

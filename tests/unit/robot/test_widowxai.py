@@ -255,7 +255,7 @@ class TestWidowXAIAction:
         """ValueError on wrong action shape."""
         robot = _create_robot(mock_trossen_arm, role="follower")
 
-        with pytest.raises(ValueError, match="Expected action shape"):
+        with pytest.raises(ValueError, match="Expected at least"):
             robot.send_action(np.zeros(3, dtype=np.float32))  # type: ignore[union-attr]
 
     def test_send_action_accepts_degrees_and_sends_radians(self, mock_trossen_arm: MagicMock) -> None:

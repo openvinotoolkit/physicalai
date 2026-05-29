@@ -25,8 +25,9 @@ class ChunkedActionQueue:
     def push_chunk(self, chunk: np.ndarray, offset: int = 0) -> None:
         """Push an action chunk, blending with remaining actions via the smoother."""
         with self._lock:
+            incoming = chunk[offset:]
             remaining = np.stack(list(self._deque)) if self._deque else np.empty((0, chunk.shape[1]), dtype=chunk.dtype)
-            merged = self._smoother.merge(remaining, chunk, offset)
+            merged = self._smoother.merge(remaining, incoming)
             self._deque.clear()
             self._deque.extend(merged)
 
@@ -44,6 +45,13 @@ class ChunkedActionQueue:
             self._consecutive_holds = 0
             self._total_pops += 1
             return self._deque.popleft()
+
+    def peek_remaining(self) -> np.ndarray | None:
+        """Return copy of remaining actions without consuming them. Thread-safe."""
+        with self._lock:
+            if not self._deque:
+                return None
+            return np.stack(list(self._deque))
 
     @property
     def remaining(self) -> int:
@@ -70,3 +78,11 @@ class ChunkedActionQueue:
         with self._lock:
             self._deque.clear()
             self._consecutive_holds = 0
+
+    def reset(self) -> None:
+        """Clear queue and reset all counters for a fresh session."""
+        with self._lock:
+            self._deque.clear()
+            self._consecutive_holds = 0
+            self._total_holds = 0
+            self._total_pops = 0
