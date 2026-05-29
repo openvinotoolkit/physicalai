@@ -79,7 +79,7 @@ def _load_spec(name: str, entry_points: dict[str, EntryPoint]) -> SubcommandSpec
     spec = _resolve_register(name, entry_points)()
     if not isinstance(spec, SubcommandSpec):
         msg = (
-            f"Entry point '{name}' for group 'physicalai.cli.subcommands' returned "
+            f"Subcommand '{name}' register() returned "
             f"{type(spec).__name__}, expected SubcommandSpec."
         )
         raise TypeError(msg)
@@ -190,7 +190,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     if selected is None:
         host = _build_host_parser(_subcommand_help(entry_points))
         host.parse_args(argv_list)
-        return 0
 
     spec = _load_spec(selected, entry_points)
     sub_argv = argv_list[argv_list.index(selected) + 1 :]
