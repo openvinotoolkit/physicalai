@@ -35,12 +35,20 @@ class DeviceInfo(BaseModel):
     metadata: dict[str, Any] | None = Field(default=None, description="Backend-specific extras.")
 
 
-def discover_all() -> dict[str, list[DeviceInfo]]:
+def discover_all(*, only_usable: bool = True) -> dict[str, list[DeviceInfo]]:
     """Discover available cameras across all supported camera types.
 
     Each camera type is tried independently; failures are silently
     skipped so that a missing SDK does not prevent discovery of other
     camera types.
+
+    Args:
+        only_usable: When True (default), only return devices that can
+            actually be opened.  For UVC cameras, devices already in use
+            by another process will not appear in the results.  Set to
+            False to include all detected devices regardless of
+            availability.  Only applies to backends that support this
+            filter (currently UVC).
 
     Returns:
         Dict mapping camera type name to list of discovered devices.
@@ -52,7 +60,7 @@ def discover_all() -> dict[str, list[DeviceInfo]]:
     with contextlib.suppress(Exception):
         from physicalai.capture.cameras.uvc import discover_uvc  # noqa: PLC0415
 
-        results["uvc"] = discover_uvc()
+        results["uvc"] = discover_uvc(only_usable=only_usable)
 
     with contextlib.suppress(Exception):
         from physicalai.capture.cameras.ip import IPCamera  # noqa: PLC0415

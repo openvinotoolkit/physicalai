@@ -36,7 +36,7 @@ from physicalai.inference import InferenceModel
 from physicalai.runtime import (
     ActionQueue,
     PolicyRuntime,
-    RerunCallback,
+    RerunCallback, ChunkedActionQueue,
 )
 from physicalai.runtime.execution import SyncExecution
 
@@ -127,7 +127,7 @@ def main() -> None:
         robot=robot,
         model=model,
         execution=SyncExecution(request_threshold=args.request_threshold),
-        action_queue=ActionQueue(),  # no smoother — raw chunk playback
+        action_queue=ChunkedActionQueue(),  # no smoother — raw chunk playback
         cameras=cameras,
         fps=args.fps,
         callbacks=callbacks,

@@ -13,7 +13,6 @@ import pytest
 
 from physicalai.capture import Frame
 from physicalai.capture.errors import CaptureError
-from physicalai.runtime._action_queue import ActionQueue
 from physicalai.runtime.execution import SyncExecution
 from physicalai.runtime.runtime import (
     PolicyRuntime,

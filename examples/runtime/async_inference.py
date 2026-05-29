@@ -44,8 +44,8 @@ import signal
 from physicalai.capture import select_cameras_interactive
 from physicalai.inference import InferenceModel
 from physicalai.runtime import (
-    ActionQueue,
     AsyncExecution,
+    ChunkedActionQueue,
     LerpSmoother,
     PolicyRuntime,
     RerunCallback,
@@ -149,7 +149,7 @@ def main() -> None:
         robot=robot,
         model=model,
         execution=AsyncExecution(request_threshold=args.request_threshold),
-        action_queue=ActionQueue(smoother=LerpSmoother(duration_frames=args.lerp_frames)),
+        action_queue=ChunkedActionQueue(smoother=LerpSmoother(duration_frames=args.lerp_frames)),
         cameras=cameras,
         fps=args.fps,
         callbacks=callbacks,

@@ -11,7 +11,7 @@ import numpy as np
 from physicalai.runtime.smoothers import ChunkSmoother, ReplaceSmoother
 
 
-class ActionQueue:
+class ChunkedActionQueue:
     """Thread-safe action queue with chunk smoothing."""
 
     def __init__(self, smoother: ChunkSmoother | None = None) -> None:

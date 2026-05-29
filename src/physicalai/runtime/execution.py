@@ -9,14 +9,15 @@ import logging
 import threading
 import time
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 
 if TYPE_CHECKING:
     from physicalai.inference.model import InferenceModel
-    from physicalai.runtime._action_queue import ActionQueue
+    from physicalai.runtime._action_queue import ChunkedActionQueue
     from physicalai.runtime._callback_bus import _CallbackBus
+    from physicalai.runtime.runtime import ActionQueue
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ class SyncExecution(Execution):
                 the entire chunk before re-inferring.
         """
         self._model: InferenceModel | None = None
-        self._queue: ActionQueue | None = None
+        self._queue: ChunkedActionQueue | None = None
         self._chunk_size: int = 0
         self._threshold_frac = request_threshold
         self._threshold_count: int = 0
@@ -93,7 +94,7 @@ class SyncExecution(Execution):
     def start(self, model: InferenceModel, action_queue: ActionQueue) -> None:
         """Bind model and queue."""
         self._model = model
-        self._queue = action_queue
+        self._queue = cast("ChunkedActionQueue", action_queue)
 
     def warmup(self, sample_observation: dict[str, np.ndarray]) -> None:
         """Run one inference, seed queue, discover chunk_size.
@@ -170,7 +171,7 @@ class AsyncExecution(Execution):
         self._watchdog_timeout_s = watchdog_timeout_s
 
         self._model: InferenceModel | None = None
-        self._queue: ActionQueue | None = None
+        self._queue: ChunkedActionQueue | None = None
         self._chunk_size: int = 0
         self._threshold_count: int = 0
 
@@ -190,7 +191,7 @@ class AsyncExecution(Execution):
     def start(self, model: InferenceModel, action_queue: ActionQueue) -> None:
         """Bind model/queue and spawn inference thread."""
         self._model = model
-        self._queue = action_queue
+        self._queue = cast("ChunkedActionQueue", action_queue)
         self._thread = threading.Thread(target=self._run, name="InferenceThread", daemon=True)
         self._thread.start()
 

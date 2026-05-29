@@ -5,14 +5,12 @@
 
 from __future__ import annotations
 
-import json
-import warnings
+import re
 from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
 import numpy as np
-import yaml
 
 from physicalai.inference.adapters import adapter_registry, get_adapter
 from physicalai.inference.component_factory import instantiate_component, resolve_artifact
@@ -26,6 +24,16 @@ if TYPE_CHECKING:
     from physicalai.inference.postprocessors.base import Postprocessor
     from physicalai.inference.preprocessors.base import Preprocessor
     from physicalai.inference.runners.base import InferenceRunner
+
+
+# Policy names from the manifest are used to construct filesystem paths.
+# Restrict to safe characters to prevent "../" traversal attacks.
+_SAFE_POLICY_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.\-]*$", re.ASCII)
+
+
+def _is_safe_policy_name(name: str) -> bool:
+    """Return True if *name* matches ``[a-zA-Z0-9][a-zA-Z0-9-_.]*`` (ASCII only)."""
+    return _SAFE_POLICY_NAME_RE.fullmatch(name) is not None
 
 
 class InferenceModel:
@@ -72,7 +80,7 @@ class InferenceModel:
         Args:
             export_dir: Directory containing exported policy files
             policy_name: Policy name (auto-detected if None)
-            backend: Backend to use, or 'auto' to detect from metadata/files
+            backend: Backend to use, or 'auto' to detect from manifest/files
             device: Device for inference ('auto', 'cpu', 'cuda', 'CPU', 'GPU', etc.)
             runner: Execution runner override. If None, auto-selected from manifest.
             preprocessors: Pipeline stages applied to observations before the
@@ -85,7 +93,8 @@ class InferenceModel:
             **adapter_kwargs: Backend-specific configuration options
 
         Raises:
-            FileNotFoundError: If export directory or required files don't exist
+            FileNotFoundError: If export directory or required files don't exist.
+            ValueError: If ``policy_name`` contains invalid characters.
         """
         self.export_dir = Path(export_dir)
         if not self.export_dir.exists():
@@ -96,6 +105,12 @@ class InferenceModel:
 
         if policy_name is None:
             policy_name = self._detect_policy_name()
+        elif not _is_safe_policy_name(policy_name):
+            msg = (
+                f"policy_name {policy_name!r} contains invalid characters; "
+                "only alphanumeric characters, hyphens, underscores, and dots are allowed"
+            )
+            raise ValueError(msg)
         self.policy_name = policy_name
 
         if backend == "auto":
@@ -318,38 +333,15 @@ class InferenceModel:
         return inputs
 
     def _load_manifest(self) -> Manifest:
-        """Load export manifest from manifest.json, metadata.yaml, or metadata.json.
-
-        Tries ``manifest.json`` first (new format), then falls back to
-        ``metadata.yaml`` and ``metadata.json`` for backward compatibility.
+        """Load export manifest from ``manifest.json``.
 
         Returns:
-            Parsed Manifest instance.
+            Parsed Manifest instance, or an empty Manifest if no
+            ``manifest.json`` exists in the export directory.
         """
         manifest_path = self.export_dir / "manifest.json"
         if manifest_path.exists():
             return Manifest.load(manifest_path)
-
-        yaml_path = self.export_dir / "metadata.yaml"
-        json_path = self.export_dir / "metadata.json"
-        legacy_path = yaml_path if yaml_path.exists() else json_path if json_path.exists() else None
-
-        if legacy_path is not None:
-            warnings.warn(
-                f"Loading from '{legacy_path.name}' is deprecated. "
-                "Re-export your model to generate 'manifest.json'. "
-                "Legacy metadata support will be removed in a future release.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            if legacy_path.suffix == ".yaml":
-                with legacy_path.open(encoding="utf-8") as f:
-                    raw = yaml.safe_load(f) or {}
-            else:
-                with legacy_path.open(encoding="utf-8") as f:
-                    raw = json.load(f)
-            return Manifest.from_legacy_metadata(raw)
-
         return Manifest()
 
     def _load_processors(self, specs: list[ComponentSpec]) -> list[Any]:
@@ -379,7 +371,14 @@ class InferenceModel:
             ValueError: If policy name cannot be determined
         """
         if self.manifest.policy.name:
-            return self.manifest.policy.name
+            name = self.manifest.policy.name
+            if not _is_safe_policy_name(name):
+                msg = (
+                    f"manifest policy.name {name!r} contains invalid characters; "
+                    "only alphanumeric characters, hyphens, underscores, and dots are allowed"
+                )
+                raise ValueError(msg)
+            return name
 
         class_path = self.manifest.policy.source.class_path
         if class_path:
@@ -399,7 +398,7 @@ class InferenceModel:
         raise ValueError(msg)
 
     def _detect_backend_from_manifest(self) -> str | None:
-        """Extract backend from manifest artifacts or legacy extra data.
+        """Extract backend from manifest artifacts.
 
         Returns:
             Backend string, or ``None`` if not found.
@@ -407,10 +406,6 @@ class InferenceModel:
         artifacts = self.manifest.model.artifacts
         if artifacts:
             return next(iter(artifacts))
-
-        legacy_backend = (self.manifest.model_extra or {}).get("backend")
-        if legacy_backend:
-            return str(legacy_backend)
 
         return None
 
