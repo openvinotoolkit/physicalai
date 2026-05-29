@@ -45,8 +45,7 @@ def discover_subcommands(
     for ep in entry_points(group=ENTRY_POINT_GROUP):
         if ep.name in builtin_names:
             logger.warning(
-                "physicalai.cli: subcommand '%s' from %s collides with built-in; "
-                "using built-in.",
+                "physicalai.cli: subcommand '%s' from %s collides with built-in; using built-in.",
                 ep.name,
                 ep.dist.name if ep.dist else "<unknown>",
             )
@@ -54,8 +53,7 @@ def discover_subcommands(
         if ep.name in discovered:
             existing = discovered[ep.name]
             logger.warning(
-                "physicalai.cli: subcommand '%s' registered by both %s and %s; "
-                "using %s.",
+                "physicalai.cli: subcommand '%s' registered by both %s and %s; using %s.",
                 ep.name,
                 existing.dist.name if existing.dist else "<unknown>",
                 ep.dist.name if ep.dist else "<unknown>",

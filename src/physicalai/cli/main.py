@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from jsonargparse import ArgumentParser
 
@@ -78,16 +78,10 @@ def _load_spec(name: str, entry_points: dict[str, EntryPoint]) -> SubcommandSpec
     """
     spec = _resolve_register(name, entry_points)()
     if not isinstance(spec, SubcommandSpec):
-        msg = (
-            f"Subcommand '{name}' register() returned "
-            f"{type(spec).__name__}, expected SubcommandSpec."
-        )
+        msg = f"Subcommand '{name}' register() returned {type(spec).__name__}, expected SubcommandSpec."
         raise TypeError(msg)
     if spec.name != name:
-        msg = (
-            f"Subcommand '{name}' returned SubcommandSpec(name={spec.name!r}); "
-            "name mismatch."
-        )
+        msg = f"Subcommand '{name}' returned SubcommandSpec(name={spec.name!r}); name mismatch."
         raise ValueError(msg)
     return spec
 
@@ -181,6 +175,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     Returns:
         Process exit code returned by the dispatched subcommand.
+
+    Raises:
+        AssertionError: If host parsing returns without selecting a subcommand.
     """
     argv_list = list(sys.argv[1:] if argv is None else argv)
     entry_points = discover_subcommands(frozenset(_BUILTINS))
@@ -190,9 +187,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if selected is None:
         host = _build_host_parser(_subcommand_help(entry_points))
         host.parse_args(argv_list)
+        msg = "Host parser returned without selecting a subcommand."
+        raise AssertionError(msg)
+    selected_name = cast("str", selected)
 
-    spec = _load_spec(selected, entry_points)
-    sub_argv = argv_list[argv_list.index(selected) + 1 :]
+    spec = _load_spec(selected_name, entry_points)
+    sub_argv = argv_list[argv_list.index(selected_name) + 1 :]
     cfg = spec.parser.parse_args(sub_argv)
     return spec.dispatch(spec.parser, cfg)
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 import io
 import logging
 from contextlib import redirect_stdout
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -292,15 +292,15 @@ class TestMainDispatch:
         with patch.dict(main_module._BUILTINS, {"run": lambda: fake_spec}, clear=False):  # noqa: SLF001
             exit_code = main(["run", *_MINIMAL_ARGV, "--run.duration_s=1"])
         assert exit_code == 0
-        sub_cfg = captured["cfg"]
-        assert sub_cfg.runtime.fps == 30  # type: ignore[union-attr]
-        assert sub_cfg.run.duration_s == 1  # type: ignore[union-attr]
+        sub_cfg = cast(Any, captured["cfg"])
+        assert sub_cfg.runtime.fps == 30
+        assert sub_cfg.run.duration_s == 1
 
     def test_third_party_subcommand_dispatches(self) -> None:
         captured: dict[str, object] = {}
 
         def fake_dispatch(parser: ArgumentParser, cfg: object) -> int:  # noqa: ARG001
-            captured["foo"] = cfg.foo
+            captured["foo"] = cast(Any, cfg).foo
             return 0
 
         ext_parser = ArgumentParser(prog="physicalai fit")
@@ -336,7 +336,7 @@ class TestMainDispatch:
         wrong = SubcommandSpec(
             name="other",
             parser=ArgumentParser(),
-            dispatch=lambda _p, _c: 0,
+            dispatch=lambda parser, cfg: 0,
             help="",
         )
         ep = _fake_ep("fit")
