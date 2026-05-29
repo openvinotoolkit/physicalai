@@ -16,6 +16,7 @@ import numpy as np
 if TYPE_CHECKING:
     from physicalai.inference.model import InferenceModel
     from physicalai.runtime._action_queue import ChunkedActionQueue
+    from physicalai.runtime._callback_bus import _CallbackBus
     from physicalai.runtime.runtime import ActionQueue
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,14 @@ class WorkerDiedError(RuntimeError):
 
 class Execution(ABC):
     """Decides when and where inference runs. Pushes results into ActionQueue."""
+
+    _bus: _CallbackBus | None
+    _session_id: str
+
+    def set_bus(self, bus: _CallbackBus, session_id: str) -> None:
+        """Inject callback bus and session ID before the control loop starts."""
+        self._bus = bus
+        self._session_id = session_id
 
     @abstractmethod
     def start(self, model: InferenceModel, action_queue: ActionQueue) -> None:
@@ -60,10 +69,27 @@ class Execution(ABC):
 class SyncExecution(Execution):
     """Synchronous inference in the control thread."""
 
-    def __init__(self) -> None:  # noqa: D107
+    def __init__(
+        self,
+        *,
+        request_threshold: float = 0.5,
+    ) -> None:
+        """Configure synchronous execution.
+
+        Args:
+            request_threshold: Re-infer when queue drops below this fraction
+                of chunk_size. E.g. 0.5 means re-infer after consuming half
+                the chunk (discards the stale tail). Set to 0.0 to drain
+                the entire chunk before re-inferring.
+        """
         self._model: InferenceModel | None = None
         self._queue: ChunkedActionQueue | None = None
         self._chunk_size: int = 0
+        self._threshold_frac = request_threshold
+        self._threshold_count: int = 0
+        self._inference_count: int = 0
+        self._bus: _CallbackBus | None = None
+        self._session_id: str = ""
 
     def start(self, model: InferenceModel, action_queue: ActionQueue) -> None:
         """Bind model and queue."""
@@ -80,19 +106,35 @@ class SyncExecution(Execution):
             raise RuntimeError(_NOT_STARTED)
         actions = self._model.predict_action_chunk(sample_observation)
         self._chunk_size = actions.shape[0]
+        self._threshold_count = max(1, int(self._chunk_size * self._threshold_frac))
         self._queue.push_chunk(actions, offset=0)
 
     def maybe_request(self, observation: dict[str, np.ndarray]) -> None:
-        """Refill queue synchronously when empty.
+        """Refill queue synchronously when below threshold.
 
         Raises:
             RuntimeError: If start() has not been called.
         """
         if self._model is None or self._queue is None:
             raise RuntimeError(_NOT_STARTED)
-        if self._queue.below_threshold(1):
+        if self._queue.below_threshold(self._threshold_count):
+            t0 = time.perf_counter()
             actions = self._model.predict_action_chunk(observation)
+            latency = time.perf_counter() - t0
             self._queue.push_chunk(actions, offset=0)
+            self._inference_count += 1
+            if self._bus:
+                from physicalai.runtime.events import InferenceEvent  # noqa: PLC0415
+
+                self._bus.emit_inference(
+                    InferenceEvent(
+                        session_id=self._session_id,
+                        timestamp=time.time(),
+                        latency_s=latency,
+                        offset=0,
+                        chunk=actions,
+                    )
+                )
 
     def stop(self) -> None:
         """No-op for synchronous execution."""
@@ -102,21 +144,31 @@ class SyncExecution(Execution):
         """Return discovered chunk size."""
         return self._chunk_size
 
+    @property
+    def inference_count(self) -> int:
+        """Number of completed inference calls."""
+        return self._inference_count
+
 
 class AsyncExecution(Execution):
     """Async inference in a background thread with health monitoring."""
 
-    def __init__(  # noqa: D107
+    def __init__(
         self,
-        threshold: float = 0.5,
-        fps: int = 30,
+        request_threshold: float = 0.5,
         watchdog_timeout_s: float = 30.0,
-        max_consecutive_holds: int | None = None,
     ) -> None:
-        self._threshold_frac = threshold
-        self._fps = fps
+        """Configure the async execution strategy.
+
+        Args:
+            request_threshold: Queue fraction at which to request new inference.
+                When the action queue drops below this fraction of chunk_size,
+                a new inference is scheduled. E.g. 0.25 means "request when
+                only 25% of the chunk remains in the queue."
+            watchdog_timeout_s: If inference is stuck longer than this, force-reset.
+        """
+        self._threshold_frac = request_threshold
         self._watchdog_timeout_s = watchdog_timeout_s
-        self._max_consecutive_holds = max_consecutive_holds or 3 * fps
 
         self._model: InferenceModel | None = None
         self._queue: ChunkedActionQueue | None = None
@@ -128,10 +180,13 @@ class AsyncExecution(Execution):
         self._obs_ready = threading.Event()
         self._running_inference = False
         self._request_time: float = 0.0
+        self._pops_at_request: int = 0
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._death_cause: BaseException | None = None
         self._inference_count: int = 0
+        self._bus: _CallbackBus | None = None
+        self._session_id: str = ""
 
     def start(self, model: InferenceModel, action_queue: ActionQueue) -> None:
         """Bind model/queue and spawn inference thread."""
@@ -175,6 +230,7 @@ class AsyncExecution(Execution):
             with self._lock:
                 self._obs_slot = snapshot
                 self._request_time = time.perf_counter()
+                self._pops_at_request = self._queue.total_pops
             self._obs_ready.set()
 
     def stop(self) -> None:
@@ -239,9 +295,26 @@ class AsyncExecution(Execution):
                 actions = self._model.predict_action_chunk(obs)
                 latency = time.perf_counter() - t0
 
-                offset = int(latency * self._fps)
+                # Offset = actions actually sent since the observation was
+                # captured. This is exact (no fps estimation error).
+                with self._lock:
+                    pops_since = self._queue.total_pops - self._pops_at_request
+                offset = min(max(pops_since, 0), len(actions) - 1)
                 self._queue.push_chunk(actions, offset=offset)
                 self._inference_count += 1
+
+                if self._bus:
+                    from physicalai.runtime.events import InferenceEvent  # noqa: PLC0415
+
+                    self._bus.emit_inference(
+                        InferenceEvent(
+                            session_id=self._session_id,
+                            timestamp=time.time(),
+                            latency_s=latency,
+                            offset=offset,
+                            chunk=actions,
+                        )
+                    )
 
                 with self._lock:
                     self._running_inference = False

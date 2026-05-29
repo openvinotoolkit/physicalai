@@ -42,6 +42,16 @@ class RobotObservation(Protocol):
     sensor_data: dict[str, np.ndarray] | None
     images: dict[str, Frame] | None
 
+    @property
+    def state(self) -> np.ndarray:
+        """Full robot state vector for inference (positions + sensor data if available).
+
+        Default: ``joint_positions``. Implementations with additional
+        sensor data (e.g. velocities) should override to concatenate
+        them in the order matching training data conventions.
+        """
+        return self.joint_positions
+
 
 @runtime_checkable
 class Robot(Protocol):

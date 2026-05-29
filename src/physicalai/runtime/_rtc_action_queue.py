@@ -164,3 +164,22 @@ class RTCActionQueue:
             self._processed = None
             self._cursor = 0
             self._consecutive_holds = 0
+
+    def push_chunk(self, chunk: np.ndarray, offset: int = 0) -> None:
+        """Push an action chunk (adapts to ActionQueue Protocol).
+
+        For RTC queues, this sets the processed track directly.
+        Use ``merge()`` for full dual-track updates.
+        """
+        sliced = chunk[offset:]
+        self.merge(raw=sliced, processed=sliced, action_index_before_inference=None)
+
+    def reset(self) -> None:
+        """Clear queue and reset all counters for a fresh session."""
+        with self._lock:
+            self._raw = None
+            self._processed = None
+            self._cursor = 0
+            self._consecutive_holds = 0
+            self._total_holds = 0
+            self._total_pops = 0

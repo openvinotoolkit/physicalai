@@ -58,6 +58,13 @@ class WidowXAIObservation:
     sensor_data: dict[str, np.ndarray] | None = None
     images: dict[str, Frame] | None = None
 
+    @property
+    def state(self) -> np.ndarray:
+        """State vector: positions (7) + velocities (7) = (14,)."""
+        if self.sensor_data and "velocities" in self.sensor_data:
+            return np.concatenate([self.joint_positions, self.sensor_data["velocities"]])
+        return self.joint_positions
+
 
 class WidowXAI(Robot):
     """Driver for the Trossen WidowX AI robot arm (7-DOF).
@@ -221,28 +228,27 @@ class WidowXAI(Robot):
         )
 
     def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None:
-        """Send a 7-DOF joint position command to follower arms.
+        """Send a joint position command to follower arms.
 
         Args:
-            action: Array of shape ``(7,)`` with target joint positions in degrees
-            for non-gripper joints, and native gripper scalar value.
+            action: Array of shape ``(N,)`` where N >= 7. Only the first 7
+                elements (joint positions) are used; extra dimensions
+                (e.g. predicted velocities) are ignored.
             goal_time: Minimum time (seconds) for the arm to reach the target.
-                The backend control loop typically sets this to ``1 / fps``.
-                Not part of the :class:`~physicalai.robot.Robot` protocol.
 
         Raises:
             RuntimeError: If called on a leader arm.
-            ValueError: If action shape is not ``(7,)``.
+            ValueError: If action has fewer than 7 elements.
         """
         if self._role == "leader":
             msg = "Cannot send actions to a leader arm."
             raise RuntimeError(msg)
 
-        expected_shape = (self.NUM_JOINTS,)
-        if action.shape != expected_shape:
-            msg = f"Expected action shape {expected_shape}, got {action.shape}"
+        if action.shape[0] < self.NUM_JOINTS:
+            msg = f"Expected at least {self.NUM_JOINTS} action dims, got {action.shape}"
             raise ValueError(msg)
 
+        action = action[: self.NUM_JOINTS]
         driver = self._require_driver()
 
         target_radians = np.asarray(action, dtype=np.float32).copy()

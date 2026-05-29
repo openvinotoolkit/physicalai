@@ -330,6 +330,21 @@ class RTCExecution(Execution):
             )
             self._first_chunk_ready.set()
 
+            # Emit inference event so callbacks (e.g. RerunCallback) can
+            # plot predicted future actions.
+            if self._bus:
+                from physicalai.runtime.events import InferenceEvent  # noqa: PLC0415
+
+                self._bus.emit_inference(
+                    InferenceEvent(
+                        session_id=self._session_id,
+                        timestamp=time.time(),
+                        latency_s=elapsed,
+                        offset=0,
+                        chunk=processed_actions,
+                    )
+                )
+
             logger.debug(
                 "RTC chunk: latency=%.3fs remaining=%d",
                 elapsed,
