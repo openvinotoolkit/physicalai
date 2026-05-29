@@ -270,12 +270,18 @@ class SharedCamera(Camera):
             if sample is None:
                 break
             newest_sample = sample
+            # Explicitly clear 'sample' to release reference. Otherwise, Python keeps
+            # it alive during the next receive() call, triggering iceoryx2 subscriber warnings/errors,
+            # especially when run in an IDE where debuggers hold onto local frames.
+            sample = None
 
         if newest_sample is not None:
             header, frame = self._decode_sample(newest_sample)
             self._last_header = header
             self._latest = frame
             self._check_config_match(header)
+            # Explicitly clear 'newest_sample' to release the iceoryx2 sample borrow under IDE/debugger.
+            newest_sample = None
 
         if self._latest is None:
             msg = "no frame available"
@@ -297,12 +303,18 @@ class SharedCamera(Camera):
             if sample is None:
                 break
             newest_sample = sample
+            # Explicitly clear 'sample' to release reference. Otherwise, Python keeps
+            # it alive during the next receive() call, triggering iceoryx2 subscriber warnings/errors,
+            # especially when run in an IDE where debuggers hold onto local frames.
+            sample = None
 
         if newest_sample is not None:
             header, frame = self._decode_sample(newest_sample)
             self._last_header = header
             self._latest = frame
             self._check_config_match(header)
+            # Explicitly clear 'newest_sample' to release the iceoryx2 sample borrow under IDE/debugger.
+            newest_sample = None
 
         if self._latest is None:
             msg = "no frame available"

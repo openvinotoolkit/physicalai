@@ -13,7 +13,6 @@ import pytest
 
 from physicalai.capture import Frame
 from physicalai.capture.errors import CaptureError
-from physicalai.runtime._action_queue import ActionQueue
 from physicalai.runtime.execution import SyncExecution
 from physicalai.runtime.runtime import (
     PolicyRuntime,
@@ -161,10 +160,10 @@ class TestResilientObserveCameras:
             mock_time.sleep = MagicMock()
             mock_time.perf_counter.return_value = 0.0
             mock_time.time.return_value = 0.0
-            result = rt._resilient_observe()
+            _robot_obs, camera_frames = rt._resilient_observe()
 
-        assert "images.cam0" in result
-        np.testing.assert_array_equal(result["images.cam0"], stale_frame.data[np.newaxis])
+        assert "cam0" in camera_frames
+        assert camera_frames["cam0"] is stale_frame
 
     def test_camera_first_read_fails_raises(self) -> None:
         camera = MagicMock()
@@ -272,13 +271,16 @@ class TestRunStatsWithFaults:
         obs = _make_obs()
         robot = _make_mock_robot(obs)
 
-        warmup_call = [0]
+        call_count = [0]
 
         def get_obs_with_loop_errors():
-            warmup_call[0] += 1
-            if warmup_call[0] <= 1:
+            call_count[0] += 1
+            # Call 1: warmup (_build_model_input)
+            # Call 2: first tick (_resilient_observe) — sets _last_robot_obs
+            if call_count[0] <= 2:
                 return obs
-            if warmup_call[0] <= 1 + _MAX_OBS_RETRIES:
+            # Calls 3..5: second tick retries all fail — uses stale fallback
+            if call_count[0] <= 2 + _MAX_OBS_RETRIES:
                 raise ConnectionError("flake")
             return obs
 
@@ -286,7 +288,6 @@ class TestRunStatsWithFaults:
         robot.send_action.return_value = None
 
         rt = _make_runtime(robot=robot)
-        rt._last_robot_obs = obs
         rt._connected = True
 
         with patch("physicalai.runtime.runtime.time") as mock_time:

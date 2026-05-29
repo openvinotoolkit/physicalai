@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from physicalai.runtime.events import InferenceEvent, LifecycleEvent, TickEvent
+from tests.unit.runtime.conftest import FakeRobotObservation
 
 
 @pytest.fixture()
@@ -62,7 +63,10 @@ def _tick(step: int = 0, dof: int = 7) -> TickEvent:
         session_id="sess-1",
         step=step,
         timestamp=1000.0 + step * (1 / 30),
-        joint_positions=np.arange(dof, dtype=np.float64),
+        robot_observation=FakeRobotObservation(
+            joint_positions=np.arange(dof, dtype=np.float64),
+        ),
+        camera_frames={},
         action_sent=np.ones(dof, dtype=np.float64),
         queue_remaining=5,
         loop_duration_s=0.033,
@@ -196,7 +200,7 @@ class TestRerunCallbackTick:
         mock_rerun.set_time.assert_any_call("step", sequence=5)
         mock_rerun.set_time.assert_any_call("wall", timestamp=event.timestamp)
 
-    def test_none_joint_positions_skipped(self, make_callback: Any, mock_rerun: MagicMock) -> None:
+    def test_none_action_sent_skipped(self, make_callback: Any, mock_rerun: MagicMock) -> None:
         cb = make_callback()
         cb.on_lifecycle(_lifecycle_start())
         mock_rerun.reset_mock()
@@ -205,7 +209,10 @@ class TestRerunCallbackTick:
             session_id="sess-1",
             step=1,
             timestamp=1000.0,
-            joint_positions=None,
+            robot_observation=FakeRobotObservation(
+                joint_positions=np.arange(7, dtype=np.float64),
+            ),
+            camera_frames={},
             action_sent=None,
             queue_remaining=5,
             loop_duration_s=0.033,
@@ -215,8 +222,8 @@ class TestRerunCallbackTick:
         cb.on_tick(event)
 
         log_calls = mock_rerun.log.call_args_list
-        joint_calls = [c for c in log_calls if c.args[0] == "robot/joints"]
-        assert len(joint_calls) == 0
+        action_calls = [c for c in log_calls if c.args[0] == "robot/actions"]
+        assert len(action_calls) == 0
 
 
 @pytest.mark.usefixtures("_patch_rerun")
@@ -319,7 +326,8 @@ class TestRerunCallbackCameraSubscribers:
         cb = make_callback(cameras={"top": fake_camera})
         cb.on_lifecycle(_lifecycle_start())
 
-        assert cb._camera_subscribers == {}
+        # Non-shared cameras are stored directly for reading on tick
+        assert cb._camera_subscribers == {"top": fake_camera}
 
     def test_shared_camera_subscriber_logs_frames(self, make_callback: Any, mock_rerun: MagicMock) -> None:
         cb = make_callback(image_decimation=1)
@@ -339,18 +347,24 @@ class TestRerunCallbackCameraSubscribers:
         assert len(image_calls) == 1
 
     def test_close_disconnects_subscribers(self, make_callback: Any) -> None:
+        from physicalai.capture.transport._shared_camera import SharedCamera  # noqa: PLC0415
+
         cb = make_callback()
-        mock_sub = MagicMock()
-        cb._camera_subscribers = {"cam1": mock_sub, "cam2": MagicMock()}
+        mock_sub = MagicMock(spec=SharedCamera)
+        mock_sub2 = MagicMock(spec=SharedCamera)
+        cb._camera_subscribers = {"cam1": mock_sub, "cam2": mock_sub2}
 
         cb.close()
 
         mock_sub.disconnect.assert_called_once()
+        mock_sub2.disconnect.assert_called_once()
         assert cb._camera_subscribers == {}
 
     def test_close_handles_disconnect_error(self, make_callback: Any) -> None:
+        from physicalai.capture.transport._shared_camera import SharedCamera  # noqa: PLC0415
+
         cb = make_callback()
-        mock_sub = MagicMock()
+        mock_sub = MagicMock(spec=SharedCamera)
         mock_sub.disconnect.side_effect = RuntimeError("connection lost")
         cb._camera_subscribers = {"cam1": mock_sub}
 

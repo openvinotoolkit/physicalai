@@ -11,8 +11,11 @@ import logging
 import threading
 import time
 from collections import deque
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
+
+from physicalai.capture.frame import Frame
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -64,7 +67,7 @@ class JsonlCallback:
                 "session_id": event.session_id,
                 "step": event.step,
                 "timestamp": event.timestamp,
-                "joint_positions": _np_to_list(event.joint_positions),
+                "joint_positions": _np_to_list(event.robot_observation.joint_positions),
                 "action_sent": _np_to_list(event.action_sent),
                 "queue_remaining": event.queue_remaining,
                 "loop_duration_s": event.loop_duration_s,
@@ -129,16 +132,37 @@ class AsyncCallback:
         self._thread = threading.Thread(target=self._worker, name="AsyncCallbackWorker", daemon=True)
         self._thread.start()
 
-    def on_tick(self, event: TickEvent) -> None:  # noqa: D102
+    def on_tick(self, event: TickEvent) -> None:
+        """Enqueue tick event, copying borrowed frame buffers to prevent dangling SHM refs.
+
+        Zero-copy SharedCamera frames are views into iceoryx2 shared memory that become
+        invalid on the next read_latest() call. Since the background worker may process
+        this event after the next tick, we use dataclasses.replace to produce a new
+        TickEvent with owned copies of any borrowed frame buffers. Frames that already
+        own their data (the common case) are passed through untouched.
+        """
+        if any(not f.data.flags.owndata for f in event.camera_frames.values()):
+            event = replace(
+                event,
+                camera_frames={
+                    name: Frame(data=f.data.copy(), timestamp=f.timestamp, sequence=f.sequence)
+                    if not f.data.flags.owndata
+                    else f
+                    for name, f in event.camera_frames.items()
+                },
+            )
         self._enqueue("on_tick", event)
 
-    def on_inference(self, event: InferenceEvent) -> None:  # noqa: D102
+    def on_inference(self, event: InferenceEvent) -> None:
+        """Enqueue inference event for background processing."""
         self._enqueue("on_inference", event)
 
-    def on_lifecycle(self, event: LifecycleEvent) -> None:  # noqa: D102
+    def on_lifecycle(self, event: LifecycleEvent) -> None:
+        """Enqueue lifecycle event for background processing."""
         self._enqueue("on_lifecycle", event)
 
-    def close(self) -> None:  # noqa: D102
+    def close(self) -> None:
+        """Stop the worker thread and close the inner callback."""
         self._stop.set()
         self._has_work.set()
         self._thread.join(timeout=5.0)
@@ -225,9 +249,7 @@ class RerunCallback:
         rr.set_time("step", sequence=event.step)
         rr.set_time("wall", timestamp=event.timestamp)
 
-        if event.joint_positions is not None:
-            # One plot with N overlaid series instead of N separate plots.
-            rr.log("robot/joints", rr.Scalars([float(v) for v in event.joint_positions]))
+        rr.log("robot/joints", rr.Scalars([float(v) for v in event.robot_observation.joint_positions]))
 
         if event.action_sent is not None:
             rr.log("robot/actions", rr.Scalars([float(v) for v in event.action_sent]))

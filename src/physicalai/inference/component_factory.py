@@ -128,23 +128,28 @@ def resolve_artifact(spec: ComponentSpec, export_dir: Path) -> ComponentSpec:
         The spec with resolved artifact path, or the original spec
         unchanged if no resolution is needed.
     """
+    # Canonicalize the export root once before containment checks.  Using
+    # resolve() ensures `..` segments are collapsed and symlinks are followed
+    # so `is_relative_to()` is applied to the final filesystem locations.
+    resolved_export = export_dir.resolve()
+
+    def _safe_resolve(artifact: str) -> str:
+        resolved = (export_dir / artifact).resolve()
+        if not resolved.is_relative_to(resolved_export):
+            msg = f"artifact path {artifact!r} escapes the export directory"
+            raise ValueError(msg)
+        return str(resolved)
+
     flat = spec.flat_params
     if "artifact" in flat and not Path(flat["artifact"]).is_absolute():
-        resolved_path = str(export_dir / flat["artifact"])
-        new_params = {**flat, "artifact": resolved_path}
-        return type(spec).model_validate({
-            "type": spec.type,
-            **new_params,
-        })
+        new_params = {**flat, "artifact": _safe_resolve(flat["artifact"])}
+        return type(spec).model_validate({"type": spec.type, **new_params})
 
     if spec.class_path and "artifact" in spec.init_args:
         artifact = spec.init_args["artifact"]
         if not Path(artifact).is_absolute():
-            new_init_args = {**spec.init_args, "artifact": str(export_dir / artifact)}
-            return type(spec).model_validate({
-                "class_path": spec.class_path,
-                "init_args": new_init_args,
-            })
+            new_init_args = {**spec.init_args, "artifact": _safe_resolve(artifact)}
+            return type(spec).model_validate({"class_path": spec.class_path, "init_args": new_init_args})
 
     return spec
 
@@ -158,6 +163,11 @@ def _import_class(class_path: str) -> type:
     module_path, class_name = class_path.rsplit(".", maxsplit=1)
     module = importlib.import_module(module_path)
     return getattr(module, class_name)
+
+
+# Maximum nesting depth for recursive component instantiation.  Unbounded
+# recursion on a crafted manifest would exhaust the Python call stack.
+_MAX_COMPONENT_DEPTH = 10
 
 
 def instantiate_component(
@@ -189,6 +199,31 @@ def instantiate_component(
     Returns:
         An instance of the resolved class.
     """
+    return _instantiate_component(spec, registry=registry, _depth=0)
+
+
+def _instantiate_component(
+    spec: ComponentSpec,
+    *,
+    registry: ComponentRegistry | None = None,
+    _depth: int = 0,
+) -> object:
+    """Recursive implementation of :func:`instantiate_component`. Do not call directly.
+
+    Returns:
+        An instance of the resolved class.
+
+    Raises:
+        ValueError: If the component nesting depth exceeds :data:`_MAX_COMPONENT_DEPTH`.
+    """
+    if _depth >= _MAX_COMPONENT_DEPTH:
+        msg = (
+            f"Component nesting depth {_depth} exceeds the maximum allowed "
+            f"({_MAX_COMPONENT_DEPTH}). Check the manifest for deeply or "
+            "cyclically nested component specs."
+        )
+        raise ValueError(msg)
+
     reg = registry or component_registry
 
     if spec.class_path:
@@ -198,9 +233,10 @@ def instantiate_component(
         resolved_args: dict[str, object] = {}
         for key, value in spec.init_args.items():
             if isinstance(value, dict) and ("class_path" in value or "type" in value):
-                resolved_args[key] = instantiate_component(
+                resolved_args[key] = _instantiate_component(
                     type(spec).model_validate(value),
                     registry=reg,
+                    _depth=_depth + 1,
                 )
             else:
                 resolved_args[key] = value
@@ -213,9 +249,10 @@ def instantiate_component(
     resolved_params: dict[str, object] = {}
     for key, value in spec.flat_params.items():
         if isinstance(value, dict) and ("class_path" in value or "type" in value):
-            resolved_params[key] = instantiate_component(
+            resolved_params[key] = _instantiate_component(
                 type(spec).model_validate(value),
                 registry=reg,
+                _depth=_depth + 1,
             )
         else:
             resolved_params[key] = value

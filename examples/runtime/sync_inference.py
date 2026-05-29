@@ -36,11 +36,11 @@ from physicalai.inference import InferenceModel
 from physicalai.runtime import (
     ActionQueue,
     PolicyRuntime,
-    RerunCallback,
+    RerunCallback, ChunkedActionQueue,
 )
 from physicalai.runtime.execution import SyncExecution
 
-from utils import build_robot, parse_camera_specs
+from utils import build_robot, parse_camera_specs, prompt_torque_disable
 
 
 def main() -> None:
@@ -126,8 +126,8 @@ def main() -> None:
     runtime = PolicyRuntime(
         robot=robot,
         model=model,
-        execution=SyncExecution(fps=int(args.fps), request_threshold=args.request_threshold),
-        action_queue=ActionQueue(),  # no smoother — raw chunk playback
+        execution=SyncExecution(request_threshold=args.request_threshold),
+        action_queue=ChunkedActionQueue(),  # no smoother — raw chunk playback
         cameras=cameras,
         fps=args.fps,
         callbacks=callbacks,
@@ -140,8 +140,8 @@ def main() -> None:
             print(f"  task: {args.task!r}")
         print("  (inference blocks the loop — expect pauses)")
         stats = runtime.run(duration_s=args.duration_s)
-
-    print(f"\nDone — {stats.steps} steps, {stats.inference_count} inferences, {stats.total_holds} holds")
+        print(f"\nDone — {stats.steps} steps, {stats.inference_count} inferences, {stats.total_holds} holds")
+        prompt_torque_disable(robot)
 
 
 if __name__ == "__main__":

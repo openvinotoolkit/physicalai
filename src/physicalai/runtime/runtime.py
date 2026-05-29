@@ -9,12 +9,12 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol, Self
+from typing import TYPE_CHECKING, Any, Protocol, Self, runtime_checkable
 
 import numpy as np
 
 from physicalai.capture.errors import CaptureError
-from physicalai.runtime._action_queue import ActionQueue  # noqa: PLC2701
+from physicalai.runtime._action_queue import ChunkedActionQueue  # noqa: PLC2701
 from physicalai.runtime._callback_bus import _CallbackBus  # noqa: PLC2701
 from physicalai.runtime.events import LifecycleEvent, TickEvent
 from physicalai.runtime.execution import Execution, WorkerDiedError
@@ -39,6 +39,55 @@ _WARMUP_BACKOFF_S = 1.0
 _GOAL_TIME_TICKS = 3
 
 
+@runtime_checkable
+class ActionQueue(Protocol):
+    """Protocol for a thread-safe action queue."""
+
+    def pop(self) -> np.ndarray | None:
+        """Pop the next action.
+
+        Returns:
+            Single action vector, or None if empty.
+        """
+        ...
+
+    @property
+    def remaining(self) -> int:
+        """Number of unconsumed actions in the queue."""
+        ...
+
+    @property
+    def consecutive_holds(self) -> int:
+        """Number of consecutive holds (resets on successful pop)."""
+        ...
+
+    @property
+    def total_holds(self) -> int:
+        """Total number of hold events (pop on empty queue)."""
+        ...
+
+    @property
+    def total_pops(self) -> int:
+        """Total number of actions popped."""
+        ...
+
+    def below_threshold(self, threshold: int) -> bool:
+        """Check if remaining actions are below threshold."""
+        ...
+
+    def clear(self) -> None:
+        """Clear all state from the queue."""
+        ...
+
+    def push_chunk(self, chunk: np.ndarray, offset: int = 0) -> None:
+        """Push an action chunk into the queue."""
+        ...
+
+    def reset(self) -> None:
+        """Clear queue and reset all counters for a fresh session."""
+        ...
+
+
 class RuntimeCallback(Protocol):
     """Optional hook points in the PolicyRuntime control loop."""
 
@@ -53,6 +102,52 @@ class RuntimeCallback(Protocol):
     def on_hold(self, *, step: int, holds: int) -> None:
         """Called when action queue is empty and robot holds last position."""
         ...
+
+
+class LowPassFilterCallback:
+    """Stateful low-pass filter (Exponential Moving Average) callback for smooth actions.
+
+    Filters outgoing multidimensional joint positions/actions using a simple
+    discrete one-pole IIR filter (exponential moving average):
+        y_t = alpha * x_t + (1 - alpha) * y_{t-1}
+
+    Args:
+        alpha: Smoothing factor in range (0, 1]. A lower value introduces
+            more smoothing (heavy low-pass filter), whereas 1.0 is a no-op.
+    """
+
+    def __init__(self, alpha: float = 0.5) -> None:  # noqa: D107
+        if not (0.0 < alpha <= 1.0):
+            msg = f"alpha must be in (0, 1], got {alpha}"
+            raise ValueError(msg)
+        self.alpha = alpha
+        self._last_action: np.ndarray | None = None
+
+    def before_send_action(self, *, action: np.ndarray, step: int) -> np.ndarray:  # noqa: ARG002
+        """Filter target action vector using previous action state.
+
+        Args:
+            action: The target raw/unfiltered joint configuration.
+            step: The iteration step index in the control loop.
+
+        Returns:
+            The smoothed/filtered action target configuration.
+        """
+        if self._last_action is None or self._last_action.shape != action.shape:
+            # First tick or shape mismatch: initialize filter state to current action
+            self._last_action = action.copy()
+            return action
+
+        # Apply low-pass recursive formula
+        filtered_action = self.alpha * action + (1.0 - self.alpha) * self._last_action
+        self._last_action = filtered_action.copy()
+        return filtered_action
+
+    def on_action_sent(self, *, action: np.ndarray, step: int) -> None:
+        """No-op."""
+
+    def on_hold(self, *, step: int, holds: int) -> None:
+        """No-op."""
 
 
 @dataclass(frozen=True)
@@ -97,7 +192,9 @@ class PolicyRuntime:
         self._execution = execution
         self._fps = fps
         self._cameras: Mapping[str, Camera] = cameras or {}
-        self._action_queue = action_queue or ActionQueue(smoother=LerpSmoother(duration_frames=_DEFAULT_LERP_FRAMES))
+        self._action_queue = action_queue or ChunkedActionQueue(
+            smoother=LerpSmoother(duration_frames=_DEFAULT_LERP_FRAMES)
+        )
         self._bus = _CallbackBus(callbacks)
         self._goal_time = (1.0 / fps) * _GOAL_TIME_TICKS
         self._task = task
@@ -196,10 +293,10 @@ class PolicyRuntime:
             msg = "PolicyRuntime.run() called before connect(). Use 'with runtime:' or call runtime.connect() first."
             raise RuntimeError(msg)
 
-        self._session_id = uuid.uuid4().hex[:8]
-        self._execution.set_bus(self._bus, self._session_id)
+        self._reset_session()
 
-        self._execution.start(self._model, self._action_queue)
+        self._execution.set_bus(self._bus, self._session_id)
+        self._execution.start(self._model, self._action_queue)  # type: ignore[arg-type]
         self._bus.emit_lifecycle(
             LifecycleEvent(
                 session_id=self._session_id,
@@ -228,10 +325,10 @@ class PolicyRuntime:
                 loop_start = time.perf_counter()
                 stale_this_tick = False
 
-                obs = self._resilient_observe()
+                robot_obs, camera_frames = self._resilient_observe()
                 if self._consecutive_error_ticks > 0:
                     stale_this_tick = True
-                self._execution.maybe_request(obs)
+                self._execution.maybe_request(self._build_model_input_from(robot_obs, camera_frames))
 
                 action = self._action_queue.pop()
                 if action is not None:
@@ -261,7 +358,8 @@ class PolicyRuntime:
                         session_id=self._session_id,
                         step=step,
                         timestamp=time.time(),
-                        joint_positions=self._last_robot_obs.joint_positions if self._last_robot_obs else None,
+                        robot_observation=robot_obs,
+                        camera_frames=camera_frames,
                         action_sent=action,
                         queue_remaining=self._action_queue.remaining,
                         loop_duration_s=elapsed,
@@ -302,6 +400,16 @@ class PolicyRuntime:
                 )
         self._bus.invoke_on_hold(step=step, holds=holds)
 
+    def _reset_session(self) -> None:
+        """Reset all session-scoped state for a fresh run."""
+        self._session_id = uuid.uuid4().hex[:8]
+        self._last_robot_obs = None
+        self._last_camera_frames = {}
+        self._consecutive_error_ticks = 0
+        self._stale_obs_ticks = 0
+        self._transient_errors = 0
+        self._action_queue.reset()
+
     @staticmethod
     def _tick_sleep(loop_start: float, goal_time: float) -> tuple[float, float]:
         elapsed = time.perf_counter() - loop_start
@@ -340,7 +448,17 @@ class PolicyRuntime:
                 break
         return robot_obs, last_error
 
-    def _resilient_observe(self) -> dict[str, Any]:
+    def _resilient_observe(self) -> tuple[RobotObservation, dict[str, Frame]]:
+        """Read robot observation and camera frames with retry and stale fallback.
+
+        Returns:
+            Tuple of (robot observation, camera frames keyed by name).
+
+        Raises:
+            ConnectionError: If robot observation fails with no stale fallback or
+                max consecutive errors exceeded.
+            CaptureError: If a camera read fails and no stale frame is available.
+        """
         robot_obs, last_robot_error = self._retry_robot_obs()
 
         if robot_obs is None:
@@ -400,6 +518,14 @@ class PolicyRuntime:
                 )
                 camera_frames[name] = stale_frame
 
+        return robot_obs, camera_frames
+
+    def _build_model_input_from(self, robot_obs: RobotObservation, camera_frames: dict[str, Frame]) -> dict[str, Any]:
+        """Assemble model input dict from observation and camera frames.
+
+        Returns:
+            Dictionary ready to pass to the inference model.
+        """
         model_input: dict[str, Any] = {"state": np.array([robot_obs.state], dtype=np.float32)}
         if robot_obs.images:
             for name, frame in robot_obs.images.items():

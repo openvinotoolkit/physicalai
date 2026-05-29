@@ -75,3 +75,24 @@ def parse_camera_specs(
             kwargs["device"] = device_id
         cameras[name] = create_camera(driver, shared=shared, **kwargs)
     return cameras
+
+
+def prompt_torque_disable(robot: Robot) -> None:
+    """Ask the user whether to disable torque after a run completes (SO101 only)."""
+    from physicalai.robot import SO101
+
+    if not isinstance(robot, SO101):
+        print("Torque prompt skipped (not an SO101 robot).")
+        return
+
+    print("\nRobot is holding position (torque ON).")
+    try:
+        resp = input("Disable torque? The arm will drop under gravity. [y/N]: ").strip().lower()
+        if resp == "y":
+            robot.set_torque(enabled=False)
+            robot.torque_on_disconnect = False
+            print("Torque disabled — arm is free.")
+        else:
+            print("Torque remains enabled — arm holds position.")
+    except (KeyboardInterrupt, EOFError):
+        print("\nTorque remains enabled.")

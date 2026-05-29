@@ -58,9 +58,10 @@ class TelemetryEmitter:
                 return int(obj)
             if isinstance(obj, np.floating):
                 return float(obj)
-            return obj
+            msg = f"Unsupported payload type for msgpack serialization: {type(obj).__name__}"
+            raise TypeError(msg)
 
-        return self._msgpack.packb(payload, default=_default)
+        return self._msgpack.packb(payload, default=_default, use_bin_type=True)
 
     def emit_tick(
         self,

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import select
-import subprocess  # noqa: S404
+import subprocess  # noqa: S404 # nosec: B404
 import sys
 from typing import TYPE_CHECKING, Self
 
@@ -70,8 +70,14 @@ class CameraPublisher:
         }
         if self._factory_override is not None:
             config["_factory_override"] = self._factory_override
-
-        self._process = subprocess.Popen(
+        # B603 suppressed: the argv list is static — sys.executable (the active
+        # interpreter) plus a hardcoded internal module path. shell=True is not
+        # used, so there is no shell-injection risk. Configuration is delivered
+        # to the worker via stdin as JSON, not as argv arguments; callers are
+        # responsible for validating spec fields (camera_type, camera_kwargs,
+        # service_name, _factory_override) before constructing a
+        # CameraPublisher.
+        self._process = subprocess.Popen(  # nosec: B603
             [sys.executable, "-m", "physicalai.capture.transport._publisher_worker"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,

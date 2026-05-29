@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import tempfile
-import time
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -16,6 +16,7 @@ from physicalai.runtime._callback_bus import _CallbackBus
 from physicalai.runtime._telemetry import TelemetryEmitter, _decode_numpy, _encode_numpy
 from physicalai.runtime.callbacks import AsyncCallback, ConsoleCallback, JsonlCallback
 from physicalai.runtime.events import InferenceEvent, LifecycleEvent, TickEvent
+from tests.unit.runtime.conftest import FakeRobotObservation
 
 
 class TestNumpyEncoding:
@@ -126,7 +127,8 @@ class TestCallbackBus:
             session_id="test",
             step=step,
             timestamp=0.0,
-            joint_positions=None,
+            robot_observation=FakeRobotObservation(joint_positions=np.zeros(3)),
+            camera_frames={},
             action_sent=np.zeros(3),
             queue_remaining=5,
             loop_duration_s=0.03,
@@ -228,7 +230,8 @@ class TestConsoleCallback:
                     session_id="t",
                     step=i,
                     timestamp=0.0,
-                    joint_positions=None,
+                    robot_observation=FakeRobotObservation(joint_positions=np.zeros(3)),
+                    camera_frames={},
                     action_sent=np.zeros(3),
                     queue_remaining=5,
                     loop_duration_s=0.03,
@@ -251,7 +254,10 @@ class TestJsonlCallback:
                 session_id="s1",
                 step=0,
                 timestamp=1.0,
-                joint_positions=np.array([0.1, 0.2]),
+                robot_observation=FakeRobotObservation(
+                    joint_positions=np.array([0.1, 0.2]),
+                ),
+                camera_frames={},
                 action_sent=np.array([0.3, 0.4]),
                 queue_remaining=5,
                 loop_duration_s=0.03,
@@ -282,10 +288,12 @@ class TestJsonlCallback:
 class TestAsyncCallback:
     def test_dispatches_events_asynchronously(self) -> None:
         inner = MagicMock(spec=["on_tick", "on_inference", "on_lifecycle", "close"])
+        called = threading.Event()
+        inner.on_lifecycle.side_effect = lambda e: called.set()
         cb = AsyncCallback(inner, max_queue=64)
         event = LifecycleEvent(session_id="t", timestamp=0.0, event="start", metadata={})
         cb.on_lifecycle(event)
-        time.sleep(0.1)
+        assert called.wait(timeout=2.0), "on_lifecycle not called within timeout"
         inner.on_lifecycle.assert_called_once_with(event)
         cb.close()
 
