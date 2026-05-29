@@ -237,7 +237,7 @@ model = InferenceModel.load(
 ```python
 import json
 
-from physicalai.benchmark.perf import InferenceBenchmark
+from physicalai.benchmark.performance import InferenceBenchmark
 from physicalai.inference import InferenceModel
 
 model = InferenceModel.load("./exports/act_policy")

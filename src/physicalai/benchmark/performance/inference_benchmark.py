@@ -10,7 +10,7 @@ from statistics import median, pstdev
 
 import numpy as np
 
-from physicalai.benchmark.perf.input_sources import RandomInputSource
+from physicalai.benchmark.performance.input_sources import RandomInputSource
 from physicalai.inference import InferenceModel
 
 
@@ -64,7 +64,7 @@ class InferenceBenchmark:
                 model's declared input features. Must contain at least
                 ``warmup_iters`` items plus at least one measured sample.
                 When ``None``, a
-                :class:`~physicalai.benchmark.perf.input_sources.RandomInputSource`
+                :class:`~physicalai.benchmark.performance.input_sources.RandomInputSource`
                 is built from ``model.input_features``.
 
         Returns:

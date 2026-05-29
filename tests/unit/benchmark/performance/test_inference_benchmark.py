@@ -10,7 +10,7 @@ import time
 import numpy as np
 import pytest
 
-from physicalai.benchmark.perf.inference_benchmark import InferenceBenchmark
+from physicalai.benchmark.performance.inference_benchmark import InferenceBenchmark
 from physicalai.inference.data.features import (
     InferenceFeature,
     InferenceFeatureDtype,
