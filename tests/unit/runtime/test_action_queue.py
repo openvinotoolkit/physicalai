@@ -4,13 +4,13 @@ import threading
 
 import numpy as np
 
-from physicalai.runtime._action_queue import ActionQueue
+from physicalai.runtime._action_queue import ChunkedActionQueue
 from physicalai.runtime.smoothers import LerpSmoother, ReplaceSmoother
 
 
-class TestActionQueue:
+class TestChunkedActionQueue:
     def test_push_pop_roundtrip(self) -> None:
-        queue = ActionQueue()
+        queue = ChunkedActionQueue()
         chunk = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float32)
         queue.push_chunk(chunk)
 
@@ -20,11 +20,11 @@ class TestActionQueue:
             np.testing.assert_array_equal(action, chunk[i])
 
     def test_pop_empty_returns_none(self) -> None:
-        queue = ActionQueue()
+        queue = ChunkedActionQueue()
         assert queue.pop() is None
 
     def test_consecutive_holds_increment_and_reset(self) -> None:
-        queue = ActionQueue()
+        queue = ChunkedActionQueue()
         queue.pop()
         queue.pop()
         assert queue.consecutive_holds == 2
@@ -34,7 +34,7 @@ class TestActionQueue:
         assert queue.consecutive_holds == 0
 
     def test_total_counters(self) -> None:
-        queue = ActionQueue()
+        queue = ChunkedActionQueue()
         queue.pop()
         queue.pop()
         queue.push_chunk(np.array([[1.0], [2.0], [3.0]], dtype=np.float32))
@@ -47,7 +47,7 @@ class TestActionQueue:
         assert queue.total_pops == 3
 
     def test_remaining_property(self) -> None:
-        queue = ActionQueue()
+        queue = ChunkedActionQueue()
         assert queue.remaining == 0
 
         queue.push_chunk(np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32))
@@ -57,7 +57,7 @@ class TestActionQueue:
         assert queue.remaining == 1
 
     def test_below_threshold(self) -> None:
-        queue = ActionQueue()
+        queue = ChunkedActionQueue()
         assert queue.below_threshold(1) is True
 
         queue.push_chunk(np.array([[1.0], [2.0], [3.0]], dtype=np.float32))
@@ -66,7 +66,7 @@ class TestActionQueue:
         assert queue.below_threshold(2) is False
 
     def test_clear(self) -> None:
-        queue = ActionQueue()
+        queue = ChunkedActionQueue()
         queue.push_chunk(np.array([[1.0], [2.0]], dtype=np.float32))
         queue.pop()
         queue.pop()
@@ -82,7 +82,7 @@ class TestActionQueue:
         assert queue.total_pops == 2
 
     def test_push_with_offset(self) -> None:
-        queue = ActionQueue()
+        queue = ChunkedActionQueue()
         chunk = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float32)
         queue.push_chunk(chunk, offset=2)
 
@@ -92,11 +92,11 @@ class TestActionQueue:
         np.testing.assert_array_equal(action, [5.0, 6.0])
 
     def test_default_smoother_is_replace(self) -> None:
-        queue = ActionQueue()
+        queue = ChunkedActionQueue()
         assert isinstance(queue._smoother, ReplaceSmoother)
 
     def test_smoother_integration_lerp(self) -> None:
-        queue = ActionQueue(smoother=LerpSmoother(duration_frames=5))
+        queue = ChunkedActionQueue(smoother=LerpSmoother(duration_frames=5))
         first = np.array([[10.0, 10.0], [20.0, 20.0], [30.0, 30.0]], dtype=np.float32)
         queue.push_chunk(first)
 
@@ -111,7 +111,7 @@ class TestActionQueue:
         assert not np.array_equal(first_action, second[0]), "LerpSmoother should blend, not replace"
 
     def test_smoother_integration_replace(self) -> None:
-        queue = ActionQueue(smoother=ReplaceSmoother())
+        queue = ChunkedActionQueue(smoother=ReplaceSmoother())
         first = np.array([[1.0], [2.0], [3.0]], dtype=np.float32)
         queue.push_chunk(first)
 
@@ -124,9 +124,9 @@ class TestActionQueue:
         np.testing.assert_array_equal(action, [10.0])
 
 
-class TestActionQueueThreadSafety:
+class TestChunkedActionQueueThreadSafety:
     def test_concurrent_push_pop(self) -> None:
-        queue = ActionQueue()
+        queue = ChunkedActionQueue()
         errors: list[Exception] = []
         action_dim = 4
         n_pushes = 100

@@ -30,8 +30,8 @@ from physicalai.capture.transport import SharedCamera
 from physicalai.inference import InferenceModel
 from physicalai.robot import SO101
 from physicalai.runtime import (
-    ActionQueue,
     AsyncExecution,
+    ChunkedActionQueue,
     LerpSmoother,
     PolicyRuntime,
 )
@@ -73,7 +73,7 @@ def main():
         robot=robot,
         model=model,
         execution=AsyncExecution(threshold=0.3, fps=int(args.fps)),
-        action_queue=ActionQueue(smoother=LerpSmoother(duration_frames=5)),
+        action_queue=ChunkedActionQueue(smoother=LerpSmoother(duration_frames=5)),
         cameras=cameras,
         fps=args.fps,
     )
