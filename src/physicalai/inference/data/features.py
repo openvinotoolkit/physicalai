@@ -19,7 +19,7 @@ class InferenceFeatureType(StrEnum):
     VISUAL = "VISUAL"
     ACTION = "ACTION"
     STATE = "STATE"
-    LANGUAGE = "LANG"
+    LANGUAGE = "LANGUAGE"
     COMMON = "COMMON"
 
 

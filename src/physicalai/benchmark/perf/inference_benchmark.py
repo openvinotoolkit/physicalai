@@ -107,10 +107,15 @@ class InferenceBenchmark:
         iter_times: list[float] = []
         max_duration_s = self.max_duration / 1000.0 if self.max_duration is not None else None
         loop_start = time.perf_counter()
-        for sample in input_iter:
+        while True:
             if self.max_iters is not None and len(iter_times) >= self.max_iters:
                 break
             if max_duration_s is not None and (time.perf_counter() - loop_start) >= max_duration_s:
+                break
+
+            try:
+                sample = next(input_iter)
+            except StopIteration:
                 break
 
             iter_start = time.perf_counter()

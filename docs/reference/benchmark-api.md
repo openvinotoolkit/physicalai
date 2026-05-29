@@ -18,7 +18,7 @@ Measures per-chunk latency of an `InferenceModel`. The measured loop stops at wh
 metrics = benchmark.run(model, inputs=None)
 ```
 
-`inputs` is an iterable of observation dicts compatible with `model`. When `None`, a random inputs are filled from `model.input_features`
+`inputs` is an iterable of observation dicts compatible with `model`. When `None`, random inputs are generated from `model.input_features`
 specifications; this requires the exported package to declare input features.
 
 Runs `warmup_iters` warmup iterations followed by the measured loop and returns a dict of per-iteration seconds:
