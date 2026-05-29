@@ -8,11 +8,11 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol, Self
+from typing import TYPE_CHECKING, Any, Protocol, Self, runtime_checkable
 
 import numpy as np
 
-from physicalai.runtime._action_queue import ActionQueue  # noqa: PLC2701
+from physicalai.runtime._action_queue import ChunkedActionQueue  # noqa: PLC2701
 from physicalai.runtime.execution import Execution, WorkerDiedError
 from physicalai.runtime.smoothers import LerpSmoother
 
@@ -26,6 +26,47 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_LERP_FRAMES = 5
+
+
+@runtime_checkable
+class ActionQueue(Protocol):
+    """Protocol for a thread-safe action queue."""
+
+    def pop(self) -> np.ndarray | None:
+        """Pop the next action.
+
+        Returns:
+            Single action vector, or None if empty.
+        """
+        ...
+
+    @property
+    def remaining(self) -> int:
+        """Number of unconsumed actions in the queue."""
+        ...
+
+    @property
+    def consecutive_holds(self) -> int:
+        """Number of consecutive holds (resets on successful pop)."""
+        ...
+
+    @property
+    def total_holds(self) -> int:
+        """Total number of hold events (pop on empty queue)."""
+        ...
+
+    @property
+    def total_pops(self) -> int:
+        """Total number of actions popped."""
+        ...
+
+    def below_threshold(self, threshold: int) -> bool:
+        """Check if remaining actions are below threshold."""
+        ...
+
+    def clear(self) -> None:
+        """Clear all state from the queue."""
+        ...
 
 
 class RuntimeCallback(Protocol):
@@ -42,6 +83,52 @@ class RuntimeCallback(Protocol):
     def on_hold(self, *, step: int, holds: int) -> None:
         """Called when action queue is empty and robot holds last position."""
         ...
+
+
+class LowPassFilterCallback:
+    """Stateful low-pass filter (Exponential Moving Average) callback for smooth actions.
+
+    Filters outgoing multidimensional joint positions/actions using a simple
+    discrete one-pole IIR filter (exponential moving average):
+        y_t = alpha * x_t + (1 - alpha) * y_{t-1}
+
+    Args:
+        alpha: Smoothing factor in range (0, 1]. A lower value introduces
+            more smoothing (heavy low-pass filter), whereas 1.0 is a no-op.
+    """
+
+    def __init__(self, alpha: float = 0.5) -> None:  # noqa: D107
+        if not (0.0 < alpha <= 1.0):
+            msg = f"alpha must be in (0, 1], got {alpha}"
+            raise ValueError(msg)
+        self.alpha = alpha
+        self._last_action: np.ndarray | None = None
+
+    def before_send_action(self, *, action: np.ndarray, step: int) -> np.ndarray:  # noqa: ARG002
+        """Filter target action vector using previous action state.
+
+        Args:
+            action: The target raw/unfiltered joint configuration.
+            step: The iteration step index in the control loop.
+
+        Returns:
+            The smoothed/filtered action target configuration.
+        """
+        if self._last_action is None or self._last_action.shape != action.shape:
+            # First tick or shape mismatch: initialize filter state to current action
+            self._last_action = action.copy()
+            return action
+
+        # Apply low-pass recursive formula
+        filtered_action = self.alpha * action + (1.0 - self.alpha) * self._last_action
+        self._last_action = filtered_action.copy()
+        return filtered_action
+
+    def on_action_sent(self, *, action: np.ndarray, step: int) -> None:
+        """No-op."""
+
+    def on_hold(self, *, step: int, holds: int) -> None:
+        """No-op."""
 
 
 @dataclass(frozen=True)
@@ -85,7 +172,9 @@ class PolicyRuntime:
         self._execution = execution
         self._fps = fps
         self._cameras: Mapping[str, Camera] = cameras or {}
-        self._action_queue = action_queue or ActionQueue(smoother=LerpSmoother(duration_frames=_DEFAULT_LERP_FRAMES))
+        self._action_queue = action_queue or ChunkedActionQueue(
+            smoother=LerpSmoother(duration_frames=_DEFAULT_LERP_FRAMES)
+        )
         self._callbacks = list(callbacks)
         self._goal_time = (1.0 / fps) * 3
         self._connected = False
@@ -165,7 +254,7 @@ class PolicyRuntime:
         if not self._connected:
             msg = "PolicyRuntime.run() called before connect(). Use 'with runtime:' or call runtime.connect() first."
             raise RuntimeError(msg)
-        self._execution.start(self._model, self._action_queue)
+        self._execution.start(self._model, self._action_queue)  # type: ignore[arg-type]
         sample_obs = self._build_model_input()
         self._execution.warmup(sample_obs)
 

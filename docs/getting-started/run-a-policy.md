@@ -1,7 +1,5 @@
 # Run a Policy
 
-> **Preview:** `PolicyRuntime` and the CLI are planned APIs. The examples below document the target design.
-
 Use `PolicyRuntime` to run a trained policy on real hardware. The runtime handles the control loop: reading cameras, building observations, running inference, and sending actions to the robot.
 
 ```python
@@ -21,11 +19,14 @@ runtime = PolicyRuntime(
     robot=robot,
     model=model,
     cameras=cameras,
-    execution=SyncExecution(mode="chunk"),
+    execution=SyncExecution(),
 )
 
-runtime.run(duration_s=60)
+with runtime:
+    runtime.run(duration_s=60)
 ```
+
+> **Preview:** The config and CLI flows below are not yet implemented.
 
 The equivalent CLI command uses the same runtime configuration.
 
