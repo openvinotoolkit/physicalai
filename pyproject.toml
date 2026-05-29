@@ -74,10 +74,10 @@ docs = ["mkdocs>=1.6", "mkdocs-material>=9.6"]
 allow-direct-references = true
 
 [project.urls]
-Homepage = "https://github.com/openvinotoolkit/physical-ai"
-Documentation = "https://github.com/openvinotoolkit/physical-ai"
-Repository = "https://github.com/openvinotoolkit/physical-ai"
-Issues = "https://github.com/openvinotoolkit/physical-ai/issues"
+Homepage = "https://github.com/openvinotoolkit/physicalai"
+Documentation = "https://github.com/openvinotoolkit/physicalai/tree/main/docs"
+Repository = "https://github.com/openvinotoolkit/physicalai"
+Issues = "https://github.com/openvinotoolkit/physicalai/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/physicalai"]
