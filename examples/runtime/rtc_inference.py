@@ -92,7 +92,7 @@ def main() -> None:
     rt_group.add_argument("--fps", type=float, default=30.0, help="Control loop FPS (default: 30)")
     rt_group.add_argument("--duration-s", type=float, default=None, help="Run duration in seconds (default: run indefinitely)")
     rt_group.add_argument("--task", type=str, default=None, help="Task string for the model (e.g. 'pick up the can')")
-    rt_group.add_argument("--shared-camera", action="store_false", help="Use shared memory cameras (iceoryx2) — faster but incompatible with debugger")
+    rt_group.add_argument("--shared-camera", action="store_true", help="Use shared memory cameras (iceoryx2) — faster but incompatible with debugger")
 
     # RTC parameters
     rtc_group = parser.add_argument_group("rtc")
