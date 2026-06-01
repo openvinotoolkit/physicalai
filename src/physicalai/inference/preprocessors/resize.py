@@ -5,7 +5,10 @@
 
 from __future__ import annotations
 
+import cv2
 import numpy as np
+
+from physicalai.inference.constants import IMAGES
 
 from .base import Preprocessor
 
@@ -22,8 +25,9 @@ class ResizePreprocessor(Preprocessor):
     def __init__(
         self,
         image_resolution: tuple[int, int],
-        padding: bool,
-        keep_aspect_ratio: bool,
+        *,
+        padding: bool = True,
+        keep_aspect_ratio: bool = True,
     ) -> None:
         """Initialize the resize preprocessor."""
         super().__init__()
@@ -31,6 +35,112 @@ class ResizePreprocessor(Preprocessor):
         self._padding = padding
         self._keep_aspect_ratio = keep_aspect_ratio
 
-    def __call__(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-        """Resize observation images to the target resolution."""
-        raise NotImplementedError
+    def __call__(
+        self,
+        inputs: dict[str, np.ndarray | dict[str, np.ndarray]],
+    ) -> dict[str, np.ndarray | dict[str, np.ndarray]]:
+        """Resize observation images to the target resolution.
+
+        Images may be provided as a single array under the ``images`` key, a
+        nested ``{camera: array}`` dict under ``images``, or flat ``images.*``
+        keys. ``is_pad`` keys are left untouched.
+
+        Args:
+            inputs: Observation dict. Image arrays are expected to have shape
+                ``(batch, channels, height, width)``.
+
+        Returns:
+            A new dict with the image arrays resized.
+        """
+        outputs: dict[str, np.ndarray | dict[str, np.ndarray]] = dict(inputs)
+        images_value = outputs.get(IMAGES)
+
+        if isinstance(images_value, dict):
+            outputs[IMAGES] = {key: self._resize_with_ar_pad(value) for key, value in images_value.items()}
+        elif isinstance(images_value, np.ndarray):
+            outputs[IMAGES] = self._resize_with_ar_pad(images_value)
+        else:
+            image_keys = [key for key in outputs if key.startswith(IMAGES) and "is_pad" not in key]
+            for key in image_keys:
+                value = outputs[key]
+                if isinstance(value, np.ndarray):
+                    outputs[key] = self._resize_with_ar_pad(value)
+
+        return outputs
+
+    def _resize_with_ar_pad(self, img: np.ndarray) -> np.ndarray:  # noqa: PLR0914
+        """Resize an image array to the target resolution.
+
+        Behavior depends on the preprocessor configuration:
+
+        - ``keep_aspect_ratio``: scale so the image fits within the target while
+          preserving proportions. When disabled, the image is stretched to the
+          exact target size.
+        - ``padding``: zero-pad symmetrically so the output exactly matches the
+          target resolution. When disabled, the output keeps the resized size.
+
+        Args:
+            img: Input image array with shape ``(batch, channels, height, width)``.
+
+        Returns:
+            Resized image array.
+
+        Raises:
+            ValueError: If the input array does not have 4 dimensions
+                (batch, channels, height, width).
+        """
+        img_dim = 4
+        if img.ndim != img_dim:
+            msg = f"(b,c,h,w) expected, but {img.shape}"
+            raise ValueError(msg)
+
+        target_height, target_width = self._image_resolution
+        cur_height, cur_width = img.shape[2:]
+
+        if self._keep_aspect_ratio:
+            ratio = max(cur_width / target_width, cur_height / target_height)
+            resized_height = min(int(cur_height / ratio), target_height)
+            resized_width = min(int(cur_width / ratio), target_width)
+        else:
+            resized_height = target_height
+            resized_width = target_width
+
+        if (resized_height, resized_width) != (cur_height, cur_width):
+            img = self._resize_bchw(img, resized_width, resized_height)
+
+        if not self._padding:
+            return img
+
+        pad_height = target_height - resized_height
+        pad_width = target_width - resized_width
+        pad_top = pad_height // 2
+        pad_bottom = pad_height - pad_top
+        pad_left = pad_width // 2
+        pad_right = pad_width - pad_left
+
+        return np.pad(
+            img,
+            ((0, 0), (0, 0), (pad_top, pad_bottom), (pad_left, pad_right)),
+        )
+
+    @staticmethod
+    def _resize_bchw(img: np.ndarray, width: int, height: int) -> np.ndarray:
+        """Bilinear resize of a ``(batch, channels, height, width)`` array.
+
+        Args:
+            img: Input array in channels-first layout.
+            width: Target width.
+            height: Target height.
+
+        Returns:
+            Resized array in channels-first layout.
+        """
+        img_hwc = np.transpose(img, (0, 2, 3, 1))  # (B, H, W, C)
+        resized = []
+        for i in range(img_hwc.shape[0]):
+            out = cv2.resize(img_hwc[i], (width, height), interpolation=cv2.INTER_LINEAR)
+            if out.ndim == 2:  # noqa: PLR2004
+                out = out[:, :, np.newaxis]
+            resized.append(out)
+        stacked = np.stack(resized, axis=0)  # (B, H, W, C)
+        return np.transpose(stacked, (0, 3, 1, 2))  # (B, C, H, W)
