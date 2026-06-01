@@ -14,6 +14,7 @@ import signal
 import sys
 import threading
 import time
+import traceback
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -39,8 +40,9 @@ def signal_ready() -> None:
     sys.stdout.close()
 
 
-def signal_error(msg: str) -> None:
-    sys.stdout.write(f"ERROR:{json.dumps(msg)}\n")
+def signal_error(msg: str, tb: str | None = None) -> None:
+    payload = {"msg": msg, "traceback": tb} if tb else {"msg": msg}
+    sys.stdout.write(f"ERROR:{json.dumps(payload)}\n")
     sys.stdout.flush()
     sys.stdout.close()
 
@@ -295,6 +297,17 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0914, PLR0915
         camera.connect()
 
         node = iox2.NodeBuilder.new().create(iox2.ServiceType.Ipc)
+
+        # Best-effort GC of dead nodes left behind by previously crashed
+        # publishers/subscribers. Only entries whose owning PID is gone
+        # are removed; live nodes (including our own, just created above)
+        # are left untouched. Failure here is non-fatal, the worker
+        # will still attempt service creation and surface any real error.
+        try:
+            iox2.Node.try_cleanup_dead_nodes(node.config, iox2.ServiceType.Ipc)
+        except Exception as cleanup_exc:  # noqa: BLE001
+            logger.warning(f"dead-node cleanup failed (non-fatal): {cleanup_exc!r}")
+
         max_nodes = max_subscribers + 2
         service = (
             node
@@ -331,7 +344,7 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0914, PLR0915
         if saved_stdout_fd is not None:
             restore_stdout(saved_stdout_fd)
             saved_stdout_fd = None
-        signal_error(str(exc))
+        signal_error(f"{type(exc).__name__}: {exc}", tb=traceback.format_exc())
         if camera is not None:
             try:
                 camera.disconnect()
