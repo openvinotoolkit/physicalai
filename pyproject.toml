@@ -46,7 +46,7 @@ realsense = [
 basler = ["pypylon", "opencv-python-headless"]
 # Pin iceoryx2 exact version and sync with PhysicalAI Studio so
 # publishers and subscribers across processes/venvs can attach to each other.
-transport = ["iceoryx2==0.9.1"]
+transport = ["iceoryx2==0.9.0"]
 genicam = []
 capture = [
     "physicalai[realsense]",
