@@ -102,6 +102,7 @@ component_registry.register("single_pass", "physicalai.inference.runners.SingleP
 
 # Preprocessors
 component_registry.register("normalize", "physicalai.inference.preprocessors.StatsNormalizer")
+component_registry.register("resize", "physicalai.inference.preprocessors.ResizePreprocessor")
 component_registry.register("smolvla_resize", "physicalai.inference.preprocessors.ResizeSmolVLA")
 component_registry.register("new_line", "physicalai.inference.preprocessors.NewLinePreprocessor")
 component_registry.register("hf_tokenizer", "physicalai.inference.preprocessors.HFTokenizer")
