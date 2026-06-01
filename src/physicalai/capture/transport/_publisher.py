@@ -97,7 +97,11 @@ class CameraPublisher:
             raise CaptureError(msg)
         if line.startswith("ERROR:"):
             self.stop()
-            payload = json.loads(line[len("ERROR:") :])
+            try:
+                payload = json.loads(line[len("ERROR:") :])
+            except json.JSONDecodeError as exc:
+                msg = f"failed to start camera publisher (malformed ERROR payload): {line!r}"
+                raise CaptureError(msg) from exc
             # Back-compat: older workers sent a bare string.
             if isinstance(payload, str):
                 msg = f"failed to start camera publisher: {payload}"
