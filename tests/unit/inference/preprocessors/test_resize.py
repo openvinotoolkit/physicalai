@@ -28,6 +28,24 @@ class TestResizePreprocessor:
         # Padded back to the exact target resolution.
         assert result[IMAGES].shape == (1, 3, 64, 64)
 
+    def test_padding_uses_configured_pad_value(self) -> None:
+        prep = ResizePreprocessor(
+            image_resolution=(64, 64),
+            padding=True,
+            keep_aspect_ratio=True,
+            pad_value=7,
+        )
+        img = np.ones((1, 1, 32, 16), dtype=np.float32)
+
+        result = prep({IMAGES: img})
+        out = result[IMAGES]
+
+        assert out.shape == (1, 1, 64, 64)
+        # 32x16 scales to 64x32, so left and right pads are 16 pixels each.
+        assert np.all(out[:, :, :, :16] == 7)
+        assert np.all(out[:, :, :, 48:] == 7)
+        assert np.allclose(out[:, :, :, 16:48], 1.0)
+
     def test_keep_aspect_ratio_without_padding(self) -> None:
         prep = ResizePreprocessor(image_resolution=(64, 64), padding=False, keep_aspect_ratio=True)
         img = np.random.rand(1, 3, 32, 16).astype(np.float32)
