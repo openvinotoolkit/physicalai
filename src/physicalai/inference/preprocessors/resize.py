@@ -101,8 +101,8 @@ class ResizePreprocessor(Preprocessor):
 
         if self._keep_aspect_ratio:
             ratio = max(cur_width / target_width, cur_height / target_height)
-            resized_height = min(int(cur_height / ratio), target_height)
-            resized_width = min(int(cur_width / ratio), target_width)
+            resized_height = max(1, min(int(cur_height / ratio), target_height))
+            resized_width = max(1, min(int(cur_width / ratio), target_width))
         else:
             resized_height = target_height
             resized_width = target_width
@@ -119,6 +119,9 @@ class ResizePreprocessor(Preprocessor):
         pad_bottom = pad_height - pad_top
         pad_left = pad_width // 2
         pad_right = pad_width - pad_left
+
+        if pad_height == 0 and pad_width == 0:
+            return img
 
         return np.pad(
             img,

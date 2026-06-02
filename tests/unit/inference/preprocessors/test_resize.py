@@ -53,6 +53,15 @@ class TestResizePreprocessor:
         # Aspect ratio preserved (32:16 -> 64:32), no padding applied.
         assert result[IMAGES].shape == (1, 3, 64, 32)
 
+    def test_keep_aspect_ratio_clamps_to_minimum_size_one(self) -> None:
+        prep = ResizePreprocessor(image_resolution=(512, 512), padding=False, keep_aspect_ratio=True)
+        img = np.random.rand(1, 3, 1, 640).astype(np.float32)
+
+        result = prep({IMAGES: img})
+
+        # 1x640 downscaled to 512-wide would produce height=0 without clamping.
+        assert result[IMAGES].shape == (1, 3, 1, 512)
+
     def test_nested_image_dict(self) -> None:
         prep = ResizePreprocessor(image_resolution=(64, 64), keep_aspect_ratio=False)
         images = {"cam0": np.random.rand(1, 3, 32, 32).astype(np.float32)}
