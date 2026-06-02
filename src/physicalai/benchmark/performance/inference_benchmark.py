@@ -6,7 +6,7 @@
 import time
 from collections.abc import Iterable
 from itertools import islice
-from statistics import median, pstdev
+from statistics import mean, median, pstdev
 
 import numpy as np
 
@@ -74,6 +74,8 @@ class InferenceLatencyBenchmark:
             - ``num_iters``: Number of measured iterations executed.
             - ``min_iter_time`` / ``max_iter_time``: Extremes of measured
               per-iteration times.
+            - ``mean_iter_time``: Arithmetic mean of measured per-iteration
+              times.
             - ``median_iter_time``: Median per-iteration time.
             - ``std_iter_time``: Population standard deviation of measured
               per-iteration times (``0.0`` when only a single iteration ran).
@@ -129,6 +131,7 @@ class InferenceLatencyBenchmark:
         results["num_iters"] = len(iter_times)
         results["min_iter_time"] = min(iter_times)
         results["max_iter_time"] = max(iter_times)
+        results["mean_iter_time"] = mean(iter_times)
         results["median_iter_time"] = median(iter_times)
         results["std_iter_time"] = pstdev(iter_times) if len(iter_times) > 1 else 0.0
 

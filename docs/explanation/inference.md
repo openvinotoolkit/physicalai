@@ -76,4 +76,4 @@ warmup_iters  -> measured loop -> metrics
 When no `inputs` iterable is provided, the benchmark generates random inputs according to `model.input_features` specifications,
 so it can run without a recorded dataset. Pass a custom iterable to benchmark against real observations.
 
-The reported metrics (`num_iters`, `min_iter_time`, `max_iter_time`, `median_iter_time`, `std_iter_time`, `avg_warmup_iter_time`) are per-iteration seconds and reflect the full preprocess → runner → postprocess pipeline.
+The reported metrics (`num_iters`, `min_iter_time`, `max_iter_time`, `mean_iter_time`, `median_iter_time`, `std_iter_time`, `avg_warmup_iter_time`) are per-iteration seconds and reflect the full preprocess → runner → postprocess pipeline.

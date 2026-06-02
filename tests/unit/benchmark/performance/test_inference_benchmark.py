@@ -78,6 +78,7 @@ class TestInferenceLatencyBenchmark:
             "avg_warmup_iter_time",
             "min_iter_time",
             "max_iter_time",
+            "mean_iter_time",
             "median_iter_time",
             "std_iter_time",
         ):

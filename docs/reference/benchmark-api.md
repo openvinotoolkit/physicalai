@@ -29,5 +29,6 @@ Runs `warmup_iters` warmup iterations followed by the measured loop and returns 
 | `num_iters`            | Number of measured iterations.                 |
 | `min_iter_time`        | Fastest measured iteration.                    |
 | `max_iter_time`        | Slowest measured iteration.                    |
+| `mean_iter_time`       | Mean measured iteration.                       |
 | `median_iter_time`     | Median measured iteration.                     |
 | `std_iter_time`        | Population standard deviation (0.0 if n == 1). |
