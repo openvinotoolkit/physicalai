@@ -5,14 +5,16 @@ build-backend = "hatchling.build"
 [project]
 name = "physicalai"
 version = "0.2.0.dev0"
-requires-python = ">=3.12, <3.15"
+requires-python = ">=3.11"
 description = "Lightweight runtime for physical AI inference"
 readme = "README.md"
 license = { file = "LICENSE" }
-authors = [{ name = "Intel Open Edge Platform" }]
+authors = [{ name = "Intel OpenVINO Toolkit" }]
 classifiers = [
     "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
     "numpy>=1.24",
@@ -27,7 +29,7 @@ dependencies = [
     "num2words>=0.5.14,<0.6.0",
     "safetensors>=0.4.3,<1.0.0",
     "onnxruntime",
-    "openvino==2026.1",
+    "openvino==2026.0",
     "openvino_tokenizers>=2026.0",
     "jsonargparse[signatures,shtab]>=4.36",
 ]
@@ -57,7 +59,7 @@ capture = [
 ur = []
 abb = []
 franka = []
-trossen = ["trossen-arm>=1.9.0"]
+trossen = ["trossen-arm>=1.9.0; python_version < '3.14'"]
 so101 = ["feetech-servo-sdk"]
 observer-rerun = ["rerun-sdk>=0.22"]
 robots = [
@@ -95,14 +97,14 @@ include = [
 ]
 
 [tool.pyrefly]
-python-version = "3.12"
+python-version = "3.11"
 ignore-missing-imports = ["*"]
 
 [tool.uv]
 default-groups = ["dev"]
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py311"
 line-length = 120
 preview = true
 exclude = [
