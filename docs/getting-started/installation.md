@@ -31,12 +31,12 @@ Training commands may be provided by a separate training distribution or by plug
 When installed together with the coordinated `physicalai-train` release, the
 shared `physicalai` executable also exposes training and benchmark subcommands.
 
-## OpenVINO GPU (optional)
+## Intel GPU runtime (optional)
 
-The bundled OpenVINO runtime can execute models on the CPU out of the box. To
-target an Intel GPU (`device: GPU` or `AUTO` in your inference config) the host
-needs the OpenCL runtime and Intel compute driver, which are system packages
-that `pip` cannot install:
+To run OpenVINO inference on an Intel GPU (`device: GPU` or `AUTO` in your
+inference config), the host needs the OpenCL loader and Intel compute driver.
+This is the standard Intel GPU host setup on Linux, and these system packages
+cannot be installed via `pip`:
 
 ```bash
 # Debian / Ubuntu
@@ -49,7 +49,7 @@ sudo usermod -aG render $USER
 clinfo -l
 ```
 
-Without these, loading the GPU plugin fails with either
+Without these, loading the OpenVINO GPU plugin fails with either
 `libOpenCL.so.1: cannot open shared object file` (loader missing) or
 `[GPU] Can't get PERFORMANCE_HINT property as no supported devices found`
 (driver missing or device not accessible). CPU inference is unaffected.
