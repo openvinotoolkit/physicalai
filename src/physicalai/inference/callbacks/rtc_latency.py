@@ -12,9 +12,10 @@ from __future__ import annotations
 import math
 import time
 from collections import deque
-from typing import Any, override
+from typing import Any
 
 import numpy as np
+from typing_extensions import override
 
 from physicalai.inference.callbacks.base import Callback
 

@@ -12,7 +12,9 @@ following the common `n_action_steps` notation used in policy configs.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING
+
+from typing_extensions import override
 
 from physicalai.inference.constants import ACTION
 from physicalai.inference.postprocessors.base import Postprocessor

@@ -16,9 +16,10 @@ Supports two denormalization modes:
 
 from __future__ import annotations
 
-from typing import Any, override
+from typing import Any
 
 import numpy as np
+from typing_extensions import override
 
 from physicalai.inference.postprocessors.base import Postprocessor
 

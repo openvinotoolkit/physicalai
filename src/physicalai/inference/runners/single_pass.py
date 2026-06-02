@@ -10,7 +10,9 @@ and return the output dict unchanged.  This runner is completely generic
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING
+
+from typing_extensions import override
 
 from physicalai.inference.runners.base import InferenceRunner
 

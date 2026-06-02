@@ -32,6 +32,7 @@ dependencies = [
     "openvino==2026.0",
     "openvino_tokenizers>=2026.0",
     "jsonargparse[signatures,shtab]>=4.36",
+    "typing-extensions>=4.5",
 ]
 
 [project.scripts]

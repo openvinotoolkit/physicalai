@@ -11,9 +11,8 @@ PhysicalAI ``select_action()`` API.
 
 from __future__ import annotations
 
-from typing import override
-
 import numpy as np
+from typing_extensions import override
 
 from physicalai.inference.constants import ACTION
 from physicalai.inference.postprocessors.base import Postprocessor

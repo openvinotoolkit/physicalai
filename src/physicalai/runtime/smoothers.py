@@ -6,9 +6,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import override
 
 import numpy as np
+from typing_extensions import override
 
 _NDIM_2 = 2
 _ERR_2D = "remaining and incoming must be 2D arrays"

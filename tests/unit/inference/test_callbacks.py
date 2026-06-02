@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any, override
+from typing import Any
+from typing_extensions import override
 from unittest.mock import MagicMock, patch
 
 import numpy as np
