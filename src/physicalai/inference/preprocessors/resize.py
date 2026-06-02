@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 import cv2
 import numpy as np
 
@@ -13,29 +15,36 @@ from physicalai.inference.constants import IMAGES
 from .base import Preprocessor
 
 
+class ResizeMode(StrEnum):
+    """Resize strategy for :class:`ResizePreprocessor`."""
+
+    STRETCH = "stretch"
+    LETTERBOX = "letterbox"
+
+
 class ResizePreprocessor(Preprocessor):
     """Resize observation images to a target resolution.
 
     Args:
         image_resolution: Target (height, width) for images.
-        padding: Whether to pad images to reach the target resolution.
-        keep_aspect_ratio: Whether to preserve the aspect ratio when resizing.
+        mode: Resize strategy.
+            - ``stretch`` distorts to exact target size without padding.
+            - ``letterbox`` preserves aspect ratio and pads to exact target.
+        pad_value: Fill value used for letterbox padding.
     """
 
     def __init__(
         self,
         image_resolution: tuple[int, int],
         *,
-        padding: bool = True,
-        keep_aspect_ratio: bool = True,
+        mode: ResizeMode | str = ResizeMode.LETTERBOX,
         pad_value: int = 0,
     ) -> None:
         """Initialize the resize preprocessor."""
         super().__init__()
         self._image_resolution = image_resolution
-        self._padding = padding
+        self._mode = ResizeMode(mode)
         self._pad_value = pad_value
-        self._keep_aspect_ratio = keep_aspect_ratio
 
     def __call__(
         self,
@@ -73,13 +82,11 @@ class ResizePreprocessor(Preprocessor):
     def _resize_with_ar_pad(self, img: np.ndarray) -> np.ndarray:  # noqa: PLR0914
         """Resize an image array to the target resolution.
 
-        Behavior depends on the preprocessor configuration:
+                Behavior depends on the configured ``mode``:
 
-        - ``keep_aspect_ratio``: scale so the image fits within the target while
-          preserving proportions. When disabled, the image is stretched to the
-          exact target size.
-        - ``padding``: zero-pad symmetrically so the output exactly matches the
-          target resolution. When disabled, the output keeps the resized size.
+                - ``stretch``: image is resized directly to the target dimensions.
+                - ``letterbox``: image is scaled to fit while preserving aspect ratio,
+                    then padded symmetrically to exactly match the target dimensions.
 
         Args:
             img: Input image array with shape ``(batch, channels, height, width)``.
@@ -99,18 +106,18 @@ class ResizePreprocessor(Preprocessor):
         target_height, target_width = self._image_resolution
         cur_height, cur_width = img.shape[2:]
 
-        if self._keep_aspect_ratio:
+        if self._mode == ResizeMode.LETTERBOX:
             ratio = max(cur_width / target_width, cur_height / target_height)
             resized_height = max(1, min(int(cur_height / ratio), target_height))
             resized_width = max(1, min(int(cur_width / ratio), target_width))
-        else:
+        else:  # ResizeMode.STRETCH
             resized_height = target_height
             resized_width = target_width
 
         if (resized_height, resized_width) != (cur_height, cur_width):
             img = self._resize_bchw(img, resized_width, resized_height)
 
-        if not self._padding:
+        if self._mode == ResizeMode.STRETCH:
             return img
 
         pad_height = target_height - resized_height
