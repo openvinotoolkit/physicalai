@@ -28,11 +28,13 @@ class ResizePreprocessor(Preprocessor):
         *,
         padding: bool = True,
         keep_aspect_ratio: bool = True,
+        pad_value: int = 0,
     ) -> None:
         """Initialize the resize preprocessor."""
         super().__init__()
         self._image_resolution = image_resolution
         self._padding = padding
+        self._pad_value = pad_value
         self._keep_aspect_ratio = keep_aspect_ratio
 
     def __call__(
@@ -121,6 +123,7 @@ class ResizePreprocessor(Preprocessor):
         return np.pad(
             img,
             ((0, 0), (0, 0), (pad_top, pad_bottom), (pad_left, pad_right)),
+            constant_values=self._pad_value,
         )
 
     @staticmethod
