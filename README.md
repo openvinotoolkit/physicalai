@@ -28,7 +28,7 @@ Physical AI Runtime provides the deployment-side components for running trained 
 ---
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/openvinotoolkit/physicalai/main/docs/assets/inference_rerun.gif" alt="Inference demo" width="100%">
+  <img src="https://raw.githubusercontent.com/openvinotoolkit/physicalai/main/docs/assets/inference_rerun.webp" alt="Inference demo" width="100%">
 </p>
 
 ## Installation
