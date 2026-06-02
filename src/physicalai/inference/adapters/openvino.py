@@ -87,7 +87,8 @@ class OpenVINOAdapter(RuntimeAdapter):
                     "  sudo usermod -aG render $USER\n"
                     "Verify with: clinfo -l\n"
                     "Or set device='CPU' (or 'AUTO') to run inference on the CPU. "
-                    "See https://github.com/openvinotoolkit/physicalai/tree/main/docs/getting-started/installation.md for details."
+                    "See https://github.com/openvinotoolkit/physicalai/tree/main/docs/getting-started/installation.md "
+                    "for details."
                 )
                 raise RuntimeError(msg) from e
             raise
