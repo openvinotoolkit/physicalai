@@ -27,7 +27,7 @@ dependencies = [
     "num2words>=0.5.14,<0.6.0",
     "safetensors>=0.4.3,<1.0.0",
     "onnxruntime",
-    "openvino>=2026.0",
+    "openvino==2026.1",
     "openvino_tokenizers>=2026.0",
     "jsonargparse[signatures,shtab]>=4.36",
 ]
@@ -44,7 +44,9 @@ realsense = [
     "pyrealsense2-macosx; sys_platform == 'darwin'",
 ]
 basler = ["pypylon", "opencv-python-headless"]
-transport = ["iceoryx2>=0.8"]
+# Pin iceoryx2 exact version and sync with PhysicalAI Studio so
+# publishers and subscribers across processes/venvs can attach to each other.
+transport = ["iceoryx2==0.9.0"]
 genicam = []
 capture = [
     "physicalai[realsense]",
