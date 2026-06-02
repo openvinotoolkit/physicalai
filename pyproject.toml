@@ -67,7 +67,7 @@ robots = [
     "physicalai[ur]",
     "physicalai[abb]",
     "physicalai[franka]",
-    "physicalai[trossen]",
+    "physicalai[trossen]; python_version < '3.14'",
     "physicalai[so101]",
 ]
 

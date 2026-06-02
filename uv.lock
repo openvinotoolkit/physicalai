@@ -1646,7 +1646,7 @@ realsense = [
 ]
 robots = [
     { name = "feetech-servo-sdk" },
-    { name = "trossen-arm" },
+    { name = "trossen-arm", marker = "python_full_version < '3.14'" },
 ]
 so101 = [
     { name = "feetech-servo-sdk" },
@@ -1699,7 +1699,7 @@ requires-dist = [
     { name = "physicalai", extras = ["realsense"], marker = "extra == 'capture'" },
     { name = "physicalai", extras = ["so101"], marker = "extra == 'robots'" },
     { name = "physicalai", extras = ["transport"], marker = "extra == 'capture'" },
-    { name = "physicalai", extras = ["trossen"], marker = "extra == 'robots'" },
+    { name = "physicalai", extras = ["trossen"], marker = "python_full_version < '3.14' and extra == 'robots'" },
     { name = "physicalai", extras = ["ur"], marker = "extra == 'robots'" },
     { name = "pydantic", specifier = ">=2.5" },
     { name = "pynokhwa", specifier = "==0.1.2" },

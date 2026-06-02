@@ -29,8 +29,18 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, Literal
 
 import numpy as np
-import trossen_arm
 from loguru import logger
+
+try:
+    import trossen_arm
+except ImportError as e:
+    msg = (
+        "trossen-arm is required for WidowXAI. Install with: "
+        "pip install 'physicalai[trossen]'. "
+        "Note: trossen-arm does not ship wheels for Python 3.14+ yet; "
+        "use Python 3.11–3.13 if you need this robot."
+    )
+    raise ImportError(msg) from e
 
 from physicalai.robot import Robot
 from physicalai.robot.trossen.constants import HOME_POSITION, VALID_ROLES, WIDOWXAI_JOINT_ORDER
