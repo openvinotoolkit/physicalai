@@ -51,6 +51,7 @@ class OpenVINOAdapter(RuntimeAdapter):
         Raises:
             ImportError: If OpenVINO is not installed
             FileNotFoundError: If model files don't exist
+            RuntimeError: If model compilation fails (e.g. missing GPU drivers when ``device='GPU'``)
         """
         try:
             import openvino as ov  # noqa: PLC0415

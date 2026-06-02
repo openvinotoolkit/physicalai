@@ -157,7 +157,7 @@ def _dist_help(ep: EntryPoint) -> str:
     """
     if ep.dist is None:
         return ""
-    summary = ep.dist.metadata.get("Summary")
+    summary = ep.dist.metadata.get("Summary")  # type: ignore[attr-defined]
     return f"(from {ep.dist.name}) {summary}" if summary else f"(from {ep.dist.name})"
 
 
