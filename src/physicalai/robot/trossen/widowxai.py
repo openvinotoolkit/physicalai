@@ -38,7 +38,7 @@ except ImportError as e:
         "trossen-arm is required for WidowXAI. Install with: "
         "pip install 'physicalai[trossen]'. "
         "Note: trossen-arm does not ship wheels for Python 3.14+ yet; "
-        "use Python 3.11–3.13 if you need this robot."
+        "use Python 3.11-3.13 if you need this robot."
     )
     raise ImportError(msg) from e
 
