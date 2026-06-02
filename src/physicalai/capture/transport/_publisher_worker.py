@@ -304,7 +304,7 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0914, PLR0915
         # are left untouched. Failure here is non-fatal, the worker
         # will still attempt service creation and surface any real error.
         try:
-            iox2.Node.try_cleanup_dead_nodes(node.config, iox2.ServiceType.Ipc)
+            iox2.Node.try_cleanup_dead_nodes(iox2.ServiceType.Ipc, node.config)
         except Exception as cleanup_exc:  # noqa: BLE001
             logger.warning(f"dead-node cleanup failed (non-fatal): {cleanup_exc!r}")
 
