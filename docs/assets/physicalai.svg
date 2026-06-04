@@ -7,7 +7,7 @@
    version="1.1"
    id="svg7"
    sodipodi:docname="physicalai.svg"
-   inkscape:version="1.4.2 (ebf0e940, 2025-05-08)"
+   inkscape:version="1.4.4 (dcaf3e7, 2026-05-05)"
    xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
    xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
    xmlns:xlink="http://www.w3.org/1999/xlink"
@@ -22,15 +22,16 @@
      inkscape:pageopacity="0.0"
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
-     inkscape:zoom="0.74949822"
-     inkscape:cx="918.61459"
-     inkscape:cy="277.51901"
+     inkscape:zoom="2.1199011"
+     inkscape:cx="617.24578"
+     inkscape:cy="151.89388"
      inkscape:window-width="2560"
-     inkscape:window-height="1021"
-     inkscape:window-x="1280"
-     inkscape:window-y="31"
-     inkscape:window-maximized="0"
-     inkscape:current-layer="svg7" />
+     inkscape:window-height="1299"
+     inkscape:window-x="1440"
+     inkscape:window-y="746"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg7"
+     showguides="true" />
   <g
      clip-path="url(#clip0_7646_2644)"
      id="g5">
@@ -134,14 +135,14 @@
   <text
      xml:space="preserve"
      style="font-weight:bold;font-size:45.1912px;font-family:'Intel Clear';-inkscape-font-specification:'Intel Clear Bold';text-align:start;writing-mode:lr-tb;direction:ltr;text-anchor:start;fill:#ffffff;fill-opacity:1;stroke:none;stroke-width:0.228751;stroke-linejoin:bevel;stroke-opacity:1"
-     x="386.39505"
+     x="308.83081"
      y="99.130051"
      id="text9"><tspan
        sodipodi:role="line"
        id="tspan9"
-       x="386.39505"
+       x="308.83081"
        y="99.130051"
-       style="stroke-width:0.228751">Physical AI</tspan></text>
+       style="stroke-width:0.228751">OpenVINO™ Physical AI</tspan></text>
   <text
      xml:space="preserve"
      style="font-weight:bold;font-size:16px;font-family:'Intel Clear';-inkscape-font-specification:'Intel Clear Bold';text-align:start;writing-mode:lr-tb;direction:ltr;text-anchor:start;fill:#9aa0ad;fill-opacity:1;stroke:none;stroke-width:0.228751;stroke-linejoin:bevel;stroke-opacity:1"
