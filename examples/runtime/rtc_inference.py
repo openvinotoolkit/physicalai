@@ -97,9 +97,9 @@ def main() -> None:
     # RTC parameters
     rtc_group = parser.add_argument_group("rtc")
     rtc_group.add_argument("--chunk-size", type=int, default=50)
-    rtc_group.add_argument("--execution-horizon", type=int, default=10)
+    rtc_group.add_argument("--execution-horizon", type=int, default=15)
     rtc_group.add_argument("--max-action-dim", type=int, default=32)
-    rtc_group.add_argument("--max-guidance-weight", type=float, default=10.0)
+    rtc_group.add_argument("--max-guidance-weight", type=float, default=7.0)
     rtc_group.add_argument("--queue-threshold", type=int, default=30)
     rtc_group.add_argument("--low-pass-alpha", type=float, default=None, help="Alpha parameter for stateful LowPassFilterCallback. E.g. 0.5. Defaults to None (disabled).")
 

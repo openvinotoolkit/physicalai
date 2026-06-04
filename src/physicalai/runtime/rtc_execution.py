@@ -42,6 +42,16 @@ class RTCExecution(Execution):
     merges them into an :class:`RTCActionQueue`. The main thread pops
     one action per tick — never blocking on inference.
 
+    Tuning (defaults are the values validated best on π0.5):
+
+    * ``execution_horizon`` (15) — fresh actions used per chunk before
+      re-planning. Raise for smoother, more open-loop motion; lower for
+      more reactive motion at the cost of more inferences per second.
+    * ``max_guidance_weight`` (7) — how tightly each new chunk is pulled
+      toward the previous chunk's tail. Lower it if you see jitter or
+      oscillation between chunks; raise it if chunk seams look
+      discontinuous.
+
     RTC-specific inputs injected before each inference call:
     - ``noise``: random noise for denoising (shape: 1 x chunk x action_dim)
     - ``prev_chunk_left_over``: unconsumed tail (shape: 1 x chunk x action_dim)
@@ -52,15 +62,21 @@ class RTCExecution(Execution):
     Args:
         chunk_size: Number of actions per model output chunk. If None, is
             automatically inferred from the model's manifest or model metadata.
-        execution_horizon: Fresh actions to execute per chunk (range: typically
-            5 to 15, default 10). Low values speed up response but consume more
-            CPU, high values tolerate higher latency spikes.
+        execution_horizon: Number of fresh actions to execute from each
+            chunk before re-inferring (default 15, validated best for
+            π0.5). Larger = smoother and more open-loop (re-plans less
+            often); smaller = more reactive (re-plans more often, more
+            model calls per second).
         fps: Robot control frequency in Hz.
         max_action_dim: Model's internal action dimension (for noise/padding).
             If None, is automatically inferred from the model's manifest or
             defaulted to 32.
-        max_guidance_weight: Classifier-free guidance scale weight (range:
-            typically 1.0 to 15.0, default 10.0) injected into diffusion models.
+        max_guidance_weight: Strength of the RTC inpainting guidance
+            (paper's β, default 7, validated best for π0.5). Higher
+            pulls each new chunk more tightly toward the previous
+            chunk's tail (smoother seams) but can oscillate if pushed
+            too high with few denoising steps; lower it if you see
+            jitter between chunks.
         queue_threshold: Re-infer when queue drops below this level. If None,
             is dynamically computed as ``execution_horizon + latency_delay_actions``
             derived from worst-case inference latency and robot control rate (fps).
@@ -78,10 +94,10 @@ class RTCExecution(Execution):
     def __init__(  # noqa: D107
         self,
         chunk_size: int | None = None,
-        execution_horizon: int = 10,
+        execution_horizon: int = 15,
         fps: float = 30.0,
         max_action_dim: int | None = None,
-        max_guidance_weight: float = 10.0,
+        max_guidance_weight: float = 7.0,
         queue_threshold: int | None = None,
         latency_tracker: RTCLatencyTracker | None = None,
         warmup_inferences: int = 2,
