@@ -23,7 +23,7 @@
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
      inkscape:zoom="2.1199011"
-     inkscape:cx="617.24578"
+     inkscape:cx="428.55773"
      inkscape:cy="151.89388"
      inkscape:window-width="2560"
      inkscape:window-height="1299"
@@ -135,12 +135,12 @@
   <text
      xml:space="preserve"
      style="font-weight:bold;font-size:45.1912px;font-family:'Intel Clear';-inkscape-font-specification:'Intel Clear Bold';text-align:start;writing-mode:lr-tb;direction:ltr;text-anchor:start;fill:#ffffff;fill-opacity:1;stroke:none;stroke-width:0.228751;stroke-linejoin:bevel;stroke-opacity:1"
-     x="308.83081"
+     x="252.83081"
      y="99.130051"
      id="text9"><tspan
        sodipodi:role="line"
        id="tspan9"
-       x="308.83081"
+       x="252.83081"
        y="99.130051"
        style="stroke-width:0.228751">OpenVINO™ Physical AI</tspan></text>
   <text
