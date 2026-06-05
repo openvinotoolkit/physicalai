@@ -22,6 +22,7 @@ from physicalai.runtime.smoothers import LerpSmoother
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
+    from pathlib import Path
 
     from physicalai.capture.camera import Camera
     from physicalai.capture.frame import Frame
@@ -275,6 +276,37 @@ class PolicyRuntime:
 
     def __exit__(self, *exc_info: object) -> None:  # noqa: D105
         self.disconnect()
+
+    @classmethod
+    def from_config(cls, config: str | Path) -> Self:
+        """Build a :class:`PolicyRuntime` from a YAML/JSON config file.
+
+        Uses the same schema as ``physicalai run --config``. The optional
+        top-level ``run:`` block is parsed but ignored — pass ``duration_s``
+        to :meth:`run` directly.
+
+        Args:
+            config: Path to a YAML or JSON config file.
+
+        Returns:
+            Instantiated runtime, not yet connected. Call ``connect()`` or
+            use as a context manager before invoking ``run()``.
+
+        Example::
+
+            with PolicyRuntime.from_config("rtc_runtime.yaml") as runtime:
+                runtime.run(duration_s=60)
+        """
+        from jsonargparse import ActionConfigFile, ArgumentParser  # noqa: PLC0415
+
+        parser = ArgumentParser()
+        parser.add_argument("--config", action=ActionConfigFile)
+        parser.add_class_arguments(cls, "runtime")
+        # Accept (and ignore) the CLI's ``run:`` block so configs round-trip
+        # between ``physicalai run --config`` and ``from_config``.
+        parser.add_method_arguments(cls, "run", "run")
+        ns = parser.parse_args(["--config", str(config)])
+        return parser.instantiate(ns).runtime
 
     def run(self, *, duration_s: float | None = None) -> RunStats:  # noqa: PLR0915
         """Run the control loop.

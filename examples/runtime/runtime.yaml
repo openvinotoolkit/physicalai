@@ -1,0 +1,100 @@
+# PhysicalAI runtime — minimal sample config
+#
+# Edit every CHANGE_ME field for your hardware, then run:
+#   python examples/runtime/run_from_config.py examples/runtime/runtime.yaml
+#
+# This sample uses SyncExecution (inference blocks the control loop). It is the
+# simplest mode and a good first check that your model + robot + camera work
+# together. For lower-jitter runs, switch ``execution`` to:
+#
+#   execution:
+#     class_path: physicalai.runtime.AsyncExecution    # background-thread inference
+#     init_args:
+#       request_threshold: 0.5
+#
+# or, for an RTC-exported model:
+#
+#   execution:
+#     class_path: physicalai.runtime.RTCExecution
+#     init_args:
+#       fps: 30.0
+#   action_queue:
+#     class_path: physicalai.runtime.RTCActionQueue
+
+runtime:
+  robot:
+    class_path: physicalai.robot.SO101
+    init_args:
+      port: /dev/ttyACM0 # CHANGE_ME: your robot's serial port
+      calibration: ./robot_calibration.json # CHANGE_ME: path to calibration JSON
+
+  model:
+    class_path: physicalai.inference.InferenceModel
+    init_args:
+      export_dir: ./exports/my_policy # CHANGE_ME: path to exported OpenVINO model
+      device: GPU # GPU | CPU | NPU
+
+  execution:
+    class_path: physicalai.runtime.SyncExecution
+
+  cameras:
+    overhead: # scene/workspace view
+      class_path: physicalai.capture.SharedCamera
+      init_args:
+        camera_type: uvc
+        camera_kwargs:
+          device: /dev/video0 # CHANGE_ME: use /dev/v4l/by-id/... for stable identity
+          width: 640
+          height: 480
+          fps: 30
+    gripper: # wrist-mounted view (rename to ``arm`` if the model expects that key)
+      class_path: physicalai.capture.SharedCamera
+      init_args:
+        camera_type: uvc
+        camera_kwargs:
+          device: /dev/video2 # CHANGE_ME
+          width: 640
+          height: 480
+          fps: 30
+
+  fps: 30.0
+  task: "pick up the red cube" # CHANGE_ME: task string the model was trained with
+
+  callbacks:
+    # Live visualization in Rerun. ``mode: spawn`` launches a viewer window.
+    # For a remote/long-running viewer, swap to:
+    #   mode: connect
+    #   connect_addr: "127.0.0.1:9876"
+    # and start ``rerun`` separately.
+    #
+    # Cameras are declared again here so the callback can subscribe to the
+    # same shared-memory streams as the runtime. SharedCamera matches
+    # publishers by ``camera_type`` + ``camera_kwargs``, so keep these blocks
+    # in sync with the runtime ``cameras:`` section above.
+    - class_path: physicalai.runtime.RerunCallback
+      init_args:
+        cameras:
+          overhead:
+            class_path: physicalai.capture.SharedCamera
+            init_args:
+              camera_type: uvc
+              camera_kwargs:
+                device: /dev/video0 # CHANGE_ME: same as overhead camera above
+                width: 640
+                height: 480
+                fps: 30
+          gripper:
+            class_path: physicalai.capture.SharedCamera
+            init_args:
+              camera_type: uvc
+              camera_kwargs:
+                device: /dev/video2 # CHANGE_ME: same as gripper camera above
+                width: 640
+                height: 480
+                fps: 30
+        mode: spawn
+        log_images: true
+        image_decimation: 1 # log every Nth frame; raise to reduce viewer load
+
+run:
+  duration_s: 60.0
