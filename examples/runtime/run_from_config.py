@@ -4,17 +4,18 @@
 
 """Load a PolicyRuntime from a YAML config and run it.
 
-Equivalent to ``physicalai run --config <path>`` but from a Python script,
-useful for notebooks, debugging, and apps that want to drive the runtime
-programmatically while still using the CLI's config schema.
+Showcases :meth:`PolicyRuntime.from_config` — loads the same ``runtime:``
+schema as ``physicalai run --config``, but the caller owns ``duration_s``
+(passed directly to :meth:`PolicyRuntime.run`). Any ``run:`` block in the
+YAML is parsed and ignored by ``from_config``.
 
 Examples:
 
-    # Run for the duration specified inside the YAML (or indefinitely if absent)
-    python examples/runtime/run_from_config.py examples/runtime/rtc_runtime.yaml
+    # Run for the default 60s
+    python examples/runtime/run_from_config.py examples/runtime/runtime.yaml
 
-    # Override duration from the command line
-    python examples/runtime/run_from_config.py examples/runtime/rtc_runtime.yaml --duration-s 30
+    # Override duration
+    python examples/runtime/run_from_config.py examples/runtime/runtime.yaml --duration-s 30
 """
 
 from __future__ import annotations
@@ -25,6 +26,8 @@ import sys
 from pathlib import Path
 
 from physicalai.runtime import PolicyRuntime
+
+_DEFAULT_DURATION_S = 60.0
 
 
 def main() -> int:
@@ -43,8 +46,8 @@ def main() -> int:
     parser.add_argument(
         "--duration-s",
         type=float,
-        default=None,
-        help="Run duration in seconds. Defaults to running indefinitely.",
+        default=_DEFAULT_DURATION_S,
+        help=f"Run duration in seconds (default: {_DEFAULT_DURATION_S:g}).",
     )
     args = parser.parse_args()
 
@@ -52,9 +55,7 @@ def main() -> int:
         print(f"Config not found: {args.config}", file=sys.stderr)
         return 2
 
-    print(f"Loading runtime from {args.config}...")
     runtime = PolicyRuntime.from_config(args.config)
-    print("Runtime loaded.")
 
     with runtime:
         print(f"Running (duration_s={args.duration_s})")
