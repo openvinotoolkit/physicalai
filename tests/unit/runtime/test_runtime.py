@@ -18,6 +18,8 @@ import pytest
 from physicalai.runtime._action_queue import ChunkedActionQueue as ActionQueue, ChunkedActionQueue
 from physicalai.runtime.execution import SyncExecution, WorkerDiedError
 from physicalai.runtime.runtime import PolicyRuntime, RunStats
+from physicalai.robot.interface import RobotObservation
+from physicalai.inference.model import InferenceModel
 
 from physicalai.capture import Frame
 
@@ -313,7 +315,7 @@ class _ConfigFakeRobot:
     def is_connected(self) -> bool:
         return True
 
-    def get_observation(self) -> FakeRobotObservation:
+    def get_observation(self) -> RobotObservation:
         return FakeRobotObservation(
             joint_positions=np.zeros(2, dtype=np.float32),
             timestamp=time.monotonic(),
@@ -324,9 +326,16 @@ class _ConfigFakeRobot:
     def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None: ...
 
 
+class _ConfigFakeModel(InferenceModel):
+    """Minimal InferenceModel subclass that skips export-dir filesystem access."""
+
+    def __init__(self, export_dir: str = "/tmp/fake") -> None:  # noqa: S108
+        self.export_dir = export_dir  # type: ignore[assignment]
+
+
 _FAKE_ROBOT_PATH = f"{__name__}._ConfigFakeRobot"
 _SYNC_EXECUTION_PATH = "physicalai.runtime.execution.SyncExecution"
-_MODEL_PATH = "physicalai.inference.model.InferenceModel"
+_MODEL_PATH = f"{__name__}._ConfigFakeModel"
 
 
 def _minimal_yaml(*, fps: float = 30.0, include_run_block: bool = False) -> str:
@@ -356,8 +365,7 @@ class TestFromConfig:
         cfg_path = tmp_path / "runtime.yaml"
         cfg_path.write_text(_minimal_yaml())
 
-        with patch("physicalai.inference.model.InferenceModel.__init__", return_value=None):
-            runtime = PolicyRuntime.from_config(cfg_path)
+        runtime = PolicyRuntime.from_config(cfg_path)
 
         assert isinstance(runtime, PolicyRuntime)
         assert runtime._fps == 30.0  # noqa: SLF001
@@ -368,8 +376,7 @@ class TestFromConfig:
         cfg_path = tmp_path / "runtime.yaml"
         cfg_path.write_text(_minimal_yaml(fps=15.0))
 
-        with patch("physicalai.inference.model.InferenceModel.__init__", return_value=None):
-            runtime = PolicyRuntime.from_config(str(cfg_path))
+        runtime = PolicyRuntime.from_config(str(cfg_path))
 
         assert runtime._fps == 15.0  # noqa: SLF001
 
@@ -378,8 +385,7 @@ class TestFromConfig:
         cfg_path = tmp_path / "runtime.yaml"
         cfg_path.write_text(_minimal_yaml(include_run_block=True))
 
-        with patch("physicalai.inference.model.InferenceModel.__init__", return_value=None):
-            runtime = PolicyRuntime.from_config(cfg_path)
+        runtime = PolicyRuntime.from_config(cfg_path)
 
         assert isinstance(runtime, PolicyRuntime)
         # Runtime carries no record of run.duration_s; only its constructor args.
@@ -403,7 +409,6 @@ class TestFromConfig:
         cfg_path = tmp_path / "runtime.yaml"
         cfg_path.write_text(_minimal_yaml())
 
-        with patch("physicalai.inference.model.InferenceModel.__init__", return_value=None):
-            runtime = PolicyRuntime.from_config(cfg_path)
+        runtime = PolicyRuntime.from_config(cfg_path)
 
         assert runtime._connected is False  # noqa: SLF001
