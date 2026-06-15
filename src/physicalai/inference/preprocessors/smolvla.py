@@ -51,6 +51,9 @@ class ResizeSmolVLA(Preprocessor):
                         with pixel values normalized to [-1, 1].
             - IMAGE_MASKS: Boolean masks of shape (batch_size, height, width) indicating
                              valid image regions (all ones for padded images).
+
+        Raises:
+            ValueError: If input images have unsupported data types.
         """
         inputs = dict(inputs)
 
@@ -66,7 +69,18 @@ class ResizeSmolVLA(Preprocessor):
         resized_images = []
 
         for img in images:
-            resized_img = self._resize_with_pad(img, *self.image_resolution, pad_value=0)
+            if img.dtype == np.uint8:
+                img_fp32 = img.astype(np.float32) / 255.0
+            elif np.issubdtype(img.dtype, np.floating):
+                img_fp32 = img.astype(np.float32)
+            else:
+                msg = f"Unsupported image dtype: {img.dtype}"
+                raise ValueError(msg)
+
+            if img_fp32.ndim == 4 and img_fp32.shape[-1] == 3:  # noqa: PLR2004
+                img_fp32 = np.transpose(img_fp32, (0, 3, 1, 2))  # (B, H, W, C) to (B, C, H, W)
+
+            resized_img = self._resize_with_pad(img_fp32, *self.image_resolution, pad_value=0)
             resized_img = resized_img * 2.0 - 1.0
             bsize = resized_img.shape[0]
             mask = np.ones(bsize, dtype=np.bool)

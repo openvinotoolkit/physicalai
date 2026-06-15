@@ -100,6 +100,56 @@ class TestResizeSmolVLACall:
         assert result[IMAGE_MASKS].all()
 
 
+class TestResizeSmolVLADtypeAndLayout:
+    def test_uint8_input_normalised(self) -> None:
+        prep = ResizeSmolVLA(image_resolution=(64, 64))
+        # uint8 255 → 1.0 → 1.0 * 2 - 1 = 1.0
+        img = np.full((1, 3, 64, 64), 255, dtype=np.uint8)
+        result = prep({IMAGES: img})
+        assert result[IMAGES].dtype == np.float32
+        assert result[IMAGES].shape[1:] == img.shape
+        np.testing.assert_allclose(result[IMAGES].max(), 1.0, atol=1e-5)
+
+    def test_uint8_zeros_normalised(self) -> None:
+        prep = ResizeSmolVLA(image_resolution=(64, 64))
+        # uint8 0 → 0.0 → 0.0 * 2 - 1 = -1.0
+        img = np.zeros((1, 3, 64, 64), dtype=np.uint8)
+        result = prep({IMAGES: img})
+        assert result[IMAGES].dtype == np.float32
+        assert result[IMAGES].shape[1:] == img.shape
+        np.testing.assert_allclose(result[IMAGES].min(), -1.0, atol=1e-5)
+
+    def test_non_float32_dtype_converted(self) -> None:
+        prep = ResizeSmolVLA(image_resolution=(64, 64))
+        img = np.ones((1, 3, 64, 64), dtype=np.float64)
+        result = prep({IMAGES: img})
+        assert result[IMAGES].shape[1:] == img.shape
+        assert result[IMAGES].dtype == np.float32
+
+    def test_unsupported_dtype_raises(self) -> None:
+        prep = ResizeSmolVLA(image_resolution=(64, 64))
+        img = np.ones((1, 3, 64, 64), dtype=np.int32)
+        with pytest.raises(ValueError, match="Unsupported image dtype"):
+            prep({IMAGES: img})
+
+    def test_channels_last_transposed(self) -> None:
+        prep = ResizeSmolVLA(image_resolution=(64, 64))
+        # (B, H, W, C) input should be transposed to (B, C, H, W) internally
+        img = np.random.rand(1, 32, 32, 3).astype(np.float32)
+        result = prep({IMAGES: img})
+        assert result[IMAGES].shape[2] == 3
+        assert result[IMAGES].shape[3] == 64
+        assert result[IMAGES].shape[4] == 64
+
+    def test_channels_last_uint8_matches_channels_first(self) -> None:
+        prep = ResizeSmolVLA(image_resolution=(64, 64))
+        chw = np.random.randint(0, 256, size=(1, 3, 48, 48), dtype=np.uint8)
+        hwc = np.transpose(chw, (0, 2, 3, 1))
+        result_chw = prep({IMAGES: chw})
+        result_hwc = prep({IMAGES: hwc})
+        np.testing.assert_array_equal(result_chw[IMAGES], result_hwc[IMAGES])
+
+
 class TestResizeSmolVLAResizeWithPad:
     def test_invalid_ndim_raises(self) -> None:
         with pytest.raises(ValueError, match="expected"):
