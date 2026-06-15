@@ -56,9 +56,13 @@ class ResizePreprocessor(Preprocessor):
         nested ``{camera: array}`` dict under ``images``, or flat ``images.*``
         keys. ``is_pad`` keys are left untouched.
 
+        Image arrays may be in channels-first ``(batch, channels, height,
+        width)`` or channels-last ``(batch, height, width, channels)`` layout,
+        with ``uint8`` or floating-point values. The output is always in
+        channels-first layout and preserves the input dtype.
+
         Args:
-            inputs: Observation dict. Image arrays are expected to have shape
-                ``(batch, channels, height, width)``.
+            inputs: Observation dict.
 
         Returns:
             A new dict with the image arrays resized.
@@ -88,20 +92,37 @@ class ResizePreprocessor(Preprocessor):
                 - ``letterbox``: image is scaled to fit while preserving aspect ratio,
                     then padded symmetrically to exactly match the target dimensions.
 
+        Accepts channels-first ``(B,C,H,W)`` or
+        channels-last ``(B,H,W,C)`` arrays with ``uint8``
+        or floating-point values. The output is always in channels-first layout
+        and ``fp32``.
+
         Args:
-            img: Input image array with shape ``(batch, channels, height, width)``.
+            img: Input image array in channels-first or channels-last layout.
 
         Returns:
-            Resized image array.
+            Resized image array in channels-first layout.
 
         Raises:
-            ValueError: If the input array does not have 4 dimensions
-                (batch, channels, height, width).
+            ValueError: If the input array does not have 4 dimensions, or if it
+                has an unsupported dtype (not ``uint8`` or floating point).
         """
         img_dim = 4
         if img.ndim != img_dim:
-            msg = f"(b,c,h,w) expected, but {img.shape}"
+            msg = f"(B,C,H,W) expected, but {img.shape}"
             raise ValueError(msg)
+
+        if img.dtype == np.uint8:
+            img = img.astype(np.float32) / 255.0
+        elif np.issubdtype(img.dtype, np.floating):
+            img = img.astype(np.float32)
+        else:
+            msg = f"Unsupported image dtype: {img.dtype}"
+            raise ValueError(msg)
+
+        channels_last = img.shape[-1] == 3  # noqa: PLR2004
+        if channels_last:
+            img = np.transpose(img, (0, 3, 1, 2))  # (B, H, W, C) -> (B, C, H, W)
 
         target_height, target_width = self._image_resolution
         cur_height, cur_width = img.shape[2:]
@@ -117,24 +138,21 @@ class ResizePreprocessor(Preprocessor):
         if (resized_height, resized_width) != (cur_height, cur_width):
             img = self._resize_bchw(img, resized_width, resized_height)
 
-        if self._mode == ResizeMode.STRETCH:
-            return img
+        if self._mode == ResizeMode.LETTERBOX:
+            pad_height = target_height - resized_height
+            pad_width = target_width - resized_width
+            if pad_height > 0 or pad_width > 0:
+                pad_top = pad_height // 2
+                pad_bottom = pad_height - pad_top
+                pad_left = pad_width // 2
+                pad_right = pad_width - pad_left
+                img = np.pad(
+                    img,
+                    ((0, 0), (0, 0), (pad_top, pad_bottom), (pad_left, pad_right)),
+                    constant_values=self._pad_value,
+                )
 
-        pad_height = target_height - resized_height
-        pad_width = target_width - resized_width
-        pad_top = pad_height // 2
-        pad_bottom = pad_height - pad_top
-        pad_left = pad_width // 2
-        pad_right = pad_width - pad_left
-
-        if pad_height == 0 and pad_width == 0:
-            return img
-
-        return np.pad(
-            img,
-            ((0, 0), (0, 0), (pad_top, pad_bottom), (pad_left, pad_right)),
-            constant_values=self._pad_value,
-        )
+        return img
 
     @staticmethod
     def _resize_bchw(img: np.ndarray, width: int, height: int) -> np.ndarray:

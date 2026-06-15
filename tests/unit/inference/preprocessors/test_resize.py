@@ -86,3 +86,39 @@ class TestResizePreprocessor:
         img = np.random.rand(3, 32, 32).astype(np.float32)
         with pytest.raises(ValueError, match="expected"):
             prep({IMAGES: img})
+
+    def test_unsupported_dtype_raises(self) -> None:
+        prep = ResizePreprocessor(image_resolution=(64, 64))
+        img = np.zeros((1, 3, 32, 32), dtype=np.int32)
+        with pytest.raises(ValueError, match="Unsupported image dtype"):
+            prep({IMAGES: img})
+
+    def test_uint8_is_normalized_to_unit_range(self) -> None:
+        prep = ResizePreprocessor(image_resolution=(32, 32), mode=ResizeMode.STRETCH)
+        img = np.full((1, 3, 32, 32), 255, dtype=np.uint8)
+        result = prep({IMAGES: img})
+        out = result[IMAGES]
+        assert out.dtype == np.float32
+        assert np.allclose(out, 1.0)
+
+    def test_float_output_is_float32(self) -> None:
+        prep = ResizePreprocessor(image_resolution=(32, 32), mode=ResizeMode.STRETCH)
+        img = np.random.rand(1, 3, 16, 16).astype(np.float64)
+        result = prep({IMAGES: img})
+        assert result[IMAGES].dtype == np.float32
+
+    def test_channels_last_input_returns_channels_first(self) -> None:
+        prep = ResizePreprocessor(image_resolution=(64, 64), mode=ResizeMode.STRETCH)
+        img = np.random.rand(1, 32, 16, 3).astype(np.float32)
+        result = prep({IMAGES: img})
+        # Channels-last input is converted to channels-first output.
+        assert result[IMAGES].shape == (1, 3, 64, 64)
+
+    def test_channels_last_uint8_is_normalized(self) -> None:
+        prep = ResizePreprocessor(image_resolution=(32, 32), mode=ResizeMode.STRETCH)
+        img = np.full((1, 16, 16, 3), 255, dtype=np.uint8)
+        result = prep({IMAGES: img})
+        out = result[IMAGES]
+        assert out.shape == (1, 3, 32, 32)
+        assert out.dtype == np.float32
+        assert np.allclose(out, 1.0)
