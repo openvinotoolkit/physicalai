@@ -39,7 +39,9 @@ class ResizeSmolVLA(Preprocessor):
         """Process and prepare images for model inference.
 
         Resizes images with padding, normalizes pixel values to [-1, 1] range,
-        and generates corresponding attention masks.
+        and generates corresponding attention masks. Supported image formats:
+        - (B, C, H, W) or (B, H, W, C) with float32 values in [0, 1]
+        - (B, C, H, W) or (B, H, W, C) with uint8 values in [0, 255]
 
         Args:
             inputs: Dictionary containing IMAGES key with numpy array(s) of shape
