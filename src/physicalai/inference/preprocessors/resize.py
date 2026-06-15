@@ -58,8 +58,8 @@ class ResizePreprocessor(Preprocessor):
 
         Image arrays may be in channels-first ``(batch, channels, height,
         width)`` or channels-last ``(batch, height, width, channels)`` layout,
-        with ``uint8`` or floating-point values. The output is always in
-        channels-first layout and preserves the input dtype.
+        with ``uint8`` (normalized to ``float32`` in [0, 1]) or floating-point
+        values. The output is always in channels-first layout and ``float32``.
 
         Args:
             inputs: Observation dict.
