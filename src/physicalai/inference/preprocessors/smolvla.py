@@ -79,7 +79,7 @@ class ResizeSmolVLA(Preprocessor):
                 msg = f"Unsupported image dtype: {img.dtype}"
                 raise ValueError(msg)
 
-            if img_fp32.ndim == 4 and img_fp32.shape[-1] == 3:  # noqa: PLR2004
+            if img_fp32.ndim == 4 and img_fp32.shape[-1] == 3 and img_fp32.shape[1] != 3:  # noqa: PLR2004
                 img_fp32 = np.transpose(img_fp32, (0, 3, 1, 2))  # (B, H, W, C) to (B, C, H, W)
 
             resized_img = self._resize_with_pad(img_fp32, *self.image_resolution, pad_value=0)
