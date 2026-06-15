@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Protocol, Self, runtime_checkable
 import numpy as np
 
 from physicalai.capture.errors import CaptureError
+from physicalai.inference.constants import IMAGES, STATE, TASK
 from physicalai.runtime._action_queue import ChunkedActionQueue  # noqa: PLC2701
 from physicalai.runtime._callback_bus import _CallbackBus  # noqa: PLC2701
 from physicalai.runtime.events import LifecycleEvent, TickEvent
@@ -452,17 +453,17 @@ class PolicyRuntime:
 
     def _build_model_input(self) -> dict[str, Any]:
         robot_obs = self._robot.get_observation()
-        model_input: dict[str, Any] = {"state": np.array([robot_obs.state], dtype=np.float32)}
+        model_input: dict[str, Any] = {STATE: np.array([robot_obs.state], dtype=np.float32)}
 
         # Merge robot-embedded images and external cameras
         if robot_obs.images:
             for name, frame in robot_obs.images.items():
-                model_input[f"images.{name}"] = frame.data[np.newaxis]
+                model_input[f"{IMAGES}.{name}"] = frame.data[np.newaxis]
         for name, cam in self._cameras.items():
-            model_input[f"images.{name}"] = cam.read_latest().data[np.newaxis]
+            model_input[f"{IMAGES}.{name}"] = cam.read_latest().data[np.newaxis]
 
         if self._task is not None:
-            model_input["task"] = [self._task]
+            model_input[TASK] = [self._task]
 
         return model_input
 
@@ -558,14 +559,14 @@ class PolicyRuntime:
         Returns:
             Dictionary ready to pass to the inference model.
         """
-        model_input: dict[str, Any] = {"state": np.array([robot_obs.state], dtype=np.float32)}
+        model_input: dict[str, Any] = {STATE: np.array([robot_obs.state], dtype=np.float32)}
         if robot_obs.images:
             for name, frame in robot_obs.images.items():
-                model_input[f"images.{name}"] = frame.data[np.newaxis]
+                model_input[f"{IMAGES}.{name}"] = frame.data[np.newaxis]
         for name, frame in camera_frames.items():
-            model_input[f"images.{name}"] = frame.data[np.newaxis]
+            model_input[f"{IMAGES}.{name}"] = frame.data[np.newaxis]
         if self._task is not None:
-            model_input["task"] = [self._task]
+            model_input[TASK] = [self._task]
         return model_input
 
     def _resilient_send(self, action: np.ndarray) -> None:
