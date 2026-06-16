@@ -19,6 +19,10 @@ license-check: true
 vulnerability-check: true
 allow-dependencies-licenses:
   # typing-extensions distribution license is PSF-2.0, as declared in the PyPI,
-  # see https://pypi.org/pypi/typing-extensions/json
+  # https://pypi.org/pypi/typing-extensions/json
   # The GPL-1.0-or-later entry in the SBOM is a scanner false positive
   - pkg:pypi/typing-extensions
+  # trossen-arm distribution license is BSD-3-Clause, as declared in the PyPI wheel and GitHub,
+  # https://pypi.org/project/trossen-arm/#files
+  # https://github.com/TrossenRobotics/trossen_arm/blob/main/LICENSE
+  - pkg:pypi/trossen-arm
