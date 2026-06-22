@@ -18,6 +18,7 @@ from physicalai.inference.constants import ACTION
 from physicalai.inference.data.features import InferenceFeature
 from physicalai.inference.manifest import ComponentSpec, Manifest
 from physicalai.inference.runners import get_runner
+from physicalai.inference.utils._hub import download_from_hub  # noqa: PLC2701
 
 if TYPE_CHECKING:
     from physicalai.inference.adapters.base import RuntimeAdapter
@@ -178,6 +179,50 @@ class InferenceModel:
             >>> policy = InferenceModel.load("./exports", backend="onnx")
         """
         return cls(export_dir=export_dir, **kwargs)
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        repo_id: str,
+        *,
+        revision: str | None = None,
+        cache_dir: str | Path | None = None,
+        token: str | None = None,
+        allow_patterns: list[str] | None = None,
+        **kwargs: Any,  # noqa: ANN401
+    ) -> InferenceModel:
+        """Load an inference model from a Hugging Face Hub repository.
+
+        Downloads the repository snapshot to a local cache directory and then
+        loads it like a local export.
+
+        Args:
+            repo_id: Hub repository identifier, e.g. ``"physical-ai/act-cube"``.
+            revision: Hub git revision (branch, tag, or commit SHA). Pin to a
+                commit SHA for reproducible, tamper-evident loads.
+            cache_dir: Cache directory for the download.
+            token: Hugging Face access token for private repositories.
+            allow_patterns: Optional glob patterns limiting which files are
+                downloaded. When ``None``, the full snapshot is fetched.
+            **kwargs: Additional arguments passed to ``__init__``.
+
+        Returns:
+            Initialized InferenceModel instance.
+
+        Examples:
+            >>> policy = InferenceModel.from_pretrained("physical-ai/act-cube")
+            >>> policy = InferenceModel.from_pretrained(
+            ...     "physical-ai/act-cube", revision="v1.0", backend="onnx"
+            ... )
+        """
+        local_dir = download_from_hub(
+            repo_id,
+            revision=revision,
+            cache_dir=cache_dir,
+            token=token,
+            allow_patterns=allow_patterns,
+        )
+        return cls(export_dir=local_dir, **kwargs)
 
     def __call__(self, inputs: dict[str, np.ndarray | list[str]]) -> dict[str, np.ndarray]:
         """Run the full inference pipeline and return model outputs.

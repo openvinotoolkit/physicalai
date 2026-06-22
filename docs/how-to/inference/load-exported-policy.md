@@ -15,6 +15,23 @@ model.reset()
 action = model.select_action(observation)
 ```
 
+Load directly from the Hugging Face Hub with a repo id.
+
+```python
+model = InferenceModel.from_pretrained("physical-ai/act-cube")
+```
+
+Pin a revision (branch, tag, or commit SHA) for reproducible loads, and pass a
+token for private repositories.
+
+```python
+model = InferenceModel.from_pretrained(
+    "physical-ai/act-cube",
+    revision="v1.0",
+    token="hf_...",
+)
+```
+
 If necessary, select the backend explicitly.
 
 ```python

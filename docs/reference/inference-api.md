@@ -24,6 +24,21 @@ The model can be constructed directly from an export directory or loaded from co
 model = InferenceModel.load("./exports/act_policy")
 ```
 
+### `from_pretrained`
+
+```python
+model = InferenceModel.from_pretrained(
+    "physical-ai/act-cube",
+    revision="v1.0",      # branch, tag, or commit SHA (optional)
+    cache_dir=None,        # download cache directory (optional)
+    token=None,            # access token for private repos (optional)
+)
+```
+
+This downloads the policy package snapshot from the Hugging Face Hub and loads
+it like a local export. Additional keyword arguments are forwarded to the
+constructor (e.g. `backend`, `device`).
+
 > **Note:** `InferenceModel.from_config()` is a planned API.
 
 ## Methods

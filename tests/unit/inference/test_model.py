@@ -729,6 +729,42 @@ class TestPipelineWiring:
 
 
 @pytest.mark.usefixtures("_patch_adapter")
+class TestHubLoading:
+    def test_from_pretrained_downloads_and_loads(self, tmp_path: Path) -> None:
+        export_dir = _make_export_dir(tmp_path)
+        with patch(
+            "physicalai.inference.model.download_from_hub",
+            return_value=export_dir,
+        ) as mock_download:
+            model = InferenceModel.from_pretrained(
+                "physical-ai/act-cube",
+                revision="v1.0",
+                cache_dir="/tmp/cache",
+                token="secret",
+            )
+
+        assert isinstance(model, InferenceModel)
+        assert model.policy_name == "act"
+        mock_download.assert_called_once_with(
+            "physical-ai/act-cube",
+            revision="v1.0",
+            cache_dir="/tmp/cache",
+            token="secret",
+            allow_patterns=None,
+        )
+
+    def test_from_pretrained_forwards_kwargs(self, tmp_path: Path) -> None:
+        export_dir = _make_export_dir(tmp_path, backend="onnx")
+        with patch(
+            "physicalai.inference.model.download_from_hub",
+            return_value=export_dir,
+        ):
+            model = InferenceModel.from_pretrained("physical-ai/act-cube", backend="onnx")
+
+        assert model.backend == "onnx"
+
+
+@pytest.mark.usefixtures("_patch_adapter")
 class TestPolicyNameValidation:
     """Policy_name path traversal prevention."""
 
