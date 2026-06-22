@@ -763,6 +763,14 @@ class TestHubLoading:
 
         assert model.backend == "onnx"
 
+    def test_from_pretrained_rejects_export_dir(self) -> None:
+        with patch("physicalai.inference.model.download_from_hub") as mock_download, pytest.raises(
+            TypeError, match="does not accept export_dir"
+        ):
+            InferenceModel.from_pretrained("physical-ai/act-cube", export_dir="/tmp/leak")
+
+        mock_download.assert_not_called()
+
 
 @pytest.mark.usefixtures("_patch_adapter")
 class TestPolicyNameValidation:

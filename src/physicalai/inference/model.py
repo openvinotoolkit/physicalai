@@ -209,12 +209,19 @@ class InferenceModel:
         Returns:
             Initialized InferenceModel instance.
 
+        Raises:
+            TypeError: If ``export_dir`` is passed in ``kwargs``.
+
         Examples:
             >>> policy = InferenceModel.from_pretrained("physical-ai/act-cube")
             >>> policy = InferenceModel.from_pretrained(
             ...     "physical-ai/act-cube", revision="v1.0", backend="onnx"
             ... )
         """
+        if "export_dir" in kwargs:
+            msg = "from_pretrained() does not accept export_dir; it is set from the downloaded snapshot"
+            raise TypeError(msg)
+
         local_dir = download_from_hub(
             repo_id,
             revision=revision,
