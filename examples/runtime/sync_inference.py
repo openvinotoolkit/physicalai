@@ -96,10 +96,8 @@ def main() -> None:
     args = parser.parse_args()
 
     # ── Load model ──
-    import openvino_tokenizers  # noqa: F401 — registers OV tokenizer ops
-
     print(f"Loading model from {args.model} on {args.device}...", flush=True)
-    model = InferenceModel.load(args.model, device=args.device)
+    model = InferenceModel(args.model, device=args.device)
     print("Model loaded.")
 
     # ── Build robot & cameras (direct, no shared memory — debugger-safe) ──

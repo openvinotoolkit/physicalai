@@ -51,7 +51,7 @@ class InferenceModel:
 
     Examples:
         >>> # Auto-detect everything
-        >>> policy = InferenceModel.load("./exports/act_policy")
+        >>> policy = InferenceModel("./exports/act_policy")
         >>> policy.reset()
         >>> action = policy.select_action(obs)
         >>> action = policy.predict_action_chunk(obs)
@@ -158,27 +158,6 @@ class InferenceModel:
             if flat_chunk is not None:
                 return int(flat_chunk)
         return 1
-
-    @classmethod
-    def load(
-        cls,
-        export_dir: str | Path,
-        **kwargs: Any,  # noqa: ANN401
-    ) -> InferenceModel:
-        """Load inference model with auto-detection.
-
-        Args:
-            export_dir: Directory containing exported policy files
-            **kwargs: Additional arguments passed to __init__
-
-        Returns:
-            Initialized InferenceModel instance
-
-        Examples:
-            >>> policy = InferenceModel.load("./exports/act_policy")
-            >>> policy = InferenceModel.load("./exports", backend="onnx")
-        """
-        return cls(export_dir=export_dir, **kwargs)
 
     @classmethod
     def from_pretrained(

@@ -16,7 +16,7 @@ Key Features:
 Examples:
     >>> from physicalai.inference import InferenceModel
     >>> # Load with auto-detection
-    >>> policy = InferenceModel.load("./exports/act_policy")
+    >>> policy = InferenceModel("./exports/act_policy")
 
     >>> # Use like PyTorch policy
     >>> policy.reset()

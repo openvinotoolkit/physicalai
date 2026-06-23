@@ -39,7 +39,7 @@ class ThroughputMonitor(Callback):
 
     Examples:
         >>> monitor = ThroughputMonitor(window_seconds=5.0)
-        >>> model = InferenceModel.load("./exports/act", callbacks=[monitor])
+        >>> model = InferenceModel("./exports/act", callbacks=[monitor])
         >>> for obs in observations:
         ...     model.select_action(obs)
         >>> print(f"{monitor.throughput:.1f} predictions/sec")

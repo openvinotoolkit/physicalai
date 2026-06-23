@@ -212,7 +212,7 @@ Load exported policies from [Physical AI Studio](https://github.com/open-edge-pl
 from physicalai.inference import InferenceModel
 
 # Load exported policy
-model = InferenceModel.load("./exports/act_policy")
+model = InferenceModel("./exports/act_policy")
 
 # Reset state for new episode
 model.reset()
@@ -228,7 +228,7 @@ action = model.select_action(observation)
 from physicalai.inference import InferenceModel
 
 # Force specific backend
-model = InferenceModel.load(
+model = InferenceModel(
     "./exports/act_policy",
     backend="openvino",
     device="GPU",
@@ -246,7 +246,7 @@ import json
 from physicalai.benchmark.performance import InferenceLatencyBenchmark
 from physicalai.inference import InferenceModel
 
-model = InferenceModel.load("./exports/act_policy")
+model = InferenceModel("./exports/act_policy")
 model.reset()
 benchmark = InferenceLatencyBenchmark(
         max_iters=100,
@@ -275,7 +275,7 @@ from physicalai.robot import SO101
 runtime = PolicyRuntime(
     fps=30,
     robot=SO101(port="/dev/ttyACM0"),
-    model=InferenceModel.load("./exports/act_policy"),
+    model=InferenceModel("./exports/act_policy"),
     cameras={
         "wrist": UVCCamera(device="/dev/video0", width=640, height=480),
         "overhead": RealSenseCamera(serial_number="123456789"),

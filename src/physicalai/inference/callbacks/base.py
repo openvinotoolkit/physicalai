@@ -40,7 +40,7 @@ class Callback:
         ...     def on_predict_start(self, inputs: dict) -> None:
         ...         print(f"Predicting with keys: {list(inputs.keys())}")
 
-        >>> model = InferenceModel.load("./exports/act", callbacks=[PrintCallback()])
+        >>> model = InferenceModel("./exports/act", callbacks=[PrintCallback()])
     """
 
     def on_predict_start(self, inputs: dict[str, Any]) -> dict[str, Any] | None:

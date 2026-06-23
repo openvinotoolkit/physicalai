@@ -43,7 +43,7 @@ from physicalai.runtime import PolicyRuntime, SyncExecution
 from physicalai.robot import SO101
 from physicalai.capture import UVCCamera
 
-model = InferenceModel.load("./exports/act_policy")
+model = InferenceModel("./exports/act_policy")
 robot = SO101(port="/dev/ttyACM0")
 cameras = {"wrist": UVCCamera(device="/dev/video0", width=640, height=480)}
 

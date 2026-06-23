@@ -176,11 +176,6 @@ class TestInferenceModelInit:
 
         assert InferenceModel(export_dir, backend=backend_str).backend == expected
 
-    def test_load_classmethod(self, tmp_path: Path) -> None:
-        model = InferenceModel.load(_make_export_dir(tmp_path))
-        assert isinstance(model, InferenceModel)
-        assert model.policy_name == "act"
-
     def test_init_auto_selects_single_pass_runner(self, tmp_path: Path) -> None:
         export_dir = _make_export_dir(tmp_path, use_action_queue=False, chunk_size=1)
         assert isinstance(InferenceModel(export_dir).runner, SinglePass)

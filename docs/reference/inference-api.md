@@ -21,7 +21,7 @@ The model can be constructed directly from an export directory or loaded from co
 ## Constructors
 
 ```python
-model = InferenceModel.load("./exports/act_policy")
+model = InferenceModel("./exports/act_policy")
 ```
 
 ### `from_pretrained`

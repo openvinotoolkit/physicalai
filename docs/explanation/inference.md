@@ -3,7 +3,7 @@
 `InferenceModel` is the runtime API for exported policies. It loads the exported package, runs preprocessing and postprocessing, and produces actions.
 
 ```python
-model = InferenceModel.load("./exports/act_policy")
+model = InferenceModel("./exports/act_policy")
 action = model.select_action(observation)
 ```
 

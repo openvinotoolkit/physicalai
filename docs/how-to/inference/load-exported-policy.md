@@ -5,7 +5,7 @@ Load the exported package with auto-detection first.
 ```python
 from physicalai.inference import InferenceModel
 
-model = InferenceModel.load("./exports/act_policy")
+model = InferenceModel("./exports/act_policy")
 ```
 
 Then compute one action.
@@ -35,7 +35,7 @@ model = InferenceModel.from_pretrained(
 If necessary, select the backend explicitly.
 
 ```python
-model = InferenceModel.load(
+model = InferenceModel(
     "./exports/act_policy",
     backend="openvino",
     device="CPU",

@@ -118,7 +118,7 @@ def main() -> None:
     import openvino_tokenizers  # noqa: F401 — registers OV tokenizer ops
 
     print(f"Loading model from {args.model} on {args.device} (this may take a minute)...", flush=True)
-    model = InferenceModel.load(args.model, device=args.device)
+    model = InferenceModel(args.model, device=args.device)
     print("Model loaded.")
 
     # ── Build robot & cameras ──

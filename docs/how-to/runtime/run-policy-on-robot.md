@@ -11,7 +11,7 @@ from physicalai.capture import UVCCamera
 runtime = PolicyRuntime(
     fps=30,
     robot=SO101(port="/dev/ttyACM0"),
-    model=InferenceModel.load("./exports/act_policy"),
+    model=InferenceModel("./exports/act_policy"),
     cameras={
         "wrist": UVCCamera(device="/dev/video0", width=640, height=480),
     },
