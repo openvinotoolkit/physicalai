@@ -116,8 +116,6 @@ def main() -> None:
     args = parser.parse_args()
 
     # ── Load model ──
-    import openvino_tokenizers  # noqa: F401 — registers OV tokenizer ops
-
     latency_tracker = RTCLatencyTracker(window_size=100)
 
     print(f"Loading model from {args.model} on {args.device} (this may take a minute)...", flush=True)
