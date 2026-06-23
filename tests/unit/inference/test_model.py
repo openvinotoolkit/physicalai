@@ -766,6 +766,16 @@ class TestHubLoading:
 
         mock_download.assert_not_called()
 
+    def test_from_pretrained_loads_local_path_without_download(self, tmp_path: Path) -> None:
+        export_dir = _make_export_dir(tmp_path)
+        with patch("physicalai.inference.model.download_from_hub") as mock_download:
+            model = InferenceModel.from_pretrained(str(export_dir))
+
+        assert isinstance(model, InferenceModel)
+        assert model.policy_name == "act"
+        assert model.export_dir == export_dir
+        mock_download.assert_not_called()
+
 
 @pytest.mark.usefixtures("_patch_adapter")
 class TestPolicyNameValidation:

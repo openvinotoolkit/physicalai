@@ -170,19 +170,25 @@ class InferenceModel:
         allow_patterns: list[str] | None = None,
         **kwargs: Any,  # noqa: ANN401
     ) -> InferenceModel:
-        """Load an inference model from a Hugging Face Hub repository.
+        """Load an inference model from a Hugging Face Hub repository or local path.
 
-        Downloads the repository snapshot to a local cache directory and then
-        loads it like a local export.
+        If ``repo_id`` points to an existing local directory, it is loaded
+        directly as an export. Otherwise the repository snapshot is downloaded
+        to a local cache directory and then loaded like a local export.
 
         Args:
-            repo_id: Hub repository identifier, e.g. ``"physical-ai/act-cube"``.
+            repo_id: Hub repository identifier (e.g. ``"physical-ai/act-cube"``)
+                or a path to a local export directory.
             revision: Hub git revision (branch, tag, or commit SHA). Pin to a
-                commit SHA for reproducible, tamper-evident loads.
-            cache_dir: Cache directory for the download.
-            token: Hugging Face access token for private repositories.
+                commit SHA for reproducible, tamper-evident loads. Ignored when
+                ``repo_id`` is a local directory.
+            cache_dir: Cache directory for the download. Ignored when ``repo_id``
+                is a local directory.
+            token: Hugging Face access token for private repositories. Ignored
+                when ``repo_id`` is a local directory.
             allow_patterns: Optional glob patterns limiting which files are
-                downloaded. When ``None``, the full snapshot is fetched.
+                downloaded. When ``None``, the full snapshot is fetched. Ignored
+                when ``repo_id`` is a local directory.
             **kwargs: Additional arguments passed to ``__init__``.
 
         Returns:
@@ -196,10 +202,14 @@ class InferenceModel:
             >>> policy = InferenceModel.from_pretrained(
             ...     "physical-ai/act-cube", revision="v1.0", backend="onnx"
             ... )
+            >>> policy = InferenceModel.from_pretrained("./exports/act_policy")
         """
         if "export_dir" in kwargs:
             msg = "from_pretrained() does not accept export_dir; it is set from the downloaded snapshot"
             raise TypeError(msg)
+
+        if Path(repo_id).is_dir():
+            return cls(export_dir=repo_id, **kwargs)
 
         local_dir = download_from_hub(
             repo_id,
