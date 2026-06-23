@@ -166,7 +166,6 @@ class InferenceModel:
         *,
         revision: str | None = None,
         cache_dir: str | Path | None = None,
-        token: str | None = None,
         allow_patterns: list[str] | None = None,
         **kwargs: Any,  # noqa: ANN401
     ) -> InferenceModel:
@@ -176,6 +175,9 @@ class InferenceModel:
         directly as an export. Otherwise the repository snapshot is downloaded
         to a local cache directory and then loaded like a local export.
 
+        .. warning::
+            The consumer shall ensure the ``repo_id`` points to a trusted directory.
+
         Args:
             repo_id: Hub repository identifier (e.g. ``"physical-ai/act-cube"``)
                 or a path to a local export directory.
@@ -184,8 +186,6 @@ class InferenceModel:
                 ``repo_id`` is a local directory.
             cache_dir: Cache directory for the download. Ignored when ``repo_id``
                 is a local directory.
-            token: Hugging Face access token for private repositories. Ignored
-                when ``repo_id`` is a local directory.
             allow_patterns: Optional glob patterns limiting which files are
                 downloaded. When ``None``, the full snapshot is fetched. Ignored
                 when ``repo_id`` is a local directory.
@@ -215,7 +215,6 @@ class InferenceModel:
             repo_id,
             revision=revision,
             cache_dir=cache_dir,
-            token=token,
             allow_patterns=allow_patterns,
         )
         return cls(export_dir=local_dir, **kwargs)

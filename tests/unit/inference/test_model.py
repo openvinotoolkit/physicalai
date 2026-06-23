@@ -735,7 +735,6 @@ class TestHubLoading:
                 "physical-ai/act-cube",
                 revision="v1.0",
                 cache_dir="/tmp/cache",
-                token="secret",
             )
 
         assert isinstance(model, InferenceModel)
@@ -744,7 +743,6 @@ class TestHubLoading:
             "physical-ai/act-cube",
             revision="v1.0",
             cache_dir="/tmp/cache",
-            token="secret",
             allow_patterns=None,
         )
 

@@ -28,7 +28,6 @@ token for private repositories.
 model = InferenceModel.from_pretrained(
     "physical-ai/act-cube",
     revision="v1.0",
-    token="hf_...",
 )
 ```
 
