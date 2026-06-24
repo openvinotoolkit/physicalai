@@ -1601,7 +1601,6 @@ wheels = [
 
 [[package]]
 name = "physicalai"
-version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "jsonargparse", extra = ["shtab", "signatures"] },
@@ -1647,7 +1646,7 @@ realsense = [
 ]
 robots = [
     { name = "feetech-servo-sdk" },
-    { name = "trossen-arm", marker = "python_full_version < '3.14'" },
+    { name = "trossen-arm" },
 ]
 so101 = [
     { name = "feetech-servo-sdk" },
@@ -1678,10 +1677,12 @@ docs = [
 
 [package.metadata]
 requires-dist = [
+    { name = "feetech-servo-sdk", marker = "extra == 'robots'" },
     { name = "feetech-servo-sdk", marker = "extra == 'so101'" },
+    { name = "iceoryx2", marker = "extra == 'capture'", specifier = "==0.9.0" },
     { name = "iceoryx2", marker = "extra == 'transport'", specifier = "==0.9.0" },
     { name = "ipykernel", marker = "extra == 'notebooks'" },
-    { name = "jsonargparse", extras = ["signatures", "shtab"], specifier = ">=4.36" },
+    { name = "jsonargparse", extras = ["shtab", "signatures"], specifier = ">=4.36" },
     { name = "loguru", specifier = ">=0.7" },
     { name = "matplotlib", marker = "extra == 'notebooks'" },
     { name = "matplotlib-inline", marker = "extra == 'notebooks'" },
@@ -1691,21 +1692,16 @@ requires-dist = [
     { name = "onnxruntime" },
     { name = "opencv-python-headless" },
     { name = "opencv-python-headless", marker = "extra == 'basler'" },
+    { name = "opencv-python-headless", marker = "extra == 'capture'" },
     { name = "openvino", specifier = "==2026.1" },
     { name = "openvino-tokenizers", specifier = ">=2026.0" },
-    { name = "physicalai", extras = ["abb"], marker = "extra == 'robots'" },
-    { name = "physicalai", extras = ["basler"], marker = "extra == 'capture'" },
-    { name = "physicalai", extras = ["franka"], marker = "extra == 'robots'" },
-    { name = "physicalai", extras = ["genicam"], marker = "extra == 'capture'" },
-    { name = "physicalai", extras = ["realsense"], marker = "extra == 'capture'" },
-    { name = "physicalai", extras = ["so101"], marker = "extra == 'robots'" },
-    { name = "physicalai", extras = ["transport"], marker = "extra == 'capture'" },
-    { name = "physicalai", extras = ["trossen"], marker = "python_full_version < '3.14' and extra == 'robots'" },
-    { name = "physicalai", extras = ["ur"], marker = "extra == 'robots'" },
     { name = "pydantic", specifier = ">=2.5" },
     { name = "pynokhwa", specifier = "==0.1.2" },
     { name = "pypylon", marker = "extra == 'basler'" },
+    { name = "pypylon", marker = "extra == 'capture'" },
+    { name = "pyrealsense2", marker = "sys_platform != 'darwin' and extra == 'capture'" },
     { name = "pyrealsense2", marker = "sys_platform != 'darwin' and extra == 'realsense'" },
+    { name = "pyrealsense2-macosx", marker = "sys_platform == 'darwin' and extra == 'capture'" },
     { name = "pyrealsense2-macosx", marker = "sys_platform == 'darwin' and extra == 'realsense'" },
     { name = "pytest", marker = "extra == 'tests'" },
     { name = "pyturbojpeg", marker = "sys_platform == 'linux'", specifier = "<2" },
@@ -1713,10 +1709,11 @@ requires-dist = [
     { name = "rerun-sdk", marker = "extra == 'observer-rerun'", specifier = ">=0.22" },
     { name = "safetensors", specifier = ">=0.4.3,<1.0.0" },
     { name = "transformers", specifier = ">=5.3.0,<5.4.0" },
+    { name = "trossen-arm", marker = "extra == 'robots'", specifier = ">=1.9.0" },
     { name = "trossen-arm", marker = "extra == 'trossen'", specifier = ">=1.9.0" },
     { name = "typing-extensions", specifier = ">=4.5" },
 ]
-provides-extras = ["tests", "notebooks", "realsense", "basler", "transport", "genicam", "capture", "ur", "abb", "franka", "trossen", "so101", "observer-rerun", "robots"]
+provides-extras = ["abb", "basler", "capture", "franka", "genicam", "notebooks", "observer-rerun", "realsense", "robots", "so101", "tests", "transport", "trossen", "ur"]
 
 [package.metadata.requires-dev]
 dev = [

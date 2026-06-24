@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "physicalai"
-version = "0.1.1"
+dynamic = ["version"]
 requires-python = ">=3.11"
 description = "Lightweight runtime for physical AI inference"
 readme = "README.md"
@@ -75,6 +75,9 @@ robots = [
 [dependency-groups]
 dev = ["pytest", "mypy", "pyrefly", "ruff>=0.15.12", "prek"]
 docs = ["mkdocs>=1.6", "mkdocs-material>=9.6"]
+
+[tool.hatch.version]
+source = "vcs"
 
 [tool.hatch.metadata]
 allow-direct-references = true
