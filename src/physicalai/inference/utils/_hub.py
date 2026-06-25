@@ -57,11 +57,14 @@ def download_from_hub(
         )
         raise ImportError(msg) from exc
 
-    local_path = snapshot_download(
-        repo_id=repo_id,
-        revision=revision,
-        cache_dir=str(cache_dir) if cache_dir is not None else None,
-        token=token,
-        allow_patterns=allow_patterns,
-    )
+    kwargs: dict[str, object] = {
+        "repo_id": repo_id,
+        "revision": revision,
+        "cache_dir": str(cache_dir) if cache_dir is not None else None,
+        "allow_patterns": allow_patterns,
+    }
+    if token is not None:
+        kwargs["token"] = token
+
+    local_path = snapshot_download(**kwargs)
     return Path(local_path)
