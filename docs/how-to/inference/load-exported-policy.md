@@ -21,8 +21,7 @@ Load directly from the Hugging Face Hub with a repo id.
 model = InferenceModel.from_pretrained("physical-ai/act-cube")
 ```
 
-Pin a revision (branch, tag, or commit SHA) for reproducible loads, and pass a
-token for private repositories.
+Pin a revision (branch, tag, or commit SHA) for reproducible loads.
 
 ```python
 model = InferenceModel.from_pretrained(

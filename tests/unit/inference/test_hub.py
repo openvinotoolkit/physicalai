@@ -24,7 +24,6 @@ class TestDownloadFromHub:
                 "physical-ai/act-cube",
                 revision="v1.0",
                 cache_dir="/cache",
-                token="secret",
                 allow_patterns=["*.json"],
             )
 
@@ -33,7 +32,6 @@ class TestDownloadFromHub:
             repo_id="physical-ai/act-cube",
             revision="v1.0",
             cache_dir="/cache",
-            token="secret",
             allow_patterns=["*.json"],
         )
 
