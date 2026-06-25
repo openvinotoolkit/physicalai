@@ -198,9 +198,9 @@ class InferenceModel:
             TypeError: If ``export_dir`` is passed in ``kwargs``.
 
         Examples:
-            >>> policy = InferenceModel.from_pretrained("physical-ai/act-cube")
+            >>> policy = InferenceModel.from_pretrained("OpenVINO/act-fp16-ov")
             >>> policy = InferenceModel.from_pretrained(
-            ...     "physical-ai/act-cube", revision="v1.0", backend="onnx"
+            ...     "OpenVINO/act-fp16-ov", revision="main"
             ... )
             >>> policy = InferenceModel.from_pretrained("./exports/act_policy")
         """

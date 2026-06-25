@@ -26,8 +26,8 @@ token for private repositories.
 
 ```python
 model = InferenceModel.from_pretrained(
-    "physical-ai/act-cube",
-    revision="v1.0",
+    "OpenVINO/act-fp16-ov",
+    revision="main",
 )
 ```
 
