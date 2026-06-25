@@ -48,7 +48,6 @@ class TestDownloadFromHub:
             repo_id="physical-ai/act-cube",
             revision=None,
             cache_dir=None,
-            token=None,
             allow_patterns=None,
         )
 

@@ -31,7 +31,6 @@ model = InferenceModel.from_pretrained(
     "OpenVINO/act-fp16-ov",
     revision="main",      # branch, tag, or commit SHA (optional)
     cache_dir=None,        # download cache directory (optional)
-    token=None,            # access token for private repos (optional)
 )
 ```
 
