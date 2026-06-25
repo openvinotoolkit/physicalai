@@ -18,7 +18,7 @@ action = model.select_action(observation)
 Load directly from the Hugging Face Hub with a repo id.
 
 ```python
-model = InferenceModel.from_pretrained("physical-ai/act-cube")
+model = InferenceModel.from_pretrained("OpenVINO/act-fp16-ov")
 ```
 
 Pin a revision (branch, tag, or commit SHA) for reproducible loads.

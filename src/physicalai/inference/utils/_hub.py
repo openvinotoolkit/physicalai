@@ -30,7 +30,7 @@ def download_from_hub(
     straight to :class:`~physicalai.inference.model.InferenceModel`.
 
     Args:
-        repo_id: Hub repository identifier, e.g. ``"physical-ai/act-cube"``.
+        repo_id: Hub repository identifier, e.g. ``"OpenVINO/act-fp16-ov"``.
         revision: Optional git revision (branch, tag, or commit SHA). Pin to a
             commit SHA for reproducible, tamper-evident loads.
         cache_dir: Optional cache directory for the download. Defaults to the

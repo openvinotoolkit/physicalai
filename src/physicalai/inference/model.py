@@ -179,7 +179,7 @@ class InferenceModel:
             The consumer shall ensure the ``repo_id`` points to a trusted directory.
 
         Args:
-            repo_id: Hub repository identifier (e.g. ``"physical-ai/act-cube"``)
+            repo_id: Hub repository identifier (e.g. ``"OpenVINO/act-fp16-ov"``)
                 or a path to a local export directory.
             revision: Hub git revision (branch, tag, or commit SHA). Pin to a
                 commit SHA for reproducible, tamper-evident loads. Ignored when
