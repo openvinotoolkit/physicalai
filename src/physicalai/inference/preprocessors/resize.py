@@ -38,7 +38,7 @@ class ResizePreprocessor(Preprocessor):
         image_resolution: tuple[int, int],
         *,
         mode: ResizeMode | str = ResizeMode.LETTERBOX,
-        pad_value: int = 0,
+        pad_value: float = 0,
     ) -> None:
         """Initialize the resize preprocessor."""
         super().__init__()
@@ -105,11 +105,16 @@ class ResizePreprocessor(Preprocessor):
 
         Raises:
             ValueError: If the input array does not have 4 dimensions, or if it
-                has an unsupported dtype (not ``uint8`` or floating point).
+                has an unsupported dtype (not ``uint8`` or floating point),
+                or if the ``pad_value`` is out of range for ``uint8`` inputs.
         """
         img_dim = 4
         if img.ndim != img_dim:
             msg = f"(B,C,H,W) expected, but {img.shape}"
+            raise ValueError(msg)
+
+        if img.dtype == np.uint8 and self._pad_value > np.iinfo(np.uint8).max:
+            msg = f"pad_value {self._pad_value} is out of range for uint8 inputs"
             raise ValueError(msg)
 
         if np.issubdtype(img.dtype, np.floating):
