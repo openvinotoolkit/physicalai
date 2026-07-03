@@ -6,7 +6,7 @@ license: Apache-2.0
 
 # Loading Exported Policies
 
-Runtime loads Studio export directories (or Hub snapshots that mirror them) through `InferenceModel` in `src/physicalai/inference/model.py`. Manifest parsing lives in `manifest.py`; backends register in `adapters/registry.py` (`onnx` → `.onnx`, `openvino` → `.xml`). Hub downloads use `inference/utils/_hub.py`.
+Runtime loads Studio export directories (or Hub snapshots that mirror them) through `InferenceModel` in `src/physicalai/inference/model.py`. Manifest parsing lives in `src/physicalai/inference/manifest.py`; backends register in `src/physicalai/inference/adapters/registry.py` (`onnx` → `.onnx`, `openvino` → `.xml`). Hub downloads use `src/physicalai/inference/utils/_hub.py`.
 
 ## Workflow
 
@@ -59,7 +59,7 @@ For adapter changes, add or run targeted tests under `tests/unit/inference/`.
 - Export directory contains backend model file(s) and `manifest.json` consistent with `docs/reference/manifest-schema.md`.
 - Metadata input/output/feature names align with preprocessors in the manifest.
 - Optional backends fail with clear install guidance (`onnxruntime`, OpenVINO).
-- Do not document a backend unless an adapter is registered in `inference/adapters/`.
+- Do not document a backend unless an adapter is registered in `src/physicalai/inference/adapters/`.
 - Hub loads must not log tokens; prefer pinned `revision=` for production docs.
 
 ## References

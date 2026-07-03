@@ -18,7 +18,7 @@ Expected rubric per scenario:
 Expected behavior:
 
 - Nested `class_path` / `init_args` for `PolicyRuntime`, `SO101`, `InferenceModel`, `UVCCamera`, `SyncExecution`.
-- Command includes `--config` and duration override pattern from `cli/run.py` docs.
+- Command includes `--config` and duration override pattern from `src/physicalai/cli/run.py` docs.
 
 ### Scenario 2: Execution mode choice
 
@@ -26,7 +26,7 @@ Expected behavior:
 
 Expected behavior:
 
-- Points to `docs/how-to/runtime/use-execution-modes.md` and RTC/sync modules under `runtime/`.
+- Points to `docs/how-to/runtime/use-execution-modes.md` and RTC/sync modules under `src/physicalai/runtime/`.
 - Does not reimplement timing inside `InferenceModel.select_action`.
 
 ### Scenario 3: Runtime test with fakes
@@ -46,7 +46,7 @@ Expected behavior:
 
 Expected behavior:
 
-- Implements methods from `robot/interface.py`; cites `references/robot-protocol.md`.
+- Implements methods from `src/physicalai/robot/interface.py`; cites `references/robot-protocol.md`.
 - `isinstance(..., Robot)` check in test.
 
 ### Scenario 5: SO-101 port validation
@@ -59,7 +59,7 @@ Expected behavior:
 
 ### Scenario 6: Export new robot from package
 
-> "Add a new arm driver package under `robot/myarm/` with optional extra and unit tests."
+> "Add a new arm driver package under `src/physicalai/robot/myarm/` with optional extra and unit tests."
 
 Expected behavior:
 

@@ -13,11 +13,11 @@ Expected rubric per scenario:
 
 ### Scenario 1: Scaffold a new USB camera variant
 
-> "Add a minimal UVC-like camera under `capture/cameras/` for a new V4L2 device path API. Mirror the existing UVCCamera layout and add a unit test with fakes."
+> "Add a minimal UVC-like camera under `src/physicalai/capture/cameras/` for a new V4L2 device path API. Mirror the existing UVCCamera layout and add a unit test with fakes."
 
 Expected behavior:
 
-- References `capture/cameras/uvc/` structure.
+- References `src/physicalai/capture/cameras/uvc/` structure.
 - Uses `tests/unit/capture/fake.py` or conftest patterns.
 - Runs `uv run pytest tests/unit/capture -k <name>`.
 
@@ -27,7 +27,7 @@ Expected behavior:
 
 Expected behavior:
 
-- Updates `factory.py` and `pyproject.toml` optional dependency.
+- Updates `src/physicalai/capture/factory.py` and `pyproject.toml` optional dependency.
 - Clear ImportError/message without the extra.
 
 ### Scenario 3: SharedCamera documentation

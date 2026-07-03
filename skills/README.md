@@ -4,11 +4,11 @@ Canonical, repo-specific agent skills for Physical AI Runtime. Skills are groupe
 
 ## Buckets
 
-| Bucket        | Path                       | Scope                                                                                                     |
-| ------------- | -------------------------- | --------------------------------------------------------------------------------------------------------- |
-| **Inference** | [`inference/`](inference/) | `src/physicalai/inference/`: `InferenceModel`, manifests, adapters, preprocessors/postprocessors, runners |
-| **Capture**   | [`capture/`](capture/)     | `src/physicalai/capture/`: cameras, discovery, transport                                                  |
-| **Runtime**   | [`runtime/`](runtime/)     | `src/physicalai/runtime/`, `robot/`, `cli/`: control loop, robots, `physicalai run`                       |
+| Bucket        | Path                       | Scope                                                                                                             |
+| ------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| **Inference** | [`inference/`](inference/) | `src/physicalai/inference/`: `InferenceModel`, manifests, adapters, preprocessors/postprocessors, runners         |
+| **Capture**   | [`capture/`](capture/)     | `src/physicalai/capture/`: cameras, discovery, transport                                                          |
+| **Runtime**   | [`runtime/`](runtime/)     | `src/physicalai/runtime/`, `src/physicalai/robot/`, `src/physicalai/cli/`: control loop, robots, `physicalai run` |
 
 Each bucket has its own skill list and [`EVALUATION.md`](inference/EVALUATION.md) scenarios.
 

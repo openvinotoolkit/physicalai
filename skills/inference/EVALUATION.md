@@ -38,7 +38,7 @@ Expected behavior:
 
 Expected behavior:
 
-- References `inference/adapters/onnx.py` and `onnxruntime` dependency.
+- References `src/physicalai/inference/adapters/onnx.py` and `onnxruntime` dependency.
 - Does not invent unsupported backends.
 
 ## `inference-configuring-inference-pipeline`
@@ -59,7 +59,7 @@ Expected behavior:
 
 Expected behavior:
 
-- Edits `component_factory.py` registry without breaking `_MAX_COMPONENT_DEPTH`.
+- Edits `src/physicalai/inference/component_factory.py` registry without breaking `_MAX_COMPONENT_DEPTH`.
 - Adds test under `tests/unit/inference/preprocessors/`.
 
 ### Scenario 6: Fix processor order bug

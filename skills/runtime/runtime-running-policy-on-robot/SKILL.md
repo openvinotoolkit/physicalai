@@ -6,7 +6,7 @@ license: Apache-2.0
 
 # Running a Policy on a Robot
 
-`PolicyRuntime` (`src/physicalai/runtime/runtime.py`) owns the control loop; `InferenceModel` owns policy math. Execution strategy lives under `runtime/execution.py` and `rtc_execution.py`. CLI: `physicalai run` in `cli/run.py` instantiates from YAML via jsonargparse.
+`PolicyRuntime` (`src/physicalai/runtime/runtime.py`) owns the control loop; `InferenceModel` owns policy math. Execution strategy lives under `src/physicalai/runtime/execution.py` and `src/physicalai/runtime/rtc_execution.py`. CLI: `physicalai run` in `src/physicalai/cli/run.py` instantiates from YAML via jsonargparse.
 
 ## Workflow
 

@@ -6,7 +6,7 @@ license: Apache-2.0
 
 # Adding a Robot Integration
 
-Robots satisfy the structural `Robot` protocol in `src/physicalai/robot/interface.py` — no base class inheritance required. References: `robot/so101/`, `robot/trossen/` (WidowX). Connection helpers: `robot/connect.py`; validation: `robot/verify.py`.
+Robots satisfy the structural `Robot` protocol in `src/physicalai/robot/interface.py` — no base class inheritance required. References: `src/physicalai/robot/so101/`, `src/physicalai/robot/trossen/` (WidowX). Connection helpers: `src/physicalai/robot/connect.py`; validation: `src/physicalai/robot/verify.py`.
 
 ## Workflow
 

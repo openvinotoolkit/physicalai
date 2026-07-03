@@ -103,8 +103,7 @@ def cmd_sync(root: Path) -> int:
         target = adapter_target(bucket, name)
         for adapter_root in adapters:
             link = adapter_root / name
-            current = read_link(link)
-            if current == target and link.exists():
+            if resolves_to(link, target) and link.exists():
                 continue
             create_adapter(link, target)
 
