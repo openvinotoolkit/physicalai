@@ -64,6 +64,21 @@ repos:
     hooks:
       - id: gitleaks
 
+  - repo: local
+    hooks:
+      - id: agent-skills-sync
+        name: sync agent skill adapters
+        entry: python3 .github/scripts/skills/agent_skills.py sync
+        language: system
+        pass_filenames: false
+        files: ^skills/
+      - id: agent-skills-validate
+        name: validate agent skills layout
+        entry: python3 .github/scripts/skills/agent_skills.py validate
+        language: system
+        pass_filenames: false
+        files: ^skills/
+
   # ========================================================================== #
   # DOCUMENTATION FORMATTING (root-level docs)                                 #
   # ========================================================================== #
