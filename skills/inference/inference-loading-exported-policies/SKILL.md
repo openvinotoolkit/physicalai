@@ -13,27 +13,37 @@ Runtime loads Studio export directories (or Hub snapshots that mirror them) thro
 1. **Identify the artifact**: local export directory or Hub `repo_id`, expected backend, and whether the user needs `select_action` vs `predict_action_chunk`.
    - Done when: load path and API entry point are chosen before editing code.
 2. **Load with auto-detection first** (local):
+
    ```python
    from physicalai.inference import InferenceModel
    model = InferenceModel("./exports/act_policy")
    ```
+
    - Done when: `model` constructs without explicit `backend=` when artifacts match a registered extension.
+
 3. **Hub load** when the package is published:
+
    ```python
    model = InferenceModel.from_pretrained("OpenVINO/act-fp16-ov", revision="<commit-sha>")
    ```
+
    - Done when: revision is pinned for reproducibility when security or CI matters.
+
 4. **Explicit backend** only when auto-detection is ambiguous:
+
    ```python
    model = InferenceModel("./exports/act_policy", backend="openvino", device="CPU")
    ```
+
 5. **Validate structure** against `references/export-load-contract.md` and backend notes (`references/onnx.md`, `references/openvino.md`).
    - Done when: manifest, model file, and processor artifacts resolve under the export directory.
 6. **Smoke inference** without owning robot timing:
+
    ```python
    model.reset()
    action = model.select_action(observation)
    ```
+
    - Done when: one forward pass succeeds on representative observation keys/shapes. For hardware loops, hand off to `runtime-running-policy-on-robot`.
 
 ## Validation loop

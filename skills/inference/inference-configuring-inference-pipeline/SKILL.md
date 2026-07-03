@@ -20,13 +20,16 @@ Core code:
    - Done when: you know whether specs use `type` (registry short name) or `class_path`.
 2. **Prefer `type` for built-ins** registered in `component_factory` (e.g. normalize/denormalize patterns in docs).
 3. **Use `class_path` + `init_args`** for explicit classes:
+
    ```yaml
    preprocessors:
      - class_path: physicalai.inference.preprocessors.StatsNormalizer
        init_args:
          artifact: stats.safetensors
    ```
+
    - Done when: `init_args` paths resolve relative to the export directory via `resolve_artifact`.
+
 4. **Add a new built-in processor**:
    - Implement subclass of `Preprocessor` / `Postprocessor` in the appropriate package.
    - Register a short `type` name in `component_factory` if manifest-friendly aliases are needed.

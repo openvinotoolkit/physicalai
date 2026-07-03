@@ -136,7 +136,7 @@ exclude = [
     "notebooks",
 ]
 src = ["src", "tests"]
-extend-exclude = ["docs", "examples", "tests", "notebooks"]
+extend-exclude = ["docs", "examples", "tests", "notebooks", ".github/scripts"]
 
 [tool.ruff.lint]
 select = ["ALL"]
@@ -152,17 +152,6 @@ unfixable = []
 "src/physicalai/cli/*.py" = ["INP001"]
 "src/physicalai/capture/transport/_header.py" = ["RUF012"]
 "src/physicalai/capture/transport/_publisher.py" = ["S603"]
-".github/scripts/skills/agent_skills.py" = [
-    "D103",
-    "DOC201",
-    "TRY300",
-    "S404",
-    "S603",
-    "S607",
-    "C901",
-    "PLR0912",
-    "EXE001",
-]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 15

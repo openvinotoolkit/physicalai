@@ -6,9 +6,9 @@ Run commands from the repo root (`uv run pytest tests/unit/runtime/...`, `physic
 
 ## Skills
 
-| Skill | Covers |
-| ----- | ------ |
-| `runtime-running-policy-on-robot` | `PolicyRuntime`, execution modes, YAML config, `physicalai run`, callbacks. |
+| Skill                                | Covers                                                                          |
+| ------------------------------------ | ------------------------------------------------------------------------------- |
+| `runtime-running-policy-on-robot`    | `PolicyRuntime`, execution modes, YAML config, `physicalai run`, callbacks.     |
 | `runtime-adding-a-robot-integration` | `Robot` protocol, concrete drivers (SO-101, WidowX), `verify`, optional extras. |
 
 New runtime skills must pass at least three scenarios in [`EVALUATION.md`](EVALUATION.md).

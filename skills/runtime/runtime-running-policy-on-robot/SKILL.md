@@ -13,6 +13,7 @@ license: Apache-2.0
 1. **Choose API vs config**: Python for notebooks/tests; YAML + `physicalai run` for reproducible deployment.
    - Done when: entry point matches the user's task.
 2. **Python minimal loop** (see `docs/how-to/runtime/run-policy-on-robot.md`):
+
    ```python
    from physicalai.runtime import PolicyRuntime, SyncExecution
    from physicalai.inference import InferenceModel
@@ -29,11 +30,15 @@ license: Apache-2.0
    with runtime:
        runtime.run(duration_s=60)
    ```
+
    - Done when: components connect and the loop runs in a test or dry-run with fakes.
+
 3. **YAML config** — nest `class_path` / `init_args` for robot, model, cameras, execution; run:
+
    ```bash
    physicalai run --config runtime.yaml --run.duration_s=60
    ```
+
 4. **Execution mode** — pick sync vs RTC per `docs/how-to/runtime/use-execution-modes.md`; do not build ad-hoc timing around `InferenceModel.select_action` when `PolicyRuntime` should own the queue.
 5. **Callbacks** — register via runtime callback APIs (`docs/how-to/runtime/add-runtime-callbacks.md`) for telemetry/latency, not inside inference adapters.
 

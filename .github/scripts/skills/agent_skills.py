@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 import argparse
+import os
 import platform
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 _SCRIPT = "python3 .github/scripts/skills/agent_skills.py"
@@ -28,11 +30,9 @@ def skill_dirs(root: Path) -> list[tuple[str, str]]:
         bucket_path = root / "skills" / bucket
         if not bucket_path.is_dir():
             continue
-        found.extend(
-            (bucket, child.name)
-            for child in sorted(bucket_path.iterdir())
-            if child.is_dir() and (child / "SKILL.md").is_file()
-        )
+        for child in sorted(bucket_path.iterdir()):
+            if child.is_dir() and (child / "SKILL.md").is_file():
+                found.append((bucket, child.name))
     return found
 
 
@@ -42,7 +42,7 @@ def adapter_target(bucket: str, name: str) -> str:
 
 def read_link(path: Path) -> str | None:
     if path.is_symlink():
-        return Path(path).readlink()
+        return os.readlink(path)
     return None
 
 
@@ -53,6 +53,9 @@ def resolves_to(link: Path, expected_target: str) -> bool:
     On Windows, ``sync`` may fall back to a directory junction when
     symlinks are unavailable; ``read_link`` returns ``None`` for those,
     so resolve the link and compare against the resolved expected target.
+
+    Returns:
+        True if the adapter resolves to the expected relative target.
     """
     if link.is_symlink():
         return read_link(link) == expected_target
@@ -65,8 +68,7 @@ def remove_adapter(path: Path) -> None:
     if path.is_symlink() or path.is_file():
         path.unlink()
     elif path.is_dir() and not path.is_symlink():
-        msg = f"{path} is a real directory; remove it manually"
-        raise RuntimeError(msg)
+        raise RuntimeError(f"{path} is a real directory; remove it manually")
 
 
 def create_adapter(link: Path, target: str) -> None:
@@ -74,8 +76,7 @@ def create_adapter(link: Path, target: str) -> None:
     remove_adapter(link)
     abs_target = (link.parent / target).resolve()
     if not abs_target.is_dir():
-        msg = f"canonical skill missing: {abs_target}"
-        raise RuntimeError(msg)
+        raise RuntimeError(f"canonical skill missing: {abs_target}")
 
     if platform.system() == "Windows":
         _create_windows_link(link, abs_target)
@@ -86,16 +87,13 @@ def create_adapter(link: Path, target: str) -> None:
 def _create_windows_link(link: Path, abs_target: Path) -> None:
     try:
         link.symlink_to(abs_target, target_is_directory=True)
-        return
     except OSError:
-        pass
-
-    subprocess.run(
-        ["cmd", "/c", "mklink", "/J", str(link), str(abs_target)],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(abs_target)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
 
 def cmd_sync(root: Path) -> int:
@@ -112,8 +110,10 @@ def cmd_sync(root: Path) -> int:
 
     names = sorted({name for _, name in skill_dirs(root)})
     for adapter_root in adapters:
+        print(f"{adapter_root.relative_to(root)}:")
         for name in names:
-            (adapter_root / name).exists()
+            if (adapter_root / name).exists():
+                print(f"  {name}")
     return 0
 
 
@@ -131,8 +131,9 @@ def cmd_check_adapters(root: Path) -> int:
             errors.append(f"{link}: expected adapter to {target!r}, got {current!r}")
 
     if errors:
-        for _msg in errors:
-            pass
+        for msg in errors:
+            print(msg, file=sys.stderr)
+        print(f"Run: {_SCRIPT} sync", file=sys.stderr)
         return 1
     return 0
 
@@ -169,7 +170,9 @@ def cmd_validate(root: Path) -> int:
             if not fm_name:
                 errors.append(f"{skill_md}: missing frontmatter name")
             elif fm_name != name:
-                errors.append(f"{skill_md}: frontmatter name {fm_name!r} must match directory {name!r}")
+                errors.append(
+                    f"{skill_md}: frontmatter name {fm_name!r} must match directory {name!r}"
+                )
 
             for entry in child.iterdir():
                 if entry.is_symlink():
@@ -183,15 +186,19 @@ def cmd_validate(root: Path) -> int:
                     errors.append(f"Missing adapter {link} (run: {_SCRIPT} sync)")
                     continue
                 if not resolves_to(link, target):
-                    errors.append(f"{link}: expected adapter to {target!r}, got {read_link(link)!r}")
+                    errors.append(
+                        f"{link}: expected adapter to {target!r}, got {read_link(link)!r}"
+                    )
                     continue
                 if not (link / "SKILL.md").is_file():
                     errors.append(f"Broken adapter {link}")
 
     if errors:
-        for _msg in errors:
-            pass
+        for msg in errors:
+            print(f"::error::{msg}", file=sys.stderr)
+        print(f"Skills validation failed with {len(errors)} error(s).", file=sys.stderr)
         return 1
+    print("Skills validation passed.")
     return 0
 
 
