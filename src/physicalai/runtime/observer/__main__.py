@@ -16,7 +16,7 @@ def main(argv: list[str] | None = None) -> None:
     """
     parser = argparse.ArgumentParser(
         prog="python -m physicalai.runtime.observer",
-        description="Observe runtime telemetry from a running PolicyRuntime session",
+        description="Observe runtime telemetry from a running RobotRuntime session",
     )
     parser.add_argument("--session-id", default=None, help="Filter to a specific session ID")
     parser.add_argument("--record", default=None, metavar="PATH", help="Record events to JSONL file")

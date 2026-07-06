@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-# NOTE(runtime): zenoh telemetry is deferred — this module is scaffolding, not yet wired into PolicyRuntime.
+# NOTE(runtime): zenoh telemetry is deferred — this module is scaffolding, not yet wired into RobotRuntime.
 """Runtime telemetry observer — subscribes to zenoh pub-sub events."""
 
 from __future__ import annotations

@@ -40,12 +40,21 @@ camera = instantiate_component(spec)
 Nested component specs are instantiated recursively.
 
 ```yaml
-class_path: physicalai.runtime.PolicyRuntime
+class_path: physicalai.runtime.RobotRuntime
 init_args:
   robot:
     class_path: physicalai.robot.so101.SO101
     init_args:
       port: /dev/ttyACM0
+  action_source:
+    class_path: physicalai.runtime.PolicySource
+    init_args:
+      model:
+        class_path: physicalai.inference.InferenceModel
+        init_args:
+          export_dir: ./exports/act_policy
+      execution:
+        class_path: physicalai.runtime.SyncExecution
   cameras:
     wrist:
       class_path: physicalai.capture.UVCCamera

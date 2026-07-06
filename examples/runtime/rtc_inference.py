@@ -2,7 +2,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Real-Time Chunking (RTC) inference with PolicyRuntime.
+"""Real-Time Chunking (RTC) inference with RobotRuntime + PolicySource.
 
 Demonstrates how to run a Pi0.5 model with RTC denoising baked into
 the graph. The model produces 50-action chunks; the RTCExecution
@@ -41,10 +41,11 @@ from physicalai.inference import InferenceModel
 from physicalai.inference.callbacks import RTCLatencyTracker
 from physicalai.runtime import (
     LowPassFilterCallback,
-    PolicyRuntime,
+    PolicySource,
     RTCActionQueue,
     RTCExecution,
     RerunCallback,
+    RobotRuntime,
 )
 
 from utils import build_robot, parse_camera_specs, prompt_torque_disable
@@ -59,7 +60,7 @@ def main() -> None:
     signal.signal(signal.SIGINT, _handle_sigint)
 
     parser = argparse.ArgumentParser(
-        description="Run Pi0.5 RTC policy with PolicyRuntime",
+        description="Run Pi0.5 RTC policy with RobotRuntime",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
@@ -164,15 +165,18 @@ def main() -> None:
         )
 
     # ── Run ──
-    runtime = PolicyRuntime(
-        robot=robot,
+    policy_source = PolicySource(
         model=model,
         execution=execution,
         action_queue=rtc_queue,
+        task=args.task,
+    )
+    runtime = RobotRuntime(
+        robot=robot,
+        action_source=policy_source,
         cameras=cameras,
         fps=args.fps,
         callbacks=callbacks,
-        task=args.task,
     )
 
     with runtime:
@@ -187,10 +191,10 @@ def main() -> None:
         )
         if args.task:
             print(f"  task: {args.task!r}")
-        stats = runtime.run(duration_s=args.duration_s)
+        steps = runtime.run(duration_s=args.duration_s)
         print(
-            f"\nDone — {stats.steps} steps, {stats.inference_count} inferences, "
-            f"{stats.total_holds} holds"
+            f"\nDone — {steps} steps, {execution.inference_count} inferences, "
+            f"{policy_source.action_queue.total_holds} holds"
         )
         print(
             f"Latency — max={latency_tracker.max_latency_s:.3f}s, "

@@ -1,21 +1,23 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Controller abstraction and policy-backed controller implementation."""
+"""Action source abstraction and policy/teleop implementations."""
 
 from __future__ import annotations
 
 import contextlib
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+import time
+from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
 
 from physicalai.inference.constants import IMAGES, STATE, TASK
 from physicalai.runtime._action_queue import ChunkedActionQueue  # noqa: PLC2701
+from physicalai.runtime.events import MetricsEvent
 from physicalai.runtime.smoothers import LerpSmoother
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator, Mapping
+    from collections.abc import Callable, Mapping
 
     from physicalai.capture.frame import Frame
     from physicalai.inference.model import InferenceModel
@@ -23,93 +25,50 @@ if TYPE_CHECKING:
     from physicalai.runtime._callback_bus import _CallbackBus
     from physicalai.runtime.execution import Execution
     from physicalai.runtime.runtime import ActionQueue
-    from physicalai.runtime.tick import Tick
 
 _DEFAULT_LERP_FRAMES = 5
 
 
-@runtime_checkable
-class Controller(Protocol):
-    """Protocol for action-selection components consumed by RobotRuntime.
+class ActionSource(Protocol):
+    """The minimum a developer must implement to plug an action source into RobotRuntime.
 
-    Only the members every controller must implement. Bus injection, stats
-    reporting, queue draining, and hold-status introspection are optional
-    capabilities the runtime detects via :class:`SupportsBus`,
-    :class:`SupportsStats`, :class:`SupportsDrain`, and
-    :class:`SupportsHoldInfo` rather than requiring every controller (e.g.
-    :class:`TeleopController`) to implement them.
+    Three required methods, nothing optional — no capability protocols, no
+    ``isinstance`` anywhere in the runtime.
     """
 
-    def start(self) -> None:
-        """Initialize resources before loop start."""
+    def connect(self, *, bus: _CallbackBus, session_id: str) -> None:
+        """Set up resources (spawn threads, connect a leader device, etc.).
+
+        Called fresh every ``run()``, which is exactly when the runtime
+        generates a new ``session_id`` — construction-time injection would
+        miss that.
+        """
         ...
 
-    def warmup(self, tick: Tick) -> None:
-        """Optional pre-loop warmup using a fresh tick."""
+    def update(self, robot_state: RobotObservation, camera_frames: Mapping[str, Frame], step: int) -> np.ndarray:
+        """Return the action to send this tick.
+
+        Always returns a sendable action — no ``None`` sentinel. What to do
+        when there is nothing new to decide (repeat the last action, go to a
+        safe pose, whatever) is entirely this action source's own call, made
+        internally. If it truly cannot produce anything, it raises.
+
+        Returns:
+            Action vector to send to the robot this tick.
+        """
         ...
 
-    def update(self, tick: Tick) -> np.ndarray | None:
-        """Return action for this tick, or None to request hold."""
-        ...
+    def disconnect(self) -> None:
+        """Tear down only (stop threads, release a leader device).
 
-    def stop(self) -> None:
-        """Stop background activity/resources."""
-        ...
-
-    def reset(self) -> None:
-        """Reset session-scoped state before a run."""
-        ...
-
-
-@runtime_checkable
-class SupportsBus(Protocol):
-    """Optional capability: controller wants the runtime's callback bus/session."""
-
-    def set_bus(self, bus: _CallbackBus, session_id: str) -> None:
-        """Inject callback bus/session (e.g. forwarded to an Execution)."""
-        ...
-
-
-@runtime_checkable
-class SupportsStats(Protocol):
-    """Optional capability: controller contributes stats merged into RunStats."""
-
-    def stats(self) -> Mapping[str, int]:
-        """Return controller-owned counters (e.g. total_pops, total_holds)."""
+        Returns nothing — any queued-but-unsent actions are discarded, not
+        flushed. The action source never receives a robot reference.
+        """
         ...
 
 
-@runtime_checkable
-class SupportsDrain(Protocol):
-    """Optional capability: controller owns a queue drained on shutdown."""
-
-    @property
-    def remaining(self) -> int:
-        """Number of unconsumed queued actions."""
-        ...
-
-    def drain(self, limit: int) -> Iterable[np.ndarray]:
-        """Yield up to ``limit`` remaining queued actions for shutdown flush."""
-        ...
-
-
-@runtime_checkable
-class SupportsHoldInfo(Protocol):
-    """Optional capability: controller reports hold/fallback status for logging."""
-
-    @property
-    def last_was_hold(self) -> bool:
-        """Whether the latest update() returned a held action fallback."""
-        ...
-
-    @property
-    def holds(self) -> int:
-        """Consecutive hold count."""
-        ...
-
-
-class PolicyController:
-    """Controller adapting model+execution+action-queue policy pipeline."""
+class PolicySource:
+    """Action source adapting a model + execution + action-queue policy pipeline."""
 
     def __init__(
         self,
@@ -119,7 +78,7 @@ class PolicyController:
         *,
         task: str | None = None,
     ) -> None:
-        """Initialize a policy-backed controller."""
+        """Initialize a policy-backed action source."""
         self._model = model
         self._execution = execution
         self._action_queue = action_queue or ChunkedActionQueue(
@@ -127,102 +86,74 @@ class PolicyController:
         )
         self._task = task
         self._last: np.ndarray | None = None
-        self._last_was_hold = False
-
-    @property
-    def remaining(self) -> int:
-        """Remaining queued actions."""
-        return self._action_queue.remaining
+        self._warmed_up = False
+        self._bus: _CallbackBus | None = None
+        self._session_id: str = ""
 
     @property
     def action_queue(self) -> ActionQueue:
-        """Underlying action queue.
+        """Underlying action queue, exposed for end-of-run stats access.
 
         Returns:
-            Action queue used by this controller.
+            Action queue used by this action source.
         """
         return self._action_queue
 
-    @property
-    def holds(self) -> int:
-        """Consecutive hold count from queue pop() behavior."""
-        return self._action_queue.consecutive_holds
-
-    @property
-    def last_was_hold(self) -> bool:
-        """Whether the latest update() returned a held action fallback."""
-        return self._last_was_hold
-
-    def set_bus(self, bus: _CallbackBus, session_id: str) -> None:
-        """Forward bus/session injection to execution."""
+    def connect(self, *, bus: _CallbackBus, session_id: str) -> None:
+        """Inject bus/session into execution and start it."""
+        self._bus = bus
+        self._session_id = session_id
         self._execution.set_bus(bus, session_id)
-
-    def start(self) -> None:
-        """Start execution strategy."""
         self._execution.start(self._model, self._action_queue)
 
-    def warmup(self, tick: Tick) -> None:
-        """Seed queue/discover chunk size using warmup sample."""
-        self._execution.warmup(self._to_model_input(*tick.observation()))
+    def update(self, robot_state: RobotObservation, camera_frames: Mapping[str, Frame], step: int) -> np.ndarray:
+        """Maybe request inference and return the next action.
 
-    def update(self, tick: Tick) -> np.ndarray | None:
-        """Maybe request inference and return next action (or fallback hold).
+        On the first call, seeds the queue via ``execution.warmup()`` behind a
+        private not-yet-seeded flag — there is no runtime-level warmup step.
+        When the queue has nothing new, returns the last action sent (this
+        action source's own hold decision); raises if none was ever produced.
 
         Returns:
-            Action to send this tick, or fallback hold action/None when queue is empty.
+            Action to send this tick.
+
+        Raises:
+            RuntimeError: If the queue is empty and no action has ever been produced.
         """
-        self._execution.maybe_request(lambda: self._to_model_input(*tick.observation()))
+        model_input = self._to_model_input(robot_state, camera_frames)
+
+        if not self._warmed_up:
+            self._execution.warmup(model_input)
+            self._warmed_up = True
+
+        self._execution.maybe_request(model_input)
 
         action = self._action_queue.pop()
         if action is None:
-            self._last_was_hold = True
-            return self._last
+            if self._last is None:
+                msg = "No action available and none produced yet (warmup may have failed)"
+                raise RuntimeError(msg)
+            action = self._last
+        else:
+            self._last = action
 
-        self._last_was_hold = False
-        self._last = action
+        if self._bus is not None:
+            self._bus.emit_metrics(
+                MetricsEvent(
+                    session_id=self._session_id,
+                    step=step,
+                    timestamp=time.time(),
+                    values={"queue_remaining": float(self._action_queue.remaining)},
+                )
+            )
+
         return action
 
-    def stop(self) -> None:
-        """Stop execution strategy."""
+    def disconnect(self) -> None:
+        """Stop execution — no drain, queued actions are discarded."""
         self._execution.stop()
 
-    def drain(self, limit: int) -> Iterator[np.ndarray]:
-        """Yield up to ``limit`` remaining queued actions for shutdown flush.
-
-        Called after :meth:`stop` (execution already quiesced), so no concurrent
-        producer is pushing into the queue.
-
-        Args:
-            limit: Maximum number of actions to yield.
-
-        Yields:
-            Remaining action vectors in order, at most ``limit`` of them.
-        """
-        for _ in range(max(limit, 0)):
-            action = self._action_queue.pop()
-            if action is None:
-                return
-            yield action
-
-    def reset(self) -> None:
-        """Reset queue and local fallback state for new run."""
-        self._action_queue.reset()
-        self._last = None
-        self._last_was_hold = False
-
-    def stats(self) -> dict[str, int]:
-        """Policy/queue stats for RunStats merge.
-
-        Returns:
-            Mapping with ``total_pops``, ``total_holds``, ``inference_count``.
-        """
-        return {
-            "total_pops": self._action_queue.total_pops,
-            "total_holds": self._action_queue.total_holds,
-            "inference_count": getattr(self._execution, "inference_count", 0),
-        }
-
-    def _to_model_input(self, robot_obs: RobotObservation, camera_frames: dict[str, Frame]) -> dict[str, Any]:
+    def _to_model_input(self, robot_obs: RobotObservation, camera_frames: Mapping[str, Frame]) -> dict[str, Any]:
         """Assemble model input dict from observation and camera frames.
 
         Returns:
@@ -247,8 +178,8 @@ class PolicyController:
             model_input[TASK] = [self._task]
         return model_input
 
-    def to_model_input(self, robot_obs: RobotObservation, camera_frames: dict[str, Frame]) -> dict[str, Any]:
-        """Public compatibility wrapper for model-input conversion.
+    def to_model_input(self, robot_obs: RobotObservation, camera_frames: Mapping[str, Frame]) -> dict[str, Any]:
+        """Public wrapper for model-input conversion (used by callers/tests).
 
         Returns:
             Dictionary ready for model inference.
@@ -256,12 +187,13 @@ class PolicyController:
         return self._to_model_input(robot_obs, camera_frames)
 
 
-class TeleopController:
-    """Controller that reads a leader arm and writes to the follower.
+class TeleopSource:
+    """Action source that reads a leader arm and writes to the follower.
 
     The action source is the leader device, not the follower's observation or
-    any inference model. ``tick`` is never consumed — a teleop tick with no
-    recording attached performs zero follower/camera reads.
+    any inference model. Both ``robot_state``/``camera_frames`` are ignored —
+    a teleop tick with no recording attached performs zero extra reads beyond
+    what the runtime already does for telemetry.
 
     Args:
         leader: The leader robot (same ``Robot`` protocol; must support
@@ -281,19 +213,13 @@ class TeleopController:
         self._to_action = to_action or (lambda obs: obs.joint_positions)
         self._leader_owned = False
 
-    def start(self) -> None:
+    def connect(self, *, bus: _CallbackBus, session_id: str) -> None:  # noqa: ARG002
         """Connect leader if not already connected."""
         if not self._leader.is_connected():
             self._leader.connect()
             self._leader_owned = True
 
-    def set_bus(self, bus: _CallbackBus, session_id: str) -> None:
-        """No-op — teleop does not emit inference events."""
-
-    def warmup(self, tick: Tick) -> None:
-        """No-op — no inference to seed."""
-
-    def update(self, tick: Tick) -> np.ndarray | None:  # noqa: ARG002
+    def update(self, robot_state: RobotObservation, camera_frames: Mapping[str, Frame], step: int) -> np.ndarray:  # noqa: ARG002
         """Read the leader arm and return the action for the follower.
 
         Returns:
@@ -301,11 +227,8 @@ class TeleopController:
         """
         return self._to_action(self._leader.get_observation())
 
-    def stop(self) -> None:
+    def disconnect(self) -> None:
         """Disconnect leader if we connected it."""
         if self._leader_owned:
             with contextlib.suppress(Exception):
                 self._leader.disconnect()
-
-    def reset(self) -> None:
-        """No-op — no session state to clear."""

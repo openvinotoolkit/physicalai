@@ -23,7 +23,7 @@ from physicalai.cli._discovery import discover_subcommands  # noqa: PLC2701
 from physicalai.cli._spec import Dispatch, SubcommandSpec  # noqa: PLC2701
 from physicalai.cli.main import main
 from physicalai.robot.interface import RobotObservation
-from physicalai.runtime import PolicyRuntime, RunStats
+from physicalai.runtime import RobotRuntime
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -75,13 +75,15 @@ class FakeRobot:
 _FAKE_ROBOT = f"{__name__}.FakeRobot"
 _REAL_SYNC = "physicalai.runtime.execution.SyncExecution"
 _REAL_MODEL = "physicalai.inference.model.InferenceModel"
+_POLICY_SOURCE = "physicalai.runtime.controller.PolicySource"
 
 _MINIMAL_ARGV: tuple[str, ...] = (
     f"--runtime.robot={_FAKE_ROBOT}",
     "--runtime.robot.port=/dev/null",
-    f"--runtime.model={_REAL_MODEL}",
-    "--runtime.model.export_dir=/tmp/fake",  # noqa: S108
-    f"--runtime.execution={_REAL_SYNC}",
+    f"--runtime.action_source={_POLICY_SOURCE}",
+    f"--runtime.action_source.model={_REAL_MODEL}",
+    "--runtime.action_source.model.export_dir=/tmp/fake",  # noqa: S108
+    f"--runtime.action_source.execution={_REAL_SYNC}",
     "--runtime.fps=30",
 )
 
@@ -189,7 +191,9 @@ class TestRunParser:
         cfg = parser.parse_args(list(_MINIMAL_ARGV))
         assert cfg.runtime.fps == 30
         assert cfg.runtime.robot.class_path == _FAKE_ROBOT
-        assert cfg.runtime.execution.class_path == _REAL_SYNC
+        assert cfg.runtime.action_source.class_path == _POLICY_SOURCE
+        assert cfg.runtime.action_source.init_args.execution.class_path == _REAL_SYNC
+        assert cfg.runtime.action_source.init_args.model.class_path == _REAL_MODEL
 
     def test_config_file_loads_yaml(self, tmp_path: Path) -> None:
         cfg_file = tmp_path / "runtime.yaml"
@@ -200,12 +204,15 @@ class TestRunParser:
             f"    class_path: {_FAKE_ROBOT}\n"
             "    init_args:\n"
             "      port: /dev/null\n"
-            "  model:\n"
-            f"    class_path: {_REAL_MODEL}\n"
+            "  action_source:\n"
+            f"    class_path: {_POLICY_SOURCE}\n"
             "    init_args:\n"
-            "      export_dir: /tmp/fake\n"
-            "  execution:\n"
-            f"    class_path: {_REAL_SYNC}\n"
+            "      model:\n"
+            f"        class_path: {_REAL_MODEL}\n"
+            "        init_args:\n"
+            "          export_dir: /tmp/fake\n"
+            "      execution:\n"
+            f"        class_path: {_REAL_SYNC}\n"
             "run:\n"
             "  duration_s: 5\n",
         )
@@ -214,6 +221,7 @@ class TestRunParser:
         assert cfg.runtime.fps == 30
         assert cfg.run.duration_s == 5
         assert cfg.runtime.robot.class_path == _FAKE_ROBOT
+        assert cfg.runtime.action_source.class_path == _POLICY_SOURCE
 
     def test_cli_overrides_config_file(self, tmp_path: Path) -> None:
         cfg_file = tmp_path / "runtime.yaml"
@@ -224,12 +232,15 @@ class TestRunParser:
             f"    class_path: {_FAKE_ROBOT}\n"
             "    init_args:\n"
             "      port: /dev/null\n"
-            "  model:\n"
-            f"    class_path: {_REAL_MODEL}\n"
+            "  action_source:\n"
+            f"    class_path: {_POLICY_SOURCE}\n"
             "    init_args:\n"
-            "      export_dir: /tmp/fake\n"
-            "  execution:\n"
-            f"    class_path: {_REAL_SYNC}\n",
+            "      model:\n"
+            f"        class_path: {_REAL_MODEL}\n"
+            "        init_args:\n"
+            "          export_dir: /tmp/fake\n"
+            "      execution:\n"
+            f"        class_path: {_REAL_SYNC}\n",
         )
         parser = run_module.build_parser()
         cfg = parser.parse_args([f"--config={cfg_file}", "--runtime.fps=60"])
@@ -240,19 +251,17 @@ class TestRunDispatcher:
     """``physicalai run`` dispatcher: parser.instantiate + runtime.run."""
 
     @staticmethod
-    def _fake_runtime(stats: RunStats) -> MagicMock:
-        fake = MagicMock(spec=PolicyRuntime)
+    def _fake_runtime(steps: int) -> MagicMock:
+        fake = MagicMock(spec=RobotRuntime)
         fake.__enter__ = MagicMock(return_value=fake)
         fake.__exit__ = MagicMock(return_value=None)
-        fake.run.return_value = stats
+        fake.run.return_value = steps
         return fake
 
     def test_invokes_runtime_run_with_method_args(self) -> None:
         parser = run_module.build_parser()
         cfg = parser.parse_args([*_MINIMAL_ARGV, "--run.duration_s=7"])
-        fake = self._fake_runtime(
-            RunStats(steps=10, total_pops=10, total_holds=0, inference_count=2),
-        )
+        fake = self._fake_runtime(10)
 
         with patch.object(parser, "instantiate") as inst:
             inst.return_value = MagicMock(runtime=fake)
@@ -267,9 +276,7 @@ class TestRunDispatcher:
     def test_defaults_to_none_duration(self) -> None:
         parser = run_module.build_parser()
         cfg = parser.parse_args(list(_MINIMAL_ARGV))
-        fake = self._fake_runtime(
-            RunStats(steps=0, total_pops=0, total_holds=0, inference_count=0),
-        )
+        fake = self._fake_runtime(0)
 
         with patch.object(parser, "instantiate") as inst:
             inst.return_value = MagicMock(runtime=fake)

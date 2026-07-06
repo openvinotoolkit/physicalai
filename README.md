@@ -23,7 +23,7 @@ Physical AI Runtime provides the deployment-side components for running trained 
 - **Unified Camera API** — Same interface for UVC, RealSense, Basler, and IP cameras
 - **Robot Protocol** — Structural typing for any robot; no inheritance required
 - **Inference Engine** — Load exported policies from Studio with auto-detected backends
-- **Policy Runtime** — Control loop with observation building and action dispatch
+- **Robot Runtime** — Control loop with pluggable action sources (policy inference or teleop), observation building, and action dispatch
 
 ---
 
@@ -262,25 +262,27 @@ print(json.dumps(metrics, indent=2))
 
 ---
 
-## Policy Runtime
+## Robot Runtime
 
-The `PolicyRuntime` orchestrates the full control loop: connecting hardware, reading cameras, building observations, running inference, and dispatching actions to the robot.
+The `RobotRuntime` orchestrates the full control loop: connecting hardware, reading cameras, building observations, running inference, and dispatching actions to the robot. It takes a required, pluggable `action_source` — `PolicySource` wraps a trained model, `TeleopSource` drives a follower from a leader arm, or bring your own by implementing the `ActionSource` protocol.
 
 ```python
-from physicalai.runtime import PolicyRuntime, SyncExecution
+from physicalai.runtime import RobotRuntime, PolicySource, SyncExecution
 from physicalai.inference import InferenceModel
 from physicalai.capture import UVCCamera, RealSenseCamera
 from physicalai.robot import SO101
 
-runtime = PolicyRuntime(
+runtime = RobotRuntime(
     fps=30,
     robot=SO101(port="/dev/ttyACM0"),
-    model=InferenceModel.load("./exports/act_policy"),
+    action_source=PolicySource(
+        model=InferenceModel.load("./exports/act_policy"),
+        execution=SyncExecution(),
+    ),
     cameras={
         "wrist": UVCCamera(device="/dev/video0", width=640, height=480),
         "overhead": RealSenseCamera(serial_number="123456789"),
     },
-    execution=SyncExecution(),
 )
 
 with runtime:
@@ -290,38 +292,35 @@ with runtime:
 <details>
 <summary><strong>From YAML Config</strong></summary>
 
-> **Preview:** This API is not yet implemented.
-
 ```python
-runtime = PolicyRuntime.from_config("runtime.yaml")
+runtime = RobotRuntime.from_config("runtime.yaml")
 runtime.run(duration_s=60)
 ```
 
 ```yaml
 # runtime.yaml
 runtime:
-  class_path: physicalai.runtime.PolicyRuntime
-  init_args:
-    fps: 30
-    robot:
-      class_path: physicalai.robot.so101.SO101
-      init_args:
-        port: /dev/ttyACM0
-    model:
-      class_path: physicalai.inference.InferenceModel
-      init_args:
-        export_dir: ./exports/act_policy
-    cameras:
-      wrist:
-        class_path: physicalai.capture.UVCCamera
+  robot:
+    class_path: physicalai.robot.so101.SO101
+    init_args:
+      port: /dev/ttyACM0
+  action_source:
+    class_path: physicalai.runtime.PolicySource
+    init_args:
+      model:
+        class_path: physicalai.inference.InferenceModel
         init_args:
-          device: /dev/video0
-          width: 640
-          height: 480
-    execution:
-      class_path: physicalai.runtime.SyncExecution
+          export_dir: ./exports/act_policy
+      execution:
+        class_path: physicalai.runtime.SyncExecution
+  cameras:
+    wrist:
+      class_path: physicalai.capture.UVCCamera
       init_args:
-        mode: chunk
+        device: /dev/video0
+        width: 640
+        height: 480
+  fps: 30
 ```
 
 </details>
@@ -345,14 +344,13 @@ can add subcommands such as `fit` and `benchmark` through the
 Async execution runs inference in a background thread while the main loop handles camera reads and robot commands at a fixed frequency. Useful when inference is slower than the control rate.
 
 ```python
-from physicalai.runtime import PolicyRuntime, AsyncExecution
+from physicalai.runtime import RobotRuntime, PolicySource, AsyncExecution
 
-runtime = PolicyRuntime(
+runtime = RobotRuntime(
     fps=30,
     robot=robot,
-    model=model,
+    action_source=PolicySource(model=model, execution=AsyncExecution()),
     cameras=cameras,
-    execution=AsyncExecution(fps=30),
 )
 
 with runtime:
@@ -369,13 +367,13 @@ Remote execution sends observations to an inference server and receives actions 
 > **Preview:** This API is not yet implemented.
 
 ```python
-from physicalai.runtime import PolicyRuntime, RemoteExecution
+from physicalai.runtime import RobotRuntime, PolicySource, RemoteExecution
 
-runtime = PolicyRuntime(
+runtime = RobotRuntime(
     fps=30,
     robot=robot,
+    action_source=PolicySource(model=model, execution=RemoteExecution(endpoint="http://gpu-server:8080/infer")),
     cameras=cameras,
-    execution=RemoteExecution(endpoint="http://gpu-server:8080/infer"),
 )
 
 runtime.run(duration_s=60)

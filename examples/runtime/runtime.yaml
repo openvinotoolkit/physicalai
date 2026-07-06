@@ -5,7 +5,8 @@
 #
 # This sample uses SyncExecution (inference blocks the control loop). It is the
 # simplest mode and a good first check that your model + robot + camera work
-# together. For lower-jitter runs, switch ``execution`` to:
+# together. For lower-jitter runs, switch ``execution`` (under
+# ``action_source.init_args``) to:
 #
 #   execution:
 #     class_path: physicalai.runtime.AsyncExecution    # background-thread inference
@@ -28,14 +29,19 @@ runtime:
       port: /dev/ttyACM0 # CHANGE_ME: your robot's serial port
       calibration: ./robot_calibration.json # CHANGE_ME: path to calibration JSON
 
-  model:
-    class_path: physicalai.inference.InferenceModel
+  action_source:
+    class_path: physicalai.runtime.PolicySource
     init_args:
-      export_dir: ./exports/my_policy # CHANGE_ME: path to exported OpenVINO model
-      device: GPU # GPU | CPU | NPU
+      model:
+        class_path: physicalai.inference.InferenceModel
+        init_args:
+          export_dir: ./exports/my_policy # CHANGE_ME: path to exported OpenVINO model
+          device: GPU # GPU | CPU | NPU
 
-  execution:
-    class_path: physicalai.runtime.SyncExecution
+      execution:
+        class_path: physicalai.runtime.SyncExecution
+
+      task: "pick up the red cube" # CHANGE_ME: task string the model was trained with
 
   cameras:
     overhead: # scene/workspace view
@@ -58,7 +64,6 @@ runtime:
           fps: 30
 
   fps: 30.0
-  task: "pick up the red cube" # CHANGE_ME: task string the model was trained with
 
   callbacks:
     # Live visualization in Rerun. ``mode: spawn`` launches a viewer window.

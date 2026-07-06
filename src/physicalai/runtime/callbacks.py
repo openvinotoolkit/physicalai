@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import colorsys
+import dataclasses
 import json
 import logging
 import threading
@@ -22,7 +23,7 @@ if TYPE_CHECKING:
     import numpy as np
 
     from physicalai.capture.camera import Camera
-    from physicalai.runtime.events import InferenceEvent, LifecycleEvent, TickEvent
+    from physicalai.runtime.events import InferenceEvent, LifecycleEvent, MetricsEvent, TickEvent
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,6 @@ class ConsoleCallback:
         print(  # noqa: T201
             f"[{elapsed:6.1f}s] step={event.step} "
             f"hz={actual_hz:.0f} "
-            f"queue={event.queue_remaining} "
             f"loop={event.loop_duration_s * 1000:.1f}ms"
             f"{' STALE' if event.stale_obs else ''}",
         )
@@ -71,16 +71,14 @@ class JsonlCallback:
         self._record_chunks = record_chunks
 
     def on_tick(self, event: TickEvent) -> None:  # noqa: D102
-        robot_observation = event.tick.robot_state()
         self._write(
             "tick",
             {
                 "session_id": event.session_id,
                 "step": event.step,
                 "timestamp": event.timestamp,
-                "joint_positions": _np_to_list(robot_observation.joint_positions),
+                "joint_positions": _np_to_list(event.robot_state.joint_positions),
                 "action_sent": _np_to_list(event.action_sent),
-                "queue_remaining": event.queue_remaining,
                 "loop_duration_s": event.loop_duration_s,
                 "sleep_time_s": event.sleep_time_s,
                 "stale_obs": event.stale_obs,
@@ -126,7 +124,7 @@ class AsyncCallback:
     events are dropped.
     """
 
-    _ACTION_HOOKS = ("before_send_action", "on_action_sent", "on_hold")
+    _ACTION_HOOKS = ("on_action_ready", "on_action_sent")
 
     def __init__(self, inner: Any, max_queue: int = 1024) -> None:  # noqa: D107, ANN401
         dropped = [h for h in self._ACTION_HOOKS if hasattr(inner, h)]
@@ -149,19 +147,17 @@ class AsyncCallback:
         Zero-copy SharedCamera frames are views into iceoryx2 shared memory that become
         invalid on the next read_latest() call. Since the background worker may process
         this event after the next tick, borrowed frames are replaced with owned copies
-        before enqueuing. Frames are only inspected when they were already read this tick;
-        an idle tick that pulled no frames is not forced to read the camera here.
+        before enqueuing.
         """
-        if event.tick.camera_frames_cached():
-            camera_frames = event.tick.camera_frames()
-            if any(not f.data.flags.owndata for f in camera_frames.values()):
-                copied = {
-                    name: Frame(data=f.data.copy(), timestamp=f.timestamp, sequence=f.sequence)
-                    if not f.data.flags.owndata
-                    else f
-                    for name, f in camera_frames.items()
-                }
-                event.tick._set_camera_frames(copied)  # noqa: SLF001
+        camera_frames = event.camera_frames
+        if any(not f.data.flags.owndata for f in camera_frames.values()):
+            copied = {
+                name: Frame(data=f.data.copy(), timestamp=f.timestamp, sequence=f.sequence)
+                if not f.data.flags.owndata
+                else f
+                for name, f in camera_frames.items()
+            }
+            event = dataclasses.replace(event, camera_frames=copied)
         self._enqueue("on_tick", event)
 
     def on_inference(self, event: InferenceEvent) -> None:
@@ -260,12 +256,11 @@ class RerunCallback:
         rr.set_time("step", sequence=event.step)
         rr.set_time("wall", timestamp=event.timestamp)
 
-        rr.log("robot/joints", rr.Scalars([float(v) for v in event.tick.robot_state().joint_positions]))
+        rr.log("robot/joints", rr.Scalars([float(v) for v in event.robot_state.joint_positions]))
 
         if event.action_sent is not None:
             rr.log("robot/actions", rr.Scalars([float(v) for v in event.action_sent]))
 
-        rr.log("queue/remaining", rr.Scalars(float(event.queue_remaining)))
         rr.log("queue/inference", rr.Scalars(0.0))
         rr.log("runtime/loop_duration_s", rr.Scalars(event.loop_duration_s))
         rr.log("runtime/sleep_time_s", rr.Scalars(event.sleep_time_s))
@@ -273,6 +268,22 @@ class RerunCallback:
 
         if self._log_images and event.step % self._image_decimation == 0:
             self._log_camera_frames()
+
+    @staticmethod
+    def on_metrics(event: MetricsEvent) -> None:
+        """Log source-owned live values (currently just queue depth).
+
+        Not every action source emits this (e.g. ``TeleopSource`` never does)
+        — the queue panel is simply empty for those sessions.
+        """
+        import rerun as rr  # noqa: PLC0415
+
+        queue_remaining = event.values.get("queue_remaining")
+        if queue_remaining is None:
+            return
+        rr.set_time("step", sequence=event.step)
+        rr.set_time("wall", timestamp=event.timestamp)
+        rr.log("queue/remaining", rr.Scalars(float(queue_remaining)))
 
     def on_inference(self, event: InferenceEvent) -> None:  # noqa: D102
         import numpy as np  # noqa: PLC0415

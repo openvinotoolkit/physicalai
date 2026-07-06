@@ -50,7 +50,7 @@ class TestSyncExecution:
 
         model.predict_action_chunk.reset_mock()
         model.predict_action_chunk.return_value = chunk
-        ex.maybe_request(lambda: obs)
+        ex.maybe_request(obs)
 
         assert queue.remaining == 4
         model.predict_action_chunk.assert_called_once()
@@ -67,10 +67,10 @@ class TestSyncExecution:
         queue.pop()
 
         model.predict_action_chunk.reset_mock()
-        ex.maybe_request(lambda: obs)
+        ex.maybe_request(obs)
         model.predict_action_chunk.assert_not_called()
 
-    def test_maybe_request_skips_provider_when_queue_full(self) -> None:
+    def test_maybe_request_skips_inference_when_queue_full(self) -> None:
         chunk = np.random.randn(8, 2).astype(np.float32)
         model = _make_mock_model(chunk)
         queue = ChunkedActionQueue()
@@ -80,10 +80,10 @@ class TestSyncExecution:
         ex.start(model, queue)
         ex.warmup(obs)
 
-        provider = MagicMock(return_value=obs)
-        ex.maybe_request(provider)
+        model.predict_action_chunk.reset_mock()
+        ex.maybe_request(obs)
 
-        provider.assert_not_called()
+        model.predict_action_chunk.assert_not_called()
 
     def test_stop_is_noop(self) -> None:
         ex = SyncExecution()
@@ -100,7 +100,7 @@ class TestSyncExecution:
         ex.warmup(obs)
         for _ in range(4):
             queue.pop()
-        ex.maybe_request(lambda: obs)
+        ex.maybe_request(obs)
         assert ex.inference_count == 1
 
 
@@ -143,13 +143,13 @@ class TestAsyncExecution:
 
         model.predict_action_chunk.reset_mock()
         model.predict_action_chunk.return_value = chunk
-        ex.maybe_request(lambda: obs)
+        ex.maybe_request(obs)
 
         time.sleep(0.3)
         assert queue.remaining > 0
         ex.stop()
 
-    def test_maybe_request_skips_provider_when_queue_full(self) -> None:
+    def test_maybe_request_skips_inference_when_queue_full(self) -> None:
         chunk = np.random.randn(10, 2).astype(np.float32)
         model = _make_mock_model(chunk)
         queue = ChunkedActionQueue()
@@ -159,10 +159,10 @@ class TestAsyncExecution:
         obs = {"state": np.zeros(2)}
         ex.warmup(obs)
 
-        provider = MagicMock(return_value=obs)
-        ex.maybe_request(provider)
+        model.predict_action_chunk.reset_mock()
+        ex.maybe_request(obs)
 
-        provider.assert_not_called()
+        model.predict_action_chunk.assert_not_called()
         ex.stop()
 
     def test_defensive_copy_of_observation(self) -> None:
@@ -180,7 +180,7 @@ class TestAsyncExecution:
         model.predict_action_chunk.reset_mock()
         original_state = np.array([1.0, 2.0])
         obs_to_submit = {"state": original_state.copy()}
-        ex.maybe_request(lambda: obs_to_submit)
+        ex.maybe_request(obs_to_submit)
         obs_to_submit["state"][:] = 99.0
 
         time.sleep(0.3)
@@ -205,11 +205,11 @@ class TestAsyncExecution:
         for _ in range(4):
             queue.pop()
 
-        ex.maybe_request(lambda: obs)
+        ex.maybe_request(obs)
         time.sleep(0.5)
 
         with pytest.raises(WorkerDiedError, match="model exploded"):
-            ex.maybe_request(lambda: obs)
+            ex.maybe_request(obs)
 
         ex.stop()
 
@@ -242,7 +242,7 @@ class TestAsyncExecution:
 
         model.predict_action_chunk.reset_mock()
         model.predict_action_chunk.return_value = chunk
-        ex.maybe_request(lambda: obs)
+        ex.maybe_request(obs)
         time.sleep(0.3)
 
         assert ex.inference_count >= 1
@@ -271,10 +271,10 @@ class TestAsyncExecution:
 
         for _ in range(4):
             queue.pop()
-        ex.maybe_request(lambda: obs)
+        ex.maybe_request(obs)
 
         time.sleep(0.3)
-        ex.maybe_request(lambda: obs)
+        ex.maybe_request(obs)
 
         ex.stop()
 

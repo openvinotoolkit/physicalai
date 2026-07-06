@@ -78,6 +78,6 @@ Configuration objects remain passive data. Orchestrators are responsible for cre
 
 ```python
 config = RuntimeConfig.load("runtime.yaml")
-runtime = PolicyRuntime.from_config(config)
+runtime = RobotRuntime.from_config(config)
 runtime.run()
 ```

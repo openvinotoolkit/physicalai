@@ -12,7 +12,7 @@ physicalai run --config runtime.yaml --run.duration_s=60
 Equivalent Python control flow:
 
 ```python
-runtime = PolicyRuntime(...)
+runtime = RobotRuntime(...)
 
 with runtime:
     runtime.run(duration_s=60)
@@ -30,9 +30,9 @@ source <(pai completion zsh)
 
 ## Runtime Commands
 
-| Command          | Purpose                          |
-| ---------------- | -------------------------------- |
-| `physicalai run` | Runs a policy on robot hardware. |
+| Command          | Purpose                                                         |
+| ---------------- | --------------------------------------------------------------- |
+| `physicalai run` | Runs a trained policy (or any action source) on robot hardware. |
 
 ## Training Commands
 

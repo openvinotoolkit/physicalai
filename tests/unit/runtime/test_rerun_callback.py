@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from physicalai.runtime.events import InferenceEvent, LifecycleEvent, TickEvent
-from tests.unit.runtime.conftest import FakeRobotObservation, make_fake_tick
+from physicalai.runtime.events import InferenceEvent, LifecycleEvent, MetricsEvent, TickEvent
+from tests.unit.runtime.conftest import FakeRobotObservation
 
 
 @pytest.fixture()
@@ -63,16 +63,23 @@ def _tick(step: int = 0, dof: int = 7) -> TickEvent:
         session_id="sess-1",
         step=step,
         timestamp=1000.0 + step * (1 / 30),
-        tick=make_fake_tick(
-            FakeRobotObservation(
-                joint_positions=np.arange(dof, dtype=np.float64),
-            )
+        robot_state=FakeRobotObservation(
+            joint_positions=np.arange(dof, dtype=np.float64),
         ),
+        camera_frames={},
         action_sent=np.ones(dof, dtype=np.float64),
-        queue_remaining=5,
         loop_duration_s=0.033,
         sleep_time_s=0.0,
         stale_obs=False,
+    )
+
+
+def _metrics(step: int = 0, *, queue_remaining: float = 5.0) -> MetricsEvent:
+    return MetricsEvent(
+        session_id="sess-1",
+        step=step,
+        timestamp=1000.0 + step * (1 / 30),
+        values={"queue_remaining": queue_remaining},
     )
 
 
@@ -179,7 +186,6 @@ class TestRerunCallbackTick:
 
         log_calls = mock_rerun.log.call_args_list
         paths = [c.args[0] for c in log_calls]
-        assert "queue/remaining" in paths
         assert "runtime/loop_duration_s" in paths
         assert "runtime/sleep_time_s" in paths
         assert "runtime/stale_obs" in paths
@@ -210,13 +216,11 @@ class TestRerunCallbackTick:
             session_id="sess-1",
             step=1,
             timestamp=1000.0,
-            tick=make_fake_tick(
-                FakeRobotObservation(
-                    joint_positions=np.arange(7, dtype=np.float64),
-                )
+            robot_state=FakeRobotObservation(
+                joint_positions=np.arange(7, dtype=np.float64),
             ),
+            camera_frames={},
             action_sent=None,
-            queue_remaining=5,
             loop_duration_s=0.033,
             sleep_time_s=0.0,
             stale_obs=False,
@@ -226,6 +230,32 @@ class TestRerunCallbackTick:
         log_calls = mock_rerun.log.call_args_list
         action_calls = [c for c in log_calls if c.args[0] == "robot/actions"]
         assert len(action_calls) == 0
+
+
+class TestRerunCallbackMetrics:
+    """Queue depth moved from on_tick to the optional on_metrics hook (MetricsEvent)."""
+
+    def test_on_metrics_logs_queue_remaining(self, make_callback: Any, mock_rerun: MagicMock) -> None:
+        cb = make_callback()
+        cb.on_lifecycle(_lifecycle_start())
+        mock_rerun.reset_mock()
+
+        cb.on_metrics(_metrics(step=3, queue_remaining=7.0))
+
+        log_calls = mock_rerun.log.call_args_list
+        queue_calls = [c for c in log_calls if c.args[0] == "queue/remaining"]
+        assert len(queue_calls) == 1
+
+    def test_on_metrics_ignores_unknown_keys(self, make_callback: Any, mock_rerun: MagicMock) -> None:
+        cb = make_callback()
+        cb.on_lifecycle(_lifecycle_start())
+        mock_rerun.reset_mock()
+
+        cb.on_metrics(MetricsEvent(session_id="sess-1", step=0, timestamp=1000.0, values={"other": 1.0}))
+
+        log_calls = mock_rerun.log.call_args_list
+        queue_calls = [c for c in log_calls if c.args[0] == "queue/remaining"]
+        assert len(queue_calls) == 0
 
 
 @pytest.mark.usefixtures("_patch_rerun")

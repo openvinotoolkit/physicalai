@@ -40,34 +40,33 @@ The core rules are straightforward.
 
 ```yaml
 runtime:
-  class_path: physicalai.runtime.PolicyRuntime
-  init_args:
-    fps: 30
-    robot:
-      class_path: physicalai.robot.so101.SO101
-      init_args:
-        port: /dev/ttyACM0
-    model:
-      class_path: physicalai.inference.InferenceModel
-      init_args:
-        export_dir: ./exports/act_policy
-    execution:
-      class_path: physicalai.runtime.SyncExecution
-      init_args:
-        mode: chunk
+  robot:
+    class_path: physicalai.robot.so101.SO101
+    init_args:
+      port: /dev/ttyACM0
+  action_source:
+    class_path: physicalai.runtime.PolicySource
+    init_args:
+      model:
+        class_path: physicalai.inference.InferenceModel
+        init_args:
+          export_dir: ./exports/act_policy
+      execution:
+        class_path: physicalai.runtime.SyncExecution
+  fps: 30
 ```
 
 The most common runtime fields are listed below.
 
-| Field                         | Type            | Description                |
-| ----------------------------- | --------------- | -------------------------- |
-| `runtime`                     | `ComponentSpec` | Runtime orchestrator       |
-| `runtime.init_args.fps`       | number          | Control loop frequency     |
-| `runtime.init_args.robot`     | `ComponentSpec` | Robot implementation       |
-| `runtime.init_args.model`     | `ComponentSpec` | Inference model            |
-| `runtime.init_args.execution` | `ComponentSpec` | Execution strategy         |
-| `runtime.init_args.cameras`   | mapping         | Optional camera components |
-| `runtime.init_args.callbacks` | list            | Optional runtime callbacks |
+| Field                   | Type            | Description                                                          |
+| ----------------------- | --------------- | -------------------------------------------------------------------- |
+| `runtime.robot`         | `ComponentSpec` | Robot implementation                                                 |
+| `runtime.action_source` | `ComponentSpec` | Action source — always explicit, e.g. `PolicySource`, `TeleopSource` |
+| `runtime.fps`           | number          | Control loop frequency                                               |
+| `runtime.cameras`       | mapping         | Optional camera components                                           |
+| `runtime.callbacks`     | list            | Optional runtime callbacks                                           |
+
+`action_source.init_args` depends on the chosen class — `PolicySource` takes `model` and `execution` (and optionally `task`, `action_queue`); `TeleopSource` takes `leader`.
 
 ## InferenceConfig
 

@@ -8,21 +8,12 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol, Self, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, Self, runtime_checkable
 
 from physicalai.capture.errors import CaptureError
 from physicalai.runtime._callback_bus import _CallbackBus  # noqa: PLC2701
-from physicalai.runtime.controller import (
-    PolicyController,
-    SupportsBus,
-    SupportsDrain,
-    SupportsHoldInfo,
-    SupportsStats,
-)
 from physicalai.runtime.events import LifecycleEvent, TickEvent
 from physicalai.runtime.execution import WorkerDiedError
-from physicalai.runtime.tick import Tick
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -32,36 +23,15 @@ if TYPE_CHECKING:
 
     from physicalai.capture.camera import Camera
     from physicalai.capture.frame import Frame
-    from physicalai.inference.model import InferenceModel
     from physicalai.robot.interface import Robot, RobotObservation
-    from physicalai.runtime.controller import Controller
-    from physicalai.runtime.execution import Execution
+    from physicalai.runtime.controller import ActionSource
 
 logger = logging.getLogger(__name__)
 
 
-def _config_has_class_path(path: str) -> bool:
-    import yaml  # noqa: PLC0415
-
-    try:
-        with open(path, encoding="utf-8") as f:  # noqa: PTH123
-            data = yaml.safe_load(f)
-    except (OSError, yaml.YAMLError):
-        logger.debug("Failed to peek config %s for schema detection", path, exc_info=True)
-        return False
-    if isinstance(data, dict):
-        runtime = data.get("runtime", {})
-        if isinstance(runtime, dict):
-            return "controller" in runtime
-    return False
-
-
-_DEFAULT_LERP_FRAMES = 5
 _MAX_OBS_RETRIES = 3
 _MAX_SEND_RETRIES = 2
 _RETRY_BACKOFF_S = 0.001
-_WARMUP_RETRIES = 5
-_WARMUP_BACKOFF_S = 1.0
 _GOAL_TIME_TICKS = 3
 
 
@@ -115,18 +85,28 @@ class ActionQueue(Protocol):
 
 
 class RuntimeCallback(Protocol):
-    """Optional hook points in the PolicyRuntime control loop."""
+    """Optional action-transform hooks in the RobotRuntime control loop.
 
-    def before_send_action(self, *, action: np.ndarray, step: int) -> np.ndarray | None:
-        """Called before sending action. Return modified action or None."""
+    Only ``on_action_ready``/``on_action_sent`` are part of this protocol — the
+    fire-and-forget telemetry hooks (``on_tick``, ``on_inference``,
+    ``on_lifecycle``, ``on_metrics``) are duck-typed via ``getattr`` in the
+    callback bus and intentionally not part of this protocol.
+    """
+
+    def on_action_ready(self, *, action: np.ndarray, step: int) -> np.ndarray:
+        """Called with the chosen action before it's sent; may transform it.
+
+        Every callback must return a valid action (no ``None`` sentinel) — a
+        callback that doesn't want to change anything returns its input
+        unchanged.
+
+        Returns:
+            The action after this callback's transform.
+        """
         ...
 
     def on_action_sent(self, *, action: np.ndarray, step: int) -> None:
-        """Called after action is sent to robot."""
-        ...
-
-    def on_hold(self, *, step: int, holds: int) -> None:
-        """Called when action queue is empty and robot holds last position."""
+        """Called after action is sent to robot. Notification only."""
         ...
 
 
@@ -149,7 +129,7 @@ class LowPassFilterCallback:
         self.alpha = alpha
         self._last_action: np.ndarray | None = None
 
-    def before_send_action(self, *, action: np.ndarray, step: int) -> np.ndarray:  # noqa: ARG002
+    def on_action_ready(self, *, action: np.ndarray, step: int) -> np.ndarray:  # noqa: ARG002
         """Filter target action vector using previous action state.
 
         Args:
@@ -172,38 +152,23 @@ class LowPassFilterCallback:
     def on_action_sent(self, *, action: np.ndarray, step: int) -> None:
         """No-op."""
 
-    def on_hold(self, *, step: int, holds: int) -> None:
-        """No-op."""
-
-
-@dataclass(frozen=True)
-class RunStats:
-    """Statistics from a PolicyRuntime.run() session."""
-
-    steps: int
-    total_pops: int
-    total_holds: int
-    inference_count: int
-    transient_errors: int = 0
-    stale_obs_ticks: int = 0
-
 
 class RobotRuntime:
-    """Generic robot runtime loop with pluggable action-selection controller."""
+    """Generic robot runtime loop with a required, pluggable action source."""
 
     def __init__(  # noqa: D107
         self,
         robot: Robot,
-        controller: Controller,
+        action_source: ActionSource,
         fps: float,
         cameras: Mapping[str, Camera] | None = None,
-        callbacks: Sequence[Any] = (),
+        callbacks: Sequence[RuntimeCallback] = (),
     ) -> None:
         if fps <= 0:
             msg = f"fps must be positive, got {fps}"
             raise ValueError(msg)
         self._robot = robot
-        self._controller = controller
+        self._action_source = action_source
         self._fps = fps
         self._cameras: Mapping[str, Camera] = cameras or {}
         self._bus = _CallbackBus(callbacks)
@@ -216,6 +181,7 @@ class RobotRuntime:
         self._stale_obs_ticks: int = 0
         self._transient_errors: int = 0
         self._session_id: str = ""
+        self._last_tick_stale: bool = False
 
     @property
     def robot(self) -> Robot:
@@ -226,6 +192,16 @@ class RobotRuntime:
     def cameras(self) -> Mapping[str, Camera]:
         """Camera instances managed by this runtime, keyed by name."""
         return self._cameras
+
+    @property
+    def action_source(self) -> ActionSource:
+        """The action source driving this runtime's control loop.
+
+        Public so config-built runs can still reach action-source-owned
+        stats (e.g. ``runtime.action_source.action_queue.total_pops``)
+        after ``run()`` returns.
+        """
+        return self._action_source
 
     def connect(self) -> None:
         """Connect robot and cameras.
@@ -290,47 +266,37 @@ class RobotRuntime:
     def from_config(cls, config: str | Path) -> Self:
         """Build runtime from YAML/JSON config file.
 
-        Supports both the flat PolicyRuntime schema and the general schema with
-        ``runtime.class_path``. The config is peeked to determine which parser
-        to use.
+        ``action_source:`` is always required and explicit — one schema, no
+        flat/legacy shorthand.
 
         Returns:
             Instantiated runtime object.
         """
         from jsonargparse import ActionConfigFile, ArgumentParser  # noqa: PLC0415
 
-        config_str = str(config)
         parser = ArgumentParser()
         parser.add_argument("--config", action=ActionConfigFile)
-        if _config_has_class_path(config_str):
-            parser.add_class_arguments(RobotRuntime, "runtime")
-            parser.add_method_arguments(RobotRuntime, "run", "run")
-        else:
-            parser.add_class_arguments(cls, "runtime")
-            parser.add_method_arguments(cls, "run", "run")
-        ns = parser.parse_args(["--config", config_str])
+        parser.add_class_arguments(cls, "runtime")
+        parser.add_method_arguments(cls, "run", "run")
+        ns = parser.parse_args(["--config", str(config)])
         return parser.instantiate(ns).runtime
 
-    def run(self, *, duration_s: float | None = None) -> RunStats:
+    def run(self, *, duration_s: float | None = None) -> int:
         """Run the control loop.
 
         Returns:
-            Statistics for this run session.
+            Number of steps completed this run.
 
         Raises:
             RuntimeError: If called before ``connect()``.
-            WorkerDiedError: If controller/execution worker dies.
+            WorkerDiedError: If the action source's execution worker dies.
         """
         if not self._connected:
             msg = "RobotRuntime.run() called before connect(). Use 'with runtime:' or call runtime.connect() first."
             raise RuntimeError(msg)
 
         self._reset_session()
-        self._controller.reset()
-
-        if isinstance(self._controller, SupportsBus):
-            self._controller.set_bus(self._bus, self._session_id)
-        self._controller.start()
+        self._action_source.connect(bus=self._bus, session_id=self._session_id)
         self._bus.emit_lifecycle(
             LifecycleEvent(
                 session_id=self._session_id,
@@ -344,7 +310,6 @@ class RobotRuntime:
                 },
             )
         )
-        self._warmup_with_retry()
 
         goal_time = 1.0 / self._fps
         step = 0
@@ -355,46 +320,26 @@ class RobotRuntime:
                     break
 
                 loop_start = time.perf_counter()
-                tick = Tick(
-                    frame_index=step,
-                    timestamp=time.time(),
-                    read_robot_state=self._read_robot_resilient,
-                    read_camera_frames=self._read_cameras_resilient,
-                )
+                robot_state, camera_frames = self._read_observation()
 
-                action = self._controller.update(tick)
-                if isinstance(self._controller, SupportsHoldInfo) and self._controller.last_was_hold:
-                    self._handle_hold(step=step, holds=self._controller.holds)
-
-                if action is None:
-                    logger.error("No action available (warmup may have failed)")
-                    self._tick_sleep(loop_start, goal_time)
-                    step += 1
-                    continue
-
-                action = self._bus.invoke_before_send_action(action=action, step=step)
+                action = self._action_source.update(robot_state, camera_frames, step)
+                action = self._bus.invoke_on_action_ready(action=action, step=step)
 
                 self._resilient_send(action)
                 self._bus.invoke_on_action_sent(action=action, step=step)
 
-                elapsed = time.perf_counter() - loop_start
-                sleep_time = goal_time - elapsed
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
-
+                elapsed, sleep_time = self._tick_sleep(loop_start, goal_time)
                 self._bus.emit_tick(
                     TickEvent(
                         session_id=self._session_id,
                         step=step,
                         timestamp=time.time(),
-                        tick=tick,
+                        robot_state=robot_state,
+                        camera_frames=camera_frames,
                         action_sent=action,
-                        queue_remaining=self._controller.remaining
-                        if isinstance(self._controller, SupportsDrain)
-                        else 0,
                         loop_duration_s=elapsed,
                         sleep_time_s=max(sleep_time, 0.0),
-                        stale_obs=tick.robot_state_stale,
+                        stale_obs=self._last_tick_stale,
                     )
                 )
                 step += 1
@@ -407,29 +352,7 @@ class RobotRuntime:
         finally:
             self._shutdown(step)
 
-        stats_hook = self._controller if isinstance(self._controller, SupportsStats) else None
-        controller_stats = stats_hook.stats() if stats_hook is not None else {}
-        return RunStats(
-            steps=step,
-            total_pops=controller_stats.get("total_pops", 0),
-            total_holds=controller_stats.get("total_holds", 0),
-            inference_count=controller_stats.get("inference_count", 0),
-            transient_errors=self._transient_errors,
-            stale_obs_ticks=self._stale_obs_ticks,
-        )
-
-    def _handle_hold(self, *, step: int, holds: int) -> None:
-        if holds == 1:
-            logger.warning("Queue empty — holding position")
-        elif self._fps > 0:
-            warning_interval = max(int(self._fps), 1)
-            if holds % warning_interval == 0:
-                logger.warning(
-                    "Queue starvation: %d consecutive holds (%.1fs)",
-                    holds,
-                    holds / self._fps,
-                )
-        self._bus.invoke_on_hold(step=step, holds=holds)
+        return step
 
     def _reset_session(self) -> None:
         """Reset all session-scoped state for a fresh run."""
@@ -439,6 +362,7 @@ class RobotRuntime:
         self._consecutive_error_ticks = 0
         self._stale_obs_ticks = 0
         self._transient_errors = 0
+        self._last_tick_stale = False
 
     @staticmethod
     def _tick_sleep(loop_start: float, goal_time: float) -> tuple[float, float]:
@@ -525,19 +449,21 @@ class RobotRuntime:
                 camera_frames[name] = stale_frame
         return camera_frames
 
-    def _resilient_observe(self) -> tuple[RobotObservation, dict[str, Frame]]:
-        """Read robot observation and camera frames with retry and stale fallback.
+    def _read_observation(self) -> tuple[RobotObservation, dict[str, Frame]]:
+        """Read robot state + camera frames once for this tick (retry + stale fallback).
+
+        The single read for this tick — the same values are passed to the
+        action source's ``update()`` and to telemetry via ``TickEvent``.
+        Staleness is stashed on the instance (``_last_tick_stale``) for the
+        caller to attach to the tick's ``TickEvent``.
 
         Returns:
-            Tuple ``(robot_observation, camera_frames)``.
+            Tuple ``(robot_state, camera_frames)``.
         """
-        tick = Tick(
-            frame_index=0,
-            timestamp=time.time(),
-            read_robot_state=self._read_robot_resilient,
-            read_camera_frames=self._read_cameras_resilient,
-        )
-        return tick.robot_state(), dict(tick.camera_frames())
+        robot_state, stale = self._read_robot_resilient()
+        self._last_tick_stale = stale
+        camera_frames = self._read_cameras_resilient()
+        return robot_state, camera_frames
 
     def _resilient_send(self, action: np.ndarray) -> None:
         last_error: ConnectionError | OSError | None = None
@@ -580,48 +506,8 @@ class RobotRuntime:
             last_error,
         )
 
-    def _warmup_with_retry(self) -> None:
-        last_error: ConnectionError | OSError | None = None
-
-        for attempt in range(_WARMUP_RETRIES):
-            tick = Tick(
-                frame_index=attempt,
-                timestamp=time.time(),
-                read_robot_state=self._read_robot_resilient,
-                read_camera_frames=self._read_cameras_resilient,
-            )
-            try:
-                self._controller.warmup(tick)
-            except (ConnectionError, OSError) as exc:
-                last_error = exc
-                if attempt + 1 < _WARMUP_RETRIES:
-                    time.sleep(_WARMUP_BACKOFF_S)
-            else:
-                return
-
-        msg = f"Warmup failed after {_WARMUP_RETRIES} attempts"
-        self._bus.emit_lifecycle(
-            LifecycleEvent(
-                session_id=self._session_id,
-                timestamp=time.time(),
-                event="warmup_failed",
-                metadata={"error": str(last_error), "attempts": _WARMUP_RETRIES},
-            )
-        )
-        raise ConnectionError(msg) from last_error
-
     def _shutdown(self, step: int) -> None:
-        self._controller.stop()
-
-        if isinstance(self._controller, SupportsDrain):
-            drain_limit = min(self._controller.remaining, int(self._fps))
-            for action in self._controller.drain(drain_limit):
-                try:
-                    self._resilient_send(action)
-                except ConnectionError:
-                    logger.warning("Send failed during drain; skipping remaining actions")
-                    break
-                time.sleep(1.0 / self._fps)
+        self._action_source.disconnect()
 
         self._bus.emit_lifecycle(
             LifecycleEvent(
@@ -637,57 +523,4 @@ class RobotRuntime:
         )
         self._bus.close()
 
-        stats_hook = self._controller if isinstance(self._controller, SupportsStats) else None
-        controller_stats = stats_hook.stats() if stats_hook is not None else {}
-        logger.info(
-            "Shutdown complete — %d steps, %d pops, %d holds",
-            step,
-            controller_stats.get("total_pops", 0),
-            controller_stats.get("total_holds", 0),
-        )
-
-
-class PolicyRuntime(RobotRuntime):
-    """Runs a policy on robot hardware.
-
-    Backward-compatible policy-only entry point preserving constructor and
-    white-box helper surface.
-    """
-
-    def __init__(  # noqa: D107
-        self,
-        robot: Robot,
-        model: InferenceModel,
-        execution: Execution,
-        fps: float,
-        cameras: Mapping[str, Camera] | None = None,
-        action_queue: ActionQueue | None = None,
-        callbacks: Sequence[Any] = (),
-        task: str | None = None,
-    ) -> None:
-        policy_controller = PolicyController(
-            model=model,
-            execution=execution,
-            action_queue=action_queue,
-            task=task,
-        )
-        super().__init__(
-            robot=robot,
-            controller=policy_controller,
-            fps=fps,
-            cameras=cameras or {},
-            callbacks=callbacks,
-        )
-        self._policy_controller = policy_controller
-
-    @property
-    def _action_queue(self) -> ActionQueue:
-        return self._policy_controller.action_queue
-
-    def _build_model_input(self) -> dict[str, Any]:
-        robot_obs = self._robot.get_observation()
-        camera_frames = {name: cam.read_latest() for name, cam in self._cameras.items()}
-        return self._build_model_input_from(robot_obs, camera_frames)
-
-    def _build_model_input_from(self, robot_obs: RobotObservation, camera_frames: dict[str, Frame]) -> dict[str, Any]:
-        return self._policy_controller.to_model_input(robot_obs, camera_frames)
+        logger.info("Shutdown complete — %d steps", step)

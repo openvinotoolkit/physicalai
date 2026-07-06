@@ -14,8 +14,6 @@ from typing import TYPE_CHECKING, cast
 import numpy as np
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from physicalai.inference.model import InferenceModel
     from physicalai.runtime._action_queue import ChunkedActionQueue
     from physicalai.runtime._callback_bus import _CallbackBus
@@ -47,8 +45,8 @@ class Execution(ABC):
         ...
 
     @abstractmethod
-    def maybe_request(self, observe_fn: Callable[[], dict[str, np.ndarray]]) -> None:
-        """Check if new inference is needed. If so, run or schedule it."""
+    def maybe_request(self, observation: dict[str, np.ndarray]) -> None:
+        """Check if new inference is needed given the (already-read) observation. If so, run or schedule it."""
         ...
 
     @abstractmethod
@@ -111,7 +109,7 @@ class SyncExecution(Execution):
         self._threshold_count = max(1, int(self._chunk_size * self._threshold_frac))
         self._queue.push_chunk(actions, offset=0)
 
-    def maybe_request(self, observe_fn: Callable[[], dict[str, np.ndarray]]) -> None:
+    def maybe_request(self, observation: dict[str, np.ndarray]) -> None:
         """Refill queue synchronously when below threshold.
 
         Raises:
@@ -120,7 +118,6 @@ class SyncExecution(Execution):
         if self._model is None or self._queue is None:
             raise RuntimeError(_NOT_STARTED)
         if self._queue.below_threshold(self._threshold_count):
-            observation = observe_fn()
             t0 = time.perf_counter()
             actions = self._model.predict_action_chunk(observation)
             latency = time.perf_counter() - t0
@@ -211,7 +208,7 @@ class AsyncExecution(Execution):
         self._threshold_count = int(self._chunk_size * self._threshold_frac)
         self._queue.push_chunk(actions, offset=0)
 
-    def maybe_request(self, observe_fn: Callable[[], dict[str, np.ndarray]]) -> None:
+    def maybe_request(self, observation: dict[str, np.ndarray]) -> None:
         """Submit observation for background inference if queue is low and worker idle.
 
         Raises:
@@ -229,7 +226,6 @@ class AsyncExecution(Execution):
             self._force_reset()
 
         if self._queue.below_threshold(self._threshold_count) and not self._busy:
-            observation = observe_fn()
             snapshot = {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in observation.items()}
             with self._lock:
                 self._obs_slot = snapshot

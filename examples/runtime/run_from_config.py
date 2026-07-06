@@ -2,11 +2,11 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Load a PolicyRuntime from a YAML config and run it.
+"""Load a RobotRuntime from a YAML config and run it.
 
-Showcases :meth:`PolicyRuntime.from_config` — loads the same ``runtime:``
+Showcases :meth:`RobotRuntime.from_config` — loads the same ``runtime:``
 schema as ``physicalai run --config``, but the caller owns ``duration_s``
-(passed directly to :meth:`PolicyRuntime.run`). Any ``run:`` block in the
+(passed directly to :meth:`RobotRuntime.run`). Any ``run:`` block in the
 YAML is parsed and ignored by ``from_config``.
 
 Examples:
@@ -25,7 +25,7 @@ import signal
 import sys
 from pathlib import Path
 
-from physicalai.runtime import PolicyRuntime
+from physicalai.runtime import PolicySource, RobotRuntime
 
 _DEFAULT_DURATION_S = 60.0
 
@@ -39,7 +39,7 @@ def main() -> int:
     signal.signal(signal.SIGINT, _handle_sigint)
 
     parser = argparse.ArgumentParser(
-        description="Load a PolicyRuntime from a YAML config and run it.",
+        description="Load a RobotRuntime from a YAML config and run it.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("config", type=Path, help="Path to runtime YAML config.")
@@ -55,16 +55,16 @@ def main() -> int:
         print(f"Config not found: {args.config}", file=sys.stderr)
         return 2
 
-    runtime = PolicyRuntime.from_config(args.config)
+    runtime = RobotRuntime.from_config(args.config)
 
     with runtime:
         print(f"Running (duration_s={args.duration_s})")
-        stats = runtime.run(duration_s=args.duration_s)
+        steps = runtime.run(duration_s=args.duration_s)
 
-    print(
-        f"\nDone — {stats.steps} steps, {stats.inference_count} inferences, "
-        f"{stats.total_holds} holds, {stats.transient_errors} transient errors",
-    )
+    summary = f"\nDone — {steps} steps"
+    if isinstance(runtime.action_source, PolicySource):
+        summary += f", {runtime.action_source.action_queue.total_pops} actions popped"
+    print(summary)
     return 0
 
 

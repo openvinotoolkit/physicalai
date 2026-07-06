@@ -47,8 +47,9 @@ from physicalai.runtime import (
     AsyncExecution,
     ChunkedActionQueue,
     LerpSmoother,
-    PolicyRuntime,
+    PolicySource,
     RerunCallback,
+    RobotRuntime,
 )
 
 from utils import build_robot, parse_camera_specs, prompt_torque_disable
@@ -145,15 +146,19 @@ def main() -> None:
         )
 
     # ── Run ──
-    runtime = PolicyRuntime(
-        robot=robot,
+    execution = AsyncExecution(request_threshold=args.request_threshold)
+    policy_source = PolicySource(
         model=model,
-        execution=AsyncExecution(request_threshold=args.request_threshold),
+        execution=execution,
         action_queue=ChunkedActionQueue(smoother=LerpSmoother(duration_frames=args.lerp_frames)),
+        task=args.task,
+    )
+    runtime = RobotRuntime(
+        robot=robot,
+        action_source=policy_source,
         cameras=cameras,
         fps=args.fps,
         callbacks=callbacks,
-        task=args.task,
     )
 
     with runtime:
@@ -163,8 +168,9 @@ def main() -> None:
             f = getattr(cam, "actual_fps", None)
             print(f"  {name}: {w}x{h} @ {f}fps" if w and h else f"  {name}: connected")
         print(f"Running at {args.fps} fps for {args.duration_s}s...")
-        stats = runtime.run(duration_s=args.duration_s)
-        print(f"\nDone — {stats.steps} steps, {stats.inference_count} inferences, {stats.total_holds} holds")
+        steps = runtime.run(duration_s=args.duration_s)
+        print(f"\nDone — {steps} steps, {execution.inference_count} inferences, "
+              f"{policy_source.action_queue.total_holds} holds")
         prompt_torque_disable(robot)
 
 

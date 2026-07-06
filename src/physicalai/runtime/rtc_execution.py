@@ -21,8 +21,6 @@ import numpy as np
 from physicalai.runtime.execution import Execution, WorkerDiedError
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from physicalai.inference.callbacks.rtc_latency import RTCLatencyTracker
     from physicalai.inference.model import InferenceModel
     from physicalai.inference.postprocessors.base import Postprocessor
@@ -246,8 +244,8 @@ class RTCExecution(Execution):
         self._chunk_size_discovered = self._chunk_size
         logger.info("RTCExecution warmup complete — chunk_size=%d", self._chunk_size_discovered)
 
-    def maybe_request(self, observe_fn: Callable[[], dict[str, np.ndarray]]) -> None:
-        """Publish latest observation for the background thread.
+    def maybe_request(self, observation: dict[str, np.ndarray]) -> None:
+        """Publish the given observation for the background thread.
 
         The background thread decides when to re-infer based on
         queue threshold. This just updates the observation slot.
@@ -264,7 +262,6 @@ class RTCExecution(Execution):
         if not self._rtc_queue.below_threshold(self.queue_threshold):
             return
 
-        observation = observe_fn()
         with self._obs_lock:
             self._obs_slot = {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in observation.items()}
 

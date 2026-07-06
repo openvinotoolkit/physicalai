@@ -1,17 +1,15 @@
 # Runtime API Reference
 
-## `PolicyRuntime`
+## `RobotRuntime`
 
-`PolicyRuntime` is the main orchestrator for running a policy on hardware.
+`RobotRuntime` is the main orchestrator for running a policy (or teleop, or any custom control logic) on hardware. It always takes an explicit, pluggable `action_source`.
 
 ```python
-PolicyRuntime(
+RobotRuntime(
     robot: Robot,
-    model: InferenceModel,
-    execution: Execution,
+    action_source: ActionSource,
     fps: float,
     cameras: Mapping[str, Camera] | None = None,
-    action_queue: ActionQueue | None = None,
     callbacks: Sequence[RuntimeCallback] = (),
 )
 ```
@@ -21,14 +19,50 @@ The most important methods are shown below.
 ```python
 runtime.connect() -> None
 runtime.disconnect() -> None
-runtime.run(duration_s: float | None = None) -> RunStats
+runtime.run(*, duration_s: float | None = None) -> int
 ```
 
-`PolicyRuntime` also supports context-manager usage so connections are cleaned up automatically.
+`RobotRuntime` also supports context-manager usage so connections are cleaned up automatically. `run()` returns the number of steps completed this run — there is no aggregate stats object. Other stats are read directly off the objects the caller already holds, e.g. `runtime.action_source.action_queue.total_pops` or `execution.inference_count`.
 
 ```python
-with PolicyRuntime(...) as runtime:
-    stats = runtime.run(duration_s=60)
+with RobotRuntime(...) as runtime:
+    steps = runtime.run(duration_s=60)
+```
+
+## `ActionSource`
+
+`ActionSource` is the protocol a developer implements to plug custom decision logic into `RobotRuntime`. Three required methods, nothing optional — no capability protocols, no `isinstance` checks anywhere in the runtime.
+
+```python
+class ActionSource(Protocol):
+    def connect(self, *, bus: _CallbackBus, session_id: str) -> None: ...
+    def update(self, robot_state: RobotObservation, camera_frames: Mapping[str, Frame], step: int) -> np.ndarray: ...
+    def disconnect(self) -> None: ...
+```
+
+`bus` is an internal callback bus injected fresh by `RobotRuntime` on every `run()`; action sources typically only forward it into an `Execution` strategy (see `PolicySource` below) rather than using it directly.
+
+The action-source implementations shipped today are listed below.
+
+| Class          | Purpose                                                                |
+| -------------- | ---------------------------------------------------------------------- |
+| `PolicySource` | runs a trained model through an `Execution` strategy + `ActionQueue`   |
+| `TeleopSource` | reads a leader arm and forwards its observation as the follower action |
+
+```python
+PolicySource(
+    model: InferenceModel,
+    execution: Execution,
+    action_queue: ActionQueue | None = None,
+    *,
+    task: str | None = None,
+)
+
+TeleopSource(
+    leader: Robot,
+    *,
+    to_action: Callable[[RobotObservation], np.ndarray] | None = None,
+)
 ```
 
 ## `Execution`

@@ -22,7 +22,7 @@ The same duration limit is available from the current Python API after you
 construct a runtime directly.
 
 ```python
-runtime = PolicyRuntime(...)
+runtime = RobotRuntime(...)
 
 with runtime:
     runtime.run(duration_s=60)

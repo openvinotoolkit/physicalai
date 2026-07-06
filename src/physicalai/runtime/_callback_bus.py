@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
     import numpy as np
 
-    from physicalai.runtime.events import InferenceEvent, LifecycleEvent, TickEvent
+    from physicalai.runtime.events import InferenceEvent, LifecycleEvent, MetricsEvent, TickEvent
 
 logger = logging.getLogger(__name__)
 
@@ -60,18 +60,25 @@ class _CallbackBus:
             except Exception:
                 logger.exception("Callback %r failed in on_lifecycle", cb)
 
-    def invoke_before_send_action(self, *, action: np.ndarray, step: int) -> np.ndarray:
+    def invoke_on_action_ready(self, *, action: np.ndarray, step: int) -> np.ndarray:
+        """Chain each callback's ``on_action_ready``, threading the return value.
+
+        Every callback must return a valid action (no ``None`` sentinel) — a
+        callback that doesn't want to change anything returns its input
+        unchanged.
+
+        Returns:
+            The action after every callback has had a chance to transform it.
+        """
         result = action
         for cb in self._callbacks:
-            fn = getattr(cb, "before_send_action", None)
+            fn = getattr(cb, "on_action_ready", None)
             if fn is None:
                 continue
             try:
-                modified = fn(action=result, step=step)
-                if modified is not None:
-                    result = modified
+                result = fn(action=result, step=step)
             except Exception:
-                logger.exception("Callback %r failed in before_send_action", cb)
+                logger.exception("Callback %r failed in on_action_ready", cb)
         return result
 
     def invoke_on_action_sent(self, *, action: np.ndarray, step: int) -> None:
@@ -84,15 +91,21 @@ class _CallbackBus:
             except Exception:
                 logger.exception("Callback %r failed in on_action_sent", cb)
 
-    def invoke_on_hold(self, *, step: int, holds: int) -> None:
+    def emit_metrics(self, event: MetricsEvent) -> None:
+        """Fire-and-forget dispatch to ``on_metrics``, exceptions isolated.
+
+        Called synchronously on the control thread (e.g. from within
+        ``PolicySource.update()``), so unlike ``emit_inference`` no queue is
+        needed here.
+        """
         for cb in self._callbacks:
-            fn = getattr(cb, "on_hold", None)
+            fn = getattr(cb, "on_metrics", None)
             if fn is None:
                 continue
             try:
-                fn(step=step, holds=holds)
+                fn(event)
             except Exception:
-                logger.exception("Callback %r failed in on_hold", cb)
+                logger.exception("Callback %r failed in on_metrics", cb)
 
     def close(self) -> None:
         for cb in self._callbacks:

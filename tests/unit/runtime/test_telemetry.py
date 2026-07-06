@@ -16,7 +16,7 @@ from physicalai.runtime._callback_bus import _CallbackBus
 from physicalai.runtime._telemetry import TelemetryEmitter, _decode_numpy, _encode_numpy
 from physicalai.runtime.callbacks import AsyncCallback, ConsoleCallback, JsonlCallback
 from physicalai.runtime.events import InferenceEvent, LifecycleEvent, TickEvent
-from tests.unit.runtime.conftest import FakeRobotObservation, make_fake_tick
+from tests.unit.runtime.conftest import FakeRobotObservation
 
 
 class TestNumpyEncoding:
@@ -64,7 +64,6 @@ class TestTelemetryEmitterNoOp:
             timestamp=0.0,
             joint_positions=None,
             action_sent=None,
-            queue_remaining=0,
             loop_duration_s=0.033,
             sleep_time_s=0.001,
         )
@@ -92,7 +91,6 @@ class TestTelemetryEmitterWithMock:
             timestamp=1.0,
             joint_positions=np.zeros(3),
             action_sent=np.ones(3),
-            queue_remaining=5,
             loop_duration_s=0.033,
             sleep_time_s=0.001,
         )
@@ -127,9 +125,9 @@ class TestCallbackBus:
             session_id="test",
             step=step,
             timestamp=0.0,
-            tick=make_fake_tick(FakeRobotObservation(joint_positions=np.zeros(3))),
+            robot_state=FakeRobotObservation(joint_positions=np.zeros(3)),
+            camera_frames={},
             action_sent=np.zeros(3),
-            queue_remaining=5,
             loop_duration_s=0.03,
             sleep_time_s=0.003,
             stale_obs=False,
@@ -175,26 +173,20 @@ class TestCallbackBus:
         bus.emit_tick(self._make_tick_event())
         cb.on_inference.assert_called_once_with(event)
 
-    def test_invoke_before_send_action_chains(self) -> None:
+    def test_invoke_on_action_ready_chains(self) -> None:
         cb1 = MagicMock()
-        cb1.before_send_action.return_value = np.ones(3)
+        cb1.on_action_ready.return_value = np.ones(3)
         cb2 = MagicMock()
-        cb2.before_send_action.return_value = None
+        cb2.on_action_ready.side_effect = lambda *, action, step: action  # noqa: ARG005
 
         bus = _CallbackBus([cb1, cb2])
         original = np.zeros(3)
-        result = bus.invoke_before_send_action(action=original, step=0)
+        result = bus.invoke_on_action_ready(action=original, step=0)
 
         np.testing.assert_array_equal(result, np.ones(3))
-        cb2.before_send_action.assert_called_once()
-        passed = cb2.before_send_action.call_args[1]["action"]
+        cb2.on_action_ready.assert_called_once()
+        passed = cb2.on_action_ready.call_args[1]["action"]
         np.testing.assert_array_equal(passed, np.ones(3))
-
-    def test_invoke_on_hold_dispatches(self) -> None:
-        cb = MagicMock()
-        bus = _CallbackBus([cb])
-        bus.invoke_on_hold(step=5, holds=3)
-        cb.on_hold.assert_called_once_with(step=5, holds=3)
 
     def test_callback_exception_isolated(self) -> None:
         bad_cb = MagicMock()
@@ -217,7 +209,6 @@ class TestCallbackBus:
         bus = _CallbackBus([MinimalCallback()])
         bus.emit_tick(self._make_tick_event())
         bus.emit_lifecycle(self._make_lifecycle_event())
-        bus.invoke_on_hold(step=0, holds=1)
 
 
 class TestConsoleCallback:
@@ -229,9 +220,9 @@ class TestConsoleCallback:
                     session_id="t",
                     step=i,
                     timestamp=0.0,
-                    tick=make_fake_tick(FakeRobotObservation(joint_positions=np.zeros(3))),
+                    robot_state=FakeRobotObservation(joint_positions=np.zeros(3)),
+                    camera_frames={},
                     action_sent=np.zeros(3),
-                    queue_remaining=5,
                     loop_duration_s=0.03,
                     sleep_time_s=0.003,
                     stale_obs=False,
@@ -252,13 +243,9 @@ class TestJsonlCallback:
                 session_id="s1",
                 step=0,
                 timestamp=1.0,
-                tick=make_fake_tick(
-                    FakeRobotObservation(
-                        joint_positions=np.array([0.1, 0.2]),
-                    )
-                ),
+                robot_state=FakeRobotObservation(joint_positions=np.array([0.1, 0.2])),
+                camera_frames={},
                 action_sent=np.array([0.3, 0.4]),
-                queue_remaining=5,
                 loop_duration_s=0.03,
                 sleep_time_s=0.003,
                 stale_obs=False,
