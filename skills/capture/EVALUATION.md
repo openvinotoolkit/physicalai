@@ -4,12 +4,12 @@ Use these prompts to test whether an agent correctly invokes and follows the cap
 
 Expected rubric per scenario:
 
-- **Activates the right skill** — `capture-adding-a-camera-backend`.
+- **Activates the right skill** — `physicalai-runtime-adding-a-camera-backend`.
 - **Uses real paths** — `src/physicalai/capture/...`, `tests/unit/capture/`.
 - **Follows workflow steps** with Done when criteria.
 - **Produces a checkable artifact** — test run or new module skeleton.
 
-## `capture-adding-a-camera-backend`
+## `physicalai-runtime-adding-a-camera-backend`
 
 ### Scenario 1: Scaffold a new USB camera variant
 

@@ -1,5 +1,5 @@
 ---
-name: runtime-adding-a-robot-integration
+name: physicalai-runtime-adding-a-robot-integration
 description: Adds or modifies robot hardware integrations under physicalai.robot. Use when implementing the Robot protocol, SO101 or Trossen WidowX drivers, robot connect helpers, verify.py checks, optional extras so101 or trossen, or tests in tests/unit/robot.
 license: Apache-2.0
 ---

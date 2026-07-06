@@ -4,12 +4,12 @@ Use these prompts to test runtime bucket skills from the repo root.
 
 Expected rubric per scenario:
 
-- **Activates the right skill** — matches `runtime-running-policy-on-robot` or `runtime-adding-a-robot-integration`.
+- **Activates the right skill** — matches `physicalai-runtime-running-policy-on-robot` or `physicalai-runtime-adding-a-robot-integration`.
 - **Uses real paths and commands** — `src/physicalai/runtime/`, `physicalai run`, `uv run pytest tests/unit/runtime/`.
 - **Follows workflow checklists**.
 - **Produces a checkable artifact**.
 
-## `runtime-running-policy-on-robot`
+## `physicalai-runtime-running-policy-on-robot`
 
 ### Scenario 1: YAML-driven run
 
@@ -38,7 +38,7 @@ Expected behavior:
 - Uses patterns from `tests/unit/runtime/test_runtime.py`.
 - Runs `uv run pytest tests/unit/runtime -k <test>`.
 
-## `runtime-adding-a-robot-integration`
+## `physicalai-runtime-adding-a-robot-integration`
 
 ### Scenario 4: New protocol-compliant robot stub
 

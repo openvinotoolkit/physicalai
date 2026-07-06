@@ -1,5 +1,5 @@
 ---
-name: runtime-running-policy-on-robot
+name: physicalai-runtime-running-policy-on-robot
 description: Runs exported policies on hardware with PolicyRuntime, execution modes, and physicalai run. Use when wiring PolicyRuntime, SyncExecution or RTC execution, runtime YAML configs, action queues, runtime callbacks, or docs/how-to/runtime run-policy-on-robot and execution modes.
 license: Apache-2.0
 ---

@@ -6,10 +6,10 @@ Run commands from the repo root unless noted otherwise (`uv sync`, `uv run pytes
 
 ## Skills
 
-| Skill                                      | Covers                                                                                                        |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
-| `inference-loading-exported-policies`      | `InferenceModel`, `Manifest`, Hub loads, ONNX/OpenVINO adapters, export/load contract (consumer side).        |
-| `inference-configuring-inference-pipeline` | Preprocessors, postprocessors, `ComponentRegistry`, `instantiate_component`, manifest `type` vs `class_path`. |
+| Skill                                               | Covers                                                                                                        |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `physicalai-runtime-loading-exported-policies`      | `InferenceModel`, `Manifest`, Hub loads, ONNX/OpenVINO adapters, export/load contract (consumer side).        |
+| `physicalai-runtime-configuring-inference-pipeline` | Preprocessors, postprocessors, `ComponentRegistry`, `instantiate_component`, manifest `type` vs `class_path`. |
 
 New inference skills must pass at least three scenarios in [`EVALUATION.md`](EVALUATION.md).
 

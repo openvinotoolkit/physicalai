@@ -9,7 +9,7 @@ Expected rubric per scenario:
 - **Follows the workflow checklist** — does not skip Required checks / validation loop steps.
 - **Produces a checkable artifact** — a command run, a file written, or a test result.
 
-## `inference-loading-exported-policies`
+## `physicalai-runtime-loading-exported-policies`
 
 ### Scenario 1: Load a local OpenVINO export
 
@@ -41,7 +41,7 @@ Expected behavior:
 - References `src/physicalai/inference/adapters/onnx.py` and `onnxruntime` dependency.
 - Does not invent unsupported backends.
 
-## `inference-configuring-inference-pipeline`
+## `physicalai-runtime-configuring-inference-pipeline`
 
 ### Scenario 4: Add StatsNormalizer to a manifest
 

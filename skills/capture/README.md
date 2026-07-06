@@ -6,9 +6,9 @@ Run commands from the repo root (`uv run pytest tests/unit/capture/...`).
 
 ## Skills
 
-| Skill                             | Covers                                                                                          |
-| --------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `capture-adding-a-camera-backend` | New camera types, `create_camera`, `Camera` base class, optional extras, unit tests with fakes. |
+| Skill                                        | Covers                                                                                          |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `physicalai-runtime-adding-a-camera-backend` | New camera types, `create_camera`, `Camera` base class, optional extras, unit tests with fakes. |
 
 New capture skills must pass at least three scenarios in [`EVALUATION.md`](EVALUATION.md).
 

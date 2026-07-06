@@ -1,5 +1,5 @@
 ---
-name: inference-configuring-inference-pipeline
+name: physicalai-runtime-configuring-inference-pipeline
 description: Configures preprocessors, postprocessors, and runners around InferenceModel via manifest specs and ComponentRegistry. Use when editing physicalai.inference.preprocessors or postprocessors, manifest preprocessor/postprocessor lists, instantiate_component, registered type names, or class_path init_args for inference pipeline components.
 license: Apache-2.0
 ---

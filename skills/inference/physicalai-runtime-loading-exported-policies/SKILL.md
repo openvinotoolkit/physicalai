@@ -1,5 +1,5 @@
 ---
-name: inference-loading-exported-policies
+name: physicalai-runtime-loading-exported-policies
 description: Loads and validates policies exported from Physical AI Studio for Runtime deployment. Use when working on InferenceModel, InferenceModel.from_pretrained, manifest.json, adapter auto-detection (onnx, openvino), backend/device kwargs, Hugging Face Hub policy packages, or the Runtime side of the export/load contract that Studio produces with physicalai export.
 license: Apache-2.0
 ---
@@ -44,7 +44,7 @@ Runtime loads Studio export directories (or Hub snapshots that mirror them) thro
    action = model.select_action(observation)
    ```
 
-   - Done when: one forward pass succeeds on representative observation keys/shapes. For hardware loops, hand off to `runtime-running-policy-on-robot`.
+   - Done when: one forward pass succeeds on representative observation keys/shapes. For hardware loops, hand off to `physicalai-runtime-running-policy-on-robot`.
 
 ## Validation loop
 

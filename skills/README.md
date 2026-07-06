@@ -57,7 +57,7 @@ These skills follow the open [Agent Skills](https://agentskills.io) format (orig
 
 - Lowercase, hyphenated, matches the directory name, regex `^[a-z0-9]+(-[a-z0-9]+)*$`.
 - Prefix with the bucket id: `inference-`, `capture-`, or `runtime-`.
-- Prefer gerund/verb phrasing (`inference-loading-exported-policies`, `capture-adding-a-camera-backend`).
+- Prefer gerund/verb phrasing (`physicalai-runtime-loading-exported-policies`, `physicalai-runtime-adding-a-camera-backend`).
 - Must not contain the reserved words `anthropic` or `claude`.
 
 ### `description` (highest-leverage field)

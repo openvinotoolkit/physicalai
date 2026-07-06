@@ -1,5 +1,5 @@
 ---
-name: capture-adding-a-camera-backend
+name: physicalai-runtime-adding-a-camera-backend
 description: Adds or modifies a camera backend under physicalai.capture. Use when implementing a new Camera type, extending create_camera in src/physicalai/capture/factory.py, discovery helpers, optional pip extras for vendor SDKs, SharedCamera transport, or tests under tests/unit/capture with fake devices.
 license: Apache-2.0
 ---
