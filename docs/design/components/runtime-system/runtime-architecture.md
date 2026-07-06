@@ -1,614 +1,789 @@
-# Runtime Architecture
+# Runtime Redesign
 
-Status: proposal (supersedes the external `robot_runtime_architecture.md` draft)
-Scope: one robot, one fixed-FPS loop, one active action source.
+## TL;DR
 
-This document describes the production single-rate robot runtime for
-`physicalai` **as it exists today** and the one architectural change needed to
-generalize it: making the action source pluggable so the same loop can run a
-policy, a teleoperator, a human-in-the-loop mix, or a scripted routine.
+- **One `RobotRuntime` class.** No `PolicyRuntime`. An action source is a
+  required constructor argument, not an optional subclass path —
+  `PolicySource` is just the implementation you pass for a policy rollout.
+- **`ActionSource` is 3 methods:** `connect()`, `update()`, `disconnect()`, all
+  returning `None` bar `update()`. No capability protocols, no `isinstance`
+  anywhere in the runtime. **No shutdown drain** — `disconnect()` tears down and
+  returns nothing; any queued actions are discarded and the robot holds its last
+  commanded position.
+- **No `Tick` class.** The runtime reads robot state + camera frames once per
+  tick and passes the same values to the action source and to telemetry —
+  eager, not lazy.
+- **No copy needed for camera frames** at the runtime's read step — verified
+  against real hardware, not just reasoned about (see
+  [Empirical Validation](#empirical-validation-zero-copy-camera-safety)). The
+  only copies that exist are local to `AsyncCallback` and
+  `Async`/`RTCExecution`, unchanged.
+- **No "hold" concept.** `update()` always returns a sendable action; what to
+  do when there's nothing new (repeat last, safe pose, whatever) is the action
+  source's own decision, made internally.
+- **No stats mechanism in the runtime.** `run()` returns just `steps: int`.
+  Anything else (inference counts, error totals) is read directly off objects
+  you already built, or via a tiny opt-in callback.
+- **One config schema.** `action_source:` is always explicit — no flat/legacy
+  shorthand. Existing example configs need a small migration.
+- **Callback hooks:** `on_action_ready` (can transform the action) and
+  `on_action_sent` (notification only), plus the existing
+  `on_tick`/`on_inference`/`on_lifecycle`. `before_send_action` and `on_hold`
+  are gone.
 
-It is written against the current code in `src/physicalai/runtime/`, not an
-aspirational rewrite. Where the earlier external draft
-(`robot_runtime_architecture.md`) disagrees with the shipped implementation,
-this document follows the code.
+See the [Decision Summary](#decision-summary) at the end for the compact
+reference-card version of all of this. Read on for the reasoning behind each
+call.
 
-## The Design Question
+## Why a rebuild, not a patch
 
-> Today the control loop is `PolicyRuntime`. It hard-wires policy inference into
-> the loop. How do we run _any_ action source — policy, teleop, HIL, scripted —
-> without forking the loop?
+The original version of this document proposed simplifying the shipped
+`Controller`/`Tick`/4-capability-protocol design in place. Reviewing that
+proposal against the actual codebase surfaced concrete, verifiable problems,
+not just style preferences:
 
-Answer:
+- Turning `PolicyRuntime` into a bare factory function (as proposed) breaks
+  `cli/run.py`'s jsonargparse wiring, which requires a class exposing `run()`
+  — the sibling doc had already reasoned through and rejected this exact move.
+- The proposed slimmed `TickEvent` drops `queue_remaining`, which 3 of 4
+  shipped callbacks read — contradicting the same document's claim that
+  callbacks stay "unchanged."
+- The proposed slimmed `RunStats` drops fields `cli/run.py`'s own summary log
+  reads directly.
+- The proposed `PolicyController.stop()` needs to send queued actions to the
+  robot but is never given a robot reference.
+- Moving bus/session-id injection to construction time loses the fresh
+  `session_id` the runtime generates every `run()` call, breaking multi-session
+  telemetry.
+- The "what gets deleted" savings estimate was measured against a stale
+  (pre-implementation) mental model — the actual `PolicyRuntime` class today
+  is 44 lines, not the ~110 the estimate assumed.
 
-```text
-RobotRuntime      owns the robot loop and lifecycle (the loop we already have)
-Controller        chooses the next action        (the missing abstraction)
-PolicyController  adapts inference into a Controller
-PolicyRuntime     stays as a policy-only RobotRuntime subclass (backward-compatible entry point)
-```
+Rather than patch around each of these individually, the design was rebuilt
+from first principles: why does a runtime need to exist at all, why does it
+need to be generic rather than policy-only, and what should it actually own.
+That process (and a real-hardware investigation into a specific safety
+question it raised — see [Empirical validation](#empirical-validation-zero-copy-camera-safety))
+produced the design below.
 
-The loop, the resilient IO, the callback/event system, and the config/CLI
-surface already exist and stay. The only new concept is `Controller`, which
-lifts "how the next action is chosen" out of the loop body.
+## First-Principles Requirements
 
-## What Exists Today
+### Why a runtime at all
 
-`PolicyRuntime` (`src/physicalai/runtime/runtime.py`) is the top-level loop. Its
-constructor takes the robot, the model, the execution strategy, the action
-queue, cameras, callbacks, and a task string directly:
+- Avoid rewriting the control loop for every new use case.
+- Config-driven execution — decouples _what to run_ (a config file) from
+  _how the loop works_ (code), so a run can be launched without writing Python.
+- IO resilience is safety-critical and easy to get subtly wrong per call site
+  (retry-with-backoff on transient errors, stale-observation fallback,
+  consecutive-error circuit breaker) — centralizing it means it's implemented
+  and tested once, not reinvented per script.
+- Timing correctness (drift-free fixed-rate loop) is easy to get wrong with a
+  naive `sleep(1/fps)`, and matters for recorded-data quality.
+- One audit trail — every run emits the same event stream regardless of who's
+  driving the arm, so one console view / recorder / visualizer works for every
+  use case instead of one-off print statements per script.
+- Lowers the floor for non-experts — "run this policy" becomes a config file,
+  not a systems-programming exercise.
+- Non-goal: one-off diagnostic scripts (e.g. `examples/so101/move_joints.py`)
+  don't need any of this. The line is: anything that runs repeatedly, is
+  timed, is recorded, or is safety-relevant needs the runtime; a hardware
+  smoke test doesn't.
 
-```python
-PolicyRuntime(
-    robot, model, execution, fps,
-    cameras=..., action_queue=..., callbacks=..., task=...,
-)
-```
+### Why a generic (pluggable action source) runtime, not policy-only
 
-The loop body is, in essence:
+- **Teleop is data collection, not a side feature.** If policy rollout is the
+  "real" loop and teleop is a separate hand-rolled script, the timing/capture
+  semantics used to _collect_ demonstrations and the ones used to _replay_ a
+  trained policy are two different code paths — any skew between them
+  (exactly when the observation is captured relative to the action) is a
+  train/deploy mismatch waiting to happen.
+- **HIL and DAgger need to switch or mix action sources.** That has to be a
+  seam from day one, or they become a second loop implementation instead of a
+  plugin.
+- **A future safety/supervisory layer wants one place to intercept the
+  action, regardless of who's driving** — including a human in teleop.
+- **Review surface** — a new action source should be one small, reviewable
+  class, not a fork of the loop.
+- Caveat, held throughout this redesign: "generic" means **exactly one right
+  seam** (the action source), not maximal configurability everywhere. The
+  original implementation's mistake wasn't that pluggability was wrong — it
+  was 4 speculative capability protocols nobody but one consumer used. Do not
+  re-derive that mistake.
 
-```python
-robot_obs, camera_frames = self._resilient_observe()
-self._execution.maybe_request(self._build_model_input_from(robot_obs, camera_frames))
-action = self._action_queue.pop()
-if action is None:
-    action = last_action            # hold last
-    self._handle_hold(step=step)
-action = self._bus.invoke_before_send_action(action=action, step=step)
-self._resilient_send(action)
-self._bus.invoke_on_action_sent(action=action, step=step)
-```
+### What the runtime owns vs. delegates
 
-The policy is not a component the loop calls — it _is_ the loop. `maybe_request`,
-`pop`, the hold/fallback, and `_build_model_input_from` (the `STATE` / `IMAGES` /
-`TASK` model-input formatting) are all inlined into `PolicyRuntime`.
+Two genuinely distinct seams — kept structurally separate throughout:
 
-Everything else that the runtime owns is already generic and worth keeping:
+- **Callbacks** react to what already happened (telemetry) or transform the
+  chosen action. They cannot originate an action or veto sending one.
+- **Action source** decides what the action _is_, this tick.
 
-| Concern                                         | Where it lives now                       | Keep? |
-| ----------------------------------------------- | ---------------------------------------- | ----- |
-| Fixed-FPS timing, sleep-to-tick                 | `PolicyRuntime.run()`                    | yes   |
-| Resilient observe (retry + stale fallback)      | `_resilient_observe`, `_retry_robot_obs` | yes   |
-| Resilient send (retry + consecutive-error stop) | `_resilient_send`                        | yes   |
-| Warmup with retry                               | `_warmup_with_retry`                     | yes   |
-| Safe shutdown + queue drain                     | `_shutdown`                              | yes   |
-| Connect/disconnect, context manager             | `connect`/`disconnect`/`__enter__`       | yes   |
-| Callback + event bus                            | `_CallbackBus`, `events.py`              | yes   |
-| Config / CLI / `from_config`                    | `cli/run.py`, jsonargparse               | yes   |
+The runtime owns: fixed-rate timing, resilient IO (read robot/cameras, send
+action, retry/fallback/circuit-breaker), the connect/disconnect resource
+lifecycle (with rollback on partial failure), the telemetry emission point,
+and the fail-stop safety net — deciding _when to give up_ is uniform across
+every action source and is not each action source's discretion.
 
-### Inference stack (already generic, already shipped)
+The runtime delegates entirely: what the action is, and what to do when there
+is no new action to produce (see [ActionSource](#actionsource)).
 
-The policy side is already factored into replaceable strategies. These do **not**
-need to change; they become owned by `PolicyController` instead of the runtime.
+## Problem Statement (original diagnosis — still valid)
 
-- `Execution` ABC (`execution.py`): `set_bus`, `start(model, queue)`,
-  `maybe_request(observation)`, `warmup(sample)`, `stop`, `chunk_size`.
-  Implementations: `SyncExecution`, `AsyncExecution`, `RTCExecution`. Phase 1
-  changes `maybe_request` to take a **provider** (`maybe_request(observe_fn)`) so
-  it pulls the observation only on ticks it actually requests inference — see
-  [Observation is a pull](#observation-is-a-pull). Internal signature change
-  across the three implementations; `chunk_size` stays internal to the policy
-  (the loop never reads it).
-- `ActionQueue` protocol: `pop`, `push_chunk`, `remaining`, `below_threshold`,
-  `reset`, plus hold/pop counters. Implementations: `ChunkedActionQueue`,
-  `RTCActionQueue`.
-- Chunk smoothing: `LerpSmoother`, `ReplaceSmoother`.
+The pre-redesign implementation had ~25 named types in the runtime package. A
+developer had to learn the `Controller` protocol, 4 capability protocols
+(`SupportsBus`, `SupportsStats`, `SupportsDrain`, `SupportsHoldInfo`), the
+`Tick` class with its memoization contract, the `PolicyRuntime` subclass, and
+the runtime's `isinstance` dispatch logic before writing or modifying
+anything. Specific issues that motivated the rebuild:
 
-Note: the external draft calls this `InferenceExecution` and treats RTC as a
-future "merger". In this codebase it is `Execution`, and `RTCExecution` +
-`RTCActionQueue` already ship. No rename is proposed — churn without benefit.
+1. **Capability-protocol proliferation.** `PolicyController` implements all 4
+   optional protocols; `TeleopController` implements essentially none. The
+   protocols describe exactly one consumer — they are premature abstractions.
+2. **`isinstance` dispatch in the loop.** The runtime checks capability
+   protocols to decide how to interact with the controller — tight coupling
+   expressed through fragmented interfaces rather than a direct call.
+3. **Dual entry points.** `PolicyRuntime` (subclass) and `RobotRuntime` +
+   `PolicyController` do the same thing via different paths, confusing newcomers.
 
-### Callbacks (already richer than the external draft)
+## Design Principles
 
-The shipped callback system is an event bus, not the flat `on_observation` /
-`on_user_event` interface in the external draft. Keep it. Two dispatch modes:
-
-- Fire-and-forget events: `on_tick(TickEvent)`, `on_inference(InferenceEvent)`,
-  `on_lifecycle(LifecycleEvent)` — telemetry, exceptions isolated.
-- Request/response hooks: `before_send_action(action, step) -> action | None`,
-  `on_action_sent(action, step)`, `on_hold(step, holds)` — action-path hooks,
-  chained return values.
-
-Shipped callbacks: `ConsoleCallback`, `JsonlCallback`, `AsyncCallback`,
-`RerunCallback`. `LowPassFilterCallback` is an in-loop smoothing hook.
-
-These are for side effects and instrumentation. They are **not** where action
-arbitration belongs — that is the `Controller`'s job.
+- One way to do things, not two — there is exactly one runtime class and one
+  required action-source protocol, no shortcut class and no dual config schema.
+- The runtime loop body is readable top-to-bottom with no `isinstance` calls.
+- `ActionSource`: the minimum a developer must implement to plug in a new
+  action source — 3 required methods, nothing optional.
+- Internals (queue state, hold/repeat tracking, per-source stats) are the
+  action source's private concern — the runtime does not introspect them.
+- Config/CLI compatibility with the pre-redesign flat schema is **not**
+  preserved — see [Config](#config-one-schema-no-shorthand) for why that's a
+  deliberate, accepted trade rather than an oversight.
 
 ## Target Architecture
 
-One change: introduce `Controller`, move the policy specifics behind it, and
-turn the loop into `RobotRuntime`. `PolicyRuntime` is preserved as a
-`RobotRuntime` subclass.
-
-```python
-RobotRuntime.run() tick:
-  tick = Tick(robot, cameras, clock, frame_index)  # no device reads yet
-  action = controller.update(tick)                 # pulls only what it needs
-  action = callbacks.before_send_action(action)    # existing hook
-  robot.send_action(action)                         # existing resilient send
-  callbacks.on_action_sent(action)
-  emit_tick(tick, action)                           # builds TickEvent(tick=...); recording pulls here
-  sleep_until_next_tick()
-```
-
-Device reads are a **pull, not a push**, and they are **granular**:
-`tick.robot_state()` and `tick.camera_frames()` each read at most once per tick,
-independently, and only if a consumer asks. A teleop controller pulls neither; a
-proprioceptive controller pulls only `robot_state()`; a vision policy pulls both.
-See [Observation is a pull](#observation-is-a-pull) for why.
-
-Ownership:
+### Overview
 
 ```text
-RobotRuntime  decides when the loop runs, does robot IO, timing, resilience, events
-Controller    decides what action to take
-Robot         decides how hardware IO happens
+RobotRuntime     the fixed-rate loop: read → decide → send → sleep → emit. One class.
+ActionSource     decides the action, every tick. Required, not optional.
+PolicySource     adapts model + execution + queue into ActionSource
+TeleopSource     reads a leader device into ActionSource
+Callbacks        side-effects and action transforms — a distinct seam from ActionSource
 ```
 
-### Controller
-
-The new abstraction. Small on purpose.
+### ActionSource
 
 ```python
-class Tick:                                              # concrete; RobotRuntime is the only producer
-    frame_index: int                                     # bookkeeping, no IO
-    timestamp: float                                     # loop tick time, no IO
-    def robot_state(self) -> RobotObservation: ...       # lazy + cached: one follower read
-    def camera_frames(self) -> Mapping[str, Frame]: ...  # lazy + cached: camera reads
-    def observation(self) -> Observation: ...            # convenience: composes both
-
-
-class Controller(Protocol):
-    def set_bus(self, bus, session_id) -> None: ...      # optional; runtime injects if present
-    def start(self) -> None: ...
-    def warmup(self, tick: Tick) -> None: ...            # optional; no-op default
-    def update(self, tick: Tick) -> np.ndarray | None: ...
-    def stop(self) -> None: ...
-    def reset(self) -> None: ...
+class ActionSource(Protocol):
+    def connect(self, *, bus: _CallbackBus, session_id: str) -> None: ...
+    def update(self, robot_state: RobotObservation,
+               camera_frames: Mapping[str, Frame], step: int) -> np.ndarray: ...
+    def disconnect(self) -> None: ...
 ```
 
-`Tick` is a **concrete class**, not a Protocol: `RobotRuntime` is its only
-producer, controllers and callbacks only consume it, and it carries real
-memoized-read behavior that has to live in an implementation anyway. It mirrors
-the existing runtime-produced per-tick objects `TickEvent` / `InferenceEvent` /
-`LifecycleEvent`, which are concrete dataclasses too. It exposes cheap
-bookkeeping (`frame_index`, `timestamp` — no IO) and **granular, independently
-lazy** device reads. `frame_index`/`timestamp` are the loop's tick identity and
-scheduling time; they are deliberately _not_ the capture timestamps —
-`RobotObservation.timestamp` (when joints were read) and `Frame.timestamp`
-(capture time) carry those, and come from the reads themselves. Each of
-`robot_state()` / `camera_frames()` memoizes independently and carries its own
-resilient-observe (retry + stale) logic. `observation()` is just the convenience
-composition a vision policy uses to build model input.
+Three required methods. No capability protocols, no `isinstance` anywhere in
+the runtime. `Protocol`, not ABC — matches the existing `Robot` protocol
+precedent (`src/physicalai/robot/interface.py`); jsonargparse doesn't care
+either way, it instantiates the concrete class named in `class_path`, never the
+shared protocol type.
 
-- `set_bus(bus, session_id)` — optional, and only `PolicyController` implements
-  it (it forwards to its `Execution`, which needs the bus + `session_id` to emit
-  `InferenceEvent`s). The runtime calls it duck-typed before `start()`, exactly
-  as it injects `Execution.set_bus` today. Teleop and scripted controllers omit
-  it.
-- `start()` — bind resources and spawn any workers. Argument-free.
-- `warmup(tick)` — optional. The runtime reads a first tick with retry
-  (`_warmup_with_retry`) and hands it to the controller so a policy can pull
-  `tick.observation()`, seed its queue, and discover `chunk_size`. Teleop and
-  scripted controllers no-op.
-- `update(tick) -> np.ndarray | None` — the per-tick action choice. The
-  controller **pulls** only the reads it needs: a vision policy pulls
-  `observation()`; a teleop controller pulls nothing and reads its leader device
-  instead. Returning `None` means "no action this tick"; the runtime holds the
-  last sent action (the generic safety net that exists today). A policy normally
-  returns a fallback (hold-last-policy-action) itself rather than `None`.
-- `stop()` / `reset()` — lifecycle, mapping to `Execution.stop()` + `model.close()`
-  and queue reset respectively.
+- **`connect(bus, session_id)`** — resource setup (spawn threads, connect a
+  leader device). Folds into the _same_ connect/disconnect lifecycle stage the
+  runtime already runs for robot + cameras (one stage, one
+  rollback-on-failure path — not a separate stage). `bus`/`session_id` are
+  handed here because `connect()` is called fresh every `run()`, which is
+  exactly when the runtime generates a new `session_id` — construction-time
+  injection would miss that.
+- **`update(robot_state, camera_frames, step) -> np.ndarray`** — the per-tick decision.
+  **Always returns a sendable action — no `None` sentinel.** What to do when
+  there's nothing new to decide (repeat the last action, go to a safe pose,
+  whatever) is entirely the action source's own call, made internally. If it
+  truly cannot produce anything (e.g. warmup never succeeded), it raises —
+  handled by the existing fail-stop semantics for `update()` errors. No
+  runtime-level "hold" concept exists at all.
+- **No dedicated warmup step.** The runtime calls `update()` on tick 0 like any
+  other tick. An action source that needs to seed internal state before its
+  first real decision (e.g. `PolicySource` discovering `chunk_size`)
+  special-cases its own first `update()` call internally (a private
+  not-yet-seeded flag). Accepted consequence: tick 0 may take longer — visible
+  as a `loop_duration_s` spike on `TickEvent`, not hidden in a pre-loop phase.
+  Today's dedicated 5-attempt/1s-backoff warmup retry is not reproduced by the
+  runtime; an action source that wants that resilience implements it itself.
+- **`disconnect() -> None`** — teardown only (stop threads, release a leader
+  device). **No drain:** queued-but-unsent actions are discarded, not flushed.
+  On shutdown the robot simply stops receiving new actions and holds its last
+  commanded position — safer than replaying a stale queue after the operator
+  hit stop, and it removes the whole `SupportsDrain`/runtime-flush/pacing path.
+  The action source never receives a robot reference.
 
-Design decisions that diverge from the external draft, and why:
+### Reads: robot state + camera frames (no `Observation` type)
 
-1. `update(tick)` receives a **tick handle with granular, lazy reads**, not an
-   already-read observation. The action does not always depend on the follower
-   observation — for teleop the action source is the leader arm, and the follower
-   state + camera frames are needed only for recording. Even a policy may want
-   state without images. Pushing an eager, bundled observation into every
-   `update()` would add camera-read latency and jitter to the teleop action path
-   and waste IO on ticks nobody consumes (including async-policy ticks that skip
-   inference). See [Observation is a pull](#observation-is-a-pull).
-2. Bus injection reuses the existing `set_bus(bus, session_id)` pattern rather
-   than inventing a new `RuntimeContext` type. Only `PolicyController` needs it,
-   the runtime already injects it into `Execution` this exact way today, and
-   keeping it optional imposes nothing on non-policy controllers.
-3. `warmup(tick)` is a first-class step, not folded into the first `update()`.
-   This preserves the current retry-with-backoff warmup semantics (the runtime
-   re-reads the robot and retries) rather than warming up lazily on a
-   possibly-stale first observation.
-4. `update()` may return `None` to mean "no action this tick" (e.g. the policy
-   queue is starved); the runtime holds the last sent action, matching today's
-   queue-empty behavior. This is distinct from `update()` **raising**: in
-   Phase 1 an exception keeps today's **fail-stop** semantics (the run stops).
-   Silently holding-and-continuing past a controller fault can be unsafe — a
-   teleop leader-read fault would freeze the follower while the operator believes
-   it is live — so hold-and-continue on error is an opt-in controller capability
-   added with `TeleopController` in Phase 2, not a Phase-1 runtime default.
+The runtime reads robot state and camera frames **once per tick** and passes
+them as **two plain values**, not a wrapper:
 
-### PolicyController
+- `robot_state: RobotObservation` — the robot's own reading, reused as-is.
+- `camera_frames: Mapping[str, Frame]` — the standalone `cameras=` sources.
 
-Adapts the existing inference stack into a `Controller`. It owns what the loop
-currently inlines:
+No new `Observation` type. `TickEvent` already carries these as two separate
+fields, so a wrapper would only be a transient carrier into `update()` — and
+the codebase already has two distinct "observation" senses (`RobotObservation`;
+the inference model-input dict), so a third would only add confusion.
+`RobotObservation` stays the robot's product; standalone cameras stay a
+separate arg because they are read outside the robot and
+`RobotObservation.images` is contractually built-in cameras only. If a third
+sensor kind ever appears, `update()`/`TickEvent` grow a param — a non-breaking
+retrofit, and YAGNI today.
 
-```python
-class PolicyController:
-    def __init__(self, model, execution, action_queue=None, task=None, fallback=None): ...
+Eager, plain values — no `Tick`, no lazy pull, no memoization contract.
+Ordinary Python object-reference passing, not a special mechanism.
 
-    def set_bus(self, bus, session_id):
-        self._execution.set_bus(bus, session_id)     # forward to Execution (unchanged wiring)
+**Hard invariant, and the reason no copy is needed:** exactly one
+`read_latest()`/`get_observation()` call per device, per tick — nothing may
+re-read a device until the next tick. Enforced structurally, not by a runtime
+check: `ActionSource` and `RuntimeCallback` never receive `Camera`/`Robot`
+object references, only already-read `Frame`/`RobotObservation` values — so
+nothing downstream even has a handle to call `read_latest()` again.
 
-    def start(self):
-        self._execution.start(self._model, self._action_queue)
-
-    def warmup(self, tick):
-        # Always needs the observation; the runtime hands a FRESH tick per retry.
-        self._execution.warmup(self._to_model_input(tick.observation()))   # was _build_model_input_from
-
-    def update(self, tick):
-        # Pull-based: Execution invokes the provider only when it will request
-        # inference this tick, so a full queue (async idle tick) reads nothing.
-        self._execution.maybe_request(lambda: self._to_model_input(tick.observation()))
-        action = self._action_queue.pop()
-        if action is None:
-            return self._fallback(tick)            # hold-last / configured fallback
-        self._last = action
-        return action
-
-    def stop(self):
-        self._execution.stop()
-        self._model.close()
-
-    def reset(self):
-        self._action_queue.reset()
-```
-
-`_to_model_input` is today's `_build_model_input_from`: it assembles the
-`STATE` / `IMAGES.<name>` / `TASK` mapping with batch dims. Both halves of
-today's input path move here — `_build_model_input` (the wrapper that does the
-device reads) becomes the `tick.observation()` pull, and `_build_model_input_from`
-becomes `_to_model_input`. This is a **policy concern** and belongs here, not in
-the loop. A `TeleopController` never sees `model_input` and never calls
-`robot_state()` / `camera_frames()`; it reads its leader device.
-
-### Observation is a pull
-
-The earlier draft of this loop read the observation eagerly, before every
-`controller.update`, and read robot state + cameras together. That is wrong once
-the action source is not a vision policy.
-
-Consider teleop: the action comes from a **leader** arm. The follower's state and
-the camera frames are **not inputs to the action** — they are needed only for
-recording the demonstration. Forcing an eager, bundled `observe()` before
-`update()` therefore:
-
-- adds follower-state + camera-read latency and jitter to the teleop action path
-  (you want leader-read → follower-write to be tight);
-- wastes IO whenever nothing consumes the reads;
-- conflates the _action source_ (leader, owned by the controller) with the
-  _logging observation_ (follower + cameras, owned by the runtime);
-- couples two independent reads: a proprioceptive controller wanting only cheap
-  joint state is forced to pay for the expensive camera reads too.
-
-It is not teleop-specific. An async/chunked policy skips inference on most ticks
-(the queue is full). To actually save those reads, `PolicyController.update`
-hands `Execution.maybe_request` a **provider** rather than a materialized
-observation, so `tick.observation()` fires only on ticks that request inference.
-Without that — passing an already-read observation, as the shipped
-`maybe_request(observation)` takes today — a vision policy would read _every_
-tick regardless, and the async-idle row below would not hold. Making the read
-savings real for the flagship policy path is precisely why `maybe_request`
-becomes pull-based.
-
-The provider only skips the pull if the `Execution` invokes it **conditionally**.
-`SyncExecution` and `AsyncExecution` already gate on `below_threshold` (and, for
-async, `not busy`) _before_ touching the observation, so wrapping the argument in
-a provider is enough — they call it only on request ticks. `RTCExecution` is
-structured differently: its main-thread `maybe_request` **unconditionally**
-publishes the observation into `_obs_slot` every tick, and the _background_ thread
-owns the `below_threshold` decision. A mechanical signature swap there would call
-the provider — and read the device — on **every** tick, so the async-idle row
-would not hold for RTC. RTC's `maybe_request` therefore needs an added main-thread
-`below_threshold` pre-check (its `RTCActionQueue.below_threshold` is lock-safe to
-call from the loop thread) so it invokes the provider only when a refill is
-imminent. The one behavioral consequence: the background thread then inpaints from
-the snapshot captured at the last sub-threshold tick rather than the absolute
-latest tick — the same staleness `AsyncExecution` already accepts, and harmless in
-practice.
-
-So device reads are a **granular pull**: `tick.robot_state()` and
-`tick.camera_frames()` each read **at most once per tick, independently, and only
-if asked**. Each carries the existing resilient-observe logic (retry + stale
-fallback) for its device. `tick.observation()` is a convenience that composes
-both for a vision policy. Who pulls what:
-
-| Scenario                                     | robot_state reads | camera reads  |
-| -------------------------------------------- | ----------------- | ------------- |
-| teleop, no recording                         | 0                 | 0             |
-| teleop + recording                           | 1 (recording)     | 1 (recording) |
-| proprioceptive controller                    | 1                 | 0             |
-| async vision policy, idle tick, no recording | 0                 | 0             |
-| vision policy request tick, or recording     | 1 (shared)        | 1 (shared)    |
-
-Two invariants make the shared/zero rows real:
-
-- **Exactly one `Tick` per loop iteration**, threaded through both
-  `controller.update(tick)` and `emit_tick` (referenced by `TickEvent`). Memoized
-  reads are shared only if it is the _same_ `Tick` instance; two instances mean a
-  policy and a recording callback double-read.
-- **Recording relocates the reads, it does not remove them.** `emit_tick` runs
-  after the send/sleep boundary, so a recording callback pulling
-  `tick.robot_state()` / `tick.camera_frames()` there does the device IO later in
-  the tick and on the callback's turn, not at the top. Every recorded tick still
-  reads robot + cameras once; only the timing moves. For **training data** this is
-  why recording captures at a **pre-send** point (below), so the observation is
-  time-aligned with the action; an `on_tick` (post-send) pull would record the
-  follower _after_ it started moving.
-
-Two levels, kept distinct:
-
-- At the robot boundary: the typed `RobotObservation` (joint positions,
-  timestamp, images, `.state`) plus camera `Frame`s. Unchanged. These carry the
-  authoritative **capture** timestamps.
-- Exposed via `tick`: cheap bookkeeping (`frame_index`, loop `timestamp` — no IO)
-  plus the granular `robot_state()` / `camera_frames()` reads and the
-  `observation()` composition. The policy converts to model-input internally;
-  teleop ignores the reads; recording logs whatever the dataset needs.
-
-The runtime no longer builds `model_input`, and no longer reads any device
-unconditionally. Formatting moves into `PolicyController`; each read is deferred
-to whoever needs it.
+Given that invariant, **no copy is needed at the runtime's read step.**
+Synchronous consumers (the action source, any non-deferred callback) finish
+using those values before the next tick's read can invalidate anything. The
+two places that _do_ need a copy — because they hand a value to a different
+thread for later processing — already have one, unaffected by this redesign:
+`AsyncCallback` (copies non-owned frame buffers before enqueueing to its
+background worker) and `AsyncExecution`/`RTCExecution` (copy observation
+arrays before publishing to their background inference thread). See
+[Empirical Validation](#empirical-validation-zero-copy-camera-safety) for how
+this was confirmed against real hardware, not just reasoned about.
 
 ### RobotRuntime
 
-The current `PolicyRuntime` loop with the policy specifics extracted:
-
 ```python
 class RobotRuntime:
-    def __init__(self, robot, controller, fps,
-                 cameras=None, callbacks=()): ...
+    def __init__(
+        self,
+        robot: Robot,
+        action_source: ActionSource,      # required — no optional/default
+        fps: float,
+        cameras: Mapping[str, Camera] | None = None,
+        callbacks: Sequence[RuntimeCallback] = (),
+    ) -> None: ...
 
-    def run(self, *, duration_s=None) -> RunStats: ...
-    def connect(self) / disconnect(self) / __enter__ / __exit__
+    def connect(self) -> None: ...
+    def disconnect(self) -> None: ...
+    def __enter__ / __exit__: ...
+
+    def run(self, *, duration_s: float | None = None) -> int: ...   # returns steps
+
     @classmethod
-    def from_config(cls, config) -> "RobotRuntime"
+    def from_config(cls, config: str | Path) -> Self: ...
+
+    @property
+    def action_source(self) -> ActionSource: ...   # public — see Observability
 ```
 
-It keeps `_resilient_send`, `_shutdown`, the event bus, and the timing loop
-verbatim. `_resilient_observe` splits **behind** `tick.robot_state()` and
-`tick.camera_frames()` so each runs lazily and is cached per tick.
-`_warmup_with_retry` now hands a `Tick` to `controller.warmup`. The main body
-change is replacing the inlined eager `observe` + `maybe_request` + `pop` +
-`_handle_hold` with a `Tick` plus `controller.update(tick)`.
-
-Two consequences of moving the queue into the controller:
-
-- **Shutdown drain moves into `controller.stop()`.** Today `_shutdown` drains
-  `self._action_queue` directly; once the queue lives in `PolicyController`, the
-  drain is the controller's responsibility (a teleop controller has nothing to
-  drain). `RobotRuntime._shutdown` calls `controller.stop()` and no longer
-  touches a queue.
-- **`TickEvent` must carry the `Tick`, not eager reads.** Today `TickEvent`
-  eagerly holds `robot_observation` and `camera_frames`; emitting it would force
-  exactly the reads the lazy `Tick` defers. `emit_tick` therefore builds a
-  `TickEvent` that references the `Tick` (and the sent action), so a recording
-  callback pulls `tick.robot_state()` / `tick.camera_frames()` itself. This is a
-  breaking change to `TickEvent`'s shape (blast radius: `JsonlCallback`,
-  `RerunCallback`, `AsyncCallback` read those fields today) — see
-  [Phasing](#phasing).
-- **`RunStats` becomes controller-optional.** Today `run()` reads
-  `inference_count` off `self._execution` and `total_pops` / `total_holds` off
-  `self._action_queue`. Once those live in `PolicyController`, `RobotRuntime`
-  owns only loop-level stats (`steps`, `transient_errors`, `stale_obs_ticks`);
-  the controller contributes its own via an optional `stats()` the runtime
-  merges. A non-policy controller contributes none.
-- **Start-of-run reset splits.** `_reset_session` today resets the session id,
-  error/stale counters, _and_ the queue. Keep session/error reset in the
-  runtime; the queue reset moves to `controller.reset()`, which the runtime calls
-  at the top of `run()`.
-- **Fresh `Tick` per warmup retry.** `_warmup_with_retry` re-reads the robot on
-  every attempt today. Because a `Tick` memoizes its reads, the runtime must
-  build a **new** `Tick` per warmup attempt — re-handing one would reuse a stale
-  read and lose the current re-read-on-failure resilience.
-- **`consecutive_error_ticks` is read/attempt-driven, not tick-driven.** The
-  counter is shared by observe and send (a send success resets the observe side).
-  Once observe sits behind `tick.robot_state()`, a tick that never pulls it must
-  neither advance nor reset the observe counter — drive it from actual read
-  attempts, not from tick count.
-
-### PolicyRuntime (backward compatibility)
-
-`PolicyRuntime` is public API: the CLI does `add_class_arguments(PolicyRuntime)`,
-`from_config` is documented, and `examples/runtime/runtime.yaml` targets it. It
-is **not** renamed, and it stays a **class** (not a bare factory function) —
-`cli/run.py` and `from_config` call `add_class_arguments` +
-`add_method_arguments(..., "run", ...)`, which require a class exposing `run()`.
-It subclasses `RobotRuntime` and builds the `PolicyController` in its
-constructor, preserving today's signature:
+The loop body:
 
 ```python
-class PolicyRuntime(RobotRuntime):
-    def __init__(self, *, robot, model, execution, fps,
-                 cameras=None, action_queue=None, callbacks=(), task=None):
-        super().__init__(
-            robot=robot,
-            controller=PolicyController(model, execution, action_queue, task=task),
-            fps=fps, cameras=cameras, callbacks=callbacks,
-        )
+def run(self, *, duration_s=None):
+    self._connect_if_needed()
+    self._action_source.connect(bus=self._bus, session_id=self._session_id)
+
+    step = 0
+    try:
+        while not self._done(step, duration_s):
+            loop_start = time.perf_counter()
+
+            robot_state, camera_frames = self._read_observation()   # the ONE read for this tick
+            action = self._action_source.update(robot_state, camera_frames, step)
+
+            action = self._bus.invoke_on_action_ready(action=action, step=step)
+            self._resilient_send(action)
+            self._bus.invoke_on_action_sent(action=action, step=step)
+
+            elapsed, sleep_time = self._tick_sleep(loop_start, self._goal_time)
+            self._bus.emit_tick(TickEvent(
+                session_id=self._session_id, step=step, timestamp=time.time(),
+                robot_state=robot_state, camera_frames=camera_frames,
+                action_sent=action, loop_duration_s=elapsed, sleep_time_s=sleep_time,
+            ))
+            step += 1
+    except KeyboardInterrupt:
+        pass
+    finally:
+        self._shutdown(step)   # action_source.disconnect(), emit shutdown, close bus
+
+    return step
 ```
 
-Existing configs, the `physicalai run` CLI, and `from_config` keep working
-unchanged because `PolicyRuntime` is still a class with the same constructor and
-`run()`. Selecting an arbitrary controller uses the general schema below, which
-does require a CLI change (see [Config and CLI](#config-and-cli)).
+There is **no separate `PolicyRuntime` class.** One runtime, action source
+always required — `PolicySource` is simply the implementation you pass for
+the policy case. This fully resolves the old "dual entry points" problem
+(shipped `PolicyRuntime` vs. `RobotRuntime`+`PolicyController`) — there's exactly one
+way to build a runtime now.
 
-## Workflow Patterns
+Key differences from the pre-redesign loop:
 
-All workflows reuse one loop. The variation is the controller (and callbacks).
+- No `Tick`, no `isinstance` anywhere — the action source is opaque.
+- No hold branch — `update()` always returns something sendable.
+- `run()` returns `steps: int` — see
+  [Observability](#observability-no-stats-mechanism).
 
-| Workflow          | Controller                    | Callbacks                      |
-| ----------------- | ----------------------------- | ------------------------------ |
-| policy rollout    | `PolicyController`            | optional telemetry / recording |
-| teleop collection | `TeleopController`            | recording                      |
-| recorded rollout  | `PolicyController`            | recording                      |
-| HIL               | `HILController` (deferred)    | optional recording             |
-| DAgger            | `DAggerController` (deferred) | metrics / recording            |
-| scripted routine  | `ScriptedController`          | recording                      |
-
-`TeleopController` is the first non-policy controller and the one that proves the
-abstraction. The robot interface already models leader arms as read-only for
-teleoperation. The controller reads its **leader** and never touches
-`tick.observation()` — so with no recording attached, a teleop tick performs
-zero follower/camera reads and is just leader-read → follower-write:
+### PolicySource
 
 ```python
-class TeleopController:
-    def __init__(self, leader, to_action): ...
-    def update(self, tick):
-        return self._to_action(self._leader.read())   # never touches tick's reads
+class PolicySource:
+    def __init__(self, model, execution, action_queue=None, task=None): ...
+
+    def connect(self, *, bus, session_id):
+        self._execution.set_bus(bus, session_id)
+        self._execution.start(self._model, self._action_queue)
+
+    def update(self, robot_state, camera_frames, step):
+        model_input = self._to_model_input(robot_state, camera_frames)
+        if not self._warmed_up:
+            self._execution.warmup(model_input)
+            self._warmed_up = True
+
+        self._execution.maybe_request(model_input)
+        action = self._action_queue.pop()
+        if action is None:
+            if self._last is None:
+                msg = "No action available and none produced yet (warmup may have failed)"
+                raise RuntimeError(msg)
+            return self._last                 # this action source's own hold decision
+        self._last = action
+        return action
+
+    def disconnect(self):
+        self._execution.stop()          # queued actions discarded, not flushed
 ```
 
-For teleop data collection, the recording callback pulls `tick.observation()`
-(the one place the follower state + camera frames are read) and pairs it with the
-action — so the observation is captured only because recording asked for it.
+### TeleopSource
 
-## Config and CLI
+```python
+class TeleopSource:
+    def __init__(self, leader: Robot, *, to_action=None):
+        self._leader = leader
+        self._to_action = to_action or (lambda obs: obs.joint_positions)
+        self._leader_owned = False
 
-The existing schema (flat policy runtime) keeps working via `PolicyRuntime`:
+    def connect(self, *, bus, session_id):
+        if not self._leader.is_connected():
+            self._leader.connect()
+            self._leader_owned = True
+
+    def update(self, robot_state, camera_frames, step):
+        return self._to_action(self._leader.get_observation())   # ignores both reads
+
+    def disconnect(self):
+        if self._leader_owned:
+            with contextlib.suppress(Exception):
+                self._leader.disconnect()
+```
+
+Note `update()` never touches `robot_state`/`camera_frames` — the follower's
+state/cameras aren't inputs to a teleop action. They're still read once per
+tick by the runtime (for telemetry/recording), just not consumed by this
+action source.
+
+### Execution (unchanged in spirit, one signature revert)
+
+The shipped code passes `maybe_request` a **provider** (`observe_fn`) so an
+async/idle tick reads no camera at all (`execution.py`, plus a main-thread
+`below_threshold` pre-check in `rtc_execution.py`). That pull machinery is
+**deleted**: `Camera.read_latest()` is a cheap buffered fetch (returns the
+latest already-captured frame), not a blocking capture, so reading every tick
+adds negligible IO — not worth a lazy-provider indirection threaded through all
+three executions. `maybe_request` takes a materialized observation directly
+again, matching the eager-read model:
+
+```python
+def maybe_request(self, observation: dict[str, np.ndarray]) -> None: ...
+```
+
+`SyncExecution`/`AsyncExecution` already gate on `below_threshold` before using
+the observation — unchanged. `AsyncExecution`/`RTCExecution` still copy the
+observation before publishing to their background inference thread
+(`execution.py:233`, `rtc_execution.py:269`) — that copy was never about
+camera zero-copy semantics, it's these executions protecting their own thread
+boundary, and it stays exactly as-is.
+
+### RuntimeCallback
+
+```python
+class RuntimeCallback(Protocol):
+    def on_action_ready(self, *, action: np.ndarray, step: int) -> np.ndarray: ...
+    def on_action_sent(self, *, action: np.ndarray, step: int) -> None: ...
+```
+
+Plus the existing fire-and-forget hooks, unchanged: `on_tick(TickEvent)`,
+`on_inference(InferenceEvent)`, `on_lifecycle(LifecycleEvent)`.
+
+`on_action_ready` is the one hook whose return value matters (a chain: each
+callback sees the previous one's output, can transform it — e.g.
+`LowPassFilterCallback` smoothing). Always returns a valid action — no `None`
+sentinel; a callback that doesn't want to change anything returns its input
+unchanged. Every other hook, including `on_action_sent`, is pure notification —
+return value ignored. `on_hold` is **deleted**.
+
+**Why `on_hold` is gone:** the pre-redesign `PolicyController.update()` already
+tracked and returned its own last action when its queue was empty —
+`on_hold`/`SupportsHoldInfo` were purely an additional reporting side-channel
+on top of a decision the controller had already made. None of the four
+shipped callbacks (`Console`/`Jsonl`/`Async`/`Rerun`) did anything with it —
+`AsyncCallback` explicitly refused to forward it — so it was vestigial in
+practice. Now that `update()` always returns a sendable action and never
+signals "hold" to the runtime, there's nothing for the runtime to report. An
+action source that wants to warn about repeats/starvation does so with its own
+internal counters and `logging` calls — no callback bus involvement required.
+
+### TickEvent
+
+```python
+@dataclass(frozen=True, slots=True)
+class TickEvent:
+    session_id: str
+    step: int
+    timestamp: float
+    robot_state: RobotObservation
+    camera_frames: Mapping[str, Frame]
+    action_sent: np.ndarray
+    loop_duration_s: float
+    sleep_time_s: float
+    stale_obs: bool
+```
+
+Carries the same `robot_state` / `camera_frames` values read for that tick
+directly — no `Observation` wrapper, no `Tick` reference. Breaking change for
+the 3 callbacks that read `event.tick.*` today
+(`JsonlCallback`, `RerunCallback`, `AsyncCallback`) — they switch to
+`event.robot_state` / `event.camera_frames` directly. `queue_remaining` is
+dropped (it was action-source-specific — see Observability below for where
+that kind of number lives now).
+
+### Observability: no stats mechanism
+
+`run()` returns `steps: int` — no `RunStats` type. The loop's own
+`_consecutive_error_ticks` stays as **live, in-loop** state (the circuit
+breaker needs it operationally) but final aggregate totals
+(`transient_errors`, `stale_obs_ticks`) are **not** tracked or returned — every
+individual occurrence already fires a `LifecycleEvent` (`obs_error`,
+`send_error`) or is visible on `TickEvent.stale_obs` in real time. Aggregating
+a final count in the runtime duplicates the existing event stream. Anyone
+wanting a total attaches a small callback instead:
+
+```python
+class ErrorCounter:                     # not runtime code — an optional plugin
+    def __init__(self):
+        self.transient_errors = 0
+        self.stale_obs_ticks = 0
+
+    def on_lifecycle(self, event):
+        if event.event in ("obs_error", "send_error"):
+            self.transient_errors += 1
+
+    def on_tick(self, event):
+        if event.stale_obs:
+            self.stale_obs_ticks += 1
+```
+
+Same logic for action-source-specific numbers (`total_pops`, `total_holds`,
+`inference_count`): no `stats()` method, no capability protocol. Whoever builds
+the `ActionSource` already holds a reference to it, so they read its
+properties directly:
+
+```python
+policy_source = PolicySource(model=model, execution=execution)
+runtime = RobotRuntime(robot=robot, action_source=policy_source, fps=30)
+with runtime:
+    steps = runtime.run(duration_s=60)
+
+print(policy_source.action_queue.total_pops)
+print(execution.inference_count)
+```
+
+For the config-driven path, `RobotRuntime.action_source` is a public property
+for exactly this reason — `runtime.action_source.action_queue.total_pops`
+works the same way after a config-built run. `cli/run.py`'s summary log
+becomes generic (`steps` only), optionally with a purely cosmetic
+`isinstance(runtime.action_source, PolicySource)` check for a richer
+one-line message — CLI polish, not a runtime mechanism.
+
+**Live, per-tick numbers (e.g. a Rerun panel plotting queue depth) are a
+different case** from end-of-run inspection — direct property access only
+works _after_ `run()` returns. For this, an `ActionSource` emits its own
+`MetricsEvent` through the bus it already receives at `connect(bus,
+session_id)` — the exact same mechanism `Execution` already uses for
+`InferenceEvent`. Not part of `RuntimeCallback`'s required 2 hooks; a 4th,
+fully optional fire-and-forget event alongside `TickEvent`/`InferenceEvent`/
+`LifecycleEvent`:
+
+```python
+@dataclass(frozen=True, slots=True)
+class MetricsEvent:
+    session_id: str
+    step: int
+    timestamp: float
+    values: Mapping[str, float]
+```
+
+```python
+# PolicySource.update(), after popping from the queue:
+if self._bus is not None:
+    self._bus.emit_metrics(MetricsEvent(
+        session_id=self._session_id, step=step, timestamp=time.time(),
+        values={"queue_remaining": self._action_queue.remaining},
+    ))
+```
+
+`MetricsEvent` carries **only** source-owned, per-tick, live values with no
+other home — currently just `queue_remaining`. It is **not** a general stats
+channel: inference `latency_s`/`chunk` stay on `InferenceEvent` (fires on
+completion, its own cadence), and end-of-run totals (`total_pops`,
+`inference_count`) stay direct-property reads. No per-tick `inference_requested`
+flag — `InferenceEvent` already signals that an inference happened.
+
+`RerunCallback` implements `on_metrics` and logs whatever keys it recognizes;
+`TeleopSource` never emits `MetricsEvent` at all, so the panel is simply
+empty for a teleop session — no capability protocol, no `isinstance` in the
+runtime, same "only pay for what you use" shape as everything else here. This
+was chosen over a callback-constructor callable (e.g. `queue_remaining_fn`)
+specifically because a callable closing over another object can't be
+expressed in a YAML config — this mechanism works identically whether the
+runtime was built by hand or from a config file.
+
+### Config: one schema, no shorthand
 
 ```yaml
 runtime:
   robot:
     { class_path: physicalai.robot.SO101, init_args: { port: /dev/ttyACM0 } }
-  model:
-    {
-      class_path: physicalai.inference.InferenceModel,
-      init_args: { export_dir: ./exports/act },
-    }
-  execution: { class_path: physicalai.runtime.SyncExecution }
+  action_source:
+    class_path: physicalai.runtime.PolicySource
+    init_args:
+      model:
+        {
+          class_path: physicalai.inference.InferenceModel,
+          init_args: { export_dir: ./exports/act },
+        }
+      execution: { class_path: physicalai.runtime.SyncExecution }
+  fps: 30.0
+  cameras:
+    wrist:
+      {
+        class_path: physicalai.capture.UVCCamera,
+        init_args: { device: /dev/video0 },
+      }
+  callbacks:
+    - { class_path: physicalai.runtime.ConsoleCallback }
+```
+
+No flat/legacy shorthand, no dual schema, no YAML pre-parse peek.
+`action_source` is always required and explicit. `cli/run.py` collapses to
+exactly one parser-building path: `add_class_arguments(RobotRuntime, "runtime")`
+
+- `add_method_arguments(RobotRuntime, "run", "run")` — what today's
+  `_build_general_parser` already does, and the only thing needed. Choosing
+  which concrete `ActionSource` class to build is ordinary `class_path`/
+  `init_args` polymorphism, the same mechanism `robot:`/`cameras:` already use —
+  nothing special.
+
+This drops backward compatibility with the flat schema entirely. Accepted
+cost: existing example configs (`examples/runtime/*.yaml`) and direct
+constructor call sites (e.g. `examples/runtime/demo_loop.py`'s
+`PolicyRuntime(robot=..., model=..., execution=..., ...)` calls) need a small,
+mechanical migration to wrap `model`/`execution` under an `action_source:`
+block. Consistent with the round-1 argument for building this generically now:
+migration cost is low today (internal users only) and only grows later.
+
+## Empirical Validation: Zero-Copy Camera Safety
+
+The "no copy needed" claim above isn't just reasoned about — it was tested
+against real hardware, because the underlying transport (`SharedCamera`,
+iceoryx2 shared memory, `zero_copy=True`) is real and already shipped
+(`src/physicalai/capture/transport/_shared_camera.py`).
+
+**Mechanism, confirmed by reading source:** `_held_sample` is a single-slot
+attribute on the `SharedCamera` instance, unconditionally cleared and
+reassigned on every `read_latest()` call. The returned zero-copy array is
+built via raw `ctypes.from_address()` with no Python-refcounting backreference
+to the sample — so a previously returned `Frame`'s `.data` goes stale the
+moment the _next_ `read_latest()` call runs, regardless of whether the old
+`Frame` object is still referenced in Python. GC is irrelevant; only "has
+`read_latest()` been called again" matters. `Frame.sequence`/`.timestamp` are
+plain values copied from an already-copied header struct — stable — while
+`Frame.data` can silently show completely different pixel content later, with
+no exception anywhere.
+
+**`scripts/shared_camera_race_repro.py`** (built to test this) exercises the
+real `SharedCamera.read_latest()`/`_decode_sample()` code; only the iceoryx2
+subscriber is faked for the default mode. It also supports `--real-camera`
+(auto-discovers a real camera via `physicalai.capture.discovery.discover_all()`,
+real iceoryx2 + `CameraPublisher` subprocess) and `--single-reader` (isolates
+the single-reader cadence our design actually uses).
+
+Run against real hardware (UVC camera) with an adversarial second reader
+(~11M `read_latest()` calls/sec via GIL handoff during the main thread's
+sleeps): **136/150 ticks (91%) showed a held frame's content change between
+the start and end of a simulated tick-work window.** Confirms the hazard is
+real and frequent on real hardware, not theoretical.
+
+**What this does and doesn't prove about our design:** that run used an
+adversarial _second reader_ on one `SharedCamera` instance — explicitly
+outside its documented single-reader contract, and not something our design
+ever does (one reader, always). But the same underlying mechanism applies to
+a _single_ reader whenever a **deferred** consumer (`AsyncCallback`'s worker
+thread, `AsyncExecution`/`RTCExecution`'s inference thread) processes a frame
+after the reader's own next tick has already happened — which is exactly why
+those two places already carry a local copy, and why no additional/blanket
+copy is needed anywhere else. The 91% figure is an upper-bound existence proof
+for the mechanism, not a measurement of our design's own risk level.
+
+**Caveat found mid-investigation, worth keeping in mind if this script is used
+again:** byte-diff-percentage is not a reliable tear-vs-clean-swap signal for
+organic (real) image content — moving the camera mid-run alone shifted
+measured diff% enough to flip an arbitrary classification threshold, proving
+the percentage tracks scene motion/similarity, not whether a read was torn.
+The script reports `UNCHANGED` vs. `CHANGED` for real-camera mode; it does not
+classify _how_ it changed.
+
+## What Gets Deleted
+
+| Item                                                                | Reason                                                                                         |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `tick.py` (`Tick` class)                                            | Eager reads shared by reference; no lazy pull needed                                           |
+| `SupportsBus`, `SupportsStats`, `SupportsDrain`, `SupportsHoldInfo` | Folded into 3 required `ActionSource` methods; no isinstance dispatch                          |
+| `isinstance` dispatch in `run()`                                    | Gone — action source is opaque                                                                 |
+| `PolicyRuntime` class                                               | One `RobotRuntime`, action source always required                                              |
+| `RunStats` type                                                     | `run()` returns `steps: int`; everything else via direct property access or an opt-in callback |
+| `on_hold` callback hook                                             | Vestigial — no shipped callback used it; action sources own their own fallback/logging         |
+| Warmup retry loop in the runtime                                    | Folds into each action source's own first `update()`                                           |
+| `maybe_request(observe_fn)` provider / lazy pull                    | Eager per-tick read; `read_latest()` is a cheap buffered fetch, negligible IO                  |
+| Shutdown queue drain (`SupportsDrain`, runtime flush + pacing)      | `disconnect()` returns `None`; queued actions discarded, robot holds last position             |
+| Flat/legacy config schema                                           | One schema only — `action_source:` always explicit                                             |
+
+## What Stays Unchanged
+
+| Component                                          | Why                                                 |
+| -------------------------------------------------- | --------------------------------------------------- |
+| `Execution` ABC + Sync/Async/RTC                   | Core inference scheduling — irreducible complexity  |
+| `ActionQueue` protocol + implementations           | Queue mechanics unchanged                           |
+| `_CallbackBus` dispatch                            | Unchanged (2 fewer hooks to dispatch)               |
+| `InferenceEvent`, `LifecycleEvent`                 | Unchanged                                           |
+| Resilient read/send/circuit-breaker logic          | Same logic, same owner (the runtime)                |
+| Observer module (telemetry subscriber)             | Unchanged                                           |
+| Smoothers (Lerp/Replace)                           | Unchanged                                           |
+| `AsyncCallback`'s frame-copy safety check          | Unchanged — still the right, and only, place for it |
+| `AsyncExecution`/`RTCExecution`'s observation copy | Unchanged — still the right, and only, place for it |
+
+## Migration
+
+### For callback authors
+
+```python
+# Before
+def on_tick(self, event: TickEvent):
+    state = event.tick.robot_state()
+    frames = event.tick.camera_frames()
+
+# After
+def on_tick(self, event: TickEvent):
+    state = event.robot_state
+    frames = event.camera_frames
+```
+
+```python
+# Before
+def before_send_action(self, *, action, step) -> np.ndarray | None: ...
+
+# After (renamed, return is now required)
+def on_action_ready(self, *, action, step) -> np.ndarray: ...
+```
+
+`on_hold` has no replacement — delete it from any callback that implements it.
+
+### For action source implementors
+
+```python
+# Before: 3 required + up to 4 optional capability protocols
+class MyController:
+    def start(self) -> None: ...
+    def warmup(self, tick: Tick) -> None: ...
+    def update(self, tick: Tick) -> np.ndarray | None: ...
+    def stop(self) -> None: ...
+    def reset(self) -> None: ...
+    def set_bus(self, bus, session_id) -> None: ...     # if SupportsBus
+    def stats(self) -> dict: ...                        # if SupportsStats
+    def drain(self, limit) -> Iterable: ...             # if SupportsDrain
+    # + last_was_hold, holds properties                 # if SupportsHoldInfo
+
+# After: 3 required methods, full stop
+class MyActionSource:
+    def connect(self, *, bus, session_id) -> None: ...
+    def update(self, robot_state: RobotObservation,
+               camera_frames: Mapping[str, Frame], step: int) -> np.ndarray: ...
+    def disconnect(self) -> None: ...
+```
+
+### For config authors
+
+Wrap `model`/`execution` under `action_source:`:
+
+```yaml
+# Before
+runtime:
+  robot: {...}
+  model: {...}
+  execution: {...}
+  fps: 30.0
+
+# After
+runtime:
+  robot: {...}
+  action_source:
+    class_path: physicalai.runtime.PolicySource
+    init_args: { model: {...}, execution: {...} }
   fps: 30.0
 ```
 
-A general schema selects any controller:
-
-```yaml
-runtime:
-  class_path: physicalai.runtime.RobotRuntime
-  init_args:
-    fps: 30.0
-    robot:
-      { class_path: physicalai.robot.SO101, init_args: { port: /dev/ttyACM0 } }
-    controller:
-      class_path: physicalai.runtime.PolicyController
-      init_args:
-        model:
-          {
-            class_path: physicalai.inference.InferenceModel,
-            init_args: { export_dir: ./exports/act },
-          }
-        execution: { class_path: physicalai.runtime.SyncExecution }
-```
-
-`physicalai run --config ...` should dispatch both. The flat schema works today
-because `cli/run.py` binds `runtime:` to `PolicyRuntime` via
-`add_class_arguments`. The general schema (top-level `runtime.class_path`)
-**requires a CLI change**: switch to `add_subclass_arguments(RobotRuntime,
-"runtime")` (or equivalent) so `runtime.class_path` can select `RobotRuntime` or
-`PolicyRuntime`. This is the one config/CLI change in the plan; the flat
-`PolicyRuntime` path is unaffected.
-
-## Errors and Shutdown
-
-Mostly the current behavior; the `controller.update()` row is a **new** contract
-that today's loop does not implement.
-
-| Condition                                | Behavior                                                                                                                                               | Status                                                                                       |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| `controller.update()` raises             | **Phase 1: fail-stop (unchanged)** — log, emit `on_lifecycle` error event, stop the run. Hold-and-continue is opt-in per controller, added in Phase 2. | today only `KeyboardInterrupt` / `WorkerDiedError` are caught; other exceptions stop the run |
-| `robot.send_action()` fails past retries | count error; stop after N consecutive                                                                                                                  | current (`_resilient_send`)                                                                  |
-| `robot.get_observation()` fails          | retry, then stale fallback, then stop                                                                                                                  | current (`_resilient_observe`, now behind `tick.robot_state()`)                              |
-
-There is no `on_error` callback in the codebase; errors surface as `on_lifecycle`
-events (`obs_error`, `send_error`, `connection_lost`, `warmup_failed`).
-**Phase 1 preserves today's fail-stop semantics for `update()` errors** — a
-controller exception stops the run. Swallowing it and holding is a
-safety-relevant inversion (a teleop leader-read fault would freeze the follower
-while the operator believes it is live), so hold-and-continue is an opt-in
-controller capability (an `on_error_hold` flag or explicit error policy)
-introduced with `TeleopController` in Phase 2, not a runtime default.
-
-Shutdown order: `controller.stop()` (drains its own queue, if any) → lifecycle
-`shutdown` event → `disconnect()` (via the context manager). `return_to_home`
-is **not** in scope — no robot in the codebase exposes a `go_to_home()`, so it is
-deferred until there is one.
-
 ## Phasing
 
-**Phase 1 — invert the loop.** The whole value; ship first.
-
-1. Add the `Controller` protocol and the concrete `Tick` class (granular lazy
-   `robot_state()` / `camera_frames()`; bus injection via optional `set_bus`).
-2. Add `PolicyController`; move `_build_model_input` / `_build_model_input_from`,
-   `maybe_request`/`pop`, and hold/fallback into it. Its `stop()` owns the queue
-   drain; its `reset()` owns the queue reset.
-3. Change `Execution.maybe_request(observation)` to `maybe_request(observe_fn)`
-   (provider) across `Sync`/`Async`/`RTCExecution`, so the policy reads only on
-   ticks it requests inference. `Sync`/`Async` already gate on `below_threshold`
-   before using the observation, so they just invoke the provider inside that
-   guard. `RTCExecution` currently publishes the observation every tick (its
-   background thread owns the threshold check), so it must **add a main-thread
-   `below_threshold` pre-check** before invoking the provider — otherwise it reads
-   the device every tick and the async-idle savings do not apply to RTC.
-4. Add `RobotRuntime` (the current loop minus policy specifics). Change
-   `TickEvent` to carry the `Tick` instead of eager `robot_observation` /
-   `camera_frames` — the one **breaking** change (`JsonlCallback`,
-   `RerunCallback`, `AsyncCallback` read those fields today and must switch to
-   pulling from the `Tick`).
-5. Keep `PolicyRuntime` as a `RobotRuntime` **subclass** (not a function) so
-   `add_class_arguments` / `add_method_arguments` in `cli/run.py` and
-   `from_config` keep working. Its signature and the flat config schema are
-   unchanged.
-6. Apply the ownership splits decided in [RobotRuntime](#robotruntime): `RunStats`
-   controller-optional (runtime owns `steps`/error stats, controller contributes
-   `stats()`); start-of-run reset (runtime owns session/error, `controller.reset()`
-   owns the queue); **one `Tick` per iteration** threaded through `update()` and
-   `emit_tick`; **fresh `Tick` per warmup retry**.
-7. Keep **fail-stop** on `update()` errors — no behavior change. Existing tests
-   stay green apart from the `TickEvent` shape update.
-
-**Phase 2 — prove it with a second source.** Add `TeleopController`
-(leader→follower). Finalize the generic observation contract. Add the general
-`controller:` config path, switching `cli/run.py` to
-`add_subclass_arguments(RobotRuntime, "runtime")`. Implement recording:
-**capture obs + action at a pre-send hook** (time-aligned), copy borrowed frame
-buffers synchronously, and offload the slow write to the recorder's own
-background thread — `on_tick` (post-send) stays telemetry-only. Because a
-pre-send capture is an action-path hook, the recorder cannot be wrapped in
-`AsyncCallback` (which forwards fire-and-forget events only); it owns its writer
-thread and uses a fail-loud (not silent-drop) queue policy.
-
-**Phase 3 — deferred until a concrete consumer exists (YAGNI).**
-`SafetyLayer`, `HILController` / `DAggerController` implementations,
-`swap_controller` / mid-loop command bus, typed `RobotAction`, and any
-multi-rate / composite runtime. These land only when something needs them.
+1. **Core loop.** `ActionSource` protocol (`update` takes `robot_state` +
+   `camera_frames`, no `Observation` type), `RobotRuntime` loop rewrite (no
+   `Tick`, no isinstance, no hold branch), `RuntimeCallback` renamed/shrunk to
+   2 hooks, `TickEvent` carries plain values. Delete `tick.py`, the 4
+   capability protocols, `PolicyRuntime`, `RunStats`.
+2. **Config/CLI.** Collapse `cli/run.py` to one parser path. Migrate
+   `examples/runtime/*.yaml` and direct-construction call sites (`demo_loop.py`
+   and others) to the single schema.
+3. **Verify.** `TeleopSource` re-sketched under the new shape (above) — a
+   mechanically small change. Existing tests updated for the renamed callback
+   hooks and `TickEvent` shape; fault-tolerance tests should be largely
+   unaffected (same resilient-IO logic, different call sites).
 
 ## Decision Summary
 
 ```text
-robot loop ownership      RobotRuntime (today's PolicyRuntime loop)
-action selection          Controller (new)
-policy inference          PolicyController owns model + Execution + ActionQueue
-sync/async/RTC boundary   Execution (SyncExecution / AsyncExecution / RTCExecution) — shipped
-side effects & telemetry  callback event bus (on_tick / on_inference / on_lifecycle) — shipped
-action-path hooks         before_send_action / on_action_sent / on_hold — shipped
-policy-only entry point   PolicyRuntime, kept as a RobotRuntime subclass (no rename, still a class)
-model-input formatting    PolicyController, not the loop
-device reads              granular lazy pull via tick.robot_state() / camera_frames() — once/tick, only if asked
-tick object               concrete class (single producer), like TickEvent; carried inside TickEvent
-teleop action source      leader arm, owned by the controller (not the runtime observation)
-bus injection             existing set_bus(bus, session_id) (no new RuntimeContext type)
-warmup                    runtime reads first tick with retry, calls controller.warmup
-deferred                  SafetyLayer, HIL/DAgger, swap_controller, typed actions, composite
+entry point                one RobotRuntime class; action_source always required
+action source protocol     ActionSource: connect(bus, session_id), update(robot_state, camera_frames, step), disconnect()
+concrete sources           PolicySource, TeleopSource (renamed from shipped PolicyController/TeleopController)
+observation type           none — two params: robot_state (RobotObservation) + camera_frames; no new Observation class
+capability protocols       deleted (SupportsBus, Stats, Drain, HoldInfo) — no isinstance anywhere
+shutdown                   disconnect() returns None; no queue drain — queued actions discarded,
+                           robot holds last commanded position
+Tick class                 deleted; eager reads, plain robot_state + camera_frames, shared by reference
+maybe_request              eager: materialized observation again; observe_fn pull deleted
+                           (read_latest is a cheap buffered fetch, negligible per-tick IO)
+warmup                     no dedicated step; folded into each action source's own first update()
+hold handling               deleted; update() always returns a sendable action; fallback is the
+                           action source's own internal decision
+copy safety                 no copy at the runtime read step; single-read-per-tick invariant enforced
+                           structurally (ActionSource/RuntimeCallback never see Camera/Robot refs);
+                           AsyncCallback + Async/RTCExecution keep their existing local copies
+callbacks                   RuntimeCallback: on_action_ready (return matters), on_action_sent
+                           (notification) + existing on_tick/on_inference/on_lifecycle
+live metrics               source-owned per-tick values via optional MetricsEvent on the bus
+                           (queue_remaining only); latency stays InferenceEvent; totals direct-access
+stats/RunStats              deleted; run() returns steps: int; everything else via direct property
+                           access on runtime.action_source, or an opt-in callback for aggregates
+config                       one schema only — action_source: always explicit, no flat shorthand
 ```

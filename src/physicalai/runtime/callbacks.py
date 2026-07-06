@@ -322,7 +322,7 @@ class RerunCallback:
             self._send_default_blueprint()
 
     def close(self) -> None:
-        """Release independent camera subscribers (SharedCamera only)."""
+        """Release independent camera subscribers and publishers (SharedCamera only)."""
         from physicalai.capture.transport._shared_camera import SharedCamera  # noqa: PLC0415, PLC2701
 
         for sub in self._camera_subscribers.values():
@@ -333,6 +333,15 @@ class RerunCallback:
             except Exception:
                 logger.exception("Error closing RerunCallback camera subscriber")
         self._camera_subscribers.clear()
+
+        # Disconnect publisher-owning originals that we connected.
+        for cam in (self._cameras or {}).values():
+            if not isinstance(cam, SharedCamera):
+                continue
+            try:
+                cam.disconnect()
+            except Exception:
+                logger.exception("Error closing RerunCallback camera publisher")
 
     def _init_rerun(self, session_id: str, metadata: dict[str, Any]) -> None:
         import rerun as rr  # noqa: PLC0415
@@ -475,6 +484,12 @@ class RerunCallback:
 
         for name, cam in (self._cameras or {}).items():
             if isinstance(cam, SharedCamera):
+                # Connect the original instance first — this spawns the
+                # publisher process if one isn't already running.
+                if not cam._connected:  # noqa: SLF001
+                    cam.connect()
+                # Create a lightweight subscriber-only clone so we don't
+                # share the publisher-owning instance's lifecycle.
                 sub = SharedCamera(
                     camera_type=None,
                     service_name=cam.service_name,
