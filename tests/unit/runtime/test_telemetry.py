@@ -13,8 +13,8 @@ import numpy as np
 import pytest
 
 from physicalai.runtime._callback_bus import _CallbackBus
-from physicalai.runtime._telemetry import TelemetryEmitter, _decode_numpy, _encode_numpy
-from physicalai.runtime.callbacks import AsyncCallback, ConsoleCallback, JsonlCallback
+from physicalai.runtime import AsyncCallback, ConsoleCallback, JsonlCallback
+from physicalai.runtime.observer._telemetry import TelemetryEmitter, _decode_numpy, _encode_numpy
 from physicalai.runtime.events import InferenceEvent, LifecycleEvent, TickEvent
 from tests.unit.runtime.conftest import FakeRobotObservation
 

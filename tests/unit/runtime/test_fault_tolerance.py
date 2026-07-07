@@ -12,10 +12,8 @@ import pytest
 
 from physicalai.capture import Frame
 from physicalai.capture.errors import CaptureError
-from physicalai.runtime.controller import PolicySource
-from physicalai.runtime.execution import SyncExecution
-from physicalai.runtime.runtime import (
-    RobotRuntime,
+from physicalai.runtime import PolicySource, RobotRuntime, SyncExecution
+from physicalai.runtime.core import (
     _MAX_OBS_RETRIES,
     _MAX_SEND_RETRIES,
 )
@@ -79,7 +77,7 @@ class TestResilientObserve:
 
         rt = _make_runtime(robot=robot)
 
-        with patch("physicalai.runtime.runtime.time") as mock_time:
+        with patch("physicalai.runtime.core.time") as mock_time:
             mock_time.sleep = MagicMock()
             mock_time.perf_counter.return_value = 0.0
             mock_time.time.return_value = 0.0
@@ -96,7 +94,7 @@ class TestResilientObserve:
         rt = _make_runtime(robot=robot)
         rt._last_robot_obs = _make_obs()
 
-        with patch("physicalai.runtime.runtime.time") as mock_time:
+        with patch("physicalai.runtime.core.time") as mock_time:
             mock_time.sleep = MagicMock()
             mock_time.perf_counter.return_value = 0.0
             mock_time.time.return_value = 0.0
@@ -115,7 +113,7 @@ class TestResilientObserve:
         rt._last_robot_obs = _make_obs()
         rt._consecutive_error_ticks = rt._max_consecutive_error_ticks - 1
 
-        with patch("physicalai.runtime.runtime.time") as mock_time:
+        with patch("physicalai.runtime.core.time") as mock_time:
             mock_time.sleep = MagicMock()
             mock_time.time.return_value = 0.0
             with pytest.raises(ConnectionError, match="Exceeded max consecutive"):
@@ -128,7 +126,7 @@ class TestResilientObserve:
         rt = _make_runtime(robot=robot)
         assert rt._last_robot_obs is None
 
-        with patch("physicalai.runtime.runtime.time") as mock_time:
+        with patch("physicalai.runtime.core.time") as mock_time:
             mock_time.sleep = MagicMock()
             mock_time.time.return_value = 0.0
             with pytest.raises(ConnectionError, match="no stale observation"):
@@ -155,7 +153,7 @@ class TestResilientObserveCameras:
         rt = _make_runtime(cameras={"cam0": camera})
         rt._last_camera_frames["cam0"] = stale_frame
 
-        with patch("physicalai.runtime.runtime.time") as mock_time:
+        with patch("physicalai.runtime.core.time") as mock_time:
             mock_time.sleep = MagicMock()
             mock_time.perf_counter.return_value = 0.0
             mock_time.time.return_value = 0.0
@@ -170,7 +168,7 @@ class TestResilientObserveCameras:
 
         rt = _make_runtime(cameras={"cam0": camera})
 
-        with patch("physicalai.runtime.runtime.time") as mock_time:
+        with patch("physicalai.runtime.core.time") as mock_time:
             mock_time.sleep = MagicMock()
             mock_time.perf_counter.return_value = 0.0
             mock_time.time.return_value = 0.0
@@ -186,7 +184,7 @@ class TestResilientSend:
         rt = _make_runtime(robot=robot)
         action = np.zeros(3, dtype=np.float32)
 
-        with patch("physicalai.runtime.runtime.time") as mock_time:
+        with patch("physicalai.runtime.core.time") as mock_time:
             mock_time.sleep = MagicMock()
             mock_time.time.return_value = 0.0
             rt._resilient_send(action)
@@ -202,7 +200,7 @@ class TestResilientSend:
         rt = _make_runtime(robot=robot)
         action = np.zeros(3, dtype=np.float32)
 
-        with patch("physicalai.runtime.runtime.time") as mock_time:
+        with patch("physicalai.runtime.core.time") as mock_time:
             mock_time.sleep = MagicMock()
             mock_time.time.return_value = 0.0
             rt._resilient_send(action)
@@ -241,7 +239,7 @@ class TestRunReturnsStepsWithFaults:
         rt = RobotRuntime(robot=robot, action_source=policy_source, fps=10.0)
         rt._connected = True
 
-        with patch("physicalai.runtime.runtime.time") as mock_time:
+        with patch("physicalai.runtime.core.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
             mock_time.time.return_value = 0.0
@@ -280,7 +278,7 @@ class TestStaleObsEventFlag:
         rt = RobotRuntime(robot=robot, action_source=policy_source, fps=10.0, callbacks=[callback])
         rt._connected = True
 
-        with patch("physicalai.runtime.runtime.time") as mock_time:
+        with patch("physicalai.runtime.core.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
             mock_time.time.return_value = 0.0

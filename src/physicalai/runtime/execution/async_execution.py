@@ -1,153 +1,25 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Execution strategies for scheduling policy inference."""
+"""Asynchronous (background-thread) inference execution strategy."""
 
 from __future__ import annotations
 
 import logging
 import threading
 import time
-from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
 
+from physicalai.runtime.execution.base import NOT_STARTED, Execution, WorkerDiedError
+
 if TYPE_CHECKING:
     from physicalai.inference.model import InferenceModel
-    from physicalai.runtime._action_queue import ChunkedActionQueue
     from physicalai.runtime._callback_bus import _CallbackBus
-    from physicalai.runtime.runtime import ActionQueue
+    from physicalai.runtime.execution.queue import ActionQueue, ChunkedActionQueue
 
 logger = logging.getLogger(__name__)
-
-_NOT_STARTED = "start() must be called before this method"
-
-
-class WorkerDiedError(RuntimeError):
-    """Raised when the inference worker thread dies unexpectedly."""
-
-
-class Execution(ABC):
-    """Decides when and where inference runs. Pushes results into ActionQueue."""
-
-    _bus: _CallbackBus | None
-    _session_id: str
-
-    def set_bus(self, bus: _CallbackBus, session_id: str) -> None:
-        """Inject callback bus and session ID before the control loop starts."""
-        self._bus = bus
-        self._session_id = session_id
-
-    @abstractmethod
-    def start(self, model: InferenceModel, action_queue: ActionQueue) -> None:
-        """Bind to model and queue. Called once before the loop."""
-        ...
-
-    @abstractmethod
-    def maybe_request(self, observation: dict[str, np.ndarray]) -> None:
-        """Check if new inference is needed given the (already-read) observation. If so, run or schedule it."""
-        ...
-
-    @abstractmethod
-    def warmup(self, sample_observation: dict[str, np.ndarray]) -> None:
-        """Run one inference to discover chunk_size and seed the queue."""
-        ...
-
-    @abstractmethod
-    def stop(self) -> None:
-        """Stop scheduling."""
-        ...
-
-    @property
-    @abstractmethod
-    def chunk_size(self) -> int:
-        """Discovered after warmup()."""
-        ...
-
-
-class SyncExecution(Execution):
-    """Synchronous inference in the control thread."""
-
-    def __init__(
-        self,
-        *,
-        request_threshold: float = 0.5,
-    ) -> None:
-        """Configure synchronous execution.
-
-        Args:
-            request_threshold: Re-infer when queue drops below this fraction
-                of chunk_size. E.g. 0.5 means re-infer after consuming half
-                the chunk (discards the stale tail). Set to 0.0 to drain
-                the entire chunk before re-inferring.
-        """
-        self._model: InferenceModel | None = None
-        self._queue: ChunkedActionQueue | None = None
-        self._chunk_size: int = 0
-        self._threshold_frac = request_threshold
-        self._threshold_count: int = 0
-        self._inference_count: int = 0
-        self._bus: _CallbackBus | None = None
-        self._session_id: str = ""
-
-    def start(self, model: InferenceModel, action_queue: ActionQueue) -> None:
-        """Bind model and queue."""
-        self._model = model
-        self._queue = cast("ChunkedActionQueue", action_queue)
-
-    def warmup(self, sample_observation: dict[str, np.ndarray]) -> None:
-        """Run one inference, seed queue, discover chunk_size.
-
-        Raises:
-            RuntimeError: If start() has not been called.
-        """
-        if self._model is None or self._queue is None:
-            raise RuntimeError(_NOT_STARTED)
-        actions = self._model.predict_action_chunk(sample_observation)
-        self._chunk_size = actions.shape[0]
-        self._threshold_count = max(1, int(self._chunk_size * self._threshold_frac))
-        self._queue.push_chunk(actions, offset=0)
-
-    def maybe_request(self, observation: dict[str, np.ndarray]) -> None:
-        """Refill queue synchronously when below threshold.
-
-        Raises:
-            RuntimeError: If start() has not been called.
-        """
-        if self._model is None or self._queue is None:
-            raise RuntimeError(_NOT_STARTED)
-        if self._queue.below_threshold(self._threshold_count):
-            t0 = time.perf_counter()
-            actions = self._model.predict_action_chunk(observation)
-            latency = time.perf_counter() - t0
-            self._queue.push_chunk(actions, offset=0)
-            self._inference_count += 1
-            if self._bus:
-                from physicalai.runtime.events import InferenceEvent  # noqa: PLC0415
-
-                self._bus.emit_inference(
-                    InferenceEvent(
-                        session_id=self._session_id,
-                        timestamp=time.time(),
-                        latency_s=latency,
-                        offset=0,
-                        chunk=actions,
-                    )
-                )
-
-    def stop(self) -> None:
-        """No-op for synchronous execution."""
-
-    @property
-    def chunk_size(self) -> int:
-        """Return discovered chunk size."""
-        return self._chunk_size
-
-    @property
-    def inference_count(self) -> int:
-        """Number of completed inference calls."""
-        return self._inference_count
 
 
 class AsyncExecution(Execution):
@@ -202,7 +74,7 @@ class AsyncExecution(Execution):
             RuntimeError: If start() has not been called.
         """
         if self._model is None or self._queue is None:
-            raise RuntimeError(_NOT_STARTED)
+            raise RuntimeError(NOT_STARTED)
         actions = self._model.predict_action_chunk(sample_observation)
         self._chunk_size = actions.shape[0]
         self._threshold_count = int(self._chunk_size * self._threshold_frac)
@@ -216,7 +88,7 @@ class AsyncExecution(Execution):
             WorkerDiedError: If the inference thread has died.
         """
         if self._queue is None:
-            raise RuntimeError(_NOT_STARTED)
+            raise RuntimeError(NOT_STARTED)
         if self._thread is not None and not self._thread.is_alive() and self._death_cause is not None:
             msg = f"Inference thread died: {self._death_cause}"
             raise WorkerDiedError(msg) from self._death_cause
@@ -290,7 +162,7 @@ class AsyncExecution(Execution):
                     self._running_inference = True
 
                 if self._model is None or self._queue is None:
-                    raise RuntimeError(_NOT_STARTED)  # noqa: TRY301
+                    raise RuntimeError(NOT_STARTED)  # noqa: TRY301
                 t0 = time.perf_counter()
                 actions = self._model.predict_action_chunk(obs)
                 latency = time.perf_counter() - t0

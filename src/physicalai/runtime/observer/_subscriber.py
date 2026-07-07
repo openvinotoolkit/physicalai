@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from physicalai.runtime._telemetry import _decode_numpy  # noqa: PLC2701
+from physicalai.runtime.observer._telemetry import _decode_numpy  # noqa: PLC2701
 
 if TYPE_CHECKING:
     from collections.abc import Callable

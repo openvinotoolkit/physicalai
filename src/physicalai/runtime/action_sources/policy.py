@@ -1,70 +1,31 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Action source abstraction and policy/teleop implementations."""
+"""Policy-backed action source: model + execution + action queue."""
 
 from __future__ import annotations
 
-import contextlib
 import time
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from physicalai.inference.constants import IMAGES, STATE, TASK
-from physicalai.runtime._action_queue import ChunkedActionQueue  # noqa: PLC2701
 from physicalai.runtime.events import MetricsEvent
+from physicalai.runtime.execution.queue import ChunkedActionQueue
 from physicalai.runtime.smoothers import LerpSmoother
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Mapping
 
     from physicalai.capture.frame import Frame
     from physicalai.inference.model import InferenceModel
-    from physicalai.robot.interface import Robot, RobotObservation
+    from physicalai.robot.interface import RobotObservation
     from physicalai.runtime._callback_bus import _CallbackBus
-    from physicalai.runtime.execution import Execution
-    from physicalai.runtime.runtime import ActionQueue
+    from physicalai.runtime.execution.base import Execution
+    from physicalai.runtime.execution.queue import ActionQueue
 
 _DEFAULT_LERP_FRAMES = 5
-
-
-class ActionSource(Protocol):
-    """The minimum a developer must implement to plug an action source into RobotRuntime.
-
-    Three required methods, nothing optional — no capability protocols, no
-    ``isinstance`` anywhere in the runtime.
-    """
-
-    def connect(self, *, bus: _CallbackBus, session_id: str) -> None:
-        """Set up resources (spawn threads, connect a leader device, etc.).
-
-        Called fresh every ``run()``, which is exactly when the runtime
-        generates a new ``session_id`` — construction-time injection would
-        miss that.
-        """
-        ...
-
-    def update(self, robot_state: RobotObservation, camera_frames: Mapping[str, Frame], step: int) -> np.ndarray:
-        """Return the action to send this tick.
-
-        Always returns a sendable action — no ``None`` sentinel. What to do
-        when there is nothing new to decide (repeat the last action, go to a
-        safe pose, whatever) is entirely this action source's own call, made
-        internally. If it truly cannot produce anything, it raises.
-
-        Returns:
-            Action vector to send to the robot this tick.
-        """
-        ...
-
-    def disconnect(self) -> None:
-        """Tear down only (stop threads, release a leader device).
-
-        Returns nothing — any queued-but-unsent actions are discarded, not
-        flushed. The action source never receives a robot reference.
-        """
-        ...
 
 
 class PolicySource:
@@ -185,50 +146,3 @@ class PolicySource:
             Dictionary ready for model inference.
         """
         return self._to_model_input(robot_obs, camera_frames)
-
-
-class TeleopSource:
-    """Action source that reads a leader arm and writes to the follower.
-
-    The action source is the leader device, not the follower's observation or
-    any inference model. Both ``robot_state``/``camera_frames`` are ignored —
-    a teleop tick with no recording attached performs zero extra reads beyond
-    what the runtime already does for telemetry.
-
-    Args:
-        leader: The leader robot (same ``Robot`` protocol; must support
-            ``get_observation()``).
-        to_action: Optional callable mapping a ``RobotObservation`` from the
-            leader to an action array for the follower. Defaults to
-            ``obs.joint_positions`` (identity for same-morphology leader/follower).
-    """
-
-    def __init__(  # noqa: D107
-        self,
-        leader: Robot,
-        *,
-        to_action: Callable[[RobotObservation], np.ndarray] | None = None,
-    ) -> None:
-        self._leader = leader
-        self._to_action = to_action or (lambda obs: obs.joint_positions)
-        self._leader_owned = False
-
-    def connect(self, *, bus: _CallbackBus, session_id: str) -> None:  # noqa: ARG002
-        """Connect leader if not already connected."""
-        if not self._leader.is_connected():
-            self._leader.connect()
-            self._leader_owned = True
-
-    def update(self, robot_state: RobotObservation, camera_frames: Mapping[str, Frame], step: int) -> np.ndarray:  # noqa: ARG002
-        """Read the leader arm and return the action for the follower.
-
-        Returns:
-            Action array for the follower robot.
-        """
-        return self._to_action(self._leader.get_observation())
-
-    def disconnect(self) -> None:
-        """Disconnect leader if we connected it."""
-        if self._leader_owned:
-            with contextlib.suppress(Exception):
-                self._leader.disconnect()

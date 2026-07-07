@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for physicalai.runtime.runtime."""
+"""Tests for physicalai.runtime.core."""
 
 from __future__ import annotations
 
@@ -15,10 +15,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from physicalai.runtime._action_queue import ChunkedActionQueue as ActionQueue, ChunkedActionQueue
-from physicalai.runtime.controller import PolicySource
-from physicalai.runtime.execution import SyncExecution, WorkerDiedError
-from physicalai.runtime.runtime import RobotRuntime
+from physicalai.runtime import ChunkedActionQueue as ActionQueue, ChunkedActionQueue, PolicySource, RobotRuntime, SyncExecution, WorkerDiedError
 from physicalai.robot.interface import RobotObservation
 from physicalai.inference.model import InferenceModel
 from physicalai.inference.constants import IMAGES, STATE, TASK
@@ -122,7 +119,7 @@ class TestRobotRuntimeWithPolicySource:
             action_queue=queue,
         )
 
-        with patch("physicalai.runtime.runtime.time") as mock_time:
+        with patch("physicalai.runtime.core.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
             mock_time.time.return_value = 0.0
@@ -148,7 +145,7 @@ class TestRobotRuntimeWithPolicySource:
             action_queue=queue,
         )
 
-        with patch("physicalai.runtime.runtime.time") as mock_time:
+        with patch("physicalai.runtime.core.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
             mock_time.time.return_value = 0.0
@@ -178,7 +175,7 @@ class TestRobotRuntimeWithPolicySource:
             action_queue=queue,
         )
 
-        with patch("physicalai.runtime.runtime.time") as mock_time, pytest.raises(WorkerDiedError, match="dead"):
+        with patch("physicalai.runtime.core.time") as mock_time, pytest.raises(WorkerDiedError, match="dead"):
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
             mock_time.time.return_value = 0.0
@@ -196,7 +193,7 @@ class TestRobotRuntimeWithPolicySource:
             fps=10.0,
         )
 
-        with patch("physicalai.runtime.runtime.time") as mock_time:
+        with patch("physicalai.runtime.core.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
             mock_time.time.return_value = 0.0
@@ -229,7 +226,7 @@ class TestGenericActionSource:
         runtime = RobotRuntime(robot=robot, action_source=action_source, fps=10.0)
         runtime._connected = True  # noqa: SLF001
 
-        with patch("physicalai.runtime.runtime.time") as mock_time:
+        with patch("physicalai.runtime.core.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
             mock_time.time.return_value = 0.0
@@ -248,7 +245,7 @@ class TestGenericActionSource:
         runtime = RobotRuntime(robot=robot, action_source=action_source, fps=10.0)
         runtime._connected = True  # noqa: SLF001
 
-        with patch("physicalai.runtime.runtime.time") as mock_time:
+        with patch("physicalai.runtime.core.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
             mock_time.time.return_value = 0.0
@@ -265,7 +262,7 @@ class TestGenericActionSource:
         runtime = RobotRuntime(robot=robot, action_source=action_source, fps=10.0)
         runtime._connected = True  # noqa: SLF001
 
-        with patch("physicalai.runtime.runtime.time") as mock_time:
+        with patch("physicalai.runtime.core.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
             mock_time.time.return_value = 0.0
@@ -281,7 +278,7 @@ class TestGenericActionSource:
         runtime = RobotRuntime(robot=robot, action_source=action_source, fps=10.0)
         runtime._connected = True  # noqa: SLF001
 
-        with patch("physicalai.runtime.runtime.time") as mock_time:
+        with patch("physicalai.runtime.core.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
             mock_time.time.return_value = 0.0
@@ -306,7 +303,7 @@ class TestRuntimeCallback:
             callbacks=[callback],
         )
 
-        with patch("physicalai.runtime.runtime.time") as mock_time:
+        with patch("physicalai.runtime.core.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
             mock_time.time.return_value = 0.0
@@ -329,7 +326,7 @@ class TestRuntimeCallback:
             callbacks=[bad_callback],
         )
 
-        with patch("physicalai.runtime.runtime.time") as mock_time:
+        with patch("physicalai.runtime.core.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
             mock_time.time.return_value = 0.0
@@ -353,7 +350,7 @@ class TestRuntimeCallback:
             callbacks=[callback],
         )
 
-        with patch("physicalai.runtime.runtime.time") as mock_time:
+        with patch("physicalai.runtime.core.time") as mock_time:
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
             mock_time.time.return_value = 0.0
@@ -365,7 +362,7 @@ class TestRuntimeCallback:
 
 class TestLowPassFilterCallback:
     def test_low_pass_filtering_values(self) -> None:
-        from physicalai.runtime.runtime import LowPassFilterCallback
+        from physicalai.runtime import LowPassFilterCallback
 
         cb = LowPassFilterCallback(alpha=0.6)
 
@@ -381,7 +378,7 @@ class TestLowPassFilterCallback:
         assert np.allclose(res2, np.array([2.2, 3.2], dtype=np.float32))
 
     def test_low_pass_invalid_alpha(self) -> None:
-        from physicalai.runtime.runtime import LowPassFilterCallback
+        from physicalai.runtime import LowPassFilterCallback
 
         with pytest.raises(ValueError, match="alpha"):
             LowPassFilterCallback(alpha=0.0)
@@ -424,9 +421,9 @@ class _ConfigFakeModel(InferenceModel):
 
 
 _FAKE_ROBOT_PATH = f"{__name__}._ConfigFakeRobot"
-_SYNC_EXECUTION_PATH = "physicalai.runtime.execution.SyncExecution"
+_SYNC_EXECUTION_PATH = "physicalai.runtime.SyncExecution"
 _MODEL_PATH = f"{__name__}._ConfigFakeModel"
-_POLICY_SOURCE_PATH = "physicalai.runtime.controller.PolicySource"
+_POLICY_SOURCE_PATH = "physicalai.runtime.PolicySource"
 
 
 def _minimal_yaml(*, fps: float = 30.0, include_run_block: bool = False) -> str:

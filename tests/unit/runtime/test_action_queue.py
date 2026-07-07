@@ -4,7 +4,7 @@ import threading
 
 import numpy as np
 
-from physicalai.runtime._action_queue import ChunkedActionQueue
+from physicalai.runtime import ChunkedActionQueue
 from physicalai.runtime.smoothers import LerpSmoother, ReplaceSmoother
 
 

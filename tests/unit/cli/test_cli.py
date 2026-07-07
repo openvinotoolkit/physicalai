@@ -73,9 +73,9 @@ class FakeRobot:
 
 
 _FAKE_ROBOT = f"{__name__}.FakeRobot"
-_REAL_SYNC = "physicalai.runtime.execution.SyncExecution"
+_REAL_SYNC = "physicalai.runtime.SyncExecution"
 _REAL_MODEL = "physicalai.inference.model.InferenceModel"
-_POLICY_SOURCE = "physicalai.runtime.controller.PolicySource"
+_POLICY_SOURCE = "physicalai.runtime.PolicySource"
 
 _MINIMAL_ARGV: tuple[str, ...] = (
     f"--runtime.robot={_FAKE_ROBOT}",

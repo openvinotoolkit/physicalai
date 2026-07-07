@@ -35,6 +35,7 @@ class RTCActionQueue:
     """
 
     def __init__(self) -> None:
+        """Initialize an empty dual-track queue."""
         self._lock = threading.Lock()
         self._raw: np.ndarray | None = None
         self._processed: np.ndarray | None = None

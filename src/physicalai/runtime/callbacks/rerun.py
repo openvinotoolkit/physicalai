@@ -1,21 +1,14 @@
 # Copyright (C) 2025-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shipped callback implementations for the runtime callback bus."""
+"""In-process Rerun visualization callback."""
 
 from __future__ import annotations
 
 import colorsys
-import dataclasses
-import json
 import logging
-import threading
-import time
 from collections import deque
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
-
-from physicalai.capture.frame import Frame
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -23,176 +16,10 @@ if TYPE_CHECKING:
     import numpy as np
 
     from physicalai.capture.camera import Camera
+    from physicalai.capture.frame import Frame
     from physicalai.runtime.events import InferenceEvent, LifecycleEvent, MetricsEvent, TickEvent
 
 logger = logging.getLogger(__name__)
-
-
-class ConsoleCallback:
-    """Periodic one-line summary to stdout (~1 per second)."""
-
-    def __init__(self, throttle_steps: int = 30) -> None:  # noqa: D107
-        self._throttle_steps = throttle_steps
-        self._start_time: float | None = None
-        self._last_report_time: float | None = None
-        self._last_report_step: int = 0
-
-    def on_tick(self, event: TickEvent) -> None:  # noqa: D102
-        now = time.monotonic()
-        if self._start_time is None:
-            self._start_time = now
-            self._last_report_time = now
-            self._last_report_step = 0
-        if event.step > 0 and event.step % self._throttle_steps != 0:
-            return
-        last_report_time = self._last_report_time or now
-        dt = now - last_report_time
-        elapsed = now - self._start_time
-        actual_hz = (event.step - self._last_report_step) / dt if dt > 0 else 0.0
-        self._last_report_time = now
-        self._last_report_step = event.step
-        print(  # noqa: T201
-            f"[{elapsed:6.1f}s] step={event.step} "
-            f"hz={actual_hz:.0f} "
-            f"loop={event.loop_duration_s * 1000:.1f}ms"
-            f"{' STALE' if event.stale_obs else ''}",
-        )
-
-    def on_lifecycle(self, event: LifecycleEvent) -> None:  # noqa: D102, PLR6301
-        print(f"[lifecycle] {event.event}: {event.metadata}")  # noqa: T201
-
-
-class JsonlCallback:
-    """Append-only JSONL recording. Numpy arrays converted to lists."""
-
-    def __init__(self, path: str | Path, *, record_chunks: bool = False) -> None:  # noqa: D107
-        self._path = Path(path)
-        self._file = self._path.open("a")
-        self._record_chunks = record_chunks
-
-    def on_tick(self, event: TickEvent) -> None:  # noqa: D102
-        self._write(
-            "tick",
-            {
-                "session_id": event.session_id,
-                "step": event.step,
-                "timestamp": event.timestamp,
-                "joint_positions": _np_to_list(event.robot_state.joint_positions),
-                "action_sent": _np_to_list(event.action_sent),
-                "loop_duration_s": event.loop_duration_s,
-                "sleep_time_s": event.sleep_time_s,
-                "stale_obs": event.stale_obs,
-            },
-        )
-
-    def on_inference(self, event: InferenceEvent) -> None:  # noqa: D102
-        payload: dict[str, Any] = {
-            "session_id": event.session_id,
-            "timestamp": event.timestamp,
-            "latency_s": event.latency_s,
-            "offset": event.offset,
-            "chunk_shape": list(event.chunk.shape),
-        }
-        if self._record_chunks:
-            payload["chunk"] = event.chunk.tolist()
-        self._write("inference", payload)
-
-    def on_lifecycle(self, event: LifecycleEvent) -> None:  # noqa: D102
-        self._write(
-            "lifecycle",
-            {
-                "session_id": event.session_id,
-                "timestamp": event.timestamp,
-                "event": event.event,
-                "metadata": event.metadata,
-            },
-        )
-
-    def close(self) -> None:  # noqa: D102
-        self._file.close()
-
-    def _write(self, kind: str, payload: dict[str, Any]) -> None:
-        record = {"type": kind, **payload}
-        self._file.write(json.dumps(record, default=_json_default) + "\n")
-        self._file.flush()
-
-
-class AsyncCallback:
-    """Wraps a callback so all hooks run on a dedicated background thread.
-
-    The control loop only pays deque.append per event. On overflow, oldest
-    events are dropped.
-    """
-
-    _ACTION_HOOKS = ("on_action_ready", "on_action_sent")
-
-    def __init__(self, inner: Any, max_queue: int = 1024) -> None:  # noqa: D107, ANN401
-        dropped = [h for h in self._ACTION_HOOKS if hasattr(inner, h)]
-        if dropped:
-            msg = (
-                f"{type(inner).__name__} defines action hooks {dropped} which "
-                "AsyncCallback does not forward (use synchronous attachment instead)"
-            )
-            raise TypeError(msg)
-        self._inner = inner
-        self._queue: deque[tuple[str, Any]] = deque(maxlen=max_queue)
-        self._stop = threading.Event()
-        self._has_work = threading.Event()
-        self._thread = threading.Thread(target=self._worker, name="AsyncCallbackWorker", daemon=True)
-        self._thread.start()
-
-    def on_tick(self, event: TickEvent) -> None:
-        """Enqueue tick event, copying borrowed frame buffers to prevent dangling SHM refs.
-
-        Zero-copy SharedCamera frames are views into iceoryx2 shared memory that become
-        invalid on the next read_latest() call. Since the background worker may process
-        this event after the next tick, borrowed frames are replaced with owned copies
-        before enqueuing.
-        """
-        camera_frames = event.camera_frames
-        if any(not f.data.flags.owndata for f in camera_frames.values()):
-            copied = {
-                name: Frame(data=f.data.copy(), timestamp=f.timestamp, sequence=f.sequence)
-                if not f.data.flags.owndata
-                else f
-                for name, f in camera_frames.items()
-            }
-            event = dataclasses.replace(event, camera_frames=copied)
-        self._enqueue("on_tick", event)
-
-    def on_inference(self, event: InferenceEvent) -> None:
-        """Enqueue inference event for background processing."""
-        self._enqueue("on_inference", event)
-
-    def on_lifecycle(self, event: LifecycleEvent) -> None:
-        """Enqueue lifecycle event for background processing."""
-        self._enqueue("on_lifecycle", event)
-
-    def close(self) -> None:
-        """Stop the worker thread and close the inner callback."""
-        self._stop.set()
-        self._has_work.set()
-        self._thread.join(timeout=5.0)
-        close_fn = getattr(self._inner, "close", None)
-        if close_fn is not None:
-            close_fn()
-
-    def _enqueue(self, method: str, event: Any) -> None:  # noqa: ANN401
-        self._queue.append((method, event))
-        self._has_work.set()
-
-    def _worker(self) -> None:
-        while not self._stop.is_set():
-            self._has_work.wait()
-            self._has_work.clear()
-            while self._queue:
-                method, event = self._queue.popleft()
-                fn = getattr(self._inner, method, None)
-                if fn is not None:
-                    try:
-                        fn(event)
-                    except Exception:
-                        logger.exception("AsyncCallback inner %r.%s failed", self._inner, method)
 
 
 class RerunCallback:
@@ -575,12 +402,6 @@ class RerunCallback:
         rr.log("inference/stats", rr.TextDocument(md, media_type=rr.MediaType.MARKDOWN))
 
 
-def _np_to_list(arr: np.ndarray | None) -> list[float] | None:
-    if arr is None:
-        return None
-    return arr.tolist()
-
-
 def _downsample_to_max_dim(data: np.ndarray, max_dim: int) -> np.ndarray:
     """Subsample image so the longer side is <= ``max_dim``. No-op if already smaller.
 
@@ -593,16 +414,3 @@ def _downsample_to_max_dim(data: np.ndarray, max_dim: int) -> np.ndarray:
         return data
     stride = (longer + max_dim - 1) // max_dim  # ceil-divide
     return data[::stride, ::stride]
-
-
-def _json_default(obj: object) -> Any:  # noqa: ANN401
-    import numpy as np  # noqa: PLC0415
-
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    if isinstance(obj, np.integer):
-        return int(obj)
-    if isinstance(obj, np.floating):
-        return float(obj)
-    msg = f"Object of type {type(obj)} is not JSON serializable"
-    raise TypeError(msg)

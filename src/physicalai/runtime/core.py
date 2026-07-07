@@ -8,12 +8,12 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import TYPE_CHECKING, Protocol, Self, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, Self
 
 from physicalai.capture.errors import CaptureError
 from physicalai.runtime._callback_bus import _CallbackBus  # noqa: PLC2701
 from physicalai.runtime.events import LifecycleEvent, TickEvent
-from physicalai.runtime.execution import WorkerDiedError
+from physicalai.runtime.execution.base import WorkerDiedError
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from physicalai.capture.camera import Camera
     from physicalai.capture.frame import Frame
     from physicalai.robot.interface import Robot, RobotObservation
-    from physicalai.runtime.controller import ActionSource
+    from physicalai.runtime.action_sources.base import ActionSource
 
 logger = logging.getLogger(__name__)
 
@@ -33,55 +33,6 @@ _MAX_OBS_RETRIES = 3
 _MAX_SEND_RETRIES = 2
 _RETRY_BACKOFF_S = 0.001
 _GOAL_TIME_TICKS = 3
-
-
-@runtime_checkable
-class ActionQueue(Protocol):
-    """Protocol for a thread-safe action queue."""
-
-    def pop(self) -> np.ndarray | None:
-        """Pop the next action.
-
-        Returns:
-            Single action vector, or None if empty.
-        """
-        ...
-
-    @property
-    def remaining(self) -> int:
-        """Number of unconsumed actions in the queue."""
-        ...
-
-    @property
-    def consecutive_holds(self) -> int:
-        """Number of consecutive holds (resets on successful pop)."""
-        ...
-
-    @property
-    def total_holds(self) -> int:
-        """Total number of hold events (pop on empty queue)."""
-        ...
-
-    @property
-    def total_pops(self) -> int:
-        """Total number of actions popped."""
-        ...
-
-    def below_threshold(self, threshold: int) -> bool:
-        """Check if remaining actions are below threshold."""
-        ...
-
-    def clear(self) -> None:
-        """Clear all state from the queue."""
-        ...
-
-    def push_chunk(self, chunk: np.ndarray, offset: int = 0) -> None:
-        """Push an action chunk into the queue."""
-        ...
-
-    def reset(self) -> None:
-        """Clear queue and reset all counters for a fresh session."""
-        ...
 
 
 class RuntimeCallback(Protocol):
@@ -108,49 +59,6 @@ class RuntimeCallback(Protocol):
     def on_action_sent(self, *, action: np.ndarray, step: int) -> None:
         """Called after action is sent to robot. Notification only."""
         ...
-
-
-class LowPassFilterCallback:
-    """Stateful low-pass filter (Exponential Moving Average) callback for smooth actions.
-
-    Filters outgoing multidimensional joint positions/actions using a simple
-    discrete one-pole IIR filter (exponential moving average):
-        y_t = alpha * x_t + (1 - alpha) * y_{t-1}
-
-    Args:
-        alpha: Smoothing factor in range (0, 1]. A lower value introduces
-            more smoothing (heavy low-pass filter), whereas 1.0 is a no-op.
-    """
-
-    def __init__(self, alpha: float = 0.5) -> None:  # noqa: D107
-        if not (0.0 < alpha <= 1.0):
-            msg = f"alpha must be in (0, 1], got {alpha}"
-            raise ValueError(msg)
-        self.alpha = alpha
-        self._last_action: np.ndarray | None = None
-
-    def on_action_ready(self, *, action: np.ndarray, step: int) -> np.ndarray:  # noqa: ARG002
-        """Filter target action vector using previous action state.
-
-        Args:
-            action: The target raw/unfiltered joint configuration.
-            step: The iteration step index in the control loop.
-
-        Returns:
-            The smoothed/filtered action target configuration.
-        """
-        if self._last_action is None or self._last_action.shape != action.shape:
-            # First tick or shape mismatch: initialize filter state to current action
-            self._last_action = action.copy()
-            return action
-
-        # Apply low-pass recursive formula
-        filtered_action = self.alpha * action + (1.0 - self.alpha) * self._last_action
-        self._last_action = filtered_action.copy()
-        return filtered_action
-
-    def on_action_sent(self, *, action: np.ndarray, step: int) -> None:
-        """No-op."""
 
 
 class RobotRuntime:

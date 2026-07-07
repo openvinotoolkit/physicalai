@@ -38,8 +38,8 @@ from physicalai.runtime import (
     PolicySource,
     RerunCallback,
     RobotRuntime,
+    SyncExecution,
 )
-from physicalai.runtime.execution import SyncExecution
 
 from utils import build_robot, parse_camera_specs, prompt_torque_disable
 

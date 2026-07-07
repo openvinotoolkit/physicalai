@@ -18,14 +18,14 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from physicalai.runtime.execution import Execution, WorkerDiedError
+from physicalai.runtime.execution.base import Execution, WorkerDiedError
 
 if TYPE_CHECKING:
     from physicalai.inference.callbacks.rtc_latency import RTCLatencyTracker
     from physicalai.inference.model import InferenceModel
     from physicalai.inference.postprocessors.base import Postprocessor
     from physicalai.runtime._callback_bus import _CallbackBus
-    from physicalai.runtime._rtc_action_queue import RTCActionQueue
+    from physicalai.runtime.execution.rtc_queue import RTCActionQueue
 
 logger = logging.getLogger(__name__)
 

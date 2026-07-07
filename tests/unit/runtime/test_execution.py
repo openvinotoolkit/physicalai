@@ -7,8 +7,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from physicalai.runtime._action_queue import ChunkedActionQueue as ActionQueue, ChunkedActionQueue
-from physicalai.runtime.execution import AsyncExecution, SyncExecution, WorkerDiedError
+from physicalai.runtime import AsyncExecution, ChunkedActionQueue as ActionQueue, ChunkedActionQueue, SyncExecution, WorkerDiedError
 
 
 def _make_mock_model(chunk: np.ndarray | None = None) -> MagicMock:
@@ -281,8 +280,7 @@ class TestAsyncExecution:
 
 class TestRTCExecutionObsSlot:
     def test_worker_clears_obs_slot_after_consuming_warmup_sample(self) -> None:
-        from physicalai.runtime._rtc_action_queue import RTCActionQueue
-        from physicalai.runtime.rtc_execution import RTCExecution
+        from physicalai.runtime import RTCActionQueue, RTCExecution
 
         chunk_size = 20
         action_dim = 3

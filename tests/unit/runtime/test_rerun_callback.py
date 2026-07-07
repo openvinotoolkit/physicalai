@@ -39,7 +39,7 @@ def _patch_rerun(mock_rerun: MagicMock) -> Any:
 @pytest.fixture()
 def make_callback(_patch_rerun: Any, mock_rerun: MagicMock) -> Any:
     """Factory that creates a RerunCallback with the mocked rerun module."""
-    from physicalai.runtime.callbacks import RerunCallback
+    from physicalai.runtime import RerunCallback
 
     def _factory(**kwargs: Any) -> RerunCallback:
         defaults: dict[str, Any] = {"mode": "spawn"}
@@ -109,7 +109,7 @@ class TestRerunCallbackConstruction:
 
     def test_missing_rerun_raises_import_error(self) -> None:
         with patch.dict(sys.modules, {"rerun": None}):
-            from physicalai.runtime.callbacks import RerunCallback
+            from physicalai.runtime import RerunCallback
 
             with pytest.raises((ImportError, ModuleNotFoundError)):
                 RerunCallback(mode="spawn")

@@ -1,20 +1,73 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
+"""Action queue protocol and the default chunk-smoothing implementation."""
+
 from __future__ import annotations
 
 import threading
 from collections import deque
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 
 from physicalai.runtime.smoothers import ChunkSmoother, ReplaceSmoother
 
 
+@runtime_checkable
+class ActionQueue(Protocol):
+    """Protocol for a thread-safe action queue."""
+
+    def pop(self) -> np.ndarray | None:
+        """Pop the next action.
+
+        Returns:
+            Single action vector, or None if empty.
+        """
+        ...
+
+    @property
+    def remaining(self) -> int:
+        """Number of unconsumed actions in the queue."""
+        ...
+
+    @property
+    def consecutive_holds(self) -> int:
+        """Number of consecutive holds (resets on successful pop)."""
+        ...
+
+    @property
+    def total_holds(self) -> int:
+        """Total number of hold events (pop on empty queue)."""
+        ...
+
+    @property
+    def total_pops(self) -> int:
+        """Total number of actions popped."""
+        ...
+
+    def below_threshold(self, threshold: int) -> bool:
+        """Check if remaining actions are below threshold."""
+        ...
+
+    def clear(self) -> None:
+        """Clear all state from the queue."""
+        ...
+
+    def push_chunk(self, chunk: np.ndarray, offset: int = 0) -> None:
+        """Push an action chunk into the queue."""
+        ...
+
+    def reset(self) -> None:
+        """Clear queue and reset all counters for a fresh session."""
+        ...
+
+
 class ChunkedActionQueue:
     """Thread-safe action queue with chunk smoothing."""
 
     def __init__(self, smoother: ChunkSmoother | None = None) -> None:
+        """Initialize the queue with an optional chunk smoother."""
         self._smoother = smoother or ReplaceSmoother()
         self._deque: deque[np.ndarray] = deque()
         self._lock = threading.Lock()
@@ -55,26 +108,36 @@ class ChunkedActionQueue:
 
     @property
     def remaining(self) -> int:
+        """Number of unconsumed actions in the queue."""
         with self._lock:
             return len(self._deque)
 
     @property
     def consecutive_holds(self) -> int:
+        """Number of consecutive holds (resets on successful pop)."""
         return self._consecutive_holds
 
     @property
     def total_holds(self) -> int:
+        """Total number of hold events (pop on empty queue)."""
         return self._total_holds
 
     @property
     def total_pops(self) -> int:
+        """Total number of actions popped."""
         return self._total_pops
 
     def below_threshold(self, threshold: int) -> bool:
+        """Check if remaining actions are below threshold.
+
+        Returns:
+            True if the number of remaining actions is below the threshold.
+        """
         with self._lock:
             return len(self._deque) < threshold
 
     def clear(self) -> None:
+        """Clear all state from the queue."""
         with self._lock:
             self._deque.clear()
             self._consecutive_holds = 0
