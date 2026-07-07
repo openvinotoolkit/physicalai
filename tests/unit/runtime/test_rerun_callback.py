@@ -58,7 +58,7 @@ def _lifecycle_start(session_id: str = "sess-1", fps: int = 30) -> LifecycleEven
     )
 
 
-def _tick(step: int = 0, dof: int = 7) -> TickEvent:
+def _tick(step: int = 0, dof: int = 7, camera_frames: dict[str, Any] | None = None) -> TickEvent:
     return TickEvent(
         session_id="sess-1",
         step=step,
@@ -66,12 +66,19 @@ def _tick(step: int = 0, dof: int = 7) -> TickEvent:
         robot_state=FakeRobotObservation(
             joint_positions=np.arange(dof, dtype=np.float64),
         ),
-        camera_frames={},
+        camera_frames=camera_frames or {},
         action_sent=np.ones(dof, dtype=np.float64),
         loop_duration_s=0.033,
         sleep_time_s=0.0,
         stale_obs=False,
     )
+
+
+def _fake_frame() -> Any:
+    """A minimal stand-in for a Frame — just needs a ``.data`` array."""
+    frame = MagicMock()
+    frame.data = np.zeros((480, 640, 3), dtype=np.uint8)
+    return frame
 
 
 def _metrics(step: int = 0, *, queue_remaining: float = 5.0) -> MetricsEvent:
@@ -328,16 +335,10 @@ class TestRerunCallbackImageDecimation:
         cb = make_callback(image_decimation=3)
         cb.on_lifecycle(_lifecycle_start())
 
-        mock_sub = MagicMock()
-        mock_frame = MagicMock()
-        mock_frame.data = np.zeros((480, 640, 3), dtype=np.uint8)
-        mock_sub.read_latest.return_value = mock_frame
-        cb._camera_subscribers = {"top": mock_sub}
-
         image_logged_at: list[int] = []
         for step in range(6):
             mock_rerun.reset_mock()
-            cb.on_tick(_tick(step=step))
+            cb.on_tick(_tick(step=step, camera_frames={"top": _fake_frame()}))
             log_calls = mock_rerun.log.call_args_list
             if any("camera/top" in str(c.args[0]) for c in log_calls):
                 image_logged_at.append(step)
@@ -350,58 +351,38 @@ class TestRerunCallbackImageDecimation:
 
 
 @pytest.mark.usefixtures("_patch_rerun")
-class TestRerunCallbackCameraSubscribers:
-    def test_non_shared_camera_warns(self, make_callback: Any, mock_rerun: MagicMock, caplog: Any) -> None:
-        fake_camera = MagicMock()
-        fake_camera.__class__.__name__ = "FakeCamera"
+class TestRerunCallbackCameraFrames:
+    """RerunCallback takes no Camera reference — images come solely from TickEvent."""
 
-        cb = make_callback(cameras={"top": fake_camera})
+    def test_discovers_camera_names_from_first_tick(self, make_callback: Any) -> None:
+        cb = make_callback()
         cb.on_lifecycle(_lifecycle_start())
 
-        # Non-shared cameras are stored directly for reading on tick
-        assert cb._camera_subscribers == {"top": fake_camera}
+        assert cb._camera_names is None
+        cb.on_tick(_tick(step=0, camera_frames={"top": _fake_frame()}))
+        assert cb._camera_names == ["top"]
 
-    def test_shared_camera_subscriber_logs_frames(self, make_callback: Any, mock_rerun: MagicMock) -> None:
+    def test_logs_frames_directly_from_tick_event(self, make_callback: Any, mock_rerun: MagicMock) -> None:
         cb = make_callback(image_decimation=1)
         cb.on_lifecycle(_lifecycle_start())
 
-        mock_sub = MagicMock()
-        mock_frame = MagicMock()
-        mock_frame.data = np.zeros((480, 640, 3), dtype=np.uint8)
-        mock_sub.read_latest.return_value = mock_frame
-        cb._camera_subscribers = {"top": mock_sub}
-
         mock_rerun.reset_mock()
-        cb.on_tick(_tick(step=0))
+        cb.on_tick(_tick(step=0, camera_frames={"top": _fake_frame()}))
 
         log_calls = mock_rerun.log.call_args_list
         image_calls = [c for c in log_calls if "camera/top" in str(c.args[0])]
         assert len(image_calls) == 1
 
-    def test_close_disconnects_subscribers(self, make_callback: Any) -> None:
-        from physicalai.capture.transport._shared_camera import SharedCamera  # noqa: PLC0415
+    def test_no_camera_names_when_log_images_false(self, make_callback: Any, mock_rerun: MagicMock) -> None:
+        cb = make_callback(log_images=False)
+        cb.on_lifecycle(_lifecycle_start())
 
-        cb = make_callback()
-        mock_sub = MagicMock(spec=SharedCamera)
-        mock_sub2 = MagicMock(spec=SharedCamera)
-        cb._camera_subscribers = {"cam1": mock_sub, "cam2": mock_sub2}
+        mock_rerun.reset_mock()
+        cb.on_tick(_tick(step=0, camera_frames={"top": _fake_frame()}))
 
-        cb.close()
-
-        mock_sub.disconnect.assert_called_once()
-        mock_sub2.disconnect.assert_called_once()
-        assert cb._camera_subscribers == {}
-
-    def test_close_handles_disconnect_error(self, make_callback: Any) -> None:
-        from physicalai.capture.transport._shared_camera import SharedCamera  # noqa: PLC0415
-
-        cb = make_callback()
-        mock_sub = MagicMock(spec=SharedCamera)
-        mock_sub.disconnect.side_effect = RuntimeError("connection lost")
-        cb._camera_subscribers = {"cam1": mock_sub}
-
-        cb.close()
-        assert cb._camera_subscribers == {}
+        assert cb._camera_names == []
+        image_calls = [c for c in mock_rerun.log.call_args_list if "camera/top" in str(c.args[0])]
+        assert len(image_calls) == 0
 
 
 @pytest.mark.usefixtures("_patch_rerun")

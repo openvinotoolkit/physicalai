@@ -153,7 +153,6 @@ def main() -> None:
     if args.rerun != "off":
         callbacks.append(
             RerunCallback(
-                cameras=cameras,
                 image_decimation=args.rerun_image_decimation,
                 log_images=not args.rerun_no_images,
                 image_jpeg_quality=args.rerun_jpeg_quality,

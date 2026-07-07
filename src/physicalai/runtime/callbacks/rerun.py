@@ -15,7 +15,6 @@ if TYPE_CHECKING:
 
     import numpy as np
 
-    from physicalai.capture.camera import Camera
     from physicalai.capture.frame import Frame
     from physicalai.runtime.events import InferenceEvent, LifecycleEvent, MetricsEvent, TickEvent
 
@@ -26,7 +25,11 @@ class RerunCallback:
     """In-process Rerun logging for runtime visualization.
 
     Requires ``physicalai[observer-rerun]``.  Logs scalars and chunks every
-    tick / inference event, and camera frames at ``image_decimation``-th tick.
+    tick / inference event, and camera frames (from ``TickEvent.camera_frames``
+    — the same values the action source saw that tick, no independent camera
+    read) at ``image_decimation``-th tick. Camera names for the blueprint
+    layout are discovered lazily from the first tick's ``camera_frames`` keys,
+    so this callback never holds a ``Camera`` reference of its own.
 
     Do NOT wrap with :class:`AsyncCallback` — Rerun's SDK already batches I/O
     asynchronously.  The ``AsyncCallback`` guard (rejects inners with action
@@ -37,7 +40,6 @@ class RerunCallback:
     def __init__(  # noqa: D107
         self,
         *,
-        cameras: Mapping[str, Camera] | None = None,
         image_decimation: int = 3,
         log_images: bool = True,
         image_jpeg_quality: int | None = None,
@@ -53,7 +55,6 @@ class RerunCallback:
         # Fail fast if rerun-sdk is not installed.
         import rerun as rr  # noqa: PLC0415, F401
 
-        self._cameras = cameras
         self._image_decimation = image_decimation
         self._log_images = log_images
         self._image_jpeg_quality = image_jpeg_quality
@@ -68,7 +69,7 @@ class RerunCallback:
         self._pred_horizon: int = 0
         self._initialized = False
         self._blueprint_updated = False
-        self._camera_subscribers: dict[str, Any] = {}
+        self._camera_names: list[str] | None = None
         self._latencies: deque[float] = deque(maxlen=200)
 
     def on_lifecycle(self, event: LifecycleEvent) -> None:  # noqa: D102
@@ -93,8 +94,17 @@ class RerunCallback:
         rr.log("runtime/sleep_time_s", rr.Scalars(event.sleep_time_s))
         rr.log("runtime/stale_obs", rr.Scalars(float(event.stale_obs)))
 
+        if self._camera_names is None:
+            # Discover camera names from the first tick's already-read frames —
+            # no independent camera reference needed. Resend the blueprint once
+            # real names are known (same pattern as the horizon refinement in
+            # on_inference below).
+            self._camera_names = list(event.camera_frames.keys()) if self._log_images else []
+            if self._camera_names:
+                self._send_default_blueprint()
+
         if self._log_images and event.step % self._image_decimation == 0:
-            self._log_camera_frames()
+            self._log_camera_frames(event.camera_frames)
 
     @staticmethod
     def on_metrics(event: MetricsEvent) -> None:
@@ -159,28 +169,6 @@ class RerunCallback:
             self._blueprint_updated = True
             self._send_default_blueprint()
 
-    def close(self) -> None:
-        """Release independent camera subscribers and publishers (SharedCamera only)."""
-        from physicalai.capture.transport._shared_camera import SharedCamera  # noqa: PLC0415, PLC2701
-
-        for sub in self._camera_subscribers.values():
-            if not isinstance(sub, SharedCamera):
-                continue
-            try:
-                sub.disconnect()
-            except Exception:
-                logger.exception("Error closing RerunCallback camera subscriber")
-        self._camera_subscribers.clear()
-
-        # Disconnect publisher-owning originals that we connected.
-        for cam in (self._cameras or {}).values():
-            if not isinstance(cam, SharedCamera):
-                continue
-            try:
-                cam.disconnect()
-            except Exception:
-                logger.exception("Error closing RerunCallback camera publisher")
-
     def _init_rerun(self, session_id: str, metadata: dict[str, Any]) -> None:
         import rerun as rr  # noqa: PLC0415
 
@@ -201,7 +189,6 @@ class RerunCallback:
         self._initialized = True
 
         self._send_series_styles()
-        self._open_camera_subscribers()
         self._send_default_blueprint()
 
     @staticmethod
@@ -252,7 +239,7 @@ class RerunCallback:
             logger.debug("rerun.blueprint not available; skipping default blueprint")
             return
 
-        camera_names = list((self._cameras or {}).keys()) if self._log_images else []
+        camera_names = self._camera_names or []
         fps = int(self._fps)
         horizon = self._pred_horizon or int(fps * 1.5)  # best-guess until first inference
 
@@ -315,38 +302,15 @@ class RerunCallback:
         except Exception:
             logger.debug("Failed to send Rerun blueprint", exc_info=True)
 
-    def _open_camera_subscribers(self) -> None:
-        if not self._log_images:
-            return
-        from physicalai.capture.transport._shared_camera import SharedCamera  # noqa: PLC0415, PLC2701
+    def _log_camera_frames(self, camera_frames: Mapping[str, Frame]) -> None:
+        """Log camera images from the same frames the action source saw this tick.
 
-        for name, cam in (self._cameras or {}).items():
-            if isinstance(cam, SharedCamera):
-                # Connect the original instance first — this spawns the
-                # publisher process if one isn't already running.
-                if not cam._connected:  # noqa: SLF001
-                    cam.connect()
-                # Create a lightweight subscriber-only clone so we don't
-                # share the publisher-owning instance's lifecycle.
-                sub = SharedCamera(
-                    camera_type=None,
-                    service_name=cam.service_name,
-                    validate_on_connect=False,
-                )
-                sub.connect()
-                self._camera_subscribers[name] = sub
-            else:
-                # Direct camera — read from it on tick (no separate subscriber needed)
-                self._camera_subscribers[name] = cam
-
-    def _log_camera_frames(self) -> None:
+        No independent camera read — ``camera_frames`` is exactly
+        ``TickEvent.camera_frames``, already read once by the runtime.
+        """
         import rerun as rr  # noqa: PLC0415
 
-        for name, sub in self._camera_subscribers.items():
-            frame = self._read_camera_frame(sub, name)
-            if frame is None:
-                continue
-
+        for name, frame in camera_frames.items():
             data = frame.data
             if self._image_max_dim is not None:
                 data = _downsample_to_max_dim(data, self._image_max_dim)
@@ -355,14 +319,6 @@ class RerunCallback:
             if self._image_jpeg_quality is not None:
                 img = img.compress(jpeg_quality=self._image_jpeg_quality)
             rr.log(f"camera/{name}", img)
-
-    @staticmethod
-    def _read_camera_frame(sub: Any, name: str) -> Frame | None:  # noqa: ANN401
-        try:
-            return sub.read_latest()
-        except Exception:
-            logger.debug("RerunCallback: failed to read camera %r", name, exc_info=True)
-            return None
 
     def _log_lifecycle_marker(self, event: LifecycleEvent) -> None:
         import rerun as rr  # noqa: PLC0415

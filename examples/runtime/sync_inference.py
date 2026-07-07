@@ -115,7 +115,6 @@ def main() -> None:
     if args.rerun != "off":
         callbacks.append(
             RerunCallback(
-                cameras=cameras,
                 log_images=True,
                 mode=args.rerun,
                 connect_addr=args.rerun_addr,
