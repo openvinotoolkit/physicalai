@@ -108,6 +108,7 @@ component_registry.register("new_line", "physicalai.inference.preprocessors.NewL
 component_registry.register("hf_tokenizer", "physicalai.inference.preprocessors.HFTokenizer")
 component_registry.register("ov_tokenizer", "physicalai.inference.preprocessors.OVTokenizer")
 component_registry.register("pi05", "physicalai.inference.preprocessors.Pi05Preprocessor")
+component_registry.register("uint8_to_float", "physicalai.inference.preprocessors.Uint8ToFloatPreprocessor")
 
 # Postprocessors
 component_registry.register("denormalize", "physicalai.inference.postprocessors.StatsDenormalizer")

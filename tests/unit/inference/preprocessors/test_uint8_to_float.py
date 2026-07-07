@@ -1,0 +1,62 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+import numpy as np
+
+from physicalai.inference.constants import IMAGES
+from physicalai.inference.preprocessors import Preprocessor, Uint8ToFloatPreprocessor
+
+
+class TestUint8ToFloatPreprocessor:
+    def test_is_preprocessor(self) -> None:
+        prep = Uint8ToFloatPreprocessor()
+        assert isinstance(prep, Preprocessor)
+
+    def test_single_array_is_normalized(self) -> None:
+        prep = Uint8ToFloatPreprocessor()
+        img = np.full((1, 3, 8, 8), 255, dtype=np.uint8)
+        result = prep({IMAGES: img})
+        out = result[IMAGES]
+        assert out.dtype == np.float32
+        assert np.allclose(out, 1.0)
+
+    def test_zero_maps_to_zero(self) -> None:
+        prep = Uint8ToFloatPreprocessor()
+        img = np.zeros((1, 3, 8, 8), dtype=np.uint8)
+        result = prep({IMAGES: img})
+        assert np.allclose(result[IMAGES], 0.0)
+
+    def test_midpoint_value(self) -> None:
+        prep = Uint8ToFloatPreprocessor()
+        img = np.full((1, 3, 4, 4), 128, dtype=np.uint8)
+        result = prep({IMAGES: img})
+        assert np.allclose(result[IMAGES], 128 / 255.0)
+
+    def test_float_input_is_unchanged(self) -> None:
+        prep = Uint8ToFloatPreprocessor()
+        img = np.random.rand(1, 3, 8, 8).astype(np.float32)
+        result = prep({IMAGES: img})
+        assert result[IMAGES].dtype == np.float32
+        assert np.array_equal(result[IMAGES], img)
+
+    def test_nested_image_dict(self) -> None:
+        prep = Uint8ToFloatPreprocessor()
+        images = {"cam0": np.full((1, 3, 8, 8), 255, dtype=np.uint8)}
+        result = prep({IMAGES: images})
+        out = result[IMAGES]["cam0"]
+        assert out.dtype == np.float32
+        assert np.allclose(out, 1.0)
+
+    def test_flat_image_keys(self) -> None:
+        prep = Uint8ToFloatPreprocessor()
+        inputs = {
+            "images.cam0": np.full((1, 3, 8, 8), 255, dtype=np.uint8),
+            "images.cam0.is_pad": np.zeros((1,), dtype=bool),
+        }
+        result = prep(inputs)
+        assert result["images.cam0"].dtype == np.float32
+        assert np.allclose(result["images.cam0"], 1.0)
+        # is_pad keys are left untouched.
+        assert result["images.cam0.is_pad"].dtype == bool
