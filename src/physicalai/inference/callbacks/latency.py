@@ -41,7 +41,7 @@ class LatencyMonitor(Callback):
 
     Examples:
         >>> latency = LatencyMonitor(window_size=200)
-        >>> model = InferenceModel.load("./exports/act", callbacks=[latency])
+        >>> model = InferenceModel("./exports/act", callbacks=[latency])
         >>> for obs in observations:
         ...     action = model.select_action(obs)
         >>> print(

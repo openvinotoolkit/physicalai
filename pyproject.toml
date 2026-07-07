@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "physicalai"
-version = "0.1.1"
+dynamic = ["version"]
 requires-python = ">=3.11"
 description = "Lightweight runtime for physical AI inference"
 readme = "README.md"
@@ -26,6 +26,7 @@ dependencies = [
     "pydantic>=2.5",
     "pyyaml>=6.0",
     "opencv-python-headless",
+    "huggingface_hub>=0.34,<2.0",
     "transformers>=5.3.0,<5.4.0",
     "num2words>=0.5.14,<0.6.0",
     "safetensors>=0.4.3,<1.0.0",
@@ -75,6 +76,9 @@ robots = [
 [dependency-groups]
 dev = ["pytest", "mypy", "pyrefly", "ruff>=0.15.12", "prek"]
 docs = ["mkdocs>=1.6", "mkdocs-material>=9.6"]
+
+[tool.hatch.version]
+source = "vcs"
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -132,7 +136,7 @@ exclude = [
     "notebooks",
 ]
 src = ["src", "tests"]
-extend-exclude = ["docs", "examples", "tests", "notebooks"]
+extend-exclude = ["docs", "examples", "tests", "notebooks", ".github/scripts"]
 
 [tool.ruff.lint]
 select = ["ALL"]

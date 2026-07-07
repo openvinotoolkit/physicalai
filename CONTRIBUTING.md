@@ -59,6 +59,11 @@ Write clear, concise messages. Reference issue numbers when applicable.
 - For security vulnerabilities, follow [SECURITY.md](./SECURITY.md) and do not open a public issue.
 - Participate according to the [Code of Conduct](./CODE_OF_CONDUCT.md).
 
+## Agent and Copilot Guidance
+
+- [AGENTS.md](./AGENTS.md) — canonical, vendor-neutral repo guide for humans and coding agents.
+- [skills/README.md](./skills/README.md) — repo-specific agent skills and authoring rules.
+
 ## Coding Standards
 
 See [.github/copilot-instructions.md](./.github/copilot-instructions.md) for detailed coding standards, style guides, and best practices.

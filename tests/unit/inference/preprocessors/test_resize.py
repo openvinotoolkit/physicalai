@@ -122,3 +122,20 @@ class TestResizePreprocessor:
         assert out.shape == (1, 3, 32, 32)
         assert out.dtype == np.float32
         assert np.allclose(out, 1.0)
+
+    def test_uint8_resize_matches_float_within_quantization_error(self) -> None:
+        prep = ResizePreprocessor(image_resolution=(96, 96), mode=ResizeMode.LETTERBOX)
+        rng = np.random.default_rng(0)
+
+        # Random fp32 image in [0, 1] and its uint8 quantized counterpart.
+        img_float = rng.random((1, 3, 48, 64), dtype=np.float32)
+        img_uint8 = (img_float * 255.0).round().astype(np.uint8)
+
+        out_float = prep({IMAGES: img_float})[IMAGES]
+        out_uint8 = prep({IMAGES: img_uint8})[IMAGES]
+
+        assert out_float.shape == out_uint8.shape
+        # Average per-pixel difference should be on the order of the uint8
+        # quantization step (1/255 ~= 0.0039).
+        mean_abs_diff = np.mean(np.abs(out_float - out_uint8))
+        assert mean_abs_diff < 1.0 / 255.0

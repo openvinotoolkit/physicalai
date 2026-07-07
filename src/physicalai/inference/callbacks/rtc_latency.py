@@ -33,7 +33,7 @@ class RTCLatencyTracker(Callback):
 
     Examples:
         >>> tracker = RTCLatencyTracker()
-        >>> model = InferenceModel.load("./exports/pi05_rtc", callbacks=[tracker])
+        >>> model = InferenceModel("./exports/pi05_rtc", callbacks=[tracker])
         >>> # After some predictions:
         >>> delay = tracker.compute_delay(fps=30, chunk_size=50, execution_horizon=10)
     """

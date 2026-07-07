@@ -176,11 +176,6 @@ class TestInferenceModelInit:
 
         assert InferenceModel(export_dir, backend=backend_str).backend == expected
 
-    def test_load_classmethod(self, tmp_path: Path) -> None:
-        model = InferenceModel.load(_make_export_dir(tmp_path))
-        assert isinstance(model, InferenceModel)
-        assert model.policy_name == "act"
-
     def test_init_auto_selects_single_pass_runner(self, tmp_path: Path) -> None:
         export_dir = _make_export_dir(tmp_path, use_action_queue=False, chunk_size=1)
         assert isinstance(InferenceModel(export_dir).runner, SinglePass)
@@ -726,6 +721,58 @@ class TestPipelineWiring:
             call_args = mock_adapter.predict.call_args[0][0]
             np.testing.assert_array_almost_equal(call_args["state"], np.array([10.0]))
             np.testing.assert_array_almost_equal(outputs["action"], np.array([[1.0]]))
+
+
+@pytest.mark.usefixtures("_patch_adapter")
+class TestHubLoading:
+    def test_from_pretrained_downloads_and_loads(self, tmp_path: Path) -> None:
+        export_dir = _make_export_dir(tmp_path)
+        with patch(
+            "physicalai.inference.model.download_from_hub",
+            return_value=export_dir,
+        ) as mock_download:
+            model = InferenceModel.from_pretrained(
+                "physical-ai/act-cube",
+                revision="v1.0",
+                cache_dir="/tmp/cache",
+            )
+
+        assert isinstance(model, InferenceModel)
+        assert model.policy_name == "act"
+        mock_download.assert_called_once_with(
+            "physical-ai/act-cube",
+            revision="v1.0",
+            cache_dir="/tmp/cache",
+            allow_patterns=None,
+        )
+
+    def test_from_pretrained_forwards_kwargs(self, tmp_path: Path) -> None:
+        export_dir = _make_export_dir(tmp_path, backend="onnx")
+        with patch(
+            "physicalai.inference.model.download_from_hub",
+            return_value=export_dir,
+        ):
+            model = InferenceModel.from_pretrained("physical-ai/act-cube", backend="onnx")
+
+        assert model.backend == "onnx"
+
+    def test_from_pretrained_rejects_export_dir(self) -> None:
+        with patch("physicalai.inference.model.download_from_hub") as mock_download, pytest.raises(
+            TypeError, match="does not accept export_dir"
+        ):
+            InferenceModel.from_pretrained("physical-ai/act-cube", export_dir="/tmp/leak")
+
+        mock_download.assert_not_called()
+
+    def test_from_pretrained_loads_local_path_without_download(self, tmp_path: Path) -> None:
+        export_dir = _make_export_dir(tmp_path)
+        with patch("physicalai.inference.model.download_from_hub") as mock_download:
+            model = InferenceModel.from_pretrained(str(export_dir))
+
+        assert isinstance(model, InferenceModel)
+        assert model.policy_name == "act"
+        assert model.export_dir == export_dir
+        mock_download.assert_not_called()
 
 
 @pytest.mark.usefixtures("_patch_adapter")

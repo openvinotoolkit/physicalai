@@ -12,8 +12,7 @@ runtime = RobotRuntime(
     fps=30,
     robot=SO101(port="/dev/ttyACM0"),
     action_source=PolicySource(
-        model=InferenceModel.load("./exports/act_policy"),
-        execution=SyncExecution(),
+        model=InferenceModel("./exports/act_policy"),
     ),
     cameras={
         "wrist": UVCCamera(device="/dev/video0", width=640, height=480),

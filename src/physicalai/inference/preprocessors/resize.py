@@ -38,7 +38,7 @@ class ResizePreprocessor(Preprocessor):
         image_resolution: tuple[int, int],
         *,
         mode: ResizeMode | str = ResizeMode.LETTERBOX,
-        pad_value: int = 0,
+        pad_value: float = 0,
     ) -> None:
         """Initialize the resize preprocessor."""
         super().__init__()
@@ -105,27 +105,30 @@ class ResizePreprocessor(Preprocessor):
 
         Raises:
             ValueError: If the input array does not have 4 dimensions, or if it
-                has an unsupported dtype (not ``uint8`` or floating point).
+                has an unsupported dtype (not ``uint8`` or floating point),
+                or if the ``pad_value`` is out of range for ``uint8`` inputs.
         """
         img_dim = 4
         if img.ndim != img_dim:
             msg = f"(B,C,H,W) expected, but {img.shape}"
             raise ValueError(msg)
 
-        if img.dtype == np.uint8:
-            img = img.astype(np.float32) / 255.0
-        elif np.issubdtype(img.dtype, np.floating):
+        if img.dtype == np.uint8 and self._pad_value > np.iinfo(np.uint8).max:
+            msg = f"pad_value {self._pad_value} is out of range for uint8 inputs"
+            raise ValueError(msg)
+
+        if np.issubdtype(img.dtype, np.floating):
             img = img.astype(np.float32)
-        else:
+        elif img.dtype != np.uint8:
             msg = f"Unsupported image dtype: {img.dtype}"
             raise ValueError(msg)
 
         channels_last = img.shape[-1] == 3 and img.shape[1] != 3  # noqa: PLR2004
-        if channels_last:
-            img = np.transpose(img, (0, 3, 1, 2))  # (B, H, W, C) -> (B, C, H, W)
+        if not channels_last:
+            img = np.transpose(img, (0, 2, 3, 1))  # (B, C, H, W) -> (B, H, W, C)
 
         target_height, target_width = self._image_resolution
-        cur_height, cur_width = img.shape[2:]
+        cur_height, cur_width = img.shape[1:3]
 
         if self._mode == ResizeMode.LETTERBOX:
             ratio = max(cur_width / target_width, cur_height / target_height)
@@ -136,7 +139,7 @@ class ResizePreprocessor(Preprocessor):
             resized_width = target_width
 
         if (resized_height, resized_width) != (cur_height, cur_width):
-            img = self._resize_bchw(img, resized_width, resized_height)
+            img = self._resize_bhwc(img, resized_width, resized_height)
 
         if self._mode == ResizeMode.LETTERBOX:
             pad_height = target_height - resized_height
@@ -148,30 +151,33 @@ class ResizePreprocessor(Preprocessor):
                 pad_right = pad_width - pad_left
                 img = np.pad(
                     img,
-                    ((0, 0), (0, 0), (pad_top, pad_bottom), (pad_left, pad_right)),
+                    ((0, 0), (pad_top, pad_bottom), (pad_left, pad_right), (0, 0)),
                     constant_values=self._pad_value,
                 )
 
-        return img
+        output_transposed = np.transpose(img, (0, 3, 1, 2))  # (B, H, W, C) -> (B, C, H, W)
+
+        if output_transposed.dtype == np.uint8:
+            output_transposed = output_transposed.astype(np.float32) / 255.0
+
+        return output_transposed
 
     @staticmethod
-    def _resize_bchw(img: np.ndarray, width: int, height: int) -> np.ndarray:
-        """Bilinear resize of a ``(batch, channels, height, width)`` array.
+    def _resize_bhwc(img: np.ndarray, width: int, height: int) -> np.ndarray:
+        """Bilinear resize of a ``(batch, height, width, channels)`` array.
 
         Args:
-            img: Input array in channels-first layout.
+            img: Input array in channels-last layout.
             width: Target width.
             height: Target height.
 
         Returns:
-            Resized array in channels-first layout.
+            Resized array in channels-last layout.
         """
-        img_hwc = np.transpose(img, (0, 2, 3, 1))  # (B, H, W, C)
         resized = []
-        for i in range(img_hwc.shape[0]):
-            out = cv2.resize(img_hwc[i], (width, height), interpolation=cv2.INTER_LINEAR)
+        for i in range(img.shape[0]):
+            out = cv2.resize(img[i], (width, height), interpolation=cv2.INTER_LINEAR)
             if out.ndim == 2:  # noqa: PLR2004
                 out = out[:, :, np.newaxis]
             resized.append(out)
-        stacked = np.stack(resized, axis=0)  # (B, H, W, C)
-        return np.transpose(stacked, (0, 3, 1, 2))  # (B, C, H, W)
+        return np.stack(resized, axis=0)  # (B, H, W, C)

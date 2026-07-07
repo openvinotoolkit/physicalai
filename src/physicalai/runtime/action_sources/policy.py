@@ -13,6 +13,7 @@ import numpy as np
 from physicalai.inference.constants import IMAGES, STATE, TASK
 from physicalai.runtime.events import MetricsEvent
 from physicalai.runtime.execution.queue import ChunkedActionQueue
+from physicalai.runtime.execution.sync import SyncExecution
 from physicalai.runtime.smoothers import LerpSmoother
 
 if TYPE_CHECKING:
@@ -34,14 +35,14 @@ class PolicySource:
     def __init__(
         self,
         model: InferenceModel,
-        execution: Execution,
+        execution: Execution | None = None,
         action_queue: ActionQueue | None = None,
         *,
         task: str | None = None,
     ) -> None:
         """Initialize a policy-backed action source."""
         self._model = model
-        self._execution = execution
+        self._execution = execution or SyncExecution()
         self._action_queue = action_queue or ChunkedActionQueue(
             smoother=LerpSmoother(duration_frames=_DEFAULT_LERP_FRAMES)
         )
