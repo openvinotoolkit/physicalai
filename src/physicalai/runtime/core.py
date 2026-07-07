@@ -18,6 +18,7 @@ from physicalai.runtime.execution.base import WorkerDiedError
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
+    from typing import Any
 
     import numpy as np
 
@@ -36,7 +37,7 @@ _GOAL_TIME_TICKS = 3
 
 
 class RuntimeCallback(Protocol):
-    """Optional action-transform hooks in the RobotRuntime control loop.
+    """Optional action-transform hooks a callback may implement.
 
     Only ``on_action_ready``/``on_action_sent`` are part of this protocol — the
     fire-and-forget telemetry hooks (``on_tick``, ``on_inference``,
@@ -70,7 +71,7 @@ class RobotRuntime:
         action_source: ActionSource,
         fps: float,
         cameras: Mapping[str, Camera] | None = None,
-        callbacks: Sequence[RuntimeCallback] = (),
+        callbacks: Sequence[Any] = (),
     ) -> None:
         if fps <= 0:
             msg = f"fps must be positive, got {fps}"
