@@ -16,7 +16,7 @@ from physicalai.inference.preprocessors.pi05 import Pi05Preprocessor
 from physicalai.inference.preprocessors.resize import ResizeMode, ResizePreprocessor
 from physicalai.inference.preprocessors.smolvla import ResizeSmolVLA
 from physicalai.inference.preprocessors.stats_normalizer import StatsNormalizer
-from physicalai.inference.preprocessors.uint8_to_float import Uint8ToFloatPreprocessor
+from physicalai.inference.preprocessors.to_tensor import ToFloatTensorPreprocessor
 
 __all__ = [
     "HFTokenizer",
@@ -29,5 +29,5 @@ __all__ = [
     "ResizePreprocessor",
     "ResizeSmolVLA",
     "StatsNormalizer",
-    "Uint8ToFloatPreprocessor",
+    "ToFloatTensorPreprocessor",
 ]

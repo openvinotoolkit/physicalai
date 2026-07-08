@@ -12,8 +12,8 @@ from physicalai.inference.constants import IMAGES
 from .base import Preprocessor
 
 
-class Uint8ToFloatPreprocessor(Preprocessor):
-    """Convert ``uint8`` observation images to ``float32`` in the [0, 1] range.
+class ToFloatTensorPreprocessor(Preprocessor):
+    """Convert observation images to ``float32`` tensor in the [0, 1] range.
 
     ``uint8`` image arrays are divided by 255.0 and cast to ``float32``.
     Non-``uint8`` image arrays keep their dtype unchanged.
@@ -28,7 +28,7 @@ class Uint8ToFloatPreprocessor(Preprocessor):
         self,
         inputs: dict[str, np.ndarray | dict[str, np.ndarray]],
     ) -> dict[str, np.ndarray | dict[str, np.ndarray]]:
-        """Convert observation images from ``uint8`` to ``float32`` in [0, 1].
+        """Convert observation images to ``float32`` tensor in the [0, 1] range.
 
         Images may be provided as a single array under the ``images`` key, a
         nested ``{camera: array}`` dict under ``images``, or flat ``images.*``
@@ -84,9 +84,18 @@ class Uint8ToFloatPreprocessor(Preprocessor):
         Returns:
             The image as ``float32`` scaled to [0, 1] if the input is
             ``uint8``, otherwise the array unchanged.
+
+        Raises:
+            ValueError: If the input array has an unsupported dtype (not ``uint8`` or floating point).
         """
         if img.dtype == np.uint8:
             return img.astype(np.float32) / 255.0
+        if np.issubdtype(img.dtype, np.floating):
+            img = img.astype(np.float32)
+        else:
+            msg = f"Unsupported image dtype: {img.dtype}"
+            raise ValueError(msg)
+
         return img
 
     @staticmethod
