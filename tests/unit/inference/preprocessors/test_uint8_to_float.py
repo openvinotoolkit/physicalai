@@ -60,3 +60,34 @@ class TestUint8ToFloatPreprocessor:
         assert np.allclose(result["images.cam0"], 1.0)
         # is_pad keys are left untouched.
         assert result["images.cam0.is_pad"].dtype == bool
+
+    def test_channels_last_is_transposed_to_channels_first(self) -> None:
+        prep = Uint8ToFloatPreprocessor()
+        chw = np.random.randint(0, 256, size=(1, 3, 8, 6), dtype=np.uint8)
+        hwc = np.transpose(chw, (0, 2, 3, 1))
+        result = prep({IMAGES: hwc})
+        out = result[IMAGES]
+        assert out.dtype == np.float32
+        assert out.shape == (1, 3, 8, 6)
+        np.testing.assert_allclose(out, chw.astype(np.float32) / 255.0)
+
+    def test_channels_first_layout_is_preserved(self) -> None:
+        prep = Uint8ToFloatPreprocessor()
+        img = np.random.randint(0, 256, size=(1, 3, 8, 6), dtype=np.uint8)
+        result = prep({IMAGES: img})
+        assert result[IMAGES].shape == (1, 3, 8, 6)
+
+    def test_channels_last_float_input_is_transposed(self) -> None:
+        prep = Uint8ToFloatPreprocessor()
+        img = np.random.rand(1, 8, 6, 3).astype(np.float32)
+        result = prep({IMAGES: img})
+        assert result[IMAGES].dtype == np.float32
+        assert result[IMAGES].shape == (1, 3, 8, 6)
+        np.testing.assert_array_equal(result[IMAGES], np.transpose(img, (0, 3, 1, 2)))
+
+    def test_non_4d_array_layout_is_unchanged(self) -> None:
+        prep = Uint8ToFloatPreprocessor()
+        img = np.full((8, 8, 3), 255, dtype=np.uint8)
+        result = prep({IMAGES: img})
+        assert result[IMAGES].shape == (8, 8, 3)
+        assert result[IMAGES].dtype == np.float32
