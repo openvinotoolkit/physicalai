@@ -416,7 +416,10 @@ class RobotRuntime:
         )
 
     def _shutdown(self, step: int) -> None:
-        self._action_source.disconnect()
+        try:
+            self._action_source.disconnect()
+        except Exception:
+            logger.exception("Action source disconnect failed")
 
         self._bus.emit_lifecycle(
             LifecycleEvent(

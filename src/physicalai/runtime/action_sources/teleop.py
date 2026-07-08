@@ -8,6 +8,8 @@ from __future__ import annotations
 import contextlib
 from typing import TYPE_CHECKING
 
+from physicalai.runtime.action_sources.base import ActionSource
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
@@ -18,7 +20,7 @@ if TYPE_CHECKING:
     from physicalai.runtime._callback_bus import _CallbackBus
 
 
-class TeleopSource:
+class TeleopSource(ActionSource):
     """Action source that reads a leader arm and writes to the follower.
 
     The action source is the leader device, not the follower's observation or

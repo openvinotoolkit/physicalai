@@ -76,7 +76,11 @@ class _CallbackBus:
             if fn is None:
                 continue
             try:
-                result = fn(action=result, step=step)
+                modified_action = fn(action=result, step=step)
+                if modified_action is None:
+                    logger.warning("Callback %r returned None from on_action_ready, ignoring", cb)
+                else:
+                    result = modified_action
             except Exception:
                 logger.exception("Callback %r failed in on_action_ready", cb)
         return result

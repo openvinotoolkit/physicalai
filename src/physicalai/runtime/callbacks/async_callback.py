@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from physicalai.capture.frame import Frame
 
 if TYPE_CHECKING:
-    from physicalai.runtime.events import InferenceEvent, LifecycleEvent, TickEvent
+    from physicalai.runtime.events import InferenceEvent, LifecycleEvent, MetricsEvent, TickEvent
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +69,10 @@ class AsyncCallback:
     def on_lifecycle(self, event: LifecycleEvent) -> None:
         """Enqueue lifecycle event for background processing."""
         self._enqueue("on_lifecycle", event)
+
+    def on_metrics(self, event: MetricsEvent) -> None:
+        """Enqueue metrics event for background processing."""
+        self._enqueue("on_metrics", event)
 
     def close(self) -> None:
         """Stop the worker thread and close the inner callback."""

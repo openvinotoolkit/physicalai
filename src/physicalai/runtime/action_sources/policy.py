@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from physicalai.inference.constants import IMAGES, STATE, TASK
+from physicalai.runtime.action_sources.base import ActionSource
 from physicalai.runtime.events import MetricsEvent
 from physicalai.runtime.execution.queue import ChunkedActionQueue
 from physicalai.runtime.execution.sync import SyncExecution
@@ -29,7 +30,7 @@ if TYPE_CHECKING:
 _DEFAULT_LERP_FRAMES = 5
 
 
-class PolicySource:
+class PolicySource(ActionSource):
     """Action source adapting a model + execution + action-queue policy pipeline."""
 
     def __init__(
@@ -51,6 +52,11 @@ class PolicySource:
         self._warmed_up = False
         self._bus: _CallbackBus | None = None
         self._session_id: str = ""
+        self._connected = False
+
+    def set_task(self, task: str | None) -> None:
+        """Update the task string used for the *next* inference request."""
+        self._task = task
 
     @property
     def action_queue(self) -> ActionQueue:
@@ -63,10 +69,14 @@ class PolicySource:
 
     def connect(self, *, bus: _CallbackBus, session_id: str) -> None:
         """Inject bus/session into execution and start it."""
-        self._bus = bus
-        self._session_id = session_id
-        self._execution.set_bus(bus, session_id)
-        self._execution.start(self._model, self._action_queue)
+        if not self._connected:
+            self._connected = True
+            self._bus = bus
+            self._session_id = session_id
+            self._execution.set_bus(bus, session_id)
+            self._execution.start(self._model, self._action_queue)
+            self._action_queue.clear()
+            self._last = None
 
     def update(self, robot_state: RobotObservation, camera_frames: Mapping[str, Frame], step: int) -> np.ndarray:
         """Maybe request inference and return the next action.
@@ -113,7 +123,10 @@ class PolicySource:
 
     def disconnect(self) -> None:
         """Stop execution — no drain, queued actions are discarded."""
-        self._execution.stop()
+        try:
+            self._execution.stop()
+        finally:
+            self._connected = False
 
     def _to_model_input(self, robot_obs: RobotObservation, camera_frames: Mapping[str, Frame]) -> dict[str, Any]:
         """Assemble model input dict from observation and camera frames.
