@@ -22,7 +22,7 @@ runtime.disconnect() -> None
 runtime.run(*, duration_s: float | None = None) -> int
 ```
 
-`RobotRuntime` also supports context-manager usage so connections are cleaned up automatically. `run()` returns the number of steps completed this run — there is no aggregate stats object. Other stats are read directly off the objects the caller already holds, e.g. `runtime.action_source.action_queue.total_pops` or `execution.inference_count`.
+`RobotRuntime` also supports context-manager usage so connections are cleaned up automatically. A "step" is one iteration of the control loop at `fps`: read an observation, get one action from `action_source`, and send it to the robot. `run()` returns the number of steps completed this run — there is no aggregate stats object. Other stats are read directly off the objects the caller already holds, e.g. `runtime.action_source.action_queue.total_pops` or `execution.inference_count`.
 
 ```python
 with RobotRuntime(...) as runtime:

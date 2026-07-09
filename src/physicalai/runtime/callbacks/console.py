@@ -13,7 +13,12 @@ if TYPE_CHECKING:
 
 
 class ConsoleCallback:
-    """Periodic one-line summary to stdout (~1 per second)."""
+    """Periodic one-line summary to stdout, throttled by step count.
+
+    Prints every ``throttle_steps`` steps (default 30), i.e. roughly once
+    per second at a 30 fps control loop; scale ``throttle_steps`` with the
+    runtime's ``fps`` for a different cadence.
+    """
 
     def __init__(self, throttle_steps: int = 30) -> None:  # noqa: D107
         self._throttle_steps = throttle_steps

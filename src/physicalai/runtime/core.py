@@ -195,6 +195,8 @@ class RobotRuntime:
 
         Returns:
             Number of steps completed this run.
+            A step is one iteration of the loop at ``fps``: read an observation,
+            get one action from ``action_source``, and send it to the robot.
 
         Raises:
             RuntimeError: If called before ``connect()``.
