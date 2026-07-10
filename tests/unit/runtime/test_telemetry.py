@@ -196,6 +196,17 @@ class TestCallbackBus:
         bus.emit_tick(self._make_tick_event())
         good_cb.on_tick.assert_called_once()
 
+    def test_invoke_on_action_ready_propagates_exception(self) -> None:
+        bad_cb = MagicMock()
+        bad_cb.on_action_ready.side_effect = RuntimeError("oops")
+        good_cb = MagicMock()
+
+        bus = _CallbackBus([bad_cb, good_cb])
+        with pytest.raises(RuntimeError, match="oops"):
+            bus.invoke_on_action_ready(action=np.zeros(3), step=0)
+
+        good_cb.on_action_ready.assert_not_called()
+
     def test_close_calls_close_on_callbacks(self) -> None:
         cb = MagicMock()
         bus = _CallbackBus([cb])

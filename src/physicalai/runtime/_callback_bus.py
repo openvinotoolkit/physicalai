@@ -23,8 +23,14 @@ class _CallbackBus:
     """Internal dispatch bus for runtime callbacks.
 
     Two dispatch modes:
-    - Fire-and-forget (emit_*): telemetry hooks, exceptions isolated.
-    - Request-response (invoke_*): action hooks, chained return values.
+    - Fire-and-forget (emit_*, ``invoke_on_action_sent``): notification
+      hooks, exceptions isolated and logged — a broken callback can't stop
+      the run.
+    - Request-response (``invoke_on_action_ready``): chains each callback's
+      transform of the outgoing action. Exceptions propagate instead of
+      being isolated — a callback that fails partway through the chain
+      means the action can no longer be trusted, so it must not be sent to
+      the robot silently un-transformed.
 
     Thread safety: ``emit_inference`` may be called from either the control
     thread (SyncExecution) or the inference thread (AsyncExecution). All other
@@ -67,6 +73,12 @@ class _CallbackBus:
         callback that doesn't want to change anything returns its input
         unchanged.
 
+        Unlike the ``emit_*`` hooks, exceptions here are not isolated: a
+        callback (e.g. a safety filter) that fails partway through the chain
+        means the action can no longer be trusted, so the failure is logged
+        (identifying which callback raised) and then re-raised instead of
+        silently sending a partially-transformed action to the robot.
+
         Returns:
             The action after every callback has had a chance to transform it.
         """
@@ -83,6 +95,7 @@ class _CallbackBus:
                     result = modified_action
             except Exception:
                 logger.exception("Callback %r failed in on_action_ready", cb)
+                raise
         return result
 
     def invoke_on_action_sent(self, *, action: np.ndarray, step: int) -> None:

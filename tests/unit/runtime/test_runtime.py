@@ -311,7 +311,8 @@ class TestRuntimeCallback:
 
         assert callback.on_action_ready.call_count == 2
 
-    def test_callback_raises_does_not_crash_loop(self) -> None:
+    def test_callback_raises_stops_loop_and_propagates(self) -> None:
+        """A failed action-transform can't be trusted, so it ends the run instead of being silently skipped."""
         robot = _make_mock_robot()
         model = _make_mock_model(chunk_size=10)
         execution = SyncExecution()
@@ -326,13 +327,13 @@ class TestRuntimeCallback:
             callbacks=[bad_callback],
         )
 
-        with patch("physicalai.runtime.core.time") as mock_time:
+        with patch("physicalai.runtime.core.time") as mock_time, pytest.raises(RuntimeError, match="oops"):
             mock_time.perf_counter.return_value = 0.0
             mock_time.sleep = MagicMock()
             mock_time.time.return_value = 0.0
-            steps = runtime.run(duration_s=0.3)
+            runtime.run(duration_s=0.3)
 
-        assert steps == 3
+        robot.send_action.assert_not_called()
 
     def test_on_action_ready_must_return_valid_action_no_none_sentinel(self) -> None:
         """A callback that raises leaves the bus's running result untouched (isolated), never None."""
