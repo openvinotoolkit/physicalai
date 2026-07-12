@@ -1,6 +1,6 @@
 # Plan: Zenoh Transport Layer for Shared Robots
 
-Source of truth for decisions: `docs/development/robot-zenoh-transport-design.md` (D1–D19).
+Source of truth for decisions: `docs/development/robot-zenoh-transport-design.md` (D1–D20).
 Implements `physicalai.robot.transport` — one owner process holds the hardware, N subscribers
 read state (pull) / send actions (fire-and-forget) over Zenoh. Mirrors the capture-transport
 structure (`_spec`/`_publisher`/`_publisher_worker`/`_shared_camera`), different transport.
@@ -32,7 +32,8 @@ structure (`_spec`/`_publisher`/`_publisher_worker`/`_shared_camera`), different
 
 7. `robot/transport/_spec.py`: `RobotSpec` (robot_type + serializable kwargs); `build_driver(spec)` constructs SO101/WidowXAI (calibration as path, role as str). (D15)
 8. `robot/transport/_lock.py`: user-scoped lock file at `~/.cache/physicalai/robot-locks/{device_id}.lock`; acquire/release; both backends. (D14)
-9. `robot/transport/_owner_worker.py`: subprocess entrypoint — acquire lock → build+connect driver → declare `/state` pub, `/action` sub (RingChannel(1)), `/meta` queryable → `signal_ready()` (READY) or `ERROR:{json}` on failure → **write-first loop** (try_recv+apply action → read → publish state) at per-robot configurable rate → idle shutdown via `matching_status()`+`idle_timeout` → `driver.disconnect()` on exit. (D5, D6, D7, D8, D13, D17)
+9. `robot/transport/_owner_worker.py`: subprocess entrypoint — acquire lock → build+connect driver → declare `/state` pub, `/action` sub (RingChannel(1)), `/meta` queryable, **QoS: reliability=BEST_EFFORT, congestion_control=DROP, express=True; session peer mode** (D20) → `signal_ready()` (READY) or `ERROR:{json}` on failure → **write-first loop** (try_recv+apply action → read → publish state) at per-robot configurable rate → idle shutdown via `matching_status()`+`idle_timeout` → `driver.disconnect()` on exit. (D5, D6, D7, D8, D13, D17, D20)
+   - NOTE: `robot/transport/__init__.py` already exists (empty) — populate, don't create the dir. QoS (D20) MUST be applied at every `declare_publisher`/`declare_subscriber`/session open in Phase 2/3.
 10. `robot/transport/_owner.py`: parent-side spawn (`subprocess.Popen`, stdout PIPE), `_read_stdout_line` with generous timeout, parse READY/ERROR, raise `RobotTransportError` on failure. Mirror `CameraPublisher.start()`.
 
 ### Phase 3 — SharedRobot subscriber (depends on P2)
@@ -58,10 +59,11 @@ structure (`_spec`/`_publisher`/`_publisher_worker`/`_shared_camera`), different
 18. `test_shared_robot.py`: with a **fake in-process driver** (mirror capture fake-device tests) — spawn-or-attach, get_observation pull, send_action, RobotIdConflict on mismatched kwargs, disconnect detach.
 19. `test_owner_handshake.py`: READY path, ERROR path, timeout fallback to re-probe.
 20. Optional integration test: real zenoh session, two SharedRobot attach to one fake owner, latest-wins + Ring(1) behavior.
+21. `test_latency.py`: measure **p99 action-latency jitter** at target loop rate under D20 QoS (best-effort/drop/express) — batching regressions are invisible to functional tests. (D20)
 
 ### Phase 6 — Docs
 
-21. Link design doc + add how-to under `docs/how-to/runtime/` (shared robot over zenoh); note trusted-LAN assumption (D18). Add security.md rule on network transport trust boundary.
+22. Link design doc + add how-to under `docs/how-to/runtime/` (shared robot over zenoh); note trusted-LAN assumption (D18). Add security.md rule on network transport trust boundary.
 
 ## Relevant files
 
@@ -82,10 +84,11 @@ structure (`_spec`/`_publisher`/`_publisher_worker`/`_shared_camera`), different
 4. Conflict: two `SharedRobot` same override id + different port → `RobotIdConflict` raised.
 5. GIL: subscriber runs a long C call, then `get_observation()` returns freshest buffered state (Ring(1)), not a backlog.
 6. `prek run --all-files` + `pyrefly check` clean.
+7. **p99 action-latency jitter** measured at target rate under D20 QoS is within budget (batching not silently degrading latency). (D20)
 
 ## Decisions (all locked in design doc)
 
-- Structural Robot protocol satisfaction; Zenoh transport; 3 keys; RingChannel(1) pull; single write-first owner loop; per-robot fixed rate; latest-wins actions; hold-on-no-action; msgpack+numpy records; ship computed `.state`; images excluded; robot_id derived-default+override; matching_status shutdown + driver.disconnect; lock-file arbiter; READY/ERROR handshake; documented trusted-LAN boundary; robot/errors.py.
+- Structural Robot protocol satisfaction; Zenoh transport; 3 keys; RingChannel(1) pull; single write-first owner loop; per-robot fixed rate; latest-wins actions; hold-on-no-action; msgpack+numpy records; ship computed `.state`; images excluded; robot_id derived-default+override; matching_status shutdown + driver.disconnect; lock-file arbiter; READY/ERROR handshake; documented trusted-LAN boundary; robot/errors.py; transport QoS best-effort/drop/express + peer mode (D20).
 
 ## Further considerations
 

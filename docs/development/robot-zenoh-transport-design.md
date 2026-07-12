@@ -177,7 +177,7 @@ one global constant is wrong.
 
 **No-action = hold.** When `try_recv()` returns `None`, the owner sends nothing and the
 servos hold their last commanded position. Freezing is safer than silent motion. No
-deadman timer (deferred — see §12).
+deadman timer (deferred — see §13).
 
 **Idle shutdown honors the safe-state contract.** When the owner exits on idle timeout
 it first calls the underlying **`driver.disconnect()`** (which homes/stops and cleans
@@ -387,7 +387,39 @@ the wrong hardware. `RobotIdConflict` lives in a new `physicalai/robot/errors.py
 
 ---
 
-## 10. Security and trust boundary
+## 10. Session and QoS
+
+Zenoh's defaults optimize **throughput, not latency**, and its reliability/batching
+behavior must be pinned explicitly — the semantics we want (fire-and-forget,
+latest-wins, drop-is-fine, low-latency) do not match the throughput-tuned defaults.
+
+- **Publishers (`/state`, `/action`)** declared with:
+  - `reliability=Reliability.BEST_EFFORT` — messages may be lost; matches D7/D8
+    (drop-is-fine). Reliable-and-drop can silently degrade to best-effort with **no
+    app-level drop signal**, so choosing explicitly is better than the default.
+  - `congestion_control=CongestionControl.DROP` — never block the owner loop on a full
+    queue. (`DROP` is already the enum default; stated explicitly so it can't regress.)
+  - `express=True` — bypass Zenoh's latency **batching**. Small messages at 100–200 Hz
+    sit exactly in the batching danger zone (`rmw_zenoh` observed 400–1700 µs late
+    delivery at similar small-message rates until batching was disabled). `express`
+    sends each sample immediately.
+- **Session mode = peer** (not routed through a `zenohd` router) for the two-endpoint
+  owner↔subscriber topology — peer mode roughly halves latency per Zenoh's own
+  benchmarks. A router is only needed for cross-subnet discovery; keep that a deferred
+  option.
+- **`/state` subscriber** keeps `RingChannel(1)` (D4); best-effort reliability aligns
+  with latest-wins.
+
+Verified against the installed `eclipse-zenoh==1.9.0` stubs: `Reliability.BEST_EFFORT`,
+`CongestionControl.DROP`, and `express: bool` are real `declare_publisher` parameters.
+
+> **Verification (Phase 5):** measure p99 action-latency jitter at the target loop rate
+> under this QoS before considering the owner loop done — batching regressions are
+> invisible to functional tests.
+
+---
+
+## 11. Security and trust boundary
 
 Unlike `SharedCamera` (same-host iceoryx2 shared memory, no network exposure), this
 transport is **network-capable by design** (Zenoh). Per D7 the owner applies any
@@ -411,33 +443,34 @@ exposure is limited to motion commands, not remote code execution.
 
 ---
 
-## 11. Decisions log
+## 12. Decisions log
 
-| #   | Decision                                                                                                                                                                  | Rationale                                                                                                                                | Status |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| D1  | Follow `SharedCamera`'s probe → spawn-or-attach _structure_, new `physicalai.robot.transport` module, structural `Robot` protocol satisfaction                            | Proven pattern; drop-in, no protocol change                                                                                              | Locked |
-| D2  | Transport = **Zenoh** (not iceoryx2)                                                                                                                                      | Tiny payloads, network-capable; iceoryx2's SHM zero-copy is for large same-host frames                                                   | Locked |
-| D3  | Three keys: `/state` pub-sub, `/action` pub-sub, `/meta` queryable                                                                                                        | Minimal; `/meta` doubles as discovery + liveness                                                                                         | Locked |
-| D4  | Subscriber read = `RingChannel(1)` + `try_recv()` pull, **no callback thread**                                                                                            | GIL-independent native buffering (verified); matches pull model; latest-wins, no backlog                                                 | Locked |
-| D5  | Owner = single thread, **write-first** loop                                                                                                                               | No hardware contention; minimizes action latency; state freshness unaffected by order                                                    | Locked |
-| D6  | Owner loop = **fixed rate, per-robot configurable** (few× policy rate), not unbounded                                                                                     | Bounded/deterministic latency; serial (SO-101) and TCP (WidowXAI) have different ceilings, so no single global constant                  | Locked |
-| D7  | Actions latest-wins, fire-and-forget                                                                                                                                      | Absolute joint targets make dropping intermediates safe; matches synchronous no-return `send_action` contract                            | Locked |
-| D8  | No-action = **hold** (freeze), no deadman                                                                                                                                 | Freezing safer than silent motion                                                                                                        | Locked |
-| D9  | Wire format = **msgpack** dict; numpy as `{dtype, shape, data}`                                                                                                           | Heterogeneous + forward-compatible; dtype/shape-exact; `zenoh.ext` needs rigid tuples                                                    | Locked |
-| D10 | `/state` ships owner-computed `.state` (plus `joint_positions`, `sensor_data`)                                                                                            | Runtime feeds `.state`; robot-specific concat stays on owner; avoids silent shape bug                                                    | Locked |
-| D11 | Images excluded from transport                                                                                                                                            | Huge payload, duplicates `SharedCamera`; no robot populates `images` today                                                               | Locked |
-| D12 | `robot_id` = connection-derived default + explicit override                                                                                                               | Default guarantees same-machine attach; override serves network naming                                                                   | Locked |
-| D13 | Shutdown via `Publisher.matching_status()` + `idle_timeout`; owner calls `driver.disconnect()` on exit                                                                    | Detects subscribers without an ack channel (clean exit or crash); disconnect honors the safe-state contract owner-side                   | Locked |
-| D14 | Single-owner via **self-managed lock file** at user-scoped `~/.cache/physicalai/robot-locks/{device_id}.lock`, both serial and IP backends; Zenoh probe is best-effort    | Uniform arbiter; Trossen "connection refusal" is unverified vendor behavior; user-scoped path avoids CWE-377 tmp race                    | Locked |
-| D15 | Spawn passes `robot_type` + **serializable** kwargs (calibration as path)                                                                                                 | Live driver handles can't cross a process boundary                                                                                       | Locked |
-| D16 | Subscriber `disconnect()` = close own session only                                                                                                                        | Owner owns safe-state; liveness detection handles crashes                                                                                | Locked |
-| D17 | Spawn uses the proven `READY`/`ERROR:{json}` stdout handshake (as `CameraPublisher.start()`); parent blocks with generous timeout, falls back to bounded `/meta` re-probe | Distinguishes connecting / lost-race / hardware failure; `WidowXAI.connect()` blocks ~2s homing, so blind short-timeout polling misfires | Locked |
-| D18 | Network trust boundary **documented**: no auth on `/action`; trusted-LAN assumption; isolation is the deployer's responsibility (VLAN/firewall or Zenoh ACL/TLS)          | Zenoh is network-capable → any peer can move the arm (OWASP A01), new vs same-host camera precedent                                      | Locked |
-| D19 | New `physicalai/robot/errors.py`: `RobotError(RuntimeError)` base, `RobotIdConflict(RobotError)`                                                                          | Mirrors `capture/errors.py`; robot package has no error hierarchy today                                                                  | Locked |
+| #   | Decision                                                                                                                                                                  | Rationale                                                                                                                                                          | Status |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ |
+| D1  | Follow `SharedCamera`'s probe → spawn-or-attach _structure_, new `physicalai.robot.transport` module, structural `Robot` protocol satisfaction                            | Proven pattern; drop-in, no protocol change                                                                                                                        | Locked |
+| D2  | Transport = **Zenoh** (not iceoryx2)                                                                                                                                      | Tiny payloads, network-capable; iceoryx2's SHM zero-copy is for large same-host frames                                                                             | Locked |
+| D3  | Three keys: `/state` pub-sub, `/action` pub-sub, `/meta` queryable                                                                                                        | Minimal; `/meta` doubles as discovery + liveness                                                                                                                   | Locked |
+| D4  | Subscriber read = `RingChannel(1)` + `try_recv()` pull, **no callback thread**                                                                                            | GIL-independent native buffering (verified); matches pull model; latest-wins, no backlog                                                                           | Locked |
+| D5  | Owner = single thread, **write-first** loop                                                                                                                               | No hardware contention; minimizes action latency; state freshness unaffected by order                                                                              | Locked |
+| D6  | Owner loop = **fixed rate, per-robot configurable** (few× policy rate), not unbounded                                                                                     | Bounded/deterministic latency; serial (SO-101) and TCP (WidowXAI) have different ceilings, so no single global constant                                            | Locked |
+| D7  | Actions latest-wins, fire-and-forget                                                                                                                                      | Absolute joint targets make dropping intermediates safe; matches synchronous no-return `send_action` contract                                                      | Locked |
+| D8  | No-action = **hold** (freeze), no deadman                                                                                                                                 | Freezing safer than silent motion                                                                                                                                  | Locked |
+| D9  | Wire format = **msgpack** dict; numpy as `{dtype, shape, data}`                                                                                                           | Heterogeneous + forward-compatible; dtype/shape-exact; `zenoh.ext` needs rigid tuples                                                                              | Locked |
+| D10 | `/state` ships owner-computed `.state` (plus `joint_positions`, `sensor_data`)                                                                                            | Runtime feeds `.state`; robot-specific concat stays on owner; avoids silent shape bug                                                                              | Locked |
+| D11 | Images excluded from transport                                                                                                                                            | Huge payload, duplicates `SharedCamera`; no robot populates `images` today                                                                                         | Locked |
+| D12 | `robot_id` = connection-derived default + explicit override                                                                                                               | Default guarantees same-machine attach; override serves network naming                                                                                             | Locked |
+| D13 | Shutdown via `Publisher.matching_status()` + `idle_timeout`; owner calls `driver.disconnect()` on exit                                                                    | Detects subscribers without an ack channel (clean exit or crash); disconnect honors the safe-state contract owner-side                                             | Locked |
+| D14 | Single-owner via **self-managed lock file** at user-scoped `~/.cache/physicalai/robot-locks/{device_id}.lock`, both serial and IP backends; Zenoh probe is best-effort    | Uniform arbiter; Trossen "connection refusal" is unverified vendor behavior; user-scoped path avoids CWE-377 tmp race                                              | Locked |
+| D15 | Spawn passes `robot_type` + **serializable** kwargs (calibration as path)                                                                                                 | Live driver handles can't cross a process boundary                                                                                                                 | Locked |
+| D16 | Subscriber `disconnect()` = close own session only                                                                                                                        | Owner owns safe-state; liveness detection handles crashes                                                                                                          | Locked |
+| D17 | Spawn uses the proven `READY`/`ERROR:{json}` stdout handshake (as `CameraPublisher.start()`); parent blocks with generous timeout, falls back to bounded `/meta` re-probe | Distinguishes connecting / lost-race / hardware failure; `WidowXAI.connect()` blocks ~2s homing, so blind short-timeout polling misfires                           | Locked |
+| D18 | Network trust boundary **documented**: no auth on `/action`; trusted-LAN assumption; isolation is the deployer's responsibility (VLAN/firewall or Zenoh ACL/TLS)          | Zenoh is network-capable → any peer can move the arm (OWASP A01), new vs same-host camera precedent                                                                | Locked |
+| D19 | New `physicalai/robot/errors.py`: `RobotError(RuntimeError)` base, `RobotIdConflict(RobotError)`                                                                          | Mirrors `capture/errors.py`; robot package has no error hierarchy today                                                                                            | Locked |
+| D20 | Pin transport QoS: publishers `reliability=BEST_EFFORT`, `congestion_control=DROP`, `express=True`; session **peer** mode                                                 | Defaults tune for throughput not latency; small msgs at 100–200 Hz hit Zenoh batching lag (`rmw_zenoh` precedent); semantics already match fire-and-forget/drop-ok | Locked |
 
 ---
 
-## 12. Deferred (YAGNI — retrofit is non-breaking)
+## 13. Deferred (YAGNI — retrofit is non-breaking)
 
 - **Action deadman / watchdog** — hold-on-no-action + `timestamp` staleness already
   cover the common case; a "no action for N s → safe pose" policy can be added later.
@@ -451,7 +484,7 @@ exposure is limited to motion commands, not remote code execution.
 
 ---
 
-## 13. Open items
+## 14. Open items
 
 - Exact `host` component choice: hostname vs `/etc/machine-id` default.
 - Precise `/meta` schema fields and how much connection detail to expose on untrusted
