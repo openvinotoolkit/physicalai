@@ -1,6 +1,6 @@
 # Design: Zenoh Transport Layer for Shared Robots
 
-**Status:** Draft (design-only, no implementation yet)
+**Status:** Implemented
 **Scope:** `physicalai.robot.transport` — a multi-process transport that lets one
 process own a robot's exclusive hardware connection while any number of other
 processes read its state and issue actions over [Zenoh](https://zenoh.io/).
