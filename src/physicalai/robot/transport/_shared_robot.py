@@ -39,6 +39,8 @@ if TYPE_CHECKING:
 
     import numpy as np
 
+    from physicalai.robot import RobotObservation
+
 _PROBE_TIMEOUT = 1.0
 _RACE_RETRY_TIMEOUT = 5.0
 _RETRY_INTERVAL = 0.2
@@ -139,6 +141,9 @@ class SharedRobot:
             ``None`` selects the per-robot default.
         idle_timeout: Seconds with zero subscribers before a spawned owner
             self-exits (and homes/holds the robot).
+        connect_timeout: Overall budget for :meth:`connect`; also caps the
+            owner-spawn handshake (hardware connect may legitimately block
+            for seconds).
         robot_kwargs: JSON-serializable driver constructor kwargs
             (e.g. ``port``, ``calibration`` as a path, ``role`` as a str).
         **extra_robot_kwargs: Convenience merge into ``robot_kwargs``.
@@ -151,6 +156,7 @@ class SharedRobot:
         robot_id: str | None = None,
         rate_hz: float | None = None,
         idle_timeout: float = 10.0,
+        connect_timeout: float = 10.0,
         robot_kwargs: Mapping[str, object] | None = None,
         _factory_override: str | None = None,
         **extra_robot_kwargs: object,
@@ -163,6 +169,7 @@ class SharedRobot:
         self._robot_kwargs: dict[str, object] = {**(robot_kwargs or {}), **extra_robot_kwargs}
         self._rate_hz = rate_hz
         self._idle_timeout = idle_timeout
+        self._connect_timeout = connect_timeout
         self._factory_override = _factory_override
 
         try:
@@ -218,7 +225,7 @@ class SharedRobot:
         """The owner's ``/meta`` record (None before connect)."""
         return self._meta
 
-    def connect(self, timeout: float = 30.0) -> None:
+    def connect(self) -> None:
         """Attach to an existing owner, spawning one first if needed.
 
         Idempotent: calling ``connect()`` when already connected is a no-op.
@@ -226,9 +233,9 @@ class SharedRobot:
         identity does not match this instance's construction kwargs, and
         :class:`RobotTransportError` when no owner could be found or spawned.
 
-        Args:
-            timeout: Overall budget; also caps the owner-spawn handshake
-                (hardware connect may legitimately block for seconds).
+        Uses the ``connect_timeout`` passed to the constructor as its
+        overall budget (also caps the owner-spawn handshake — hardware
+        connect may legitimately block for seconds).
         """
         if self._connected:
             return
@@ -237,7 +244,7 @@ class SharedRobot:
         try:
             meta = _query_meta(self._session, meta_key(self._robot_id), timeout=_PROBE_TIMEOUT)
             if meta is None:
-                meta = self._spawn_or_reprobe(timeout)
+                meta = self._spawn_or_reprobe(self._connect_timeout)
             self._validate_meta(meta)
             self._meta = meta
             self._attach()
@@ -354,7 +361,7 @@ class SharedRobot:
         msg = f"no state received from owner of {self._robot_id} within {_FIRST_STATE_TIMEOUT:.1f}s"
         raise RobotTransportError(msg)
 
-    def get_observation(self) -> TransportObservation:
+    def get_observation(self) -> RobotObservation:
         """Pull the newest owner-published state (non-blocking).
 
         Returns:
