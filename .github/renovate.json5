@@ -89,6 +89,7 @@
 
     // Use regex versioning for open-edge-platform/geti-ci actions to parse tags like zizmor/v0.1.1
     {
+      enabled: true,
       groupName: "GitHub Actions",
       matchManagers: ["github-actions"],
       matchPackageNames: ["open-edge-platform/geti-ci"],
