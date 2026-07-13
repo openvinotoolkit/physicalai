@@ -29,3 +29,5 @@ These rules apply when writing, editing, or reviewing code under `src/physicalai
 10. Prefer `.safetensors` over `.ckpt`/`.pt` for processor stats and weights when adding new artifact types.
 
 11. jsonargparse `parser.instantiate` in `cli/run.py` and runtime config loading can construct arbitrary registered classes from YAML — document new `class_path` targets and avoid exposing dangerous constructors through config without validation.
+
+12. Network transport trust boundary. `physicalai.robot.transport` (Zenoh) applies `/action` payloads to physical hardware **without authentication** — it assumes a trusted, isolated robot-cell network (VLAN/firewall or Zenoh ACL/TLS is the deployer's responsibility). Any new network-capable transport must document its trust boundary the same way, must never deserialize payloads with `pickle` (rule 6 — use msgpack/json), and must not silently widen exposure (e.g. adding remote-code or file-path semantics to wire payloads) without a security review.

@@ -30,6 +30,7 @@ nav:
           - Run a Policy on a Robot: how-to/runtime/run-policy-on-robot.md
           - Use Execution Modes: how-to/runtime/use-execution-modes.md
           - Add Runtime Callbacks: how-to/runtime/add-runtime-callbacks.md
+          - Share a Robot Across Processes: how-to/runtime/share-a-robot.md
       - Inference:
           - Load an Exported Policy: how-to/inference/load-exported-policy.md
           - Use a Manifest: how-to/inference/use-manifest.md

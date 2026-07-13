@@ -51,7 +51,7 @@ realsense = [
 basler = ["pypylon", "opencv-python-headless"]
 # Pin iceoryx2 exact version and sync with PhysicalAI Studio so
 # publishers and subscribers across processes/venvs can attach to each other.
-transport = ["iceoryx2==0.9.0", "eclipse-zenoh==1.9.0"]
+transport = ["iceoryx2==0.9.0", "eclipse-zenoh==1.9.0", "msgpack==1.2.1"]
 genicam = []
 capture = [
     "physicalai[realsense]",
@@ -150,8 +150,12 @@ unfixable = []
 # physicalai.cli is intentionally a PEP 420 namespace package (no __init__.py)
 # so the runtime and studio distributions can each contribute subcommands.
 "src/physicalai/cli/*.py" = ["INP001"]
+# physicalai itself is a namespace package (see cli note above), so root-level
+# shared modules trip INP001 by construction.
+"src/physicalai/_serialization.py" = ["INP001"]
 "src/physicalai/capture/transport/_header.py" = ["RUF012"]
 "src/physicalai/capture/transport/_publisher.py" = ["S603"]
+"src/physicalai/robot/transport/_owner.py" = ["S603"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 15

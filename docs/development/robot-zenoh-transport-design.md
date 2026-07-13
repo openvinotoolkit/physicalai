@@ -407,6 +407,14 @@ latest-wins, drop-is-fine, low-latency) do not match the throughput-tuned defaul
   owner↔subscriber topology — peer mode roughly halves latency per Zenoh's own
   benchmarks. A router is only needed for cross-subnet discovery; keep that a deferred
   option.
+- **Deterministic TCP endpoint (implementation addition):** multicast scouting is not
+  available on every host (macOS local-network privacy, locked-down LANs), which would
+  break same-host spawn-or-attach entirely. The owner therefore also **listens on a
+  deterministic TCP port derived from the `robot_id` hash** (range 17000–17999), and
+  subscribers add `tcp/127.0.0.1:{port}` to their connect endpoints. Zenoh retries
+  connect endpoints in the background, so a subscriber session opened before the owner
+  exists attaches within ~1 s of the owner starting. Multicast scouting stays enabled
+  for cross-host discovery where available.
 - **`/state` subscriber** keeps `RingChannel(1)` (D4); best-effort reliability aligns
   with latest-wins.
 
@@ -504,8 +512,10 @@ exposure is limited to motion commands, not remote code execution.
   a ring, not a callback.
 - **`zenoh.ext` API (v1.9.0)** — `z_serialize`/`z_deserialize` require the target type
   and support only homogeneous dicts; heterogeneous records need positional tuples.
-- **`Publisher.matching_status() -> bool`** exists (plus `declare_matching_listener`),
-  enabling subscriber-presence detection for owner shutdown.
+- **`Publisher.matching_status`** exists (plus `declare_matching_listener`),
+  enabling subscriber-presence detection for owner shutdown. Note: despite the
+  `-> bool` type stub, the runtime returns a `MatchingStatus` object (always truthy);
+  the boolean lives on its `.matching` attribute.
 - **`robot_obs.state`** is what the runtime feeds the model, and it is robot-specific
   (SO-101: 6; WidowXAI/Bimanual: 14) — the reason `/state` must ship the computed
   vector.

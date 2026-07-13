@@ -12,9 +12,10 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+from physicalai._serialization import decode_numpy, encode_numpy
 from physicalai.runtime._callback_bus import _CallbackBus
 from physicalai.runtime import AsyncCallback, ConsoleCallback, JsonlCallback
-from physicalai.runtime.observer._telemetry import TelemetryEmitter, _decode_numpy, _encode_numpy
+from physicalai.runtime.observer._telemetry import TelemetryEmitter
 from physicalai.runtime.events import InferenceEvent, LifecycleEvent, TickEvent
 from tests.unit.runtime.conftest import FakeRobotObservation
 
@@ -22,7 +23,7 @@ from tests.unit.runtime.conftest import FakeRobotObservation
 class TestNumpyEncoding:
     def test_encode_numpy_float32(self) -> None:
         arr = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
-        encoded = _encode_numpy(arr)
+        encoded = encode_numpy(arr)
         assert encoded["__np__"] is True
         assert encoded["dtype"] == "float32"
         assert encoded["shape"] == [2, 2]
@@ -30,13 +31,13 @@ class TestNumpyEncoding:
 
     def test_encode_preserves_shape(self) -> None:
         arr = np.zeros((3, 4, 5), dtype=np.float64)
-        encoded = _encode_numpy(arr)
+        encoded = encode_numpy(arr)
         assert encoded["shape"] == [3, 4, 5]
         assert encoded["dtype"] == "float64"
 
     def test_roundtrip(self) -> None:
         arr = np.array([1.5, 2.5, 3.5], dtype=np.float32)
-        decoded = _decode_numpy(_encode_numpy(arr))
+        decoded = decode_numpy(encode_numpy(arr))
         np.testing.assert_array_equal(arr, decoded)
 
 

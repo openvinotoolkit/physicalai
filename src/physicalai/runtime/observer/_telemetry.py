@@ -6,24 +6,12 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import numpy as np
+if TYPE_CHECKING:
+    import numpy as np
 
 logger = logging.getLogger(__name__)
-
-
-def _encode_numpy(arr: np.ndarray) -> dict[str, Any]:
-    return {
-        "__np__": True,
-        "dtype": str(arr.dtype),
-        "shape": list(arr.shape),
-        "data": arr.tobytes(),
-    }
-
-
-def _decode_numpy(obj: dict[str, Any]) -> np.ndarray:
-    return np.frombuffer(obj["data"], dtype=np.dtype(obj["dtype"])).reshape(obj["shape"])
 
 
 class TelemetryEmitter:
@@ -50,18 +38,11 @@ class TelemetryEmitter:
     def session_id(self) -> str:
         return self._session_id
 
-    def _pack(self, payload: dict[str, Any]) -> bytes:
-        def _default(obj: object) -> object:
-            if isinstance(obj, np.ndarray):
-                return _encode_numpy(obj)
-            if isinstance(obj, np.integer):
-                return int(obj)
-            if isinstance(obj, np.floating):
-                return float(obj)
-            msg = f"Unsupported payload type for msgpack serialization: {type(obj).__name__}"
-            raise TypeError(msg)
+    @staticmethod
+    def _pack(payload: dict[str, Any]) -> bytes:
+        from physicalai._serialization import pack_payload  # noqa: PLC0415, PLC2701
 
-        return self._msgpack.packb(payload, default=_default, use_bin_type=True)
+        return pack_payload(payload)
 
     def emit_tick(
         self,

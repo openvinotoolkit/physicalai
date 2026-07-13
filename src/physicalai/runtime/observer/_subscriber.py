@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from physicalai.runtime.observer._telemetry import _decode_numpy  # noqa: PLC2701
+from physicalai._serialization import decode_numpy  # noqa: PLC2701
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -18,7 +18,7 @@ _MIN_TOPIC_PARTS = 4
 
 def _unpack_numpy(obj: object) -> object:
     if isinstance(obj, dict) and obj.get("__np__"):
-        return _decode_numpy(obj)
+        return decode_numpy(obj)
     if isinstance(obj, dict):
         return {k: _unpack_numpy(v) for k, v in obj.items()}
     if isinstance(obj, list):
