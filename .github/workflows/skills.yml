@@ -104,7 +104,7 @@ jobs:
       - name: Run skill-validator
         uses: open-edge-platform/geti-ci/actions/skill-validator@dd2b6e59ed10c4937d18c0596502b0a9408ab52a # skill-validator/v0.1.1
         with:
-          skills-path: .agents/skills/
+          skills-path: skills
           strict: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
           fail-on-findings: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
 
