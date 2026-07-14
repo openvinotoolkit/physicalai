@@ -40,7 +40,13 @@ from physicalai.robot.transport._codec import (  # noqa: PLC2701
     encode_metadata,
     encode_state,
 )
-from physicalai.robot.transport._ids import action_key, default_host, metadata_key, state_key  # noqa: PLC2701
+from physicalai.robot.transport._ids import (  # noqa: PLC2701
+    action_key,
+    default_host,
+    derive_endpoint_port,
+    metadata_key,
+    state_key,
+)
 from physicalai.robot.transport._lock import NAME_KIND, LockContention, OwnedLocks, acquire_locks  # noqa: PLC2701
 from physicalai.robot.transport._owner_config import RobotOwnerConfig  # noqa: PLC2701
 from physicalai.robot.transport._session import open_session  # noqa: PLC2701
@@ -324,7 +330,12 @@ def _declare_zenoh_endpoints(config: RobotOwnerConfig, metadata_bytes: bytes) ->
         if session is not None:
             with contextlib.suppress(Exception):
                 session.close()
-        msg = f"failed to declare Zenoh endpoints (possible collision on the derived local port): {exc}"
+        bind_host = "0.0.0.0" if config.allow_remote else "127.0.0.1"  # noqa: S104 — explicit opt-in only
+        endpoint = f"tcp/{bind_host}:{derive_endpoint_port(config.name)}"
+        msg = (
+            f"failed to declare Zenoh endpoints at derived endpoint {endpoint}: {exc}. "
+            "Choose a different robot name or configure a local Zenoh router."
+        )
         raise _StartupError(msg, phase="endpoint_collision") from exc
 
     return _ZenohEndpoints(

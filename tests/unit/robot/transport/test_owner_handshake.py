@@ -6,10 +6,11 @@ from __future__ import annotations
 import pytest
 
 from physicalai.robot.errors import RobotDeviceAlreadyOwned, RobotTransportError
+from physicalai.robot.transport._ids import derive_endpoint_port
 from physicalai.robot.transport._lock import NamedLock, acquire_locks
 from physicalai.robot.transport._owner import RobotOwner
 from physicalai.robot.transport._owner_config import RobotOwnerConfig
-from physicalai.robot.transport._owner_worker import _StartupError, _startup
+from physicalai.robot.transport._owner_worker import _StartupError, _declare_zenoh_endpoints, _startup
 
 from .conftest import FAKE_ROBOT_CLASS, requires_zenoh
 from .fake import FakeRobot
@@ -42,6 +43,33 @@ def test_startup_failure_after_connect_disconnects_and_releases_locks(
     assert driver.disconnect_called
     locks = acquire_locks(name, [device_id])
     locks.release_all()
+
+
+@requires_zenoh
+@pytest.mark.parametrize(("allow_remote", "bind_host"), [(False, "127.0.0.1"), (True, "0.0.0.0")])
+def test_endpoint_collision_error_identifies_endpoint_and_remediation(
+    unique_id: str,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    allow_remote: bool,
+    bind_host: str,
+) -> None:
+    name = unique_id.replace("/", "-")
+    config = RobotOwnerConfig(name=name, robot_class=FAKE_ROBOT_CLASS, allow_remote=allow_remote)
+
+    def _fail_open_session(*_args: object, **_kwargs: object) -> None:
+        raise OSError("address already in use")
+
+    monkeypatch.setattr("physicalai.robot.transport._owner_worker.open_session", _fail_open_session)
+
+    endpoint = f"tcp/{bind_host}:{derive_endpoint_port(name)}"
+    with pytest.raises(_StartupError, match="address already in use") as exc_info:
+        _declare_zenoh_endpoints(config, b"")
+
+    assert exc_info.value.phase == "endpoint_collision"
+    assert endpoint in str(exc_info.value)
+    assert "different robot name" in str(exc_info.value)
+    assert "local Zenoh router" in str(exc_info.value)
 
 
 @requires_zenoh
