@@ -137,22 +137,27 @@ def resolve_artifact(spec: ComponentSpec, export_dir: Path) -> ComponentSpec:
     # are still rejected.
     norm_export = Path(export_dir).resolve()
 
-    def _safe_resolve(artifact: str) -> str:
-        candidate = Path(os.path.normpath(export_dir / artifact))
+    def _resolve_artifact_path(artifact: str) -> str:
+        # Reject manifest paths that escape the export directory via
+        # "../" traversal (e.g. "../../etc/passwd").  The check is intentionally
+        # lexical (normpath, no symlink following) so that HuggingFace Hub
+        # snapshot symlinks which point from snapshot/ into a sibling blobs/
+        # store are accepted without error.
+        candidate = Path(os.path.normpath(norm_export / artifact))
         if not candidate.is_relative_to(norm_export):
             msg = f"artifact path {artifact!r} escapes the export directory"
             raise ValueError(msg)
-        return str((export_dir / artifact).resolve())
+        return str(candidate)
 
     flat = spec.flat_params
     if "artifact" in flat and not Path(flat["artifact"]).is_absolute():
-        new_params = {**flat, "artifact": _safe_resolve(flat["artifact"])}
+        new_params = {**flat, "artifact": _resolve_artifact_path(flat["artifact"])}
         return type(spec).model_validate({"type": spec.type, **new_params})
 
     if spec.class_path and "artifact" in spec.init_args:
         artifact = spec.init_args["artifact"]
         if not Path(artifact).is_absolute():
-            new_init_args = {**spec.init_args, "artifact": _safe_resolve(artifact)}
+            new_init_args = {**spec.init_args, "artifact": _resolve_artifact_path(artifact)}
             return type(spec).model_validate({"class_path": spec.class_path, "init_args": new_init_args})
 
     return spec
