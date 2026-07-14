@@ -148,10 +148,3 @@ Isolating the network — via VLAN/firewall segmentation or Zenoh's own
 ACL/TLS features — is the deployer's responsibility. `allow_remote=False`
 (the default) avoids this exposure entirely by keeping the owner
 unreachable off-host.
-
-## Design background
-
-See `docs/development/robot-zenoh-transport-design.md` and
-`docs/development/robot-zenoh-transport-identity-followup.md` for the full
-design (key layout, wire format, QoS choices, identity/locking model, and
-decision log).
