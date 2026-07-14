@@ -651,3 +651,24 @@ class TestResolveArtifact:
         })
         with pytest.raises(ValueError, match="escapes the export directory"):
             resolve_artifact(spec, tmp_path)
+
+    def test_allows_hf_hub_symlink_outside_snapshot_dir(self, tmp_path: Path) -> None:
+        """HuggingFace Hub uses relative symlinks from the snapshot dir into a sibling blobs/ dir.
+
+        snapshot/model.xml -> ../blobs/sha256_aaa  (relative, points outside snapshot/)
+
+        resolve_artifact must not raise even though the symlink target resolves
+        outside the snapshot (export) directory.
+        """
+        blob_file = tmp_path / "blobs" / "sha256_aaa"
+        blob_file.parent.mkdir()
+        blob_file.write_bytes(b"model-data")
+
+        snapshot_dir = tmp_path / "snapshot"
+        snapshot_dir.mkdir()
+        symlink = snapshot_dir / "model.xml"
+        symlink.symlink_to(Path("../blobs/sha256_aaa"))  # relative, mirrors HF Hub layout
+
+        spec = ComponentSpec.model_validate({"type": "normalize", "artifact": "model.xml"})
+        resolved = resolve_artifact(spec, snapshot_dir)
+        assert resolved.flat_params["artifact"] == str(blob_file.resolve())

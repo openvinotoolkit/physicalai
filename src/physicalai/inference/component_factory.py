@@ -14,6 +14,7 @@ to an object instance, supporting both ``type`` + flat params and
 from __future__ import annotations
 
 import importlib
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -130,17 +131,18 @@ def resolve_artifact(spec: ComponentSpec, export_dir: Path) -> ComponentSpec:
         The spec with resolved artifact path, or the original spec
         unchanged if no resolution is needed.
     """
-    # Canonicalize the export root once before containment checks.  Using
-    # resolve() ensures `..` segments are collapsed and symlinks are followed
-    # so `is_relative_to()` is applied to the final filesystem locations.
-    resolved_export = export_dir.resolve()
+    # Use normpath (no symlink following) for the traversal check so that
+    # HuggingFace Hub snapshot symlinks pointing into the sibling blobs/
+    # store are allowed while "../../" escapes in manifest artifact paths
+    # are still rejected.
+    norm_export = Path(os.path.normpath(export_dir))
 
     def _safe_resolve(artifact: str) -> str:
-        resolved = (export_dir / artifact).resolve()
-        if not resolved.is_relative_to(resolved_export):
+        candidate = export_dir / artifact
+        if not Path(os.path.normpath(candidate)).is_relative_to(norm_export):
             msg = f"artifact path {artifact!r} escapes the export directory"
             raise ValueError(msg)
-        return str(resolved)
+        return str(candidate.resolve())
 
     flat = spec.flat_params
     if "artifact" in flat and not Path(flat["artifact"]).is_absolute():
