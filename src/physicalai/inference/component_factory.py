@@ -14,7 +14,6 @@ to an object instance, supporting both ``type`` + flat params and
 from __future__ import annotations
 
 import importlib
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -135,11 +134,11 @@ def resolve_artifact(spec: ComponentSpec, export_dir: Path) -> ComponentSpec:
     # HuggingFace Hub snapshot symlinks pointing into the sibling blobs/
     # store are allowed while "../../" escapes in manifest artifact paths
     # are still rejected.
-    norm_export = Path(os.path.abspath(export_dir))
+    norm_export = Path(Path(export_dir).resolve())
 
     def _safe_resolve(artifact: str) -> str:
         candidate = export_dir / artifact
-        if not Path(os.path.abspath(candidate)).is_relative_to(norm_export):
+        if not Path(Path(candidate).resolve()).is_relative_to(norm_export):
             msg = f"artifact path {artifact!r} escapes the export directory"
             raise ValueError(msg)
         return str(candidate.resolve())
