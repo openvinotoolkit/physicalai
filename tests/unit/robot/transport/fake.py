@@ -52,11 +52,13 @@ class FakeRobot:
         *,
         device_ids: tuple[str, ...] | None = None,
         fail_connect: bool = False,
+        fail_observation: bool = False,
         **_ignored: object,
     ) -> None:
         self._port = port
         self._device_ids = device_ids if device_ids is not None else (f"fake:{port}",)
         self._fail_connect = fail_connect
+        self._fail_observation = fail_observation
         self._connected = False
         self._last_action = np.zeros(NUM_JOINTS, dtype=np.float32)
         self.disconnect_called = False
@@ -83,6 +85,9 @@ class FakeRobot:
         if not self._connected:
             msg = "Robot is not connected. Call connect() first."
             raise ConnectionError(msg)
+        if self._fail_observation:
+            msg = f"fake observation failure on {self._port}"
+            raise RuntimeError(msg)
         # Echo the last commanded action as measured position so tests can
         # observe the action round-trip through the owner loop.
         return FakeObservation(

@@ -68,6 +68,36 @@ def lock_path(kind: str, identity: str) -> Path:
     return _lock_dir() / f"{digest}.lock"
 
 
+def registered_owner_names() -> list[str]:
+    """Return names recorded by owner processes that are still alive.
+
+    Name-lock files double as a host-local discovery registry. Files are
+    intentionally retained after release, so the recorded PID is checked
+    before returning an entry. The result is only a set of candidates:
+    callers still confirm liveness through the owner's metadata queryable.
+
+    Returns:
+        Sorted, deduplicated robot names whose recorded owner PID exists.
+    """
+    names: set[str] = set()
+    for path in _lock_dir().glob("*.lock"):
+        try:
+            diagnostics = json.loads(path.read_text())
+            if not isinstance(diagnostics, dict):
+                continue
+            if diagnostics.get("kind") != NAME_KIND:
+                continue
+            name = diagnostics.get("identity")
+            pid = diagnostics.get("pid")
+            if not isinstance(name, str) or not isinstance(pid, int) or pid <= 0:
+                continue
+            os.kill(pid, 0)
+        except (OSError, ValueError, TypeError):
+            continue
+        names.add(name)
+    return sorted(names)
+
+
 class NamedLock:
     """Exclusive, non-blocking advisory lock on one namespaced identity.
 

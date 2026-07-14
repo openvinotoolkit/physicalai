@@ -376,11 +376,14 @@ def _startup(config: RobotOwnerConfig) -> _Endpoints:
     try:
         metadata_bytes = _connect_and_build_metadata(config, driver, device_ids)
         zenoh_endpoints = _declare_zenoh_endpoints(config, metadata_bytes)
-    except _StartupError:
+    except Exception as exc:
         with contextlib.suppress(Exception):
             driver.disconnect()
         locks.release_all()
-        raise
+        if isinstance(exc, _StartupError):
+            raise
+        msg = f"unexpected startup failure after acquiring locks: {type(exc).__name__}: {exc}"
+        raise _StartupError(msg, phase="unexpected_startup_failure") from exc
 
     return _Endpoints(
         driver=driver,

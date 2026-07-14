@@ -333,6 +333,18 @@ class TestOwnerIdleShutdown:
 
 @requires_zenoh
 class TestDiscovery:
+    def test_discover_local_robot_with_default_session(self, unique_id: str) -> None:
+        robot = _shared_robot(unique_id.replace("/", "-"))
+        robot.connect()
+        try:
+            found = discover_robots(timeout=2.0)
+            assert robot.name in [metadata["name"] for metadata in found]
+        finally:
+            owner = robot._owner
+            robot.disconnect()
+            if owner is not None:
+                owner.stop()
+
     def test_discover_robots_via_connected_session(self, unique_id: str) -> None:
         robot = _shared_robot(unique_id.replace("/", "-"))
         robot.connect()

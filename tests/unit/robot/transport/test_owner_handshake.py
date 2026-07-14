@@ -3,12 +3,16 @@
 
 from __future__ import annotations
 
+import pytest
+
 from physicalai.robot.errors import RobotDeviceAlreadyOwned, RobotTransportError
-from physicalai.robot.transport._lock import NamedLock
+from physicalai.robot.transport._lock import NamedLock, acquire_locks
 from physicalai.robot.transport._owner import RobotOwner
 from physicalai.robot.transport._owner_config import RobotOwnerConfig
+from physicalai.robot.transport._owner_worker import _StartupError, _startup
 
 from .conftest import FAKE_ROBOT_CLASS, requires_zenoh
+from .fake import FakeRobot
 
 
 def _owner(unique_id: str, **robot_kwargs: object) -> RobotOwner:
@@ -19,6 +23,25 @@ def _owner(unique_id: str, **robot_kwargs: object) -> RobotOwner:
         idle_timeout=2.0,
     )
     return RobotOwner(config)
+
+
+def test_startup_failure_after_connect_disconnects_and_releases_locks(
+    unique_id: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    name = unique_id.replace("/", "-")
+    device_id = f"fake:{unique_id}"
+    driver = FakeRobot(device_ids=(device_id,), fail_observation=True)
+    config = RobotOwnerConfig(name=name, robot_class=FAKE_ROBOT_CLASS)
+    monkeypatch.setattr(RobotOwnerConfig, "build", lambda _self: driver)
+
+    with pytest.raises(_StartupError, match="fake observation failure") as exc_info:
+        _startup(config)
+
+    assert exc_info.value.phase == "unexpected_startup_failure"
+    assert driver.disconnect_called
+    locks = acquire_locks(name, [device_id])
+    locks.release_all()
 
 
 @requires_zenoh

@@ -39,6 +39,7 @@ from physicalai.robot.errors import (
 
 from ._codec import ROBOT_TRANSPORT_PROTOCOL_VERSION, TransportObservation, decode_metadata, decode_state, encode_action
 from ._ids import KEY_PREFIX, METADATA_WILDCARD, action_key, metadata_key, state_key, validate_name
+from ._lock import registered_owner_names
 from ._owner_config import DEFAULT_RATE_HZ, normalize_robot_class
 from ._session import open_session
 
@@ -105,7 +106,9 @@ def discover_robots(
     Args:
         timeout: Zenoh query timeout in seconds.
         session: Optional existing Zenoh session to query through (kept
-            open); by default a new session is opened and closed.
+            open). By default, host-local owners are enumerated through
+            the name-lock registry and queried over their deterministic
+            loopback endpoints.
         allow_remote: Whether the (default, own) session may discover
             robots beyond localhost. Ignored when *session* is given —
             that session's own scope applies.
@@ -114,12 +117,11 @@ def discover_robots(
         One decoded metadata dict per answering owner, each including its
         ``name``.
     """
-    own_session = session is None
-    if own_session:
-        session = open_session(allow_remote=allow_remote)
     robots: list[dict[str, Any]] = []
-    try:
-        replies = session.get(METADATA_WILDCARD, timeout=timeout)
+    deadline = time.monotonic() + timeout
+
+    def _append_replies(query_session: Any, query_timeout: float) -> None:  # noqa: ANN401
+        replies = query_session.get(METADATA_WILDCARD, timeout=query_timeout)
         for reply in replies:
             sample = reply.ok
             if sample is None:
@@ -134,10 +136,35 @@ def discover_robots(
                 str(sample.key_expr).removeprefix(f"{KEY_PREFIX}/").removesuffix("/metadata"),
             )
             robots.append(metadata)
-    finally:
-        if own_session:
-            session.close()
-    return robots
+
+    if session is not None:
+        _append_replies(session, timeout)
+    else:
+        for name in registered_owner_names():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                local_session = open_session(name, allow_remote=False)
+            except ValueError:
+                logger.debug(f"skipping invalid robot name from local registry: {name!r}")
+                continue
+            try:
+                metadata = _query_metadata(local_session, metadata_key(name), timeout=remaining)
+                if metadata is not None:
+                    metadata.setdefault("name", name)
+                    robots.append(metadata)
+            finally:
+                local_session.close()
+
+        if allow_remote and (remaining := deadline - time.monotonic()) > 0:
+            remote_session = open_session(allow_remote=True)
+            try:
+                _append_replies(remote_session, remaining)
+            finally:
+                remote_session.close()
+
+    return list({metadata.get("name"): metadata for metadata in robots}.values())
 
 
 class SharedRobot:
@@ -243,7 +270,7 @@ class SharedRobot:
         """The owner's ``/metadata`` record (None before connect)."""
         return self._metadata
 
-    def connect(self, timeout: float | None = None) -> None:
+    def connect(self) -> None:
         """Attach to an existing owner, spawning one first if needed.
 
         Idempotent: calling ``connect()`` when already connected is a no-op.
@@ -254,16 +281,11 @@ class SharedRobot:
         why no owner could be attached to or spawned — see
         :meth:`_spawn_or_reprobe` and :meth:`_validate_metadata`.
 
-        Args:
-            timeout: Overall budget; defaults to the ``connect_timeout``
-                passed to the constructor. Also caps the owner-spawn
-                handshake (hardware connect may legitimately block for
-                seconds).
         """
         if self._connected:
             return
 
-        budget = self._connect_timeout if timeout is None else timeout
+        budget = self._connect_timeout
         self._session = open_session(self._name, allow_remote=self._allow_remote)
         try:
             metadata = self._resolve_metadata(budget)
