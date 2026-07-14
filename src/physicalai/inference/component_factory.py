@@ -131,15 +131,15 @@ def resolve_artifact(spec: ComponentSpec, export_dir: Path) -> ComponentSpec:
         The spec with resolved artifact path, or the original spec
         unchanged if no resolution is needed.
     """
-    # Use normpath (no symlink following) for the traversal check so that
+    # Use abspath (no symlink following) for the traversal check so that
     # HuggingFace Hub snapshot symlinks pointing into the sibling blobs/
     # store are allowed while "../../" escapes in manifest artifact paths
     # are still rejected.
-    norm_export = Path(os.path.normpath(export_dir))
+    norm_export = Path(os.path.abspath(export_dir))
 
     def _safe_resolve(artifact: str) -> str:
         candidate = export_dir / artifact
-        if not Path(os.path.normpath(candidate)).is_relative_to(norm_export):
+        if not Path(os.path.abspath(candidate)).is_relative_to(norm_export):
             msg = f"artifact path {artifact!r} escapes the export directory"
             raise ValueError(msg)
         return str(candidate.resolve())
