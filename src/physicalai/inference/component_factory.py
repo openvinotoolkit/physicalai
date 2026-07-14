@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from physicalai._import_utils import import_dotted_path  # noqa: PLC2701
+from ._importing import import_dotted_path
 
 if TYPE_CHECKING:
     from physicalai.inference.manifest import ComponentSpec

@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from physicalai._serialization import decode_numpy  # noqa: PLC2701
+from ._codec import decode_payload
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -14,16 +14,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MIN_TOPIC_PARTS = 4
-
-
-def _unpack_numpy(obj: object) -> object:
-    if isinstance(obj, dict) and obj.get("__np__"):
-        return decode_numpy(obj)
-    if isinstance(obj, dict):
-        return {k: _unpack_numpy(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_unpack_numpy(v) for v in obj]
-    return obj
 
 
 class TelemetrySubscriber:
@@ -45,25 +35,31 @@ class TelemetrySubscriber:
         prefix = f"physicalai/rt/{self._session_id}/**" if self._session_id else "physicalai/rt/**"
         self._sub = self._session.declare_subscriber(prefix, self._on_event)
 
+    def _decode_event(self, sample: Any) -> tuple[str, str, dict[str, Any]] | None:  # noqa: ANN401
+        key = str(sample.key_expr)
+        parts = key.split("/")
+        if len(parts) < _MIN_TOPIC_PARTS:
+            return None
+        payload = self._msgpack.unpackb(sample.payload.to_bytes(), raw=False)
+        payload = decode_payload(payload)
+        if not isinstance(payload, dict):
+            return None
+        return parts[2], parts[3], payload
+
     def _on_event(self, sample: Any) -> None:  # noqa: ANN401
         try:
-            key = str(sample.key_expr)
-            parts = key.split("/")
-            if len(parts) < _MIN_TOPIC_PARTS:
-                return
-            session_id = parts[2]
-            topic = parts[3]
-            payload = self._msgpack.unpackb(sample.payload.to_bytes(), raw=False)
-            payload = _unpack_numpy(payload)
-            if not isinstance(payload, dict):
-                return
-            for handler in self._handlers:
-                try:
-                    handler(session_id, topic, payload)
-                except Exception:
-                    logger.exception("Handler error")
+            event = self._decode_event(sample)
         except Exception:
             logger.exception("Failed to decode telemetry event")
+            return
+        if event is None:
+            return
+        session_id, topic, payload = event
+        for handler in self._handlers:
+            try:
+                handler(session_id, topic, payload)
+            except Exception:
+                logger.exception("Handler error")
 
     def stop(self) -> None:
         if self._sub is not None:

@@ -40,7 +40,7 @@ class TelemetryEmitter:
 
     @staticmethod
     def _pack(payload: dict[str, Any]) -> bytes:
-        from physicalai._serialization import pack_payload  # noqa: PLC0415, PLC2701
+        from ._codec import pack_payload  # noqa: PLC0415
 
         return pack_payload(payload)
 

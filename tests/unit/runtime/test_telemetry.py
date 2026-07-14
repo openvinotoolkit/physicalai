@@ -1,5 +1,6 @@
 # Copyright (C) 2025-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
+# ruff: noqa: ARG005, D100, D101, D102, E741, F401, I001, PLC2701, PLR2004, PLR6301, S101, SLF001, TC002, TC003
 
 from __future__ import annotations
 
@@ -12,9 +13,9 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from physicalai._serialization import decode_numpy, encode_numpy
 from physicalai.runtime._callback_bus import _CallbackBus
 from physicalai.runtime import AsyncCallback, ConsoleCallback, JsonlCallback
+from physicalai.runtime.observer._codec import decode_numpy, encode_numpy
 from physicalai.runtime.observer._telemetry import TelemetryEmitter
 from physicalai.runtime.events import InferenceEvent, LifecycleEvent, TickEvent
 from tests.unit.runtime.conftest import FakeRobotObservation
@@ -178,7 +179,7 @@ class TestCallbackBus:
         cb1 = MagicMock()
         cb1.on_action_ready.return_value = np.ones(3)
         cb2 = MagicMock()
-        cb2.on_action_ready.side_effect = lambda *, action, step: action  # noqa: ARG005
+        cb2.on_action_ready.side_effect = lambda *, action, step: action
 
         bus = _CallbackBus([cb1, cb2])
         original = np.zeros(3)

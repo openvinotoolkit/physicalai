@@ -5,9 +5,9 @@
 
 Zenoh moves opaque bytes; this module defines the msgpack record schemas
 for the ``/state``, ``/action``, and ``/metadata`` keys. Numpy arrays are
-encoded via :mod:`physicalai._serialization` so dtype and shape round-trip
-exactly. Images are intentionally excluded from ``/state`` — frames go
-through the capture transport (``SharedCamera``), not this one.
+encoded with dtype and shape so they round-trip exactly. Images are
+intentionally excluded from ``/state`` — frames go through the capture
+transport (``SharedCamera``), not this one.
 """
 
 from __future__ import annotations
@@ -17,8 +17,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-
-from physicalai._serialization import encode_numpy, pack_payload, unpack_payload  # noqa: PLC2701
 
 ROBOT_TRANSPORT_PROTOCOL_VERSION = 1
 """Version of the robot transport wire contract (not the robot class or
@@ -32,6 +30,52 @@ field, or semantic change. Do **not** bump it for additive optional
 fields, internal refactors, robot-driver changes, or package releases that
 preserve wire compatibility.
 """
+
+
+def _encode_numpy(array: np.ndarray) -> dict[str, Any]:
+    return {
+        "__np__": True,
+        "dtype": str(array.dtype),
+        "shape": list(array.shape),
+        "data": array.tobytes(),
+    }
+
+
+def _decode_payload(value: object) -> object:
+    if isinstance(value, dict):
+        if value.get("__np__"):
+            return np.frombuffer(value["data"], dtype=np.dtype(value["dtype"])).reshape(value["shape"])
+        return {key: _decode_payload(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_decode_payload(item) for item in value]
+    return value
+
+
+def _msgpack_default(value: object) -> object:
+    if isinstance(value, np.ndarray):
+        return _encode_numpy(value)
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        return float(value)
+    msg = f"Unsupported robot transport type for msgpack serialization: {type(value).__name__}"
+    raise TypeError(msg)
+
+
+def _pack_payload(payload: dict[str, Any]) -> bytes:
+    import msgpack  # noqa: PLC0415
+
+    return msgpack.packb(payload, default=_msgpack_default, use_bin_type=True)  # type: ignore[return-value]
+
+
+def _unpack_payload(data: bytes) -> dict[str, Any]:
+    import msgpack  # noqa: PLC0415
+
+    payload = _decode_payload(msgpack.unpackb(data, raw=False))
+    if not isinstance(payload, dict):
+        msg = f"Expected a dict payload, got {type(payload).__name__}"
+        raise TypeError(msg)
+    return payload
 
 
 @dataclass
@@ -82,16 +126,16 @@ def encode_state(
         msgpack-encoded bytes.
     """
     payload: dict[str, Any] = {
-        "joint_positions": encode_numpy(np.ascontiguousarray(joint_positions)),
-        "state": encode_numpy(np.ascontiguousarray(state)),
+        "joint_positions": _encode_numpy(np.ascontiguousarray(joint_positions)),
+        "state": _encode_numpy(np.ascontiguousarray(state)),
         "timestamp": timestamp,
         "sensor_data": (
-            {k: encode_numpy(np.ascontiguousarray(v)) for k, v in sensor_data.items()}
+            {k: _encode_numpy(np.ascontiguousarray(v)) for k, v in sensor_data.items()}
             if sensor_data is not None
             else None
         ),
     }
-    return pack_payload(payload)
+    return _pack_payload(payload)
 
 
 def decode_state(data: bytes) -> TransportObservation:
@@ -103,7 +147,7 @@ def decode_state(data: bytes) -> TransportObservation:
     Returns:
         A :class:`TransportObservation` with exact dtypes/shapes.
     """
-    record = unpack_payload(data)
+    record = _unpack_payload(data)
     return TransportObservation(
         joint_positions=record["joint_positions"],
         timestamp=record["timestamp"],
@@ -127,11 +171,11 @@ def encode_action(action: np.ndarray, goal_time: float) -> bytes:
         msgpack-encoded bytes.
     """
     payload: dict[str, Any] = {
-        "action": encode_numpy(np.ascontiguousarray(action)),
+        "action": _encode_numpy(np.ascontiguousarray(action)),
         "goal_time": goal_time,
         "ts": time.monotonic(),
     }
-    return pack_payload(payload)
+    return _pack_payload(payload)
 
 
 def decode_action(data: bytes) -> tuple[np.ndarray, float, float]:
@@ -143,7 +187,7 @@ def decode_action(data: bytes) -> tuple[np.ndarray, float, float]:
     Returns:
         Tuple of ``(action, goal_time, send_ts)``.
     """
-    record = unpack_payload(data)
+    record = _unpack_payload(data)
     return record["action"], record["goal_time"], record["ts"]
 
 
@@ -159,7 +203,7 @@ def encode_metadata(metadata: dict[str, Any]) -> bytes:
     Returns:
         msgpack-encoded bytes.
     """
-    return pack_payload(metadata)
+    return _pack_payload(metadata)
 
 
 def decode_metadata(data: bytes) -> dict[str, Any]:
@@ -171,4 +215,4 @@ def decode_metadata(data: bytes) -> dict[str, Any]:
     Returns:
         The metadata dict.
     """
-    return unpack_payload(data)
+    return _unpack_payload(data)

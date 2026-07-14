@@ -27,7 +27,7 @@ import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from physicalai._import_utils import import_dotted_path  # noqa: PLC2701
+from ._importing import import_dotted_path
 
 if TYPE_CHECKING:
     from physicalai.robot.interface import Robot
