@@ -62,7 +62,9 @@ init_args:
 ```
 
 The old `robot_type`, `robot_id`, `from_owner()`, and `port`/`ip` identity heuristics
-are removed rather than retained as silent compatibility paths.
+are removed rather than retained as silent compatibility paths. Robot constructor
+arguments are accepted only through `robot_kwargs`; arbitrary flat extras are not
+merged into them.
 
 ## Phase 1: Migrate the core Robot contract
 
@@ -144,6 +146,20 @@ Class normalization rules:
   attributes; and
 - instantiate only in the owner subprocess.
 
+Extract the dotted-object import primitive into a dependency-free shared helper under
+`src/physicalai/` rather than adding another local `import_module` + `getattr`
+implementation. The helper supports nested qualified names by importing the longest
+valid module prefix and traversing remaining attributes. Reuse it from:
+
+- `RobotOwnerConfig` / the owner worker;
+- `inference.component_factory._import_class`; and
+- `inference.component_factory.ComponentRegistry.get_class`.
+
+Keep policy and validation at each caller: the helper imports an object but does not
+decide whether a path is trusted or whether the result must be a class. The adapter
+registry's lazy module import and camera worker's `module:attribute` test hook have
+different contracts and do not migrate in this change.
+
 Treat class paths and constructor kwargs as trusted local application/config input.
 Never import a path received from `/metadata` or any Zenoh payload. Document this at
 the resolver to satisfy `docs/development/security.md` rules 4, 9, and 11.
@@ -154,12 +170,15 @@ the resolver to satisfy `docs/development/security.md` rules 4, 9, and 11.
 - Replace `test_spec.py` with `test_owner_config.py` covering JSON round-trip, class
   objects, public string paths, arbitrary plugin-style classes, nested qualnames,
   invalid/local classes, non-JSON kwargs, and rate validation.
+- Add `tests/unit/test_import_utils.py` for the shared importer and rerun
+  `tests/unit/inference/test_manifest.py`, which covers `ComponentRegistry` and
+  component instantiation.
 - Test that no `port` or `ip` key receives special treatment.
 
 ### Focused validation
 
 ```bash
-uv run pytest tests/unit/robot/transport/test_ids.py tests/unit/robot/transport/test_owner_config.py
+uv run pytest tests/unit/test_import_utils.py tests/unit/inference/test_manifest.py tests/unit/robot/transport/test_ids.py tests/unit/robot/transport/test_owner_config.py
 ```
 
 ## Phase 3: Generalize host-local locking and errors
@@ -238,6 +257,10 @@ scouting/gossip/enabled = false
 - Retain peer mode and the D20 QoS decisions.
 - Enable the configured remote discovery/listen behavior explicitly.
 - Preserve the trusted robot-cell LAN warning; do not imply authentication.
+
+The spawning caller fixes the owner's scope for its lifetime. A later attacher's
+`allow_remote` value configures only that subscriber's session and cannot reconfigure
+the running owner.
 
 ### Endpoint collisions
 
@@ -349,18 +372,24 @@ Refactor `_shared_robot.py` to the target API.
 
 1. Open a session with the requested scope.
 2. Probe `physicalai/robot/{name}/metadata`.
-3. If found, validate `protocol_version` before declaring `/action`; attach without
-   comparing `robot_class` or constructor kwargs.
-4. If absent in attach-only mode, raise `RobotTransportError`.
-5. If absent in create-or-attach mode, start the owner.
-6. On name-lock startup failure, bounded re-probe the same metadata key:
+3. If found, validate `protocol_version` and metadata consistency before declaring
+   `/action`. Require `num_joints == len(joint_names)`, non-empty unique joint names,
+   and positive `state_dim`.
+4. When create-or-attach supplied `robot_class`, compare its normalized string with
+   metadata and log a warning on mismatch. Do not fail and do not import the
+   owner-advertised path.
+5. If absent in attach-only mode, raise `RobotTransportError`.
+6. If absent in create-or-attach mode, start the owner.
+7. On name-lock startup failure, bounded re-probe the same metadata key:
    - matching candidate and winner `device_ids`: attach;
    - different IDs: raise `RobotNameConflict`.
-7. Map device-lock contention to `RobotDeviceAlreadyOwned`.
-8. Attach RingChannel(1) state subscriber and D20 action publisher, then await the
+8. Map device-lock contention to `RobotDeviceAlreadyOwned`.
+9. Attach RingChannel(1) state subscriber and D20 action publisher, then await the
    first state as today.
 
-Keep `robot_class` metadata diagnostic only. An unsupported protocol version raises
+Keep `robot_class` metadata diagnostic only. String mismatch is useful evidence of a
+wrong name but is not proof of incompatibility because public re-exports, wrappers,
+and subclasses can preserve the contract. An unsupported protocol version raises
 `RobotProtocolMismatch` before the action publisher exists.
 
 ### Discovery
@@ -374,7 +403,9 @@ honor `allow_remote=False` by default. Network discovery requires explicit
 - Rewrite construction tests around name validation and attach-only behavior.
 - Test create, existing-name attach, idempotent connect, and subscriber-only disconnect.
 - Test same-name matching-device race attaches and differing-device race conflicts.
-- Test existing-name behavior ignores construction kwargs and class mismatch.
+- Test existing-name behavior ignores construction kwargs, warns on class mismatch,
+  and does not import the owner-advertised path.
+- Test malformed metadata dimensions or joint names fail before action publication.
 - Test protocol rejection occurs before action publisher declaration.
 - Test local-only versus remote attach/discovery scope.
 - Preserve observation, action, Ring(1), idle shutdown, and latency tests.
@@ -394,6 +425,7 @@ uv run pytest tests/unit/robot/transport/test_shared_robot.py tests/unit/robot/t
 3. Update `examples/so101/measure_transport_latency.py` to the new API.
 4. Update `docs/how-to/runtime/share-a-robot.md`:
    - local-only default and explicit `allow_remote=True`;
+   - the spawning caller fixes owner scope for its lifetime;
    - create-or-attach and attach-only examples;
    - trusted-LAN warning for remote mode;
    - host-local-only ownership guarantee; and

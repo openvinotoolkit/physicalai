@@ -36,7 +36,7 @@ Creating a `SharedRobot` means ensure that the named service exists, then attach
 robot = SharedRobot(
     name="left-arm",
     robot_class=SO101,
-  allow_remote=False,
+    allow_remote=False,
     robot_kwargs={
         "port": "/dev/ttyACM0",
         "calibration": "calibration.json",
@@ -52,7 +52,8 @@ robot = SharedRobot.attach("left-arm")
 
 `name` and `robot_kwargs` remain separate, so a robot constructor may itself accept a
 `name` kwarg without ambiguity. Grouped `robot_kwargs` is the canonical configuration
-and subprocess representation; flat extras, if retained, are convenience sugar only.
+and subprocess representation. `SharedRobot` does not merge arbitrary flat keyword
+arguments into the robot constructor.
 
 If the named service already exists, the caller attaches to it. Construction inputs
 are a fallback recipe used only when the name does not exist. Raw constructor kwargs
@@ -154,6 +155,10 @@ Transport scope is part of attachment semantics. `SharedRobot.attach("left-arm")
 defaults to local-only and cannot discover a network owner. Attaching to a network
 owner requires `SharedRobot.attach("left-arm", allow_remote=True)`.
 
+The caller that spawns an owner fixes its transport scope for that owner's lifetime.
+Later attachers cannot widen or narrow the running owner's reachability; their
+`allow_remote` value only controls how their own session searches for and reaches it.
+
 `allow_remote` describes the security capability being granted. It is preferred over
 `networked` because local mode still uses Zenoh over loopback TCP.
 
@@ -230,9 +235,17 @@ Subscribers reject unsupported versions before declaring the action publisher.
 
 When an owner existed before the call, the parent cannot compare its `device_ids` with
 the candidate without constructing a throwaway robot. The name is therefore
-authoritative. Attach validates protocol compatibility. `robot_class` is diagnostic
-and is not compared: wrappers, subclasses, or an implementation change that preserves
-the service contract must not prevent attachment.
+authoritative. Attach validates protocol compatibility and metadata consistency. When
+the caller supplied a construction recipe, it also compares the already-normalized
+caller and owner `robot_class` strings and logs a warning on mismatch. It does not
+fail: public re-export paths, wrappers, subclasses, or an implementation change may
+preserve the service contract. The subscriber must not import the owner-advertised
+path because network metadata is untrusted.
+
+Metadata consistency checks require `num_joints == len(joint_names)`, non-empty unique
+joint names, and positive `state_dim`. Comparing joint names or dimensions against the
+caller's intended robot is not possible without adding a separate expected-contract
+input or constructing the robot, so those values are not identity checks.
 
 ## Host-local lock lifecycle
 
@@ -358,7 +371,8 @@ unless measurements show that repeated overrides are a real problem.
 - A host-local name lock serializes same-name owner creation before device locking.
 - Empty `device_ids` is valid only for a robot with no exclusive physical resource.
 - The default owner loop rate is 100 Hz, overridable with `rate_hz`.
-- `robot_class` metadata is diagnostic and is not an attach compatibility check.
+- A supplied `robot_class` mismatch logs a warning but does not block attachment;
+  metadata shape fields are validated for internal consistency.
 - Public conflict exceptions are `RobotNameConflict`, `RobotDeviceAlreadyOwned`, and
   `RobotProtocolMismatch`, all derived from `RobotTransportError`.
 - Local rendezvous hashes the name into ports 20000-59999; bind collisions fail
