@@ -5,6 +5,12 @@
 process own a robot's exclusive hardware connection while any number of other
 processes read its state and issue actions over [Zenoh](https://zenoh.io/).
 
+> **Follow-up:** Read
+> [`robot-zenoh-transport-identity-followup.md`](robot-zenoh-transport-identity-followup.md)
+> with this document. The follow-up supersedes the identity, arbitrary-class
+> construction, metadata naming, and host-local ownership decisions identified in its
+> scope section.
+
 This mirrors the _structure_ of the existing `SharedCamera`
 (`physicalai.capture.transport`) — probe → spawn-or-attach → pub/sub — but uses a
 different transport (Zenoh, network-capable) instead of iceoryx2 (same-host shared
