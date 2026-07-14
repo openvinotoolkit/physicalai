@@ -397,6 +397,10 @@ class _ConfigFakeRobot:
     def joint_names(self) -> list[str]:
         return ["j0", "j1"]
 
+    @property
+    def device_ids(self) -> tuple[str, ...]:
+        return (f"fake:{self.port}",)
+
     def connect(self) -> None: ...
     def disconnect(self) -> None: ...
     def is_connected(self) -> bool:

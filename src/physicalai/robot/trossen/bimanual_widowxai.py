@@ -93,6 +93,11 @@ class BimanualWidowXAI(Robot):
         return self._left.role
 
     @property
+    def device_ids(self) -> tuple[str, ...]:
+        """Sorted, deduplicated device ids of both constituent arms."""
+        return tuple(sorted(set(self._left.device_ids) | set(self._right.device_ids)))
+
+    @property
     def joint_names(self) -> list[str]:
         """Ordered joint names with ``left_`` / ``right_`` prefix."""
         left_names = [f"left_{n}" for n in self._left.joint_names]

@@ -18,7 +18,7 @@ HAS_ZENOH = importlib.util.find_spec("zenoh") is not None
 
 requires_zenoh = pytest.mark.skipif(not HAS_ZENOH, reason="eclipse-zenoh not installed")
 
-FAKE_FACTORY = "tests.unit.robot.transport.fake:FakeRobot"
+FAKE_ROBOT_CLASS = "tests.unit.robot.transport.fake.FakeRobot"
 
 
 @pytest.fixture(autouse=True)

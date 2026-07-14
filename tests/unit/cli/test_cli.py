@@ -57,6 +57,10 @@ class FakeRobot:
     def joint_names(self) -> list[str]:
         return ["j0", "j1"]
 
+    @property
+    def device_ids(self) -> tuple[str, ...]:
+        return (f"fake:{self.port}",)
+
     def connect(self) -> None:
         self._connected = True
 

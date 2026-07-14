@@ -86,6 +86,13 @@ def _create_robot(mock_module: MagicMock, role: str = "follower") -> object:
 class TestWidowXAIConnect:
     """Tests for connect()."""
 
+    def test_device_ids_scheme_qualified_ip(self, mock_trossen_arm: MagicMock) -> None:
+        """device_ids is a single scheme-qualified network address."""
+        from physicalai.robot.trossen import WidowXAI
+
+        robot = WidowXAI(ip="192.168.1.42", role="follower")  # type: ignore[arg-type]
+        assert robot.device_ids == ("tcp:192.168.1.42",)
+
     def test_connect_follower(self, mock_trossen_arm: MagicMock) -> None:
         """Follower connect: configure called with follower end effector, modes set, home sent."""
         driver = mock_trossen_arm.TrossenArmDriver.return_value

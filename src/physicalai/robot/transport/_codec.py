@@ -4,7 +4,7 @@
 """Wire format for the robot Zenoh transport.
 
 Zenoh moves opaque bytes; this module defines the msgpack record schemas
-for the ``/state``, ``/action``, and ``/meta`` keys. Numpy arrays are
+for the ``/state``, ``/action``, and ``/metadata`` keys. Numpy arrays are
 encoded via :mod:`physicalai._serialization` so dtype and shape round-trip
 exactly. Images are intentionally excluded from ``/state`` — frames go
 through the capture transport (``SharedCamera``), not this one.
@@ -19,6 +19,19 @@ from typing import Any
 import numpy as np
 
 from physicalai._serialization import encode_numpy, pack_payload, unpack_payload  # noqa: PLC2701
+
+ROBOT_TRANSPORT_PROTOCOL_VERSION = 1
+"""Version of the robot transport wire contract (not the robot class or
+package release). Subscribers reject an owner advertising an unsupported
+version before declaring the action publisher, so an incompatible owner
+never receives commands it might misinterpret.
+
+Bump this constant in the same change that introduces a backward-
+incompatible ``/state``, ``/action``, or ``/metadata`` payload, required-
+field, or semantic change. Do **not** bump it for additive optional
+fields, internal refactors, robot-driver changes, or package releases that
+preserve wire compatibility.
+"""
 
 
 @dataclass
@@ -134,26 +147,28 @@ def decode_action(data: bytes) -> tuple[np.ndarray, float, float]:
     return record["action"], record["goal_time"], record["ts"]
 
 
-def encode_meta(meta: dict[str, Any]) -> bytes:
-    """Encode a ``/meta`` record (discovery + attach validation).
+def encode_metadata(metadata: dict[str, Any]) -> bytes:
+    """Encode a ``/metadata`` record (discovery + protocol validation).
 
     Args:
-        meta: Informational dict — ``robot_type``, ``joint_names``,
-            ``host``, ``connection``, ``state_dim``, ``num_joints``.
+        metadata: Informational dict — ``protocol_version``, ``name``,
+            ``robot_class``, ``device_ids``, ``host``, ``joint_names``,
+            ``num_joints``, ``state_dim``. Must never include constructor
+            kwargs, calibration paths/contents, credentials, or tokens.
 
     Returns:
         msgpack-encoded bytes.
     """
-    return pack_payload(meta)
+    return pack_payload(metadata)
 
 
-def decode_meta(data: bytes) -> dict[str, Any]:
-    """Decode a ``/meta`` record.
+def decode_metadata(data: bytes) -> dict[str, Any]:
+    """Decode a ``/metadata`` record.
 
     Args:
-        data: msgpack-encoded bytes from :func:`encode_meta`.
+        data: msgpack-encoded bytes from :func:`encode_metadata`.
 
     Returns:
-        The meta dict.
+        The metadata dict.
     """
     return unpack_payload(data)

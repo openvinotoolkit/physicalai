@@ -116,6 +116,10 @@ class TestBimanualWidowXAIConstruction:
         robot_leader = _make_bimanual(mock_trossen_arm, role="leader")
         assert robot_leader.role == "leader"
 
+    def test_device_ids_union_of_both_arms(self, mock_trossen_arm: MagicMock) -> None:
+        robot = _make_bimanual(mock_trossen_arm)
+        assert robot.device_ids == ("tcp:192.168.1.10", "tcp:192.168.1.11")
+
 
 # ---------------------------------------------------------------------------
 # Connectivity

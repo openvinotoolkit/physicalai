@@ -52,6 +52,10 @@ class _ConformantRobot:
     def joint_names(self) -> list[str]:
         return ["j0", "j1", "j2", "j3", "j4", "j5"]
 
+    @property
+    def device_ids(self) -> tuple[str, ...]:
+        return ("fake-robot",)
+
 
 class _NonStationaryRobot(_ConformantRobot):
     """A robot that drifts after disconnect — should fail the stationarity check."""
@@ -97,6 +101,10 @@ class _InvalidJointPositionsRobot:
     @property
     def joint_names(self) -> list[str]:
         return ["j0", "j1", "j2", "j3", "j4", "j5"]
+
+    @property
+    def device_ids(self) -> tuple[str, ...]:
+        return ("fake-robot",)
 
 
 class TestVerifyRobot:

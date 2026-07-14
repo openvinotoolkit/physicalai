@@ -16,6 +16,17 @@ Class attribute:
 
 - `joint_names: list[str]` — order matches `joint_positions` and training action layout.
 
+Property:
+
+- `device_ids: tuple[str, ...]` — canonical, scheme-qualified identities of every
+  physical device this instance exclusively owns (e.g. `("serial:ttyUSB0",)`,
+  `("tcp:192.168.1.2",)`). Must be derivable from constructor parameters alone,
+  with no hardware I/O, and available before `connect()`. Composite robots
+  return every constituent device's id; robots with no exclusively-owned
+  hardware (e.g. a network subscriber) return `()`. Used by
+  `physicalai.robot.transport` for host-local exclusivity locking — not a
+  transport name or key.
+
 ## RobotObservation
 
 Attributes:

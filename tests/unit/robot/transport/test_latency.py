@@ -19,7 +19,7 @@ import pytest
 
 from physicalai.robot.transport import SharedRobot
 
-from .conftest import FAKE_FACTORY, requires_zenoh
+from .conftest import FAKE_ROBOT_CLASS, requires_zenoh
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -39,12 +39,11 @@ class TestActionLatency:
     @pytest.fixture
     def robot(self, unique_id: str) -> Generator[SharedRobot, None, None]:
         robot = SharedRobot(
-            "so101",
-            robot_id=unique_id,
-            port=f"/dev/{unique_id.replace('/', '-')}",
+            unique_id.replace("/", "-"),
+            robot_class=FAKE_ROBOT_CLASS,
+            robot_kwargs={"device_ids": [f"fake:{unique_id}"]},
             rate_hz=_RATE_HZ,
             idle_timeout=3.0,
-            _factory_override=FAKE_FACTORY,
         )
         robot.connect()
         yield robot

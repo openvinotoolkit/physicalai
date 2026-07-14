@@ -17,7 +17,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from physicalai.robot.connect import connect
-from physicalai.robot.errors import RobotError, RobotIdConflict, RobotNotConnectedError, RobotTransportError
+from physicalai.robot.errors import (
+    RobotDeviceAlreadyOwned,
+    RobotError,
+    RobotNameConflict,
+    RobotNotConnectedError,
+    RobotProtocolMismatch,
+    RobotTransportError,
+)
 from physicalai.robot.interface import Robot, RobotObservation
 from physicalai.robot.verify import verify_robot
 
@@ -29,10 +36,12 @@ if TYPE_CHECKING:
 
 __all__ = [
     "Robot",
+    "RobotDeviceAlreadyOwned",
     "RobotError",
-    "RobotIdConflict",
+    "RobotNameConflict",
     "RobotNotConnectedError",
     "RobotObservation",
+    "RobotProtocolMismatch",
     "RobotTransportError",
     "connect",
     "verify_robot",

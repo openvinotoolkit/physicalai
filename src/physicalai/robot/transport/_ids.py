@@ -1,134 +1,117 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Robot id derivation and Zenoh key builders.
+"""Robot naming and Zenoh key builders.
 
-The ``robot_id`` keys the Zenoh topics. It must be deterministic from the
-connection parameters so a second same-machine instance re-derives the same
-key and attaches to the existing owner instead of spawning a competing one.
+``name`` is a required, caller-chosen logical identifier — it keys the
+Zenoh topics directly and never needs a live driver instance to resolve
+(unlike the superseded connection-derived ``robot_id``). Physical device
+identity (:attr:`~physicalai.robot.interface.Robot.device_ids`) is a
+separate concern, used only for host-local exclusivity locking by the
+owner — see ``_lock.py``.
 """
 
 from __future__ import annotations
 
 import hashlib
+import re
 import socket
-from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
 
 KEY_PREFIX = "physicalai/robot"
 
-META_WILDCARD = f"{KEY_PREFIX}/**/meta"
-"""Selector enumerating the ``/meta`` queryable of every reachable robot."""
+_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+"""One safe Zenoh key segment: no ``/``, no wildcards (``*``/``**``/``$*``)."""
+
+METADATA_WILDCARD = f"{KEY_PREFIX}/*/metadata"
+"""Selector enumerating the ``/metadata`` queryable of every reachable robot."""
+
+_PORT_BASE = 20000
+_PORT_RANGE = 40000
+"""Unprivileged range 20000-59999 for the deterministic local rendezvous port."""
 
 
-def derive_device_id(robot_kwargs: Mapping[str, object]) -> str:
-    """Derive a device id from robot construction kwargs.
-
-    Serial robots (SO-101) use the symlink-resolved basename of ``port`` so
-    that ``/dev/ttyUSB0`` and ``/dev/serial/by-id/...`` map to the same id.
-    Network robots (Trossen) use ``ip``. ``role`` is intentionally excluded —
-    the id keys on the physical connection, not leader/follower.
+def validate_name(name: str) -> str:
+    """Validate a robot's logical name as one safe Zenoh key segment.
 
     Args:
-        robot_kwargs: Constructor kwargs containing ``port`` or ``ip``.
+        name: Caller-chosen logical identifier, e.g. ``"left-arm"``.
 
     Returns:
-        A device id string suitable for key and lock-file naming.
+        *name*, unchanged, once validated.
 
     Raises:
-        ValueError: If neither ``port`` nor ``ip`` is present.
+        ValueError: If *name* is empty or contains anything other than
+            ASCII letters, digits, ``_``, or ``-``.
     """
-    port = robot_kwargs.get("port")
-    if isinstance(port, str) and port:
-        if port.startswith("/dev/"):
-            return Path(port).resolve().name
-        return Path(port).name
-
-    ip = robot_kwargs.get("ip")
-    if isinstance(ip, str) and ip:
-        return ip
-
-    msg = "cannot derive a device id: robot kwargs contain neither 'port' nor 'ip'"
-    raise ValueError(msg)
+    if not name or not _NAME_RE.match(name):
+        msg = f"invalid robot name {name!r}: must be a non-empty string of letters, digits, '_', or '-'"
+        raise ValueError(msg)
+    return name
 
 
-def derive_robot_id(
-    robot_type: str,
-    robot_kwargs: Mapping[str, object],
-    *,
-    robot_id: str | None = None,
-    host: str | None = None,
-) -> str:
-    """Derive the Zenoh robot id: ``physicalai/robot/{type}/{host}/{device_id}``.
+def robot_prefix(name: str) -> str:
+    """Return the Zenoh key prefix for a robot's topics.
 
     Args:
-        robot_type: Logical robot type (e.g. ``"so101"``).
-        robot_kwargs: Constructor kwargs used for device-id derivation.
-        robot_id: Explicit override; returned as-is (prefixed) when given.
-            Useful for network-only, manually-launched-owner setups.
-        host: Host component override. Defaults to the local hostname.
+        name: The robot's logical name.
 
     Returns:
-        The full robot id used as the Zenoh key prefix for this robot.
+        ``physicalai/robot/{name}``.
     """
-    if robot_id is not None:
-        if robot_id.startswith(f"{KEY_PREFIX}/"):
-            return robot_id
-        return f"{KEY_PREFIX}/{robot_id}"
-    host = host or socket.gethostname()
-    device_id = derive_device_id(robot_kwargs)
-    return f"{KEY_PREFIX}/{robot_type}/{host}/{device_id}"
+    return f"{KEY_PREFIX}/{validate_name(name)}"
 
 
-_PORT_BASE = 17000
-_PORT_RANGE = 1000
-
-
-def derive_endpoint_port(robot_id: str) -> int:
-    """Deterministic TCP port for the owner's Zenoh listen endpoint.
-
-    Multicast scouting is not available on every host (e.g. macOS local
-    network privacy, locked-down LANs). A port derived from the robot id
-    lets same-host subscribers connect deterministically without any
-    discovery mechanism; Zenoh retries the endpoint in the background, so
-    a subscriber session opened before the owner exists attaches as soon
-    as the owner starts listening.
-
-    Args:
-        robot_id: The full robot id.
-
-    Returns:
-        A port in ``[17000, 17999]``.
-    """
-    digest = hashlib.sha256(robot_id.encode()).digest()
-    return _PORT_BASE + int.from_bytes(digest[:4], "big") % _PORT_RANGE
-
-
-def state_key(robot_id: str) -> str:
+def state_key(name: str) -> str:
     """Key for the owner-to-subscribers state stream.
 
     Returns:
-        The ``{robot_id}/state`` key expression.
+        The ``{prefix}/state`` key expression.
     """
-    return f"{robot_id}/state"
+    return f"{robot_prefix(name)}/state"
 
 
-def action_key(robot_id: str) -> str:
+def action_key(name: str) -> str:
     """Key for the subscribers-to-owner action stream.
 
     Returns:
-        The ``{robot_id}/action`` key expression.
+        The ``{prefix}/action`` key expression.
     """
-    return f"{robot_id}/action"
+    return f"{robot_prefix(name)}/action"
 
 
-def meta_key(robot_id: str) -> str:
+def metadata_key(name: str) -> str:
     """Key for the owner-answered discovery/validation queryable.
 
     Returns:
-        The ``{robot_id}/meta`` key expression.
+        The ``{prefix}/metadata`` key expression.
     """
-    return f"{robot_id}/meta"
+    return f"{robot_prefix(name)}/metadata"
+
+
+def derive_endpoint_port(name: str) -> int:
+    """Deterministic loopback TCP port for the owner's Zenoh listen endpoint.
+
+    Local rendezvous cannot rely on multicast scouting (unavailable on some
+    hosts, and disabled entirely in local-only/``allow_remote=False`` mode),
+    so the owner and its subscribers instead derive the same port from the
+    robot's full key prefix. A collision on this port is treated as a
+    startup failure rather than silently retried on another port, because
+    an independent subscriber has no way to discover a shifted port.
+
+    Args:
+        name: The robot's logical name.
+
+    Returns:
+        A port in ``[20000, 59999]``.
+    """
+    digest = hashlib.sha256(robot_prefix(name).encode()).digest()
+    return _PORT_BASE + int.from_bytes(digest[:4], "big") % _PORT_RANGE
+
+
+def default_host() -> str:
+    """Return the local hostname for informational ``/metadata`` reporting.
+
+    Returns:
+        The local hostname.
+    """
+    return socket.gethostname()

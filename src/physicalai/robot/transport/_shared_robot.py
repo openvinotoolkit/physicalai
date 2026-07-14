@@ -5,8 +5,16 @@
 
 ``SharedRobot`` structurally satisfies the :class:`~physicalai.robot.Robot`
 protocol: it pulls the latest owner-published state on demand and publishes
-actions fire-and-forget. The first instance that finds no existing owner
-spawns one; later instances attach.
+actions fire-and-forget. The first instance constructed for a given *name*
+that finds no existing owner spawns one; later instances (for the same
+*name*, anywhere reachable) attach.
+
+Unlike the superseded connection-derived ``robot_id``, *name* is a required,
+caller-chosen logical identifier — routing never needs a live driver
+instance to resolve. Physical device identity
+(:attr:`~physicalai.robot.interface.Robot.device_ids`) only matters to the
+*owner*, for host-local exclusivity locking; a ``SharedRobot`` never
+constructs a driver itself.
 
 Reads never use a background callback thread: the ``/state`` subscriber is
 declared with a native ``RingChannel(1)`` whose buffering is GIL-independent,
@@ -21,17 +29,17 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
-from physicalai.robot.errors import RobotIdConflict, RobotNotConnectedError, RobotTransportError
-
-from ._codec import TransportObservation, decode_meta, decode_state, encode_action
-from ._ids import (
-    META_WILDCARD,
-    action_key,
-    derive_device_id,
-    derive_robot_id,
-    meta_key,
-    state_key,
+from physicalai.robot.errors import (
+    RobotDeviceAlreadyOwned,
+    RobotNameConflict,
+    RobotNotConnectedError,
+    RobotProtocolMismatch,
+    RobotTransportError,
 )
+
+from ._codec import ROBOT_TRANSPORT_PROTOCOL_VERSION, TransportObservation, decode_metadata, decode_state, encode_action
+from ._ids import KEY_PREFIX, METADATA_WILDCARD, action_key, metadata_key, state_key, validate_name
+from ._owner_config import DEFAULT_RATE_HZ, normalize_robot_class
 from ._session import open_session
 
 if TYPE_CHECKING:
@@ -47,74 +55,85 @@ _RETRY_INTERVAL = 0.2
 _FIRST_STATE_TIMEOUT = 5.0
 
 
-def _query_meta(session: Any, key: str, timeout: float) -> dict[str, Any] | None:  # noqa: ANN401
-    """Query a ``/meta`` key and decode the first successful reply.
+def _query_metadata(session: Any, key: str, timeout: float) -> dict[str, Any] | None:  # noqa: ANN401
+    """Query a ``/metadata`` key and decode the first successful reply.
 
     Args:
         session: Open Zenoh session.
-        key: Concrete ``.../meta`` key expression.
+        key: Concrete ``.../metadata`` key expression.
         timeout: Zenoh query timeout in seconds.
 
     Returns:
-        The decoded meta dict, or ``None`` when no owner answered.
+        The decoded metadata dict, or ``None`` when no owner answered.
     """
     try:
         replies = session.get(key, timeout=timeout)
         for reply in replies:
             sample = reply.ok
             if sample is not None:
-                return decode_meta(sample.payload.to_bytes())
+                return decode_metadata(sample.payload.to_bytes())
     except Exception:  # noqa: BLE001
-        logger.debug(f"meta query failed for {key}", exc_info=True)
+        logger.debug(f"metadata query failed for {key}", exc_info=True)
     return None
 
 
-def _query_meta_with_retry(session: Any, key: str, timeout: float) -> dict[str, Any] | None:  # noqa: ANN401
-    """Poll :func:`_query_meta` until an owner answers or *timeout* elapses.
+def _query_metadata_with_retry(session: Any, key: str, timeout: float) -> dict[str, Any] | None:  # noqa: ANN401
+    """Poll :func:`_query_metadata` until an owner answers or *timeout* elapses.
 
     Returns:
-        The decoded meta dict, or ``None`` on timeout.
+        The decoded metadata dict, or ``None`` on timeout.
     """
     deadline = time.monotonic() + timeout
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return None
-        meta = _query_meta(session, key, timeout=min(_PROBE_TIMEOUT, remaining))
-        if meta is not None:
-            return meta
+        metadata = _query_metadata(session, key, timeout=min(_PROBE_TIMEOUT, remaining))
+        if metadata is not None:
+            return metadata
         time.sleep(_RETRY_INTERVAL)
 
 
-def discover_robots(timeout: float = 2.0, *, session: Any = None) -> list[dict[str, Any]]:  # noqa: ANN401
-    """Enumerate all reachable shared robots via the ``/meta`` wildcard.
+def discover_robots(
+    timeout: float = 2.0,
+    *,
+    session: Any = None,  # noqa: ANN401
+    allow_remote: bool = False,
+) -> list[dict[str, Any]]:
+    """Enumerate all reachable shared robots via the ``/metadata`` wildcard.
 
     Args:
         timeout: Zenoh query timeout in seconds.
         session: Optional existing Zenoh session to query through (kept
-            open); by default a scouting-only session is opened and closed.
+            open); by default a new session is opened and closed.
+        allow_remote: Whether the (default, own) session may discover
+            robots beyond localhost. Ignored when *session* is given —
+            that session's own scope applies.
 
     Returns:
-        One decoded meta dict per answering owner, each including its
-        ``robot_id`` (derived from the answering key expression).
+        One decoded metadata dict per answering owner, each including its
+        ``name``.
     """
     own_session = session is None
     if own_session:
-        session = open_session()
+        session = open_session(allow_remote=allow_remote)
     robots: list[dict[str, Any]] = []
     try:
-        replies = session.get(META_WILDCARD, timeout=timeout)
+        replies = session.get(METADATA_WILDCARD, timeout=timeout)
         for reply in replies:
             sample = reply.ok
             if sample is None:
                 continue
             try:
-                meta = decode_meta(sample.payload.to_bytes())
+                metadata = decode_metadata(sample.payload.to_bytes())
             except Exception:  # noqa: BLE001
-                logger.debug("skipping malformed meta reply", exc_info=True)
+                logger.debug("skipping malformed metadata reply", exc_info=True)
                 continue
-            meta["robot_id"] = str(sample.key_expr).removesuffix("/meta")
-            robots.append(meta)
+            metadata.setdefault(
+                "name",
+                str(sample.key_expr).removeprefix(f"{KEY_PREFIX}/").removesuffix("/metadata"),
+            )
+            robots.append(metadata)
     finally:
         if own_session:
             session.close()
@@ -130,200 +149,258 @@ class SharedRobot:
     is a drop-in replacement for a direct driver.
 
     Args:
-        robot_type: Logical robot type (``"so101"`` / ``"widowxai"``) for
-            auto-spawn mode, or ``None`` to attach to an existing owner
-            only (requires ``robot_id``).
-        robot_id: Explicit robot id override. Defaults to one derived from
-            ``robot_type`` and the connection kwargs, which is what lets a
-            second same-machine instance attach instead of spawning a
-            competing owner.
-        rate_hz: Owner loop rate when this instance spawns the owner;
-            ``None`` selects the per-robot default.
+        name: Required logical name — keys the Zenoh topics directly. Two
+            instances constructed with the same *name* (anywhere reachable
+            under the chosen transport scope) share one owner.
+        robot_class: Driver class (or its dotted import path) to spawn if
+            no owner exists yet for *name*. ``None`` means attach-only —
+            use :meth:`attach` for that case instead of passing this
+            directly.
+        robot_kwargs: JSON-serializable driver constructor kwargs (e.g.
+            ``port``, ``calibration`` as a path, ``role`` as a str), used
+            only when this instance spawns the owner.
+        allow_remote: Whether this instance's own session — and, if it
+            spawns the owner, the owner's session for its whole lifetime —
+            is reachable beyond localhost. Defaults to the secure,
+            localhost-only scope; a later attacher's value never widens or
+            narrows an already-running owner's reachability.
+        rate_hz: Owner loop rate when this instance spawns the owner.
         idle_timeout: Seconds with zero subscribers before a spawned owner
             self-exits (and homes/holds the robot).
-        connect_timeout: Overall budget for :meth:`connect`; also caps the
-            owner-spawn handshake (hardware connect may legitimately block
-            for seconds).
-        robot_kwargs: JSON-serializable driver constructor kwargs
-            (e.g. ``port``, ``calibration`` as a path, ``role`` as a str).
-        **extra_robot_kwargs: Convenience merge into ``robot_kwargs``.
+        connect_timeout: Default overall budget for :meth:`connect`.
     """
 
     def __init__(
         self,
-        robot_type: str | None,
+        name: str,
         *,
-        robot_id: str | None = None,
-        rate_hz: float | None = None,
+        robot_class: type | str | None = None,
+        robot_kwargs: Mapping[str, object] | None = None,
+        allow_remote: bool = False,
+        rate_hz: float = DEFAULT_RATE_HZ,
         idle_timeout: float = 10.0,
         connect_timeout: float = 10.0,
-        robot_kwargs: Mapping[str, object] | None = None,
-        _factory_override: str | None = None,
-        **extra_robot_kwargs: object,
     ) -> None:
-        if robot_type is None and robot_id is None:
-            msg = "must provide robot_type or robot_id"
-            raise ValueError(msg)
-
-        self._robot_type = robot_type
-        self._robot_kwargs: dict[str, object] = {**(robot_kwargs or {}), **extra_robot_kwargs}
+        self._name = validate_name(name)
+        self._robot_class = normalize_robot_class(robot_class) if robot_class is not None else None
+        self._robot_kwargs: dict[str, object] = dict(robot_kwargs or {})
+        self._allow_remote = allow_remote
         self._rate_hz = rate_hz
         self._idle_timeout = idle_timeout
         self._connect_timeout = connect_timeout
-        self._factory_override = _factory_override
-
-        try:
-            self._device_id: str | None = derive_device_id(self._robot_kwargs)
-        except ValueError:
-            self._device_id = None
-
-        if robot_id is None and self._device_id is None:
-            msg = "cannot derive robot_id: provide 'port'/'ip' in robot kwargs or an explicit robot_id"
-            raise ValueError(msg)
-
-        self._robot_id = derive_robot_id(robot_type or "", self._robot_kwargs, robot_id=robot_id)
 
         self._session: Any = None
         self._owner: Any = None
         self._state_sub: Any = None
         self._action_pub: Any = None
-        self._meta: dict[str, Any] | None = None
+        self._metadata: dict[str, Any] | None = None
         self._latest: TransportObservation | None = None
         self._connected = False
 
     @classmethod
-    def from_owner(cls, robot_id: str) -> SharedRobot:
-        """Attach-only construction: subscribe to an existing owner by id.
+    def attach(cls, name: str, *, allow_remote: bool = False, connect_timeout: float = 10.0) -> SharedRobot:
+        """Attach-only construction: subscribe to an existing owner by name.
+
+        Never spawns an owner — :meth:`connect` raises
+        :class:`~physicalai.robot.errors.RobotTransportError` if none is
+        reachable.
 
         Args:
-            robot_id: The owner's robot id (as advertised on ``/meta``).
+            name: The owner's logical name (as advertised on ``/metadata``).
+            allow_remote: Whether this session may discover an owner beyond
+                localhost.
+            connect_timeout: Overall budget for :meth:`connect`.
 
         Returns:
             A ``SharedRobot`` that never spawns an owner.
         """
-        return cls(None, robot_id=robot_id)
+        return cls(name, allow_remote=allow_remote, connect_timeout=connect_timeout)
 
     @property
-    def robot_id(self) -> str:
-        """The full Zenoh robot id keying this robot's topics."""
-        return self._robot_id
+    def name(self) -> str:
+        """This robot's logical name, keying its Zenoh topics."""
+        return self._name
+
+    @property
+    def device_ids(self) -> tuple[str, ...]:
+        """Always empty — a subscriber owns no physical hardware itself."""
+        return ()
 
     @property
     def joint_names(self) -> list[str]:
-        """Ordered joint names, from the owner's ``/meta`` record.
+        """Ordered joint names, from the owner's ``/metadata`` record.
 
         Raises:
             RobotNotConnectedError: If called before :meth:`connect`.
         """
-        if self._meta is None:
+        if self._metadata is None:
             msg = "SharedRobot is not connected. Call connect() first."
             raise RobotNotConnectedError(msg)
-        return list(self._meta["joint_names"])
+        return list(self._metadata["joint_names"])
 
     @property
-    def meta(self) -> dict[str, Any] | None:
-        """The owner's ``/meta`` record (None before connect)."""
-        return self._meta
+    def metadata(self) -> dict[str, Any] | None:
+        """The owner's ``/metadata`` record (None before connect)."""
+        return self._metadata
 
-    def connect(self) -> None:
+    def connect(self, timeout: float | None = None) -> None:
         """Attach to an existing owner, spawning one first if needed.
 
         Idempotent: calling ``connect()`` when already connected is a no-op.
-        Raises :class:`RobotIdConflict` when an existing owner's advertised
-        identity does not match this instance's construction kwargs, and
-        :class:`RobotTransportError` when no owner could be found or spawned.
+        Raises :class:`~physicalai.robot.errors.RobotProtocolMismatch`,
+        :class:`~physicalai.robot.errors.RobotNameConflict`,
+        :class:`~physicalai.robot.errors.RobotDeviceAlreadyOwned`, or
+        :class:`~physicalai.robot.errors.RobotTransportError` depending on
+        why no owner could be attached to or spawned — see
+        :meth:`_spawn_or_reprobe` and :meth:`_validate_metadata`.
 
-        Uses the ``connect_timeout`` passed to the constructor as its
-        overall budget (also caps the owner-spawn handshake — hardware
-        connect may legitimately block for seconds).
+        Args:
+            timeout: Overall budget; defaults to the ``connect_timeout``
+                passed to the constructor. Also caps the owner-spawn
+                handshake (hardware connect may legitimately block for
+                seconds).
         """
         if self._connected:
             return
 
-        self._session = open_session(self._robot_id)
+        budget = self._connect_timeout if timeout is None else timeout
+        self._session = open_session(self._name, allow_remote=self._allow_remote)
         try:
-            meta = _query_meta(self._session, meta_key(self._robot_id), timeout=_PROBE_TIMEOUT)
-            if meta is None:
-                meta = self._spawn_or_reprobe(self._connect_timeout)
-            self._validate_meta(meta)
-            self._meta = meta
+            metadata = self._resolve_metadata(budget)
+            self._validate_metadata(metadata)
+            self._metadata = metadata
             self._attach()
         except Exception:
             self._teardown()
             raise
         self._connected = True
 
-    def _spawn_or_reprobe(self, timeout: float) -> dict[str, Any]:
-        """Spawn an owner; on failure fall back to a bounded ``/meta`` re-probe.
-
-        The re-probe covers the lost-spawn-race case: the competing owner
-        holds the lock file and this worker's spawn reports an error, but
-        the robot is (or is about to be) served.
+    def _resolve_metadata(self, timeout: float) -> dict[str, Any]:
+        """Probe for an existing owner's ``/metadata``, spawning one if none answers.
 
         Returns:
-            The owner's meta record.
+            The owner's metadata record — either from an existing owner or
+            a freshly spawned one.
+        """
+        metadata = _query_metadata(self._session, metadata_key(self._name), timeout=_PROBE_TIMEOUT)
+        if metadata is None:
+            return self._spawn_or_reprobe(timeout)
+        return metadata
+
+    def _spawn_or_reprobe(self, timeout: float) -> dict[str, Any]:
+        """Spawn an owner; on a benign name-lock race, attach to the winner instead.
+
+        Returns:
+            The owner's metadata record.
 
         Raises:
-            RobotTransportError: If no owner is reachable after the retry
-                budget.
+            RobotTransportError: If ``robot_class`` was not given (attach-
+                only) or spawning failed for a reason other than a benign
+                same-device race.
+            RobotNameConflict: If the race was against a *different*-device
+                owner under the same name.
+            RobotDeviceAlreadyOwned: If a requested device is already
+                locked under another name — propagated as-is, no re-probe
+                needed.
         """
-        if self._robot_type is None:
-            msg = f"no owner found for {self._robot_id} (attach-only mode: robot_type not provided)"
+        if self._robot_class is None:
+            msg = f"no owner found for {self._name!r} (attach-only mode: robot_class not provided)"
             raise RobotTransportError(msg)
 
         from ._owner import RobotOwner  # noqa: PLC0415
-        from ._spec import RobotSpec  # noqa: PLC0415
+        from ._owner_config import RobotOwnerConfig  # noqa: PLC0415
 
-        spec = RobotSpec(self._robot_type, dict(self._robot_kwargs))
-        owner = RobotOwner(
-            spec,
-            self._robot_id,
-            self._device_id or self._robot_id.replace("/", "_"),
+        config = RobotOwnerConfig(
+            name=self._name,
+            robot_class=self._robot_class,
+            robot_kwargs=self._robot_kwargs,
+            allow_remote=self._allow_remote,
             rate_hz=self._rate_hz,
             idle_timeout=self._idle_timeout,
-            _factory_override=self._factory_override,
         )
+        owner = RobotOwner(config)
         try:
             owner.start(timeout=timeout)
+        except RobotDeviceAlreadyOwned:
+            raise
         except RobotTransportError as exc:
-            meta = _query_meta_with_retry(self._session, meta_key(self._robot_id), timeout=_RACE_RETRY_TIMEOUT)
-            if meta is not None:
-                logger.debug(f"Lost owner race for {self._robot_id} — attaching to existing owner")
-                return meta
-            msg = f"failed to start robot owner for {self._robot_id}"
+            if exc.phase == "name_lock_contention":
+                metadata = _query_metadata_with_retry(
+                    self._session,
+                    metadata_key(self._name),
+                    timeout=_RACE_RETRY_TIMEOUT,
+                )
+                if metadata is not None:
+                    winner_ids = sorted(metadata.get("device_ids") or ())
+                    mine_ids = sorted(exc.device_ids or ())
+                    if winner_ids == mine_ids:
+                        logger.debug(f"Lost owner race for {self._name!r} — attaching to existing owner")
+                        return metadata
+                    msg = (
+                        f"name {self._name!r} is claimed by different devices: "
+                        f"this instance={mine_ids}, existing owner={winner_ids}"
+                    )
+                    raise RobotNameConflict(msg, phase=exc.phase) from exc
+            msg = f"failed to start robot owner for {self._name!r}"
             raise RobotTransportError(msg) from exc
         else:
             # Keep the handle alive; the detached owner self-terminates via
             # idle timeout, so disconnect() never stops it explicitly.
             self._owner = owner
 
-        meta = _query_meta_with_retry(self._session, meta_key(self._robot_id), timeout=_RACE_RETRY_TIMEOUT)
-        if meta is None:
-            msg = f"owner for {self._robot_id} reported READY but its /meta queryable is unreachable"
+        metadata = _query_metadata_with_retry(self._session, metadata_key(self._name), timeout=_RACE_RETRY_TIMEOUT)
+        if metadata is None:
+            msg = f"owner for {self._name!r} reported READY but its /metadata queryable is unreachable"
             raise RobotTransportError(msg)
-        return meta
+        return metadata
 
-    def _validate_meta(self, meta: dict[str, Any]) -> None:
-        """Compare the owner's advertised identity against our kwargs.
+    def _validate_metadata(self, metadata: dict[str, Any]) -> None:
+        """Validate protocol compatibility and internal metadata consistency.
 
-        A mismatch means the id was reused for different hardware — fail
-        loudly instead of silently binding to the wrong robot.
+        Never imports the owner-advertised ``robot_class`` — network
+        metadata is untrusted (only compared as a string). A mismatch is
+        logged, not raised: public re-exports, wrappers, and subclasses can
+        all preserve the wire contract, so an exact string match is useful
+        evidence of a wrong name, not proof of incompatibility.
 
         Raises:
-            RobotIdConflict: On robot-type or connection mismatch.
+            RobotProtocolMismatch: If the owner's transport protocol
+                version is unsupported.
+            RobotTransportError: If the owner's metadata is internally
+                inconsistent (malformed joint/dimension fields).
         """
-        if self._robot_type is not None and meta.get("robot_type") != self._robot_type:
+        protocol_version = metadata.get("protocol_version")
+        if protocol_version != ROBOT_TRANSPORT_PROTOCOL_VERSION:
             msg = (
-                f"robot id {self._robot_id} is served by robot_type={meta.get('robot_type')!r}, "
-                f"but this instance was constructed for {self._robot_type!r}"
+                f"owner of {self._name!r} speaks protocol_version={protocol_version!r}, "
+                f"this SharedRobot supports {ROBOT_TRANSPORT_PROTOCOL_VERSION!r}"
             )
-            raise RobotIdConflict(msg)
-        if self._device_id is not None and meta.get("connection") != self._device_id:
-            msg = (
-                f"robot id {self._robot_id} is served by connection={meta.get('connection')!r}, "
-                f"but this instance was constructed for {self._device_id!r}"
-            )
-            raise RobotIdConflict(msg)
+            raise RobotProtocolMismatch(msg)
+
+        joint_names = metadata.get("joint_names")
+        num_joints = metadata.get("num_joints")
+        state_dim = metadata.get("state_dim")
+        malformed = (
+            not isinstance(joint_names, list)
+            or not joint_names
+            or len(set(joint_names)) != len(joint_names)
+            or num_joints != len(joint_names)
+            or not isinstance(state_dim, int)
+            or state_dim <= 0
+        )
+        if malformed:
+            msg = f"owner of {self._name!r} published malformed /metadata: {metadata!r}"
+            raise RobotTransportError(msg)
+
+        if self._robot_class is not None:
+            advertised = metadata.get("robot_class")
+            if advertised != self._robot_class:
+                logger.warning(
+                    f"SharedRobot(name={self._name!r}) was constructed with robot_class={self._robot_class!r} "
+                    f"but the existing owner advertises robot_class={advertised!r}. Not fatal — public "
+                    "re-exports, wrappers, or subclasses can preserve the wire contract — but double-check "
+                    "this is the robot you expect.",
+                )
 
     def _attach(self) -> None:
         """Declare the ``/state`` subscriber and ``/action`` publisher.
@@ -338,13 +415,13 @@ class SharedRobot:
         import zenoh  # noqa: PLC0415
 
         self._state_sub = self._session.declare_subscriber(
-            state_key(self._robot_id),
+            state_key(self._name),
             zenoh.handlers.RingChannel(1),
         )
         # QoS (D20): express bypasses batching; best-effort/drop match the
         # fire-and-forget, latest-wins action semantics.
         self._action_pub = self._session.declare_publisher(
-            action_key(self._robot_id),
+            action_key(self._name),
             reliability=zenoh.Reliability.BEST_EFFORT,
             congestion_control=zenoh.CongestionControl.DROP,
             express=True,
@@ -358,7 +435,7 @@ class SharedRobot:
                 return
             time.sleep(0.005)
 
-        msg = f"no state received from owner of {self._robot_id} within {_FIRST_STATE_TIMEOUT:.1f}s"
+        msg = f"no state received from owner of {self._name!r} within {_FIRST_STATE_TIMEOUT:.1f}s"
         raise RobotTransportError(msg)
 
     def get_observation(self) -> RobotObservation:

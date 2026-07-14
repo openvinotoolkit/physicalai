@@ -120,6 +120,11 @@ class WidowXAI(Robot):
         return self._ip
 
     @property
+    def device_ids(self) -> tuple[str, ...]:
+        """Network address identifying this arm, e.g. ``("tcp:192.168.1.2",)``."""
+        return (f"tcp:{self._ip}",)
+
+    @property
     def role(self) -> str:
         """Robot role (``"leader"`` or ``"follower"``)."""
         return self._role

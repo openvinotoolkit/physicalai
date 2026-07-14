@@ -208,6 +208,12 @@ class SO101(Robot):
         return self.JOINT_ORDER
 
     @property
+    def device_ids(self) -> tuple[str, ...]:
+        """Symlink-resolved serial device id, e.g. ``("serial:ttyUSB0",)``."""
+        name = Path(self._port).resolve().name if self._port.startswith("/dev/") else Path(self._port).name
+        return (f"serial:{name}",)
+
+    @property
     def port(self) -> str:
         """Serial port path."""
         return self._port

@@ -9,12 +9,12 @@ import json
 import select
 import subprocess  # noqa: S404 # nosec: B404
 import sys
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Self
 
-from physicalai.robot.errors import RobotTransportError
+from physicalai.robot.errors import RobotDeviceAlreadyOwned, RobotTransportError
 
 if TYPE_CHECKING:
-    from physicalai.robot.transport._spec import RobotSpec
+    from physicalai.robot.transport._owner_config import RobotOwnerConfig
 
 _DEFAULT_START_TIMEOUT = 30.0
 """Generous by design: WidowXAI.connect() blocks ~2s on a homing move, and
@@ -30,56 +30,35 @@ class RobotOwner:
     timeout when zero subscribers remain.
 
     Args:
-        spec: Robot construction specification (serializable kwargs only).
-        robot_id: Full Zenoh robot id keying the topics.
-        device_id: Device id used for the single-owner lock file.
-        rate_hz: Owner loop rate; ``None`` selects the per-robot default.
-        idle_timeout: Seconds with zero subscribers before self-exit.
+        config: Robot construction and transport-scope configuration.
     """
 
-    def __init__(
-        self,
-        spec: RobotSpec,
-        robot_id: str,
-        device_id: str,
-        *,
-        rate_hz: float | None = None,
-        idle_timeout: float = 10.0,
-        _factory_override: str | None = None,
-    ) -> None:
-        self._spec = spec
-        self._robot_id = robot_id
-        self._device_id = device_id
-        self._rate_hz = rate_hz
-        self._idle_timeout = idle_timeout
-        self._factory_override = _factory_override
+    def __init__(self, config: RobotOwnerConfig) -> None:
+        self._config = config
         self._process: subprocess.Popen[bytes] | None = None
 
     def start(self, timeout: float = _DEFAULT_START_TIMEOUT) -> None:
         """Start the owner subprocess and wait for the READY handshake.
+
+        On an ``ERROR:{json}`` response, delegates to
+        :meth:`_raise_from_error_line`, which may raise the unambiguous
+        :class:`~physicalai.robot.errors.RobotDeviceAlreadyOwned` directly
+        instead of the generic :exc:`RobotTransportError` below.
 
         Args:
             timeout: Maximum seconds to wait for the subprocess to report
                 readiness (hardware connect may block for seconds).
 
         Raises:
-            RobotTransportError: If the subprocess fails to start, reports
-                an error, or does not become ready within *timeout*.
+            RobotTransportError: If the subprocess never becomes ready, or
+                reports an error phase other than device-already-owned
+                (including name-lock contention: ``exc.phase ==
+                "name_lock_contention"``, ``exc.device_ids`` set — the
+                caller resolves that by re-probing ``/metadata``).
         """
         if self.is_alive:
             return
 
-        config: dict[str, Any] = {
-            "robot_type": self._spec.robot_type,
-            "robot_kwargs": self._spec.robot_kwargs,
-            "robot_id": self._robot_id,
-            "device_id": self._device_id,
-            "idle_timeout": self._idle_timeout,
-        }
-        if self._rate_hz is not None:
-            config["rate_hz"] = self._rate_hz
-        if self._factory_override is not None:
-            config["_factory_override"] = self._factory_override
         # B603 suppressed: the argv list is static — sys.executable (the
         # active interpreter) plus a hardcoded internal module path.
         # shell=True is not used, so there is no shell-injection risk.
@@ -91,11 +70,11 @@ class RobotOwner:
             stdout=subprocess.PIPE,
             # Detach into a new session so the owner survives when the
             # parent exits / Ctrl+C's. Subsequent subscribers re-attach
-            # by robot id.
+            # by name.
             start_new_session=True,
         )
         assert self._process.stdin is not None  # noqa: S101
-        self._process.stdin.write(json.dumps(config).encode())
+        self._process.stdin.write(json.dumps(self._config.to_json_dict()).encode())
         self._process.stdin.close()
 
         line = self._read_stdout_line(timeout)
@@ -105,21 +84,38 @@ class RobotOwner:
             raise RobotTransportError(msg)
         if line.startswith("ERROR:"):
             self.stop()
-            try:
-                payload = json.loads(line[len("ERROR:") :])
-            except json.JSONDecodeError as exc:
-                msg = f"failed to start robot owner (malformed ERROR payload): {line!r}"
-                raise RobotTransportError(msg) from exc
-            err = payload.get("msg", "<unknown>")
-            tb = payload.get("traceback")
-            msg = f"failed to start robot owner: {err}"
-            if tb:
-                msg = f"{msg}\n--- worker traceback ---\n{tb}"
-            raise RobotTransportError(msg)
+            self._raise_from_error_line(line)
         if line != "READY":
             self.stop()
             msg = f"unexpected owner response: {line!r}"
             raise RobotTransportError(msg)
+
+    @staticmethod
+    def _raise_from_error_line(line: str) -> None:
+        """Parse a worker ``ERROR:{json}`` line and raise the matching exception.
+
+        Raises:
+            RobotDeviceAlreadyOwned: On the unambiguous device-conflict phase.
+            RobotTransportError: For every other phase, carrying ``phase``
+                and ``device_ids`` for the caller to inspect.
+        """
+        try:
+            payload = json.loads(line[len("ERROR:") :])
+        except json.JSONDecodeError as exc:
+            msg = f"failed to start robot owner (malformed ERROR payload): {line!r}"
+            raise RobotTransportError(msg) from exc
+
+        err = payload.get("msg", "<unknown>")
+        tb = payload.get("traceback")
+        phase = payload.get("phase")
+        device_ids = tuple(payload.get("device_ids") or ())
+        msg = f"failed to start robot owner: {err}"
+        if tb:
+            msg = f"{msg}\n--- worker traceback ---\n{tb}"
+
+        if phase == "device_lock_contention":
+            raise RobotDeviceAlreadyOwned(msg, phase=phase, device_ids=device_ids)
+        raise RobotTransportError(msg, phase=phase, device_ids=device_ids or None)
 
     def stop(self, timeout: float = 5.0) -> None:
         """Stop the owner subprocess.

@@ -137,3 +137,21 @@ class Robot(Protocol):
         :meth:`send_action`.
         """
         ...
+
+    @property
+    def device_ids(self) -> tuple[str, ...]:
+        """Canonical identities of every physical device this instance exclusively owns.
+
+        Available immediately after construction, before :meth:`connect` is
+        called — must be derivable from constructor parameters alone, with
+        no hardware I/O. Stable across processes, restarts, and equivalent
+        connection aliases (e.g. a symlinked serial path).
+
+        Single-device robots return one id; composite robots (e.g. a
+        bimanual arm) return every constituent device's id. Robots with no
+        exclusively-owned physical resource (e.g. a network-attached
+        subscriber) return an empty tuple. Used by shared transport to key
+        host-local exclusivity locks — describes physical ownership, not
+        any transport-level name.
+        """
+        ...

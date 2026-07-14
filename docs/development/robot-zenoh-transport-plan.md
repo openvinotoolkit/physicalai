@@ -1,5 +1,16 @@
 # Plan: Zenoh Transport Layer for Shared Robots
 
+**Status:** Completed and superseded in part. The original implementation
+(Phases 0-6 below) landed, then
+[`robot-zenoh-transport-identity-followup.md`](robot-zenoh-transport-identity-followup.md)
+and its [plan](robot-zenoh-transport-identity-followup-plan.md) replaced the
+kwargs-derived `robot_id`/`device_id_from_kwargs`, `robot_type` string
+dispatch, `/meta` naming, and `RobotIdConflict` described here with a
+required logical `name`, arbitrary `robot_class`, owner-reported
+`Robot.device_ids`, and `/metadata`. Read the follow-up docs for the
+current design; this file is kept as the historical record of the initial
+implementation.
+
 Source of truth for decisions: `docs/development/robot-zenoh-transport-design.md` (D1–D20).
 Implements `physicalai.robot.transport` — one owner process holds the hardware, N subscribers
 read state (pull) / send actions (fire-and-forget) over Zenoh. Mirrors the capture-transport

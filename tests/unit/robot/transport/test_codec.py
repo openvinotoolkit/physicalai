@@ -7,12 +7,13 @@ import numpy as np
 import pytest
 
 from physicalai.robot.transport._codec import (
+    ROBOT_TRANSPORT_PROTOCOL_VERSION,
     TransportObservation,
     decode_action,
-    decode_meta,
+    decode_metadata,
     decode_state,
     encode_action,
-    encode_meta,
+    encode_metadata,
     encode_state,
 )
 
@@ -95,20 +96,22 @@ class TestActionRoundtrip:
         assert decoded.dtype == np.float64
 
 
-class TestMetaRoundtrip:
+class TestMetadataRoundtrip:
     def test_roundtrip(self) -> None:
-        meta = {
-            "robot_type": "so101",
-            "joint_names": ["a", "b"],
+        metadata = {
+            "protocol_version": ROBOT_TRANSPORT_PROTOCOL_VERSION,
+            "name": "left-arm",
+            "robot_class": "physicalai.robot.so101.SO101",
+            "device_ids": ["serial:ttyUSB0"],
             "host": "myhost",
-            "connection": "ttyUSB0",
-            "state_dim": 6,
-            "num_joints": 6,
+            "joint_names": ["a", "b"],
+            "num_joints": 2,
+            "state_dim": 2,
         }
-        assert decode_meta(encode_meta(meta)) == meta
+        assert decode_metadata(encode_metadata(metadata)) == metadata
 
     def test_bad_payload_raises(self) -> None:
         import msgpack
 
         with pytest.raises(TypeError, match="Expected a dict"):
-            decode_meta(msgpack.packb([1, 2, 3]))
+            decode_metadata(msgpack.packb([1, 2, 3]))

@@ -13,9 +13,10 @@ to an object instance, supporting both ``type`` + flat params and
 
 from __future__ import annotations
 
-import importlib
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from physicalai._import_utils import import_dotted_path  # noqa: PLC2701
 
 if TYPE_CHECKING:
     from physicalai.inference.manifest import ComponentSpec
@@ -69,10 +70,7 @@ class ComponentRegistry:
         Returns:
             The resolved class object.
         """
-        class_path = self.resolve(name_or_path)
-        module_path, class_name = class_path.rsplit(".", maxsplit=1)
-        module = importlib.import_module(module_path)
-        return getattr(module, class_name)
+        return _import_class(self.resolve(name_or_path))
 
     def entries(self) -> dict[str, str]:
         """Return a copy of all registered entries.
@@ -161,10 +159,15 @@ def _import_class(class_path: str) -> type:
 
     Returns:
         The imported class object.
+
+    Raises:
+        TypeError: If the resolved object is not a class.
     """
-    module_path, class_name = class_path.rsplit(".", maxsplit=1)
-    module = importlib.import_module(module_path)
-    return getattr(module, class_name)
+    obj = import_dotted_path(class_path)
+    if not isinstance(obj, type):
+        msg = f"{class_path!r} does not resolve to a class (got {type(obj).__name__})"
+        raise TypeError(msg)
+    return obj
 
 
 # Maximum nesting depth for recursive component instantiation.  Unbounded

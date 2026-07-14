@@ -168,6 +168,11 @@ class TestSO101Construction:
         with pytest.raises(ValueError, match="calibration is required"):
             SO101(port="/dev/ttyUSB0", calibration=None)
 
+    def test_device_ids_scheme_qualified_serial_basename(self, mock_sdk: MagicMock) -> None:
+        """device_ids is a single scheme-qualified serial basename."""
+        robot = _create_robot(mock_sdk)
+        assert robot.device_ids == ("serial:ttyUSB0",)
+
     def test_uncalibrated_factory_sets_ticks_mode(self, mock_sdk: MagicMock) -> None:
         """uncalibrated() creates an explicit raw-ticks mode robot."""
         from physicalai.robot.so101 import SO101

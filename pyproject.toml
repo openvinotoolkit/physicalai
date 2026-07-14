@@ -153,6 +153,7 @@ unfixable = []
 # physicalai itself is a namespace package (see cli note above), so root-level
 # shared modules trip INP001 by construction.
 "src/physicalai/_serialization.py" = ["INP001"]
+"src/physicalai/_import_utils.py" = ["INP001"]
 "src/physicalai/capture/transport/_header.py" = ["RUF012"]
 "src/physicalai/capture/transport/_publisher.py" = ["S603"]
 "src/physicalai/robot/transport/_owner.py" = ["S603"]

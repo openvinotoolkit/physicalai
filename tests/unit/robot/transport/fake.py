@@ -38,12 +38,24 @@ class FakeRobot:
     """In-memory robot producing synthetic observations.
 
     Args:
-        port: Accepted for id-derivation parity with real drivers; unused.
+        port: Identity source for :attr:`device_ids`; unused otherwise.
+        device_ids: Explicit override for :attr:`device_ids` — lets tests
+            exercise single-device, multi-device, and virtual (empty
+            tuple) cases without relying on any constructor-kwarg
+            convention.
         fail_connect: If True, ``connect()`` raises (owner ERROR-path tests).
     """
 
-    def __init__(self, port: str = "/dev/fake0", *, fail_connect: bool = False, **_ignored: object) -> None:
+    def __init__(
+        self,
+        port: str = "/dev/fake0",
+        *,
+        device_ids: tuple[str, ...] | None = None,
+        fail_connect: bool = False,
+        **_ignored: object,
+    ) -> None:
         self._port = port
+        self._device_ids = device_ids if device_ids is not None else (f"fake:{port}",)
         self._fail_connect = fail_connect
         self._connected = False
         self._last_action = np.zeros(NUM_JOINTS, dtype=np.float32)
@@ -52,6 +64,10 @@ class FakeRobot:
     @property
     def joint_names(self) -> list[str]:
         return [f"joint_{i}" for i in range(NUM_JOINTS)]
+
+    @property
+    def device_ids(self) -> tuple[str, ...]:
+        return self._device_ids
 
     def connect(self) -> None:
         if self._fail_connect:
