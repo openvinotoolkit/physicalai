@@ -533,3 +533,4 @@ class SharedRobot:
             self._session = None
         self._connected = False
         self._latest = None
+        self._metadata = None
