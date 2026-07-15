@@ -50,7 +50,9 @@ class RuntimeCallback(Protocol):
 
         Every callback must return a valid action (no ``None`` sentinel) — a
         callback that doesn't want to change anything returns its input
-        unchanged.
+        unchanged. Exceptions raised here are not isolated by the callback
+        bus — they propagate and end the run, since a failed transform (e.g.
+        a safety filter) means the action can no longer be trusted.
 
         Returns:
             The action after this callback's transform.
@@ -267,6 +269,8 @@ class RobotRuntime:
 
     def _reset_session(self) -> None:
         """Reset all session-scoped state for a fresh run."""
+        # Telemetry/log correlation id only (ties together events from one run()
+        # call), not a security token or capability.
         self._session_id = uuid.uuid4().hex[:8]
         self._last_robot_obs = None
         self._last_camera_frames = {}
