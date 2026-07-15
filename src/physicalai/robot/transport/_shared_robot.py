@@ -471,6 +471,7 @@ class SharedRobot:
 
         Raises:
             RobotNotConnectedError: If called before :meth:`connect`.
+            RobotTransportError: If no owner state has been cached.
         """
         if not self._connected or self._state_sub is None:
             msg = "SharedRobot is not connected. Call connect() first."
