@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,10 +21,15 @@ from physicalai.inference import InferenceModel
 
 STATE_KEY = "state"
 TASK_KEY = "task"
-TOP_IMAGE_KEY = "images.top-cam"
-GRIPPER_IMAGE_KEY = "images.gripper-cam"
-TOP_DATASET_VIDEO_KEY = "observation.images.top-cam"
-GRIPPER_DATASET_VIDEO_KEY = "observation.images.gripper-cam"
+DEFAULT_ACTION_NAMES = (
+    "base/ee-x",
+    "shoulder/ee-y",
+    "elbow/ee-z",
+    "wrist-rx",
+    "wrist-ry",
+    "wrist-rz",
+    "gripper",
+)
 
 SO101_JOINT_ORDER = (
     "shoulder_pan",
@@ -40,11 +46,25 @@ class ReplayEpisode:
     dataset_root: Path
     episode_id: int
     episode_df: pd.DataFrame
-    top_video_path: Path
-    gripper_video_path: Path
-    top_start_frame: int
-    gripper_start_frame: int
+    video_paths: dict[str, Path]
+    video_start_frames: dict[str, int]
+    image_keys: list[str]
     fps: float
+    action_dim: int
+    state_dim: int
+    task: str | None
+
+
+def dataset_image_key_to_model_key(dataset_key: str) -> str:
+    return dataset_key.removeprefix("observation.")
+
+
+def _format_lerobot_path(template: str, **values: int | str) -> str:
+    return template.format(**values)
+
+
+def _join_dataset_prefix(dataset_name: str, relative_path: str) -> str:
+    return f"{dataset_name}/{relative_path}" if dataset_name else relative_path
 
 
 def download_pi05_package(repo_id: str, assets_dir: Path, model_dir: Path | None = None) -> Path:
@@ -93,7 +113,7 @@ def prepare_replay_episode(
             repo_id=repo_id,
             repo_type="dataset",
             local_dir=dataset_cache,
-            allow_patterns=[f"{dataset_name}/meta/**"],
+            allow_patterns=[_join_dataset_prefix(dataset_name, "meta/**")],
             local_dir_use_symlinks=False,
         )
         dataset_root = resolve_dataset_root(dataset_cache, dataset_name)
@@ -105,6 +125,21 @@ def prepare_replay_episode(
         raise FileNotFoundError(f"Missing LeRobot dataset metadata: {info_path}")
     info = json.loads(info_path.read_text(encoding="utf-8"))
     fps = float(info.get("fps", 30))
+    features = info.get("features", {})
+    image_keys = [
+        key
+        for key, spec in features.items()
+        if key.startswith("observation.images.") and spec.get("dtype") in {"image", "video"}
+    ]
+    if not image_keys:
+        raise ValueError(f"No observation image/video keys found in {info_path}")
+    action_dim = int(features.get("action", {}).get("shape", [7])[0])
+    state_dim = int(features.get("observation.state", {}).get("shape", [action_dim])[0])
+    data_path_template = info.get("data_path", "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet")
+    video_path_template = info.get(
+        "video_path",
+        "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
+    )
 
     def download_dataset_file(relative_path: str) -> Path:
         local_path = dataset_root / relative_path
@@ -114,8 +149,8 @@ def prepare_replay_episode(
             hf_hub_download(
                 repo_id=repo_id,
                 repo_type="dataset",
-                filename=f"{dataset_name}/{relative_path}",
-                local_dir=dataset_root.parent,
+                filename=_join_dataset_prefix(dataset_name, relative_path),
+                local_dir=dataset_root.parent if dataset_name else dataset_root,
                 local_dir_use_symlinks=False,
             )
         )
@@ -134,9 +169,19 @@ def prepare_replay_episode(
 
     data_chunk = int(episode_meta["data/chunk_index"])
     data_file = int(episode_meta["data/file_index"])
-    parquet = download_dataset_file(f"data/chunk-{data_chunk:03d}/file-{data_file:03d}.parquet")
+    parquet = download_dataset_file(
+        _format_lerobot_path(data_path_template, chunk_index=data_chunk, file_index=data_file)
+    )
     episode_df = pd.read_parquet(parquet)
     episode_df = episode_df[episode_df["episode_index"] == episode_id].reset_index(drop=True)
+    task_text: str | None = None
+    tasks_path = dataset_root / "meta" / "tasks.parquet"
+    if tasks_path.exists() and "task_index" in episode_df.columns:
+        tasks = pd.read_parquet(tasks_path)
+        task_index = int(episode_df.iloc[0]["task_index"])
+        task_matches = tasks[tasks["task_index"] == task_index]
+        if not task_matches.empty:
+            task_text = str(task_matches.index[0])
 
     def video_info(video_key: str) -> tuple[Path, int]:
         chunk_col = f"videos/{video_key}/chunk_index"
@@ -145,21 +190,34 @@ def prepare_replay_episode(
         chunk_index = int(episode_meta[chunk_col]) if chunk_col in episode_meta.index else 0
         file_index = int(episode_meta[file_col]) if file_col in episode_meta.index else data_file
         start_seconds = float(episode_meta[start_col]) if start_col in episode_meta.index else 0.0
-        video_path = download_dataset_file(f"videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4")
+        video_path = download_dataset_file(
+            _format_lerobot_path(
+                video_path_template,
+                video_key=video_key,
+                chunk_index=chunk_index,
+                file_index=file_index,
+            )
+        )
         return video_path, int(round(start_seconds * fps))
 
-    top_video_path, top_start_frame = video_info(TOP_DATASET_VIDEO_KEY)
-    gripper_video_path, gripper_start_frame = video_info(GRIPPER_DATASET_VIDEO_KEY)
+    video_paths: dict[str, Path] = {}
+    video_start_frames: dict[str, int] = {}
+    for image_key in image_keys:
+        if image_key in episode_df.columns and features.get(image_key, {}).get("dtype") == "image":
+            continue
+        video_paths[image_key], video_start_frames[image_key] = video_info(image_key)
 
     return ReplayEpisode(
         dataset_root=dataset_root,
         episode_id=episode_id,
         episode_df=episode_df,
-        top_video_path=top_video_path,
-        gripper_video_path=gripper_video_path,
-        top_start_frame=top_start_frame,
-        gripper_start_frame=gripper_start_frame,
+        video_paths=video_paths,
+        video_start_frames=video_start_frames,
+        image_keys=image_keys,
         fps=fps,
+        action_dim=action_dim,
+        state_dim=state_dim,
+        task=task_text,
     )
 
 
@@ -203,25 +261,60 @@ def read_video_rgb(path: Path, max_frames: int | None = None, start_frame: int =
     return frames
 
 
-def as_action_vector(values: Any, name: str = "action") -> np.ndarray:
+def decode_image_cell(value: Any) -> np.ndarray:
+    if isinstance(value, dict) and value.get("bytes") is not None:
+        return np.asarray(Image.open(BytesIO(value["bytes"])).convert("RGB"), dtype=np.uint8)
+    if isinstance(value, (bytes, bytearray)):
+        return np.asarray(Image.open(BytesIO(value)).convert("RGB"), dtype=np.uint8)
+    arr = np.asarray(value)
+    if arr.ndim == 3:
+        return arr[..., :3].astype(np.uint8)
+    raise ValueError(f"Unsupported image cell type: {type(value)!r}")
+
+
+def read_replay_rgb_sequence(
+    replay: ReplayEpisode,
+    image_key: str,
+    max_frames: int | None = None,
+) -> list[np.ndarray]:
+    if image_key in replay.video_paths:
+        return read_video_rgb(
+            replay.video_paths[image_key],
+            max_frames=max_frames,
+            start_frame=replay.video_start_frames[image_key],
+        )
+    rows = replay.episode_df[image_key]
+    if max_frames is not None:
+        rows = rows.iloc[:max_frames]
+    return [decode_image_cell(value) for value in rows]
+
+
+def as_vector(values: Any, name: str, expected_dim: int | None = None) -> np.ndarray:
     arr = np.asarray(values, dtype=np.float32)
     if arr.ndim == 0:
         raise ValueError(f"Expected {name} to be a vector, got scalar value {arr!r}")
     if arr.ndim > 1:
         arr = arr.reshape(-1, arr.shape[-1])[0]
-    arr = arr[: len(SO101_JOINT_ORDER)].astype(np.float32)
-    if arr.shape[0] != len(SO101_JOINT_ORDER):
-        raise ValueError(f"Expected {name} length {len(SO101_JOINT_ORDER)}, got shape {arr.shape}")
+    arr = arr.astype(np.float32)
+    if expected_dim is not None:
+        arr = arr[:expected_dim]
+        if arr.shape[0] != expected_dim:
+            raise ValueError(f"Expected {name} length {expected_dim}, got shape {arr.shape}")
     return arr
 
 
-def make_policy_observation(top_frame: np.ndarray, gripper_frame: np.ndarray, state: Any, task: str) -> dict[str, Any]:
-    return {
-        STATE_KEY: as_action_vector(state, name="observation.state")[None, :],
-        TOP_IMAGE_KEY: top_frame.astype(np.float32)[None, ...] / 255.0,
-        GRIPPER_IMAGE_KEY: gripper_frame.astype(np.float32)[None, ...] / 255.0,
+def as_action_vector(values: Any, name: str = "action", expected_dim: int | None = None) -> np.ndarray:
+    return as_vector(values, name=name, expected_dim=expected_dim)
+
+
+def make_policy_observation(frames: dict[str, np.ndarray], state: Any, task: str, state_dim: int) -> dict[str, Any]:
+    obs: dict[str, Any] = {
+        STATE_KEY: as_vector(state, name="observation.state", expected_dim=state_dim)[None, :],
         TASK_KEY: [task],
     }
+    for dataset_key, frame in frames.items():
+        obs[dataset_image_key_to_model_key(dataset_key)] = frame.astype(np.float32)[None, ...] / 255.0
+    return obs
 
 
 def openvino_config_for_device(cache_dir: Path) -> dict[str, str]:
@@ -238,9 +331,8 @@ def benchmark_pi05(
     runs: int = 5,
 ) -> tuple[InferenceModel, dict[str, Any]]:
     cache_dir.mkdir(parents=True, exist_ok=True)
-    top_frame = read_video_rgb(replay.top_video_path, max_frames=1, start_frame=replay.top_start_frame)[0]
-    gripper_frame = read_video_rgb(replay.gripper_video_path, max_frames=1, start_frame=replay.gripper_start_frame)[0]
-    obs = make_policy_observation(top_frame, gripper_frame, replay.episode_df.iloc[0]["observation.state"], task)
+    frames = {key: read_replay_rgb_sequence(replay, key, max_frames=1)[0] for key in replay.image_keys}
+    obs = make_policy_observation(frames, replay.episode_df.iloc[0]["observation.state"], task, replay.state_dim)
 
     start = time.perf_counter()
     model = InferenceModel.load(model_dir, backend="openvino", device=device, **openvino_config_for_device(cache_dir))
@@ -323,10 +415,11 @@ def _draw_bars(
     pred: np.ndarray,
     expert: np.ndarray,
 ) -> None:
-    row_h = height // len(SO101_JOINT_ORDER)
+    names = list(DEFAULT_ACTION_NAMES[: len(pred)])
+    row_h = height // len(names)
     center = x + width // 2
     draw.line([(center, y), (center, y + height)], fill=(80, 90, 102), width=1)
-    for i, name in enumerate(SO101_JOINT_ORDER):
+    for i, name in enumerate(names):
         yy = y + i * row_h + 6
         draw.text((x, yy), name, fill=(220, 226, 234))
         for val, color, offset in [(expert[i], (95, 170, 255), 13), (pred[i], (255, 190, 85), 28)]:
@@ -336,8 +429,7 @@ def _draw_bars(
 
 
 def _make_overlay_frame(
-    top: np.ndarray,
-    gripper: np.ndarray,
+    camera_frames: dict[str, np.ndarray],
     state: np.ndarray,
     pred: np.ndarray,
     expert: np.ndarray,
@@ -347,16 +439,18 @@ def _make_overlay_frame(
     task: str,
 ) -> Image.Image:
     canvas = Image.new("RGB", (1120, 720), (18, 22, 28))
-    top_img = Image.fromarray(top).resize((512, 288))
-    grip_img = Image.fromarray(gripper).resize((512, 288))
-    draw_top = ImageDraw.Draw(top_img)
-    draw_grip = ImageDraw.Draw(grip_img)
-    draw_top.rectangle([0, 0, 92, 26], fill=(0, 0, 0))
-    draw_top.text((8, 6), "top-cam", fill=(255, 255, 255))
-    draw_grip.rectangle([0, 0, 122, 26], fill=(0, 0, 0))
-    draw_grip.text((8, 6), "gripper-cam", fill=(255, 255, 255))
-    canvas.paste(top_img, (20, 72))
-    canvas.paste(grip_img, (20, 374))
+    camera_items = list(camera_frames.items())[:2]
+    if not camera_items:
+        raise ValueError("At least one camera frame is required for replay visualization.")
+    if len(camera_items) == 1:
+        camera_items.append(camera_items[0])
+    for (key, frame), pos in zip(camera_items, [(20, 72), (20, 374)]):
+        image = Image.fromarray(frame).resize((512, 288))
+        draw_image = ImageDraw.Draw(image)
+        label = dataset_image_key_to_model_key(key)
+        draw_image.rectangle([0, 0, 220, 26], fill=(0, 0, 0))
+        draw_image.text((8, 6), label, fill=(255, 255, 255))
+        canvas.paste(image, pos)
 
     draw = ImageDraw.Draw(canvas)
     draw.text((20, 24), "SO-101 Pi0.5 Replay: PhysicalAI + OpenVINO", fill=(242, 246, 250))
@@ -364,7 +458,7 @@ def _make_overlay_frame(
     draw.rectangle([560, 72, 1098, 430], outline=(65, 76, 90), width=2)
     draw.text((580, 92), "Joint-space viewer", fill=(235, 241, 245))
     draw.text((580, 116), "blue: observed state   amber: Pi0.5 predicted target", fill=(170, 184, 199))
-    _draw_arm(draw, state, (95, 170, 255), width=11)
+    _draw_arm(draw, state[:6], (95, 170, 255), width=11)
     _draw_arm(draw, pred, (255, 190, 85), width=7)
     draw.text((580, 398), f"mean |pred - expert| = {float(np.mean(np.abs(pred - expert))):.2f}", fill=(235, 241, 245))
     draw.rectangle([560, 454, 1098, 704], outline=(65, 76, 90), width=2)
@@ -394,13 +488,10 @@ def run_replay_visualization(
     render_stride: int = 3,
 ) -> dict[str, Any]:
     max_replay_steps = max_rendered_frames * render_stride
-    top_frames = read_video_rgb(replay.top_video_path, max_frames=max_replay_steps, start_frame=replay.top_start_frame)
-    gripper_frames = read_video_rgb(
-        replay.gripper_video_path,
-        max_frames=max_replay_steps,
-        start_frame=replay.gripper_start_frame,
-    )
-    n = min(len(top_frames), len(gripper_frames), len(replay.episode_df), max_replay_steps)
+    video_frames = {
+        key: read_replay_rgb_sequence(replay, key, max_frames=max_replay_steps) for key in replay.image_keys
+    }
+    n = min(*(len(frames) for frames in video_frames.values()), len(replay.episode_df), max_replay_steps)
     if n == 0:
         raise RuntimeError("No replay frames were decoded.")
 
@@ -415,12 +506,21 @@ def run_replay_visualization(
     expert_actions: list[np.ndarray] = []
 
     for frame_idx in range(n):
-        state = as_action_vector(replay.episode_df.iloc[frame_idx]["observation.state"], name="observation.state")
-        expert = as_action_vector(replay.episode_df.iloc[frame_idx]["action"], name="expert action")
-        obs = make_policy_observation(top_frames[frame_idx], gripper_frames[frame_idx], state, task)
+        state = as_vector(
+            replay.episode_df.iloc[frame_idx]["observation.state"],
+            name="observation.state",
+            expected_dim=replay.state_dim,
+        )
+        expert = as_action_vector(
+            replay.episode_df.iloc[frame_idx]["action"],
+            name="expert action",
+            expected_dim=replay.action_dim,
+        )
+        frame_batch = {key: frames[frame_idx] for key, frames in video_frames.items()}
+        obs = make_policy_observation(frame_batch, state, task, replay.state_dim)
 
         start = time.perf_counter()
-        pred = as_action_vector(model.select_action(obs), name="predicted action")
+        pred = as_action_vector(model.select_action(obs), name="predicted action", expected_dim=replay.action_dim)
         latency_ms = (time.perf_counter() - start) * 1000
         latencies.append(latency_ms)
         errors.append(float(np.mean(np.abs(pred - expert))))
@@ -429,8 +529,7 @@ def run_replay_visualization(
         if frame_idx % render_stride == 0 and len(vis_frames) < max_rendered_frames:
             vis_frames.append(
                 _make_overlay_frame(
-                    top_frames[frame_idx],
-                    gripper_frames[frame_idx],
+                    frame_batch,
                     state,
                     pred,
                     expert,
@@ -446,6 +545,7 @@ def run_replay_visualization(
     vis_frames[0].save(gif_path, save_all=True, append_images=vis_frames[1:], duration=66, loop=0)
     mean_mae = float(np.mean(errors))
     per_joint_mae = np.mean(np.abs(np.stack(predictions) - np.stack(expert_actions)), axis=0)
+    action_names = list(DEFAULT_ACTION_NAMES[: len(per_joint_mae)])
     return {
         "gif_path": gif_path,
         "gif": IPyImage(filename=str(gif_path)),
@@ -453,6 +553,197 @@ def run_replay_visualization(
         "rendered_frames": len(vis_frames),
         "avg_select_action_ms": float(np.mean(latencies)),
         "avg_mae": mean_mae,
-        "per_joint_mae": dict(zip(SO101_JOINT_ORDER, per_joint_mae.round(3).tolist())),
+        "per_joint_mae": dict(zip(action_names, per_joint_mae.round(3).tolist())),
         "interpretation": describe_replay_mae(mean_mae),
+        "predicted_actions": np.stack(predictions),
+        "expert_actions": np.stack(expert_actions),
+    }
+
+
+def _mujoco_pick_place_xml() -> str:
+    return """
+<mujoco model="cartesian_pick_place_visualizer">
+  <compiler angle="degree" autolimits="true"/>
+  <option timestep="0.02" gravity="0 0 -9.81"/>
+  <visual>
+    <global offwidth="960" offheight="640"/>
+  </visual>
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.18 0.20 0.22" rgb2="0.25 0.27 0.30" width="256" height="256"/>
+    <material name="floor" texture="grid" texrepeat="6 6" reflectance="0.15"/>
+    <material name="arm_blue" rgba="0.20 0.58 0.95 1"/>
+    <material name="arm_orange" rgba="1.00 0.62 0.18 1"/>
+    <material name="joint_dark" rgba="0.08 0.10 0.13 1"/>
+    <material name="target" rgba="0.25 0.85 0.50 1"/>
+    <material name="goal" rgba="0.20 0.55 0.95 0.35"/>
+  </asset>
+  <worldbody>
+    <light pos="0 -1.5 2.5" dir="0 0 -1" diffuse="0.9 0.9 0.9"/>
+    <geom type="plane" size="1.4 1.4 0.02" material="floor"/>
+    <geom name="place_goal" type="box" pos="-0.22 0.22 0.006" size="0.06 0.06 0.006" material="goal"/>
+    <body name="target" pos="0.24 -0.18 0.035">
+      <freejoint name="target_free"/>
+      <geom type="box" size="0.035 0.035 0.035" material="target"/>
+    </body>
+    <body name="base" pos="-0.48 -0.38 0.02">
+      <geom type="cylinder" size="0.065 0.04" material="joint_dark"/>
+      <geom type="capsule" fromto="0 0 0.03 0 0 0.40" size="0.015" material="joint_dark"/>
+    </body>
+    <body name="ee" pos="0.24 -0.18 0.25">
+      <freejoint name="ee_free"/>
+      <geom type="capsule" fromto="0 0 0.22 0 0 0.02" size="0.018" material="arm_blue"/>
+      <geom type="box" pos="0 0 0" size="0.055 0.032 0.018" material="arm_orange"/>
+      <body name="left_finger" pos="0 0.018 -0.055">
+        <joint name="left_finger_slide" type="slide" axis="0 1 0" range="0 0.035"/>
+        <geom type="box" pos="0 0 -0.03" size="0.014 0.006 0.045" material="arm_orange"/>
+      </body>
+      <body name="right_finger" pos="0 -0.018 -0.055">
+        <joint name="right_finger_slide" type="slide" axis="0 -1 0" range="0 0.035"/>
+        <geom type="box" pos="0 0 -0.03" size="0.014 0.006 0.045" material="arm_orange"/>
+      </body>
+    </body>
+    <camera name="overview" pos="0.72 -0.92 0.58" xyaxes="0.80 0.60 0.00 -0.32 0.43 0.85"/>
+  </worldbody>
+</mujoco>
+"""
+
+
+def _smoothstep(value: float) -> float:
+    value = float(np.clip(value, 0.0, 1.0))
+    return value * value * (3.0 - 2.0 * value)
+
+
+def _segment(progress: float, start: float, end: float) -> float:
+    return _smoothstep((progress - start) / max(1e-6, end - start))
+
+
+def _interp(a: np.ndarray, b: np.ndarray, alpha: float) -> np.ndarray:
+    return a * (1.0 - alpha) + b * alpha
+
+
+def _pick_place_state(frame_idx: int, total_frames: int) -> tuple[np.ndarray, np.ndarray, float]:
+    progress = frame_idx / max(1, total_frames - 1)
+    cube_start = np.array([0.24, -0.18, 0.035], dtype=np.float64)
+    cube_goal = np.array([-0.22, 0.22, 0.035], dtype=np.float64)
+    above_start = cube_start + np.array([0.0, 0.0, 0.22])
+    grasp = cube_start + np.array([0.0, 0.0, 0.105])
+    lift = cube_start + np.array([0.0, 0.0, 0.30])
+    above_goal = cube_goal + np.array([0.0, 0.0, 0.30])
+    place = cube_goal + np.array([0.0, 0.0, 0.105])
+    retreat = cube_goal + np.array([-0.08, 0.0, 0.30])
+
+    if progress < 0.18:
+        ee_pos = above_start
+        cube_pos = cube_start
+        grip_gap = 0.030
+    elif progress < 0.34:
+        ee_pos = _interp(above_start, grasp, _segment(progress, 0.18, 0.34))
+        cube_pos = cube_start
+        grip_gap = 0.030
+    elif progress < 0.44:
+        ee_pos = grasp
+        cube_pos = cube_start
+        grip_gap = 0.030 * (1.0 - _segment(progress, 0.34, 0.44)) + 0.004 * _segment(progress, 0.34, 0.44)
+    elif progress < 0.58:
+        alpha = _segment(progress, 0.44, 0.58)
+        ee_pos = _interp(grasp, lift, alpha)
+        cube_pos = ee_pos + np.array([0.0, 0.0, -0.07])
+        grip_gap = 0.004
+    elif progress < 0.76:
+        alpha = _segment(progress, 0.58, 0.76)
+        ee_pos = _interp(lift, above_goal, alpha)
+        cube_pos = ee_pos + np.array([0.0, 0.0, -0.07])
+        grip_gap = 0.004
+    elif progress < 0.88:
+        alpha = _segment(progress, 0.76, 0.88)
+        ee_pos = _interp(above_goal, place, alpha)
+        cube_pos = ee_pos + np.array([0.0, 0.0, -0.07])
+        grip_gap = 0.004
+    elif progress < 0.94:
+        ee_pos = place
+        cube_pos = cube_goal
+        grip_gap = 0.004 * (1.0 - _segment(progress, 0.88, 0.94)) + 0.030 * _segment(progress, 0.88, 0.94)
+    else:
+        ee_pos = _interp(place, retreat, _segment(progress, 0.94, 1.0))
+        cube_pos = cube_goal
+        grip_gap = 0.030
+
+    return ee_pos, cube_pos, float(grip_gap)
+
+
+def _annotate_mujoco_frame(
+    frame: np.ndarray,
+    *,
+    frame_idx: int,
+    grip_gap: float,
+    source: str,
+) -> Image.Image:
+    image = Image.fromarray(frame)
+    draw = ImageDraw.Draw(image)
+    draw.rectangle([0, 0, 960, 64], fill=(12, 16, 22))
+    draw.text((18, 14), "MuJoCo pick-and-place rollout visualization", fill=(245, 248, 250))
+    draw.text((18, 38), f"source={source} | frame={frame_idx:03d}", fill=(178, 190, 204))
+    draw.text((680, 38), f"finger gap={grip_gap:.3f} m", fill=(178, 190, 204))
+    return image
+
+
+def run_mujoco_visualization(
+    *,
+    actions: np.ndarray | None,
+    output_dir: Path,
+    source: str,
+    max_rendered_frames: int = 180,
+) -> dict[str, Any]:
+    """Render a scripted Cartesian gripper pick-and-place scene in MuJoCo."""
+    try:
+        import mujoco
+    except ImportError as exc:
+        raise RuntimeError("Install mujoco before running the MuJoCo visualization cell.") from exc
+
+    frame_count = min(max_rendered_frames, len(actions)) if actions is not None and len(actions) else max_rendered_frames
+    source = "scripted MuJoCo pick-and-place trajectory"
+
+    model = mujoco.MjModel.from_xml_string(_mujoco_pick_place_xml())
+    data = mujoco.MjData(model)
+    renderer = mujoco.Renderer(model, height=640, width=960)
+    ee_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "ee_free")
+    target_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "target_free")
+    left_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "left_finger_slide")
+    right_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "right_finger_slide")
+    ee_qpos_addr = int(model.jnt_qposadr[ee_joint_id])
+    target_qpos_addr = int(model.jnt_qposadr[target_joint_id])
+    left_qpos_addr = int(model.jnt_qposadr[left_joint_id])
+    right_qpos_addr = int(model.jnt_qposadr[right_joint_id])
+
+    frames: list[Image.Image] = []
+    try:
+        for frame_idx in range(frame_count):
+            ee_pos, cube_pos, grip_gap = _pick_place_state(frame_idx, frame_count)
+            data.qpos[ee_qpos_addr : ee_qpos_addr + 7] = [ee_pos[0], ee_pos[1], ee_pos[2], 1.0, 0.0, 0.0, 0.0]
+            data.qpos[target_qpos_addr : target_qpos_addr + 7] = [
+                cube_pos[0],
+                cube_pos[1],
+                cube_pos[2],
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+            ]
+            data.qpos[left_qpos_addr] = grip_gap
+            data.qpos[right_qpos_addr] = grip_gap
+            mujoco.mj_forward(model, data)
+            renderer.update_scene(data, camera="overview")
+            frame = renderer.render()
+            frames.append(_annotate_mujoco_frame(frame, frame_idx=frame_idx, grip_gap=grip_gap, source=source))
+    finally:
+        renderer.close()
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    gif_path = output_dir / "mujoco_pick_place_visualization.gif"
+    frames[0].save(gif_path, save_all=True, append_images=frames[1:], duration=50, loop=0)
+    return {
+        "gif_path": gif_path,
+        "gif": IPyImage(filename=str(gif_path)),
+        "frames": len(frames),
+        "source": source,
     }
