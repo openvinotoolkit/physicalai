@@ -330,7 +330,7 @@ def _declare_zenoh_endpoints(config: RobotOwnerConfig, metadata_bytes: bytes) ->
         if session is not None:
             with contextlib.suppress(Exception):
                 session.close()
-        bind_host = "0.0.0.0" if config.allow_remote else "127.0.0.1"  # noqa: S104 — explicit opt-in only
+        bind_host = "0.0.0.0" if config.allow_remote else "127.0.0.1"  # noqa: S104  # nosec B104: explicit remote opt-in
         endpoint = f"tcp/{bind_host}:{derive_endpoint_port(config.name)}"
         msg = (
             f"failed to declare Zenoh endpoints at derived endpoint {endpoint}: {exc}. "

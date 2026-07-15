@@ -58,7 +58,7 @@ def open_session(name: str | None = None, *, listen: bool = False, allow_remote:
     if name is not None:
         port = derive_endpoint_port(name)
         if listen:
-            bind_host = "0.0.0.0" if allow_remote else "127.0.0.1"  # noqa: S104 — explicit opt-in only
+            bind_host = "0.0.0.0" if allow_remote else "127.0.0.1"  # noqa: S104  # nosec B104: explicit remote opt-in
             config.insert_json5("listen/endpoints", f'["tcp/{bind_host}:{port}"]')
         else:
             config.insert_json5("connect/endpoints", f'["tcp/127.0.0.1:{port}"]')
