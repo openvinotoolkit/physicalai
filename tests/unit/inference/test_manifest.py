@@ -651,3 +651,31 @@ class TestResolveArtifact:
         })
         with pytest.raises(ValueError, match="escapes the export directory"):
             resolve_artifact(spec, tmp_path)
+
+    def test_hf_hub_symlink_sibling_files_discoverable(self, tmp_path: Path) -> None:
+        """The resolved artifact path must keep sibling files (e.g. OV .bin) discoverable.
+
+        OpenVINO expects model.bin to live next to model.xml.  If resolve_artifact
+        followed the HF Hub symlink and returned the blob path, OV would look for
+        the .bin inside blobs/ where it does not exist.
+        """
+        blob_xml = tmp_path / "blobs" / "sha256_xml"
+        blob_bin = tmp_path / "blobs" / "sha256_bin"
+        blob_xml.parent.mkdir()
+        blob_xml.write_bytes(b"<xml/>")
+        blob_bin.write_bytes(b"bin-weights")
+
+        snapshot_dir = tmp_path / "snapshot"
+        snapshot_dir.mkdir()
+        (snapshot_dir / "model.xml").symlink_to(Path("../blobs/sha256_xml"))
+        (snapshot_dir / "model.bin").symlink_to(Path("../blobs/sha256_bin"))
+
+        spec = ComponentSpec.model_validate({"type": "normalize", "artifact": "model.xml"})
+        resolved = resolve_artifact(spec, snapshot_dir)
+
+        artifact_path = Path(resolved.flat_params["artifact"])
+        sibling_bin = artifact_path.with_suffix(".bin")
+        assert sibling_bin.exists(), (
+            f"Expected {sibling_bin} to exist next to the artifact, "
+            f"but artifact resolved to {artifact_path}"
+        )
