@@ -482,7 +482,9 @@ class SharedRobot:
         if sample is not None:
             self._latest = decode_state(sample.payload.to_bytes())
 
-        assert self._latest is not None  # noqa: S101  # guaranteed by _attach()
+        if self._latest is None:
+            msg = "SharedRobot has no cached state. Call connect() first."
+            raise RobotTransportError(msg)
         return self._latest
 
     def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None:
