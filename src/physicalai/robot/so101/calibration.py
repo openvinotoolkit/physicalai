@@ -32,6 +32,20 @@ class SO101JointCalibration:
         """Direction multiplier derived from drive mode."""
         return -1 if self.drive_mode == 1 else 1
 
+    def to_dict(self) -> dict[str, int]:
+        """Serialize to a JSON-compatible dict in the LeRobot calibration format.
+
+        Returns:
+            Dict with the joint's calibration fields.
+        """
+        return {
+            "id": self.id,
+            "drive_mode": self.drive_mode,
+            "homing_offset": self.homing_offset,
+            "range_min": self.range_min,
+            "range_max": self.range_max,
+        }
+
 
 @dataclass(frozen=True)
 class SO101Calibration:
@@ -48,6 +62,14 @@ class SO101Calibration:
         """
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         return cls.from_dict(data)
+
+    def to_dict(self) -> dict[str, dict[str, int]]:
+        """Serialize to a JSON-compatible dict in the LeRobot calibration format.
+
+        Returns:
+            Dict mapping joint names to their calibration fields.
+        """
+        return {name: joint.to_dict() for name, joint in self.joints.items()}
 
     @classmethod
     def from_dict(cls, data: object) -> SO101Calibration:

@@ -118,7 +118,7 @@ class SO101(Robot):
     def __init__(
         self,
         port: str,
-        calibration: SO101Calibration | str | Path | None,
+        calibration: SO101Calibration | str | Path | dict | None,
         baudrate: int = 1_000_000,
         role: Literal["leader", "follower"] = "follower",
         unit: SO101Unit = "normalized",
@@ -157,6 +157,8 @@ class SO101(Robot):
 
         if isinstance(calibration, (str, Path)):
             calibration = SO101Calibration.from_path(calibration)
+        elif isinstance(calibration, dict):
+            calibration = SO101Calibration.from_dict(calibration)
 
         self._calibration: SO101Calibration | None = calibration
         self._uncalibrated_mode = self._calibration is None
