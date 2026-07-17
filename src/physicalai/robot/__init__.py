@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from physicalai.robot.connect import connect
+from physicalai.robot.device_ids import device_id_from_serial_port
 from physicalai.robot.errors import (
     RobotDeviceAlreadyOwned,
     RobotError,
@@ -44,6 +45,7 @@ __all__ = [
     "RobotProtocolMismatch",
     "RobotTransportError",
     "connect",
+    "device_id_from_serial_port",
     "verify_robot",
 ]
 
