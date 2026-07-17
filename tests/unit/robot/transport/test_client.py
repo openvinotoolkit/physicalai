@@ -28,10 +28,6 @@ class _Clock:
 
 
 class TestSharedRobotClient:
-    def test_requires_explicit_remote_opt_in(self) -> None:
-        with pytest.raises(ValueError, match="allow_remote=True"):
-            SharedRobotClient()
-
     def test_discovery_uses_cold_then_warm_default_budgets(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import physicalai.robot.transport._client as client_module
 
@@ -43,7 +39,7 @@ class TestSharedRobotClient:
 
         def _open_session(*, allow_remote: bool) -> _Session:
             nonlocal sessions_opened
-            assert allow_remote
+            assert not allow_remote
             sessions_opened += 1
             return session
 
@@ -60,7 +56,7 @@ class TestSharedRobotClient:
         monkeypatch.setattr(client_module.time, "monotonic", clock.monotonic)
         monkeypatch.setattr(client_module.time, "sleep", clock.sleep)
 
-        with SharedRobotClient(allow_remote=True) as client:
+        with SharedRobotClient() as client:
             assert client.discover() == [{"name": "left-arm"}]
             assert client.discover() == [{"name": "left-arm"}]
 
@@ -96,7 +92,7 @@ class TestSharedRobotClient:
             _session: _Session,
         ) -> Robot:
             nonlocal received_session
-            assert allow_remote
+            assert not allow_remote
             assert connect_timeout == 3.0
             received_session = _session
             return robot
@@ -105,7 +101,7 @@ class TestSharedRobotClient:
         monkeypatch.setattr(client_module.SharedRobot, "attach", _attach)
         monkeypatch.setattr(client_module.logger, "info", messages.append)
 
-        client = SharedRobotClient(allow_remote=True)
+        client = SharedRobotClient()
         assert client.attach("left-arm", connect_timeout=3.0) is robot
         client.close()
 
@@ -113,3 +109,38 @@ class TestSharedRobotClient:
         assert robot.disconnected
         assert session.closed
         assert messages == ["Disconnecting SharedRobot 'left-arm' as SharedRobotClient closes"]
+
+    @pytest.mark.parametrize("allow_remote", [False, True])
+    def test_client_propagates_network_scope(self, allow_remote: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+        import physicalai.robot.transport._client as client_module
+
+        session = _Session()
+        scopes: list[bool] = []
+
+        def _open_session(*, allow_remote: bool) -> _Session:
+            scopes.append(allow_remote)
+            return session
+
+        class Robot:
+            def is_connected(self) -> bool:
+                return False
+
+        def _attach(
+            _name: str,
+            *,
+            allow_remote: bool,
+            connect_timeout: float,
+            _session: _Session,
+        ) -> Robot:
+            scopes.append(allow_remote)
+            assert _session is session
+            return Robot()
+
+        monkeypatch.setattr(client_module, "open_session", _open_session)
+        monkeypatch.setattr(client_module.SharedRobot, "attach", _attach)
+
+        client = SharedRobotClient(allow_remote=allow_remote)
+        client.attach("left-arm")
+        client.close()
+
+        assert scopes == [allow_remote, allow_remote]

@@ -83,9 +83,9 @@ for metadata in discover_robots():
 ## Reuse a remote client
 
 For a long-running process that repeatedly discovers or attaches to remote
-owners, use `SharedRobotClient`. It keeps one Zenoh scouting session open,
-so the first operation establishes remote routes and later operations reuse
-them:
+owners, use `SharedRobotClient(allow_remote=True)`. It keeps one Zenoh
+scouting session open, so the first operation establishes remote routes and
+later operations reuse them:
 
 ```python
 from physicalai.robot.transport import SharedRobotClient
@@ -95,7 +95,7 @@ with SharedRobotClient(allow_remote=True) as client:
   robot = client.attach(robots[0]["name"])
   robot.connect()
 
-  # Later discovery uses the already-established remote session.
+  # Later discovery reuses the established remote session.
   robots = client.discover()
 ```
 
@@ -105,7 +105,8 @@ session on context exit. Its first `discover()` call uses a one-second budget
 for Zenoh scouting; later calls use 0.1 seconds with the warmed session.
 Pass `timeout=` to override either budget. The timeout remains a wildcard-query
 collection window, so use a larger explicit value when a more complete inventory
-is needed after a network or owner change.
+is needed after a network or owner change. `SharedRobotClient()` also works for
+same-host owners; omit `allow_remote=True` to keep that client local-only.
 
 ## Network scope: local-only by default
 
