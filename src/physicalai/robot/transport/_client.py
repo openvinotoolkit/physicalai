@@ -8,6 +8,8 @@ from __future__ import annotations
 import time
 from typing import Any, Self
 
+from loguru import logger
+
 from ._session import open_session
 from ._shared_robot import SharedRobot, discover_robots
 
@@ -101,7 +103,8 @@ class SharedRobotClient:
         if self._closed:
             return
         self._closed = True
-        for robot in self._robots:
+        for robot in [r for r in self._robots if r.is_connected()]:
+            logger.info(f"Disconnecting SharedRobot {robot.name!r} as SharedRobotClient closes")
             robot.disconnect()
         self._robots.clear()
         if self._session is not None:

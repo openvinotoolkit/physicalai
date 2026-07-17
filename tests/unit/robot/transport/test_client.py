@@ -70,9 +70,11 @@ class TestSharedRobotClient:
 
         session = _Session()
         received_session: _Session | None = None
+        messages: list[str] = []
 
         class Robot:
             disconnected = False
+            name = "left-arm"
 
             def disconnect(self) -> None:
                 self.disconnected = True
@@ -94,6 +96,7 @@ class TestSharedRobotClient:
 
         monkeypatch.setattr(client_module, "open_session", lambda *, allow_remote: session)
         monkeypatch.setattr(client_module.SharedRobot, "attach", _attach)
+        monkeypatch.setattr(client_module.logger, "info", messages.append)
 
         client = SharedRobotClient(allow_remote=True)
         assert client.attach("left-arm", connect_timeout=3.0) is robot
@@ -102,3 +105,4 @@ class TestSharedRobotClient:
         assert received_session is session
         assert robot.disconnected
         assert session.closed
+        assert messages == ["Disconnecting SharedRobot 'left-arm' as SharedRobotClient closes"]
