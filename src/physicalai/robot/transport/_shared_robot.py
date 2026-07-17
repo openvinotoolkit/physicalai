@@ -92,7 +92,7 @@ def _query_metadata_with_retry(session: Any, key: str, timeout: float) -> dict[s
         metadata = _query_metadata(session, key, timeout=min(_PROBE_TIMEOUT, remaining))
         if metadata is not None:
             return metadata
-        time.sleep(_RETRY_INTERVAL)
+        time.sleep(min(_RETRY_INTERVAL, remaining))
 
 
 def discover_robots(
@@ -160,7 +160,9 @@ def discover_robots(
         if allow_remote and (remaining := deadline - time.monotonic()) > 0:
             remote_session = open_session(allow_remote=True)
             try:
-                _append_replies(remote_session, remaining)
+                while (remaining := deadline - time.monotonic()) > 0:
+                    _append_replies(remote_session, min(_PROBE_TIMEOUT, remaining))
+                    time.sleep(min(_RETRY_INTERVAL, remaining))
             finally:
                 remote_session.close()
 
@@ -305,6 +307,14 @@ class SharedRobot:
             a freshly spawned one.
         """
         metadata = _query_metadata(self._session, metadata_key(self._name), timeout=_PROBE_TIMEOUT)
+        if metadata is None and self._allow_remote:
+            # A fresh remote peer needs time to learn routes through Zenoh
+            # scouting before the owner's queryable is reachable.
+            metadata = _query_metadata_with_retry(
+                self._session,
+                metadata_key(self._name),
+                timeout=min(_RACE_RETRY_TIMEOUT, timeout),
+            )
         if metadata is None:
             return self._spawn_or_reprobe(timeout)
         return metadata

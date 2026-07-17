@@ -69,6 +69,29 @@ class TestConstruction:
     def test_device_ids_always_empty(self) -> None:
         assert _shared_robot("x").device_ids == ()
 
+    def test_remote_metadata_resolution_retries_after_scouting_settles(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import physicalai.robot.transport._shared_robot as shared_robot_module
+
+        robot = SharedRobot.attach("left-arm", allow_remote=True)
+        robot._session = object()
+        metadata = {"name": "left-arm"}
+        calls = 0
+
+        def _query(_session: object, _key: str, timeout: float) -> dict[str, str] | None:
+            nonlocal calls
+            assert timeout > 0
+            calls += 1
+            return None if calls == 1 else metadata
+
+        monkeypatch.setattr(shared_robot_module, "_query_metadata", _query)
+        monkeypatch.setattr(shared_robot_module.time, "sleep", lambda _seconds: None)
+
+        assert robot._resolve_metadata(timeout=1.0) == metadata
+        assert calls == 2
+
 
 @requires_zenoh
 class TestSharedRobotLifecycle:
@@ -333,6 +356,38 @@ class TestOwnerIdleShutdown:
 
 @requires_zenoh
 class TestDiscovery:
+    def test_remote_discovery_retries_after_scouting_settles(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import physicalai.robot.transport._shared_robot as shared_robot_module
+
+        class Clock:
+            now = 0.0
+
+            def monotonic(self) -> float:
+                return self.now
+
+            def sleep(self, seconds: float) -> None:
+                self.now += seconds
+
+        class Session:
+            calls = 0
+
+            def get(self, _key: str, *, timeout: float) -> list[object]:
+                self.calls += 1
+                return []
+
+            def close(self) -> None:
+                pass
+
+        clock = Clock()
+        session = Session()
+        monkeypatch.setattr(shared_robot_module, "registered_owner_names", lambda: [])
+        monkeypatch.setattr(shared_robot_module, "open_session", lambda **_kwargs: session)
+        monkeypatch.setattr(shared_robot_module.time, "monotonic", clock.monotonic)
+        monkeypatch.setattr(shared_robot_module.time, "sleep", clock.sleep)
+
+        assert discover_robots(timeout=1.0, allow_remote=True) == []
+        assert session.calls > 1
+
     def test_discover_local_robot_with_default_session(self, unique_id: str) -> None:
         robot = _shared_robot(unique_id.replace("/", "-"))
         robot.connect()
