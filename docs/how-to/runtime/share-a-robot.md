@@ -126,10 +126,11 @@ robot = SharedRobot(
 )
 ```
 
-The caller that spawns the owner fixes this scope for the owner's entire
-lifetime — a later attacher's `allow_remote` only configures its own
-session, it never widens or narrows an already-running owner's
-reachability. See [Security](#security-trusted-network-required) below.
+Each caller has its own Zenoh session. For an attacher, `allow_remote`
+controls only that session's ability to find remote owners. For the caller
+that spawns an owner, it also fixes the owner's reachability for its
+entire lifetime. Later attachers cannot change an existing owner's scope.
+See [Security](#security-trusted-network-required) below.
 
 ## Physical device identity vs. logical name
 
