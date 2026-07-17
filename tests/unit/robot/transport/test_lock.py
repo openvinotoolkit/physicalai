@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -25,16 +26,29 @@ if TYPE_CHECKING:
 
 @pytest.fixture
 def lock_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-    return tmp_path
+    runtime_dir = tmp_path / "runtime"
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
+    return runtime_dir / "physicalai" / "robot-locks"
 
 
 class TestLockPath:
     def test_user_scoped_hashed_path(self, lock_dir: Path) -> None:
         path = lock_path("device", "ttyUSB0")
-        assert path.parent == lock_dir / "physicalai" / "robot-locks"
+        assert path.parent == lock_dir
         assert path.suffix == ".lock"
         assert path.stem != "ttyUSB0"  # hashed, not the raw identity
+
+    def test_falls_back_to_user_scoped_temporary_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        monkeypatch.setattr(
+            "physicalai.robot.transport._lock.tempfile.gettempdir", lambda: str(tmp_path)
+        )
+
+        path = lock_path("device", "ttyUSB0")
+
+        assert path.parent == tmp_path / f"physicalai-{os.getuid()}" / "robot-locks"
 
     def test_deterministic(self, lock_dir: Path) -> None:
         assert lock_path("device", "ttyUSB0") == lock_path("device", "ttyUSB0")
@@ -91,7 +105,7 @@ class TestNamedLock:
         """)
         result = subprocess.run(
             [sys.executable, "-c", code],
-            env={"XDG_CACHE_HOME": str(lock_dir), "PYTHONPATH": "src"},
+            env={"XDG_RUNTIME_DIR": str(lock_dir.parent.parent), "PYTHONPATH": "src"},
             check=False,
             capture_output=True,
         )
@@ -110,7 +124,7 @@ class TestNamedLock:
         """)
         result = subprocess.run(
             [sys.executable, "-c", code],
-            env={"XDG_CACHE_HOME": str(lock_dir), "PYTHONPATH": "src"},
+            env={"XDG_RUNTIME_DIR": str(lock_dir.parent.parent), "PYTHONPATH": "src"},
             check=False,
             capture_output=True,
         )
@@ -173,7 +187,7 @@ class TestAcquireLocks:
         """)
         result = subprocess.run(
             [sys.executable, "-c", code],
-            env={"XDG_CACHE_HOME": str(lock_dir), "PYTHONPATH": "src"},
+            env={"XDG_RUNTIME_DIR": str(lock_dir.parent.parent), "PYTHONPATH": "src"},
             check=False,
             capture_output=True,
         )

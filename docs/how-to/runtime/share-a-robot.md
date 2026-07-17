@@ -149,9 +149,10 @@ wire contract.
 
 - One owner process per `name`, and one owner per physical device — both
   enforced by host-local, crash-safe `flock` locks
-  (`~/.cache/physicalai/robot-locks/`). If two processes race to spawn the
-  same `name`, the loser attaches (same devices) or raises `RobotNameConflict`
-  (different devices).
+  (under `$XDG_RUNTIME_DIR/physicalai/robot-locks/` on Linux, or a private
+  per-user temporary directory elsewhere on Unix). If two processes race to
+  spawn the same `name`, the loser attaches (same devices) or raises
+  `RobotNameConflict` (different devices).
 - The owner runs a single write-first control loop at a fixed rate
   (`rate_hz` spawn parameter, default 100 Hz; override per instance when
   hardware measurements justify a different value).

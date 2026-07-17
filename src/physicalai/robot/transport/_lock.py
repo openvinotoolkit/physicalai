@@ -24,6 +24,8 @@ import fcntl
 import hashlib
 import json
 import os
+import stat
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Self
@@ -39,12 +41,22 @@ def _lock_dir() -> Path:
     """Return the user-scoped lock directory, creating it if needed.
 
     Returns:
-        The ``~/.cache/physicalai/robot-locks`` directory path.
+        A private directory below ``XDG_RUNTIME_DIR`` when available, or a
+        per-user directory below the platform temporary directory otherwise.
+
+    Raises:
+        RuntimeError: If the resulting directory is not private or is not
+            owned by the current user.
     """
-    cache_home = os.environ.get("XDG_CACHE_HOME")
-    base = Path(cache_home) if cache_home else Path.home() / ".cache"
-    lock_dir = base / "physicalai" / "robot-locks"
-    lock_dir.mkdir(parents=True, exist_ok=True)
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    base = Path(runtime_dir) if runtime_dir else Path(tempfile.gettempdir()) / f"physicalai-{os.getuid()}"
+
+    lock_dir = base / "physicalai" / "robot-locks" if runtime_dir else base / "robot-locks"
+    lock_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    lock_dir_stat = lock_dir.stat()
+    if not stat.S_ISDIR(lock_dir_stat.st_mode) or lock_dir_stat.st_uid != os.getuid() or lock_dir_stat.st_mode & 0o077:
+        msg = f"robot lock directory must be private and owned by this user: {lock_dir}"
+        raise RuntimeError(msg)
     return lock_dir
 
 
@@ -68,6 +80,26 @@ def lock_path(kind: str, identity: str) -> Path:
     return _lock_dir() / f"{digest}.lock"
 
 
+def _active_owner_name(path: Path) -> str | None:
+    """Return the live owner name recorded in one lock file, if any."""
+    try:
+        diagnostics = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(diagnostics, dict) or diagnostics.get("kind") != NAME_KIND:
+        return None
+
+    name = diagnostics.get("identity")
+    pid = diagnostics.get("pid")
+    if not isinstance(name, str) or not isinstance(pid, int) or pid <= 0:
+        return None
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return None
+    return name
+
+
 def registered_owner_names() -> list[str]:
     """Return names recorded by owner processes that are still alive.
 
@@ -81,20 +113,8 @@ def registered_owner_names() -> list[str]:
     """
     names: set[str] = set()
     for path in _lock_dir().glob("*.lock"):
-        try:
-            diagnostics = json.loads(path.read_text())
-            if not isinstance(diagnostics, dict):
-                continue
-            if diagnostics.get("kind") != NAME_KIND:
-                continue
-            name = diagnostics.get("identity")
-            pid = diagnostics.get("pid")
-            if not isinstance(name, str) or not isinstance(pid, int) or pid <= 0:
-                continue
-            os.kill(pid, 0)
-        except (OSError, ValueError, TypeError):
-            continue
-        names.add(name)
+        if name := _active_owner_name(path):
+            names.add(name)
     return sorted(names)
 
 

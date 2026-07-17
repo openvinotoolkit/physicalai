@@ -137,7 +137,10 @@ Hardware access starts only after every lock is held.
 
 ### Host-local locking
 
-POSIX `flock` files under the user's cache directory provide crash-safe arbitration:
+POSIX `flock` files in a private runtime directory provide crash-safe arbitration.
+Linux uses `$XDG_RUNTIME_DIR/physicalai/robot-locks`; other Unix hosts fall back to
+a per-user directory below the platform temporary directory. Lock state is kept out
+of cache and durable application-storage directories:
 
 - one `name:{name}` lock serializes concurrent creation of the same service;
 - one `device:{device_id}` lock protects each physical resource;
