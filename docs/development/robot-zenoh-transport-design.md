@@ -340,17 +340,6 @@ and are never imported.
 The following can be added without breaking the current protocol when a concrete need
 appears:
 
-- action deadman or watchdog behavior beyond hold-on-no-action;
 - action acknowledgement or blocking safety-command channels;
-- on-change state publishing and a cold-start state cache;
-- router-enforced write authorization; and
+- router-enforced write authorization;
 - distributed ownership leases with hardware fencing.
-
-## Implementation evidence
-
-- Native `RingChannel(1)` buffering continues while Python cannot schedule a callback;
-  retrieval still occurs on the caller's thread.
-- Zenoh 1.9 exposes the pinned best-effort, drop, express, matching-status, and peer-mode
-  APIs used by the implementation.
-- Runtime inference consumes `robot_obs.state`, confirming that the owner-computed
-  state vector is part of the wire contract.
