@@ -27,4 +27,4 @@ allow-dependencies-licenses:
   # https://github.com/TrossenRobotics/trossen_arm/blob/main/LICENSE
   - pkg:pypi/trossen-arm
   # trufflehog is used only in CI for secret scanning; not shipped with the product
-  - pkg:github/actions/trufflesecurity/trufflehog
+  - pkg:githubactions/trufflesecurity/trufflehog
