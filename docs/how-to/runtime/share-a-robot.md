@@ -101,9 +101,11 @@ with SharedRobotClient(allow_remote=True) as client:
 
 `SharedRobotClient` is attach-only: it never starts an owner process. It
 disconnects every robot created through `attach()` before closing its shared
-session on context exit. `timeout` remains the wildcard-query collection
-window; use a larger value for the first remote discovery to allow Zenoh
-scouting to establish routes.
+session on context exit. Its first `discover()` call uses a one-second budget
+for Zenoh scouting; later calls use 0.1 seconds with the warmed session.
+Pass `timeout=` to override either budget. The timeout remains a wildcard-query
+collection window, so use a larger explicit value when a more complete inventory
+is needed after a network or owner change.
 
 ## Network scope: local-only by default
 

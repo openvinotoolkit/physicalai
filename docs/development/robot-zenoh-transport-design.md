@@ -201,10 +201,11 @@ Long-running remote clients can retain one scouting session through
 `SharedRobotClient(allow_remote=True)`. The client is attach-only and owns
 the session for its context lifetime: its first discovery includes Zenoh
 route establishment, and later discovery or attachments reuse that warmed
-session. It disconnects all robots attached through the client before
-closing the session. The wildcard discovery timeout remains a collection
-window even for a warmed session because Zenoh cannot signal that every
-reachable owner has replied.
+session. With no explicit timeout, the first discovery gets a one-second
+budget and later discovery gets 0.1 seconds. It disconnects all robots
+attached through the client before closing the session. The wildcard discovery
+timeout remains a collection window even for a warmed session because Zenoh
+cannot signal that every reachable owner has replied.
 
 ## Owner loop and subscriber behavior
 

@@ -32,13 +32,14 @@ class TestSharedRobotClient:
         with pytest.raises(ValueError, match="allow_remote=True"):
             SharedRobotClient()
 
-    def test_discovery_reuses_one_session(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_discovery_uses_cold_then_warm_default_budgets(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import physicalai.robot.transport._client as client_module
 
         clock = _Clock()
         session = _Session()
         sessions_opened = 0
         discovery_calls = 0
+        timeouts: list[float] = []
 
         def _open_session(*, allow_remote: bool) -> _Session:
             nonlocal sessions_opened
@@ -51,6 +52,7 @@ class TestSharedRobotClient:
             assert session is not None
             assert timeout > 0
             discovery_calls += 1
+            timeouts.append(timeout)
             return [{"name": "left-arm"}] if discovery_calls >= 2 else []
 
         monkeypatch.setattr(client_module, "open_session", _open_session)
@@ -59,11 +61,13 @@ class TestSharedRobotClient:
         monkeypatch.setattr(client_module.time, "sleep", clock.sleep)
 
         with SharedRobotClient(allow_remote=True) as client:
-            assert client.discover(timeout=0.5) == [{"name": "left-arm"}]
-            assert client.discover(timeout=0.1) == [{"name": "left-arm"}]
+            assert client.discover() == [{"name": "left-arm"}]
+            assert client.discover() == [{"name": "left-arm"}]
 
         assert sessions_opened == 1
         assert session.closed
+        assert timeouts[0] == 1.0
+        assert timeouts[-1] == pytest.approx(0.1)
 
     def test_attach_borrows_session_and_close_disconnects_robot(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import physicalai.robot.transport._client as client_module
@@ -75,6 +79,9 @@ class TestSharedRobotClient:
         class Robot:
             disconnected = False
             name = "left-arm"
+
+            def is_connected(self) -> bool:
+                return True
 
             def disconnect(self) -> None:
                 self.disconnected = True

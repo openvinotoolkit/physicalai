@@ -13,7 +13,8 @@ from loguru import logger
 from ._session import open_session
 from ._shared_robot import SharedRobot, discover_robots
 
-_PROBE_TIMEOUT = 1.0
+_COLD_DISCOVERY_TIMEOUT = 1.0
+_WARM_DISCOVERY_TIMEOUT = 0.1
 _RETRY_INTERVAL = 0.2
 
 
@@ -41,6 +42,7 @@ class SharedRobotClient:
         self._session: Any = None
         self._robots: list[SharedRobot] = []
         self._closed = False
+        self._has_discovered = False
 
     def __enter__(self) -> Self:
         """Enter the client context.
@@ -55,24 +57,29 @@ class SharedRobotClient:
         """Disconnect attached robots and close the shared session."""
         self.close()
 
-    def discover(self, timeout: float = 2.0) -> list[dict[str, Any]]:
+    def discover(self, timeout: float | None = None) -> list[dict[str, Any]]:
         """Enumerate reachable remote shared robots.
 
         Args:
-            timeout: Total discovery budget, including any initial Zenoh
-                scouting needed to establish remote routes.
+            timeout: Total discovery budget. When omitted, the first call
+                uses one second for Zenoh scouting; later calls use 0.1
+                seconds with the warmed session.
 
         Returns:
             One metadata record per answering owner.
         """
-        if timeout <= 0:
+        budget = timeout
+        if budget is None:
+            budget = _WARM_DISCOVERY_TIMEOUT if self._has_discovered else _COLD_DISCOVERY_TIMEOUT
+        if budget <= 0:
             return []
 
         session = self._get_session()
-        deadline = time.monotonic() + timeout
+        self._has_discovered = True
+        deadline = time.monotonic() + budget
         robots: dict[object, dict[str, Any]] = {}
         while (remaining := deadline - time.monotonic()) > 0:
-            for metadata in discover_robots(session=session, timeout=min(_PROBE_TIMEOUT, remaining)):
+            for metadata in discover_robots(session=session, timeout=min(_COLD_DISCOVERY_TIMEOUT, remaining)):
                 robots[metadata.get("name")] = metadata
             remaining = deadline - time.monotonic()
             if remaining > 0:
