@@ -194,6 +194,15 @@ The caller that spawns an owner fixes its scope for the owner's lifetime. A late
 attacher controls only its own session and cannot widen or narrow the running owner.
 Remote attachment requires explicit `allow_remote=True`.
 
+Long-running remote clients can retain one scouting session through
+`SharedRobotClient(allow_remote=True)`. The client is attach-only and owns
+the session for its context lifetime: its first discovery includes Zenoh
+route establishment, and later discovery or attachments reuse that warmed
+session. It disconnects all robots attached through the client before
+closing the session. The wildcard discovery timeout remains a collection
+window even for a warmed session because Zenoh cannot signal that every
+reachable owner has replied.
+
 ## Owner loop and subscriber behavior
 
 The owner is the only thread that touches the driver. Each tick is:

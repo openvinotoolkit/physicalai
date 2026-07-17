@@ -209,6 +209,7 @@ class SharedRobot:
         rate_hz: float = DEFAULT_RATE_HZ,
         idle_timeout: float = 10.0,
         connect_timeout: float = 10.0,
+        _session: object | None = None,
     ) -> None:
         self._name = validate_name(name)
         self._robot_class = normalize_robot_class(robot_class) if robot_class is not None else None
@@ -218,7 +219,9 @@ class SharedRobot:
         self._idle_timeout = idle_timeout
         self._connect_timeout = connect_timeout
 
+        self._provided_session = _session
         self._session: Any = None
+        self._owns_session = _session is None
         self._owner: Any = None
         self._state_sub: Any = None
         self._action_pub: Any = None
@@ -227,7 +230,14 @@ class SharedRobot:
         self._connected = False
 
     @classmethod
-    def attach(cls, name: str, *, allow_remote: bool = False, connect_timeout: float = 10.0) -> SharedRobot:
+    def attach(
+        cls,
+        name: str,
+        *,
+        allow_remote: bool = False,
+        connect_timeout: float = 10.0,
+        _session: object | None = None,
+    ) -> SharedRobot:
         """Attach-only construction: subscribe to an existing owner by name.
 
         Never spawns an owner — :meth:`connect` raises
@@ -243,7 +253,7 @@ class SharedRobot:
         Returns:
             A ``SharedRobot`` that never spawns an owner.
         """
-        return cls(name, allow_remote=allow_remote, connect_timeout=connect_timeout)
+        return cls(name, allow_remote=allow_remote, connect_timeout=connect_timeout, _session=_session)
 
     @property
     def name(self) -> str:
@@ -288,7 +298,7 @@ class SharedRobot:
             return
 
         budget = self._connect_timeout
-        self._session = open_session(self._name, allow_remote=self._allow_remote)
+        self._session = self._provided_session or open_session(self._name, allow_remote=self._allow_remote)
         try:
             metadata = self._resolve_metadata(budget)
             self._validate_metadata(metadata)
@@ -538,12 +548,12 @@ class SharedRobot:
         self._owner = None
         self._state_sub = None
         self._action_pub = None
-        if self._session is not None:
+        if self._session is not None and self._owns_session:
             try:
                 self._session.close()
             except Exception:  # noqa: BLE001
                 logger.debug("Error closing zenoh session", exc_info=True)
-            self._session = None
+        self._session = None
         self._connected = False
         self._latest = None
         self._metadata = None

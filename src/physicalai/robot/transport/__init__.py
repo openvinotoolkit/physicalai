@@ -23,6 +23,7 @@ Requires the ``transport`` extra::
 
 from __future__ import annotations
 
+from ._client import SharedRobotClient
 from ._shared_robot import SharedRobot, discover_robots
 
-__all__ = ["SharedRobot", "discover_robots"]
+__all__ = ["SharedRobot", "SharedRobotClient", "discover_robots"]
