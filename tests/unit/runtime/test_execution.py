@@ -252,12 +252,15 @@ class TestAsyncExecution:
         model = _make_mock_model(chunk)
 
         call_count = 0
+        inference_started = threading.Event()
+        release_inference = threading.Event()
 
         def slow_predict(obs: dict) -> np.ndarray:
             nonlocal call_count
             call_count += 1
             if call_count == 2:
-                time.sleep(100)
+                inference_started.set()
+                assert release_inference.wait(timeout=1.0)
             return chunk
 
         model.predict_action_chunk.side_effect = slow_predict
@@ -272,9 +275,12 @@ class TestAsyncExecution:
             queue.pop()
         ex.maybe_request(obs)
 
-        time.sleep(0.3)
-        ex.maybe_request(obs)
-
+        assert inference_started.wait(timeout=1.0)
+        with patch.object(ex, "_force_reset", wraps=ex._force_reset) as force_reset:
+            time.sleep(0.3)
+            ex.maybe_request(obs)
+            force_reset.assert_called_once()
+        release_inference.set()
         ex.stop()
 
 
