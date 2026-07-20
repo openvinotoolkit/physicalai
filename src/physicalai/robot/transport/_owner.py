@@ -11,6 +11,8 @@ import subprocess  # noqa: S404 # nosec: B404
 import sys
 from typing import TYPE_CHECKING, Self
 
+from loguru import logger
+
 from physicalai.robot.errors import RobotDeviceAlreadyOwned, RobotTransportError
 
 if TYPE_CHECKING:
@@ -135,6 +137,7 @@ class RobotOwner:
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
+            logger.warning(f"Owner subprocess did not exit within {timeout:.1f}s, killing")
             proc.kill()
             proc.wait(timeout=1)
 
