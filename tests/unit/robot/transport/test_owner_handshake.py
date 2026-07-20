@@ -10,7 +10,7 @@ from physicalai.robot.transport._ids import derive_endpoint_port
 from physicalai.robot.transport._lock import NamedLock, acquire_locks
 from physicalai.robot.transport._owner import RobotOwner
 from physicalai.robot.transport._owner_config import RobotOwnerConfig
-from physicalai.robot.transport._owner_worker import _StartupError, _declare_zenoh_endpoints, _startup
+from physicalai.robot.transport._owner_worker import _StartupError, _build_metadata, _declare_zenoh_endpoints, _startup
 
 from .conftest import FAKE_ROBOT_CLASS, requires_zenoh
 from .fake import FakeRobot
@@ -43,6 +43,23 @@ def test_startup_failure_after_connect_disconnects_and_releases_locks(
     assert driver.disconnect_called
     locks = acquire_locks(name, [device_id])
     locks.release_all()
+
+
+@pytest.mark.parametrize("allow_remote", [False, True])
+def test_metadata_redacts_device_ids_for_remote_owner(allow_remote: bool) -> None:
+    config = RobotOwnerConfig(name="left-arm", robot_class=FAKE_ROBOT_CLASS, allow_remote=allow_remote)
+    metadata = _build_metadata(
+        config,
+        FakeRobot(device_ids=("serial:ttyUSB0",)),
+        ("serial:ttyUSB0",),
+        state_dim=6,
+    )
+
+    assert metadata["host"]
+    if allow_remote:
+        assert "device_ids" not in metadata
+    else:
+        assert metadata["device_ids"] == ["serial:ttyUSB0"]
 
 
 @requires_zenoh

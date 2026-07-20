@@ -131,6 +131,11 @@ lifetime — a later attacher's `allow_remote` only configures its own
 session, it never widens or narrows an already-running owner's
 reachability. See [Security](#security-trusted-network-required) below.
 
+Remote owners omit physical `device_ids` from their `/metadata`
+responses. Other discovery information, including the logical name, driver
+class, host, joint layout, and state dimensions, remains visible to reachable
+peers.
+
 ## Physical device identity vs. logical name
 
 `name` is what you choose and what keys the Zenoh topics — it never
@@ -169,7 +174,7 @@ wire contract.
 ## Security: trusted network required
 
 In `allow_remote=True` mode, this transport applies any action received on
-its Zenoh `/action` key **without authentication** — any peer that can
+its Zenoh `/action` key **without authentication and encryption** — any peer that can
 reach the owner's Zenoh session can move the physical robot. It is designed
 for a **trusted robot-cell network** (isolated LAN/VLAN) in that mode.
 Isolating the network — via VLAN/firewall segmentation or Zenoh's own

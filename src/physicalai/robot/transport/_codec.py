@@ -196,8 +196,9 @@ def encode_metadata(metadata: dict[str, Any]) -> bytes:
 
     Args:
         metadata: Informational dict — ``protocol_version``, ``name``,
-            ``robot_class``, ``device_ids``, ``host``, ``joint_names``,
-            ``num_joints``, ``state_dim``. Must never include constructor
+            ``robot_class``, optional ``device_ids``, ``host``,
+            ``joint_names``, ``num_joints``, ``state_dim``. Remote-capable
+            owners omit ``device_ids``. Must never include constructor
             kwargs, calibration paths/contents, credentials, or tokens.
 
     Returns:

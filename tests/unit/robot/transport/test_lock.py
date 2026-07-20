@@ -16,6 +16,7 @@ import pytest
 from physicalai.robot.transport._lock import (
     LockContention,
     NamedLock,
+    active_owner_device_ids,
     acquire_locks,
     lock_path,
 )
@@ -144,8 +145,24 @@ class TestAcquireLocks:
         owned = acquire_locks("virtual-bot", [])
         try:
             assert owned.device_locks == []
+            assert active_owner_device_ids("virtual-bot") == ()
         finally:
             owned.release_all()
+
+    def test_name_lock_diagnostic_records_device_ids(self, lock_dir: Path) -> None:
+        owned = acquire_locks("left-arm", ["serial:ttyUSB1", "serial:ttyUSB0", "serial:ttyUSB0"])
+        try:
+            diagnostics = json.loads(owned.name_lock.path.read_text())
+            assert diagnostics["device_ids"] == ["serial:ttyUSB0", "serial:ttyUSB1"]
+            assert active_owner_device_ids("left-arm") == ("serial:ttyUSB0", "serial:ttyUSB1")
+        finally:
+            owned.release_all()
+
+    def test_legacy_or_malformed_name_lock_has_no_device_ids(self, lock_dir: Path) -> None:
+        path = lock_path("name", "left-arm")
+        path.write_text(json.dumps({"kind": "name", "identity": "left-arm", "pid": os.getpid()}))
+
+        assert active_owner_device_ids("left-arm") is None
 
     def test_sorted_and_deduplicated(self, lock_dir: Path) -> None:
         owned = acquire_locks("left-arm", ["tcp:2", "tcp:1", "tcp:1"])

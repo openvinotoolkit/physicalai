@@ -39,7 +39,7 @@ from physicalai.robot.errors import (
 
 from ._codec import ROBOT_TRANSPORT_PROTOCOL_VERSION, TransportObservation, decode_metadata, decode_state, encode_action
 from ._ids import KEY_PREFIX, METADATA_WILDCARD, action_key, metadata_key, state_key, validate_name
-from ._lock import registered_owner_names
+from ._lock import active_owner_device_ids, registered_owner_names
 from ._owner_config import DEFAULT_RATE_HZ, normalize_robot_class
 from ._session import open_session
 
@@ -373,8 +373,13 @@ class SharedRobot:
                     timeout=_RACE_RETRY_TIMEOUT,
                 )
                 if metadata is not None:
-                    winner_ids = sorted(metadata.get("device_ids") or ())
-                    mine_ids = sorted(exc.device_ids or ())
+                    # A name-lock contention is always host-local, so the winner's
+                    # device ids come from its private name-lock diagnostic
+                    winner_ids = active_owner_device_ids(self._name)
+                    if winner_ids is None:
+                        msg = f"could not determine device identities for local owner {self._name!r}"
+                        raise RobotTransportError(msg, phase=exc.phase) from exc
+                    mine_ids = tuple(sorted(exc.device_ids or ()))
                     if winner_ids == mine_ids:
                         logger.debug(f"Lost owner race for {self._name!r} — attaching to existing owner")
                         return metadata

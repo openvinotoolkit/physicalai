@@ -30,12 +30,13 @@ _NUM_JOINTS = 6
 _STATE_DIM = 12  # fake ships positions + velocities
 
 
-def _shared_robot(name: str, **robot_kwargs: object) -> SharedRobot:
+def _shared_robot(name: str, *, allow_remote: bool = False, **robot_kwargs: object) -> SharedRobot:
     return SharedRobot(
         name,
         robot_class=FAKE_ROBOT_CLASS,
         robot_kwargs={"device_ids": [f"fake:{name}"], **robot_kwargs},
         idle_timeout=0.5,
+        allow_remote=allow_remote,
     )
 
 
@@ -214,6 +215,18 @@ class TestSharedRobotLifecycle:
         assert robot.metadata["num_joints"] == _NUM_JOINTS
         assert robot.metadata["device_ids"] == [f"fake:{robot.name}"]
 
+    def test_remote_owner_metadata_redacts_device_ids(self, unique_id: str) -> None:
+        robot = _shared_robot(unique_id.replace("/", "-"), allow_remote=True)
+        robot.connect()
+        try:
+            assert robot.metadata is not None
+            assert "device_ids" not in robot.metadata
+        finally:
+            owner = robot._owner
+            robot.disconnect()
+            if owner is not None:
+                owner.stop()
+
     def test_class_mismatch_warns_but_attaches(self, module_owner: SharedRobot, caplog: pytest.LogCaptureFixture) -> None:
         """robot_class mismatch on an existing owner is diagnostic, not fatal."""
         import logging
@@ -270,8 +283,8 @@ class TestSharedRobotLifecycle:
 
 @requires_zenoh
 class TestIndependentSpawn:
-    def test_differing_device_race_raises_name_conflict(self, unique_id: str) -> None:
-        """A genuine concurrent race for the same name but different devices must conflict."""
+    @pytest.mark.parametrize("allow_remote", [False, True])
+    def test_differing_device_race_raises_name_conflict(self, unique_id: str, *, allow_remote: bool) -> None:
         import threading
 
         name = unique_id.replace("/", "-")
@@ -279,7 +292,12 @@ class TestIndependentSpawn:
         results: dict[str, object] = {}
 
         def _run(key: str, device_id: str) -> None:
-            robot = SharedRobot(name, robot_class=FAKE_ROBOT_CLASS, robot_kwargs={"device_ids": [device_id]})
+            robot = SharedRobot(
+                name,
+                robot_class=FAKE_ROBOT_CLASS,
+                robot_kwargs={"device_ids": [device_id]},
+                allow_remote=allow_remote,
+            )
             barrier.wait()
             try:
                 robot.connect()

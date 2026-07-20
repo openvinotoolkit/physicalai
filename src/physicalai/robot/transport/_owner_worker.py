@@ -141,7 +141,8 @@ def _build_metadata(
     Args:
         config: Worker config (for name / robot_class).
         driver: Connected driver (for joint names).
-        device_ids: This owner's sorted, deduplicated device ids.
+        device_ids: This owner's sorted, deduplicated device ids. Omitted
+            from advertised metadata when remote transport is enabled.
         state_dim: Length of the owner-computed state vector.
 
     Returns:
@@ -150,16 +151,18 @@ def _build_metadata(
         any other construction secret.
     """
     joint_names = list(driver.joint_names)
-    return {
+    metadata: dict[str, Any] = {
         "protocol_version": ROBOT_TRANSPORT_PROTOCOL_VERSION,
         "name": config.name,
         "robot_class": config.robot_class,
-        "device_ids": list(device_ids),
         "host": default_host(),
         "joint_names": joint_names,
         "num_joints": len(joint_names),
         "state_dim": state_dim,
     }
+    if not config.allow_remote:
+        metadata["device_ids"] = list(device_ids)
+    return metadata
 
 
 def _run_loop(

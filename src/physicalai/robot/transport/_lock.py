@@ -80,8 +80,17 @@ def lock_path(kind: str, identity: str) -> Path:
     return _lock_dir() / f"{digest}.lock"
 
 
-def _active_owner_name(path: Path) -> str | None:
-    """Return the live owner name recorded in one lock file, if any."""
+def _read_live_name_diagnostics(path: Path) -> dict[str, object] | None:
+    """Parse and liveness-check one lock file's diagnostics as a name lock.
+
+    Shared by :func:`_active_owner_name` and :func:`active_owner_device_ids`
+    -- both need the same "well-formed ``name`` lock, owner still alive"
+    gate before trusting any field in the diagnostics.
+
+    Returns:
+        The diagnostics dict if *path* is a well-formed, live ``name``-kind
+        lock file, else ``None``.
+    """
     try:
         diagnostics = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
@@ -89,15 +98,23 @@ def _active_owner_name(path: Path) -> str | None:
     if not isinstance(diagnostics, dict) or diagnostics.get("kind") != NAME_KIND:
         return None
 
-    name = diagnostics.get("identity")
     pid = diagnostics.get("pid")
-    if not isinstance(name, str) or not isinstance(pid, int) or pid <= 0:
+    if not isinstance(pid, int) or pid <= 0:
         return None
     try:
         os.kill(pid, 0)
     except OSError:
         return None
-    return name
+    return diagnostics
+
+
+def _active_owner_name(path: Path) -> str | None:
+    """Return the live owner name recorded in one lock file, if any."""
+    diagnostics = _read_live_name_diagnostics(path)
+    if diagnostics is None:
+        return None
+    name = diagnostics.get("identity")
+    return name if isinstance(name, str) else None
 
 
 def registered_owner_names() -> list[str]:
@@ -118,6 +135,24 @@ def registered_owner_names() -> list[str]:
     return sorted(names)
 
 
+def active_owner_device_ids(name: str) -> tuple[str, ...] | None:
+    """Return a live owner's device identities from its private name lock.
+
+    Returns:
+        Sorted device identities for a live owner, an empty tuple for a
+        virtual owner, or ``None`` when no live, compatible diagnostic is
+        available.
+    """
+    diagnostics = _read_live_name_diagnostics(lock_path(NAME_KIND, name))
+    if diagnostics is None or diagnostics.get("identity") != name:
+        return None
+
+    device_ids = diagnostics.get("device_ids")
+    if not isinstance(device_ids, list) or not all(isinstance(device_id, str) for device_id in device_ids):
+        return None
+    return tuple(sorted(set(device_ids)))
+
+
 class NamedLock:
     """Exclusive, non-blocking advisory lock on one namespaced identity.
 
@@ -131,12 +166,22 @@ class NamedLock:
         identity: The name or device id being locked.
         owner_name: The robot name claiming this lock, recorded in the
             lock file's diagnostic contents (not used for arbitration).
+        device_ids: Owner device identities recorded only in a name-lock
+            diagnostic for same-host race recovery.
     """
 
-    def __init__(self, kind: str, identity: str, *, owner_name: str | None = None) -> None:
+    def __init__(
+        self,
+        kind: str,
+        identity: str,
+        *,
+        owner_name: str | None = None,
+        device_ids: Sequence[str] | None = None,
+    ) -> None:
         self._kind = kind
         self._identity = identity
         self._owner_name = owner_name
+        self._device_ids = tuple(sorted(set(device_ids or ())))
         self._path = lock_path(kind, identity)
         self._fd: int | None = None
 
@@ -170,12 +215,14 @@ class NamedLock:
         except OSError:
             os.close(fd)
             return False
-        diagnostics = {
+        diagnostics: dict[str, object] = {
             "kind": self._kind,
             "identity": self._identity,
             "owner_name": self._owner_name,
             "pid": os.getpid(),
         }
+        if self._kind == NAME_KIND:
+            diagnostics["device_ids"] = list(self._device_ids)
         os.ftruncate(fd, 0)
         os.write(fd, json.dumps(diagnostics).encode())
         self._fd = fd
@@ -260,13 +307,14 @@ def acquire_locks(name: str, device_ids: Sequence[str]) -> OwnedLocks:
         LockContention: Naming the first lock (name, or a specific device)
             that another process already holds.
     """
-    name_lock = NamedLock(NAME_KIND, name, owner_name=name)
+    normalized_device_ids = tuple(sorted(set(device_ids)))
+    name_lock = NamedLock(NAME_KIND, name, owner_name=name, device_ids=normalized_device_ids)
     if not name_lock.acquire():
         raise LockContention(NAME_KIND, name)
 
     device_locks: list[NamedLock] = []
     try:
-        for device_id in sorted(set(device_ids)):
+        for device_id in normalized_device_ids:
             device_lock = NamedLock(DEVICE_KIND, device_id, owner_name=name)
             if not device_lock.acquire():
                 raise LockContention(DEVICE_KIND, device_id)  # noqa: TRY301
