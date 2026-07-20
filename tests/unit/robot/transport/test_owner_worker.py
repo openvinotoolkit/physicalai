@@ -4,13 +4,14 @@
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
 from physicalai.robot.transport import _owner_worker
 from physicalai.robot.transport._owner_config import RobotOwnerConfig
-from physicalai.robot.transport._owner_worker import OwnerExitReason, _run_loop, run_owner
+from physicalai.robot.transport._owner_worker import OwnerEvent, OwnerExitReason, _run_loop, run_owner
 
 from .fake import FakeRobot
 
@@ -86,6 +87,41 @@ def test_repeated_reads_return_failure() -> None:
         shutdown_event=threading.Event(),
     )
     assert reason is OwnerExitReason.CONSECUTIVE_READ_FAILURES
+
+
+def test_subscriber_transitions_and_heartbeat_emit_events() -> None:
+    events: list[OwnerEvent] = []
+    publisher = _StatePublisher(matching=False)
+    shutdown = threading.Event()
+
+    def _change_matching() -> None:
+        publisher.matching = True
+        time.sleep(0.02)
+        publisher.matching = False
+        time.sleep(0.02)
+        shutdown.set()
+
+    thread = threading.Thread(target=_change_matching)
+    thread.start()
+    try:
+        reason = _run_loop(
+            _driver(),
+            publisher,
+            _ActionSubscriber(),
+            rate_hz=1000.0,
+            idle_timeout=None,
+            name="test",
+            shutdown_event=shutdown,
+            on_event=events.append,
+            heartbeat_interval_s=0.01,
+        )
+    finally:
+        thread.join()
+
+    assert reason is OwnerExitReason.SHUTDOWN
+    assert OwnerEvent.SUBSCRIBERS_PRESENT in events
+    assert OwnerEvent.NO_SUBSCRIBERS in events
+    assert OwnerEvent.HEARTBEAT in events
 
 
 def test_disconnect_failure_upgrades_clean_shutdown(monkeypatch: Any) -> None:  # noqa: ANN401

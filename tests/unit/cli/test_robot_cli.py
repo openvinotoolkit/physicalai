@@ -15,10 +15,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from loguru import logger
+
 from physicalai.cli import robot as robot_module
 from physicalai.robot.errors import RobotTransportError
+from physicalai.robot.transport import OwnerEvent, OwnerExitReason, OwnerResult
 from physicalai.robot.transport._lock import acquire_locks
-from physicalai.robot.transport._owner_worker import OwnerExitReason, OwnerResult
 
 from tests.unit.robot.transport.conftest import requires_zenoh
 
@@ -30,6 +32,7 @@ def _serve_cfg(**overrides: object) -> SimpleNamespace:
         "robot_kwargs": {"port": "/dev/fake0"},
         "allow_remote": False,
         "rate_hz": 100.0,
+        "verbose": False,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -38,10 +41,11 @@ def _serve_cfg(**overrides: object) -> SimpleNamespace:
 def test_serve_runs_owner_in_foreground_with_persistent_timeout(capsys: object) -> None:
     captured: dict[str, object] = {}
 
-    def _run_owner(config: object, shutdown: threading.Event, *, ready: object) -> OwnerResult:
+    def _run_owner(config: object, shutdown: threading.Event, *, ready: object, on_event: object) -> OwnerResult:
         captured["config"] = config
         captured["shutdown"] = shutdown
         assert callable(ready)
+        assert callable(on_event)
         ready()
         shutdown.set()
         return OwnerResult(OwnerExitReason.SHUTDOWN, 0)
@@ -55,14 +59,21 @@ def test_serve_runs_owner_in_foreground_with_persistent_timeout(capsys: object) 
     assert config.name == "left-arm"  # type: ignore[attr-defined]
 
 
-def test_signal_requests_runtime_shutdown() -> None:
-    def _run_owner(_config: object, shutdown: threading.Event, *, ready: object) -> OwnerResult:  # noqa: ARG001
+def test_signal_requests_runtime_shutdown(capsys: object) -> None:
+    def _run_owner(  # noqa: ARG001
+        _config: object,
+        shutdown: threading.Event,
+        *,
+        ready: object,
+        on_event: object,
+    ) -> OwnerResult:
         signal.raise_signal(signal.SIGTERM)
         assert shutdown.is_set()
         return OwnerResult(OwnerExitReason.SHUTDOWN, 0)
 
     with patch.object(robot_module, "run_owner", side_effect=_run_owner):
         assert robot_module.serve(_serve_cfg()) == 0
+    assert "Shutdown requested by SIGTERM" in capsys.readouterr().err  # type: ignore[attr-defined]
 
 
 def test_expected_startup_error_is_concise(capsys: object) -> None:
@@ -94,6 +105,68 @@ def test_discovery_json_is_sorted_and_clean(capsys: object) -> None:
     output = capsys.readouterr()  # type: ignore[attr-defined]
     assert output.err == ""
     assert [record["name"] for record in json.loads(output.out)] == ["a-arm", "z-arm"]
+
+
+def test_discovery_human_output_is_table(capsys: object) -> None:
+    records = [
+        {"name": "z-arm", "host": "b", "robot_class": "untrusted.Z", "num_joints": 7},
+        {"name": "a-arm", "host": "a", "robot_class": "untrusted.A", "num_joints": 6},
+    ]
+    cfg = SimpleNamespace(timeout=1.0, allow_remote=False, json=False)
+    with patch.object(robot_module, "discover_robots", return_value=records):
+        assert robot_module.discover(cfg) == 0
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "NAME" in output
+    assert "ROBOT CLASS" in output
+    assert output.index("a-arm") < output.index("z-arm")
+    assert "2 robots found" in output
+
+
+def test_owner_events_are_logged(capsys: object) -> None:
+    def _run_owner(  # noqa: ARG001
+        _config: object,
+        _shutdown: threading.Event,
+        *,
+        ready: object,
+        on_event: object,
+    ) -> OwnerResult:
+        assert callable(ready)
+        assert callable(on_event)
+        ready()
+        on_event(OwnerEvent.SUBSCRIBERS_PRESENT)
+        on_event(OwnerEvent.HEARTBEAT)
+        on_event(OwnerEvent.NO_SUBSCRIBERS)
+        return OwnerResult(OwnerExitReason.SHUTDOWN, 0)
+
+    with patch.object(robot_module, "run_owner", side_effect=_run_owner):
+        assert robot_module.serve(_serve_cfg()) == 0
+
+    stderr = capsys.readouterr().err  # type: ignore[attr-defined]
+    assert "Subscriber(s) connected" in stderr
+    assert "Healthy" in stderr
+    assert "Subscriber(s) connected" in stderr
+    assert "No subscribers remain" in stderr
+
+
+def test_verbose_controls_trace_details(capsys: object) -> None:
+    def _run_owner(  # noqa: ARG001
+        _config: object,
+        _shutdown: threading.Event,
+        *,
+        ready: object,
+        on_event: object,
+    ) -> OwnerResult:
+        logger.trace("startup phase detail")
+        return OwnerResult(OwnerExitReason.SHUTDOWN, 0)
+
+    with patch.object(robot_module, "run_owner", side_effect=_run_owner):
+        assert robot_module.serve(_serve_cfg(verbose=False)) == 0
+    assert "startup phase detail" not in capsys.readouterr().err  # type: ignore[attr-defined]
+
+    with patch.object(robot_module, "run_owner", side_effect=_run_owner):
+        assert robot_module.serve(_serve_cfg(verbose=True)) == 0
+    assert "startup phase detail" in capsys.readouterr().err  # type: ignore[attr-defined]
 
 
 def test_empty_discovery_json_is_array(capsys: object) -> None:

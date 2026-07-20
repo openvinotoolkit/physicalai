@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     from types import FrameType
 
 _MAX_CONSECUTIVE_FAILURES = 5
+_HEARTBEAT_INTERVAL_S = 30.0
 
 shutdown = threading.Event()
 
@@ -77,6 +78,14 @@ class OwnerResult:
 
     reason: OwnerExitReason
     exit_code: int
+
+
+class OwnerEvent(enum.Enum):
+    """Operator-relevant pulse emitted by the owner loop."""
+
+    SUBSCRIBERS_PRESENT = "subscribers_present"
+    NO_SUBSCRIBERS = "no_subscribers"
+    HEARTBEAT = "heartbeat"
 
 
 def sigterm_handler(_signum: int, _frame: FrameType | None) -> None:
@@ -185,6 +194,18 @@ def _build_metadata(
     return metadata
 
 
+def _apply_pending_action(driver: Robot, action_sub: Any, name: str) -> None:  # noqa: ANN401
+    """Apply the newest pending action without letting invalid input stop the owner."""
+    sample = action_sub.try_recv()
+    if sample is None:
+        return
+    try:
+        action, goal_time, _send_ts = decode_action(sample.payload.to_bytes())
+        driver.send_action(action, goal_time=goal_time)
+    except Exception:  # noqa: BLE001
+        logger.warning(f"Failed to apply action for {name}", exc_info=True)
+
+
 def _run_loop(
     driver: Robot,
     state_pub: Any,  # noqa: ANN401
@@ -194,6 +215,8 @@ def _run_loop(
     idle_timeout: float | None,
     name: str,
     shutdown_event: threading.Event,
+    on_event: Callable[[OwnerEvent], None] | None = None,
+    heartbeat_interval_s: float = _HEARTBEAT_INTERVAL_S,
 ) -> OwnerExitReason:
     """Single-threaded write-first owner loop.
 
@@ -211,6 +234,8 @@ def _run_loop(
         idle_timeout: Seconds with zero subscribers before self-exit.
         name: For logging.
         shutdown_event: Event requesting graceful loop termination.
+        on_event: Optional callback for subscriber transitions and heartbeat telemetry.
+        heartbeat_interval_s: Seconds between heartbeat events.
 
     Returns:
         The reason the loop stopped.
@@ -219,17 +244,19 @@ def _run_loop(
     idle_since: float | None = None
     consecutive_failures = 0
     next_tick = time.monotonic()
+    next_heartbeat = next_tick + heartbeat_interval_s
+    subscribers_present = False
+
+    def _emit(event: OwnerEvent) -> None:
+        if on_event is None:
+            return
+        try:
+            on_event(event)
+        except Exception:  # noqa: BLE001
+            logger.warning(f"Owner event callback failed for {name}", exc_info=True)
 
     while not shutdown_event.is_set():
-        sample = action_sub.try_recv()
-        if sample is not None:
-            try:
-                action, goal_time, _send_ts = decode_action(sample.payload.to_bytes())
-                driver.send_action(action, goal_time=goal_time)
-            except Exception:  # noqa: BLE001
-                # A malformed or out-of-range action from one subscriber must
-                # not kill the owner shared by everyone else.
-                logger.warning(f"Failed to apply action for {name}", exc_info=True)
+        _apply_pending_action(driver, action_sub, name)
 
         try:
             obs = driver.get_observation()
@@ -253,13 +280,25 @@ def _run_loop(
         now = time.monotonic()
         # Runtime returns a MatchingStatus object (always truthy); the bool
         # lives on its .matching attribute — the type stub says `-> bool`.
-        if state_pub.matching_status.matching:
+        matching = state_pub.matching_status.matching
+        if matching and not subscribers_present:
+            subscribers_present = True
+            _emit(OwnerEvent.SUBSCRIBERS_PRESENT)
+        elif not matching and subscribers_present:
+            subscribers_present = False
+            _emit(OwnerEvent.NO_SUBSCRIBERS)
+
+        if matching:
             idle_since = None
         elif idle_since is None:
             idle_since = now
         elif idle_timeout is not None and now - idle_since > idle_timeout:
             logger.info(f"No subscribers for {idle_timeout}s -- shutting down owner {name}")
             return OwnerExitReason.IDLE_TIMEOUT
+
+        if now >= next_heartbeat:
+            _emit(OwnerEvent.HEARTBEAT)
+            next_heartbeat = now + heartbeat_interval_s
 
         next_tick += period
         sleep_time = next_tick - time.monotonic()
@@ -299,12 +338,14 @@ def _connect_and_build_metadata(
             raises.
     """
     try:
+        logger.trace(f"Connecting robot driver for {config.name!r}")
         driver.connect()
     except Exception as exc:
         msg = f"driver.connect() failed: {exc}"
         raise _StartupError(msg, phase="connection_failed") from exc
 
     first_obs = driver.get_observation()
+    logger.trace(f"Received initial observation for {config.name!r}")
     metadata = _build_metadata(config, driver, device_ids, state_dim=int(first_obs.state.shape[0]))
     return encode_metadata(metadata)
 
@@ -356,6 +397,7 @@ def _declare_zenoh_endpoints(config: RobotOwnerConfig, metadata_bytes: bytes) ->
         )
         action_sub = session.declare_subscriber(action_key(config.name), zenoh.handlers.RingChannel(1))
         metadata_queryable = session.declare_queryable(metadata_key_expr, _answer_metadata)
+        logger.trace(f"Declared state, action, and metadata endpoints for {config.name!r}")
     except Exception as exc:
         if session is not None:
             with contextlib.suppress(Exception):
@@ -394,6 +436,7 @@ def _startup(config: RobotOwnerConfig) -> _Endpoints:
             via :func:`signal_error`.
     """
     try:
+        logger.trace(f"Constructing robot driver {config.robot_class!r}")
         driver = config.build()
     except Exception as exc:
         msg = f"failed to construct {config.robot_class!r}: {exc}"
@@ -404,6 +447,7 @@ def _startup(config: RobotOwnerConfig) -> _Endpoints:
         raise _StartupError(msg, phase="construction_failed")
 
     device_ids = tuple(sorted(set(driver.device_ids)))
+    logger.trace(f"Acquiring ownership locks for {config.name!r}")
 
     try:
         locks = acquire_locks(config.name, device_ids)
@@ -441,6 +485,7 @@ def run_owner(
     shutdown_event: threading.Event,
     *,
     ready: Callable[[], None] | None = None,
+    on_event: Callable[[OwnerEvent], None] | None = None,
 ) -> OwnerResult:
     """Own a robot driver and its transport endpoints in the current process.
 
@@ -448,6 +493,7 @@ def run_owner(
         config: Validated owner configuration.
         shutdown_event: Event requesting graceful shutdown.
         ready: Optional callback invoked after startup is complete.
+        on_event: Optional callback for operator-facing runtime telemetry.
 
     Returns:
         Structured termination reason and process-compatible exit code.
@@ -472,6 +518,7 @@ def run_owner(
             idle_timeout=config.idle_timeout,
             name=config.name,
             shutdown_event=shutdown_event,
+            on_event=on_event,
         )
         exit_code = 0 if reason in {OwnerExitReason.SHUTDOWN, OwnerExitReason.IDLE_TIMEOUT} else 1
     except Exception:  # noqa: BLE001
@@ -480,15 +527,19 @@ def run_owner(
         shutdown_event.set()
         try:
             endpoints.driver.disconnect()
+            logger.trace(f"Disconnected robot driver for {config.name!r}")
         except Exception:  # noqa: BLE001
             logger.exception(f"driver disconnect failed for {config.name}")
             exit_code = 1
         with contextlib.suppress(Exception):
             endpoints.metadata_queryable.undeclare()
+            logger.trace(f"Undeclared metadata endpoint for {config.name!r}")
         with contextlib.suppress(Exception):
             endpoints.session.close()
+            logger.trace(f"Closed Zenoh session for {config.name!r}")
         with contextlib.suppress(Exception):
             endpoints.locks.release_all()
+            logger.trace(f"Released ownership locks for {config.name!r}")
 
     return OwnerResult(reason=reason, exit_code=exit_code)
 

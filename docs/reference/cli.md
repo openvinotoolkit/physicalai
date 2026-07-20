@@ -40,6 +40,9 @@ Direct CLI arguments use the same names, including nested constructor values suc
 `--robot_kwargs.port /dev/ttyACM0`. Serving stays in the foreground until SIGINT or
 SIGTERM and returns nonzero for startup, loop, repeated-read, or disconnect failures.
 
+Use `--verbose` to include driver construction, lock acquisition, initial observation,
+endpoint declaration, and cleanup details.
+
 `--allow_remote` exposes an unauthenticated physical action endpoint. Use it only on
 an isolated robot-cell VLAN/firewall or with Zenoh ACL/TLS.
 
@@ -49,9 +52,10 @@ an isolated robot-cell VLAN/firewall or with Zenoh ACL/TLS.
 physicalai robot discover [--allow_remote] [--timeout 2] [--json]
 ```
 
-Results are sorted by robot name and host. Human output includes name, class, host,
-and joint count. JSON mode writes exactly one array to stdout; empty discovery is
-successful and writes `[]`.
+Results are sorted by robot name and host. Human output is an ASCII table containing
+name, class, host, and joint count, followed by the result count and elapsed discovery
+time. JSON mode writes exactly one array to stdout; empty discovery is successful and
+writes `[]`.
 
 ## Shell Completion
 

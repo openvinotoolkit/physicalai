@@ -10,17 +10,25 @@ import math
 import signal
 import sys
 import threading
+import time
 from typing import TYPE_CHECKING
 
 from jsonargparse import ActionConfigFile, ArgumentParser
+from loguru import logger
 
 from physicalai.cli._spec import SubcommandSpec  # noqa: PLC2701
 from physicalai.robot.errors import RobotTransportError
-from physicalai.robot.transport import discover_robots
-from physicalai.robot.transport._owner_config import DEFAULT_RATE_HZ, RobotOwnerConfig  # noqa: PLC2701
-from physicalai.robot.transport._owner_worker import run_owner  # noqa: PLC2701
+from physicalai.robot.transport import (
+    DEFAULT_RATE_HZ,
+    OwnerEvent,
+    RobotOwnerConfig,
+    discover_robots,
+    run_owner,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from jsonargparse import Namespace
 
 HELP = "Serve or discover shared robots over Zenoh."
@@ -59,6 +67,7 @@ def _build_serve_parser() -> ArgumentParser:
         ),
     )
     parser.add_argument("--rate_hz", type=float, default=DEFAULT_RATE_HZ, help="Owner loop rate in Hz.")
+    parser.add_argument("--verbose", action="store_true", default=False, help="Show startup and cleanup details.")
     return parser
 
 
@@ -95,12 +104,55 @@ def print_help(prog: str) -> None:
     )
 
 
+def _configure_serve_logging(*, verbose: bool) -> None:
+    """Configure concise process-wide Loguru output for foreground serving."""
+    logger.remove()
+    logger.add(
+        sys.stderr,
+        level="TRACE" if verbose else "INFO",
+        format="<green>{time:HH:mm:ss}</green>  <level>{level: <8}</level> {message}",
+        colorize=sys.stderr.isatty(),
+    )
+
+
+def _format_duration(seconds: float) -> str:
+    """Format elapsed seconds as ``HH:MM:SS``.
+
+    Returns:
+        The formatted duration.
+    """
+    total_seconds = max(0, int(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def _format_table(headers: tuple[str, ...], rows: Sequence[tuple[str, ...]], *, right_align: set[int]) -> str:
+    """Render a compact dependency-free ASCII table.
+
+    Returns:
+        The rendered table.
+    """
+    widths = [max(len(header), *(len(row[index]) for row in rows)) for index, header in enumerate(headers)]
+
+    def _row(values: tuple[str, ...]) -> str:
+        cells = [
+            value.rjust(widths[index]) if index in right_align else value.ljust(widths[index])
+            for index, value in enumerate(values)
+        ]
+        return "  ".join(cells).rstrip()
+
+    separator = "  ".join("-" * width for width in widths)
+    return "\n".join([_row(headers), separator, *(_row(row) for row in rows)])
+
+
 def serve(cfg: Namespace) -> int:
     """Serve one robot in the current foreground process.
 
     Returns:
         The owner runtime exit code, or 1 for an expected startup failure.
     """
+    _configure_serve_logging(verbose=cfg.verbose)
     try:
         config = RobotOwnerConfig(
             name=cfg.name,
@@ -111,28 +163,55 @@ def serve(cfg: Namespace) -> int:
             idle_timeout=None,
         )
     except (TypeError, ValueError) as exc:
-        sys.stderr.write(f"Invalid robot configuration: {exc}\n")
+        logger.error(f"Invalid robot configuration: {exc}")
         return 1
 
     shutdown = threading.Event()
+    ready_at: float | None = None
+    subscribers_present = False
+    received_signum: int | None = None
 
-    def _handle_signal(_signum: int, _frame: object) -> None:
+    def _handle_signal(signum: int, _frame: object) -> None:
+        nonlocal received_signum
+        received_signum = signum
         shutdown.set()
 
     def _ready() -> None:
-        scope = "remote" if config.allow_remote else "local-only"
-        sys.stderr.write(f"Serving robot {config.name!r} ({scope}).\n")
-        sys.stderr.flush()
+        nonlocal ready_at
+        ready_at = time.monotonic()
+        logger.success(f"Serving robot {config.name!r} · {config.rate_hz:g} Hz")
 
+    def _on_event(event: OwnerEvent) -> None:
+        nonlocal subscribers_present
+        if event is OwnerEvent.SUBSCRIBERS_PRESENT:
+            subscribers_present = True
+            logger.info("Subscriber(s) connected")
+        elif event is OwnerEvent.NO_SUBSCRIBERS:
+            subscribers_present = False
+            logger.info("No subscribers remain")
+        elif event is OwnerEvent.HEARTBEAT:
+            uptime_s = 0.0 if ready_at is None else time.monotonic() - ready_at
+            status = "subscriber(s) connected" if subscribers_present else "no subscribers"
+            logger.info(f"Healthy · uptime {_format_duration(uptime_s)} · {status}")
+
+    logger.info(f"Starting robot {config.name!r} using {config.robot_class}")
     previous_sigterm = signal.signal(signal.SIGTERM, _handle_signal)
     previous_sigint = signal.signal(signal.SIGINT, _handle_signal)
     try:
         try:
-            return run_owner(config, shutdown, ready=_ready).exit_code
+            result = run_owner(config, shutdown, ready=_ready, on_event=_on_event)
         except RobotTransportError as exc:
             phase = f" during {exc.phase}" if exc.phase else ""
-            sys.stderr.write(f"Failed to start robot owner{phase}: {exc}\n")
+            logger.error(f"Failed to start robot owner{phase}: {exc}")
             return 1
+        else:
+            if received_signum is not None:
+                logger.info(f"Shutdown requested by {signal.Signals(received_signum).name}")
+            if result.exit_code == 0:
+                logger.success(f"Robot {config.name!r} disconnected safely")
+            else:
+                logger.error(f"Robot {config.name!r} stopped with reason {result.reason.value}")
+            return result.exit_code
     finally:
         signal.signal(signal.SIGTERM, previous_sigterm)
         signal.signal(signal.SIGINT, previous_sigint)
@@ -148,6 +227,7 @@ def discover(cfg: Namespace) -> int:
         sys.stderr.write(f"timeout must be finite and greater than zero, got {cfg.timeout!r}\n")
         return 1
 
+    started_at = time.monotonic()
     robots = sorted(
         discover_robots(timeout=cfg.timeout, allow_remote=cfg.allow_remote),
         key=lambda robot: (str(robot.get("name", "")), str(robot.get("host", ""))),
@@ -156,13 +236,21 @@ def discover(cfg: Namespace) -> int:
         sys.stdout.write(json.dumps(robots) + "\n")
         return 0
     if not robots:
-        print("No robots discovered.")  # noqa: T201
+        print(f"No robots discovered in {time.monotonic() - started_at:.1f}s.")  # noqa: T201
         return 0
-    for robot in robots:
-        print(  # noqa: T201
-            f"{robot.get('name', '?')}\t{robot.get('robot_class', '?')}\t"
-            f"host={robot.get('host', '?')}\tjoints={robot.get('num_joints', '?')}",
+    headers = ("NAME", "ROBOT CLASS", "HOST", "JOINTS")
+    rows = [
+        (
+            str(robot.get("name", "?")),
+            str(robot.get("robot_class", "?")),
+            str(robot.get("host", "?")),
+            str(robot.get("num_joints", "?")),
         )
+        for robot in robots
+    ]
+    print(_format_table(headers, rows, right_align={3}))  # noqa: T201
+    noun = "robot" if len(robots) == 1 else "robots"
+    print(f"\n{len(robots)} {noun} found in {time.monotonic() - started_at:.1f}s")  # noqa: T201
     return 0
 
 

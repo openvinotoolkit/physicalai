@@ -54,8 +54,10 @@ robot lifecycle:
 physicalai robot serve --config examples/so101/serve.yaml
 ```
 
-The command constructs and connects the driver in its own foreground process. The command does not daemonize; use your service manager for
-background supervision.
+The command constructs and connects the driver in its own foreground process. Normal
+output reports readiness, state-subscriber presence changes, a health summary every
+30 seconds, and clean shutdown. Add `--verbose` for startup and cleanup details. The
+command does not daemonize; use your service manager for background supervision.
 
 List reachable owners without importing their advertised driver class:
 
@@ -65,8 +67,9 @@ physicalai robot discover --json
 physicalai robot discover --allow_remote
 ```
 
-Discovery is local-only unless `--allow_remote` is explicit. JSON mode writes one
-sorted array to stdout, including `[]` when no robot answers.
+Discovery is local-only unless `--allow_remote` is explicit. Human output is a sorted
+ASCII table. JSON mode writes one sorted array to stdout, including `[]` when no robot
+answers.
 
 Notes:
 
