@@ -102,6 +102,8 @@ def _read_live_name_diagnostics(path: Path) -> dict[str, object] | None:
     if not isinstance(pid, int) or pid <= 0:
         return None
     try:
+        # Signal 0 sends nothing; the kernel only validates that pid exists
+        # and is signalable by us, giving a liveness check with no side effect.
         os.kill(pid, 0)
     except OSError:
         return None
