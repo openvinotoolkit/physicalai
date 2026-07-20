@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Long-lived remote client for shared robot discovery and attachment."""
+"""Long-lived client for shared robot discovery and attachment."""
 
 from __future__ import annotations
 
@@ -19,26 +19,20 @@ _RETRY_INTERVAL = 0.2
 
 
 class SharedRobotClient:
-    """Manage one reusable remote Zenoh session for shared robot clients.
+    """Manage one reusable Zenoh session for shared robot clients.
 
     The client is attach-only: it never constructs a hardware driver or
     starts an owner process. Its session remains open across discovery and
     attached robots, avoiding repeat scouting after the first remote call.
 
     Args:
-        allow_remote: Must be ``True`` to acknowledge the trusted-network
-            transport boundary.
+        allow_remote: Whether the shared session can discover and attach to
+            owners beyond localhost. Defaults to ``False``.
     """
 
     def __init__(self, *, allow_remote: bool = False) -> None:
-        """Create a remote shared-robot client without opening a session yet.
-
-        Raises:
-            ValueError: If remote transport was not explicitly enabled.
-        """
-        if not allow_remote:
-            msg = "SharedRobotClient requires allow_remote=True"
-            raise ValueError(msg)
+        """Create a shared-robot client without opening a session yet."""
+        self._allow_remote = allow_remote
         self._session: Any = None
         self._robots: list[SharedRobot] = []
         self._closed = False
@@ -98,7 +92,7 @@ class SharedRobotClient:
         """
         robot = SharedRobot.attach(
             name,
-            allow_remote=True,
+            allow_remote=self._allow_remote,
             connect_timeout=connect_timeout,
             _session=self._get_session(),
         )
@@ -121,7 +115,7 @@ class SharedRobotClient:
     def _get_session(self) -> Any:  # noqa: ANN401
         self._require_open()
         if self._session is None:
-            self._session = open_session(allow_remote=True)
+            self._session = open_session(allow_remote=self._allow_remote)
         return self._session
 
     def _require_open(self) -> None:

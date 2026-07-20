@@ -42,6 +42,7 @@ from scservo_sdk import (
 )
 
 from physicalai.robot import Robot
+from physicalai.robot.device_ids import device_id_from_serial_port
 from physicalai.robot.so101.calibration import SO101Calibration
 from physicalai.robot.so101.constants import (
     MAX_SPEED_DEG_S,
@@ -212,8 +213,7 @@ class SO101(Robot):
     @property
     def device_ids(self) -> tuple[str, ...]:
         """Symlink-resolved serial device id, e.g. ``("serial:ttyUSB0",)``."""
-        name = Path(self._port).resolve().name if self._port.startswith("/dev/") else Path(self._port).name
-        return (f"serial:{name}",)
+        return (device_id_from_serial_port(self._port),)
 
     @property
     def port(self) -> str:
