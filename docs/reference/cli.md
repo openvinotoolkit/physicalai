@@ -28,6 +28,31 @@ with runtime:
     runtime.run(duration_s=60)
 ```
 
+## `physicalai robot serve`
+
+```bash
+physicalai robot serve --config examples/so101/serve.yaml
+```
+
+The flat YAML fields are `name`, `robot_class`, optional `robot_kwargs`, optional
+`allow_remote` (default `false`), and optional positive `rate_hz` (default 100 Hz).
+Direct CLI arguments use the same names, including nested constructor values such as
+`--robot_kwargs.port /dev/ttyACM0`. Serving stays in the foreground until SIGINT or
+SIGTERM and returns nonzero for startup, loop, repeated-read, or disconnect failures.
+
+`--allow_remote` exposes an unauthenticated physical action endpoint. Use it only on
+an isolated robot-cell VLAN/firewall or with Zenoh ACL/TLS.
+
+## `physicalai robot discover`
+
+```bash
+physicalai robot discover [--allow_remote] [--timeout 2] [--json]
+```
+
+Results are sorted by robot name and host. Human output includes name, class, host,
+and joint count. JSON mode writes exactly one array to stdout; empty discovery is
+successful and writes `[]`.
+
 ## Shell Completion
 
 Shell completion scripts can be printed directly from the CLI and sourced in

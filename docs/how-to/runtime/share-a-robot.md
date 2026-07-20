@@ -45,6 +45,29 @@ or the path itself, e.g. `robot_class="physicalai.robot.so101.SO101"` — any
 importable class works, including third-party plugin robots, with no
 registry to update.
 
+## Serve a robot in the foreground
+
+Use the operator command when a shell, systemd, Docker, or Kubernetes should own the
+robot lifecycle:
+
+```bash
+physicalai robot serve --config examples/so101/serve.yaml
+```
+
+The command constructs and connects the driver in its own foreground process. The command does not daemonize; use your service manager for
+background supervision.
+
+List reachable owners without importing their advertised driver class:
+
+```bash
+physicalai robot discover
+physicalai robot discover --json
+physicalai robot discover --allow_remote
+```
+
+Discovery is local-only unless `--allow_remote` is explicit. JSON mode writes one
+sorted array to stdout, including `[]` when no robot answers.
+
 Notes:
 
 - `get_observation()` returns the newest owner-published state; if no new
@@ -168,6 +191,8 @@ wire contract.
 - When the last subscriber disconnects (cleanly or by crashing), the owner
   waits `idle_timeout` seconds, then calls the driver's `disconnect()` —
   honoring the safe-state contract (hold/home) — and exits.
+- An explicit `physicalai robot serve` owner has no idle timeout. It remains in the
+  foreground until interrupted or until the owner loop fails.
 - A subscriber's `disconnect()` never stops the robot's motors; the owner
   owns safe-state.
 - Subscribers reject an owner advertising an unsupported transport

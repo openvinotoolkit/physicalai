@@ -30,9 +30,11 @@ source <(pai completion zsh)
 
 ## Runtime Commands
 
-| Command          | Purpose                                                         |
-| ---------------- | --------------------------------------------------------------- |
-| `physicalai run` | Runs a trained policy (or any action source) on robot hardware. |
+| Command                     | Purpose                                                         |
+| --------------------------- | --------------------------------------------------------------- |
+| `physicalai run`            | Runs a trained policy (or any action source) on robot hardware. |
+| `physicalai robot serve`    | Serves one shared robot from a foreground owner process.        |
+| `physicalai robot discover` | Lists reachable shared-robot owners.                            |
 
 ## Training Commands
 

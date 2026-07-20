@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 
 from jsonargparse import ArgumentParser
 
+from physicalai.cli import robot as robot_cmd
 from physicalai.cli import run as run_cmd
 from physicalai.cli._discovery import discover_subcommands  # noqa: PLC2701
 from physicalai.cli._spec import SubcommandSpec  # noqa: PLC2701
@@ -45,10 +46,12 @@ logger = logging.getLogger(__name__)
 # ``--help`` listing never has to build (or import) a parser.
 _BUILTINS: dict[str, Callable[[], SubcommandSpec]] = {
     "run": run_cmd.register,
+    "robot": robot_cmd.register,
 }
 _BUILTIN_HELP: dict[str, str] = {
     "completion": "Print a shell completion script.",
     "run": run_cmd.HELP,
+    "robot": robot_cmd.HELP,
 }
 _COMPLETION_SHELLS = frozenset({"bash", "zsh", "fish"})
 _HELP_FLAGS = frozenset({"-h", "--help"})
@@ -97,8 +100,8 @@ def _load_subcommand_module(name: str, entry_points: dict[str, EntryPoint]) -> M
     Returns:
         Imported subcommand module when available, otherwise ``None``.
     """
-    if name == "run":
-        return run_cmd
+    if name in _BUILTINS:
+        return sys.modules.get(_BUILTINS[name].__module__)
 
     try:
         register = entry_points[name].load()
@@ -126,6 +129,11 @@ def _print_fast_help(name: str, entry_points: dict[str, EntryPoint], prog: str) 
 def _is_help_request(argv: Sequence[str]) -> bool:
     """Return whether ``argv`` asks for subcommand help."""
     return any(token in _HELP_FLAGS for token in argv)
+
+
+def _is_direct_help_request(argv: Sequence[str]) -> bool:
+    """Return whether arguments request help for the selected command itself."""
+    return bool(argv) and all(token in _HELP_FLAGS for token in argv)
 
 
 def _ep_help(ep: EntryPoint) -> str:
@@ -284,7 +292,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if selected_name == "completion":
         return _print_completion(sub_argv, entry_points, prog)
 
-    if _is_help_request(sub_argv) and _print_fast_help(selected_name, entry_points, prog):
+    if _is_direct_help_request(sub_argv) and _print_fast_help(selected_name, entry_points, prog):
         return 0
 
     spec = _load_spec(selected_name, entry_points)

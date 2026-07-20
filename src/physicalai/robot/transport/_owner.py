@@ -38,6 +38,7 @@ class RobotOwner:
     def __init__(self, config: RobotOwnerConfig) -> None:
         self._config = config
         self._process: subprocess.Popen[bytes] | None = None
+        self._exit_code: int | None = None
 
     def start(self, timeout: float = _DEFAULT_START_TIMEOUT) -> None:
         """Start the owner subprocess and wait for the READY handshake.
@@ -60,6 +61,7 @@ class RobotOwner:
         """
         if self.is_alive:
             return
+        self._exit_code = None
 
         # B603 suppressed: the argv list is static — sys.executable (the
         # active interpreter) plus a hardcoded internal module path.
@@ -129,8 +131,11 @@ class RobotOwner:
             timeout: Maximum seconds to wait for graceful shutdown.
         """
         proc = self._process
-        if proc is None or proc.poll() is not None:
-            self._process = None
+        if proc is None:
+            return
+
+        if proc.poll() is not None:
+            self._exit_code = proc.returncode
             return
 
         proc.terminate()
@@ -141,7 +146,24 @@ class RobotOwner:
             proc.kill()
             proc.wait(timeout=1)
 
-        self._process = None
+        self._exit_code = proc.returncode
+
+    def wait(self) -> int:
+        """Wait for the owner to exit and return its retained exit code.
+
+        Returns:
+            The worker process exit code.
+
+        Raises:
+            RuntimeError: If the owner has never been started.
+        """
+        if self._process is None:
+            if self._exit_code is None:
+                msg = "cannot wait for robot owner before start"
+                raise RuntimeError(msg)
+            return self._exit_code
+        self._exit_code = self._process.wait()
+        return self._exit_code
 
     @property
     def is_alive(self) -> bool:

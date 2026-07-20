@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
@@ -53,12 +54,19 @@ class FakeRobot:
         device_ids: tuple[str, ...] | None = None,
         fail_connect: bool = False,
         fail_observation: bool = False,
+        fail_observation_after: int | None = None,
+        fail_disconnect: bool = False,
+        disconnect_marker: str | None = None,
         **_ignored: object,
     ) -> None:
         self._port = port
         self._device_ids = device_ids if device_ids is not None else (f"fake:{port}",)
         self._fail_connect = fail_connect
         self._fail_observation = fail_observation
+        self._fail_observation_after = fail_observation_after
+        self._fail_disconnect = fail_disconnect
+        self._disconnect_marker = disconnect_marker
+        self._observation_calls = 0
         self._connected = False
         self._last_action = np.zeros(NUM_JOINTS, dtype=np.float32)
         self.disconnect_called = False
@@ -80,12 +88,20 @@ class FakeRobot:
     def disconnect(self) -> None:
         self.disconnect_called = True
         self._connected = False
+        if self._disconnect_marker is not None:
+            Path(self._disconnect_marker).touch()
+        if self._fail_disconnect:
+            msg = f"fake disconnect failure on {self._port}"
+            raise RuntimeError(msg)
 
     def get_observation(self) -> FakeObservation:
         if not self._connected:
             msg = "Robot is not connected. Call connect() first."
             raise ConnectionError(msg)
-        if self._fail_observation:
+        self._observation_calls += 1
+        if self._fail_observation or (
+            self._fail_observation_after is not None and self._observation_calls > self._fail_observation_after
+        ):
             msg = f"fake observation failure on {self._port}"
             raise RuntimeError(msg)
         # Echo the last commanded action as measured position so tests can

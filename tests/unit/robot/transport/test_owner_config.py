@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import pickle
 import sys
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -64,6 +65,30 @@ class TestRobotOwnerConfig:
         assert config.allow_remote is False
         assert config.rate_hz == 100.0
         assert config.idle_timeout == 10.0
+
+    def test_persistent_idle_timeout_json_roundtrip(self) -> None:
+        config = RobotOwnerConfig(name="left-arm", robot_class="pkg.mod.Cls", idle_timeout=None)
+        restored = RobotOwnerConfig.from_json_dict(json.loads(json.dumps(config.to_json_dict())))
+        assert restored == config
+        assert restored.idle_timeout is None
+
+    def test_invalid_name_raises(self) -> None:
+        with pytest.raises(ValueError, match="invalid robot name"):
+            RobotOwnerConfig(name="left/arm", robot_class="pkg.mod.Cls")
+
+    @pytest.mark.parametrize("rate_hz", [float("nan"), True, "100"])
+    def test_invalid_rate_types_raise(self, rate_hz: object) -> None:
+        with pytest.raises(ValueError, match="rate_hz must be finite"):
+            RobotOwnerConfig(name="left-arm", robot_class="pkg.mod.Cls", rate_hz=rate_hz)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("idle_timeout", [0.0, -1.0, float("inf"), float("nan"), True, "10"])
+    def test_invalid_idle_timeout_raises(self, idle_timeout: object) -> None:
+        with pytest.raises(ValueError, match="idle_timeout must be finite"):
+            RobotOwnerConfig(
+                name="left-arm",
+                robot_class="pkg.mod.Cls",
+                idle_timeout=cast(Any, idle_timeout),
+            )
 
     def test_zero_rate_raises(self) -> None:
         with pytest.raises(ValueError, match="rate_hz must be finite"):

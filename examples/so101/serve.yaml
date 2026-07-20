@@ -1,0 +1,14 @@
+# Example config for `physicalai robot serve --config examples/so101/serve.yaml`.
+#
+# Replace `port` and `calibration` with the values for your machine before
+# running. See docs/how-to/runtime/share-a-robot.md for the full host A /
+# host B walkthrough (serve on the host with the physical robot attached,
+# attach from anywhere else with a `SharedRobot` runtime config).
+name: follower-arm
+robot_class: physicalai.robot.SO101
+robot_kwargs:
+  port: /dev/ttyACM0
+  calibration: /path/to/so101-calibration.json
+  role: follower
+allow_remote: false
+rate_hz: 100.0
