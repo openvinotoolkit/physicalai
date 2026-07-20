@@ -30,6 +30,14 @@ field, or semantic change. Do **not** bump it for additive optional
 fields, internal refactors, robot-driver changes, or package releases that
 preserve wire compatibility.
 """
+_MAX_PAYLOAD_BYTES = 1024 * 1024
+"""Upper bound on a single encoded record.
+
+The richest realistic record (bimanual state: 14-dim ``joint_positions`` +
+28-dim ``state`` + a few ``sensor_data`` arrays) is on the order of a few
+KB. 1 MiB leaves generous headroom for future growth while still rejecting
+a corrupted or hostile payload before any unpacking work is spent on it.
+"""
 
 
 def _encode_numpy(array: np.ndarray) -> dict[str, Any]:
@@ -70,6 +78,10 @@ def _pack_payload(payload: dict[str, Any]) -> bytes:
 
 def _unpack_payload(data: bytes) -> dict[str, Any]:
     import msgpack  # noqa: PLC0415
+
+    if len(data) > _MAX_PAYLOAD_BYTES:
+        msg = f"Robot transport payload of {len(data)} bytes exceeds the {_MAX_PAYLOAD_BYTES}-byte limit"
+        raise ValueError(msg)
 
     payload = _decode_payload(msgpack.unpackb(data, raw=False))
     if not isinstance(payload, dict):

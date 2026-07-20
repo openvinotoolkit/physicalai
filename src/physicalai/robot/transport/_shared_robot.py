@@ -478,8 +478,15 @@ class SharedRobot:
         while time.monotonic() < deadline:
             sample = self._state_sub.try_recv()
             if sample is not None:
-                self._latest = decode_state(sample.payload.to_bytes())
-                return
+                try:
+                    self._latest = decode_state(sample.payload.to_bytes())
+                except Exception:  # noqa: BLE001
+                    # A malformed sample from a corrupted or incompatible
+                    # owner must not abort attach -- keep waiting for a
+                    # good one until the deadline.
+                    logger.warning(f"Failed to decode state for {self._name!r}", exc_info=True)
+                else:
+                    return
             time.sleep(0.005)
 
         msg = f"no state received from owner of {self._name!r} within {_FIRST_STATE_TIMEOUT:.1f}s"
@@ -506,7 +513,13 @@ class SharedRobot:
         # resumes on current state, never a backlog of stale samples.
         sample = self._state_sub.try_recv()
         if sample is not None:
-            self._latest = decode_state(sample.payload.to_bytes())
+            try:
+                self._latest = decode_state(sample.payload.to_bytes())
+            except Exception:  # noqa: BLE001
+                # A malformed sample must not crash the caller (e.g. a
+                # PolicyRuntime control loop) -- fall back to the last
+                # known-good state instead.
+                logger.warning(f"Failed to decode state for {self._name!r}", exc_info=True)
 
         if self._latest is None:
             msg = "SharedRobot has no cached state. Call connect() first."
