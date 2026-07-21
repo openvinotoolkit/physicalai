@@ -116,17 +116,18 @@ def _read_live_name_diagnostics(path: Path) -> dict[str, object] | None:
         fd = os.open(path, os.O_RDWR)
     except OSError:
         return None
+    held = False
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         # Acquired the lock — no process is currently holding it.
         with contextlib.suppress(OSError):
             fcntl.flock(fd, fcntl.LOCK_UN)
-        return None
     except OSError:
         # Could not acquire — some process holds the lock; this is a live owner.
-        return diagnostics
+        held = True
     finally:
         os.close(fd)
+    return diagnostics if held else None
 
 
 def _active_owner_name(path: Path) -> str | None:
