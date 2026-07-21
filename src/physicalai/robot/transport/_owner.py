@@ -136,6 +136,7 @@ class RobotOwner:
 
         if proc.poll() is not None:
             self._exit_code = proc.returncode
+            self._process = None
             return
 
         proc.terminate()
@@ -147,6 +148,7 @@ class RobotOwner:
             proc.wait(timeout=1)
 
         self._exit_code = proc.returncode
+        self._process = None
 
     def wait(self) -> int:
         """Wait for the owner to exit and return its retained exit code.

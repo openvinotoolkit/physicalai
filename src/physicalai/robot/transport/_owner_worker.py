@@ -528,8 +528,9 @@ def run_owner(
         try:
             endpoints.driver.disconnect()
             logger.trace(f"Disconnected robot driver for {config.name!r}")
-        except Exception:  # noqa: BLE001
-            logger.exception(f"driver disconnect failed for {config.name}")
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"driver disconnect failed for {config.name}: {exc}")
+            logger.opt(exception=True).trace("driver disconnect traceback")
             exit_code = 1
         with contextlib.suppress(Exception):
             endpoints.metadata_queryable.undeclare()

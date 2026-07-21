@@ -54,7 +54,7 @@ def _build_serve_parser() -> ArgumentParser:
     parser.add_argument(
         "--robot_kwargs",
         type=dict,
-        default={},
+        default=None,
         help="JSON-serializable driver constructor arguments.",
     )
     parser.add_argument(
