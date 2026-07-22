@@ -18,13 +18,15 @@ cannot share third-party drivers cleanly.
 ## Proposal
 
 ```text
-@export_config  →  remember supplied __init__ args
+@export_config / @export_config(class_path=...)  →  remember supplied __init__ args
 to_config(live) →  {class_path, init_args}   # ComponentConfig
 instantiate(cfg)→  fresh disconnected instance
+to_config_value() → domain arg → plain JSON inside init_args
 ```
 
 Same shape as existing jsonargparse configs. Protocols (`Robot`, `Camera`, …) stay
 behavior-only. Transport settings (`name`, `service_name`, rates) stay in envelopes.
+Studio needs only `is_config_exportable` + `to_config`.
 
 ```mermaid
 flowchart LR

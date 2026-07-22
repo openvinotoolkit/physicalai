@@ -41,6 +41,7 @@ from scservo_sdk import (
     PortHandler,
 )
 
+from physicalai.config import export_config
 from physicalai.robot import Robot
 from physicalai.robot.device_ids import device_id_from_serial_port
 from physicalai.robot.so101.calibration import SO101Calibration
@@ -93,6 +94,7 @@ class SO101Observation:
         return self.joint_positions
 
 
+@export_config(class_path="physicalai.robot.SO101")
 class SO101(Robot):
     """Driver for the SO-101 robot arm (6-DOF, Feetech STS3215 servos).
 

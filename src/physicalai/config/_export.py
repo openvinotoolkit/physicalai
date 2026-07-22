@@ -7,19 +7,17 @@ from __future__ import annotations
 
 import functools
 import inspect
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar, overload
 
 from ._errors import ComponentConfigError
 from ._normalize import (
     normalize_value,
     snapshot_captured_value,
-    validate_component_config,
 )
 from ._path import format_path
 from ._types import (
     _CAPTURED_INIT_ARGS_ATTR,
     _CONFIG_CLASS_PATH_ATTR,
-    _CONFIG_HOOK_NAME,
     _EXPORT_DEPTH_ATTR,
     _EXPORT_MARKER_ATTR,
     _MAX_CONFIG_DEPTH,
@@ -28,6 +26,9 @@ from ._types import (
 )
 from .importing import import_dotted_path
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 _T = TypeVar("_T", bound=type)
 
 
@@ -35,27 +36,53 @@ def _has_export_marker(obj: object) -> bool:
     return bool(getattr(obj, _EXPORT_MARKER_ATTR, False))
 
 
-def _has_config_hook(value: object) -> bool:
-    hook = getattr(value, _CONFIG_HOOK_NAME, None)
-    return callable(hook)
+def _encode_domain_value(value: object) -> tuple[JsonValue] | None:
+    """Encode a domain value via ``to_config_value()`` if present.
+
+    The returned payload is further normalized by :func:`normalize_value`
+    (non-finite floats, reserved ``class_path`` maps, depth/cycles, nested
+    codecs). Absence of a callable ``to_config_value`` means *no codec*.
+    Returning JSON ``null`` (``None``) from the method is a real payload —
+    wrap it in a 1-tuple here so it is distinct from “no codec”.
+
+    Returns:
+        ``(payload,)`` when a codec applies (``payload`` may be ``None``), or
+        ``None`` when the value has no domain encoder.
+    """
+    encode = getattr(value, "to_config_value", None)
+    if not callable(encode):
+        return None
+    return (encode(),)  # type: ignore[return-value]
 
 
 def is_config_exportable(value: object) -> bool:
     """Return whether *value* can export a :class:`ComponentConfig`.
 
     A value is exportable if and only if its most-derived class's effective
-    ``__init__`` carries the ``@export_config`` marker, or the instance
-    provides a callable ``__component_config__`` hook.
+    ``__init__`` carries the ``@export_config`` marker.
     """
-    if _has_config_hook(value):
-        return True
     init = type(value).__init__
     return _has_export_marker(init)
 
 
+def _class_path_override(cls: type) -> str | None:
+    """Return ``class_path=`` only when *cls* owns the decorated ``__init__``.
+
+    Subclasses that inherit a decorated constructor unchanged must not inherit
+    the base's public-path override; they export ``__module__.__qualname__``
+    unless they re-decorate with their own ``class_path=``.
+    """
+    owned_init = cls.__dict__.get("__init__")
+    if owned_init is None:
+        return None
+    explicit = getattr(owned_init, _CONFIG_CLASS_PATH_ATTR, None)
+    if isinstance(explicit, str) and explicit:
+        return explicit
+    return None
+
+
 def _resolve_public_class_path(cls: type) -> str:
-    explicit = getattr(cls, _CONFIG_CLASS_PATH_ATTR, None)
-    path = explicit if isinstance(explicit, str) and explicit else f"{cls.__module__}.{cls.__qualname__}"
+    path = _class_path_override(cls) or f"{cls.__module__}.{cls.__qualname__}"
 
     if "<locals>" in cls.__qualname__:
         msg = f"local class {path!r} cannot export a stable class_path"
@@ -74,10 +101,7 @@ def _resolve_public_class_path(cls: type) -> str:
 
 def _component_path_prefix(value: object) -> str:
     cls = type(value)
-    explicit = getattr(cls, _CONFIG_CLASS_PATH_ATTR, None)
-    if isinstance(explicit, str) and explicit:
-        return explicit
-    return f"{cls.__module__}.{cls.__qualname__}"
+    return _class_path_override(cls) or f"{cls.__module__}.{cls.__qualname__}"
 
 
 def _arg_path(prefix: str, class_path: str, key: str) -> str:
@@ -95,9 +119,12 @@ def to_config(
 ) -> ComponentConfig:
     """Export an opted-in live component as JSON-safe ``class_path`` + ``init_args``.
 
+    Nested constructor values may be components (``@export_config``) or domain
+    values with :meth:`~ConfigValue.to_config_value` (re-normalized; absence of
+    the method means no codec; a returned ``None`` is JSON null).
+
     Args:
-        value: An instance whose class uses ``@export_config``, or which
-            implements ``__component_config__``.
+        value: An instance whose class uses ``@export_config``.
 
     Returns:
         A :class:`ComponentConfig` describing the object as constructed.
@@ -112,29 +139,10 @@ def to_config(
 
     seen = _seen if _seen is not None else set()
 
-    if _has_config_hook(value):
-        hook = getattr(value, _CONFIG_HOOK_NAME)
-        raw = hook()
-        path_prefix = _path or _component_path_prefix(value)
-        validated = validate_component_config(raw, path=path_prefix)
-        normalized_args: dict[str, JsonValue] = {
-            key: normalize_value(
-                item,
-                path=_arg_path(_path, validated["class_path"], key),
-                depth=_depth + 1,
-                seen=seen,
-                to_config=to_config,
-                is_exportable=is_config_exportable,
-            )
-            for key, item in validated["init_args"].items()
-        }
-        return {"class_path": validated["class_path"], "init_args": normalized_args}
-
     if not _has_export_marker(type(value).__init__):
         msg = (
             f"{_path or _component_path_prefix(value)}: not config-exportable; "
-            "decorate the concrete class with @export_config or implement "
-            "__component_config__"
+            "decorate the concrete class with @export_config"
         )
         raise ComponentConfigError(msg)
 
@@ -156,6 +164,7 @@ def to_config(
             seen=seen,
             to_config=to_config,
             is_exportable=is_config_exportable,
+            domain_codec=_encode_domain_value,
         )
     return {"class_path": class_path, "init_args": init_args}
 
@@ -184,34 +193,7 @@ def _validate_replayable_signature(cls: type, signature: inspect.Signature) -> N
             raise TypeError(msg)
 
 
-def export_config(cls: _T) -> _T:
-    """Opt a concrete class into constructor-config export via :func:`to_config`.
-
-    Remembers caller-supplied ``__init__`` arguments (not defaults). Rejects
-    constructors that declare positional-only parameters or ``*args``. Injects
-    an instance ``to_config()`` convenience method; library code should still
-    call the module-level :func:`to_config`.
-
-    Inheritance:
-
-    - Decorate every concrete class that **overrides** ``__init__``.
-    - An undecorated overriding ``__init__`` fails at :func:`to_config` (partial
-      base recipes are not emitted).
-    - A subclass that inherits a decorated constructor unchanged remains valid
-      without re-decorating.
-    - Do not apply ``@export_config`` to a subclass that does not define its
-      own ``__init__`` (that would double-wrap the inherited wrapper).
-
-    Args:
-        cls: Class to decorate. Must define ``__init__`` in its own class body.
-
-    Returns:
-        The same class with a wrapped ``__init__``.
-
-    Raises:
-        TypeError: If *cls* is not a type, has no own ``__init__``, or its
-            ``__init__`` is not replayable.
-    """
+def _decorate_export_config(cls: _T, *, class_path: str | None) -> _T:
     if not isinstance(cls, type):
         msg = f"@export_config expects a class, got {type(cls).__name__}"
         raise TypeError(msg)
@@ -229,9 +211,13 @@ def export_config(cls: _T) -> _T:
         msg = f"@export_config on {cls.__qualname__}: class has no custom __init__"
         raise TypeError(msg)
 
-    # Re-decorating the same class body is a no-op.
+    # Re-decorating the same class body is a no-op (keeps prior class_path if any).
     if _has_export_marker(original_init):
         return cls
+
+    if class_path is not None and (not isinstance(class_path, str) or not class_path):
+        msg = f"@export_config on {cls.__qualname__}: class_path must be a non-empty string"
+        raise TypeError(msg)
 
     signature = inspect.signature(original_init)
     _validate_replayable_signature(cls, signature)
@@ -275,7 +261,76 @@ def export_config(cls: _T) -> _T:
                 delattr(self, _EXPORT_DEPTH_ATTR)
 
     setattr(wrapped_init, _EXPORT_MARKER_ATTR, True)
+    if class_path is not None:
+        setattr(wrapped_init, _CONFIG_CLASS_PATH_ATTR, class_path)
     cls.__init__ = wrapped_init  # type: ignore[method-assign]
     # Convenience method; type checkers do not see the injection — prefer module to_config.
     cls.to_config = _instance_to_config  # type: ignore[attr-defined]
     return cls
+
+
+@overload
+def export_config(cls: _T, /) -> _T: ...
+
+
+@overload
+def export_config(*, class_path: str | None = None) -> Callable[[_T], _T]: ...
+
+
+def export_config(
+    cls: _T | None = None,
+    /,
+    *,
+    class_path: str | None = None,
+) -> _T | Callable[[_T], _T]:
+    """Opt a concrete class into constructor-config export via :func:`to_config`.
+
+    Remembers caller-supplied ``__init__`` arguments (not defaults). Rejects
+    constructors that declare positional-only parameters or ``*args``. Injects
+    an instance ``to_config()`` convenience method; library code should still
+    call the module-level :func:`to_config`.
+
+    Usage::
+
+        @export_config
+        class MyRobot: ...
+
+        @export_config(class_path="physicalai.robot.SO101")
+        class SO101: ...
+
+    When ``class_path`` is omitted, export uses
+    ``type(self).__module__ + "." + type(self).__qualname__``. Pass
+    ``class_path=`` when the public import path differs from the defining
+    module (for example a package re-export).
+
+    Nested non-component domain values (for example calibration objects) may
+    implement :meth:`~ConfigValue.to_config_value` so they normalize to
+    constructor-compatible JSON; that method's output is re-normalized.
+    Absence of the method means no codec; a returned ``None`` is JSON null.
+
+    Inheritance:
+
+    - Decorate every concrete class that **overrides** ``__init__``.
+    - An undecorated overriding ``__init__`` fails at :func:`to_config` (partial
+      base recipes are not emitted).
+    - A subclass that inherits a decorated constructor unchanged remains valid
+      without re-decorating.
+    - Do not apply ``@export_config`` to a subclass that does not define its
+      own ``__init__`` (that would double-wrap the inherited wrapper).
+
+    Args:
+        cls: Class to decorate when used as ``@export_config``. Must define
+            ``__init__`` in its own class body.
+        class_path: Optional stable public import path for export. Verified on
+            export to resolve exactly to the decorated class.
+
+    Returns:
+        The decorated class, or a decorator when ``class_path`` is passed.
+    """
+    if cls is not None:
+        return _decorate_export_config(cls, class_path=class_path)
+
+    def decorator(target: _T) -> _T:
+        return _decorate_export_config(target, class_path=class_path)
+
+    return decorator

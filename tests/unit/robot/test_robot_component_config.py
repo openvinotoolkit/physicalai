@@ -1,0 +1,209 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# ruff:file-ignore[undocumented-public-module, undocumented-public-class, undocumented-public-method, undocumented-public-init, assert, magic-value-comparison]
+
+"""Construction round-trips for robot ``@export_config`` wiring."""
+
+from __future__ import annotations
+
+import json
+import sys
+from collections.abc import Generator
+from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from physicalai.config import instantiate, is_config_exportable, to_config
+from physicalai.robot import Robot
+
+# SO101 imports scservo_sdk at module load; keep unit tests hardware-free.
+sys.modules.setdefault("scservo_sdk", MagicMock())
+
+SAMPLE_CALIBRATION: dict[str, Any] = {
+    "shoulder_pan": {"id": 1, "drive_mode": 0, "homing_offset": 2048, "range_min": 707, "range_max": 3439},
+    "shoulder_lift": {"id": 2, "drive_mode": 1, "homing_offset": 1024, "range_min": 669, "range_max": 3292},
+    "elbow_flex": {"id": 3, "drive_mode": 0, "homing_offset": 2048, "range_min": 846, "range_max": 3069},
+    "wrist_flex": {"id": 4, "drive_mode": 0, "homing_offset": 2048, "range_min": 956, "range_max": 3311},
+    "wrist_roll": {"id": 5, "drive_mode": 0, "homing_offset": 2048, "range_min": 59, "range_max": 3946},
+    "gripper": {"id": 6, "drive_mode": 0, "homing_offset": 2048, "range_min": 2026, "range_max": 3074},
+}
+
+
+def _assert_construction_round_trip(robot: object) -> dict[str, Any]:
+    assert is_config_exportable(robot)
+    assert isinstance(robot, Robot)
+    config = to_config(robot)
+    wire: dict[str, Any] = json.loads(json.dumps(config))
+    restored = instantiate(wire)
+    assert type(restored) is type(robot)
+    assert to_config(restored) == wire
+    assert not restored.is_connected()  # type: ignore[union-attr]
+    return wire
+
+
+# ---------------------------------------------------------------------------
+# SO101
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mock_scservo_sdk() -> Generator[MagicMock, None, None]:
+    sdk = MagicMock()
+    with patch.dict(sys.modules, {"scservo_sdk": sdk}):
+        # Ensure SO101 can be imported under the mock (idempotent if already loaded).
+        yield sdk
+
+
+class TestSO101ComponentConfig:
+    def test_dict_calibration_round_trip(self, mock_scservo_sdk: MagicMock) -> None:
+        from physicalai.robot import SO101
+
+        robot = SO101(port="/dev/ttyUSB0", calibration=SAMPLE_CALIBRATION)
+        wire = _assert_construction_round_trip(robot)
+        assert wire["class_path"] == "physicalai.robot.SO101"
+        assert wire["init_args"] == {
+            "port": "/dev/ttyUSB0",
+            "calibration": SAMPLE_CALIBRATION,
+        }
+
+    def test_calibration_object_encodes_to_dict(self, mock_scservo_sdk: MagicMock) -> None:
+        from physicalai.robot import SO101
+        from physicalai.robot.so101 import SO101Calibration
+
+        calibration = SO101Calibration.from_dict(SAMPLE_CALIBRATION)
+        robot = SO101(port="/dev/ttyACM0", calibration=calibration)
+        wire = _assert_construction_round_trip(robot)
+        assert wire["init_args"]["calibration"] == SAMPLE_CALIBRATION
+
+    def test_path_calibration_keeps_relative_string(
+        self, mock_scservo_sdk: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from physicalai.robot import SO101
+
+        calib_path = tmp_path / "calibration.json"
+        calib_path.write_text(json.dumps(SAMPLE_CALIBRATION), encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+
+        robot = SO101(port="/dev/ttyUSB0", calibration="calibration.json")
+        wire = _assert_construction_round_trip(robot)
+        assert wire["init_args"]["calibration"] == "calibration.json"
+
+    def test_path_object_keeps_relative_as_given(
+        self, mock_scservo_sdk: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from physicalai.robot import SO101
+
+        calib_path = tmp_path / "calib.json"
+        calib_path.write_text(json.dumps(SAMPLE_CALIBRATION), encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+
+        robot = SO101(port="/dev/ttyUSB0", calibration=Path("calib.json"))
+        wire = _assert_construction_round_trip(robot)
+        assert wire["init_args"]["calibration"] == "calib.json"
+
+    def test_absolute_path_calibration_stays_absolute(
+        self, mock_scservo_sdk: MagicMock, tmp_path: Path
+    ) -> None:
+        from physicalai.robot import SO101
+
+        calib_path = (tmp_path / "absolute-calib.json").resolve()
+        calib_path.write_text(json.dumps(SAMPLE_CALIBRATION), encoding="utf-8")
+
+        robot = SO101(port="/dev/ttyUSB0", calibration=calib_path)
+        wire = _assert_construction_round_trip(robot)
+        assert wire["init_args"]["calibration"] == str(calib_path)
+        assert Path(str(wire["init_args"]["calibration"])).is_absolute()
+
+    def test_uncalibrated_retains_private_flag(self, mock_scservo_sdk: MagicMock) -> None:
+        from physicalai.robot import SO101
+
+        robot = SO101.uncalibrated(port="/dev/ttyUSB0")
+        wire = _assert_construction_round_trip(robot)
+        assert wire["init_args"]["calibration"] is None
+        assert wire["init_args"]["_allow_uncalibrated"] is True
+        assert wire["init_args"]["unit"] == "ticks"
+
+    def test_protocol_still_holds(self, mock_scservo_sdk: MagicMock) -> None:
+        from physicalai.robot import SO101
+
+        robot = SO101(port="/dev/ttyUSB0", calibration=SAMPLE_CALIBRATION)
+        assert isinstance(robot, Robot)
+        assert robot.to_config() == to_config(robot)  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# WidowXAI / BimanualWidowXAI
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_trossen_arm() -> MagicMock:
+    module = MagicMock()
+    driver = MagicMock()
+    driver.get_is_configured.return_value = True
+    module.TrossenArmDriver.return_value = driver
+    module.Model.wxai_v0 = MagicMock(name="Model.wxai_v0")
+    module.StandardEndEffector.wxai_v0_follower = MagicMock(name="wxai_v0_follower")
+    module.StandardEndEffector.wxai_v0_leader = MagicMock(name="wxai_v0_leader")
+    module.Mode.position = MagicMock(name="Mode.position")
+    module.Mode.external_effort = MagicMock(name="Mode.external_effort")
+    return module
+
+
+@pytest.fixture
+def mock_trossen_arm() -> Generator[MagicMock, None, None]:
+    """Inject a mock ``trossen_arm`` so WidowX drivers import without the SDK."""
+    mock_module = _make_mock_trossen_arm()
+    # Drop cached modules so import picks up the mock even if a prior import failed.
+    for name in (
+        "physicalai.robot.trossen.widowxai",
+        "physicalai.robot.trossen.bimanual_widowxai",
+        "physicalai.robot.trossen",
+    ):
+        sys.modules.pop(name, None)
+    with patch.dict(sys.modules, {"trossen_arm": mock_module}):
+        yield mock_module
+
+
+class TestWidowXAIComponentConfig:
+    def test_default_role_omitted(self, mock_trossen_arm: MagicMock) -> None:
+        from physicalai.robot import WidowXAI
+
+        robot = WidowXAI(ip="192.168.1.2")
+        wire = _assert_construction_round_trip(robot)
+        assert wire["class_path"] == "physicalai.robot.WidowXAI"
+        assert wire["init_args"] == {"ip": "192.168.1.2"}
+
+    def test_explicit_role_round_trip(self, mock_trossen_arm: MagicMock) -> None:
+        from physicalai.robot import WidowXAI
+
+        robot = WidowXAI(ip="10.0.0.1", role="leader")
+        wire = _assert_construction_round_trip(robot)
+        assert wire["init_args"] == {"ip": "10.0.0.1", "role": "leader"}
+
+    def test_protocol_still_holds(self, mock_trossen_arm: MagicMock) -> None:
+        from physicalai.robot import WidowXAI
+
+        robot = WidowXAI(ip="192.168.1.2")
+        assert isinstance(robot, Robot)
+        assert robot.to_config() == to_config(robot)  # type: ignore[attr-defined]
+
+
+class TestBimanualWidowXAIComponentConfig:
+    def test_nested_arms_round_trip(self, mock_trossen_arm: MagicMock) -> None:
+        from physicalai.robot import BimanualWidowXAI, WidowXAI
+
+        left = WidowXAI(ip="192.168.1.10", role="follower")
+        right = WidowXAI(ip="192.168.1.11", role="follower")
+        robot = BimanualWidowXAI(left=left, right=right)
+        wire = _assert_construction_round_trip(robot)
+        assert wire["class_path"] == "physicalai.robot.BimanualWidowXAI"
+        left_cfg = wire["init_args"]["left"]
+        right_cfg = wire["init_args"]["right"]
+        assert isinstance(left_cfg, dict)
+        assert isinstance(right_cfg, dict)
+        assert left_cfg["class_path"] == "physicalai.robot.WidowXAI"
+        assert right_cfg["class_path"] == "physicalai.robot.WidowXAI"
+        assert left_cfg["init_args"] == {"ip": "192.168.1.10", "role": "follower"}
+        assert right_cfg["init_args"] == {"ip": "192.168.1.11", "role": "follower"}

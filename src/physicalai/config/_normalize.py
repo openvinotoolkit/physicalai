@@ -22,7 +22,9 @@ from ._types import (
 
 ToConfigFn = Callable[..., ComponentConfig]
 IsExportableFn = Callable[[object], bool]
-DomainCodecFn = Callable[[object], JsonValue | None]
+# Present codec result is a 1-tuple so JSON ``null`` (``None``) is distinct from
+# “no codec” (plain ``None`` return from the codec function).
+DomainCodecFn = Callable[[object], tuple[JsonValue] | None]
 
 
 def _is_component_config_mapping(value: Mapping[object, object]) -> bool:
@@ -52,7 +54,12 @@ def validate_component_config(config: object, *, path: str = "") -> ComponentCon
     extra = keys - allowed
     if extra:
         extras = ", ".join(sorted(repr(k) for k in extra))
-        msg = f"{loc}: nested component config may only contain 'class_path' and 'init_args'; unexpected keys: {extras}"
+        msg = (
+            f"{loc}: nested component config may only contain 'class_path' and "
+            f"'init_args'; unexpected keys: {extras}. For an ordinary mapping that "
+            "needs a 'class_path' data key, encode it via to_config_value() "
+            "(or another domain wrapper) instead of nesting it as a component config"
+        )
         raise ComponentConfigError(msg)
     if "class_path" not in config:
         msg = f"{loc}: component config missing required 'class_path'"
@@ -140,6 +147,7 @@ def _normalize_mapping(
     path: str,
     depth: int,
     seen: set[int],
+    codec_seen: set[int],
     to_config: ToConfigFn | None,
     is_exportable: IsExportableFn | None,
     domain_codec: DomainCodecFn | None,
@@ -161,6 +169,7 @@ def _normalize_mapping(
                     path=child_path,
                     depth=depth + 1,
                     seen=seen,
+                    codec_seen=codec_seen,
                     to_config=to_config,
                     is_exportable=is_exportable,
                     domain_codec=domain_codec,
@@ -182,6 +191,7 @@ def _normalize_mapping(
                 path=child_path,
                 depth=depth + 1,
                 seen=seen,
+                codec_seen=codec_seen,
                 to_config=to_config,
                 is_exportable=is_exportable,
                 domain_codec=domain_codec,
@@ -197,6 +207,7 @@ def _normalize_sequence(
     path: str,
     depth: int,
     seen: set[int],
+    codec_seen: set[int],
     to_config: ToConfigFn | None,
     is_exportable: IsExportableFn | None,
     domain_codec: DomainCodecFn | None,
@@ -216,6 +227,7 @@ def _normalize_sequence(
                     path=child_path,
                     depth=depth + 1,
                     seen=seen,
+                    codec_seen=codec_seen,
                     to_config=to_config,
                     is_exportable=is_exportable,
                     domain_codec=domain_codec,
@@ -240,6 +252,7 @@ def normalize_value(
     path: str = "",
     depth: int = 0,
     seen: set[int] | None = None,
+    codec_seen: set[int] | None = None,
     to_config: ToConfigFn | None = None,
     is_exportable: IsExportableFn | None = None,
     domain_codec: DomainCodecFn | None = None,
@@ -249,21 +262,28 @@ def normalize_value(
     Args:
         value: Captured constructor argument or nested structure.
         path: Argument path for error messages.
-        depth: Current nesting depth (configs, lists, and mappings).
+        depth: Current nesting depth (configs, lists, mappings, and codec hops).
         seen: Container identities already visited (cycle detection).
+        codec_seen: Domain values currently mid-encode via ``to_config_value``.
         to_config: Callback for nested exportable components.
         is_exportable: Predicate for nested exportable components.
-        domain_codec: Optional codec returning a JSON value or ``None``.
+        domain_codec: Optional codec. Returns ``None`` when there is no codec for
+            *value*; returns a 1-tuple ``(payload,)`` when a codec applies
+            (``payload`` may be JSON ``null`` / ``None``). Tuple payloads are
+            re-normalized (fail closed).
 
     Returns:
         A JSON-safe value.
 
     Raises:
-        ComponentConfigError: On unsupported values, cycles, or depth overflow.
+        ComponentConfigError: On unsupported values, cycles, depth overflow,
+            or a domain codec that returns the same object identity.
     """
     _check_depth(path, depth)
     if seen is None:
         seen = set()
+    if codec_seen is None:
+        codec_seen = set()
 
     handled, scalar = _try_normalize_scalar(value, path=path)
     if handled:
@@ -276,9 +296,35 @@ def normalize_value(
         return _normalize_exportable(value, path=path, depth=depth, seen=seen, to_config=to_config)
 
     if domain_codec is not None:
-        encoded = domain_codec(value)
-        if encoded is not None:
-            return encoded
+        encoded_result = domain_codec(value)
+        if encoded_result is not None:
+            obj_id = id(value)
+            if obj_id in codec_seen:
+                msg = f"{format_path(path)}: cyclic to_config_value() encoding is not serializable"
+                raise ComponentConfigError(msg)
+            (encoded,) = encoded_result
+            # Identity guard: a method that returns self would recurse forever.
+            if encoded is value:
+                msg = (
+                    f"{format_path(path)}: to_config_value() must return a new "
+                    "JSON-compatible value, not the same object "
+                    "(absence of the method means no codec)"
+                )
+                raise ComponentConfigError(msg)
+            codec_seen.add(obj_id)
+            try:
+                return normalize_value(
+                    encoded,
+                    path=path,
+                    depth=depth + 1,
+                    seen=seen,
+                    codec_seen=codec_seen,
+                    to_config=to_config,
+                    is_exportable=is_exportable,
+                    domain_codec=domain_codec,
+                )
+            finally:
+                codec_seen.discard(obj_id)
 
     if isinstance(value, Mapping):
         return _normalize_mapping(
@@ -286,6 +332,7 @@ def normalize_value(
             path=path,
             depth=depth,
             seen=seen,
+            codec_seen=codec_seen,
             to_config=to_config,
             is_exportable=is_exportable,
             domain_codec=domain_codec,
@@ -297,6 +344,7 @@ def normalize_value(
             path=path,
             depth=depth,
             seen=seen,
+            codec_seen=codec_seen,
             to_config=to_config,
             is_exportable=is_exportable,
             domain_codec=domain_codec,

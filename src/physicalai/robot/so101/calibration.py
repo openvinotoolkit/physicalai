@@ -71,6 +71,14 @@ class SO101Calibration:
         """
         return {name: joint.to_dict() for name, joint in self.joints.items()}
 
+    def to_config_value(self) -> dict[str, dict[str, int]]:
+        """Encode as a constructor-compatible dict for :func:`~physicalai.config.to_config`.
+
+        Returns:
+            The LeRobot calibration mapping produced by :meth:`to_dict`.
+        """
+        return self.to_dict()
+
     @classmethod
     def from_dict(cls, data: object) -> SO101Calibration:
         """Build a calibration object from parsed JSON data.

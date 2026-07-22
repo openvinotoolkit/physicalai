@@ -12,13 +12,25 @@ configuration must be exportable so a fresh instance can be created later.
 
 ```text
 Robot / Camera / ActionSource = runtime behavior (unchanged)
-@export_config                = opt into ComponentConfig export from ctor args
+@export_config / @export_config(class_path=...) = opt into ComponentConfig export
 ComponentConfig               = plain class_path + init_args data
 ```
 
 Use the same contract for robots, cameras, action sources, runtimes,
 callbacks, and nested components. Keep process names, rates, timeouts, and
 other transport settings in their existing transport envelopes.
+
+Mental model:
+
+```text
+@export_config / @export_config(class_path="...")  → whole component → {class_path, init_args}
+to_config_value()                                  → domain arg     → plain JSON inside init_args
+(nested @export_config)                            → nested component → nested {class_path, init_args}
+```
+
+Studio needs only `is_config_exportable(obj)` and `to_config(obj)`, then
+domain helpers such as `SharedRobot.from_config(...)`. Studio does not
+implement or require domain/component escape hatches.
 
 The contract closes both directions:
 
@@ -71,7 +83,7 @@ Place this API in a neutral module such as `physicalai.config`,
 not under robot, capture, runtime, or inference.
 
 ```python
-from typing import TypedDict
+from typing import Protocol, TypedDict
 
 JsonScalar = None | bool | int | float | str
 JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -80,7 +92,11 @@ JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 ComponentConfig = TypedDict("ComponentConfig", {"class_path": str, "init_args": dict[str, JsonValue]})
 
 
-def export_config(cls: type) -> type: ...
+class ConfigValue(Protocol):
+    def to_config_value(self) -> JsonValue: ...
+
+
+def export_config(cls: type | None = None, *, class_path: str | None = None): ...
 
 
 def to_config(value: object) -> ComponentConfig: ...
@@ -96,6 +112,11 @@ Normal use stays small:
 
 ```python
 @export_config
+class MyCamera:
+    def __init__(self, device: str): ...
+
+
+@export_config(class_path="physicalai.robot.SO101")
 class SO101:
     def __init__(self, port: str, calibration: dict | str): ...
 
@@ -127,10 +148,9 @@ the supported JSON model.
 Do not add a public `Constructible` or `Replayable` protocol. Runtime and
 Studio code that needs to test exportability uses `is_config_exportable(value)`.
 A value is exportable if and only if it carries the private `@export_config`
-decorator marker **or** provides a callable `__component_config__` hook.
-`to_config(value)` uses the same predicate. This keeps the plugin-facing
-contract to one decorator plus one private escape hatch, and gives Studio's
-share path a single exportability check for both decorator and hook paths.
+decorator marker. `to_config(value)` uses the same predicate. This keeps the
+plugin-facing contract to one decorator; Studio's share path keys off that
+single exportability check.
 
 ### Naming
 
@@ -142,18 +162,18 @@ detail documented here, not part of the public name.
 
 Rejected names:
 
-| Name                              | Problem                                                                                               |
-| --------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `capture_init`                    | Collides with the `physicalai.capture` camera package                                                 |
-| `record_init`                     | Will collide with planned runtime recording callbacks                                                 |
-| `serializable`                    | Implies complete object-state serialization                                                           |
-| `configurable`                    | Usually means an object accepts configuration, not that it exports it                                 |
-| `replayable`                      | Does not say what is replayed and can suggest runtime/action replay                                   |
-| `reconstructible`                 | Accurate but cumbersome and still hides the config-export contract                                    |
-| `remember_init` / `snapshot_init` | Mechanism-only; weaker fit next to `to_config`                                                        |
-| `config_exportable`               | Accurate but clumsy as a class decorator                                                              |
-| `export_init`                     | Precise about ctor args, but understates hook-only export and rhymes less with `is_config_exportable` |
-| `has_captured_init`               | Misleading for hook-only classes; use `is_config_exportable`                                          |
+| Name                              | Problem                                                               |
+| --------------------------------- | --------------------------------------------------------------------- |
+| `capture_init`                    | Collides with the `physicalai.capture` camera package                 |
+| `record_init`                     | Will collide with planned runtime recording callbacks                 |
+| `serializable`                    | Implies complete object-state serialization                           |
+| `configurable`                    | Usually means an object accepts configuration, not that it exports it |
+| `replayable`                      | Does not say what is replayed and can suggest runtime/action replay   |
+| `reconstructible`                 | Accurate but cumbersome and still hides the config-export contract    |
+| `remember_init` / `snapshot_init` | Mechanism-only; weaker fit next to `to_config`                        |
+| `config_exportable`               | Accurate but clumsy as a class decorator                              |
+| `export_init`                     | Precise about ctor args, but rhymes less with `is_config_exportable`  |
+| `has_captured_init`               | Mechanism-only; use `is_config_exportable`                            |
 
 Use `to_config(value)` for export because the result is directly consumable
 jsonargparse component configuration. Use `instantiate()` for the trusted
@@ -250,30 +270,28 @@ again. Tests and contributor documentation must state this explicitly.
 
 There is no merge or last-write behavior. The outermost decorated constructor
 owns the complete `init_args`. `to_config(value)` verifies that the
-most-derived class's effective `__init__` carries the decorator marker **or**
-that the instance provides `__component_config__`; an overriding, undecorated
-`__init__` without the hook fails loudly instead of emitting a partial recipe.
-A subclass that inherits a decorated constructor unchanged remains valid
+most-derived class's effective `__init__` carries the decorator marker; an
+overriding, undecorated `__init__` fails loudly instead of emitting a partial
+recipe. A subclass that inherits a decorated constructor unchanged remains valid
 because its effective constructor has the marker and the inherited signature
 is complete.
 
 Select `class_path` from the most-derived `type(self)`, never from the class
-that defined an inner decorated constructor. Classes can declare a stable
-`__config_class_path__` public re-export; otherwise use
-`type(self).__module__ + "." + type(self).__qualname__`. Before emitting the
-spec, resolve the selected path and verify that it identifies exactly
-`type(self)`.
+that defined an inner decorated constructor. Pass
+`@export_config(class_path="physicalai.robot.SO101")` when the public import
+path differs from the defining module; otherwise export uses
+`type(self).__module__ + "." + type(self).__qualname__`. The `class_path=`
+override applies only to the concrete class that was decorated (owns the
+wrapped `__init__` in its class dict). A subclass that inherits a decorated
+constructor unchanged does **not** inherit that override — it exports its own
+`__module__.__qualname__` unless it re-decorates with its own `class_path=`.
+Before emitting the spec, resolve the selected path and verify that it
+identifies exactly `type(self)`.
 
-First-party public robot and camera classes must declare their stable public
+First-party public robot and camera classes must pass their stable public
 re-export path (for example, `physicalai.robot.SO101`) instead of emitting an
 internal defining-module path. Plugins must do the same when they promise a
 stable public import surface.
-
-Factory or legacy classes whose configuration does not correspond directly to
-one constructor call can implement a private `__component_config__()` hook.
-`to_config(value)` and `is_config_exportable(value)` recognize that hook. This
-is an internal escape hatch, not a second public protocol; such classes are
-the exception, not the default.
 
 `to_config(value)` describes the object **as constructed**, not its current
 mutable state.
@@ -288,10 +306,10 @@ Normalization is recursive and produces JSON-safe values.
 | non-finite `float` (`NaN`, `±Inf`)           | error                         | not applicable               |
 | `Path`                                       | string as given (`str(path)`) | string                       |
 | `Enum`                                       | JSON-safe `.value`            | enum value representation    |
-| decorated or hook-exportable component       | `{class_path, init_args}`     | instantiated component       |
+| decorated (`@export_config`) component       | `{class_path, init_args}`     | instantiated component       |
 | mapping with string keys                     | normalized mapping            | decoded mapping              |
 | list or tuple                                | normalized list               | list                         |
-| domain value with an explicit codec          | codec output                  | constructor-compatible value |
+| domain value with `to_config_value()`        | re-normalized codec output    | constructor-compatible value |
 | any other object                             | error                         | not applicable               |
 
 `Path` values serialize as `str(path)` **without** `resolve()`. Relative paths
@@ -304,10 +322,16 @@ Reject non-finite floats during normalization. Python's default `json` encoder
 permits `NaN` / `Infinity`, which are not portable across strict JSON
 consumers.
 
-For v1, domain codecs remain minimal. `SO101Calibration` can normalize with
-`to_dict()` because the SO101 constructor already accepts a dictionary. Do not
-add a global arbitrary-object codec registry until a second concrete domain
-type requires one.
+For v1, domain codecs remain minimal. Non-component domain values implement
+`to_config_value()` (`ConfigValue` Protocol). The method must return a **new**
+JSON-compatible value that is then re-normalized (non-finite floats, reserved
+`class_path` maps, depth and cycle checks, nested codecs). Absence of the
+method means _no codec_ for that value. Returning `None` from the method is a
+real JSON `null` payload. Mutually recursive domain codecs fail with
+`ComponentConfigError` (not `RecursionError`). `SO101Calibration.to_config_value()`
+returns `to_dict()` because the SO101 constructor already accepts a dictionary.
+Do not auto-call arbitrary `to_dict()`. Do not add a global arbitrary-object
+codec registry until a second concrete domain type requires one.
 
 Constructors participating in this contract must accept the normalized JSON
 representation of their arguments. For example, constructors typed with an
@@ -327,10 +351,11 @@ Any dictionary containing `class_path` is reserved as a nested component
 config. Its only allowed keys are `class_path` and `init_args`; omitted
 `init_args` means an empty mapping. Extra keys or invalid values are malformed
 configs, not ordinary dictionaries. A caller that needs `class_path` as a normal
-data key must use an explicit domain codec or wrapper. Error messages and the
-plugin contract must name this escape hatch. This rule removes ambiguity and
-fails closed during generic recursive deserialization. Do not add a sentinel
-marker unless a second concrete domain collision demonstrates the need.
+data key must encode that mapping through `to_config_value()` (or another
+domain wrapper). Error messages and the plugin contract name this escape.
+This rule removes ambiguity and fails closed during generic recursive
+deserialization. Do not add a sentinel marker unless a second concrete domain
+collision demonstrates the need.
 
 Errors identify the full argument path:
 
@@ -432,9 +457,11 @@ pass the bare fragment to `instantiate()`.
 
 ### Robots
 
-SO101 and WidowXAI opt in directly. SO101 calibration is stored as a path when
-constructed from a path and as a normalized dictionary when constructed from
-an object.
+SO101 and WidowXAI opt in with `@export_config(class_path="physicalai.robot.…")`
+so export emits the public re-export path. SO101 calibration is stored as a
+path when constructed from a path and as a normalized dictionary when
+constructed from an object (`SO101Calibration.to_config_value()` →
+`to_dict()` — a domain value, not a nested component).
 
 Private arguments are not excluded by naming convention. If replay needs an
 argument, capture it. `SO101.uncalibrated()` currently calls the constructor
@@ -443,10 +470,11 @@ that supplied private argument. Uncalibrated round-trip tests are required
 before claiming SO101 support; a future public constructor parameter can
 replace the private replay detail.
 
-Bimanual robots no longer need a special serialization design once each arm
-uses `@export_config`: `left` and `right` become nested configs under
-`BimanualWidowXAI`. v1 `SharedRobot` spawn treats the composite as **one
-owner**. Per-arm `SharedRobot` wrapping of nested arms is out of scope.
+Bimanual robots need no special serialization once each arm uses
+`@export_config`: `left` and `right` are nested `@export_config` components
+under `BimanualWidowXAI` (contrast with domain `to_config_value` for
+calibration). v1 `SharedRobot` spawn treats the composite as **one owner**.
+Per-arm `SharedRobot` wrapping of nested arms is out of scope.
 
 ### Cameras
 
@@ -532,9 +560,11 @@ Non-scalar or live override arguments among captured kwargs (including
 non-scalar `adapter_kwargs`, and live `runner` / `preprocessors` /
 `postprocessors` / `callbacks`) make `to_config` fail. Do not silently drop
 them. Live overrides are in scope only when every nested value independently
-exports component config or `InferenceModel` supplies the private manual
-config hook. Instantiating an inference config can allocate substantial
-resources; it is not analogous to constructing a disconnected robot driver.
+exports via `@export_config` (or encodes via `to_config_value()` for domain
+args). A full-component escape hatch without the decorator is deferred and not
+part of the v1 contract. Instantiating an inference config can allocate
+substantial resources; it is not analogous to constructing a disconnected
+robot driver.
 
 ### Runtime
 
@@ -652,11 +682,11 @@ window on the private wire.
   `robot: {class_path, init_args}` before spawn. New code and docs prefer
   `SharedRobot.from_config(...)` and `from_robot(...)`.
 - **Public path normalization:** when accepting a class object or a legacy
-  dotted path, normalize through the same public-path resolution /
-  `__config_class_path__` used by `to_config` **before** store, metadata
-  advertise, and conflict compare. This prevents false mismatches between
-  defining-module paths (for example
-  `physicalai.robot.so101.so101.SO101`) and public re-exports
+  dotted path, normalize through the same public-path resolution used by
+  `to_config` (decorator `class_path=` override, else
+  `__module__.__qualname__`) **before** store, metadata advertise, and conflict
+  compare. This prevents false mismatches between defining-module paths (for
+  example `physicalai.robot.so101.so101.SO101`) and public re-exports
   (`physicalai.robot.SO101`).
 - **CLI `physicalai robot`:** accept `--robot` (ComponentConfig JSON/YAML)
   **XOR** legacy `--robot_class` / `--robot_kwargs`; both paths write only the
@@ -770,18 +800,25 @@ policy, but it does not replace the trusted-input rule for v1.
 
 1. Implement the relevant runtime protocol (`Robot`, `Camera`,
    `ActionSource`, callback, or another typed component).
-2. Opt into config export with `@export_config`. A factory-oriented class can
-   instead provide `__component_config__()`; both paths satisfy
-   `is_config_exportable`.
-3. Ensure every captured value is JSON-normalizable and constructor-compatible;
-   domain dictionaries containing reserved `class_path` require an explicit
-   codec or wrapper.
+2. Opt into config export with `@export_config`. When the public import path
+   differs from the defining module, pass
+   `@export_config(class_path="physicalai.robot.SO101")`.
+3. Ensure every captured value is JSON-normalizable and constructor-compatible
+   (JSON-safe scalars/collections, nested `@export_config` components, or
+   domain values with `to_config_value()`). Do not auto-call arbitrary
+   `to_dict()`. Dictionaries containing reserved `class_path` as ordinary data
+   must go through `to_config_value()` or another wrapper.
 4. Path-shaped constructor args may be relative. They resolve against the
    process cwd at open/`instantiate`. Owner/publisher children inherit the
    parent cwd at spawn — keep that cwd stable between export and spawn when
    using relatives. Absolute paths and `Path` are fine when you need them.
-5. Export the class from a stable public import path.
+5. Export the class from a stable public import path (and set `class_path=`
+   on the decorator when that path differs from the defining module).
 6. Add construction round-trip tests.
+
+Studio consumes only `is_config_exportable` and `to_config`, then
+`SharedRobot.from_config` / camera equivalents. A full-component escape hatch
+(without `@export_config`) is not part of the v1 contract.
 
 Opt-in is transitive: a container component can export config only when all
 captured nested component values can also export config.
@@ -808,7 +845,8 @@ specific subclasses only where tests or callers distinguish phases.
    duplicated inference and robot importers behind that resolver
    (behavior-preserving). Do not change inference factory behavior.
 2. Add `@export_config`, `to_config()`, and `is_config_exportable()` with
-   signature, inheritance-depth, hook-export, and mutable-container tests.
+   signature, inheritance-depth, `class_path=`, domain `to_config_value`, and
+   mutable-container tests.
 3. Wire SO101, WidowXAI, and `BimanualWidowXAI` (nested `left`/`right`
    composite round-trips); add JSON and construction round-trip tests.
 4. Add `SharedRobot.from_config()` / `from_robot()`; hard-cutover
@@ -867,9 +905,8 @@ cutovers; do not describe them as schema-preserving.
 - Decorated `super()` calls do not overwrite the outer constructor capture.
 - An undecorated overriding constructor fails instead of emitting base-only
   arguments, and the selected public path resolves to the most-derived type.
-- `is_config_exportable` is true for decorator-marked and `__component_config__`
-  hook-only classes; `to_config` works for both; Studio share keys off that
-  predicate.
+- `is_config_exportable` is true for decorator-marked classes; `to_config`
+  works for them; Studio share keys off that predicate.
 - jsonargparse still sees the original decorated constructor signature.
 - Injected instance `to_config()` does not break structural Protocol checks;
   docs prefer module `to_config`.

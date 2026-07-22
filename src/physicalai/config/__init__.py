@@ -6,6 +6,16 @@
 Trusted local application and parent→child startup configs only. Never pass
 network metadata or untrusted peer payloads to :func:`instantiate`.
 
+Opt-in path:
+
+- ``@export_config`` / ``@export_config(class_path=...)`` — remember
+  caller-supplied constructor args for :func:`to_config`.
+- Domain ctor args may implement :meth:`~ConfigValue.to_config_value` to
+  return a JSON-compatible fragment (re-normalized).
+
+Studio needs only :func:`is_config_exportable` and :func:`to_config`, then
+domain ``from_config`` helpers (for example ``SharedRobot.from_config``).
+
 Public names are resolved lazily so ``physicalai.config.importing`` can be
 imported without loading export/normalize/instantiate.
 """
@@ -23,6 +33,7 @@ if TYPE_CHECKING:
     from ._export import to_config as to_config
     from ._instantiate import instantiate as instantiate
     from ._types import ComponentConfig as ComponentConfig
+    from ._types import ConfigValue as ConfigValue
     from ._types import JsonScalar as JsonScalar
     from ._types import JsonValue as JsonValue
     from .importing import import_dotted_path as import_dotted_path
@@ -31,6 +42,7 @@ __all__ = [
     "ComponentConfig",
     "ComponentConfigError",
     "ComponentImportError",
+    "ConfigValue",
     "JsonScalar",
     "JsonValue",
     "export_config",
@@ -42,6 +54,7 @@ __all__ = [
 
 _LAZY_ATTRS: dict[str, tuple[str, str]] = {
     "ComponentConfig": ("._types", "ComponentConfig"),
+    "ConfigValue": ("._types", "ConfigValue"),
     "JsonScalar": ("._types", "JsonScalar"),
     "JsonValue": ("._types", "JsonValue"),
     "ComponentConfigError": ("._errors", "ComponentConfigError"),

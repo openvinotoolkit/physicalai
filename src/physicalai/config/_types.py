@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import Protocol, TypedDict, runtime_checkable
 
 JsonScalar = None | bool | int | float | str
 JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -18,6 +18,15 @@ class ComponentConfig(TypedDict):
     init_args: dict[str, JsonValue]
 
 
+@runtime_checkable
+class ConfigValue(Protocol):
+    """Domain value that encodes to constructor-compatible JSON for export."""
+
+    def to_config_value(self) -> JsonValue:
+        """Return ctor-compatible JSON for component-config export."""
+        ...
+
+
 # Maximum nesting depth for recursive normalization and instantiation.
 # Counts traversal through lists and mappings as well as nested component configs.
 _MAX_CONFIG_DEPTH = 10
@@ -26,7 +35,7 @@ _MAX_CONFIG_DEPTH = 10
 _CAPTURED_INIT_ARGS_ATTR = "_physicalai_captured_init_args"
 _EXPORT_DEPTH_ATTR = "_physicalai_export_config_depth"
 _EXPORT_MARKER_ATTR = "_physicalai_export_config"
-_CONFIG_HOOK_NAME = "__component_config__"
-_CONFIG_CLASS_PATH_ATTR = "__config_class_path__"
+# Optional public class_path override stored on the decorated __init__ wrapper.
+_CONFIG_CLASS_PATH_ATTR = "_physicalai_config_class_path"
 
 _REPR_LIMIT = 80

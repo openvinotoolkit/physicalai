@@ -106,17 +106,6 @@ class InheritsDecorated(BaseWidget):
     """Subclass that inherits the decorated constructor unchanged."""
 
 
-class HookOnly:
-    def __init__(self, value: int) -> None:
-        self.value = value
-
-    def __component_config__(self) -> dict[str, object]:
-        return {
-            "class_path": "tests.unit.config.test_component_config.HookOnly",
-            "init_args": {"value": self.value},
-        }
-
-
 @export_config
 class WithExtras:
     def __init__(self, base: int, **kwargs: object) -> None:
@@ -166,6 +155,62 @@ class CtorBoom:
     def __init__(self, x: int) -> None:
         msg = "boom"
         raise ValueError(msg)
+
+
+class DomainPayload:
+    """Domain value that encodes via ``to_config_value()`` (not a component)."""
+
+    def __init__(self, amount: int) -> None:
+        self.amount = amount
+
+    def to_config_value(self) -> dict[str, int]:
+        return {"amount": self.amount}
+
+
+class BadNanDomain:
+    def to_config_value(self) -> dict[str, float]:
+        return {"x": math.nan}
+
+
+class BadReservedDomain:
+    def to_config_value(self) -> dict[str, object]:
+        return {"class_path": "not.a.component", "other": 1}
+
+
+class NullDomain:
+    def to_config_value(self) -> None:
+        return None
+
+
+class CodecPeer:
+    """Domain value that can point at another domain value for cycle tests."""
+
+    def __init__(self) -> None:
+        self.other: object | None = None
+
+    def to_config_value(self) -> object:
+        return self.other
+
+
+@export_config
+class DomainHolder:
+    def __init__(self, payload: object) -> None:
+        self.payload = payload
+
+
+@export_config(class_path="tests.unit.config.test_component_config.ExportAlias")
+class _HiddenExport:
+    """Defining-module class with a public re-export alias (see ExportAlias)."""
+
+    def __init__(self, x: int) -> None:
+        self.x = x
+
+
+ExportAlias = _HiddenExport
+
+
+class InheritsAliasedExport(_HiddenExport):
+    """Inherits decorated constructor; must not inherit ``class_path=`` override."""
 
 
 class TestImportDottedPath:
@@ -325,7 +370,7 @@ class TestNormalizeAndInstantiate:
 
     def test_dict_with_class_path_is_reserved(self) -> None:
         holder = MappingHolder({"class_path": "not.a.component", "other": 1})
-        with pytest.raises(ComponentConfigError, match="unexpected keys"):
+        with pytest.raises(ComponentConfigError, match="to_config_value"):
             to_config(holder)
 
     def test_unsupported_object_reports_path(self) -> None:
@@ -415,17 +460,62 @@ class TestExportConfig:
         with pytest.raises(RuntimeError, match="nope"):
             Boom(1)
 
-    def test_hook_exportable(self) -> None:
-        obj = HookOnly(7)
+    def test_explicit_class_path_override(self) -> None:
+        obj = _HiddenExport(3)
         assert is_config_exportable(obj)
         config = to_config(obj)
-        assert config == {
-            "class_path": "tests.unit.config.test_component_config.HookOnly",
-            "init_args": {"value": 7},
-        }
+        assert config["class_path"] == "tests.unit.config.test_component_config.ExportAlias"
+        assert config["init_args"] == {"x": 3}
         restored = instantiate(config)
-        assert isinstance(restored, HookOnly)
-        assert restored.value == 7
+        assert type(restored) is _HiddenExport
+        assert restored.x == 3  # type: ignore[union-attr]
+
+    def test_inherited_class_path_override_does_not_leak(self) -> None:
+        obj = InheritsAliasedExport(9)
+        assert is_config_exportable(obj)
+        config = to_config(obj)
+        assert config["class_path"] == (
+            "tests.unit.config.test_component_config.InheritsAliasedExport"
+        )
+        assert config["init_args"] == {"x": 9}
+        restored = instantiate(config)
+        assert type(restored) is InheritsAliasedExport
+
+    def test_domain_value_hook_encodes_to_json(self) -> None:
+        holder = DomainHolder(DomainPayload(42))
+        config = to_config(holder)
+        assert config["init_args"]["payload"] == {"amount": 42}
+        wire = json.loads(json.dumps(config))
+        restored = cast(DomainHolder, instantiate(wire))
+        assert restored.payload == {"amount": 42}
+        assert to_config(restored) == wire
+
+    def test_domain_value_none_is_json_null(self) -> None:
+        holder = DomainHolder(NullDomain())
+        config = to_config(holder)
+        assert config["init_args"]["payload"] is None
+        wire = json.loads(json.dumps(config))
+        restored = cast(DomainHolder, instantiate(wire))
+        assert restored.payload is None
+
+    def test_domain_value_codec_cycle_raises(self) -> None:
+        left = CodecPeer()
+        right = CodecPeer()
+        left.other = right
+        right.other = left
+        holder = DomainHolder(left)
+        with pytest.raises(ComponentConfigError, match="cyclic to_config_value"):
+            to_config(holder)
+
+    def test_domain_value_hook_output_is_renormalized(self) -> None:
+        holder = DomainHolder(BadNanDomain())
+        with pytest.raises(ComponentConfigError, match="non-finite"):
+            to_config(holder)
+
+    def test_domain_value_hook_reserved_class_path_validated(self) -> None:
+        holder = DomainHolder(BadReservedDomain())
+        with pytest.raises(ComponentConfigError, match="to_config_value"):
+            to_config(holder)
 
     def test_instance_to_config_sugar(self) -> None:
         point = Point(1, 2)

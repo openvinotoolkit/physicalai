@@ -88,10 +88,12 @@ flowchart TB
 ```python
 ComponentConfig = {"class_path": str, "init_args": dict[str, JsonValue]}
 
-@export_config          # opt-in on concrete classes
-to_config(value)       # live → ComponentConfig
-instantiate(config)    # trusted ComponentConfig → fresh object
-is_config_exportable   # decorator marker OR __component_config__
+@export_config                    # opt-in on concrete classes
+@export_config(class_path="...")  # when public import ≠ defining module
+to_config(value)                  # live → ComponentConfig
+instantiate(config)               # trusted ComponentConfig → fresh object
+is_config_exportable              # @export_config marker only
+# Domain args: to_config_value() → plain JSON (ConfigValue Protocol)
 ```
 
 ```mermaid
@@ -340,23 +342,26 @@ Implement **one step at a time**. Keep the design note open as the contract.
 ## Plugin checklist
 
 1. Implement `Robot` / `Camera` / `ActionSource` / callback protocol
-2. `@export_config` (or `__component_config__`)
-3. JSON-normalizable args; constructors accept normalized forms
+2. `@export_config` — use `@export_config(class_path="…")` when re-exported
+3. JSON-normalizable args (JSON / nested `@export_config` / `to_config_value()`);
+   constructors accept normalized forms
 4. Relative path args OK; keep cwd stable through Shared\* spawn (or use absolute/`Path` as given)
-5. Stable public import path + `__config_class_path__` when re-exported
+5. Stable public import path (decorator `class_path=` when it differs from defining module)
 6. Round-trip test: `to_config` → `json` → `instantiate` → `to_config` equal
 
----
+## Studio: `is_config_exportable` + `to_config` only
 
 ## Quick reference
 
-| Symbol                      | Role                                                                |
-| --------------------------- | ------------------------------------------------------------------- |
-| `@export_config`            | Opt into `ComponentConfig` export (stores supplied `__init__` args) |
-| `ComponentConfig`           | Wire shape shared with jsonargparse                                 |
-| `to_config` / `instantiate` | Export / trusted rebuild                                            |
-| `is_config_exportable`      | Can we get a recipe?                                                |
-| Owner/publisher stdin       | Hard cutover to `robot:` / `camera: ComponentConfig`                |
-| `service_name`              | Camera transport identity (not construction)                        |
+| Symbol                         | Role                                                                |
+| ------------------------------ | ------------------------------------------------------------------- |
+| `@export_config`               | Opt into `ComponentConfig` export (stores supplied `__init__` args) |
+| `@export_config(class_path=…)` | Public re-export path when ≠ defining module                        |
+| `to_config_value()`            | Domain arg → plain JSON inside `init_args` (`ConfigValue`)          |
+| `ComponentConfig`              | Wire shape shared with jsonargparse                                 |
+| `to_config` / `instantiate`    | Export / trusted rebuild                                            |
+| `is_config_exportable`         | Can we get a recipe? (decorator marker)                             |
+| Owner/publisher stdin          | Hard cutover to `robot:` / `camera: ComponentConfig`                |
+| `service_name`                 | Camera transport identity (not construction)                        |
 
 **Full rules and required tests:** [component-config.md](component-config.md)

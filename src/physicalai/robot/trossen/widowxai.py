@@ -42,6 +42,7 @@ except ImportError as e:
     )
     raise ImportError(msg) from e
 
+from physicalai.config import export_config
 from physicalai.robot import Robot
 from physicalai.robot.trossen.constants import HOME_POSITION, VALID_ROLES, WIDOWXAI_JOINT_ORDER
 
@@ -77,6 +78,7 @@ class WidowXAIObservation:
         return self.joint_positions
 
 
+@export_config(class_path="physicalai.robot.WidowXAI")
 class WidowXAI(Robot):
     """Driver for the Trossen WidowX AI robot arm (7-DOF).
 
