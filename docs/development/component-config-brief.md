@@ -1,7 +1,7 @@
 # Component config — reviewer brief
 
 **Read time:** ~3–5 minutes  
-**Status:** Accepted design — gathering implementation opinions  
+**Status:** Accepted — implement per rollout  
 **Full map:** [component-config-report.md](component-config-report.md)  
 **Canonical spec:** [component-config.md](component-config.md)  
 **Context:** Follow-up to [Studio SharedRobot #818](https://github.com/open-edge-platform/physical-ai-studio/pull/818)
