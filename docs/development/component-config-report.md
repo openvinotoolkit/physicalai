@@ -2,10 +2,11 @@
 
 **Audience:** Runtime developers  
 **Status:** Accepted — implement per rollout  
-**Canonical spec:** [robot-construction-remembered-init.md](robot-construction-remembered-init.md)  
+**Short brief (reviewers):** [component-config-brief.md](component-config-brief.md)  
+**Canonical spec:** [component-config.md](component-config.md)  
 **Context:** Follow-up to [Studio SharedRobot #818](https://github.com/open-edge-platform/physical-ai-studio/pull/818)
 
-This report is the human-readable map of the design. When behavior is ambiguous, the canonical design note wins.
+This report is the human-readable map of the design. Prefer the [brief](component-config-brief.md) for a quick overview. When behavior is ambiguous, the canonical design note wins.
 
 ![Architecture: behavior, construction, and transport layers](captured-component-config-architecture.png)
 
@@ -78,7 +79,7 @@ flowchart TB
 
 - **Construction** = how to build a fresh instance
 - **Transport** = name, rate, `service_name`, timeouts, sharing
-- **Exportable ≠ shared** — Studio owns `robot.share`; `@export_config` only enables config export
+- **Exportable ≠ shared** — Studio decides whether to wrap in `SharedRobot`; `@export_config` only enables config export
 
 ---
 
@@ -178,7 +179,7 @@ flowchart TB
 
 ## Transport migration (private wire)
 
-Do **not** bump `ROBOT_TRANSPORT_PROTOCOL_VERSION` or camera frame `PROTOCOL_VERSION` for this. Those are network/frame protocols. Startup stdin is a same-package `Popen` handshake — **hard cutover** to `ComponentConfig` with no `config_format` and no dual-read (see [wire decision](shared-construction-wire-decision.md)).
+Do **not** bump `ROBOT_TRANSPORT_PROTOCOL_VERSION` or camera frame `PROTOCOL_VERSION` for this. Those are network/frame protocols. Startup stdin is a same-package `Popen` handshake — **hard cutover** to `ComponentConfig` with no `config_format` and no dual-read (recorded in the [spec](component-config.md#private-startup-envelopes-hard-cutover)).
 
 ```text
 # Robot owner — after
@@ -256,7 +257,7 @@ flowchart LR
 ```mermaid
 flowchart TD
   Builder[Plugin builder] --> Driver[Ordinary Robot/Camera]
-  Driver --> Share{robot.share?}
+  Driver --> Share{Studio share policy?}
   Share -->|no| Direct[In-process driver]
   Share -->|yes| Exp{is_config_exportable?}
   Exp -->|no| Fail[Fail loud]
@@ -358,4 +359,4 @@ Implement **one step at a time**. Keep the design note open as the contract.
 | Owner/publisher stdin       | Hard cutover to `robot:` / `camera: ComponentConfig`                |
 | `service_name`              | Camera transport identity (not construction)                        |
 
-**Full rules and required tests:** [robot-construction-remembered-init.md](robot-construction-remembered-init.md)
+**Full rules and required tests:** [component-config.md](component-config.md)

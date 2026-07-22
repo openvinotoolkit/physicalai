@@ -129,8 +129,8 @@ Studio code that needs to test exportability uses `is_config_exportable(value)`.
 A value is exportable if and only if it carries the private `@export_config`
 decorator marker **or** provides a callable `__component_config__` hook.
 `to_config(value)` uses the same predicate. This keeps the plugin-facing
-contract to one decorator plus one private escape hatch, and gives
-`share_if_requested` a single key for both paths.
+contract to one decorator plus one private escape hatch, and gives Studio's
+share path a single exportability check for both decorator and hook paths.
 
 ### Naming
 
@@ -707,21 +707,24 @@ The same separation applies to camera service names, validation settings,
 zero-copy mode, publisher rates, and idle timeouts. These settings describe
 how a component is shared, not how the underlying component was constructed.
 
-Config export capability does not imply process sharing. Studio owns an
-explicit product/deployment policy such as `robot.share`;
-`is_config_exportable` only determines whether the selected sharing path can
-obtain a component config. Studio consumption becomes:
+Config export capability does not imply process sharing. Studio owns the
+product decision of whether a built driver should run in-process or be wrapped
+in `SharedRobot`. `is_config_exportable` only answers whether that sharing path
+can obtain a component config. Sketch:
 
 ```python
 driver = await builder(robot, self)
-driver = share_if_requested(driver, name=robot.name, enabled=robot.share)
+if should_share(robot):  # Studio policy — not a Runtime field
+    if not is_config_exportable(driver):
+        raise ...
+    if driver.is_connected():
+        raise ...
+    driver = SharedRobot.from_config(to_config(driver), name=robot.name)
 ```
 
-`share_if_requested()` leaves the direct driver unchanged when disabled. When
-enabled, it requires `is_config_exportable(driver)`, rejects a connected
-driver, then calls `SharedRobot.from_config(to_config(driver), name=name)`.
-The helper implements Studio policy; it is not part of the generic
-component-config API.
+`should_share` is Studio's concern (UI toggle, deployment setting, etc.). It is
+not part of the generic component-config API and is not a Runtime attribute on
+robots.
 
 Catalog and plugin builders return ordinary runtime objects. Plugins never
 import Zenoh, iceoryx2, `SharedRobot`, or `SharedCamera`.
