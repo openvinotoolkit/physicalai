@@ -1,17 +1,17 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Serializable owner-subprocess construction config for shared robots.
+"""Serializable owner construction config for shared robots.
 
 Named ``RobotOwnerConfig`` (not ``RobotSpec``) to avoid colliding with the
 unrelated ``physicalai.inference.manifest.RobotSpec`` (a manifest-schema
-pydantic model). This is private, process-internal IPC — not a user-facing
-configuration object.
+pydantic model). Used by the foreground serve path and by the owner
+subprocess stdin handshake.
 
-The owner subprocess must construct the robot driver itself: a live
-serial/socket handle cannot cross a process boundary (D15). Only an
-importable ``robot_class`` plus JSON-serializable ``robot_kwargs`` survive
-that boundary — arbitrary robot types, including third-party plugins, work
+The owner must construct the robot driver itself: a live serial/socket
+handle cannot cross a process boundary (D15). Only an importable
+``robot_class`` plus JSON-serializable ``robot_kwargs`` survive that
+boundary — arbitrary robot types, including third-party plugins, work
 without any registry lookup here.
 
 Security: *robot_class* is trusted local application/config input, exactly
@@ -78,7 +78,13 @@ def normalize_robot_class(robot_class: type | str) -> str:
 
 @dataclass(frozen=True)
 class RobotOwnerConfig:
-    """Everything the owner subprocess needs to construct and run a robot.
+    """Everything the owner needs to construct and run a robot.
+
+    Warning:
+        ``allow_remote=True`` exposes an unauthenticated physical ``/action``
+        endpoint beyond localhost. Any peer that can reach the owner's Zenoh
+        session can move the robot. Use only on an isolated robot-cell
+        network (VLAN/firewall) or with Zenoh ACL/TLS.
 
     Attributes:
         name: The robot's logical name (keys the Zenoh topics).
@@ -87,6 +93,9 @@ class RobotOwnerConfig:
             driver constructor (e.g. ``calibration`` as a file path).
         allow_remote: Whether the owner's Zenoh session is reachable beyond
             localhost. Fixed for the owner's lifetime once spawned.
+            ``True`` exposes an unauthenticated physical ``/action`` endpoint
+            — use only on an isolated robot-cell network or with Zenoh
+            ACL/TLS. Default ``False`` keeps the owner unreachable off-host.
         rate_hz: Owner loop rate.
         idle_timeout: Seconds with zero subscribers before self-exit.
     """

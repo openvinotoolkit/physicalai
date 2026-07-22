@@ -34,6 +34,11 @@ if TYPE_CHECKING:
 HELP = "Serve or discover shared robots over Zenoh."
 _SERVE_HELP = "Serve one robot in the foreground as a persistent shared-robot owner."
 _DISCOVER_HELP = "Enumerate reachable shared robots."
+_ALLOW_REMOTE_WARNING = (
+    "WARNING: The action endpoint is unauthenticated and reachable from all "
+    "network interfaces on the derived port. Use only on an isolated robot-cell "
+    "network or with Zenoh ACL/TLS.\n"
+)
 _HELP_TEMPLATE = """usage: {prog} {{serve,discover}} ...
 
 {description}
@@ -115,6 +120,19 @@ def _configure_serve_logging(*, verbose: bool) -> None:
     )
 
 
+def _prepare_serve_logging(*, allow_remote: bool, verbose: bool) -> None:
+    """Emit the remote-exposure banner (if needed), then configure Loguru."""
+    if allow_remote:
+        sys.stderr.write(_ALLOW_REMOTE_WARNING)
+    _configure_serve_logging(verbose=verbose)
+
+
+def _log_serve_start(config: RobotOwnerConfig) -> None:
+    """Log the audited serve start line, including local vs remote mode."""
+    mode_tag = "remote" if config.allow_remote else "local-only"
+    logger.info(f"Starting robot {config.name!r} using {config.robot_class} [{mode_tag}]")
+
+
 def _format_duration(seconds: float) -> str:
     """Format elapsed seconds as ``HH:MM:SS``.
 
@@ -152,7 +170,7 @@ def serve(cfg: Namespace) -> int:
     Returns:
         The owner runtime exit code, or 1 for an expected startup failure.
     """
-    _configure_serve_logging(verbose=cfg.verbose)
+    _prepare_serve_logging(allow_remote=cfg.allow_remote, verbose=cfg.verbose)
     try:
         config = RobotOwnerConfig(
             name=cfg.name,
@@ -194,7 +212,7 @@ def serve(cfg: Namespace) -> int:
             status = "subscriber(s) connected" if subscribers_present else "no subscribers"
             logger.info(f"Healthy · uptime {_format_duration(uptime_s)} · {status}")
 
-    logger.info(f"Starting robot {config.name!r} using {config.robot_class}")
+    _log_serve_start(config)
     previous_sigterm = signal.signal(signal.SIGTERM, _handle_signal)
     previous_sigint = signal.signal(signal.SIGINT, _handle_signal)
     try:

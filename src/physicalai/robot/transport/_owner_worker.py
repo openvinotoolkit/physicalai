@@ -203,7 +203,8 @@ def _apply_pending_action(driver: Robot, action_sub: Any, name: str) -> None:  #
         action, goal_time, _send_ts = decode_action(sample.payload.to_bytes())
         driver.send_action(action, goal_time=goal_time)
     except Exception:  # noqa: BLE001
-        logger.warning(f"Failed to apply action for {name}", exc_info=True)
+        logger.warning(f"Failed to apply action for {name}")
+        logger.opt(exception=True).trace("action apply traceback")
 
 
 def _run_loop(

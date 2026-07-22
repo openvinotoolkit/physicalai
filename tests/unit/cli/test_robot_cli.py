@@ -57,6 +57,30 @@ def test_serve_runs_owner_in_foreground_with_persistent_timeout(capsys: object) 
     config = captured["config"]
     assert config.idle_timeout is None  # type: ignore[attr-defined]
     assert config.name == "left-arm"  # type: ignore[attr-defined]
+    stderr = capsys.readouterr().err  # type: ignore[attr-defined]
+    assert "unauthenticated" not in stderr
+    assert "[local-only]" in stderr
+
+
+def test_serve_allow_remote_warns_and_tags_mode(capsys: object) -> None:
+    def _run_owner(  # noqa: ARG001
+        _config: object,
+        _shutdown: threading.Event,
+        *,
+        ready: object,
+        on_event: object,
+    ) -> OwnerResult:
+        return OwnerResult(OwnerExitReason.SHUTDOWN, 0)
+
+    with patch.object(robot_module, "run_owner", side_effect=_run_owner):
+        assert robot_module.serve(_serve_cfg(allow_remote=True)) == 0
+
+    stderr = capsys.readouterr().err  # type: ignore[attr-defined]
+    assert robot_module._ALLOW_REMOTE_WARNING.strip() in stderr
+    assert "[remote]" in stderr
+    warning_at = stderr.index("WARNING: The action endpoint is unauthenticated")
+    starting_at = stderr.index("Starting robot")
+    assert warning_at < starting_at
 
 
 def test_signal_requests_runtime_shutdown(capsys: object) -> None:
