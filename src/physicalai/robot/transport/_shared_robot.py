@@ -57,15 +57,7 @@ if TYPE_CHECKING:
 
 
 def _coerce_robot_recipe(robot: object) -> ComponentConfig | Mapping[str, object]:
-    """Accept a ComponentConfig mapping or a live exportable driver recipe.
-
-    ``instantiate()`` recursively builds nested ``class_path`` configs into live
-    drivers before calling this constructor; spawn still needs a JSON recipe for
-    the owner subprocess. Live drivers are converted with :func:`to_config`.
-    Connected drivers are rejected — same rule as :meth:`SharedRobot.from_robot`.
-
-    Args:
-        robot: ComponentConfig mapping or disconnected ``@export_config`` driver.
+    """Accept a ComponentConfig mapping or a disconnected ``@export_config`` driver.
 
     Returns:
         A mapping suitable for :func:`normalize_robot_config`.
@@ -310,15 +302,6 @@ class SharedRobot:
             writes only the new owner stdin shape on spawn.
         """
         # Omit default None so @export_config does not capture "_session": null.
-        if _session is None:
-            return cls(
-                name,
-                robot=robot_config,
-                allow_remote=allow_remote,
-                rate_hz=rate_hz,
-                idle_timeout=idle_timeout,
-                connect_timeout=connect_timeout,
-            )
         return cls(
             name,
             robot=robot_config,
@@ -326,7 +309,7 @@ class SharedRobot:
             rate_hz=rate_hz,
             idle_timeout=idle_timeout,
             connect_timeout=connect_timeout,
-            _session=_session,
+            **({} if _session is None else {"_session": _session}),
         )
 
     @classmethod
@@ -378,24 +361,14 @@ class SharedRobot:
             )
             raise ValueError(msg)
         # Omit default None so @export_config does not capture "_session": null.
-        recipe = to_config(robot)
-        if _session is None:
-            return cls.from_config(
-                recipe,
-                name=name,
-                allow_remote=allow_remote,
-                rate_hz=rate_hz,
-                idle_timeout=idle_timeout,
-                connect_timeout=connect_timeout,
-            )
         return cls.from_config(
-            recipe,
+            to_config(robot),
             name=name,
             allow_remote=allow_remote,
             rate_hz=rate_hz,
             idle_timeout=idle_timeout,
             connect_timeout=connect_timeout,
-            _session=_session,
+            **({} if _session is None else {"_session": _session}),
         )
 
     @classmethod
@@ -423,9 +396,9 @@ class SharedRobot:
             A ``SharedRobot`` that never spawns an owner.
         """
         # Omit default None so @export_config does not capture "_session": null.
-        if _session is None:
-            return cls(name, allow_remote=allow_remote, connect_timeout=connect_timeout)
-        return cls(name, allow_remote=allow_remote, connect_timeout=connect_timeout, _session=_session)
+        if _session is not None:
+            return cls(name, allow_remote=allow_remote, connect_timeout=connect_timeout, _session=_session)
+        return cls(name, allow_remote=allow_remote, connect_timeout=connect_timeout)
 
     @property
     def _robot_class(self) -> str | None:

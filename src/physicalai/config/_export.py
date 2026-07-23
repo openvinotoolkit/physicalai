@@ -64,15 +64,10 @@ def _has_export_marker(obj: object) -> bool:
 def _encode_domain_value(value: object) -> tuple[JsonValue] | None:
     """Encode a domain value via ``to_config_value()`` if present.
 
-    The returned payload is further normalized by :func:`normalize_value`
-    (non-finite floats, reserved ``class_path`` maps, depth/cycles, nested
-    codecs). Absence of a callable ``to_config_value`` means *no codec*.
-    Returning JSON ``null`` (``None``) from the method is a real payload —
-    wrap it in a 1-tuple here so it is distinct from “no codec”.
-
     Returns:
-        ``(payload,)`` when a codec applies (``payload`` may be ``None``), or
-        ``None`` when the value has no domain encoder.
+        ``(payload,)`` when a codec applies — the 1-tuple keeps a real JSON
+        ``null`` payload distinct from "no codec" — or ``None`` when the value
+        has no domain encoder. The payload is re-normalized by the caller.
     """
     encode = getattr(value, "to_config_value", None)
     if not callable(encode):
@@ -91,11 +86,11 @@ def is_config_exportable(value: object) -> bool:
 
 
 def _class_path_override(cls: type) -> str | None:
-    """Return ``class_path=`` only when *cls* owns the decorated ``__init__``.
+    """Return the decorator ``class_path=`` only when *cls* owns the decorated ``__init__``.
 
-    Subclasses that inherit a decorated constructor unchanged must not inherit
-    the base's public-path override; they export ``__module__.__qualname__``
-    unless they re-decorate with their own ``class_path=``.
+    Returns:
+        The override path, or ``None`` for inherited constructors (subclasses
+        export ``__module__.__qualname__`` unless they re-decorate).
     """
     owned_init = cls.__dict__.get("__init__")
     if owned_init is None:
@@ -138,10 +133,6 @@ def resolve_public_class_path(cls: type) -> str:
         msg = f"class_path {path!r} resolves to {resolved!r}, expected exactly {cls!r}"
         raise ComponentConfigError(msg)
     return path
-
-
-# Private alias kept for call sites that predate the public name.
-_resolve_public_class_path = resolve_public_class_path
 
 
 def _component_path_prefix(value: object) -> str:
@@ -199,7 +190,7 @@ def to_config(
         )
         raise ComponentConfigError(msg)
 
-    class_path = _resolve_public_class_path(type(value))
+    class_path = resolve_public_class_path(type(value))
     init_args: dict[str, JsonValue] = {}
     for key, item in captured.items():
         init_args[key] = normalize_value(
@@ -262,7 +253,7 @@ def _flatten_var_kwargs(
             # Seal so normalize fails at to_config (no silent JSON nest).
             supplied[key] = _NonScalarVarKwarg(key)
         else:
-            supplied[key] = snapshot_captured_value(value, keep_by_reference=is_config_exportable)
+            supplied[key] = snapshot_captured_value(value)
 
 
 def _decorate_export_config(
@@ -312,11 +303,7 @@ def _decorate_export_config(
         bound = signature.bind(self, *args, **kwargs)
         # Do not apply_defaults — omit unsupplied arguments so reconstruction
         # uses current constructor defaults.
-        supplied = {
-            name: snapshot_captured_value(value, keep_by_reference=is_config_exportable)
-            for name, value in bound.arguments.items()
-            if name != "self"
-        }
+        supplied = {name: snapshot_captured_value(value) for name, value in bound.arguments.items() if name != "self"}
         if var_kw_name is not None and var_kw_name in supplied:
             _flatten_var_kwargs(
                 supplied,

@@ -357,14 +357,13 @@ def normalize_value(
 def snapshot_captured_value(
     value: object,
     *,
-    keep_by_reference: Callable[[object], bool] | None = None,
     memo: dict[int, object] | None = None,
 ) -> object:
-    """Deep-snapshot built-in mutable containers; keep selected values by reference.
+    """Deep-snapshot built-in mutable containers; keep other values by reference.
 
-    Nested exportable components (and other values matching
-    *keep_by_reference*) are retained by identity so their own conversion
-    remains authoritative. Cyclic containers are preserved via *memo* so
+    Non-container values — including nested exportable components and domain
+    values — are retained by identity so their own conversion remains
+    authoritative. Cyclic containers are preserved via *memo* so
     :func:`~physicalai.config.to_config` can reject them during normalization.
 
     Returns:
@@ -381,23 +380,17 @@ def snapshot_captured_value(
             result: dict[object, object] = {}
             memo[obj_id] = result
             for key, item in value.items():
-                result[key] = snapshot_captured_value(item, keep_by_reference=keep_by_reference, memo=memo)
+                result[key] = snapshot_captured_value(item, memo=memo)
             snap: object = result
         elif isinstance(value, list):
             result_list: list[object] = []
             memo[obj_id] = result_list
-            result_list.extend(
-                snapshot_captured_value(item, keep_by_reference=keep_by_reference, memo=memo) for item in value
-            )
+            result_list.extend(snapshot_captured_value(item, memo=memo) for item in value)
             snap = result_list
         else:
             memo[obj_id] = value
-            snap = tuple(
-                snapshot_captured_value(item, keep_by_reference=keep_by_reference, memo=memo) for item in value
-            )
+            snap = tuple(snapshot_captured_value(item, memo=memo) for item in value)
             memo[obj_id] = snap
         return snap
 
-    if keep_by_reference is not None and keep_by_reference(value):
-        return value
     return value

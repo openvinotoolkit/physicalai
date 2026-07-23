@@ -40,15 +40,7 @@ _SERVICE_NAME_EXPECTED_PARTS = 5
 
 
 def _coerce_camera_recipe(camera: object) -> ComponentConfig | Mapping[str, object]:
-    """Accept a ComponentConfig mapping or a live exportable camera recipe.
-
-    ``instantiate()`` recursively builds nested ``class_path`` configs into live
-    cameras before calling this constructor; spawn still needs a JSON recipe for
-    the publisher subprocess. Live cameras are converted with :func:`to_config`.
-    Connected cameras are rejected — same rule as :meth:`SharedCamera.from_camera`.
-
-    Args:
-        camera: ComponentConfig mapping or disconnected ``@export_config`` camera.
+    """Accept a ComponentConfig mapping or a disconnected ``@export_config`` camera.
 
     Returns:
         A mapping suitable for :func:`normalize_camera_config`.
