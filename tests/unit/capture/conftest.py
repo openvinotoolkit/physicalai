@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import importlib.util
-import sys
 from typing import TYPE_CHECKING
 
 import pytest
@@ -18,12 +17,16 @@ if TYPE_CHECKING:
 
 HAS_ICEORYX2 = importlib.util.find_spec("iceoryx2") is not None
 
+FAKE_CAMERA_CLASS = "tests.unit.capture.fake.FakeCamera"
+
 
 @pytest.fixture
 def fake_camera_spec() -> CameraSpec:
     from physicalai.capture.transport._spec import CameraSpec  # noqa: PLC0415
 
-    return CameraSpec(camera_type="fake", camera_kwargs={})
+    return CameraSpec(
+        camera={"class_path": FAKE_CAMERA_CLASS, "init_args": {}},
+    )
 
 
 @pytest.fixture

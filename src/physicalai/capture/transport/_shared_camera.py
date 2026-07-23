@@ -1,7 +1,16 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared-memory camera subscriber transport based on iceoryx2."""
+"""Shared-memory camera subscriber transport based on iceoryx2.
+
+Construction is :class:`~physicalai.config.ComponentConfig`-only via
+``camera=``, :meth:`SharedCamera.from_config`, or :meth:`from_camera`.
+Prefer :meth:`from_config` when sharing; :meth:`from_camera` is export-only
+sugar after disconnect. Pass ``camera=None`` with ``service_name`` (or use
+:meth:`from_publisher`) for attach-only. Flat ``camera_type`` /
+``camera_kwargs`` are unsupported. The publisher owns the device exclusively —
+do not keep a direct camera open on the same hardware while sharing.
+"""
 
 from __future__ import annotations
 
@@ -9,21 +18,22 @@ import contextlib
 import ctypes
 import time
 from importlib import import_module
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from loguru import logger
 
-from physicalai.capture.camera import Camera, CameraType, ColorMode
+from physicalai.capture.camera import Camera, ColorMode
 from physicalai.capture.errors import CaptureError, CaptureTimeoutError, NotConnectedError
 
 from ._header import FrameHeader, decode_header, decode_rgb
+from ._spec import derive_service_name, normalize_camera_config
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from physicalai.capture.frame import Frame
     from physicalai.capture.transport._publisher import CameraPublisher
+    from physicalai.config import ComponentConfig
 
 
 _SERVICE_NAME_EXPECTED_PARTS = 5
@@ -74,16 +84,6 @@ def _probe_with_retry(service_name: str, timeout: float, interval: float = 0.1) 
         time.sleep(interval)
 
 
-def _derive_service_name(camera_type: str, camera_kwargs: Mapping[str, object]) -> str:
-    device_id = camera_kwargs.get("serial_number", camera_kwargs.get("device", 0))
-    # Resolve symlinks so that /dev/v4l/by-id/... and /dev/videoN produce
-    # the same service name for the same physical device.
-    if isinstance(device_id, str) and device_id.startswith("/dev/"):
-        resolved = Path(device_id).resolve()
-        device_id = resolved.name
-    return f"physicalai/camera/{camera_type}/{device_id}/frame"
-
-
 class SharedCamera(Camera):
     """Camera subscriber that reads frames from shared memory via iceoryx2.
 
@@ -91,21 +91,32 @@ class SharedCamera(Camera):
     Multiple SharedCamera instances can subscribe to the same publisher
     for zero-copy fan-out.
 
+    Prefer :meth:`from_config` when sharing. :meth:`from_camera` is export-only
+    sugar after disconnect — never keep a direct camera open while sharing.
+    The constructor takes ``camera: ComponentConfig`` to spawn, or
+    ``camera=None`` + ``service_name`` for attach-only (:meth:`from_publisher`
+    is the explicit form).
+
+    The publisher subprocess owns the device exclusively. Another connected
+    holder of the same hardware will cause open to fail; this API does not
+    hand off an already-open device into the child.
+
     Args:
-        camera_type: Logical camera type (auto-spawn mode), or ``None`` to
-            subscribe to an existing publisher only.
-        color_mode: Pixel format for returned frames.
+        camera: Trusted camera :class:`~physicalai.config.ComponentConfig` to
+            spawn if no publisher exists yet for the derived or explicit
+            ``service_name``. ``None`` means attach-only.
+        color_mode: Pixel format preference for this subscriber.
         zero_copy: If True, returned frames reference the iceoryx2 SHM
             buffer directly (read-only). Otherwise, frames are copied.
-        service_name: Override the iceoryx2 service name. Defaults to one
-            derived from ``camera_type`` and identifying ``camera_kwargs``.
+        service_name: iceoryx2 service name. Derived for built-in
+            ``class_path`` values when omitted; required for third-party
+            cameras and for attach-only.
         validate_on_connect: If True and an existing publisher's frame
             dimensions do not match ``width``/``height`` in
-            ``camera_kwargs``, :meth:`connect` raises
+            ``camera.init_args``, :meth:`connect` raises
             :class:`CaptureError`. If False (default), the mismatch is
             logged as a warning and the existing publisher's resolution
-            is used. This validation applies only during
-            :meth:`connect`.
+            is used.
         overwrite_settings: If True, attempt to reconfigure the publisher
             to match requested settings on config mismatch. Requires
             the publisher to support the control channel (phase 2+).
@@ -117,39 +128,28 @@ class SharedCamera(Camera):
 
     def __init__(
         self,
-        camera_type: CameraType | str | None,
         *,
-        color_mode: ColorMode = ColorMode.RGB,
+        camera: ComponentConfig | Mapping[str, object] | None = None,
+        color_mode: ColorMode | str = ColorMode.RGB,
         zero_copy: bool = False,
         service_name: str | None = None,
         validate_on_connect: bool = False,
         overwrite_settings: bool = False,
         idle_timeout: float = 5.0,
-        camera_kwargs: Mapping[str, object] | None = None,
-        **extra_camera_kwargs: object,
     ) -> None:
-        try:
-            camera_type = CameraType(camera_type) if camera_type is not None else None
-        except ValueError as exc:
-            valid = ", ".join(m.value for m in CameraType)
-            msg = f"unknown camera_type {camera_type!r}; expected one of: {valid}"
-            raise ValueError(msg) from exc
-
-        if camera_type is None and service_name is None:
-            msg = "must provide camera_type or service_name"
+        if camera is None and service_name is None:
+            msg = "must provide camera ComponentConfig or service_name"
             raise ValueError(msg)
 
-        merged_camera_kwargs: dict[str, object] = {**(camera_kwargs or {}), **extra_camera_kwargs}
-
-        if camera_type is not None:
-            service_name = _derive_service_name(camera_type, merged_camera_kwargs)
+        normalized = None if camera is None else normalize_camera_config(camera)
+        if normalized is not None:
+            service_name = derive_service_name(normalized, service_name=service_name)
         elif service_name is None:
-            msg = "service_name must be provided if camera_type is None"
+            msg = "service_name must be provided if camera is None"
             raise ValueError(msg)
 
         super().__init__(color_mode=color_mode)
-        self._camera_type = camera_type
-        self._camera_kwargs = merged_camera_kwargs
+        self._camera = normalized
         self._service_name: str = service_name
         self._zero_copy = zero_copy
         self._validate_on_connect = validate_on_connect
@@ -166,18 +166,136 @@ class SharedCamera(Camera):
         self._listener: Any | None = None
 
     @classmethod
-    def from_publisher(
+    def from_config(
         cls,
-        service_name: str,
+        config: ComponentConfig | Mapping[str, object],
         *,
-        color_mode: ColorMode = ColorMode.RGB,
+        service_name: str | None = None,
+        color_mode: ColorMode | str = ColorMode.RGB,
         zero_copy: bool = False,
         validate_on_connect: bool = False,
         overwrite_settings: bool = False,
         idle_timeout: float = 5.0,
     ) -> SharedCamera:
+        """Primary API: spawn/attach from a trusted camera ComponentConfig.
+
+        Args:
+            config: Trusted ``class_path`` + ``init_args`` for the camera.
+            service_name: Explicit iceoryx2 name; derived for built-ins when omitted.
+            color_mode: Subscriber pixel-format preference.
+            zero_copy: Whether frames reference SHM directly.
+            validate_on_connect: Raise on resolution mismatch at connect.
+            overwrite_settings: Reconfigure publisher on mismatch.
+            idle_timeout: Idle self-exit timeout for a spawned publisher.
+
+        Returns:
+            A ``SharedCamera`` that stores the normalized ComponentConfig and
+            writes only the new publisher stdin shape on spawn.
+        """
         return cls(
-            None,
+            camera=config,
+            service_name=service_name,
+            color_mode=color_mode,
+            zero_copy=zero_copy,
+            validate_on_connect=validate_on_connect,
+            overwrite_settings=overwrite_settings,
+            idle_timeout=idle_timeout,
+        )
+
+    @classmethod
+    def from_camera(
+        cls,
+        camera: Camera,
+        *,
+        service_name: str | None = None,
+        color_mode: ColorMode | str = ColorMode.RGB,
+        zero_copy: bool = False,
+        validate_on_connect: bool = False,
+        overwrite_settings: bool = False,
+        idle_timeout: float = 5.0,
+    ) -> SharedCamera:
+        """Export-only sugar over :meth:`from_config` for an opted-in live camera.
+
+        Prefer :meth:`from_config` / YAML when sharing. This method only
+        exports a construction recipe via :func:`~physicalai.config.to_config`;
+        the publisher subprocess opens the device fresh. It does **not** hand
+        off an already-open device into the child. Requires
+        :func:`~physicalai.config.is_config_exportable`. Rejects a connected
+        camera and never disconnects a caller-owned instance implicitly —
+        disconnect before calling. Other process/device holders are not
+        detected here; a busy device fails later when the publisher opens.
+
+        Args:
+            camera: Disconnected, ``@export_config``-marked camera instance.
+            service_name: Explicit iceoryx2 name; derived for built-ins when omitted.
+            color_mode: Subscriber pixel-format preference.
+            zero_copy: Whether frames reference SHM directly.
+            validate_on_connect: Raise on resolution mismatch at connect.
+            overwrite_settings: Reconfigure publisher on mismatch.
+            idle_timeout: Idle self-exit timeout for a spawned publisher.
+
+        Returns:
+            A ``SharedCamera`` built from :func:`~physicalai.config.to_config`.
+
+        Raises:
+            ValueError: If *camera* is not exportable or is still connected.
+        """
+        from physicalai.config import is_config_exportable, to_config  # noqa: PLC0415
+
+        if not is_config_exportable(camera):
+            msg = (
+                f"{type(camera).__module__}.{type(camera).__qualname__} is not "
+                "config-exportable; decorate with @export_config or pass from_config(...)"
+            )
+            raise ValueError(msg)
+        if camera.is_connected:
+            msg = (
+                "SharedCamera.from_camera() is export-only sugar and requires a "
+                "disconnected camera; the publisher opens the device fresh and "
+                "does not take over a live handle. Disconnect explicitly before "
+                "sharing, or prefer from_config(to_config(...)) / YAML without "
+                "keeping a direct camera open"
+            )
+            raise ValueError(msg)
+        return cls.from_config(
+            to_config(camera),
+            service_name=service_name,
+            color_mode=color_mode,
+            zero_copy=zero_copy,
+            validate_on_connect=validate_on_connect,
+            overwrite_settings=overwrite_settings,
+            idle_timeout=idle_timeout,
+        )
+
+    @classmethod
+    def from_publisher(
+        cls,
+        service_name: str,
+        *,
+        color_mode: ColorMode | str = ColorMode.RGB,
+        zero_copy: bool = False,
+        validate_on_connect: bool = False,
+        overwrite_settings: bool = False,
+        idle_timeout: float = 5.0,
+    ) -> SharedCamera:
+        """Attach-only construction: subscribe to an existing publisher by name.
+
+        Never spawns a publisher — :meth:`connect` times out if none is
+        reachable.
+
+        Args:
+            service_name: iceoryx2 service name of an existing publisher.
+            color_mode: Subscriber pixel-format preference.
+            zero_copy: Whether frames reference SHM directly.
+            validate_on_connect: Raise on resolution mismatch at connect.
+            overwrite_settings: Reconfigure publisher on mismatch.
+            idle_timeout: Unused for attach-only (no spawn); kept for API parity.
+
+        Returns:
+            An attach-only ``SharedCamera``.
+        """
+        return cls(
+            camera=None,
             color_mode=color_mode,
             zero_copy=zero_copy,
             service_name=service_name,
@@ -190,11 +308,11 @@ class SharedCamera(Camera):
         if self._connected:
             return
 
-        if self._camera_type is not None and not _probe_service(self._service_name):
+        if self._camera is not None and not _probe_service(self._service_name):
             from ._publisher import CameraPublisher  # noqa: PLC0415
             from ._spec import CameraSpec  # noqa: PLC0415
 
-            spec = CameraSpec(self._camera_type, self._camera_kwargs)
+            spec = CameraSpec(camera=self._camera)
             publisher = CameraPublisher(spec, self._service_name, idle_timeout=self._idle_timeout)
             try:
                 publisher.start()
@@ -202,7 +320,11 @@ class SharedCamera(Camera):
                 if _probe_with_retry(self._service_name, timeout=3.0):
                     logger.debug(f"Lost publisher race for {self._service_name} — using existing")
                 else:
-                    msg = f"failed to start camera publisher for {self._service_name}"
+                    msg = (
+                        f"failed to start camera publisher for {self._service_name}: {exc}. "
+                        "The publisher opens the device exclusively; another connected "
+                        "holder of the same hardware will cause open to fail."
+                    )
                     raise CaptureError(msg) from exc
             else:
                 self._publisher = publisher
@@ -375,6 +497,10 @@ class SharedCamera(Camera):
         """
         import json  # noqa: PLC0415
 
+        if self._camera is None:
+            msg = "reconfigure requires a camera ComponentConfig (attach-only SharedCamera has none)"
+            raise CaptureError(msg)
+
         iox2 = cast("Any", import_module("iceoryx2"))
         control_name = f"{self._service_name}/control"
 
@@ -391,12 +517,13 @@ class SharedCamera(Camera):
             msg = f"publisher does not support reconfigure (no control service at {control_name})"
             raise CaptureError(msg) from exc
 
-        camera_type = self._camera_type.value if self._camera_type is not None else None
         request_payload = json.dumps({
             "kind": "RECONFIGURE",
             "spec": {
-                "camera_type": camera_type,
-                "camera_kwargs": dict(self._camera_kwargs),
+                "camera": {
+                    "class_path": self._camera["class_path"],
+                    "init_args": dict(self._camera["init_args"]),  # type: ignore[arg-type]
+                },
             },
         }).encode()
 
@@ -507,14 +634,19 @@ class SharedCamera(Camera):
             )
 
     def _detect_mismatch(self, header: FrameHeader) -> tuple[str, str] | None:
-        """Compare header against requested kwargs.
+        """Compare header against requested camera init_args.
 
         Returns:
             ``(want_str, actual_str)`` if mismatch found, ``None`` otherwise.
         """
-        want_w = self._camera_kwargs.get("width")
-        want_h = self._camera_kwargs.get("height")
-        want_fps = self._camera_kwargs.get("fps")
+        if self._camera is None:
+            return None
+        init_args = self._camera.get("init_args", {})
+        if not isinstance(init_args, dict):
+            return None
+        want_w = init_args.get("width")
+        want_h = init_args.get("height")
+        want_fps = init_args.get("fps")
         if want_w is None and want_h is None and want_fps is None:
             return None
 

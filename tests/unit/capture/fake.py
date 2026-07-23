@@ -17,8 +17,10 @@ import numpy as np
 from physicalai.capture.camera import Camera, ColorMode
 from physicalai.capture.errors import NotConnectedError
 from physicalai.capture.frame import Frame
+from physicalai.config import export_config
 
 
+@export_config
 class FakeCamera(Camera):
     """In-memory camera that produces synthetic frames.
 

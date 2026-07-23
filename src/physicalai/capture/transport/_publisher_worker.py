@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import ctypes
+import errno
 import importlib
 import json
 import os
@@ -27,7 +28,53 @@ if TYPE_CHECKING:
 _MAX_CONSECUTIVE_FAILURES = 5
 _CONTROL_MAX_SLICE_LEN = 4096
 
+# Substrings that reliably indicate the device is held by another opener.
+_BUSY_MESSAGE_MARKERS = (
+    "device or resource busy",
+    "resource busy",
+    "already in use",
+    "device busy",
+)
+
 shutdown = threading.Event()
+
+
+def _looks_like_device_busy(exc: BaseException) -> bool:
+    """Return True when *exc* (or its cause chain) indicates a busy device.
+
+    Only matches ``errno.EBUSY`` and well-known busy message substrings —
+    does not guess from generic permission or open failures.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, OSError) and current.errno == errno.EBUSY:
+            return True
+        text = str(current).lower()
+        if any(marker in text for marker in _BUSY_MESSAGE_MARKERS):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _format_camera_open_error(exc: BaseException) -> str:
+    """Format a camera open/connect failure for the READY/ERROR handshake.
+
+    When a busy device is detectable, append exclusive-ownership guidance.
+
+    Returns:
+        Error string for the publisher ``ERROR:`` handshake line.
+    """
+    base = f"{type(exc).__name__}: {exc}"
+    if not _looks_like_device_busy(exc):
+        return base
+    return (
+        f"{base}. The publisher subprocess opens the camera exclusively; "
+        "another process or a still-connected direct Camera holding the same "
+        "device will cause open to fail. Disconnect other holders and prefer "
+        "SharedCamera.from_config without keeping a live direct camera open."
+    )
 
 
 def sigterm_handler(_signum: int, _frame: FrameType | None) -> None:
@@ -85,18 +132,25 @@ def build_camera(config: dict) -> Camera:
     """Instantiate a camera from a JSON config dict.
 
     Args:
-        config: Configuration dict with camera_type, camera_kwargs, and
-            optional _factory_override.
+        config: Publisher envelope with ``camera: ComponentConfig``, and
+            optional ``_factory_override`` for tests.
 
     Returns:
-        Connected camera instance.
+        Camera instance (not yet connected).
     """
     factory_override = config.get("_factory_override")
     if factory_override:
+        from physicalai.capture.transport._spec import CameraSpec  # noqa: PLC0415
+
+        # Validate / reject flat keys even on the factory-override path.
+        spec = CameraSpec.from_json_dict(config)
         module_path, _, attr = factory_override.rpartition(":")
         mod = importlib.import_module(module_path)
         factory = getattr(mod, attr)
-        return factory(**config.get("camera_kwargs", {}))
+        init_args = spec.camera.get("init_args", {})
+        if not isinstance(init_args, dict):
+            init_args = {}
+        return factory(**init_args)
 
     from physicalai.capture.transport._spec import CameraSpec  # noqa: PLC0415, PLC2701
 
@@ -105,16 +159,19 @@ def build_camera(config: dict) -> Camera:
 
 
 def _camera_fps_from_config(config: dict[str, object]) -> int:
-    """Extract fps from camera config when camera_kwargs is mapping-like.
+    """Extract fps from camera ComponentConfig init_args.
 
     Returns:
-        Requested fps value, or 0 when camera_kwargs is absent or invalid.
+        Requested fps value, or 0 when absent or invalid.
     """
-    camera_kwargs = config.get("camera_kwargs")
-    if not isinstance(camera_kwargs, dict):
+    camera = config.get("camera")
+    if not isinstance(camera, dict):
+        return 0
+    init_args = camera.get("init_args")
+    if not isinstance(init_args, dict):
         return 0
 
-    fps = camera_kwargs.get("fps", 0)
+    fps = init_args.get("fps", 0)
     return int(fps)
 
 
@@ -222,9 +279,17 @@ def _handle_reconfigure(state: _PublisherState, request: dict, service_name: str
         old_camera = state.camera
         old_fps = state.camera_fps
 
-        new_config = {
-            "camera_type": spec_data.get("camera_type", old_config.get("camera_type")),
-            "camera_kwargs": spec_data.get("camera_kwargs", {}),
+        from physicalai.config import ComponentConfigError  # noqa: PLC0415
+
+        from ._spec import validate_publisher_config  # noqa: PLC0415
+
+        try:
+            camera_cfg = validate_publisher_config(spec_data)
+        except (TypeError, ValueError, ComponentConfigError) as exc:
+            return {"ok": False, "error": f"invalid reconfigure spec: {exc}"}
+
+        new_config: dict[str, object] = {
+            "camera": dict(camera_cfg),
             "service_name": service_name,
         }
         # Preserve factory override if present in original config
@@ -241,6 +306,7 @@ def _handle_reconfigure(state: _PublisherState, request: dict, service_name: str
             new_camera.connect()
         except Exception as exc:  # noqa: BLE001
             logger.error(f"Reconfigure failed for {service_name}: {exc}. Attempting restore.")
+            open_err = _format_camera_open_error(exc)
             try:
                 restored_camera = build_camera(old_config)
                 restored_camera.connect()
@@ -252,8 +318,8 @@ def _handle_reconfigure(state: _PublisherState, request: dict, service_name: str
                     f"Cannot restore old config for {service_name} — shutting down.",
                 )
                 shutdown.set()
-                return {"ok": False, "error": f"reconfigure failed and restore failed: {exc}"}
-            return {"ok": False, "error": str(exc)}
+                return {"ok": False, "error": f"reconfigure failed and restore failed: {open_err}"}
+            return {"ok": False, "error": open_err}
 
         new_fps = _camera_fps_from_config(new_config)
         state.camera = new_camera
@@ -344,7 +410,7 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0914, PLR0915
         if saved_stdout_fd is not None:
             restore_stdout(saved_stdout_fd)
             saved_stdout_fd = None
-        signal_error(f"{type(exc).__name__}: {exc}", tb=traceback.format_exc())
+        signal_error(_format_camera_open_error(exc), tb=traceback.format_exc())
         if camera is not None:
             try:
                 camera.disconnect()

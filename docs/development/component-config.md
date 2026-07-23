@@ -479,41 +479,35 @@ Per-arm `SharedRobot` wrapping of nested arms is out of scope.
 ### Cameras
 
 Camera implementations opt in using public class paths. This supports
-third-party cameras without extending the `create_camera()` registry.
+third-party cameras without extending the `create_camera()` registry for
+shared spawn.
 
-Today's `CameraSpec(camera_type, camera_kwargs)` cannot preserve a third-party
-class path because `build()` routes through the built-in `create_camera()`
-registry. Supporting third-party replay therefore requires a semantic
-transport migration, not a wrapper translation.
-
-Change the private publisher envelope to contain `camera: ComponentConfig`
-plus transport fields including `service_name`; `build()` delegates to
-`instantiate()` and verifies the result satisfies `Camera`. This is a private
-startup-wire **hard cutover** in the same PR as the SharedCamera spawn path:
-rewrite the envelope, update fixtures/tests, and drop the legacy
-`camera_type` + `camera_kwargs` reader. No `config_format` field and no
-dual-read. Normalize built-in names to public class paths in the new shape.
-Third-party camera sharing is not supported until this step lands.
+The private publisher envelope contains `camera: ComponentConfig` plus
+transport fields including `service_name`; `build()` delegates to
+`instantiate()` and verifies the result satisfies `Camera`. Writers and
+readers speak only this shape. Flat `camera_type` + `camera_kwargs` are
+rejected before import. Built-in names are public class paths in the new
+shape.
 
 #### SharedCamera service naming
 
 Transport owns naming; `ComponentConfig` never embeds `service_name`.
 
-Today spawn derives
-`physicalai/camera/{camera_type}/{device_id}/frame` from the registry enum.
-After the envelope migration there is no `camera_type` on the construction
-config. Rules:
+Spawn has no `camera_type` on the construction config. Rules:
 
-- **Built-in spawn:** a private map from public `class_path` to the legacy
-  `CameraType` token (`uvc`, `ip`, `realsense`, `basler`, `genicam`). That map
-  lives in **capture transport**, not in `physicalai.config`. Derive
-  `service_name` with the existing scheme using that token plus device id from
-  `init_args` (`serial_number` else `device`, including `/dev/` symlink
-  resolve). This preserves existing attacher discovery.
-- **Third-party spawn:** require an explicit `service_name` on `SharedCamera` /
-  the publisher envelope; fail before publisher start if missing. Do not hash
-  `class_path` or `init_args` into a name (unstable across arg ordering and
-  omitted defaults).
+- **Shareable built-in spawn:** a private map from public `class_path` to the
+  legacy `CameraType` token for backends with a real driver under `cameras/`
+  (`uvc`, `realsense`, `basler` only). That map lives in capture transport
+  (`builtin.py`), not in `physicalai.config`. Derive `service_name` with the
+  existing scheme using that token plus device id from `init_args`
+  (`serial_number` else `device`, including `/dev/` symlink resolve). This
+  preserves existing attacher discovery.
+- **Stub / non-shareable registry types and third-party spawn:** `ip` and
+  `genicam` are intentionally absent from the map (same rule as third-party).
+  Require an explicit `service_name` on `SharedCamera` / the publisher
+  envelope; fail before publisher start if missing. Do not hash `class_path`
+  or `init_args` into a name (unstable across arg ordering and omitted
+  defaults).
 - **Attach-only:** unchanged — `service_name` required; no construction config
   needed.
 - The publisher payload carries `service_name` **alongside**
@@ -665,9 +659,10 @@ v1 rules:
    absolutizing paths; that is out of scope for v1.
 
 `port` remains absolute (`/dev/…`); relative serial ports are unsupported.
-Camera URL/stream fields are not filesystem paths. The built-in camera
-`class_path` → `CameraType` map lives in **capture transport**, not in
-`physicalai.config`.
+Camera URL/stream fields are not filesystem paths. The shareable built-in
+camera `class_path` → `CameraType` map (`uvc` / `realsense` / `basler`) lives
+in **capture transport** (`builtin.py`), not in `physicalai.config`. Stub
+types (`ip`, `genicam`) are not in that map.
 
 ### Public SharedRobot, CLI, and metadata
 
@@ -705,16 +700,19 @@ three APIs:
   API. Transport kwargs (zero-copy, validation, idle timeout, …) stay on the
   SharedCamera / publisher side, never inside `ComponentConfig`.
 - **`SharedCamera.from_camera(camera, *, service_name=None, …)`** — sugar:
-  require `is_config_exportable(camera)`, reject if `camera.is_connected()`
+  require `is_config_exportable(camera)`, reject if `camera.is_connected`
   (fail before publisher spawn), never disconnect a caller-owned live camera
   implicitly, then `from_config(to_config(camera), …)`. No ad-hoc kwargs
   scrape.
-- **Constructor adapter:** accept `camera: ComponentConfig` **XOR** legacy
-  `camera_type` + kwargs. Passing both is an error. Legacy flat form packs
-  `camera: ComponentConfig` and writes only the new stdin.
-- **Who derives `service_name`:** `from_config` and the adapter constructor.
-  If `service_name` is omitted and `class_path` is a known built-in, derive
-  via the transport map + device id from `init_args`. If third-party and
+- **Constructor:** accept `camera: ComponentConfig` to spawn, or
+  `camera=None` + `service_name` for attach-only (prefer
+  :meth:`SharedCamera.from_publisher`). Flat `camera_type` /
+  `camera_kwargs` are unsupported on the public API and publisher stdin
+  (rejected before import) — not a dual adapter API.
+- **Who derives `service_name`:** `from_config` and the constructor.
+  If `service_name` is omitted and `class_path` is a shareable built-in
+  (`uvc` / `realsense` / `basler`), derive via the transport map + device id
+  from `init_args`. If stub (`ip` / `genicam`) or third-party and
   `service_name` is omitted, fail before spawn. The publisher envelope always
   carries a concrete `service_name`; the child never re-derives it.
 - **Attach-only / `from_publisher(service_name=…)`:** unchanged.
@@ -860,10 +858,13 @@ specific subclasses only where tests or callers distinguish phases.
 5. Wire camera implementations, then hard-cutover the camera publisher stdin
    to `camera: ComponentConfig` with `service_name` beside it (same PR:
    rewrite fixtures; no dual-read). Add `SharedCamera.from_config()` /
-   `from_camera()`, XOR adapter ctor, and transport-owned built-in
-   class-path → type-token map for derived names; third-party requires
-   explicit `service_name`. Do not claim third-party shared camera support
-   before this lands.
+   `from_camera()`; public ctor accepts only `camera=` / `from_config` /
+   `from_camera` (flat `camera_type` / `camera_kwargs` unsupported on public
+   API and stdin — same post-step-4 SharedRobot simplification). Transport-
+   owned shareable class-path → type-token map (`uvc` / `realsense` /
+   `basler`) for derived names; stub (`ip` / `genicam`) and third-party
+   require explicit `service_name`. Do not claim third-party shared camera
+   support before this lands.
 6. Wire the exact PolicySource graph listed above, `TeleopSource`, path-rooted
    `InferenceModel` configuration, and the v1 callback set.
 7. Wire `RobotRuntime` and verify emitted nested configs load through both
@@ -921,15 +922,16 @@ cutovers; do not describe them as schema-preserving.
 - Robot owner and camera publisher subprocess handshakes remain JSON-only,
   accept only the new `robot:` / `camera: ComponentConfig` shape, and reject
   unsupported flat stdin (`robot_class` / `camera_type` forms) before import.
-- Built-in SharedCamera spawn derives the legacy `service_name` via the
-  transport class-path → type-token map inside `from_config` / the adapter
-  ctor; third-party spawn without explicit `service_name` fails before
-  publisher start; the publisher envelope carries a concrete `service_name`
-  not inside `init_args`.
+- Shareable SharedCamera spawn (`uvc` / `realsense` / `basler`) derives the
+  legacy `service_name` via the transport class-path → type-token map inside
+  `from_config` / the constructor; stub (`ip` / `genicam`) and third-party
+  spawn without explicit `service_name` fails before publisher start; the
+  publisher envelope carries a concrete `service_name` not inside
+  `init_args`.
 - `SharedCamera.from_camera()` is sugar over `from_config(to_config(...))`,
   requires exportability, rejects connected cameras before publisher spawn,
-  and never disconnects implicitly; public ctor XOR-rejects simultaneous
-  `camera` and legacy `camera_type` + kwargs.
+  and never disconnects implicitly; public ctor and publisher stdin reject
+  flat `camera_type` / `camera_kwargs` as unsupported (not a dual API).
 - Third-party camera class paths survive the publisher envelope and bypass the
   built-in camera registry.
 - Public `SharedRobot` ctor and `physicalai robot serve` accept only

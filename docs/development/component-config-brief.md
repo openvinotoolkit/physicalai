@@ -49,8 +49,10 @@ flowchart LR
 
 - Robots (SO101, WidowX, bimanual as one owner), cameras, PolicySource graph,
   path-rooted `InferenceModel`, RobotRuntime + listed callbacks
-- SharedCamera: built-in `service_name` derived in transport; third-party must
-  pass an explicit name
+- SharedCamera: ComponentConfig-only (`camera=` / `from_config` /
+  `from_camera`); shareable built-in `service_name` derived in transport
+  (`uvc` / `realsense` / `basler`); stubs (`ip` / `genicam`) and third-party
+  must pass an explicit name; flat `camera_type` / `camera_kwargs` rejected
 - Trust: `instantiate` only on local / parent→child config — never network metadata
 
 ## Out of scope (v1)

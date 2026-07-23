@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from physicalai.capture.camera import Camera, ColorMode
 from physicalai.capture.cameras.uvc._camera_setting import CameraSetting  # noqa: PLC2701
+from physicalai.config import export_config
 
 if TYPE_CHECKING:
     from physicalai.capture.cameras.uvc.v4l2 import V4L2Camera
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
     from physicalai.capture.frame import Frame
 
 
+@export_config(class_path="physicalai.capture.UVCCamera")
 class UVCCamera(Camera):
     """Camera facade for UVC devices (USB Video Class).
 

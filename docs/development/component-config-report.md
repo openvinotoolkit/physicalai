@@ -208,26 +208,27 @@ flowchart TB
 
 ### SharedCamera naming
 
-| Mode              | `service_name`                                                             |
-| ----------------- | -------------------------------------------------------------------------- |
-| Built-in spawn    | Derived in transport: `class_path` → legacy `CameraType` token + device id |
-| Third-party spawn | **Required** explicit name (no hashing)                                    |
-| Attach-only       | Required; no construction config                                           |
+| Mode                     | `service_name`                                                                                     |
+| ------------------------ | -------------------------------------------------------------------------------------------------- |
+| Shareable built-in spawn | Derived in transport (`builtin.py`): `class_path` → `uvc` / `realsense` / `basler` + device id     |
+| Stub / third-party spawn | **Required** explicit name (`ip` / `genicam` not in the map; same rule as third-party; no hashing) |
+| Attach-only              | Required; no construction config                                                                   |
 
 `service_name` lives **beside** `camera: ComponentConfig`, never inside `init_args`.
 
 ### Public API
 
-| Surface                | Accept                                           | Preferred                     |
-| ---------------------- | ------------------------------------------------ | ----------------------------- |
-| `SharedRobot`          | `robot=` ComponentConfig (or `None` / `attach`)  | `from_config` / `from_robot`  |
-| `SharedCamera`         | `camera=` **xor** `camera_type`+kwargs (adapter) | `from_config` / `from_camera` |
-| CLI `physicalai robot` | `--robot` ComponentConfig (required)             | `--robot`                     |
-| Metadata               | Keep key `robot_class`                           | Value = public `class_path`   |
+| Surface                | Accept                                          | Preferred                     |
+| ---------------------- | ----------------------------------------------- | ----------------------------- |
+| `SharedRobot`          | `robot=` ComponentConfig (or `None` / `attach`) | `from_config` / `from_robot`  |
+| `SharedCamera`         | `camera=` ComponentConfig (or `None` / attach)  | `from_config` / `from_camera` |
+| CLI `physicalai robot` | `--robot` ComponentConfig (required)            | `--robot`                     |
+| Metadata               | Keep key `robot_class`                          | Value = public `class_path`   |
 
 Flat `robot_class` / `robot_kwargs` on SharedRobot, serve CLI, and owner stdin
-are unsupported (rejected on stdin; removed from the public API). Camera
-still keeps a temporary XOR adapter until its cutover step.
+are unsupported (rejected on stdin; removed from the public API). Flat
+`camera_type` / `camera_kwargs` on SharedCamera and publisher stdin are
+likewise unsupported — ComponentConfig-only, matching SharedRobot.
 
 `from_robot` / `from_camera`: require exportable, **reject if connected**, never disconnect implicitly.
 
