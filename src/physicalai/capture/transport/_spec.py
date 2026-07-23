@@ -16,7 +16,6 @@ never originate from network-received data.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,12 +23,11 @@ from typing import TYPE_CHECKING, Any
 
 from physicalai.config import (
     ComponentConfig,
-    ComponentConfigError,
     instantiate,
-    resolve_public_class_path,
-    validate_component_config,
+    normalize_class_reference,
+    normalize_component_config,
+    validate_envelope,
 )
-from physicalai.config.importing import import_dotted_path
 
 from .builtin import builtin_type_for_class_path
 
@@ -52,104 +50,38 @@ _PUBLISHER_ENVELOPE_KEYS = frozenset({
 def validate_publisher_config(data: Mapping[str, Any]) -> Mapping[str, object]:
     """Validate a publisher stdin or reconfigure payload schema-positively.
 
-    Requires ``camera`` with a valid ComponentConfig shape. Allows only known
-    transport envelope keys. Unknown keys (including legacy flat
-    ``camera_type`` / ``camera_kwargs``) raise a clear schema error.
-
-    Args:
-        data: Full publisher stdin dict or a reconfigure ``spec`` fragment.
-
     Returns:
         The validated ``camera`` ComponentConfig mapping (not yet
-        public-path-normalized — :class:`CameraSpec` / ``normalize_camera_config``
-        do that).
-
-    Raises:
-        TypeError: If *data* is not a mapping, or ``camera`` is not a mapping.
-        ValueError: If required ``camera`` is missing or unknown keys are present.
+        public-path-normalized — :func:`normalize_camera_config` does that).
     """
-    if not isinstance(data, Mapping):
-        msg = f"publisher config must be a mapping, got {type(data).__name__}"
-        raise TypeError(msg)
-
-    unknown = sorted(set(data) - _PUBLISHER_ENVELOPE_KEYS)
-    if unknown:
-        msg = (
-            f"unknown publisher config keys {unknown}; "
-            "require 'camera' with class_path + init_args "
-            f"(allowed envelope keys: {sorted(_PUBLISHER_ENVELOPE_KEYS)})"
-        )
-        raise ValueError(msg)
-
-    if "camera" not in data:
-        msg = "publisher config missing required 'camera' ComponentConfig"
-        raise ValueError(msg)
-
-    camera = data["camera"]
-    if not isinstance(camera, Mapping):
-        msg = f"publisher 'camera' must be a mapping, got {type(camera).__name__}"
-        raise TypeError(msg)
-
-    return validate_component_config(dict(camera), path="camera")
+    return validate_envelope(
+        data,
+        component_key="camera",
+        allowed_keys=_PUBLISHER_ENVELOPE_KEYS,
+        envelope_name="publisher",
+    )
 
 
 def normalize_camera_class(camera_class: type | str) -> str:
     """Normalize a camera class reference to its public import path.
 
-    Args:
-        camera_class: A class object, or its dotted import path as a string.
-
     Returns:
         The normalized public dotted path.
-
-    Raises:
-        TypeError: If *camera_class* is neither a string nor a class, or a
-            string path does not resolve to a class.
-        ValueError: If a class object is a local class, or the public path
-            cannot be resolved.
     """
-    if isinstance(camera_class, str):
-        try:
-            resolved = import_dotted_path(camera_class)
-        except (ValueError, ImportError, AttributeError) as exc:
-            msg = f"could not import camera class_path {camera_class!r}: {exc}"
-            raise ValueError(msg) from exc
-        if not isinstance(resolved, type):
-            msg = f"camera class_path {camera_class!r} does not resolve to a class (got {type(resolved).__name__})"
-            raise TypeError(msg)
-        camera_class = resolved
-    if not isinstance(camera_class, type):
-        msg = f"camera class_path must be a class or a dotted path string, got {type(camera_class).__name__}"
-        raise TypeError(msg)
-
-    try:
-        return resolve_public_class_path(camera_class)
-    except ComponentConfigError as exc:
-        raise ValueError(str(exc)) from exc
+    return normalize_class_reference(camera_class, label="camera class_path")
 
 
 def normalize_camera_config(camera: Mapping[str, object]) -> ComponentConfig:
     """Validate a camera ComponentConfig and normalize ``class_path``.
 
-    Args:
-        camera: Candidate ``class_path`` + ``init_args`` mapping.
-
     Returns:
         A validated config whose ``class_path`` is the public import path.
-
-    Raises:
-        ValueError: If ``class_path`` cannot be imported or is not JSON-safe
-            together with ``init_args``.
     """
-    validated = validate_component_config(dict(camera), path="camera")
-    class_path = normalize_camera_class(validated["class_path"])
-    init_args = validated["init_args"]
-    try:
-        json.dumps({"class_path": class_path, "init_args": init_args})
-    except TypeError as exc:
-        msg = f"camera.init_args must be JSON-serializable: {exc}"
-        raise ValueError(msg) from exc
-    return {"class_path": class_path, "init_args": dict(init_args)}
+    return normalize_component_config(
+        camera,
+        component_key="camera",
+        class_label="camera class_path",
+    )
 
 
 def derive_service_name(

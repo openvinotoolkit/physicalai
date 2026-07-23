@@ -153,8 +153,6 @@ unfixable = []
 "src/physicalai/capture/transport/_header.py" = ["RUF012"]
 "src/physicalai/capture/transport/_publisher.py" = ["S603"]
 "src/physicalai/robot/transport/_owner.py" = ["S603"]
-# Lazy __getattr__ public API so physicalai.config.importing stays lightweight.
-"src/physicalai/config/__init__.py" = ["RUF067"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 15

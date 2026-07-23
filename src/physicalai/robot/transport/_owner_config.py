@@ -29,22 +29,21 @@ arbitrary module to import.
 
 from __future__ import annotations
 
-import json
 import math
-from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from physicalai.config import (
     ComponentConfig,
-    ComponentConfigError,
     instantiate,
-    resolve_public_class_path,
-    validate_component_config,
+    normalize_class_reference,
+    normalize_component_config,
+    validate_envelope,
 )
-from physicalai.config.importing import import_dotted_path
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from physicalai.robot.interface import Robot
 
 DEFAULT_RATE_HZ = 100.0
@@ -72,111 +71,39 @@ _OWNER_ENVELOPE_KEYS = frozenset({
 def validate_owner_config(data: Mapping[str, Any]) -> Mapping[str, object]:
     """Validate an owner stdin payload schema-positively.
 
-    Requires ``robot`` with a valid ComponentConfig shape. Allows only known
-    transport envelope keys. Unknown keys (including legacy flat
-    ``robot_class`` / ``robot_kwargs``) raise a clear schema error.
-
-    Args:
-        data: Full owner stdin dict.
-
     Returns:
         The validated ``robot`` ComponentConfig mapping (not yet
-        public-path-normalized — :class:`RobotOwnerConfig` /
-        :func:`normalize_robot_config` do that).
-
-    Raises:
-        TypeError: If *data* is not a mapping, or ``robot`` is not a mapping.
-        ValueError: If required ``robot`` is missing or unknown keys are present.
+        public-path-normalized — :func:`normalize_robot_config` does that).
     """
-    if not isinstance(data, Mapping):
-        msg = f"owner config must be a mapping, got {type(data).__name__}"
-        raise TypeError(msg)
-
-    unknown = sorted(set(data) - _OWNER_ENVELOPE_KEYS)
-    if unknown:
-        msg = (
-            f"unknown owner config keys {unknown}; "
-            "require 'robot' with class_path + init_args "
-            f"(allowed envelope keys: {sorted(_OWNER_ENVELOPE_KEYS)})"
-        )
-        raise ValueError(msg)
-
-    if "robot" not in data:
-        msg = "owner config missing required 'robot' ComponentConfig"
-        raise ValueError(msg)
-
-    robot = data["robot"]
-    if not isinstance(robot, Mapping):
-        msg = f"owner 'robot' must be a mapping, got {type(robot).__name__}"
-        raise TypeError(msg)
-
-    return validate_component_config(dict(robot), path="robot")
+    return validate_envelope(
+        data,
+        component_key="robot",
+        allowed_keys=_OWNER_ENVELOPE_KEYS,
+        envelope_name="owner",
+    )
 
 
 def normalize_robot_class(robot_class: type | str) -> str:
     """Normalize a robot class reference to its public import path.
 
-    Matches :func:`physicalai.config.to_config` path selection: decorator
-    ``class_path=`` override when present, otherwise
-    ``__module__.__qualname__``. String paths are imported first so a
-    defining-module path (for example ``physicalai.robot.so101.so101.SO101``)
-    becomes the public re-export (``physicalai.robot.SO101``) before store,
-    metadata advertise, and conflict compare.
-
-    Args:
-        robot_class: A class object, or its dotted import path as a string.
-
     Returns:
         The normalized public dotted path.
-
-    Raises:
-        TypeError: If *robot_class* is neither a string nor a class, or a
-            string path does not resolve to a class.
-        ValueError: If a class object is a local class, or the public path
-            cannot be resolved.
     """
-    if isinstance(robot_class, str):
-        try:
-            resolved = import_dotted_path(robot_class)
-        except (ValueError, ImportError, AttributeError) as exc:
-            msg = f"could not import robot_class {robot_class!r}: {exc}"
-            raise ValueError(msg) from exc
-        if not isinstance(resolved, type):
-            msg = f"robot_class {robot_class!r} does not resolve to a class (got {type(resolved).__name__})"
-            raise TypeError(msg)
-        robot_class = resolved
-    if not isinstance(robot_class, type):
-        msg = f"robot_class must be a class or a dotted path string, got {type(robot_class).__name__}"
-        raise TypeError(msg)
-
-    try:
-        return resolve_public_class_path(robot_class)
-    except ComponentConfigError as exc:
-        raise ValueError(str(exc)) from exc
+    return normalize_class_reference(robot_class, label="robot_class")
 
 
 def normalize_robot_config(robot: Mapping[str, object]) -> ComponentConfig:
-    """Validate a robot :class:`~physicalai.config.ComponentConfig` and normalize ``class_path``.
-
-    Args:
-        robot: Candidate ``class_path`` + ``init_args`` mapping.
+    """Validate a robot ComponentConfig and normalize ``class_path``.
 
     Returns:
         A validated config whose ``class_path`` is the public import path.
-
-    Raises:
-        ValueError: If ``class_path`` cannot be imported or is not JSON-safe
-            together with ``init_args``.
     """
-    validated = validate_component_config(dict(robot), path="robot")
-    class_path = normalize_robot_class(validated["class_path"])
-    init_args = validated["init_args"]
-    try:
-        json.dumps({"class_path": class_path, "init_args": init_args})
-    except TypeError as exc:
-        msg = f"robot.init_args must be JSON-serializable (e.g. paths as str, not objects): {exc}"
-        raise ValueError(msg) from exc
-    return {"class_path": class_path, "init_args": dict(init_args)}
+    return normalize_component_config(
+        robot,
+        component_key="robot",
+        class_label="robot_class",
+        json_hint=" (e.g. paths as str, not objects)",
+    )
 
 
 @dataclass(frozen=True)
