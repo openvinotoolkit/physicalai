@@ -891,6 +891,11 @@ specific subclasses only where tests or callers distinguish phases.
 
 ## Suggested rollout
 
+Status: steps 1–7 are implemented in Runtime, including the
+`SharedRobot` / `SharedCamera` `@export_config` construction recipes that
+enable step 8. Steps 8–10 (Studio client cutover, user-facing docs, inference
+follow-up) remain open.
+
 1. Add `ComponentConfig`, bounded normalization/instantiation, cycle checks,
    and one shared dotted-path resolver to `physicalai.config`. Consolidate the
    duplicated inference and robot importers behind that resolver
