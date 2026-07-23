@@ -78,7 +78,14 @@ def _coerce_robot_recipe(robot: object) -> ComponentConfig | Mapping[str, object
         )
         raise TypeError(msg)
     is_connected = getattr(robot, "is_connected", None)
-    if callable(is_connected) and is_connected():
+    if not callable(is_connected):
+        msg = (
+            f"{type(robot).__module__}.{type(robot).__qualname__} does not expose "
+            "the Robot protocol's is_connected() method; cannot verify it is "
+            "disconnected before sharing"
+        )
+        raise TypeError(msg)
+    if is_connected():
         msg = (
             "SharedRobot requires a disconnected driver recipe; "
             "disconnect explicitly before passing a live robot, or pass "

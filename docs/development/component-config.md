@@ -623,6 +623,11 @@ builders must return disconnected drivers for wrapping, or Studio must
 explicitly release a driver it owns before calling `from_robot()`. Prefer
 `from_config()` when no live instance is otherwise needed.
 
+The connected-state check follows each protocol's surface — `is_connected()`
+is a method on robots and a property on cameras — and a live component that
+does not expose it fails with `TypeError` instead of passing the check
+silently.
+
 ### Private startup envelopes (hard cutover)
 
 Changing `RobotOwnerConfig` from `robot_class` + `robot_kwargs` to

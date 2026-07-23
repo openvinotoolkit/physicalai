@@ -60,7 +60,14 @@ def _coerce_camera_recipe(camera: object) -> ComponentConfig | Mapping[str, obje
             "camera={{class_path, init_args}} or an @export_config camera"
         )
         raise TypeError(msg)
-    if bool(getattr(camera, "is_connected", False)):
+    if not hasattr(camera, "is_connected"):
+        msg = (
+            f"{type(camera).__module__}.{type(camera).__qualname__} does not expose "
+            "the Camera protocol's is_connected property; cannot verify it is "
+            "disconnected before sharing"
+        )
+        raise TypeError(msg)
+    if bool(camera.is_connected):
         msg = (
             "SharedCamera requires a disconnected camera recipe; "
             "disconnect explicitly before passing a live camera, or pass "
