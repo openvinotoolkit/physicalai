@@ -207,3 +207,125 @@ class TestBimanualWidowXAIComponentConfig:
         assert right_cfg["class_path"] == "physicalai.robot.WidowXAI"
         assert left_cfg["init_args"] == {"ip": "192.168.1.10", "role": "follower"}
         assert right_cfg["init_args"] == {"ip": "192.168.1.11", "role": "follower"}
+
+
+# ---------------------------------------------------------------------------
+# SharedRobot (construction recipe only — no session / connection state)
+# ---------------------------------------------------------------------------
+
+
+class TestSharedRobotComponentConfig:
+    def test_spawn_recipe_round_trip(self) -> None:
+        from physicalai.robot import SharedRobot
+
+        robot = SharedRobot(
+            "follower-arm",
+            robot={
+                "class_path": "tests.unit.robot.transport.fake.FakeRobot",
+                "init_args": {"port": "/dev/fake-shared", "device_ids": ["fake:follower"]},
+            },
+            allow_remote=True,
+            rate_hz=50.0,
+            idle_timeout=2.5,
+            connect_timeout=3.0,
+        )
+        wire = _assert_construction_round_trip(robot)
+        assert wire["class_path"] == "physicalai.robot.SharedRobot"
+        assert wire["init_args"]["name"] == "follower-arm"
+        assert wire["init_args"]["allow_remote"] is True
+        assert wire["init_args"]["rate_hz"] == 50.0
+        assert wire["init_args"]["idle_timeout"] == 2.5
+        assert wire["init_args"]["connect_timeout"] == 3.0
+        nested = wire["init_args"]["robot"]
+        assert isinstance(nested, dict)
+        assert nested["class_path"] == "tests.unit.robot.transport.fake.FakeRobot"
+        assert nested["init_args"]["port"] == "/dev/fake-shared"
+        assert nested["init_args"]["device_ids"] == ["fake:follower"]
+        # Run-state / transport handles are never part of the recipe.
+        assert "_session" not in wire["init_args"]
+        assert "_connected" not in wire["init_args"]
+        assert "session" not in wire["init_args"]
+
+    def test_attach_only_round_trip(self) -> None:
+        from physicalai.robot import SharedRobot
+
+        robot = SharedRobot("leader-arm")
+        wire = _assert_construction_round_trip(robot)
+        assert wire["class_path"] == "physicalai.robot.SharedRobot"
+        assert wire["init_args"] == {"name": "leader-arm"}
+        assert "robot" not in wire["init_args"]
+
+    def test_explicit_robot_none_round_trips(self) -> None:
+        from physicalai.robot import SharedRobot
+
+        robot = SharedRobot("attach-null", robot=None)
+        wire = _assert_construction_round_trip(robot)
+        assert wire["init_args"]["name"] == "attach-null"
+        assert wire["init_args"]["robot"] is None
+
+    def test_live_session_arg_fails_at_to_config(self) -> None:
+        from physicalai.config import ComponentConfigError
+        from physicalai.robot import SharedRobot
+
+        robot = SharedRobot("sess", _session=object())
+        with pytest.raises(ComponentConfigError, match=r"init_args\._session"):
+            to_config(robot)
+
+    def test_from_config_omits_null_session(self) -> None:
+        from physicalai.robot import SharedRobot
+
+        robot = SharedRobot.from_config(
+            {
+                "class_path": "tests.unit.robot.transport.fake.FakeRobot",
+                "init_args": {"port": "/dev/fake-from-config", "device_ids": ["fake:follower"]},
+            },
+            name="from-config-arm",
+        )
+        wire = _assert_construction_round_trip(robot)
+        assert "_session" not in wire["init_args"]
+
+    def test_from_robot_omits_null_session(self) -> None:
+        from physicalai.robot import SharedRobot
+        from tests.unit.robot.transport.fake import FakeRobot
+
+        driver = FakeRobot(port="/dev/fake-from-robot", device_ids=["fake:follower"])
+        robot = SharedRobot.from_robot(driver, name="from-robot-arm")
+        wire = _assert_construction_round_trip(robot)
+        assert "_session" not in wire["init_args"]
+
+    def test_attach_omits_null_session(self) -> None:
+        from physicalai.robot import SharedRobot
+
+        robot = SharedRobot.attach("attach-arm")
+        wire = _assert_construction_round_trip(robot)
+        assert "_session" not in wire["init_args"]
+
+    def test_classmethod_live_session_still_fails_at_to_config(self) -> None:
+        from physicalai.config import ComponentConfigError
+        from physicalai.robot import SharedRobot
+
+        session = object()
+        for robot in (
+            SharedRobot.from_config(
+                {
+                    "class_path": "tests.unit.robot.transport.fake.FakeRobot",
+                    "init_args": {"port": "/dev/fake-live", "device_ids": ["fake:follower"]},
+                },
+                name="live-from-config",
+                _session=session,
+            ),
+            SharedRobot.attach("live-attach", _session=session),
+        ):
+            with pytest.raises(ComponentConfigError, match=r"init_args\._session"):
+                to_config(robot)
+
+    def test_from_robot_still_rejects_connected(self) -> None:
+        from physicalai.robot import SharedRobot
+        from tests.unit.robot.transport.fake import FakeRobot
+
+        driver = FakeRobot(port="/dev/fake-connected")
+        driver.connect()
+        assert driver.is_connected()
+        with pytest.raises(ValueError, match="disconnected driver"):
+            SharedRobot.from_robot(driver, name="left-arm")
+        assert driver.is_connected()

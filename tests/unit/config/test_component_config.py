@@ -113,6 +113,13 @@ class WithExtras:
         self.kwargs = kwargs
 
 
+@export_config(scalar_var_kwargs=True)
+class ScalarVarKwargs:
+    def __init__(self, base: int, **kwargs: object) -> None:
+        self.base = base
+        self.kwargs = kwargs
+
+
 @export_config
 class PathHolder:
     def __init__(self, path: str | Path) -> None:
@@ -534,3 +541,42 @@ class TestExportConfig:
         point = Point(1)
         assert is_config_exportable(point)
         assert "_physicalai_export_config_depth" not in vars(point)
+
+
+class TestScalarVarKwargs:
+    def test_scalar_var_kwargs_round_trip(self) -> None:
+        obj = ScalarVarKwargs(1, count=2, flag=True, label="x", missing=None)
+        config = to_config(obj)
+        assert config["init_args"] == {
+            "base": 1,
+            "count": 2,
+            "flag": True,
+            "label": "x",
+            "missing": None,
+        }
+        restored = cast(ScalarVarKwargs, instantiate(json.loads(json.dumps(config))))
+        assert restored.base == 1
+        assert restored.kwargs == {"count": 2, "flag": True, "label": "x", "missing": None}
+
+    def test_non_scalar_dict_var_kwarg_fails(self) -> None:
+        obj = ScalarVarKwargs(1, config_blob={"a": 1})
+        with pytest.raises(ComponentConfigError, match=r"init_args\.config_blob"):
+            to_config(obj)
+
+    def test_non_scalar_list_var_kwarg_fails(self) -> None:
+        obj = ScalarVarKwargs(1, tags=["x", "y"])
+        with pytest.raises(ComponentConfigError, match=r"init_args\.tags"):
+            to_config(obj)
+
+    def test_named_mapping_still_exports_without_scalar_flag(self) -> None:
+        # Default **kwargs flattening still accepts nested JSON.
+        obj = WithExtras(1, nested={"a": 1})
+        assert to_config(obj)["init_args"]["nested"] == {"a": 1}
+
+    def test_scalar_var_kwargs_requires_var_keyword(self) -> None:
+        with pytest.raises(TypeError, match="scalar_var_kwargs=True requires"):
+
+            @export_config(scalar_var_kwargs=True)
+            class NoVarKwargs:
+                def __init__(self, x: int) -> None:
+                    self.x = x

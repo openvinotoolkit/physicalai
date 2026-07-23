@@ -32,6 +32,31 @@ if TYPE_CHECKING:
 _T = TypeVar("_T", bound=type)
 
 
+class _NonScalarVarKwarg:
+    """Poison value so ``to_config`` rejects non-scalar ``**kwargs`` entries.
+
+    Used when ``@export_config(scalar_var_kwargs=True)`` seals flattened
+    var-keyword arguments to JSON scalars only.
+    """
+
+    __slots__ = ("_name",)
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    def __repr__(self) -> str:
+        return f"<non-scalar **kwargs value {self._name!r}>"
+
+
+def _is_json_scalar(value: object) -> bool:
+    """Return whether *value* is a :data:`~physicalai.config.JsonScalar`."""
+    if value is None or isinstance(value, (bool, str)):
+        return True
+    if isinstance(value, int) and not isinstance(value, bool):
+        return True
+    return isinstance(value, float)
+
+
 def _has_export_marker(obj: object) -> bool:
     return bool(getattr(obj, _EXPORT_MARKER_ATTR, False))
 
@@ -213,7 +238,39 @@ def _validate_replayable_signature(cls: type, signature: inspect.Signature) -> N
             raise TypeError(msg)
 
 
-def _decorate_export_config(cls: _T, *, class_path: str | None) -> _T:
+def _flatten_var_kwargs(
+    supplied: dict[str, object],
+    *,
+    cls_name: str,
+    var_kw_name: str,
+    scalar_var_kwargs: bool,
+) -> None:
+    """Move flattened ``**kwargs`` entries into *supplied*; optionally seal scalars.
+
+    Raises:
+        TypeError: If the var-keyword value is not a string-keyed mapping.
+    """
+    extra = supplied.pop(var_kw_name)
+    if not isinstance(extra, dict):
+        msg = f"{cls_name}: **{var_kw_name} must be a mapping"
+        raise TypeError(msg)
+    for key, value in extra.items():
+        if not isinstance(key, str):
+            msg = f"{cls_name}: **{var_kw_name} keys must be strings"
+            raise TypeError(msg)
+        if scalar_var_kwargs and not _is_json_scalar(value):
+            # Seal so normalize fails at to_config (no silent JSON nest).
+            supplied[key] = _NonScalarVarKwarg(key)
+        else:
+            supplied[key] = snapshot_captured_value(value, keep_by_reference=is_config_exportable)
+
+
+def _decorate_export_config(
+    cls: _T,
+    *,
+    class_path: str | None,
+    scalar_var_kwargs: bool,
+) -> _T:
     if not isinstance(cls, type):
         msg = f"@export_config expects a class, got {type(cls).__name__}"
         raise TypeError(msg)
@@ -242,6 +299,14 @@ def _decorate_export_config(cls: _T, *, class_path: str | None) -> _T:
     signature = inspect.signature(original_init)
     _validate_replayable_signature(cls, signature)
 
+    var_kw_name = next(
+        (name for name, param in signature.parameters.items() if param.kind is inspect.Parameter.VAR_KEYWORD),
+        None,
+    )
+    if scalar_var_kwargs and var_kw_name is None:
+        msg = f"@export_config on {cls.__qualname__}: scalar_var_kwargs=True requires a **kwargs parameter"
+        raise TypeError(msg)
+
     @functools.wraps(original_init)
     def wrapped_init(self: object, *args: object, **kwargs: object) -> None:
         bound = signature.bind(self, *args, **kwargs)
@@ -252,21 +317,13 @@ def _decorate_export_config(cls: _T, *, class_path: str | None) -> _T:
             for name, value in bound.arguments.items()
             if name != "self"
         }
-        # Flatten **kwargs mapping into init_args.
-        var_kw_name = next(
-            (name for name, param in signature.parameters.items() if param.kind is inspect.Parameter.VAR_KEYWORD),
-            None,
-        )
         if var_kw_name is not None and var_kw_name in supplied:
-            extra = supplied.pop(var_kw_name)
-            if not isinstance(extra, dict):
-                msg = f"{cls.__qualname__}: **{var_kw_name} must be a mapping"
-                raise TypeError(msg)
-            for key, value in extra.items():
-                if not isinstance(key, str):
-                    msg = f"{cls.__qualname__}: **{var_kw_name} keys must be strings"
-                    raise TypeError(msg)
-                supplied[key] = snapshot_captured_value(value, keep_by_reference=is_config_exportable)
+            _flatten_var_kwargs(
+                supplied,
+                cls_name=cls.__qualname__,
+                var_kw_name=var_kw_name,
+                scalar_var_kwargs=scalar_var_kwargs,
+            )
 
         depth = getattr(self, _EXPORT_DEPTH_ATTR, 0)
         setattr(self, _EXPORT_DEPTH_ATTR, depth + 1)
@@ -294,7 +351,11 @@ def export_config(cls: _T, /) -> _T: ...
 
 
 @overload
-def export_config(*, class_path: str | None = None) -> Callable[[_T], _T]: ...
+def export_config(
+    *,
+    class_path: str | None = None,
+    scalar_var_kwargs: bool = False,
+) -> Callable[[_T], _T]: ...
 
 
 def export_config(
@@ -302,6 +363,7 @@ def export_config(
     /,
     *,
     class_path: str | None = None,
+    scalar_var_kwargs: bool = False,
 ) -> _T | Callable[[_T], _T]:
     """Opt a concrete class into constructor-config export via :func:`to_config`.
 
@@ -318,10 +380,18 @@ def export_config(
         @export_config(class_path="physicalai.robot.SO101")
         class SO101: ...
 
+        @export_config(class_path="physicalai.inference.InferenceModel", scalar_var_kwargs=True)
+        class InferenceModel: ...
+
     When ``class_path`` is omitted, export uses
     ``type(self).__module__ + "." + type(self).__qualname__``. Pass
     ``class_path=`` when the public import path differs from the defining
     module (for example a package re-export).
+
+    Pass ``scalar_var_kwargs=True`` when flattened ``**kwargs`` must export as
+    JSON scalars only (``None`` / ``bool`` / ``int`` / ``float`` / ``str``).
+    Non-scalar var-keyword values then fail at :func:`to_config` instead of
+    being normalized as nested JSON. Requires a ``**kwargs`` parameter.
 
     Nested non-component domain values (for example calibration objects) may
     implement :meth:`~ConfigValue.to_config_value` so they normalize to
@@ -343,14 +413,24 @@ def export_config(
             ``__init__`` in its own class body.
         class_path: Optional stable public import path for export. Verified on
             export to resolve exactly to the decorated class.
+        scalar_var_kwargs: When ``True``, seal flattened ``**kwargs`` to JSON
+            scalars so non-scalars fail at :func:`to_config`.
 
     Returns:
-        The decorated class, or a decorator when ``class_path`` is passed.
+        The decorated class, or a decorator when keyword options are passed.
     """
     if cls is not None:
-        return _decorate_export_config(cls, class_path=class_path)
+        return _decorate_export_config(
+            cls,
+            class_path=class_path,
+            scalar_var_kwargs=scalar_var_kwargs,
+        )
 
     def decorator(target: _T) -> _T:
-        return _decorate_export_config(target, class_path=class_path)
+        return _decorate_export_config(
+            target,
+            class_path=class_path,
+            scalar_var_kwargs=scalar_var_kwargs,
+        )
 
     return decorator

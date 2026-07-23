@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from physicalai.config import export_config
 from physicalai.inference.constants import IMAGES, STATE, TASK
 from physicalai.runtime.action_sources.base import ActionSource
 from physicalai.runtime.events import MetricsEvent
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
 _DEFAULT_LERP_FRAMES = 5
 
 
+@export_config(class_path="physicalai.runtime.PolicySource")
 class PolicySource(ActionSource):
     """Action source adapting a model + execution + action-queue policy pipeline."""
 

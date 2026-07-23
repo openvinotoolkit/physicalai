@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 from typing import TYPE_CHECKING
 
+from physicalai.config import export_config
 from physicalai.runtime.action_sources.base import ActionSource
 
 if TYPE_CHECKING:
@@ -20,6 +21,7 @@ if TYPE_CHECKING:
     from physicalai.runtime._callback_bus import _CallbackBus
 
 
+@export_config(class_path="physicalai.runtime.TeleopSource")
 class TeleopSource(ActionSource):
     """Action source that reads a leader arm and writes to the follower.
 

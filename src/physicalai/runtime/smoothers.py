@@ -10,6 +10,8 @@ from abc import ABC, abstractmethod
 import numpy as np
 from typing_extensions import override
 
+from physicalai.config import export_config
+
 _NDIM_2 = 2
 _ERR_2D = "remaining and incoming must be 2D arrays"
 _ERR_ACTION_DIM = "remaining and incoming must have the same action_dim"
@@ -24,8 +26,12 @@ class ChunkSmoother(ABC):
         raise NotImplementedError
 
 
+@export_config(class_path="physicalai.runtime.ReplaceSmoother")
 class ReplaceSmoother(ChunkSmoother):
     """Replace remaining actions with the incoming chunk."""
+
+    def __init__(self) -> None:
+        """Create a replace smoother (no configuration)."""
 
     @override
     def merge(self, remaining: np.ndarray, incoming: np.ndarray) -> np.ndarray:
@@ -34,6 +40,7 @@ class ReplaceSmoother(ChunkSmoother):
         return incoming
 
 
+@export_config(class_path="physicalai.runtime.LerpSmoother")
 class LerpSmoother(ChunkSmoother):
     """Blend overlapping actions and append the incoming tail."""
 

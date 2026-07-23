@@ -29,10 +29,12 @@ and ``get_observation()`` retrieves the newest sample with a non-blocking
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
+from physicalai.config import export_config
 from physicalai.robot.errors import (
     RobotDeviceAlreadyOwned,
     RobotNameConflict,
@@ -48,12 +50,51 @@ from ._owner_config import DEFAULT_RATE_HZ, normalize_robot_config
 from ._session import open_session
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
-
     import numpy as np
 
     from physicalai.config import ComponentConfig
     from physicalai.robot import Robot, RobotObservation
+
+
+def _coerce_robot_recipe(robot: object) -> ComponentConfig | Mapping[str, object]:
+    """Accept a ComponentConfig mapping or a live exportable driver recipe.
+
+    ``instantiate()`` recursively builds nested ``class_path`` configs into live
+    drivers before calling this constructor; spawn still needs a JSON recipe for
+    the owner subprocess. Live drivers are converted with :func:`to_config`.
+    Connected drivers are rejected — same rule as :meth:`SharedRobot.from_robot`.
+
+    Args:
+        robot: ComponentConfig mapping or disconnected ``@export_config`` driver.
+
+    Returns:
+        A mapping suitable for :func:`normalize_robot_config`.
+
+    Raises:
+        TypeError: If *robot* is neither a mapping nor config-exportable.
+        ValueError: If *robot* is a connected live driver.
+    """
+    if isinstance(robot, Mapping):
+        return robot
+    from physicalai.config import is_config_exportable, to_config  # ruff:ignore[PLC0415]
+
+    if not is_config_exportable(robot):
+        msg = (
+            f"{type(robot).__module__}.{type(robot).__qualname__} is not a "
+            "ComponentConfig mapping or config-exportable robot; pass "
+            "robot={{class_path, init_args}} or an @export_config driver"
+        )
+        raise TypeError(msg)
+    is_connected = getattr(robot, "is_connected", None)
+    if callable(is_connected) and is_connected():
+        msg = (
+            "SharedRobot requires a disconnected driver recipe; "
+            "disconnect explicitly before passing a live robot, or pass "
+            "robot={{class_path, init_args}}"
+        )
+        raise ValueError(msg)
+    return to_config(robot)
+
 
 _PROBE_TIMEOUT = 1.0
 _RACE_RETRY_TIMEOUT = 5.0
@@ -174,6 +215,7 @@ def discover_robots(
     return list({metadata.get("name"): metadata for metadata in robots}.values())
 
 
+@export_config(class_path="physicalai.robot.SharedRobot")
 class SharedRobot:
     """Robot subscriber that attaches to (or spawns) a shared owner process.
 
@@ -186,13 +228,21 @@ class SharedRobot:
     ``robot: ComponentConfig`` to spawn, or ``robot=None`` (attach-only;
     :meth:`attach` is the explicit form).
 
+    Opted into :func:`~physicalai.config.export_config` as a **construction
+    recipe** only (name, nested ``robot`` ComponentConfig, transport knobs).
+    Connection / Zenoh session / publisher state is never part of
+    :func:`~physicalai.config.to_config`.
+
     Args:
         name: Required logical name — keys the Zenoh topics directly. Two
             instances constructed with the same *name* (anywhere reachable
             under the chosen transport scope) share one owner.
         robot: Trusted driver :class:`~physicalai.config.ComponentConfig` to
             spawn if no owner exists yet for *name*. ``None`` means
-            attach-only — use :meth:`attach` for that case.
+            attach-only — use :meth:`attach` for that case. A live
+            ``@export_config`` driver (as produced by nested
+            :func:`~physicalai.config.instantiate`) is accepted and converted
+            to a ComponentConfig; connected drivers are rejected.
         allow_remote: Whether this instance's own session — and, if it
             spawns the owner, the owner's session for its whole lifetime —
             is reachable beyond localhost. Defaults to the secure,
@@ -216,7 +266,8 @@ class SharedRobot:
         _session: object | None = None,
     ) -> None:
         self._name = validate_name(name)
-        self._robot = None if robot is None else normalize_robot_config(robot)
+        recipe = None if robot is None else _coerce_robot_recipe(robot)
+        self._robot = None if recipe is None else normalize_robot_config(recipe)
         self._allow_remote = allow_remote
         self._rate_hz = rate_hz
         self._idle_timeout = idle_timeout
@@ -258,6 +309,16 @@ class SharedRobot:
             A ``SharedRobot`` that stores the normalized ComponentConfig and
             writes only the new owner stdin shape on spawn.
         """
+        # Omit default None so @export_config does not capture "_session": null.
+        if _session is None:
+            return cls(
+                name,
+                robot=robot_config,
+                allow_remote=allow_remote,
+                rate_hz=rate_hz,
+                idle_timeout=idle_timeout,
+                connect_timeout=connect_timeout,
+            )
         return cls(
             name,
             robot=robot_config,
@@ -316,8 +377,19 @@ class SharedRobot:
                 "after releasing hardware you own"
             )
             raise ValueError(msg)
+        # Omit default None so @export_config does not capture "_session": null.
+        recipe = to_config(robot)
+        if _session is None:
+            return cls.from_config(
+                recipe,
+                name=name,
+                allow_remote=allow_remote,
+                rate_hz=rate_hz,
+                idle_timeout=idle_timeout,
+                connect_timeout=connect_timeout,
+            )
         return cls.from_config(
-            to_config(robot),
+            recipe,
             name=name,
             allow_remote=allow_remote,
             rate_hz=rate_hz,
@@ -350,6 +422,9 @@ class SharedRobot:
         Returns:
             A ``SharedRobot`` that never spawns an owner.
         """
+        # Omit default None so @export_config does not capture "_session": null.
+        if _session is None:
+            return cls(name, allow_remote=allow_remote, connect_timeout=connect_timeout)
         return cls(name, allow_remote=allow_remote, connect_timeout=connect_timeout, _session=_session)
 
     @property

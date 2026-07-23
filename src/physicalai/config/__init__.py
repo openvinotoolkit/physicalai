@@ -10,6 +10,8 @@ Opt-in path:
 
 - ``@export_config`` / ``@export_config(class_path=...)`` — remember
   caller-supplied constructor args for :func:`to_config`.
+- ``@export_config(..., scalar_var_kwargs=True)`` — seal flattened
+  ``**kwargs`` to JSON scalars (non-scalars fail at :func:`to_config`).
 - Domain ctor args may implement :meth:`~ConfigValue.to_config_value` to
   return a JSON-compatible fragment (re-normalized).
 

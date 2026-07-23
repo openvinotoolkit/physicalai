@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, cast
 
 import numpy as np
 
+from physicalai.config import export_config
 from physicalai.runtime.execution.base import NOT_STARTED, Execution, WorkerDiedError
 
 if TYPE_CHECKING:
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@export_config(class_path="physicalai.runtime.AsyncExecution")
 class AsyncExecution(Execution):
     """Async inference in a background thread with health monitoring."""
 

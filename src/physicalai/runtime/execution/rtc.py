@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from physicalai.config import export_config
 from physicalai.runtime.execution.base import Execution, WorkerDiedError
 
 if TYPE_CHECKING:
@@ -36,6 +37,7 @@ _MAX_CONSECUTIVE_ERRORS: int = 10
 _JOIN_TIMEOUT_S: float = 5.0
 
 
+@export_config(class_path="physicalai.runtime.RTCExecution")
 class RTCExecution(Execution):
     """Async RTC execution strategy with background inference thread.
 

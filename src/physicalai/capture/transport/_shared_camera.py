@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import time
+from collections.abc import Mapping
 from importlib import import_module
 from typing import TYPE_CHECKING, Any, cast
 
@@ -24,19 +25,57 @@ from loguru import logger
 
 from physicalai.capture.camera import Camera, ColorMode
 from physicalai.capture.errors import CaptureError, CaptureTimeoutError, NotConnectedError
+from physicalai.config import export_config
 
 from ._header import FrameHeader, decode_header, decode_rgb
 from ._spec import derive_service_name, normalize_camera_config
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
-
     from physicalai.capture.frame import Frame
     from physicalai.capture.transport._publisher import CameraPublisher
     from physicalai.config import ComponentConfig
 
 
 _SERVICE_NAME_EXPECTED_PARTS = 5
+
+
+def _coerce_camera_recipe(camera: object) -> ComponentConfig | Mapping[str, object]:
+    """Accept a ComponentConfig mapping or a live exportable camera recipe.
+
+    ``instantiate()`` recursively builds nested ``class_path`` configs into live
+    cameras before calling this constructor; spawn still needs a JSON recipe for
+    the publisher subprocess. Live cameras are converted with :func:`to_config`.
+    Connected cameras are rejected — same rule as :meth:`SharedCamera.from_camera`.
+
+    Args:
+        camera: ComponentConfig mapping or disconnected ``@export_config`` camera.
+
+    Returns:
+        A mapping suitable for :func:`normalize_camera_config`.
+
+    Raises:
+        TypeError: If *camera* is neither a mapping nor config-exportable.
+        ValueError: If *camera* is a connected live camera.
+    """
+    if isinstance(camera, Mapping):
+        return camera
+    from physicalai.config import is_config_exportable, to_config  # ruff:ignore[PLC0415]
+
+    if not is_config_exportable(camera):
+        msg = (
+            f"{type(camera).__module__}.{type(camera).__qualname__} is not a "
+            "ComponentConfig mapping or config-exportable camera; pass "
+            "camera={{class_path, init_args}} or an @export_config camera"
+        )
+        raise TypeError(msg)
+    if bool(getattr(camera, "is_connected", False)):
+        msg = (
+            "SharedCamera requires a disconnected camera recipe; "
+            "disconnect explicitly before passing a live camera, or pass "
+            "camera={{class_path, init_args}}"
+        )
+        raise ValueError(msg)
+    return to_config(camera)
 
 
 def _probe_service(service_name: str) -> bool:
@@ -84,6 +123,7 @@ def _probe_with_retry(service_name: str, timeout: float, interval: float = 0.1) 
         time.sleep(interval)
 
 
+@export_config(class_path="physicalai.capture.SharedCamera")
 class SharedCamera(Camera):
     """Camera subscriber that reads frames from shared memory via iceoryx2.
 
@@ -97,6 +137,11 @@ class SharedCamera(Camera):
     ``camera=None`` + ``service_name`` for attach-only (:meth:`from_publisher`
     is the explicit form).
 
+    Opted into :func:`~physicalai.config.export_config` as a **construction
+    recipe** only (nested ``camera`` ComponentConfig, ``service_name``,
+    ``color_mode``, transport knobs). Publisher / iceoryx2 session / frame
+    state is never part of :func:`~physicalai.config.to_config`.
+
     The publisher subprocess owns the device exclusively. Another connected
     holder of the same hardware will cause open to fail; this API does not
     hand off an already-open device into the child.
@@ -104,7 +149,10 @@ class SharedCamera(Camera):
     Args:
         camera: Trusted camera :class:`~physicalai.config.ComponentConfig` to
             spawn if no publisher exists yet for the derived or explicit
-            ``service_name``. ``None`` means attach-only.
+            ``service_name``. ``None`` means attach-only. A live
+            ``@export_config`` camera (as produced by nested
+            :func:`~physicalai.config.instantiate`) is accepted and converted
+            to a ComponentConfig; connected cameras are rejected.
         color_mode: Pixel format preference for this subscriber.
         zero_copy: If True, returned frames reference the iceoryx2 SHM
             buffer directly (read-only). Otherwise, frames are copied.
@@ -141,7 +189,8 @@ class SharedCamera(Camera):
             msg = "must provide camera ComponentConfig or service_name"
             raise ValueError(msg)
 
-        normalized = None if camera is None else normalize_camera_config(camera)
+        recipe = None if camera is None else _coerce_camera_recipe(camera)
+        normalized = None if recipe is None else normalize_camera_config(recipe)
         if normalized is not None:
             service_name = derive_service_name(normalized, service_name=service_name)
         elif service_name is None:

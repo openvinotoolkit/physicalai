@@ -12,6 +12,7 @@ from collections import deque
 from typing import TYPE_CHECKING, Any
 
 from physicalai.capture.frame import Frame
+from physicalai.config import export_config
 
 if TYPE_CHECKING:
     from physicalai.runtime.events import InferenceEvent, LifecycleEvent, MetricsEvent, TickEvent
@@ -19,6 +20,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@export_config(class_path="physicalai.runtime.AsyncCallback")
 class AsyncCallback:
     """Wraps a callback so all hooks run on a dedicated background thread.
 

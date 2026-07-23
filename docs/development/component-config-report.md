@@ -90,6 +90,7 @@ ComponentConfig = {"class_path": str, "init_args": dict[str, JsonValue]}
 
 @export_config                    # opt-in on concrete classes
 @export_config(class_path="...")  # when public import ≠ defining module
+@export_config(..., scalar_var_kwargs=True)  # seal flattened **kwargs to JSON scalars
 to_config(value)                  # live → ComponentConfig
 instantiate(config)               # trusted ComponentConfig → fresh object
 is_config_exportable              # @export_config marker only
@@ -218,12 +219,12 @@ flowchart TB
 
 ### Public API
 
-| Surface                | Accept                                          | Preferred                     |
-| ---------------------- | ----------------------------------------------- | ----------------------------- |
-| `SharedRobot`          | `robot=` ComponentConfig (or `None` / `attach`) | `from_config` / `from_robot`  |
-| `SharedCamera`         | `camera=` ComponentConfig (or `None` / attach)  | `from_config` / `from_camera` |
-| CLI `physicalai robot` | `--robot` ComponentConfig (required)            | `--robot`                     |
-| Metadata               | Keep key `robot_class`                          | Value = public `class_path`   |
+| Surface                | Accept                                                                                | Preferred                     |
+| ---------------------- | ------------------------------------------------------------------------------------- | ----------------------------- |
+| `SharedRobot`          | `robot=` ComponentConfig (or `None` / `attach`); `@export_config` construction recipe | `from_config` / `from_robot`  |
+| `SharedCamera`         | `camera=` ComponentConfig (or `None` / attach); `@export_config` construction recipe  | `from_config` / `from_camera` |
+| CLI `physicalai robot` | `--robot` ComponentConfig (required)                                                  | `--robot`                     |
+| Metadata               | Keep key `robot_class`                                                                | Value = public `class_path`   |
 
 Flat `robot_class` / `robot_kwargs` on SharedRobot, serve CLI, and owner stdin
 are unsupported (rejected on stdin; removed from the public API). Flat
@@ -325,18 +326,19 @@ gantt
   Docs / preview versioning note      :d2, 8, 9
 ```
 
-| Step | Deliverable                                                                                  |
-| ---: | -------------------------------------------------------------------------------------------- |
-|    1 | `ComponentConfig`, instantiate, depth/cycles, shared importer (no inference behavior change) |
-|    2 | `@export_config`, `to_config`, `is_config_exportable`                                        |
-|    3 | SO101, WidowXAI, BimanualWidowXAI round-trips                                                |
-|    4 | SharedRobot + owner stdin + public/CLI ComponentConfig-only (cwd inherit for relatives)      |
-|    5 | SharedCamera + publisher stdin hard cutover + `service_name` rules                           |
-|    6 | PolicySource graph, TeleopSource, path-rooted InferenceModel, v1 callbacks                   |
-|    7 | RobotRuntime -> `instantiate` + jsonargparse                                                 |
-|    8 | Studio drops interim serializers                                                             |
-|    9 | User-facing docs                                                                             |
-|   10 | Separate: inference factory follow-up (optional)                                             |
+| Step | Deliverable                                                                                  | Status   |
+| ---: | -------------------------------------------------------------------------------------------- | -------- |
+|    1 | `ComponentConfig`, instantiate, depth/cycles, shared importer (no inference behavior change) | **done** |
+|    2 | `@export_config`, `to_config`, `is_config_exportable`                                        | **done** |
+|    3 | SO101, WidowXAI, BimanualWidowXAI round-trips                                                | **done** |
+|    4 | SharedRobot + owner stdin + public/CLI ComponentConfig-only (cwd inherit for relatives)      | **done** |
+|    5 | SharedCamera + publisher stdin hard cutover + `service_name` rules                           | **done** |
+|    6 | PolicySource graph, TeleopSource, path-rooted InferenceModel, v1 callbacks                   | **done** |
+|    7 | RobotRuntime -> `instantiate` + jsonargparse                                                 | **done** |
+|   7b | SharedRobot / SharedCamera `@export_config` construction recipes (runtime `to_config` path)  | **done** |
+|    8 | Studio drops interim serializers (enabled by 7b; Studio client still this step)              |          |
+|    9 | User-facing docs                                                                             |          |
+|   10 | Separate: inference factory follow-up (optional)                                             |          |
 
 Implement **one step at a time**. Keep the design note open as the contract.
 
@@ -345,7 +347,8 @@ Implement **one step at a time**. Keep the design note open as the contract.
 ## Plugin checklist
 
 1. Implement `Robot` / `Camera` / `ActionSource` / callback protocol
-2. `@export_config` — use `@export_config(class_path="…")` when re-exported
+2. `@export_config` — use `@export_config(class_path="…")` when re-exported;
+   `scalar_var_kwargs=True` when flattened `**kwargs` must be JSON scalars
 3. JSON-normalizable args (JSON / nested `@export_config` / `to_config_value()`);
    constructors accept normalized forms
 4. Relative path args OK; keep cwd stable through Shared\* spawn (or use absolute/`Path` as given)
@@ -360,6 +363,7 @@ Implement **one step at a time**. Keep the design note open as the contract.
 | ------------------------------ | ------------------------------------------------------------------- |
 | `@export_config`               | Opt into `ComponentConfig` export (stores supplied `__init__` args) |
 | `@export_config(class_path=…)` | Public re-export path when ≠ defining module                        |
+| `scalar_var_kwargs=True`       | Seal flattened `**kwargs` to JSON scalars (default `False`)         |
 | `to_config_value()`            | Domain arg → plain JSON inside `init_args` (`ConfigValue`)          |
 | `ComponentConfig`              | Wire shape shared with jsonargparse                                 |
 | `to_config` / `instantiate`    | Export / trusted rebuild                                            |

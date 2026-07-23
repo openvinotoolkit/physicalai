@@ -12,7 +12,7 @@ configuration must be exportable so a fresh instance can be created later.
 
 ```text
 Robot / Camera / ActionSource = runtime behavior (unchanged)
-@export_config / @export_config(class_path=...) = opt into ComponentConfig export
+@export_config / @export_config(class_path=..., scalar_var_kwargs=...) = opt into ComponentConfig export
 ComponentConfig               = plain class_path + init_args data
 ```
 
@@ -23,7 +23,7 @@ other transport settings in their existing transport envelopes.
 Mental model:
 
 ```text
-@export_config / @export_config(class_path="...")  → whole component → {class_path, init_args}
+@export_config / @export_config(class_path="...", scalar_var_kwargs=...)  → whole component → {class_path, init_args}
 to_config_value()                                  → domain arg     → plain JSON inside init_args
 (nested @export_config)                            → nested component → nested {class_path, init_args}
 ```
@@ -96,7 +96,12 @@ class ConfigValue(Protocol):
     def to_config_value(self) -> JsonValue: ...
 
 
-def export_config(cls: type | None = None, *, class_path: str | None = None): ...
+def export_config(
+    cls: type | None = None,
+    *,
+    class_path: str | None = None,
+    scalar_var_kwargs: bool = False,
+): ...
 
 
 def to_config(value: object) -> ComponentConfig: ...
@@ -107,6 +112,12 @@ def instantiate(config: ComponentConfig) -> object: ...
 
 def is_config_exportable(value: object) -> bool: ...
 ```
+
+`scalar_var_kwargs` defaults to `False`. Pass
+`@export_config(..., scalar_var_kwargs=True)` when flattened `**kwargs` must
+export as JSON scalars only (`None` / `bool` / `int` / `float` / `str`);
+non-scalar var-keyword values then fail at `to_config`. Path-rooted
+`InferenceModel` uses this option.
 
 Normal use stays small:
 
@@ -119,6 +130,14 @@ class MyCamera:
 @export_config(class_path="physicalai.robot.SO101")
 class SO101:
     def __init__(self, port: str, calibration: dict | str): ...
+
+
+@export_config(
+    class_path="physicalai.inference.InferenceModel",
+    scalar_var_kwargs=True,
+)
+class InferenceModel:
+    def __init__(self, export_dir, *, backend=None, device=None, **kwargs): ...
 
 
 robot = SO101("/dev/ttyACM0", "./calibration.json")
@@ -228,6 +247,9 @@ class PolicySource(ActionSource):
 The wrapper uses `inspect.signature()` and `Signature.bind()` before invoking
 the constructor. It converts positional arguments to their parameter names,
 removes `self`, and flattens a bound `**kwargs` mapping into `init_args`.
+When `scalar_var_kwargs=True`, those flattened var-keyword values are sealed
+to JSON scalars: non-scalars fail later at `to_config` instead of normalizing
+as nested JSON (requires a `**kwargs` parameter on the constructor).
 Positional-only parameters and `*args` are not replayable through
 `class_path` + keyword `init_args`; reject decorated constructors that declare
 them.
@@ -285,8 +307,10 @@ override applies only to the concrete class that was decorated (owns the
 wrapped `__init__` in its class dict). A subclass that inherits a decorated
 constructor unchanged does **not** inherit that override — it exports its own
 `__module__.__qualname__` unless it re-decorates with its own `class_path=`.
-Before emitting the spec, resolve the selected path and verify that it
-identifies exactly `type(self)`.
+Pass `scalar_var_kwargs=True` on the same decorator when flattened `**kwargs`
+must be JSON scalars at export (default `False`; used by path-rooted
+`InferenceModel`). Before emitting the spec, resolve the selected path and
+verify that it identifies exactly `type(self)`.
 
 First-party public robot and camera classes must pass their stable public
 re-export path (for example, `physicalai.robot.SO101`) instead of emitting an
@@ -671,10 +695,22 @@ Flat `robot_class` / `robot_kwargs` on the public API and CLI are
 removed; those keys on owner stdin remain unsupported and are rejected
 before import.
 
+`SharedRobot` is `@export_config(class_path="physicalai.robot.SharedRobot")`
+— a **construction recipe** only (`name`, nested `robot`
+ComponentConfig, `allow_remote` / `rate_hz` / `idle_timeout` /
+`connect_timeout`). `to_config` of a `RobotRuntime` (or other
+container) that holds a `SharedRobot` is supported. Never capture Zenoh
+session / owner / publisher / connected flags; a supplied private
+`_session` live handle must fail at `to_config`, not export as an
+object.
+
 - **`SharedRobot` constructor:** accept `robot: ComponentConfig` to spawn,
   or `robot=None` for attach-only (prefer :meth:`SharedRobot.attach`).
   Prefer `SharedRobot.from_config(...)` and `from_robot(...)` when
   building from a trusted config or an exportable live driver.
+  Nested `instantiate()` may pass a live `@export_config` driver for
+  `robot=`; the constructor converts it to a ComponentConfig and rejects
+  connected drivers (same rule as `from_robot`).
 - **Public path normalization:** when accepting a class object or dotted
   path inside `robot.class_path`, normalize through the same public-path
   resolution used by `to_config` (decorator `class_path=` override, else
@@ -696,6 +732,12 @@ before import.
 Mirror the SharedRobot public story so step-5 implementers do not invent
 three APIs:
 
+`SharedCamera` is `@export_config(class_path="physicalai.capture.SharedCamera")`
+— a **construction recipe** only (nested `camera` ComponentConfig,
+`service_name`, `color_mode`, zero-copy / validation / idle knobs).
+`to_config` of a runtime that holds `SharedCamera` is supported. Never
+capture publisher / iceoryx2 node / frame / connected state.
+
 - **`SharedCamera.from_config(camera, *, service_name=None, …)`** — primary
   API. Transport kwargs (zero-copy, validation, idle timeout, …) stay on the
   SharedCamera / publisher side, never inside `ComponentConfig`.
@@ -708,7 +750,10 @@ three APIs:
   `camera=None` + `service_name` for attach-only (prefer
   :meth:`SharedCamera.from_publisher`). Flat `camera_type` /
   `camera_kwargs` are unsupported on the public API and publisher stdin
-  (rejected before import) — not a dual adapter API.
+  (rejected before import) — not a dual adapter API. Nested
+  `instantiate()` may pass a live `@export_config` camera for
+  `camera=`; convert to ComponentConfig and reject connected cameras
+  (same rule as `from_camera`).
 - **Who derives `service_name`:** `from_config` and the constructor.
   If `service_name` is omitted and `class_path` is a shareable built-in
   (`uvc` / `realsense` / `basler`), derive via the transport map + device id
@@ -737,7 +782,11 @@ how a component is shared, not how the underlying component was constructed.
 Config export capability does not imply process sharing. Studio owns the
 product decision of whether a built driver should run in-process or be wrapped
 in `SharedRobot`. `is_config_exportable` only answers whether that sharing path
-can obtain a component config. Sketch:
+can obtain a component config. Once wrapped, `SharedRobot` / `SharedCamera`
+themselves are `@export_config` construction recipes, so Studio can
+`to_config` a full runtime that already holds Shared\* without interim
+serializers (Studio drop of those serializers remains rollout step 8).
+Sketch:
 
 ```python
 driver = await builder(robot, self)
@@ -799,7 +848,9 @@ policy, but it does not replace the trusted-input rule for v1.
    `ActionSource`, callback, or another typed component).
 2. Opt into config export with `@export_config`. When the public import path
    differs from the defining module, pass
-   `@export_config(class_path="physicalai.robot.SO101")`.
+   `@export_config(class_path="physicalai.robot.SO101")`. Pass
+   `scalar_var_kwargs=True` when flattened `**kwargs` must export as JSON
+   scalars only (non-scalars fail at `to_config`).
 3. Ensure every captured value is JSON-normalizable and constructor-compatible
    (JSON-safe scalars/collections, nested `@export_config` components, or
    domain values with `to_config_value()`). Do not auto-call arbitrary
@@ -871,7 +922,10 @@ specific subclasses only where tests or callers distinguish phases.
    `instantiate()` and jsonargparse (under `runtime:` where the CLI requires
    it).
 8. Studio drops interim serializers and applies explicit sharing policy to
-   exportable plugin results.
+   exportable plugin results. Runtime already exports
+   `SharedRobot` / `SharedCamera` construction recipes (so a Studio
+   step-8 path can `to_config` a runtime that holds Shared\*); full
+   Studio client cutover remains this step.
 9. Document component config next to `class_path` / `init_args` and state that
    persisted workflow versioning remains preview work.
 10. In a separate inference design/change, audit manifest fixtures before

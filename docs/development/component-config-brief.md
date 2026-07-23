@@ -18,10 +18,11 @@ cannot share third-party drivers cleanly.
 ## Proposal
 
 ```text
-@export_config / @export_config(class_path=...)  →  remember supplied __init__ args
+@export_config / @export_config(class_path=..., scalar_var_kwargs=...)  →  remember supplied __init__ args
 to_config(live) →  {class_path, init_args}   # ComponentConfig
 instantiate(cfg)→  fresh disconnected instance
 to_config_value() → domain arg → plain JSON inside init_args
+# scalar_var_kwargs=True: flattened **kwargs must be JSON scalars (InferenceModel)
 ```
 
 Same shape as existing jsonargparse configs. Protocols (`Robot`, `Camera`, …) stay
@@ -53,6 +54,10 @@ flowchart LR
   `from_camera`); shareable built-in `service_name` derived in transport
   (`uvc` / `realsense` / `basler`); stubs (`ip` / `genicam`) and third-party
   must pass an explicit name; flat `camera_type` / `camera_kwargs` rejected
+- `SharedRobot` / `SharedCamera` are `@export_config` **construction
+  recipes** (no run-state snapshot); `to_config` of a runtime that holds
+  Shared\* is supported — enables Studio step-8; Studio client drop of
+  interim serializers remains step 8
 - Trust: `instantiate` only on local / parent→child config — never network metadata
 
 ## Out of scope (v1)

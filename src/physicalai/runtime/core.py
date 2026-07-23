@@ -11,6 +11,7 @@ import uuid
 from typing import TYPE_CHECKING, Protocol, Self
 
 from physicalai.capture.errors import CaptureError
+from physicalai.config import export_config
 from physicalai.runtime._callback_bus import _CallbackBus  # noqa: PLC2701
 from physicalai.runtime.events import LifecycleEvent, TickEvent
 from physicalai.runtime.execution.base import WorkerDiedError
@@ -64,6 +65,7 @@ class RuntimeCallback(Protocol):
         ...
 
 
+@export_config(class_path="physicalai.runtime.RobotRuntime")
 class RobotRuntime:
     """Generic robot runtime loop with a required, pluggable action source."""
 

@@ -98,3 +98,59 @@ class TestBaslerCameraComponentConfig:
         assert wire["init_args"]["fps"] == 15
         assert wire["init_args"]["width"] == 800
         assert wire["init_args"]["height"] == 600
+
+
+# ---------------------------------------------------------------------------
+# SharedCamera (construction recipe only — no publisher / SHM state)
+# ---------------------------------------------------------------------------
+
+
+class TestSharedCameraComponentConfig:
+    def test_spawn_recipe_round_trip(self) -> None:
+        from physicalai.capture import SharedCamera
+
+        camera = SharedCamera(
+            camera={
+                "class_path": "physicalai.capture.UVCCamera",
+                "init_args": {"device": "/dev/video0", "width": 640, "height": 480, "fps": 30, "backend": "v4l2"},
+            },
+            color_mode=ColorMode.BGR,
+            zero_copy=True,
+            validate_on_connect=True,
+            idle_timeout=1.5,
+        )
+        wire = _assert_construction_round_trip(camera)
+        assert wire["class_path"] == "physicalai.capture.SharedCamera"
+        assert wire["init_args"]["color_mode"] == "bgr"
+        assert wire["init_args"]["zero_copy"] is True
+        assert wire["init_args"]["validate_on_connect"] is True
+        assert wire["init_args"]["idle_timeout"] == 1.5
+        # service_name was derived, not caller-supplied — omitted from recipe.
+        assert "service_name" not in wire["init_args"]
+        nested = wire["init_args"]["camera"]
+        assert isinstance(nested, dict)
+        assert nested["class_path"] == "physicalai.capture.UVCCamera"
+        assert nested["init_args"]["device"] == "/dev/video0"
+        assert "_publisher" not in wire["init_args"]
+        assert "_connected" not in wire["init_args"]
+        assert "_node" not in wire["init_args"]
+
+    def test_attach_only_round_trip(self) -> None:
+        from physicalai.capture import SharedCamera
+
+        camera = SharedCamera(camera=None, service_name="physicalai/camera/uvc/0/frame")
+        wire = _assert_construction_round_trip(camera)
+        assert wire["class_path"] == "physicalai.capture.SharedCamera"
+        assert wire["init_args"]["camera"] is None
+        assert wire["init_args"]["service_name"] == "physicalai/camera/uvc/0/frame"
+
+    def test_from_camera_still_rejects_connected(self) -> None:
+        from physicalai.capture import SharedCamera
+        from tests.unit.capture.fake import FakeCamera
+
+        driver = FakeCamera(width=32, height=32)
+        driver.connect()
+        assert driver.is_connected
+        with pytest.raises(ValueError, match="export-only sugar"):
+            SharedCamera.from_camera(driver, service_name="physicalai/test/x/frame")
+        assert driver.is_connected
