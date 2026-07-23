@@ -629,7 +629,7 @@ add a `config_format` field, dual-read, or shape-detection fallback.
 ```
 
 Writers and readers speak only the new shape. Reject payloads that still carry
-legacy flat keys (`robot_class` / `robot_kwargs`, or `camera_type` /
+unsupported flat keys (`robot_class` / `robot_kwargs`, or `camera_type` /
 `camera_kwargs`) before import or hardware access — no silent translation.
 
 Do not reuse `capture.transport.PROTOCOL_VERSION` or
@@ -671,31 +671,30 @@ Camera URL/stream fields are not filesystem paths. The built-in camera
 
 ### Public SharedRobot, CLI, and metadata
 
-Private stdin hard cutover does not force a public API break. Keep legacy flat
-kwargs as **adapters** that pack `ComponentConfig` and write only the new
-stdin. Removing those adapters is a later cleanup PR, not a calendar dual-read
-window on the private wire.
+Public construction matches private stdin: `robot` / `--robot` only.
+Flat `robot_class` / `robot_kwargs` on the public API and CLI are
+removed; those keys on owner stdin remain unsupported and are rejected
+before import.
 
-- **`SharedRobot` constructor:** accept `robot: ComponentConfig` **XOR**
-  legacy `robot_class` + `robot_kwargs`. Passing both is an error — no merge.
-  Legacy flat kwargs are an adapter only; they immediately become
-  `robot: {class_path, init_args}` before spawn. New code and docs prefer
-  `SharedRobot.from_config(...)` and `from_robot(...)`.
-- **Public path normalization:** when accepting a class object or a legacy
-  dotted path, normalize through the same public-path resolution used by
-  `to_config` (decorator `class_path=` override, else
-  `__module__.__qualname__`) **before** store, metadata advertise, and conflict
-  compare. This prevents false mismatches between defining-module paths (for
-  example `physicalai.robot.so101.so101.SO101`) and public re-exports
-  (`physicalai.robot.SO101`).
-- **CLI `physicalai robot`:** accept `--robot` (ComponentConfig JSON/YAML)
-  **XOR** legacy `--robot_class` / `--robot_kwargs`; both paths write only the
-  new stdin shape.
-- **Network metadata:** do not rename the advertised key. Keep `robot_class` as
-  the metadata field so `ROBOT_TRANSPORT_PROTOCOL_VERSION` stays unchanged.
-  Populate it from the normalized public `robot["class_path"]`. Conflict
-  checks compare that string unchanged. Attach-only / discover paths are
-  unchanged.
+- **`SharedRobot` constructor:** accept `robot: ComponentConfig` to spawn,
+  or `robot=None` for attach-only (prefer :meth:`SharedRobot.attach`).
+  Prefer `SharedRobot.from_config(...)` and `from_robot(...)` when
+  building from a trusted config or an exportable live driver.
+- **Public path normalization:** when accepting a class object or dotted
+  path inside `robot.class_path`, normalize through the same public-path
+  resolution used by `to_config` (decorator `class_path=` override, else
+  `__module__.__qualname__`) **before** store, metadata advertise, and
+  conflict compare. This prevents false mismatches between defining-module
+  paths (for example `physicalai.robot.so101.so101.SO101`) and public
+  re-exports (`physicalai.robot.SO101`).
+- **CLI `physicalai robot serve`:** require `--robot` (ComponentConfig
+  JSON/YAML with `class_path` + `init_args`). Write only the new stdin
+  shape.
+- **Network metadata:** do not rename the advertised key. Keep `robot_class`
+  as the metadata field so `ROBOT_TRANSPORT_PROTOCOL_VERSION` stays
+  unchanged. Populate it from the normalized public `robot["class_path"]`.
+  Conflict checks compare that string unchanged. Attach-only / discover
+  paths are unchanged.
 
 ### Public SharedCamera
 
@@ -851,12 +850,13 @@ specific subclasses only where tests or callers distinguish phases.
    composite round-trips); add JSON and construction round-trip tests.
 4. Add `SharedRobot.from_config()` / `from_robot()`; hard-cutover
    `RobotOwnerConfig` stdin to `robot: ComponentConfig` (rewrite writers,
-   readers, fixtures; no `config_format`, no dual-read). Keep public ctor and
-   CLI flat kwargs as adapters that always write the new stdin (XOR mutual
-   exclusion with `robot=` / `--robot`). Normalize legacy class paths to
-   public re-exports before store/advertise/compare; advertise metadata
-   `robot_class` from that public `class_path`. Relative path args rely on
-   parent cwd inheritance at `Popen` (no path-absolutizing helper).
+   readers, fixtures; no `config_format`, no dual-read). Public ctor and
+   CLI accept only `robot=` / `--robot` (plus `from_config` / `from_robot`);
+   flat `robot_class` / `robot_kwargs` are unsupported on public API, CLI,
+   and stdin. Normalize class paths to public re-exports before
+   store/advertise/compare; advertise metadata `robot_class` from that public
+   `class_path`. Relative path args rely on parent cwd inheritance at `Popen`
+   (no path-absolutizing helper).
 5. Wire camera implementations, then hard-cutover the camera publisher stdin
    to `camera: ComponentConfig` with `service_name` beside it (same PR:
    rewrite fixtures; no dual-read). Add `SharedCamera.from_config()` /
@@ -920,7 +920,7 @@ cutovers; do not describe them as schema-preserving.
   silent drop).
 - Robot owner and camera publisher subprocess handshakes remain JSON-only,
   accept only the new `robot:` / `camera: ComponentConfig` shape, and reject
-  legacy flat stdin (`robot_class` / `camera_type` forms) before import.
+  unsupported flat stdin (`robot_class` / `camera_type` forms) before import.
 - Built-in SharedCamera spawn derives the legacy `service_name` via the
   transport class-path → type-token map inside `from_config` / the adapter
   ctor; third-party spawn without explicit `service_name` fails before
@@ -932,11 +932,12 @@ cutovers; do not describe them as schema-preserving.
   `camera` and legacy `camera_type` + kwargs.
 - Third-party camera class paths survive the publisher envelope and bypass the
   built-in camera registry.
-- Public `SharedRobot` ctor and `physicalai robot` CLI accept legacy flat
-  kwargs as adapters **XOR** ComponentConfig; both paths write only the new
-  stdin; legacy defining-module paths normalize to public re-exports before
-  store/advertise/compare; metadata `robot_class` equals that public
-  `robot["class_path"]`.
+- Public `SharedRobot` ctor and `physicalai robot serve` accept only
+  `robot=` / `--robot` ComponentConfig (plus `from_config` / `from_robot`);
+  flat `robot_class` / `robot_kwargs` are rejected as unsupported on stdin
+  and are not a public dual API; defining-module paths normalize to public
+  re-exports before store/advertise/compare; metadata `robot_class` equals
+  that public `robot["class_path"]`.
 - `SharedRobot.from_robot()` is sugar over `from_config(to_config(...))`,
   requires exportability, and rejects connected drivers before owner spawn.
 - Composite bimanual robots spawn as one owner; nested arm configs round-trip

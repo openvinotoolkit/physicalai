@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import io
+import json
 import threading
 import time
 from dataclasses import dataclass, field
@@ -11,7 +13,7 @@ from typing import Any
 
 from physicalai.robot.transport import _owner_worker
 from physicalai.robot.transport._owner_config import RobotOwnerConfig
-from physicalai.robot.transport._owner_worker import OwnerEvent, OwnerExitReason, _run_loop, run_owner
+from physicalai.robot.transport._owner_worker import OwnerEvent, OwnerExitReason, _run_loop, main, run_owner
 
 from .fake import FakeRobot
 
@@ -137,7 +139,11 @@ def test_disconnect_failure_upgrades_clean_shutdown(monkeypatch: Any) -> None:  
         locks=SimpleNamespace(release_all=lambda: None),
     )
     monkeypatch.setattr(_owner_worker, "_startup", lambda _config: endpoints)
-    config = RobotOwnerConfig(name="left-arm", robot_class="pkg.mod.Robot", idle_timeout=None)
+    config = RobotOwnerConfig(
+        name="left-arm",
+        robot={"class_path": "tests.unit.robot.transport.fake.FakeRobot", "init_args": {}},
+        idle_timeout=None,
+    )
 
     result = run_owner(config, shutdown)
 
@@ -157,7 +163,11 @@ def test_ready_failure_still_disconnects(monkeypatch: Any) -> None:  # noqa: ANN
         locks=SimpleNamespace(release_all=lambda: None),
     )
     monkeypatch.setattr(_owner_worker, "_startup", lambda _config: endpoints)
-    config = RobotOwnerConfig(name="left-arm", robot_class="pkg.mod.Robot", idle_timeout=None)
+    config = RobotOwnerConfig(
+        name="left-arm",
+        robot={"class_path": "tests.unit.robot.transport.fake.FakeRobot", "init_args": {}},
+        idle_timeout=None,
+    )
 
     def _fail_ready() -> None:
         raise RuntimeError("readiness output failed")
@@ -167,3 +177,25 @@ def test_ready_failure_still_disconnects(monkeypatch: Any) -> None:  # noqa: ANN
     assert result.reason is OwnerExitReason.LOOP_FAILURE
     assert result.exit_code == 1
     assert driver.disconnect_called
+
+
+def test_main_malformed_robot_stdin_signals_invalid_config(monkeypatch: Any) -> None:  # noqa: ANN401
+    """Malformed new-shape robot: must ERROR with invalid_config, not crash."""
+    payload = json.dumps(
+        {
+            "name": "left-arm",
+            "robot": {"class_path": "tests.unit.robot.transport.fake.FakeRobot", "extra": 1},
+        },
+    )
+    errors: list[tuple[str, str | None]] = []
+
+    def _capture_error(msg: str, tb: str | None = None, *, phase: str | None = None, **_kwargs: object) -> None:
+        errors.append((msg, phase))
+
+    monkeypatch.setattr(_owner_worker, "signal_error", _capture_error)
+    monkeypatch.setattr(_owner_worker.sys, "stdin", io.StringIO(payload))
+
+    assert main() == 1
+    assert len(errors) == 1
+    assert errors[0][1] == "invalid_config"
+    assert "invalid worker config" in errors[0][0]

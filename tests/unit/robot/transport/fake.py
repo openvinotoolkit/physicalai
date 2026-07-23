@@ -17,6 +17,8 @@ from pathlib import Path
 
 import numpy as np
 
+from physicalai.config import export_config
+
 NUM_JOINTS = 6
 
 
@@ -35,6 +37,7 @@ class FakeObservation:
         return self.joint_positions
 
 
+@export_config
 class FakeRobot:
     """In-memory robot producing synthetic observations.
 

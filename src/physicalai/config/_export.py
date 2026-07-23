@@ -81,7 +81,23 @@ def _class_path_override(cls: type) -> str | None:
     return None
 
 
-def _resolve_public_class_path(cls: type) -> str:
+def resolve_public_class_path(cls: type) -> str:
+    """Resolve the stable public ``class_path`` for an opted-in component class.
+
+    Uses the decorator ``class_path=`` override when present, otherwise
+    ``cls.__module__ + "." + cls.__qualname__``. Verifies that importing the
+    path yields exactly *cls*.
+
+    Args:
+        cls: The concrete class to resolve.
+
+    Returns:
+        The importable public dotted path.
+
+    Raises:
+        ComponentConfigError: If *cls* is local, the path is not importable, or
+            the path resolves to a different object.
+    """
     path = _class_path_override(cls) or f"{cls.__module__}.{cls.__qualname__}"
 
     if "<locals>" in cls.__qualname__:
@@ -97,6 +113,10 @@ def _resolve_public_class_path(cls: type) -> str:
         msg = f"class_path {path!r} resolves to {resolved!r}, expected exactly {cls!r}"
         raise ComponentConfigError(msg)
     return path
+
+
+# Private alias kept for call sites that predate the public name.
+_resolve_public_class_path = resolve_public_class_path
 
 
 def _component_path_prefix(value: object) -> str:

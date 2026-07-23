@@ -216,16 +216,18 @@ flowchart TB
 
 `service_name` lives **beside** `camera: ComponentConfig`, never inside `init_args`.
 
-### Public API (adapters)
+### Public API
 
-| Surface                | Accept (XOR)                                            | Preferred                     |
-| ---------------------- | ------------------------------------------------------- | ----------------------------- |
-| `SharedRobot`          | `robot=` **xor** `robot_class`+`robot_kwargs` (adapter) | `from_config` / `from_robot`  |
-| `SharedCamera`         | `camera=` **xor** `camera_type`+kwargs (adapter)        | `from_config` / `from_camera` |
-| CLI `physicalai robot` | `--robot` **xor** legacy flags (adapter)                | `--robot`                     |
-| Metadata               | Keep key `robot_class`                                  | Value = public `class_path`   |
+| Surface                | Accept                                           | Preferred                     |
+| ---------------------- | ------------------------------------------------ | ----------------------------- |
+| `SharedRobot`          | `robot=` ComponentConfig (or `None` / `attach`)  | `from_config` / `from_robot`  |
+| `SharedCamera`         | `camera=` **xor** `camera_type`+kwargs (adapter) | `from_config` / `from_camera` |
+| CLI `physicalai robot` | `--robot` ComponentConfig (required)             | `--robot`                     |
+| Metadata               | Keep key `robot_class`                           | Value = public `class_path`   |
 
-Legacy flat forms always pack `ComponentConfig` and write only the new stdin. Removing adapters is a later cleanup PR.
+Flat `robot_class` / `robot_kwargs` on SharedRobot, serve CLI, and owner stdin
+are unsupported (rejected on stdin; removed from the public API). Camera
+still keeps a temporary XOR adapter until its cutover step.
 
 `from_robot` / `from_camera`: require exportable, **reject if connected**, never disconnect implicitly.
 
@@ -327,7 +329,7 @@ gantt
 |    1 | `ComponentConfig`, instantiate, depth/cycles, shared importer (no inference behavior change) |
 |    2 | `@export_config`, `to_config`, `is_config_exportable`                                        |
 |    3 | SO101, WidowXAI, BimanualWidowXAI round-trips                                                |
-|    4 | SharedRobot + owner stdin hard cutover + public/CLI adapters (cwd inherit for relatives)     |
+|    4 | SharedRobot + owner stdin + public/CLI ComponentConfig-only (cwd inherit for relatives)      |
 |    5 | SharedCamera + publisher stdin hard cutover + `service_name` rules                           |
 |    6 | PolicySource graph, TeleopSource, path-rooted InferenceModel, v1 callbacks                   |
 |    7 | RobotRuntime -> `instantiate` + jsonargparse                                                 |

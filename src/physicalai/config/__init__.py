@@ -13,6 +13,13 @@ Opt-in path:
 - Domain ctor args may implement :meth:`~ConfigValue.to_config_value` to
   return a JSON-compatible fragment (re-normalized).
 
+Also exported for transport and other callers (no private ``physicalai.config._*``
+imports):
+
+- :func:`resolve_public_class_path` — decorator ``class_path=`` override or
+  ``__module__.__qualname__``, verified to import back to the class.
+- :func:`validate_component_config` — shape-check ``class_path`` + ``init_args``.
+
 Studio needs only :func:`is_config_exportable` and :func:`to_config`, then
 domain ``from_config`` helpers (for example ``SharedRobot.from_config``).
 
@@ -30,8 +37,10 @@ if TYPE_CHECKING:
     from ._errors import ComponentImportError as ComponentImportError
     from ._export import export_config as export_config
     from ._export import is_config_exportable as is_config_exportable
+    from ._export import resolve_public_class_path as resolve_public_class_path
     from ._export import to_config as to_config
     from ._instantiate import instantiate as instantiate
+    from ._normalize import validate_component_config as validate_component_config
     from ._types import ComponentConfig as ComponentConfig
     from ._types import ConfigValue as ConfigValue
     from ._types import JsonScalar as JsonScalar
@@ -49,7 +58,9 @@ __all__ = [
     "import_dotted_path",
     "instantiate",
     "is_config_exportable",
+    "resolve_public_class_path",
     "to_config",
+    "validate_component_config",
 ]
 
 _LAZY_ATTRS: dict[str, tuple[str, str]] = {
@@ -62,8 +73,10 @@ _LAZY_ATTRS: dict[str, tuple[str, str]] = {
     "import_dotted_path": (".importing", "import_dotted_path"),
     "export_config": ("._export", "export_config"),
     "is_config_exportable": ("._export", "is_config_exportable"),
+    "resolve_public_class_path": ("._export", "resolve_public_class_path"),
     "to_config": ("._export", "to_config"),
     "instantiate": ("._instantiate", "instantiate"),
+    "validate_component_config": ("._normalize", "validate_component_config"),
 }
 
 

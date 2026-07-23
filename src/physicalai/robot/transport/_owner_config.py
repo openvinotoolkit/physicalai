@@ -9,12 +9,17 @@ pydantic model). Used by the foreground serve path and by the owner
 subprocess stdin handshake.
 
 The owner must construct the robot driver itself: a live serial/socket
-handle cannot cross a process boundary (D15). Only an importable
-``robot_class`` plus JSON-serializable ``robot_kwargs`` survive that
-boundary — arbitrary robot types, including third-party plugins, work
-without any registry lookup here.
+handle cannot cross a process boundary (D15). Only a trusted
+:class:`~physicalai.config.ComponentConfig` (``class_path`` + ``init_args``)
+survives that boundary — arbitrary robot types, including third-party
+plugins, work without any registry lookup here.
 
-Security: *robot_class* is trusted local application/config input, exactly
+Private stdin is ``robot: ComponentConfig`` only. Flat keys
+(``robot_class`` / ``robot_kwargs``) are unsupported and rejected before
+import or hardware access. Public ``SharedRobot`` and ``physicalai robot
+serve`` use the same ``robot`` / ``--robot`` shape.
+
+Security: ``class_path`` is trusted local application/config input, exactly
 like a jsonargparse ``class_path`` (``docs/development/security.md`` rules
 4, 9, 11). It must never originate from network-received data (e.g. a
 ``/metadata`` payload) — that would let an untrusted peer choose an
@@ -25,12 +30,21 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from ._importing import import_dotted_path
+from physicalai.config import (
+    ComponentConfig,
+    ComponentConfigError,
+    instantiate,
+    resolve_public_class_path,
+    validate_component_config,
+)
+from physicalai.config.importing import import_dotted_path
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from physicalai.robot.interface import Robot
 
 DEFAULT_RATE_HZ = 100.0
@@ -42,38 +56,73 @@ debt. Override per instance with ``rate_hz`` when hardware measurements
 justify a different value for a specific robot class.
 """
 
+_UNSUPPORTED_FLAT_STDIN_KEYS = ("robot_class", "robot_kwargs")
+
 
 def normalize_robot_class(robot_class: type | str) -> str:
-    """Normalize a robot class reference to an importable dotted path.
+    """Normalize a robot class reference to its public import path.
 
-    An explicit string path is trusted and returned unchanged. A class
-    object is converted via ``cls.__module__ + "." + cls.__qualname__``,
-    because Python does not retain the re-export path through which a
-    class happened to be imported by the caller.
+    Matches :func:`physicalai.config.to_config` path selection: decorator
+    ``class_path=`` override when present, otherwise
+    ``__module__.__qualname__``. String paths are imported first so a
+    defining-module path (for example ``physicalai.robot.so101.so101.SO101``)
+    becomes the public re-export (``physicalai.robot.SO101``) before store,
+    metadata advertise, and conflict compare.
 
     Args:
         robot_class: A class object, or its dotted import path as a string.
 
     Returns:
-        The normalized dotted path.
+        The normalized public dotted path.
 
     Raises:
-        TypeError: If *robot_class* is neither a string nor a class.
-        ValueError: If a class object is a local class (defined inside a
-            function) — those have no stable import path and cannot be
-            reconstructed in the owner subprocess.
+        TypeError: If *robot_class* is neither a string nor a class, or a
+            string path does not resolve to a class.
+        ValueError: If a class object is a local class, or the public path
+            cannot be resolved.
     """
     if isinstance(robot_class, str):
-        return robot_class
+        try:
+            resolved = import_dotted_path(robot_class)
+        except (ValueError, ImportError, AttributeError) as exc:
+            msg = f"could not import robot_class {robot_class!r}: {exc}"
+            raise ValueError(msg) from exc
+        if not isinstance(resolved, type):
+            msg = f"robot_class {robot_class!r} does not resolve to a class (got {type(resolved).__name__})"
+            raise TypeError(msg)
+        robot_class = resolved
     if not isinstance(robot_class, type):
         msg = f"robot_class must be a class or a dotted path string, got {type(robot_class).__name__}"
         raise TypeError(msg)
 
-    path = f"{robot_class.__module__}.{robot_class.__qualname__}"
-    if "<locals>" in robot_class.__qualname__:
-        msg = f"robot_class {path!r} is a local class and cannot be auto-spawned; give it a module-level definition"
-        raise ValueError(msg)
-    return path
+    try:
+        return resolve_public_class_path(robot_class)
+    except ComponentConfigError as exc:
+        raise ValueError(str(exc)) from exc
+
+
+def normalize_robot_config(robot: Mapping[str, object]) -> ComponentConfig:
+    """Validate a robot :class:`~physicalai.config.ComponentConfig` and normalize ``class_path``.
+
+    Args:
+        robot: Candidate ``class_path`` + ``init_args`` mapping.
+
+    Returns:
+        A validated config whose ``class_path`` is the public import path.
+
+    Raises:
+        ValueError: If ``class_path`` cannot be imported or is not JSON-safe
+            together with ``init_args``.
+    """
+    validated = validate_component_config(dict(robot), path="robot")
+    class_path = normalize_robot_class(validated["class_path"])
+    init_args = validated["init_args"]
+    try:
+        json.dumps({"class_path": class_path, "init_args": init_args})
+    except TypeError as exc:
+        msg = f"robot.init_args must be JSON-serializable (e.g. paths as str, not objects): {exc}"
+        raise ValueError(msg) from exc
+    return {"class_path": class_path, "init_args": dict(init_args)}
 
 
 @dataclass(frozen=True)
@@ -88,9 +137,7 @@ class RobotOwnerConfig:
 
     Attributes:
         name: The robot's logical name (keys the Zenoh topics).
-        robot_class: Normalized importable dotted path to the driver class.
-        robot_kwargs: JSON-serializable keyword arguments forwarded to the
-            driver constructor (e.g. ``calibration`` as a file path).
+        robot: Trusted construction config (``class_path`` + ``init_args``).
         allow_remote: Whether the owner's Zenoh session is reachable beyond
             localhost. Fixed for the owner's lifetime once spawned.
             ``True`` exposes an unauthenticated physical ``/action`` endpoint
@@ -101,18 +148,17 @@ class RobotOwnerConfig:
     """
 
     name: str
-    robot_class: str
-    robot_kwargs: dict[str, Any] = field(default_factory=dict)
+    robot: Mapping[str, object]
     allow_remote: bool = False
     rate_hz: float = DEFAULT_RATE_HZ
     idle_timeout: float | None = 10.0
 
     def __post_init__(self) -> None:
-        """Validate ``rate_hz`` and that ``robot_kwargs`` is JSON-serializable.
+        """Validate transport fields and normalize ``robot`` to a public ComponentConfig.
 
         Raises:
-            ValueError: If ``rate_hz`` is not finite and positive, or
-                ``robot_kwargs`` contains non-JSON-serializable values.
+            ValueError: If ``rate_hz`` / ``idle_timeout`` are invalid, or
+                ``robot`` is not a JSON-serializable ComponentConfig.
         """
         if (
             isinstance(self.rate_hz, bool)
@@ -133,25 +179,32 @@ class RobotOwnerConfig:
         from ._ids import validate_name  # noqa: PLC0415
 
         validate_name(self.name)
-        if not isinstance(self.robot_class, str) or not self.robot_class.strip() or "." not in self.robot_class:
-            msg = f"robot_class must be a nonempty dotted path, got {self.robot_class!r}"
-            raise ValueError(msg)
-        try:
-            json.dumps(self.robot_kwargs)
-        except TypeError as exc:
-            msg = f"robot_kwargs must be JSON-serializable (e.g. paths as str, not objects): {exc}"
-            raise ValueError(msg) from exc
+        object.__setattr__(self, "robot", normalize_robot_config(self.robot))
+
+    @property
+    def robot_class(self) -> str:
+        """Public ``class_path`` advertised on network metadata as ``robot_class``."""
+        return str(self.robot["class_path"])
 
     def to_json_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-safe dictionary for the stdin handshake.
 
         Returns:
-            Dictionary with every dataclass field.
+            Dictionary with every dataclass field (new ``robot:`` shape only).
+
+        Raises:
+            TypeError: If ``robot.init_args`` is not a mapping.
         """
+        init_args = self.robot["init_args"]
+        if not isinstance(init_args, dict):
+            msg = f"robot.init_args must be a mapping, got {type(init_args).__name__}"
+            raise TypeError(msg)
         return {
             "name": self.name,
-            "robot_class": self.robot_class,
-            "robot_kwargs": self.robot_kwargs,
+            "robot": {
+                "class_path": self.robot["class_path"],
+                "init_args": dict(init_args),
+            },
             "allow_remote": self.allow_remote,
             "rate_hz": self.rate_hz,
             "idle_timeout": self.idle_timeout,
@@ -161,16 +214,35 @@ class RobotOwnerConfig:
     def from_json_dict(cls, data: dict[str, Any]) -> RobotOwnerConfig:
         """Deserialize from a JSON dictionary.
 
+        Rejects unsupported flat stdin keys (``robot_class`` / ``robot_kwargs``)
+        before any import or hardware access.
+
         Args:
             data: Dictionary produced by :meth:`to_json_dict`.
 
         Returns:
             A new :class:`RobotOwnerConfig` instance.
+
+        Raises:
+            ValueError: If flat keys are present or ``robot`` is missing /
+                invalid.
+            TypeError: If ``data`` is not a mapping.
         """
+        if not isinstance(data, dict):
+            msg = f"owner config must be a mapping, got {type(data).__name__}"
+            raise TypeError(msg)
+
+        unsupported = [key for key in _UNSUPPORTED_FLAT_STDIN_KEYS if key in data]
+        if unsupported:
+            msg = f"unsupported owner stdin keys {unsupported}; require 'robot' with class_path + init_args"
+            raise ValueError(msg)
+        if "robot" not in data:
+            msg = "owner config missing required 'robot' ComponentConfig"
+            raise ValueError(msg)
+
         return cls(
             name=data["name"],
-            robot_class=data["robot_class"],
-            robot_kwargs=data.get("robot_kwargs", {}),
+            robot=data["robot"],
             allow_remote=data.get("allow_remote", False),
             rate_hz=data.get("rate_hz", DEFAULT_RATE_HZ),
             idle_timeout=data.get("idle_timeout", 10.0),
@@ -179,14 +251,21 @@ class RobotOwnerConfig:
     def build(self) -> Robot:
         """Instantiate the robot driver described by this config.
 
+        Owner stdin is a trusted parent→child handshake only — never pass
+        network metadata to this path. Uses :func:`physicalai.config.instantiate`
+        on the trusted ``robot`` ComponentConfig, then verifies the
+        :class:`~physicalai.robot.Robot` protocol.
+
         Returns:
             A new, not-yet-connected driver instance.
 
         Raises:
-            TypeError: If ``robot_class`` does not resolve to a class.
+            TypeError: If the instantiated object does not satisfy ``Robot``.
         """
-        cls = import_dotted_path(self.robot_class)
-        if not isinstance(cls, type):
-            msg = f"robot_class {self.robot_class!r} does not resolve to a class (got {type(cls).__name__})"
+        from physicalai.robot.interface import Robot  # noqa: PLC0415
+
+        driver = instantiate(self.robot)  # type: ignore[arg-type]
+        if not isinstance(driver, Robot):
+            msg = f"{self.robot_class!r} does not satisfy the Robot protocol (got {type(driver).__name__})"
             raise TypeError(msg)
-        return cls(**self.robot_kwargs)
+        return driver

@@ -28,8 +28,10 @@ from tests.unit.robot.transport.conftest import requires_zenoh
 def _serve_cfg(**overrides: object) -> SimpleNamespace:
     values: dict[str, object] = {
         "name": "left-arm",
-        "robot_class": "tests.unit.robot.transport.fake.FakeRobot",
-        "robot_kwargs": {"port": "/dev/fake0"},
+        "robot": {
+            "class_path": "tests.unit.robot.transport.fake.FakeRobot",
+            "init_args": {"port": "/dev/fake0"},
+        },
         "allow_remote": False,
         "rate_hz": 100.0,
         "verbose": False,
@@ -57,9 +59,20 @@ def test_serve_runs_owner_in_foreground_with_persistent_timeout(capsys: object) 
     config = captured["config"]
     assert config.idle_timeout is None  # type: ignore[attr-defined]
     assert config.name == "left-arm"  # type: ignore[attr-defined]
+    assert config.robot == {  # type: ignore[attr-defined]
+        "class_path": "tests.unit.robot.transport.fake.FakeRobot",
+        "init_args": {"port": "/dev/fake0"},
+    }
     stderr = capsys.readouterr().err  # type: ignore[attr-defined]
     assert "unauthenticated" not in stderr
     assert "[local-only]" in stderr
+
+
+def test_serve_requires_robot_component_config(capsys: object) -> None:
+    with patch.object(robot_module, "run_owner") as run:
+        assert robot_module.serve(_serve_cfg(robot=None)) == 1
+    run.assert_not_called()
+    assert "requires --robot" in capsys.readouterr().err  # type: ignore[attr-defined]
 
 
 def test_serve_allow_remote_warns_and_tags_mode(capsys: object) -> None:
@@ -203,9 +216,36 @@ def test_empty_discovery_json_is_array(capsys: object) -> None:
 def test_parser_does_not_expose_idle_timeout() -> None:
     parser = robot_module.build_parser()
     cfg = parser.parse_args(
-        ["serve", "--name", "left-arm", "--robot_class", "pkg.mod.Robot"],
+        [
+            "serve",
+            "--name",
+            "left-arm",
+            "--robot.class_path",
+            "pkg.mod.Robot",
+            "--robot.init_args",
+            "{}",
+        ],
     )
     assert not hasattr(cfg.serve, "idle_timeout")
+    assert not hasattr(cfg.serve, "robot_class")
+    assert not hasattr(cfg.serve, "robot_kwargs")
+
+
+def test_parser_accepts_robot_component_config() -> None:
+    parser = robot_module.build_parser()
+    cfg = parser.parse_args(
+        [
+            "serve",
+            "--name",
+            "left-arm",
+            "--robot.class_path",
+            "tests.unit.robot.transport.fake.FakeRobot",
+            "--robot.init_args",
+            '{"port": "/dev/fake0"}',
+        ],
+    )
+    assert cfg.serve.robot["class_path"] == "tests.unit.robot.transport.fake.FakeRobot"
+    assert cfg.serve.robot["init_args"]["port"] == "/dev/fake0"
 
 
 def test_discover_rejects_invalid_timeout(capsys: object) -> None:
@@ -231,12 +271,10 @@ def test_serve_process_sigterm_disconnects_and_releases_locks(tmp_path: Path) ->
             "serve",
             "--name",
             name,
-            "--robot_class",
+            "--robot.class_path",
             "tests.unit.robot.transport.fake.FakeRobot",
-            "--robot_kwargs.port",
-            port,
-            "--robot_kwargs.disconnect_marker",
-            str(marker),
+            "--robot.init_args",
+            json.dumps({"port": port, "disconnect_marker": str(marker)}),
         ],
         stderr=subprocess.PIPE,
         text=True,
