@@ -18,6 +18,7 @@ from physicalai.robot.transport._owner_config import (
     RobotOwnerConfig,
     normalize_robot_class,
     normalize_robot_config,
+    validate_owner_config,
 )
 
 from .conftest import FAKE_ROBOT_CLASS
@@ -163,12 +164,13 @@ class TestRobotOwnerConfig:
             "robot_class": "totally.unknown.module.Cls",
             "robot_kwargs": {"port": "/dev/ttyUSB0"},
         }
-        with pytest.raises(ValueError, match="unsupported owner stdin keys") as exc_info:
+        with pytest.raises(ValueError, match="unknown owner config keys") as exc_info:
             RobotOwnerConfig.from_json_dict(flat)
         assert "robot_class" in str(exc_info.value)
+        assert "robot_kwargs" in str(exc_info.value)
 
     def test_flat_robot_kwargs_alone_rejected(self) -> None:
-        with pytest.raises(ValueError, match="unsupported owner stdin keys"):
+        with pytest.raises(ValueError, match="unknown owner config keys"):
             RobotOwnerConfig.from_json_dict(
                 {
                     "name": "left-arm",
@@ -177,9 +179,35 @@ class TestRobotOwnerConfig:
                 },
             )
 
+    def test_unknown_keys_rejected(self) -> None:
+        with pytest.raises(ValueError, match="unknown owner config keys") as exc_info:
+            RobotOwnerConfig.from_json_dict(
+                {
+                    "name": "left-arm",
+                    "robot": _fake_robot(),
+                    "extra_field": 1,
+                },
+            )
+        assert "extra_field" in str(exc_info.value)
+
     def test_missing_robot_rejected(self) -> None:
         with pytest.raises(ValueError, match="missing required 'robot'"):
             RobotOwnerConfig.from_json_dict({"name": "left-arm"})
+
+    def test_validate_owner_config_shared_helper(self) -> None:
+        robot = validate_owner_config(
+            {
+                "name": "left-arm",
+                "robot": _fake_robot(port="/dev/ttyUSB0"),
+                "allow_remote": True,
+                "rate_hz": 50.0,
+                "idle_timeout": 2.5,
+            },
+        )
+        assert robot["class_path"] == FAKE_ROBOT_CLASS
+        init_args = robot["init_args"]
+        assert isinstance(init_args, dict)
+        assert init_args["port"] == "/dev/ttyUSB0"
 
     def test_malformed_robot_rejected_before_import(self) -> None:
         with pytest.raises(ComponentConfigError):

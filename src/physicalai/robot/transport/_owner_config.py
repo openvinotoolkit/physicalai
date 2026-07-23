@@ -14,10 +14,11 @@ handle cannot cross a process boundary (D15). Only a trusted
 survives that boundary — arbitrary robot types, including third-party
 plugins, work without any registry lookup here.
 
-Private stdin is ``robot: ComponentConfig`` only. Flat keys
-(``robot_class`` / ``robot_kwargs``) are unsupported and rejected before
-import or hardware access. Public ``SharedRobot`` and ``physicalai robot
-serve`` use the same ``robot`` / ``--robot`` shape.
+Private stdin is ``robot: ComponentConfig`` only. The owner envelope is
+validated schema-positively: required ``robot``, known transport keys, and
+rejection of unknown keys (including legacy flat ``robot_class`` /
+``robot_kwargs``) before import or hardware access. Public ``SharedRobot``
+and ``physicalai robot serve`` use the same ``robot`` / ``--robot`` shape.
 
 Security: ``class_path`` is trusted local application/config input, exactly
 like a jsonargparse ``class_path`` (``docs/development/security.md`` rules
@@ -30,6 +31,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -43,8 +45,6 @@ from physicalai.config import (
 from physicalai.config.importing import import_dotted_path
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
-
     from physicalai.robot.interface import Robot
 
 DEFAULT_RATE_HZ = 100.0
@@ -56,7 +56,61 @@ debt. Override per instance with ``rate_hz`` when hardware measurements
 justify a different value for a specific robot class.
 """
 
-_UNSUPPORTED_FLAT_STDIN_KEYS = ("robot_class", "robot_kwargs")
+# Allowed keys on owner stdin handshake payloads. Everything else (including
+# legacy flat robot_class / robot_kwargs) is an unknown-key schema error.
+# Keep this the single allowlist — :meth:`RobotOwnerConfig.from_json_dict`
+# and any future reconfigure path should share :func:`validate_owner_config`.
+_OWNER_ENVELOPE_KEYS = frozenset({
+    "name",
+    "robot",
+    "allow_remote",
+    "rate_hz",
+    "idle_timeout",
+})
+
+
+def validate_owner_config(data: Mapping[str, Any]) -> Mapping[str, object]:
+    """Validate an owner stdin payload schema-positively.
+
+    Requires ``robot`` with a valid ComponentConfig shape. Allows only known
+    transport envelope keys. Unknown keys (including legacy flat
+    ``robot_class`` / ``robot_kwargs``) raise a clear schema error.
+
+    Args:
+        data: Full owner stdin dict.
+
+    Returns:
+        The validated ``robot`` ComponentConfig mapping (not yet
+        public-path-normalized — :class:`RobotOwnerConfig` /
+        :func:`normalize_robot_config` do that).
+
+    Raises:
+        TypeError: If *data* is not a mapping, or ``robot`` is not a mapping.
+        ValueError: If required ``robot`` is missing or unknown keys are present.
+    """
+    if not isinstance(data, Mapping):
+        msg = f"owner config must be a mapping, got {type(data).__name__}"
+        raise TypeError(msg)
+
+    unknown = sorted(set(data) - _OWNER_ENVELOPE_KEYS)
+    if unknown:
+        msg = (
+            f"unknown owner config keys {unknown}; "
+            "require 'robot' with class_path + init_args "
+            f"(allowed envelope keys: {sorted(_OWNER_ENVELOPE_KEYS)})"
+        )
+        raise ValueError(msg)
+
+    if "robot" not in data:
+        msg = "owner config missing required 'robot' ComponentConfig"
+        raise ValueError(msg)
+
+    robot = data["robot"]
+    if not isinstance(robot, Mapping):
+        msg = f"owner 'robot' must be a mapping, got {type(robot).__name__}"
+        raise TypeError(msg)
+
+    return validate_component_config(dict(robot), path="robot")
 
 
 def normalize_robot_class(robot_class: type | str) -> str:
@@ -214,8 +268,9 @@ class RobotOwnerConfig:
     def from_json_dict(cls, data: dict[str, Any]) -> RobotOwnerConfig:
         """Deserialize from a JSON dictionary.
 
-        Rejects unsupported flat stdin keys (``robot_class`` / ``robot_kwargs``)
-        before any import or hardware access.
+        Uses :func:`validate_owner_config` so the owner envelope is validated
+        schema-positively (required ``robot``, known transport keys, unknown
+        keys rejected) before any import or hardware access.
 
         Args:
             data: Dictionary produced by :meth:`to_json_dict`.
@@ -224,25 +279,16 @@ class RobotOwnerConfig:
             A new :class:`RobotOwnerConfig` instance.
 
         Raises:
-            ValueError: If flat keys are present or ``robot`` is missing /
-                invalid.
             TypeError: If ``data`` is not a mapping.
         """
         if not isinstance(data, dict):
             msg = f"owner config must be a mapping, got {type(data).__name__}"
             raise TypeError(msg)
 
-        unsupported = [key for key in _UNSUPPORTED_FLAT_STDIN_KEYS if key in data]
-        if unsupported:
-            msg = f"unsupported owner stdin keys {unsupported}; require 'robot' with class_path + init_args"
-            raise ValueError(msg)
-        if "robot" not in data:
-            msg = "owner config missing required 'robot' ComponentConfig"
-            raise ValueError(msg)
-
+        robot = validate_owner_config(data)
         return cls(
             name=data["name"],
-            robot=data["robot"],
+            robot=robot,
             allow_remote=data.get("allow_remote", False),
             rate_hz=data.get("rate_hz", DEFAULT_RATE_HZ),
             idle_timeout=data.get("idle_timeout", 10.0),

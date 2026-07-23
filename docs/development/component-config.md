@@ -646,9 +646,11 @@ add a `config_format` field, dual-read, or shape-detection fallback.
 {camera: {class_path, init_args}, service_name, idle_timeout, …}
 ```
 
-Writers and readers speak only the new shape. Reject payloads that still carry
-unsupported flat keys (`robot_class` / `robot_kwargs`, or `camera_type` /
-`camera_kwargs`) before import or hardware access — no silent translation.
+Writers and readers speak only the new shape. Validate each envelope
+schema-positively (known transport keys only; required `robot` / `camera`
+ComponentConfig). Unknown keys — including legacy flat `robot_class` /
+`robot_kwargs` or `camera_type` / `camera_kwargs` — are rejected before
+import or hardware access; no silent translation or denylist-only drops.
 
 Do not reuse `capture.transport.PROTOCOL_VERSION` or
 `ROBOT_TRANSPORT_PROTOCOL_VERSION` for these changes. Those version frame and
@@ -692,8 +694,9 @@ types (`ip`, `genicam`) are not in that map.
 
 Public construction matches private stdin: `robot` / `--robot` only.
 Flat `robot_class` / `robot_kwargs` on the public API and CLI are
-removed; those keys on owner stdin remain unsupported and are rejected
-before import.
+removed; owner stdin uses an allowlist envelope (`name`, `robot`,
+`allow_remote`, `rate_hz`, `idle_timeout`) so legacy flat keys fail as
+unknown keys before import.
 
 `SharedRobot` is `@export_config(class_path="physicalai.robot.SharedRobot")`
 — a **construction recipe** only (`name`, nested `robot`
@@ -974,8 +977,9 @@ cutovers; do not describe them as schema-preserving.
 - `InferenceModel` non-scalar / live override args fail at `to_config` (no
   silent drop).
 - Robot owner and camera publisher subprocess handshakes remain JSON-only,
-  accept only the new `robot:` / `camera: ComponentConfig` shape, and reject
-  unsupported flat stdin (`robot_class` / `camera_type` forms) before import.
+  accept only the new `robot:` / `camera: ComponentConfig` shape, and
+  schema-positively reject unknown envelope keys (including legacy flat
+  `robot_class` / `camera_type` forms) before import.
 - Shareable SharedCamera spawn (`uvc` / `realsense` / `basler`) derives the
   legacy `service_name` via the transport class-path → type-token map inside
   `from_config` / the constructor; stub (`ip` / `genicam`) and third-party
@@ -990,10 +994,11 @@ cutovers; do not describe them as schema-preserving.
   built-in camera registry.
 - Public `SharedRobot` ctor and `physicalai robot serve` accept only
   `robot=` / `--robot` ComponentConfig (plus `from_config` / `from_robot`);
-  flat `robot_class` / `robot_kwargs` are rejected as unsupported on stdin
-  and are not a public dual API; defining-module paths normalize to public
-  re-exports before store/advertise/compare; metadata `robot_class` equals
-  that public `robot["class_path"]`.
+  owner stdin allowlists envelope keys so flat `robot_class` /
+  `robot_kwargs` fail as unknown keys (not a public dual API);
+  defining-module paths normalize to public re-exports before
+  store/advertise/compare; metadata `robot_class` equals that public
+  `robot["class_path"]`.
 - `SharedRobot.from_robot()` is sugar over `from_config(to_config(...))`,
   requires exportability, and rejects connected drivers before owner spawn.
 - Composite bimanual robots spawn as one owner; nested arm configs round-trip
