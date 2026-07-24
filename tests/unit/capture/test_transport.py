@@ -26,7 +26,7 @@ from physicalai.capture.transport._header import (
     encode_frame,
 )
 from physicalai.capture.transport._shared_camera import SharedCamera
-from physicalai.capture.transport._spec import CameraSpec, derive_service_name
+from physicalai.capture.transport._spec import CameraPublisherConfig, derive_service_name
 
 from .conftest import FAKE_CAMERA_CLASS
 
@@ -39,9 +39,9 @@ def _service_name() -> str:
     return f"physicalai/test/{uuid4().hex[:8]}/frame"
 
 
-class TestCameraSpec:
+class TestCameraPublisherConfig:
     def test_picklable(self) -> None:
-        spec = CameraSpec(
+        spec = CameraPublisherConfig(
             camera={
                 "class_path": "physicalai.capture.UVCCamera",
                 "init_args": {"device": 0, "width": 640},
@@ -53,7 +53,7 @@ class TestCameraSpec:
         assert restored.camera == spec.camera
 
     def test_build_uses_instantiate(self) -> None:
-        spec = CameraSpec(
+        spec = CameraPublisherConfig(
             camera={
                 "class_path": FAKE_CAMERA_CLASS,
                 "init_args": {"width": 320, "height": 240},
@@ -66,13 +66,13 @@ class TestCameraSpec:
 
     def test_from_json_dict_rejects_flat_keys(self) -> None:
         with pytest.raises(ValueError, match="unknown publisher config keys"):
-            CameraSpec.from_json_dict(
+            CameraPublisherConfig.from_json_dict(
                 {"camera_type": "uvc", "camera_kwargs": {"device": 0}, "service_name": "x"},
             )
 
     def test_from_json_dict_rejects_unknown_keys(self) -> None:
         with pytest.raises(ValueError, match="unknown publisher config keys"):
-            CameraSpec.from_json_dict(
+            CameraPublisherConfig.from_json_dict(
                 {
                     "camera": {"class_path": FAKE_CAMERA_CLASS, "init_args": {}},
                     "service_name": "x",
@@ -82,7 +82,7 @@ class TestCameraSpec:
 
     def test_from_json_dict_requires_camera(self) -> None:
         with pytest.raises(ValueError, match="missing required 'camera'"):
-            CameraSpec.from_json_dict({"service_name": "x"})
+            CameraPublisherConfig.from_json_dict({"service_name": "x"})
 
     def test_validate_publisher_config_shared_helper(self) -> None:
         from physicalai.capture.transport._spec import validate_publisher_config
@@ -100,7 +100,7 @@ class TestCameraSpec:
         assert init_args["width"] == 8
 
     def test_to_json_dict_camera_shape(self) -> None:
-        spec = CameraSpec(
+        spec = CameraPublisherConfig(
             camera={"class_path": FAKE_CAMERA_CLASS, "init_args": {"device_name": "d0"}},
         )
         payload = spec.to_json_dict()
@@ -221,7 +221,7 @@ class TestEncodeDecodeRoundtrip:
 
 
 class TestSharedCameraConstruction:
-    """Unit tests for SharedCamera constructor / from_config / from_camera."""
+    """Unit tests for SharedCamera constructor / from_config."""
 
     def test_from_config_derives_builtin_service_name(self) -> None:
         cam = SharedCamera.from_config(
@@ -297,36 +297,36 @@ class TestSharedCameraConstruction:
         assert "service_name" not in cam._camera["init_args"]
         assert derive_service_name(cam._camera) == cam._service_name
 
-    def test_from_camera_requires_exportable(self) -> None:
+    def test_constructor_recipe_requires_exportable(self) -> None:
         class _Bare:
             @property
             def is_connected(self) -> bool:
                 return False
 
-        with pytest.raises(ValueError, match="not config-exportable"):
-            SharedCamera.from_camera(_Bare())  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="config-exportable camera"):
+            SharedCamera(camera=_Bare())  # type: ignore[arg-type]
 
-    def test_from_camera_rejects_connected_without_disconnect(self) -> None:
+    def test_constructor_recipe_rejects_connected_without_disconnect(self) -> None:
         from tests.unit.capture.fake import FakeCamera
 
         driver = FakeCamera(width=32, height=32)
         driver.connect()
         assert driver.is_connected
-        with pytest.raises(ValueError, match="export-only sugar"):
-            SharedCamera.from_camera(driver, service_name="physicalai/test/x/frame")
+        with pytest.raises(ValueError, match="disconnected camera recipe"):
+            SharedCamera(camera=driver, service_name="physicalai/test/x/frame")
         assert driver.is_connected
 
-    def test_from_camera_exports_disconnected(self) -> None:
+    def test_constructor_recipe_accepts_disconnected(self) -> None:
         from tests.unit.capture.fake import FakeCamera
 
         driver = FakeCamera(width=32, height=32, device_name="d1")
-        cam = SharedCamera.from_camera(driver, service_name="physicalai/test/x/frame")
+        cam = SharedCamera(camera=driver, service_name="physicalai/test/x/frame")
         assert cam._camera is not None
         assert cam._camera["class_path"] == FAKE_CAMERA_CLASS
         assert cam._camera["init_args"]["width"] == 32
 
     def test_third_party_build_bypasses_create_camera_registry(self) -> None:
-        spec = CameraSpec(
+        spec = CameraPublisherConfig(
             camera={"class_path": FAKE_CAMERA_CLASS, "init_args": {"width": 16, "height": 16}},
         )
         with patch("physicalai.capture.factory.create_camera") as mock_create:
@@ -359,7 +359,7 @@ class TestSharedCameraConstruction:
             def wait(self, timeout: float | None = None) -> int:
                 return 0
 
-        spec = CameraSpec(
+        spec = CameraPublisherConfig(
             camera={"class_path": FAKE_CAMERA_CLASS, "init_args": {"width": 8}},
         )
         publisher = CameraPublisher(spec, "physicalai/test/svc/frame")
@@ -908,7 +908,7 @@ class TestOverwriteSettings:
 
 @requires_iceoryx2
 class TestCameraPublisher:
-    def test_start_stop_lifecycle(self, fake_camera_spec: CameraSpec) -> None:
+    def test_start_stop_lifecycle(self, fake_camera_spec: CameraPublisherConfig) -> None:
         from physicalai.capture.transport._publisher import CameraPublisher
 
         publisher = CameraPublisher(
@@ -921,7 +921,7 @@ class TestCameraPublisher:
         publisher.stop()
         assert not publisher.is_alive
 
-    def test_context_manager(self, fake_camera_spec: CameraSpec) -> None:
+    def test_context_manager(self, fake_camera_spec: CameraPublisherConfig) -> None:
         from physicalai.capture.transport._publisher import CameraPublisher
 
         with CameraPublisher(
@@ -936,7 +936,7 @@ class TestCameraPublisher:
         from physicalai.capture.transport._publisher import CameraPublisher
 
         publisher = CameraPublisher(
-            CameraSpec(camera={"class_path": FAKE_CAMERA_CLASS, "init_args": {}}),
+            CameraPublisherConfig(camera={"class_path": FAKE_CAMERA_CLASS, "init_args": {}}),
             _service_name(),
             _factory_override="tests.unit.capture.fake:DoesNotExist",
         )
@@ -1029,7 +1029,7 @@ class TestReconfigureIntegration:
         from physicalai.capture.transport._publisher import CameraPublisher
 
         service_name = f"physicalai/test/{uuid4().hex[:8]}/frame"
-        spec = CameraSpec(
+        spec = CameraPublisherConfig(
             camera={"class_path": FAKE_CAMERA_CLASS, "init_args": {"width": 320, "height": 240}},
         )
         publisher = CameraPublisher(
@@ -1069,7 +1069,7 @@ class TestReconfigureIntegration:
         from physicalai.capture.transport._publisher import CameraPublisher
 
         service_name = f"physicalai/test/{uuid4().hex[:8]}/frame"
-        spec = CameraSpec(
+        spec = CameraPublisherConfig(
             camera={"class_path": FAKE_CAMERA_CLASS, "init_args": {"width": 320, "height": 240}},
         )
         publisher = CameraPublisher(
@@ -1118,7 +1118,7 @@ class TestReconfigureIntegration:
 
         service_name = f"physicalai/test/{uuid4().hex[:8]}/frame"
         # Publisher starts serving 320×240
-        spec = CameraSpec(
+        spec = CameraPublisherConfig(
             camera={"class_path": FAKE_CAMERA_CLASS, "init_args": {"width": 320, "height": 240}},
         )
         publisher = CameraPublisher(

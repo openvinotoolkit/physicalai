@@ -13,7 +13,7 @@ import pytest
 if TYPE_CHECKING:
     from collections.abc import Generator
 
-    from physicalai.capture.transport._spec import CameraSpec
+    from physicalai.capture.transport._spec import CameraPublisherConfig
 
 HAS_ICEORYX2 = importlib.util.find_spec("iceoryx2") is not None
 
@@ -21,16 +21,16 @@ FAKE_CAMERA_CLASS = "tests.unit.capture.fake.FakeCamera"
 
 
 @pytest.fixture
-def fake_camera_spec() -> CameraSpec:
-    from physicalai.capture.transport._spec import CameraSpec  # noqa: PLC0415
+def fake_camera_spec() -> CameraPublisherConfig:
+    from physicalai.capture.transport._spec import CameraPublisherConfig  # noqa: PLC0415
 
-    return CameraSpec(
+    return CameraPublisherConfig(
         camera={"class_path": FAKE_CAMERA_CLASS, "init_args": {}},
     )
 
 
 @pytest.fixture
-def publisher_service(fake_camera_spec: CameraSpec) -> Generator[str, None, None]:
+def publisher_service(fake_camera_spec: CameraPublisherConfig) -> Generator[str, None, None]:
     from uuid import uuid4  # noqa: PLC0415
 
     from physicalai.capture.transport._publisher import CameraPublisher  # noqa: PLC0415

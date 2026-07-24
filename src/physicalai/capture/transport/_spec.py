@@ -131,7 +131,7 @@ def derive_service_name(
 
 
 @dataclass(frozen=True)
-class CameraSpec:
+class CameraPublisherConfig:
     """Config payload describing how to construct a camera instance.
 
     Attributes:
@@ -166,7 +166,7 @@ class CameraSpec:
         }
 
     @classmethod
-    def from_json_dict(cls, data: dict[str, Any]) -> CameraSpec:
+    def from_json_dict(cls, data: dict[str, Any]) -> CameraPublisherConfig:
         """Deserialize from a JSON dictionary (full publisher envelope or fragment).
 
         Uses :func:`validate_publisher_config` so stdin and reconfigure share
@@ -178,7 +178,7 @@ class CameraSpec:
                 stdin envelope containing ``camera``.
 
         Returns:
-            A new :class:`CameraSpec` instance.
+            A new :class:`CameraPublisherConfig` instance.
 
         Raises:
             TypeError: If ``data`` is not a mapping.

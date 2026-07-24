@@ -5,9 +5,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+import yaml
 from jsonargparse import ActionConfigFile, ArgumentParser
 
 from physicalai.cli._spec import SubcommandSpec  # noqa: PLC2701
@@ -43,11 +46,68 @@ One config schema — ``action_source:`` is always explicit:
 """
 
 
+def _reshape_config_value(parser: ArgumentParser, value: object) -> object:
+    """Return CLI-shaped config content for a bare exported runtime document.
+
+    A ``--config`` value that points to a document with a top-level
+    ``class_path`` (as produced by ``to_config(runtime)`` / ``save_yaml``) is
+    loaded and unwrapped to the ``runtime:`` mapping the parser expects,
+    returned as JSON content (valid YAML that ``ActionConfigFile`` accepts
+    inline). Any other value — a non-path, an unreadable file, or a
+    ``runtime:`` CLI document — is returned unchanged.
+
+    Returns:
+        The original value, or unwrapped config content for a bare document.
+    """
+    if not isinstance(value, str):
+        return value
+    try:
+        if not Path(value).is_file():
+            return value
+        document = yaml.safe_load(Path(value).read_text(encoding="utf-8"))
+    except (OSError, ValueError, yaml.YAMLError):
+        return value
+    if not isinstance(document, dict) or "class_path" not in document:
+        return value
+
+    from physicalai.config import ComponentConfigError  # noqa: PLC0415
+    from physicalai.runtime import RobotRuntime  # noqa: PLC0415
+    from physicalai.runtime.core import _unwrap_runtime_document  # noqa: PLC0415, PLC2701
+
+    try:
+        return json.dumps(_unwrap_runtime_document(document, target=RobotRuntime))
+    except ComponentConfigError as exc:
+        parser.error(str(exc))
+
+
+class _RuntimeConfigFile(ActionConfigFile):
+    """``--config`` action accepting both the CLI document and a bare export.
+
+    Reshapes a bare exported ``RobotRuntime`` ComponentConfig (a document with a
+    top-level ``class_path``) into the ``runtime:`` document jsonargparse
+    expects before applying it; a ``runtime:`` / ``run:`` CLI document is passed
+    through unchanged. This keeps ``to_config(runtime)`` → ``save_yaml`` →
+    ``physicalai run --config`` a single-shape round-trip.
+    """
+
+    def __call__(
+        self,
+        parser: ArgumentParser,
+        cfg: Namespace,
+        values: object,
+        option_string: str | None = None,
+    ) -> None:
+        """Reshape a bare exported runtime document, then delegate to the base action."""
+        super().__call__(parser, cfg, _reshape_config_value(parser, values), option_string)
+
+
 def build_parser() -> ArgumentParser:
     """Build the ``run`` subcommand parser.
 
     One path: ``RobotRuntime`` constructor arguments (``action_source:``
-    always explicit) plus ``run()`` method arguments.
+    always explicit) plus ``run()`` method arguments. ``--config`` accepts
+    both the CLI document (``runtime:`` / ``run:``) and a bare exported
+    ComponentConfig produced by ``to_config(runtime)``.
 
     Returns:
         Parser for the ``physicalai run`` subcommand.
@@ -55,7 +115,7 @@ def build_parser() -> ArgumentParser:
     from physicalai.runtime import RobotRuntime  # noqa: PLC0415
 
     parser = ArgumentParser(prog="physicalai run", description=HELP)
-    parser.add_argument("--config", action=ActionConfigFile, help="YAML/JSON config file.")
+    parser.add_argument("--config", action=_RuntimeConfigFile, help="YAML/JSON config file.")
     parser.add_class_arguments(RobotRuntime, "runtime")
     parser.add_method_arguments(RobotRuntime, "run", "run")
     return parser

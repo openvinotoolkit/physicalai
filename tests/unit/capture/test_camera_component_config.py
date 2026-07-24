@@ -144,13 +144,13 @@ class TestSharedCameraComponentConfig:
         assert wire["init_args"]["camera"] is None
         assert wire["init_args"]["service_name"] == "physicalai/camera/uvc/0/frame"
 
-    def test_from_camera_still_rejects_connected(self) -> None:
+    def test_constructor_recipe_still_rejects_connected(self) -> None:
         from physicalai.capture import SharedCamera
         from tests.unit.capture.fake import FakeCamera
 
         driver = FakeCamera(width=32, height=32)
         driver.connect()
         assert driver.is_connected
-        with pytest.raises(ValueError, match="export-only sugar"):
-            SharedCamera.from_camera(driver, service_name="physicalai/test/x/frame")
+        with pytest.raises(ValueError, match="disconnected camera recipe"):
+            SharedCamera(camera=driver, service_name="physicalai/test/x/frame")
         assert driver.is_connected

@@ -140,10 +140,10 @@ def build_camera(config: dict) -> Camera:
     """
     factory_override = config.get("_factory_override")
     if factory_override:
-        from physicalai.capture.transport._spec import CameraSpec  # noqa: PLC0415
+        from physicalai.capture.transport._spec import CameraPublisherConfig  # noqa: PLC0415
 
         # Validate / reject flat keys even on the factory-override path.
-        spec = CameraSpec.from_json_dict(config)
+        spec = CameraPublisherConfig.from_json_dict(config)
         module_path, _, attr = factory_override.rpartition(":")
         mod = importlib.import_module(module_path)
         factory = getattr(mod, attr)
@@ -152,9 +152,9 @@ def build_camera(config: dict) -> Camera:
             init_args = {}
         return factory(**init_args)
 
-    from physicalai.capture.transport._spec import CameraSpec  # noqa: PLC0415, PLC2701
+    from physicalai.capture.transport._spec import CameraPublisherConfig  # noqa: PLC0415, PLC2701
 
-    spec = CameraSpec.from_json_dict(config)
+    spec = CameraPublisherConfig.from_json_dict(config)
     return spec.build()
 
 

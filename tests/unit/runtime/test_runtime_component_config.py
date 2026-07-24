@@ -508,6 +508,42 @@ class TestRobotRuntimeComponentConfig:
         assert via_from_config._connected is False  # noqa: SLF001
         assert via_from_config._fps == 30.0  # noqa: SLF001
 
+    def test_bare_component_export_round_trips(
+        self,
+        inference_model: Any,
+        _patch_adapter: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        from physicalai.cli.run import build_parser
+        from physicalai.runtime import RobotRuntime
+
+        runtime = _make_full_runtime(inference_model)
+        # The bare to_config shape (top-level class_path) — no manual rewrite
+        # to ``runtime:`` needed on either load path.
+        cfg_path = tmp_path / "runtime_export.json"
+        cfg_path.write_text(json.dumps(to_config(runtime)))
+
+        parser = build_parser()
+        ns = parser.parse_args(["--config", str(cfg_path)])
+        restored = parser.instantiate(ns).runtime
+        assert isinstance(restored, RobotRuntime)
+        assert restored._fps == 30.0  # noqa: SLF001
+        assert restored._connected is False  # noqa: SLF001
+
+        via_from_config = RobotRuntime.from_config(cfg_path)
+        assert isinstance(via_from_config, RobotRuntime)
+        assert via_from_config._fps == 30.0  # noqa: SLF001
+
+    def test_bare_export_foreign_class_path_rejected(self, tmp_path: Path) -> None:
+        from physicalai.config import ComponentConfigError
+        from physicalai.runtime import RobotRuntime
+
+        cfg_path = tmp_path / "not_runtime.json"
+        cfg_path.write_text(json.dumps({"class_path": "physicalai.runtime.SyncExecution", "init_args": {}}))
+
+        with pytest.raises(ComponentConfigError, match="does not resolve to"):
+            RobotRuntime.from_config(cfg_path)
+
     def test_omitted_cameras_and_callbacks(
         self, inference_model: Any, _patch_adapter: MagicMock
     ) -> None:

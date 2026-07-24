@@ -100,26 +100,26 @@ class TestConstruction:
         )
         assert robot._robot == {"class_path": FAKE_ROBOT_CLASS, "init_args": {"port": "/dev/fake0"}}
 
-    def test_from_robot_requires_exportable(self) -> None:
+    def test_constructor_recipe_requires_exportable(self) -> None:
         class _Bare:
             def is_connected(self) -> bool:
                 return False
 
-        with pytest.raises(ValueError, match="not config-exportable"):
-            SharedRobot.from_robot(_Bare(), name="left-arm")  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="config-exportable robot"):
+            SharedRobot("left-arm", robot=_Bare())  # type: ignore[arg-type]
 
-    def test_from_robot_rejects_connected_without_disconnect(self) -> None:
+    def test_constructor_recipe_rejects_connected_without_disconnect(self) -> None:
         driver = FakeRobot(port="/dev/fake0")
         driver.connect()
         assert driver.is_connected()
-        with pytest.raises(ValueError, match="disconnected driver"):
-            SharedRobot.from_robot(driver, name="left-arm")
+        with pytest.raises(ValueError, match="disconnected driver recipe"):
+            SharedRobot("left-arm", robot=driver)
         assert driver.is_connected()
         assert not driver.disconnect_called
 
-    def test_from_robot_exports_disconnected_driver(self) -> None:
+    def test_constructor_recipe_accepts_disconnected_driver(self) -> None:
         driver = FakeRobot(port="/dev/fake0", device_ids=("fake:/dev/fake0",))
-        robot = SharedRobot.from_robot(driver, name="left-arm")
+        robot = SharedRobot("left-arm", robot=driver)
         assert robot._robot is not None
         assert robot._robot["class_path"] == FAKE_ROBOT_CLASS
         assert robot._robot["init_args"]["port"] == "/dev/fake0"

@@ -10,8 +10,10 @@ that finds no existing owner spawns one; later instances (for the same
 *name*, anywhere reachable) attach.
 
 Construction is :class:`~physicalai.config.ComponentConfig`-only via
-``robot=``, :meth:`from_config`, or :meth:`from_robot`. Pass ``robot=None``
-(or use :meth:`attach`) for attach-only.
+``robot=`` or :meth:`from_config`; a disconnected ``@export_config`` driver
+instance is also accepted and converted via
+:func:`~physicalai.config.to_config`. Pass ``robot=None`` (or use
+:meth:`attach`) for attach-only.
 
 Unlike the superseded connection-derived ``robot_id``, *name* is a required,
 caller-chosen logical identifier — routing never needs a live driver
@@ -53,7 +55,7 @@ if TYPE_CHECKING:
     import numpy as np
 
     from physicalai.config import ComponentConfig
-    from physicalai.robot import Robot, RobotObservation
+    from physicalai.robot import RobotObservation
 
 
 def _coerce_robot_recipe(robot: object) -> ComponentConfig | Mapping[str, object]:
@@ -223,9 +225,10 @@ class SharedRobot:
     Zenoh. Satisfies the :class:`~physicalai.robot.Robot` protocol, so it
     is a drop-in replacement for a direct driver.
 
-    Prefer :meth:`from_config` or :meth:`from_robot`. The constructor takes
-    ``robot: ComponentConfig`` to spawn, or ``robot=None`` (attach-only;
-    :meth:`attach` is the explicit form).
+    Prefer :meth:`from_config`. The constructor takes
+    ``robot: ComponentConfig`` (or a disconnected ``@export_config`` driver)
+    to spawn, or ``robot=None`` (attach-only; :meth:`attach` is the explicit
+    form).
 
     Opted into :func:`~physicalai.config.export_config` as a **construction
     recipe** only (name, nested ``robot`` ComponentConfig, transport knobs).
@@ -312,65 +315,6 @@ class SharedRobot:
         return cls(
             name,
             robot=robot_config,
-            allow_remote=allow_remote,
-            rate_hz=rate_hz,
-            idle_timeout=idle_timeout,
-            connect_timeout=connect_timeout,
-            **({} if _session is None else {"_session": _session}),
-        )
-
-    @classmethod
-    def from_robot(
-        cls,
-        robot: Robot,
-        *,
-        name: str,
-        allow_remote: bool = False,
-        rate_hz: float = DEFAULT_RATE_HZ,
-        idle_timeout: float = 10.0,
-        connect_timeout: float = 10.0,
-        _session: object | None = None,
-    ) -> SharedRobot:
-        """Sugar over :meth:`from_config` for an opted-in live driver.
-
-        Requires :func:`~physicalai.config.is_config_exportable`. Rejects a
-        connected driver and never disconnects a caller-owned instance
-        implicitly — release hardware before calling, or prefer
-        :meth:`from_config` when no live instance is needed.
-
-        Args:
-            robot: Disconnected, ``@export_config``-marked driver instance.
-            name: Logical owner name (Zenoh topic key).
-            allow_remote: Whether this session / spawned owner may leave localhost.
-            rate_hz: Owner loop rate when this instance spawns the owner.
-            idle_timeout: Idle self-exit timeout for a spawned owner.
-            connect_timeout: Overall budget for :meth:`connect`.
-
-        Returns:
-            A ``SharedRobot`` built from :func:`~physicalai.config.to_config`.
-
-        Raises:
-            ValueError: If *robot* is not exportable or is still connected.
-        """
-        from physicalai.config import is_config_exportable, to_config  # noqa: PLC0415
-
-        if not is_config_exportable(robot):
-            msg = (
-                f"{type(robot).__module__}.{type(robot).__qualname__} is not "
-                "config-exportable; decorate with @export_config or pass from_config(...)"
-            )
-            raise ValueError(msg)
-        if robot.is_connected():
-            msg = (
-                "SharedRobot.from_robot() requires a disconnected driver; "
-                "disconnect explicitly before sharing, or use from_config(to_config(...)) "
-                "after releasing hardware you own"
-            )
-            raise ValueError(msg)
-        # Omit default None so @export_config does not capture "_session": null.
-        return cls.from_config(
-            to_config(robot),
-            name=name,
             allow_remote=allow_remote,
             rate_hz=rate_hz,
             idle_timeout=idle_timeout,

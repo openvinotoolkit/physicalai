@@ -116,14 +116,25 @@ class TestSO101ComponentConfig:
         assert wire["init_args"]["calibration"] == str(calib_path)
         assert Path(str(wire["init_args"]["calibration"])).is_absolute()
 
-    def test_uncalibrated_retains_private_flag(self, mock_scservo_sdk: MagicMock) -> None:
+    def test_uncalibrated_export_round_trips(self, mock_scservo_sdk: MagicMock) -> None:
+        from jsonargparse import ArgumentParser
+
         from physicalai.robot import SO101
 
         robot = SO101.uncalibrated(port="/dev/ttyUSB0")
         wire = _assert_construction_round_trip(robot)
         assert wire["init_args"]["calibration"] is None
-        assert wire["init_args"]["_allow_uncalibrated"] is True
+        assert wire["init_args"]["allow_uncalibrated"] is True
         assert wire["init_args"]["unit"] == "ticks"
+
+        # Public allow_uncalibrated + defaulted calibration make the export
+        # loadable by jsonargparse (the physicalai run --config path); a
+        # required calibration with no default rejects calibration: null.
+        parser = ArgumentParser()
+        parser.add_class_arguments(SO101, "robot")
+        ns = parser.parse_object({"robot": wire["init_args"]})
+        assert ns.robot.calibration is None
+        assert ns.robot.allow_uncalibrated is True
 
     def test_protocol_still_holds(self, mock_scservo_sdk: MagicMock) -> None:
         from physicalai.robot import SO101
@@ -284,12 +295,12 @@ class TestSharedRobotComponentConfig:
         wire = _assert_construction_round_trip(robot)
         assert "_session" not in wire["init_args"]
 
-    def test_from_robot_omits_null_session(self) -> None:
+    def test_constructor_recipe_omits_null_session(self) -> None:
         from physicalai.robot import SharedRobot
         from tests.unit.robot.transport.fake import FakeRobot
 
         driver = FakeRobot(port="/dev/fake-from-robot", device_ids=["fake:follower"])
-        robot = SharedRobot.from_robot(driver, name="from-robot-arm")
+        robot = SharedRobot("from-robot-arm", robot=driver)
         wire = _assert_construction_round_trip(robot)
         assert "_session" not in wire["init_args"]
 
@@ -319,13 +330,13 @@ class TestSharedRobotComponentConfig:
             with pytest.raises(ComponentConfigError, match=r"init_args\._session"):
                 to_config(robot)
 
-    def test_from_robot_still_rejects_connected(self) -> None:
+    def test_constructor_recipe_still_rejects_connected(self) -> None:
         from physicalai.robot import SharedRobot
         from tests.unit.robot.transport.fake import FakeRobot
 
         driver = FakeRobot(port="/dev/fake-connected")
         driver.connect()
         assert driver.is_connected()
-        with pytest.raises(ValueError, match="disconnected driver"):
-            SharedRobot.from_robot(driver, name="left-arm")
+        with pytest.raises(ValueError, match="disconnected driver recipe"):
+            SharedRobot("left-arm", robot=driver)
         assert driver.is_connected()

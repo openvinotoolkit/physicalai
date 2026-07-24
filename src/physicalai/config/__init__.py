@@ -36,6 +36,7 @@ from ._export import (
 from ._instantiate import instantiate
 from ._normalize import validate_component_config
 from ._types import ComponentConfig, ConfigValue, JsonScalar, JsonValue
+from ._yaml import load_yaml, save_yaml, to_yaml
 from .importing import import_dotted_path
 
 __all__ = [
@@ -49,10 +50,13 @@ __all__ = [
     "import_dotted_path",
     "instantiate",
     "is_config_exportable",
+    "load_yaml",
     "normalize_class_reference",
     "normalize_component_config",
     "resolve_public_class_path",
+    "save_yaml",
     "to_config",
+    "to_yaml",
     "validate_component_config",
     "validate_envelope",
 ]

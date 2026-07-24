@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Self
 from physicalai.capture.errors import CaptureError
 
 if TYPE_CHECKING:
-    from physicalai.capture.transport._spec import CameraSpec
+    from physicalai.capture.transport._spec import CameraPublisherConfig
 
 
 class CameraPublisher:
@@ -33,7 +33,7 @@ class CameraPublisher:
 
     def __init__(
         self,
-        spec: CameraSpec,
+        spec: CameraPublisherConfig,
         service_name: str,
         *,
         idle_timeout: float = 5,

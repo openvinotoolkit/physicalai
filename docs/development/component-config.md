@@ -62,8 +62,9 @@ construction with runtime behavior.
    beyond its constructor.
 3. Recursively support nested components and collections of components.
 4. Emit nested `class_path` + `init_args` fragments that jsonargparse accepts
-   without translation. A root config may still sit under a CLI wrapper key
-   such as `runtime:`.
+   without translation. A root config may sit under a CLI wrapper key such as
+   `runtime:`, or be a bare `RobotRuntime` export that `physicalai run --config`
+   unwraps into `runtime:`.
 5. Keep hardware and action-source protocols unchanged.
 6. Let third-party plugins opt in without depending on transports.
 7. Fail at serialization or validation time when replay is not possible.
@@ -473,9 +474,14 @@ init_args:
         fps: 30
 ```
 
-This nested fragment is accepted by jsonargparse without translation. For the
-existing CLI parser it is nested under `runtime:`; trusted local code may also
-pass the bare fragment to `instantiate()`.
+This example is a bare `RobotRuntime` export. `physicalai run --config` accepts
+it directly — it unwraps the top-level `RobotRuntime` `class_path` into the
+parser's `runtime:` section — as well as a `runtime:`-rooted CLI document.
+Trusted local code may pass the bare fragment to `instantiate()` or
+`RobotRuntime.from_config()`. Nested `class_path` + `init_args` fragments are
+native jsonargparse and need no translation. So `to_config(runtime)` →
+`save_yaml(...)` → `physicalai run --config` round-trips with one canonical
+shape; no separate export API (`save_config` / `to_run_document`) is needed.
 
 ## Component-specific decisions
 
@@ -488,11 +494,14 @@ constructed from an object (`SO101Calibration.to_config_value()` →
 `to_dict()` — a domain value, not a nested component).
 
 Private arguments are not excluded by naming convention. If replay needs an
-argument, capture it. `SO101.uncalibrated()` currently calls the constructor
-with `_allow_uncalibrated=True`, so the decorated outer constructor must retain
-that supplied private argument. Uncalibrated round-trip tests are required
-before claiming SO101 support; a future public constructor parameter can
-replace the private replay detail.
+argument, capture it. `SO101.uncalibrated()` calls the constructor with
+`allow_uncalibrated=True` — a **public** keyword-only parameter (default
+`False`) that `@export_config` captures. `calibration` defaults to `None`, so
+the uncalibrated recipe (`calibration: null`, `allow_uncalibrated: true`) loads
+through jsonargparse and `physicalai run --config` (a required, unset
+`calibration` would reject `null`). The constructor still raises unless
+`allow_uncalibrated=True` accompanies a `None` calibration, so uncalibrated
+bringup stays explicit and cannot be reached by accident.
 
 Bimanual robots need no special serialization once each arm uses
 `@export_config`: `left` and `right` are nested `@export_config` components
@@ -611,17 +620,25 @@ for `RobotRuntime` capture in v1.
 Keep construction and transport ownership separate:
 
 ```python
-SharedRobot.from_robot(robot, name="follower")
-SharedRobot.from_config(to_config(robot), name="follower")
+SharedRobot(name="follower", robot=driver)                   # live disconnected driver
+SharedRobot.from_config(to_config(robot), name="follower")   # trusted recipe (Studio API)
 ```
 
-`SharedRobot.from_robot()` is sugar only. It requires `is_config_exportable(robot)`,
-rejects a connected driver via `robot.is_connected()`, then calls
-`from_config(to_config(robot), ...)`. It must not scrape constructor kwargs
-ad hoc. It never disconnects a caller-owned live driver implicitly. Studio
-builders must return disconnected drivers for wrapping, or Studio must
-explicitly release a driver it owns before calling `from_robot()`. Prefer
-`from_config()` when no live instance is otherwise needed.
+The `SharedRobot` constructor (`robot=`) and `SharedRobot.from_config()` are the
+two entry points; there is no `from_robot()` sugar. `from_config()` is the
+named, Studio-facing API for a trusted `ComponentConfig`. The constructor
+additionally accepts a live, **disconnected** `@export_config` driver and
+converts it via `to_config()`. It requires `is_config_exportable(robot)`,
+rejects a connected driver via `robot.is_connected()`, and never disconnects a
+caller-owned live driver implicitly. Studio builders must return disconnected
+drivers for wrapping, or explicitly release a driver they own first.
+
+**Coercion contract.** The live-driver path exists because `instantiate()` is
+domain-agnostic: for a nested `robot={class_path, init_args}` it builds the
+inner driver into a **live** instance first, then calls
+`SharedRobot(robot=<live driver>)`, which re-serializes it with `to_config()`.
+This build-then-unbuild round-trip is intentional and harmless — construction
+never opens the hardware (construction ≠ `connect()`), so no device is touched.
 
 The connected-state check follows each protocol's surface — `is_connected()`
 is a method on robots and a property on cameras — and a live component that
@@ -714,11 +731,10 @@ object.
 
 - **`SharedRobot` constructor:** accept `robot: ComponentConfig` to spawn,
   or `robot=None` for attach-only (prefer :meth:`SharedRobot.attach`).
-  Prefer `SharedRobot.from_config(...)` and `from_robot(...)` when
-  building from a trusted config or an exportable live driver.
+  Prefer `SharedRobot.from_config(...)` when building from a trusted config.
   Nested `instantiate()` may pass a live `@export_config` driver for
   `robot=`; the constructor converts it to a ComponentConfig and rejects
-  connected drivers (same rule as `from_robot`).
+  connected drivers.
 - **Public path normalization:** when accepting a class object or dotted
   path inside `robot.class_path`, normalize through the same public-path
   resolution used by `to_config` (decorator `class_path=` override, else
@@ -749,19 +765,15 @@ capture publisher / iceoryx2 node / frame / connected state.
 - **`SharedCamera.from_config(camera, *, service_name=None, …)`** — primary
   API. Transport kwargs (zero-copy, validation, idle timeout, …) stay on the
   SharedCamera / publisher side, never inside `ComponentConfig`.
-- **`SharedCamera.from_camera(camera, *, service_name=None, …)`** — sugar:
-  require `is_config_exportable(camera)`, reject if `camera.is_connected`
-  (fail before publisher spawn), never disconnect a caller-owned live camera
-  implicitly, then `from_config(to_config(camera), …)`. No ad-hoc kwargs
-  scrape.
 - **Constructor:** accept `camera: ComponentConfig` to spawn, or
   `camera=None` + `service_name` for attach-only (prefer
   :meth:`SharedCamera.from_publisher`). Flat `camera_type` /
   `camera_kwargs` are unsupported on the public API and publisher stdin
   (rejected before import) — not a dual adapter API. Nested
-  `instantiate()` may pass a live `@export_config` camera for
-  `camera=`; convert to ComponentConfig and reject connected cameras
-  (same rule as `from_camera`).
+  `instantiate()` may pass a live **disconnected** `@export_config` camera for
+  `camera=`; convert to ComponentConfig and reject connected cameras. There is
+  no `from_camera()` sugar — the constructor's coercion covers the
+  live-instance case (same build-then-unbuild contract as `SharedRobot`).
 - **Who derives `service_name`:** `from_config` and the constructor.
   If `service_name` is omitted and `class_path` is a shareable built-in
   (`uvc` / `realsense` / `basler`), derive via the transport map + device id
@@ -828,8 +840,9 @@ The component-config layer is responsible for:
 - validating the JSON-safe recipe;
 - reconstructing it outside the CLI;
 - feeding emitted **nested** `class_path` + `init_args` fragments back into
-  jsonargparse without translation. A document root may still use a CLI
-  wrapper key such as `runtime:`.
+  jsonargparse without translation. A document root may use a CLI wrapper key
+  such as `runtime:`, or be a bare `RobotRuntime` export that
+  `physicalai run --config` unwraps into `runtime:`.
 
 Do not depend on jsonargparse internals to remember live-object construction.
 The explicit construction contract is also needed in subprocesses and Studio,
@@ -910,10 +923,10 @@ follow-up) remain open.
    mutable-container tests.
 3. Wire SO101, WidowXAI, and `BimanualWidowXAI` (nested `left`/`right`
    composite round-trips); add JSON and construction round-trip tests.
-4. Add `SharedRobot.from_config()` / `from_robot()`; hard-cutover
+4. Add `SharedRobot.from_config()`; hard-cutover
    `RobotOwnerConfig` stdin to `robot: ComponentConfig` (rewrite writers,
    readers, fixtures; no `config_format`, no dual-read). Public ctor and
-   CLI accept only `robot=` / `--robot` (plus `from_config` / `from_robot`);
+   CLI accept only `robot=` / `--robot` (plus `from_config`);
    flat `robot_class` / `robot_kwargs` are unsupported on public API, CLI,
    and stdin. Normalize class paths to public re-exports before
    store/advertise/compare; advertise metadata `robot_class` from that public
@@ -921,9 +934,9 @@ follow-up) remain open.
    (no path-absolutizing helper).
 5. Wire camera implementations, then hard-cutover the camera publisher stdin
    to `camera: ComponentConfig` with `service_name` beside it (same PR:
-   rewrite fixtures; no dual-read). Add `SharedCamera.from_config()` /
-   `from_camera()`; public ctor accepts only `camera=` / `from_config` /
-   `from_camera` (flat `camera_type` / `camera_kwargs` unsupported on public
+   rewrite fixtures; no dual-read). Add `SharedCamera.from_config()`;
+   public ctor accepts only `camera=` / `from_config`
+   (flat `camera_type` / `camera_kwargs` unsupported on public
    API and stdin — same post-step-4 SharedRobot simplification). Transport-
    owned shareable class-path → type-token map (`uvc` / `realsense` /
    `basler`) for derived names; stub (`ip` / `genicam`) and third-party
@@ -996,21 +1009,23 @@ cutovers; do not describe them as schema-preserving.
   spawn without explicit `service_name` fails before publisher start; the
   publisher envelope carries a concrete `service_name` not inside
   `init_args`.
-- `SharedCamera.from_camera()` is sugar over `from_config(to_config(...))`,
-  requires exportability, rejects connected cameras before publisher spawn,
-  and never disconnects implicitly; public ctor and publisher stdin reject
-  flat `camera_type` / `camera_kwargs` as unsupported (not a dual API).
+- The `SharedCamera` constructor coerces a live **disconnected** `@export_config`
+  camera via `to_config(...)`, requires exportability, and rejects connected
+  cameras before publisher spawn (no `from_camera()` sugar); public ctor and
+  publisher stdin reject flat `camera_type` / `camera_kwargs` as unsupported
+  (not a dual API).
 - Third-party camera class paths survive the publisher envelope and bypass the
   built-in camera registry.
 - Public `SharedRobot` ctor and `physicalai robot serve` accept only
-  `robot=` / `--robot` ComponentConfig (plus `from_config` / `from_robot`);
+  `robot=` / `--robot` ComponentConfig (plus `from_config`);
   owner stdin allowlists envelope keys so flat `robot_class` /
   `robot_kwargs` fail as unknown keys (not a public dual API);
   defining-module paths normalize to public re-exports before
   store/advertise/compare; metadata `robot_class` equals that public
   `robot["class_path"]`.
-- `SharedRobot.from_robot()` is sugar over `from_config(to_config(...))`,
-  requires exportability, and rejects connected drivers before owner spawn.
+- The `SharedRobot` constructor coerces a live **disconnected** `@export_config`
+  driver via `to_config(...)`, requires exportability, and rejects connected
+  drivers before owner spawn (no `from_robot()` sugar).
 - Composite bimanual robots spawn as one owner; nested arm configs round-trip
   under the composite.
 - The exact PolicySource nested graph (including smoothers) round-trips;
@@ -1052,6 +1067,6 @@ cutovers; do not describe them as schema-preserving.
 - Runtime YAML guide: [write runtime config](../how-to/config/write-runtime-config.md)
 - Security rules: [runtime security](security.md)
 - Robot owner envelope: `physicalai.robot.transport._owner_config.RobotOwnerConfig`
-- Camera publisher envelope: `physicalai.capture.transport._spec.CameraSpec`
+- Camera publisher envelope: `physicalai.capture.transport._spec.CameraPublisherConfig`
 - Review context: Mark's comments on Studio PR #818 (factory wrap; plugins
   should not care about `SharedRobot`)

@@ -4,9 +4,9 @@
 """Shared-memory camera subscriber transport based on iceoryx2.
 
 Construction is :class:`~physicalai.config.ComponentConfig`-only via
-``camera=``, :meth:`SharedCamera.from_config`, or :meth:`from_camera`.
-Prefer :meth:`from_config` when sharing; :meth:`from_camera` is export-only
-sugar after disconnect. Pass ``camera=None`` with ``service_name`` (or use
+``camera=`` or :meth:`SharedCamera.from_config`; a disconnected
+``@export_config`` camera instance is also accepted and converted via
+:func:`~physicalai.config.to_config`. Pass ``camera=None`` with ``service_name`` (or use
 :meth:`from_publisher`) for attach-only. Flat ``camera_type`` /
 ``camera_kwargs`` are unsupported. The publisher owns the device exclusively —
 do not keep a direct camera open on the same hardware while sharing.
@@ -130,9 +130,9 @@ class SharedCamera(Camera):
     Multiple SharedCamera instances can subscribe to the same publisher
     for zero-copy fan-out.
 
-    Prefer :meth:`from_config` when sharing. :meth:`from_camera` is export-only
-    sugar after disconnect — never keep a direct camera open while sharing.
-    The constructor takes ``camera: ComponentConfig`` to spawn, or
+    Prefer :meth:`from_config` when sharing; never keep a direct camera open
+    while sharing. The constructor takes ``camera: ComponentConfig`` (or a
+    disconnected ``@export_config`` camera) to spawn, or
     ``camera=None`` + ``service_name`` for attach-only (:meth:`from_publisher`
     is the explicit form).
 
@@ -251,71 +251,6 @@ class SharedCamera(Camera):
         )
 
     @classmethod
-    def from_camera(
-        cls,
-        camera: Camera,
-        *,
-        service_name: str | None = None,
-        color_mode: ColorMode | str = ColorMode.RGB,
-        zero_copy: bool = False,
-        validate_on_connect: bool = False,
-        overwrite_settings: bool = False,
-        idle_timeout: float = 5.0,
-    ) -> SharedCamera:
-        """Export-only sugar over :meth:`from_config` for an opted-in live camera.
-
-        Prefer :meth:`from_config` / YAML when sharing. This method only
-        exports a construction recipe via :func:`~physicalai.config.to_config`;
-        the publisher subprocess opens the device fresh. It does **not** hand
-        off an already-open device into the child. Requires
-        :func:`~physicalai.config.is_config_exportable`. Rejects a connected
-        camera and never disconnects a caller-owned instance implicitly —
-        disconnect before calling. Other process/device holders are not
-        detected here; a busy device fails later when the publisher opens.
-
-        Args:
-            camera: Disconnected, ``@export_config``-marked camera instance.
-            service_name: Explicit iceoryx2 name; derived for built-ins when omitted.
-            color_mode: Subscriber pixel-format preference.
-            zero_copy: Whether frames reference SHM directly.
-            validate_on_connect: Raise on resolution mismatch at connect.
-            overwrite_settings: Reconfigure publisher on mismatch.
-            idle_timeout: Idle self-exit timeout for a spawned publisher.
-
-        Returns:
-            A ``SharedCamera`` built from :func:`~physicalai.config.to_config`.
-
-        Raises:
-            ValueError: If *camera* is not exportable or is still connected.
-        """
-        from physicalai.config import is_config_exportable, to_config  # noqa: PLC0415
-
-        if not is_config_exportable(camera):
-            msg = (
-                f"{type(camera).__module__}.{type(camera).__qualname__} is not "
-                "config-exportable; decorate with @export_config or pass from_config(...)"
-            )
-            raise ValueError(msg)
-        if camera.is_connected:
-            msg = (
-                "SharedCamera.from_camera() is export-only sugar and requires a "
-                "disconnected camera; the publisher opens the device fresh and "
-                "does not take over a live handle. Disconnect explicitly before "
-                "sharing, or prefer from_config(to_config(...)) / YAML without "
-                "keeping a direct camera open"
-            )
-            raise ValueError(msg)
-        return cls.from_config(
-            to_config(camera),
-            service_name=service_name,
-            color_mode=color_mode,
-            zero_copy=zero_copy,
-            validate_on_connect=validate_on_connect,
-            overwrite_settings=overwrite_settings,
-            idle_timeout=idle_timeout,
-        )
-
-    @classmethod
     def from_publisher(
         cls,
         service_name: str,
@@ -358,9 +293,9 @@ class SharedCamera(Camera):
 
         if self._camera is not None and not _probe_service(self._service_name):
             from ._publisher import CameraPublisher  # noqa: PLC0415
-            from ._spec import CameraSpec  # noqa: PLC0415
+            from ._spec import CameraPublisherConfig  # noqa: PLC0415
 
-            spec = CameraSpec(camera=self._camera)
+            spec = CameraPublisherConfig(camera=self._camera)
             publisher = CameraPublisher(spec, self._service_name, idle_timeout=self._idle_timeout)
             try:
                 publisher.start()
