@@ -626,30 +626,24 @@ for `RobotRuntime` capture in v1.
 Keep construction and transport ownership separate:
 
 ```python
-SharedRobot(name="follower", robot=driver)                   # live disconnected driver
+SharedRobot(name="follower", robot={"class_path": ..., "init_args": {...}})
 SharedRobot.from_config(to_config(robot), name="follower")   # trusted recipe (Studio API)
 ```
 
 The `SharedRobot` constructor (`robot=`) and `SharedRobot.from_config()` are the
 two entry points; there is no `from_robot()` sugar. `from_config()` is the
-named, Studio-facing API for a trusted `ComponentConfig`. The constructor
-additionally accepts a live, **disconnected** `@export_config` driver and
-converts it via `to_config()`. It requires `is_config_exportable(robot)`,
-rejects a connected driver via `robot.is_connected()`, and never disconnects a
-caller-owned live driver implicitly. Studio builders must return disconnected
-drivers for wrapping, or explicitly release a driver they own first.
+named, Studio-facing API for a trusted `ComponentConfig`. Both take a
+`ComponentConfig` mapping only. A caller holding a live driver converts it
+explicitly with `to_config(driver)`.
 
-**Coercion contract.** The live-driver path exists because `instantiate()` is
-domain-agnostic: for a nested `robot={class_path, init_args}` it builds the
-inner driver into a **live** instance first, then calls
-`SharedRobot(robot=<live driver>)`, which re-serializes it with `to_config()`.
-This build-then-unbuild round-trip is intentional and harmless — construction
-never opens the hardware (construction ≠ `connect()`), so no device is touched.
-
-The connected-state check follows each protocol's surface — `is_connected()`
-is a method on robots and a property on cameras — and a live component that
-does not expose it fails with `TypeError` instead of passing the check
-silently.
+**Declared config args.** `robot` is declared via
+`@export_config(config_args=("robot",))`. `instantiate()` treats a declared
+config arg as **data**: for a nested `robot={class_path, init_args}` it passes
+the mapping straight through instead of building the inner driver and handing
+it to `SharedRobot`. This removes a build-then-unbuild round-trip, keeps the
+subscriber process from importing the driver package at all, and removes the
+need for a connected-state guard on the constructor. `SharedCamera` declares
+`camera` the same way.
 
 ### Private startup envelopes (hard cutover)
 
@@ -742,9 +736,8 @@ object.
 - **`SharedRobot` constructor:** accept `robot: ComponentConfig` to spawn,
   or `robot=None` for attach-only (prefer :meth:`SharedRobot.attach`).
   Prefer `SharedRobot.from_config(...)` when building from a trusted config.
-  Nested `instantiate()` may pass a live `@export_config` driver for
-  `robot=`; the constructor converts it to a ComponentConfig and rejects
-  connected drivers.
+  `robot` is declared via `@export_config(config_args=("robot",))`, so nested
+  `instantiate()` passes the recipe through instead of constructing a driver.
 - **Public path normalization:** when accepting a class object or dotted
   path inside `robot.class_path`, normalize through the same public-path
   resolution used by `to_config` (decorator `class_path=` override, else
@@ -779,11 +772,9 @@ capture publisher / iceoryx2 node / frame / connected state.
   `camera=None` + `service_name` for attach-only (prefer
   :meth:`SharedCamera.from_publisher`). Flat `camera_type` /
   `camera_kwargs` are unsupported on the public API and publisher stdin
-  (rejected before import) — not a dual adapter API. Nested
-  `instantiate()` may pass a live **disconnected** `@export_config` camera for
-  `camera=`; convert to ComponentConfig and reject connected cameras. There is
-  no `from_camera()` sugar — the constructor's coercion covers the
-  live-instance case (same build-then-unbuild contract as `SharedRobot`).
+  (rejected before import) — not a dual adapter API. `camera` is a declared
+  `config_args` argument, so nested `instantiate()` passes the recipe through
+  without constructing a camera. There is no `from_camera()` sugar.
 - **Who derives `service_name`:** `from_config` and the constructor.
   If `service_name` is omitted and `class_path` is a shareable built-in
   (`uvc` / `realsense` / `basler`), derive via the transport map + device id
@@ -1025,11 +1016,11 @@ cutovers; do not describe them as schema-preserving.
   spawn without explicit `service_name` fails before publisher start; the
   publisher envelope carries a concrete `service_name` not inside
   `init_args`.
-- The `SharedCamera` constructor coerces a live **disconnected** `@export_config`
-  camera via `to_config(...)`, requires exportability, and rejects connected
-  cameras before publisher spawn (no `from_camera()` sugar); public ctor and
-  publisher stdin reject flat `camera_type` / `camera_kwargs` as unsupported
-  (not a dual API).
+- The `SharedCamera` constructor takes a `ComponentConfig` mapping only;
+  `camera` is declared via `config_args`, so a nested `instantiate()` does not
+  construct the camera in the subscriber process (no `from_camera()` sugar);
+  public ctor and publisher stdin reject flat `camera_type` /
+  `camera_kwargs` as unsupported (not a dual API).
 - Third-party camera class paths survive the publisher envelope and bypass the
   built-in camera registry.
 - Public `SharedRobot` ctor and `physicalai robot serve` accept only
@@ -1039,9 +1030,9 @@ cutovers; do not describe them as schema-preserving.
   defining-module paths normalize to public re-exports before
   store/advertise/compare; metadata `robot_class` equals that public
   `robot["class_path"]`.
-- The `SharedRobot` constructor coerces a live **disconnected** `@export_config`
-  driver via `to_config(...)`, requires exportability, and rejects connected
-  drivers before owner spawn (no `from_robot()` sugar).
+- The `SharedRobot` constructor takes a `ComponentConfig` mapping only;
+  `robot` is declared via `config_args`, so a nested `instantiate()` does not
+  construct the driver in the subscriber process (no `from_robot()` sugar).
 - Composite bimanual robots spawn as one owner; nested arm configs round-trip
   under the composite.
 - The exact PolicySource nested graph (including smoothers) round-trips;

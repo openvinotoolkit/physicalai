@@ -138,9 +138,13 @@ def normalize_component_config(
         A validated config whose ``class_path`` is the public import path.
 
     Raises:
+        ComponentConfigError: If *config* is not a mapping.
         ValueError: If ``class_path`` cannot be imported or ``init_args`` is
             not JSON-serializable.
     """
+    if not isinstance(config, Mapping):
+        msg = f"{component_key} must be a ComponentConfig mapping, got {type(config).__name__}"
+        raise ComponentConfigError(msg)
     validated = validate_component_config(dict(config), path=component_key)
     class_path = normalize_class_reference(validated["class_path"], label=class_label)
     init_args = validated["init_args"]

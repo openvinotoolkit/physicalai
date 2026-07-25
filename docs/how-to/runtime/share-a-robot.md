@@ -33,7 +33,6 @@ driver = SO101(
     calibration="~/.cache/calibration/so101.json",  # path stays relative/as given
 )
 robot = SharedRobot.from_config(to_config(driver), name="left-arm")
-# or: SharedRobot("left-arm", robot=driver)
 # or: SharedRobot("left-arm", robot={"class_path": "physicalai.robot.SO101", "init_args": {...}})
 robot.connect()
 

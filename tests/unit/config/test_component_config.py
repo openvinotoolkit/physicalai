@@ -122,6 +122,19 @@ class ScalarVarKwargs:
 
 
 @export_config
+class Leaf:
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+
+@export_config(config_args=("recipe",))
+class Holder:
+    def __init__(self, recipe: ComponentConfig, eager: object) -> None:
+        self.recipe = recipe
+        self.eager = eager
+
+
+@export_config
 class PathHolder:
     def __init__(self, path: str | Path) -> None:
         self.path = path
@@ -666,3 +679,45 @@ class TestScalarVarKwargs:
             class NoVarKwargs:
                 def __init__(self, x: int) -> None:
                     self.x = x
+
+
+class TestConfigArgs:
+    def test_declared_config_arg_is_not_instantiated(self) -> None:
+        config: ComponentConfig = {
+            "class_path": f"{__name__}.Holder",
+            "init_args": {
+                "recipe": {"class_path": f"{__name__}.Leaf", "init_args": {"value": 3}},
+                "eager": {"class_path": f"{__name__}.Leaf", "init_args": {"value": 3}},
+            },
+        }
+        holder = cast(Holder, instantiate(config))
+        assert holder.recipe == config["init_args"]["recipe"]
+        assert isinstance(holder.eager, Leaf)
+
+    def test_declared_config_arg_round_trips(self) -> None:
+        recipe: ComponentConfig = {
+            "class_path": f"{__name__}.Leaf",
+            "init_args": {"value": 3},
+        }
+        holder = Holder(recipe=recipe, eager=Leaf(value=3))
+        config = to_config(holder)
+        assert config["init_args"]["recipe"] == recipe
+        wire = json.loads(json.dumps(config))
+        restored = cast(Holder, instantiate(wire))
+        assert to_config(restored) == wire
+
+    def test_unknown_config_arg_name_rejected(self) -> None:
+        with pytest.raises(TypeError, match="config_args 'missing' is not an __init__ parameter"):
+
+            @export_config(config_args=("missing",))
+            class Bad:
+                def __init__(self, x: int) -> None:
+                    self.x = x
+
+    def test_config_args_cannot_name_var_keyword(self) -> None:
+        with pytest.raises(TypeError, match=r"config_args cannot name the \*\*kwargs parameter"):
+
+            @export_config(config_args=("kwargs",))
+            class BadVarKw:
+                def __init__(self, **kwargs: object) -> None:
+                    self.kwargs = kwargs

@@ -31,6 +31,7 @@ from physicalai.capture.transport._spec import (
     derive_service_name,
     validate_reconfigure_request,
 )
+from physicalai.config import ComponentConfigError
 
 from .conftest import FAKE_CAMERA_CLASS
 
@@ -417,33 +418,12 @@ class TestSharedCameraConstruction:
         assert "service_name" not in cam._camera["init_args"]
         assert derive_service_name(cam._camera) == cam._service_name
 
-    def test_constructor_recipe_requires_exportable(self) -> None:
-        class _Bare:
-            @property
-            def is_connected(self) -> bool:
-                return False
-
-        with pytest.raises(TypeError, match="config-exportable camera"):
-            SharedCamera(camera=_Bare())  # type: ignore[arg-type]
-
-    def test_constructor_recipe_rejects_connected_without_disconnect(self) -> None:
-        from tests.unit.capture.fake import FakeCamera
-
-        driver = FakeCamera(width=32, height=32)
-        driver.connect()
-        assert driver.is_connected
-        with pytest.raises(ValueError, match="disconnected camera recipe"):
-            SharedCamera(camera=driver, service_name="physicalai/test/x/frame")
-        assert driver.is_connected
-
-    def test_constructor_recipe_accepts_disconnected(self) -> None:
+    def test_constructor_requires_component_config_mapping(self) -> None:
         from tests.unit.capture.fake import FakeCamera
 
         driver = FakeCamera(width=32, height=32, device_name="d1")
-        cam = SharedCamera(camera=driver, service_name="physicalai/test/x/frame")
-        assert cam._camera is not None
-        assert cam._camera["class_path"] == FAKE_CAMERA_CLASS
-        assert cam._camera["init_args"]["width"] == 32
+        with pytest.raises(ComponentConfigError, match="camera must be a ComponentConfig mapping"):
+            SharedCamera(camera=driver, service_name="physicalai/test/x/frame")  # type: ignore[arg-type]
 
     def test_third_party_build_bypasses_create_camera_registry(self) -> None:
         spec = CameraPublisherConfig(

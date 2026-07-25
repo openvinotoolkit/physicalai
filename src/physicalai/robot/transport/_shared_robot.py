@@ -10,10 +10,11 @@ that finds no existing owner spawns one; later instances (for the same
 *name*, anywhere reachable) attach.
 
 Construction is :class:`~physicalai.config.ComponentConfig`-only via
-``robot=`` or :meth:`from_config`; a disconnected ``@export_config`` driver
-instance is also accepted and converted via
-:func:`~physicalai.config.to_config`. Pass ``robot=None`` (or use
-:meth:`attach`) for attach-only.
+``robot=`` or :meth:`from_config`. ``robot`` is declared as an
+``@export_config(config_args=...)`` argument, so a nested
+:func:`~physicalai.config.instantiate` hands over the recipe instead of
+building a driver this process would immediately discard. Pass ``robot=None``
+(or use :meth:`attach`) for attach-only.
 
 Unlike the superseded connection-derived ``robot_id``, *name* is a required,
 caller-chosen logical identifier — routing never needs a live driver
@@ -56,45 +57,6 @@ if TYPE_CHECKING:
 
     from physicalai.config import ComponentConfig
     from physicalai.robot import RobotObservation
-
-
-def _coerce_robot_recipe(robot: object) -> ComponentConfig | Mapping[str, object]:
-    """Accept a ComponentConfig mapping or a disconnected ``@export_config`` driver.
-
-    Returns:
-        A mapping suitable for :func:`normalize_robot_config`.
-
-    Raises:
-        TypeError: If *robot* is neither a mapping nor config-exportable.
-        ValueError: If *robot* is a connected live driver.
-    """
-    if isinstance(robot, Mapping):
-        return robot
-    from physicalai.config import is_config_exportable, to_config  # ruff:ignore[PLC0415]
-
-    if not is_config_exportable(robot):
-        msg = (
-            f"{type(robot).__module__}.{type(robot).__qualname__} is not a "
-            "ComponentConfig mapping or config-exportable robot; pass "
-            "robot={{class_path, init_args}} or an @export_config driver"
-        )
-        raise TypeError(msg)
-    is_connected = getattr(robot, "is_connected", None)
-    if not callable(is_connected):
-        msg = (
-            f"{type(robot).__module__}.{type(robot).__qualname__} does not expose "
-            "the Robot protocol's is_connected() method; cannot verify it is "
-            "disconnected before sharing"
-        )
-        raise TypeError(msg)
-    if is_connected():
-        msg = (
-            "SharedRobot requires a disconnected driver recipe; "
-            "disconnect explicitly before passing a live robot, or pass "
-            "robot={{class_path, init_args}}"
-        )
-        raise ValueError(msg)
-    return to_config(robot)
 
 
 _PROBE_TIMEOUT = 1.0
@@ -216,7 +178,7 @@ def discover_robots(
     return list({metadata.get("name"): metadata for metadata in robots}.values())
 
 
-@export_config(class_path="physicalai.robot.SharedRobot")
+@export_config(class_path="physicalai.robot.SharedRobot", config_args=("robot",))
 class SharedRobot:
     """Robot subscriber that attaches to (or spawns) a shared owner process.
 
@@ -226,9 +188,8 @@ class SharedRobot:
     is a drop-in replacement for a direct driver.
 
     Prefer :meth:`from_config`. The constructor takes
-    ``robot: ComponentConfig`` (or a disconnected ``@export_config`` driver)
-    to spawn, or ``robot=None`` (attach-only; :meth:`attach` is the explicit
-    form).
+    ``robot: ComponentConfig`` to spawn, or ``robot=None`` (attach-only;
+    :meth:`attach` is the explicit form).
 
     Opted into :func:`~physicalai.config.export_config` as a **construction
     recipe** only (name, nested ``robot`` ComponentConfig, transport knobs).
@@ -241,10 +202,10 @@ class SharedRobot:
             under the chosen transport scope) share one owner.
         robot: Trusted driver :class:`~physicalai.config.ComponentConfig` to
             spawn if no owner exists yet for *name*. ``None`` means
-            attach-only — use :meth:`attach` for that case. A live
-            ``@export_config`` driver (as produced by nested
-            :func:`~physicalai.config.instantiate`) is accepted and converted
-            to a ComponentConfig; connected drivers are rejected.
+            attach-only — use :meth:`attach` for that case. Declared as an
+            ``@export_config`` config arg, so nested
+            :func:`~physicalai.config.instantiate` passes the recipe through
+            without constructing the driver here.
         allow_remote: Whether this instance's own session — and, if it
             spawns the owner, the owner's session for its whole lifetime —
             is reachable beyond localhost. Defaults to the secure,
@@ -268,8 +229,7 @@ class SharedRobot:
         _session: object | None = None,
     ) -> None:
         self._name = validate_name(name)
-        recipe = None if robot is None else _coerce_robot_recipe(robot)
-        self._robot = None if recipe is None else normalize_robot_config(recipe)
+        self._robot = None if robot is None else normalize_robot_config(robot)
         self._allow_remote = allow_remote
         self._rate_hz = rate_hz
         self._idle_timeout = idle_timeout

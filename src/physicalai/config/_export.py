@@ -17,6 +17,7 @@ from ._normalize import (
 from ._path import format_path
 from ._types import (
     _CAPTURED_INIT_ARGS_ATTR,
+    _CONFIG_ARGS_ATTR,
     _CONFIG_CLASS_PATH_ATTR,
     _EXPORT_DEPTH_ATTR,
     _EXPORT_MARKER_ATTR,
@@ -28,7 +29,7 @@ from ._types import (
 from .importing import import_dotted_path
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
 _T = TypeVar("_T", bound=type)
 
@@ -84,6 +85,20 @@ def is_config_exportable(value: object) -> bool:
     """
     init = type(value).__init__
     return _has_export_marker(init)
+
+
+def declared_config_args(cls: type) -> frozenset[str]:
+    """Return init-arg names *cls* consumes as ComponentConfig data.
+
+    Declared via ``@export_config(config_args=...)``. :func:`instantiate`
+    passes these arguments through as plain mappings instead of building the
+    nested component, so the component receives the recipe it needs to hand to
+    another process rather than a live object it would immediately discard.
+
+    Returns:
+        The declared argument names, or an empty set when none are declared.
+    """
+    return getattr(cls.__init__, _CONFIG_ARGS_ATTR, frozenset())
 
 
 def _class_path_override(cls: type) -> str | None:
@@ -257,11 +272,45 @@ def _flatten_var_kwargs(
             supplied[key] = snapshot_captured_value(value)
 
 
+def _validate_config_args(
+    cls: type,
+    signature: inspect.Signature,
+    config_args: Sequence[str],
+    var_kw_name: str | None,
+) -> frozenset[str]:
+    """Check that every declared config arg is a real keyword parameter.
+
+    Returns:
+        The validated names.
+
+    Raises:
+        TypeError: If a name is not a string, is not declared by ``__init__``,
+            or names the ``**kwargs`` parameter.
+    """
+    names: set[str] = set()
+    for name in config_args:
+        if not isinstance(name, str) or not name:
+            msg = f"@export_config on {cls.__qualname__}: config_args entries must be non-empty strings"
+            raise TypeError(msg)
+        if name == var_kw_name:
+            msg = (
+                f"@export_config on {cls.__qualname__}: config_args cannot name the "
+                f"**{name} parameter; declare the individual arguments instead"
+            )
+            raise TypeError(msg)
+        if name not in signature.parameters or name == "self":
+            msg = f"@export_config on {cls.__qualname__}: config_args {name!r} is not an __init__ parameter"
+            raise TypeError(msg)
+        names.add(name)
+    return frozenset(names)
+
+
 def _decorate_export_config(
     cls: _T,
     *,
     class_path: str | None,
     scalar_var_kwargs: bool,
+    config_args: Sequence[str] | None,
 ) -> _T:
     if not isinstance(cls, type):
         msg = f"@export_config expects a class, got {type(cls).__name__}"
@@ -299,6 +348,8 @@ def _decorate_export_config(
         msg = f"@export_config on {cls.__qualname__}: scalar_var_kwargs=True requires a **kwargs parameter"
         raise TypeError(msg)
 
+    declared = _validate_config_args(cls, signature, config_args or (), var_kw_name)
+
     @functools.wraps(original_init)
     def wrapped_init(self: object, *args: object, **kwargs: object) -> None:
         bound = signature.bind(self, *args, **kwargs)
@@ -334,6 +385,8 @@ def _decorate_export_config(
     setattr(wrapped_init, _EXPORT_MARKER_ATTR, True)
     if class_path is not None:
         setattr(wrapped_init, _CONFIG_CLASS_PATH_ATTR, class_path)
+    if declared:
+        setattr(wrapped_init, _CONFIG_ARGS_ATTR, declared)
     cls.__init__ = wrapped_init  # type: ignore[method-assign]
     # Convenience method; type checkers do not see the injection — prefer module to_config.
     cls.to_config = _instance_to_config  # type: ignore[attr-defined]
@@ -349,6 +402,7 @@ def export_config(
     *,
     class_path: str | None = None,
     scalar_var_kwargs: bool = False,
+    config_args: Sequence[str] | None = None,
 ) -> Callable[[_T], _T]: ...
 
 
@@ -358,6 +412,7 @@ def export_config(
     *,
     class_path: str | None = None,
     scalar_var_kwargs: bool = False,
+    config_args: Sequence[str] | None = None,
 ) -> _T | Callable[[_T], _T]:
     """Opt a concrete class into constructor-config export via :func:`to_config`.
 
@@ -409,6 +464,11 @@ def export_config(
             export to resolve exactly to the decorated class.
         scalar_var_kwargs: When ``True``, seal flattened ``**kwargs`` to JSON
             scalars so non-scalars fail at :func:`to_config`.
+        config_args: Init-arg names the class consumes as ComponentConfig
+            *data*. :func:`instantiate` passes these through as plain mappings
+            instead of constructing the nested component — use it for spawn
+            recipes that must cross a process boundary (for example
+            ``SharedCamera(camera=...)``).
 
     Returns:
         The decorated class, or a decorator when keyword options are passed.
@@ -418,6 +478,7 @@ def export_config(
             cls,
             class_path=class_path,
             scalar_var_kwargs=scalar_var_kwargs,
+            config_args=config_args,
         )
 
     def decorator(target: _T) -> _T:
@@ -425,6 +486,7 @@ def export_config(
             target,
             class_path=class_path,
             scalar_var_kwargs=scalar_var_kwargs,
+            config_args=config_args,
         )
 
     return decorator

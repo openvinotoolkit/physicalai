@@ -11,6 +11,7 @@ from enum import Enum
 from typing import cast
 
 from ._errors import ComponentConfigError, ComponentImportError
+from ._export import declared_config_args
 from ._normalize import validate_component_config
 from ._path import format_path
 from ._types import _MAX_CONFIG_DEPTH, ComponentConfig, JsonValue
@@ -227,9 +228,15 @@ def _instantiate_impl(
 
     validated = validate_component_config(config, path=path)
     cls = _resolve_class(validated["class_path"], path=path)
+    config_args = declared_config_args(cls)
 
     decoded_args: dict[str, object] = {}
     for key, item in validated["init_args"].items():
+        if key in config_args:
+            # Declared ComponentConfig data: hand the recipe over untouched so
+            # nothing nested is constructed in this process.
+            decoded_args[key] = item
+            continue
         child_path = f"{path}.init_args.{key}" if path else f"{validated['class_path']}.init_args.{key}"
         decoded_args[key] = _decode_value(item, path=child_path, depth=depth + 1, seen=seen)
 
@@ -246,7 +253,10 @@ def instantiate(config: ComponentConfig | Mapping[str, JsonValue]) -> object:
 
     Validates *config* before importing. Recursively instantiates nested
     component configs in ``init_args``, then calls the class with keyword
-    arguments. Does not invoke lifecycle methods beyond the constructor.
+    arguments. Init args a class declares via
+    ``@export_config(config_args=...)`` are passed through as plain mappings
+    instead of being constructed. Does not invoke lifecycle methods beyond the
+    constructor.
 
     Trusted local application and parent→child startup configs only. Never
     pass network metadata or untrusted peer payloads.

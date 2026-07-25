@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from physicalai.config import instantiate, is_config_exportable, to_config
+from physicalai.config import ComponentConfig, instantiate, is_config_exportable, to_config
 from physicalai.robot import Robot
 
 # SO101 imports scservo_sdk at module load; keep unit tests hardware-free.
@@ -315,10 +315,14 @@ class TestSharedRobotComponentConfig:
 
     def test_constructor_recipe_omits_null_session(self) -> None:
         from physicalai.robot import SharedRobot
-        from tests.unit.robot.transport.fake import FakeRobot
 
-        driver = FakeRobot(port="/dev/fake-from-robot", device_ids=["fake:follower"])
-        robot = SharedRobot("from-robot-arm", robot=driver)
+        robot = SharedRobot(
+            "from-robot-arm",
+            robot={
+                "class_path": "tests.unit.robot.transport.fake.FakeRobot",
+                "init_args": {"port": "/dev/fake-from-robot", "device_ids": ["fake:follower"]},
+            },
+        )
         wire = _assert_construction_round_trip(robot)
         assert "_session" not in wire["init_args"]
 
@@ -348,13 +352,21 @@ class TestSharedRobotComponentConfig:
             with pytest.raises(ComponentConfigError, match=r"init_args\._session"):
                 to_config(robot)
 
-    def test_constructor_recipe_still_rejects_connected(self) -> None:
+    def test_nested_recipe_is_not_instantiated(self) -> None:
+        from physicalai.config import instantiate
         from physicalai.robot import SharedRobot
-        from tests.unit.robot.transport.fake import FakeRobot
 
-        driver = FakeRobot(port="/dev/fake-connected")
-        driver.connect()
-        assert driver.is_connected()
-        with pytest.raises(ValueError, match="disconnected driver recipe"):
-            SharedRobot("left-arm", robot=driver)
-        assert driver.is_connected()
+        config: ComponentConfig = {
+            "class_path": "physicalai.robot.SharedRobot",
+            "init_args": {
+                "name": "nested-arm",
+                "robot": {
+                    "class_path": "tests.unit.robot.transport.fake.FakeRobot",
+                    "init_args": {"port": "/dev/fake-nested", "device_ids": ["fake:follower"]},
+                },
+            },
+        }
+        restored = instantiate(config)
+        assert isinstance(restored, SharedRobot)
+        # The declared config arg stays a mapping — no driver is built here.
+        assert restored._robot == config["init_args"]["robot"]

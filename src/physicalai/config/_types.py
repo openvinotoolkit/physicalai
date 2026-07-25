@@ -38,5 +38,8 @@ _EXPORT_MARKER_ATTR = "_physicalai_export_config"
 _NORMALIZE_CAPTURED_INIT_ARGS_ATTR = "_physicalai_normalize_captured_init_args"
 # Optional public class_path override stored on the decorated __init__ wrapper.
 _CONFIG_CLASS_PATH_ATTR = "_physicalai_config_class_path"
+# Init-arg names the component consumes as ComponentConfig *data* rather than as
+# a constructed object. instantiate() passes these through undecoded.
+_CONFIG_ARGS_ATTR = "_physicalai_config_args"
 
 _REPR_LIMIT = 80

@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from physicalai.capture.camera import Camera, ColorMode
-from physicalai.config import instantiate, is_config_exportable, to_config
+from physicalai.config import ComponentConfig, instantiate, is_config_exportable, to_config
 
 
 def _assert_construction_round_trip(camera: object) -> dict[str, Any]:
@@ -158,13 +158,20 @@ class TestSharedCameraComponentConfig:
         assert wire["init_args"]["camera"] is None
         assert wire["init_args"]["service_name"] == "physicalai/camera/uvc/0/frame"
 
-    def test_constructor_recipe_still_rejects_connected(self) -> None:
+    def test_nested_recipe_is_not_instantiated(self) -> None:
         from physicalai.capture import SharedCamera
-        from tests.unit.capture.fake import FakeCamera
 
-        driver = FakeCamera(width=32, height=32)
-        driver.connect()
-        assert driver.is_connected
-        with pytest.raises(ValueError, match="disconnected camera recipe"):
-            SharedCamera(camera=driver, service_name="physicalai/test/x/frame")
-        assert driver.is_connected
+        config: ComponentConfig = {
+            "class_path": "physicalai.capture.SharedCamera",
+            "init_args": {
+                "camera": {
+                    "class_path": "physicalai.capture.UVCCamera",
+                    "init_args": {"device": 0, "backend": "v4l2"},
+                },
+                "service_name": "physicalai/camera/uvc/0/frame",
+            },
+        }
+        restored = instantiate(config)
+        assert isinstance(restored, SharedCamera)
+        # The declared config arg stays a mapping — no UVCCamera is built here.
+        assert restored._camera == config["init_args"]["camera"]

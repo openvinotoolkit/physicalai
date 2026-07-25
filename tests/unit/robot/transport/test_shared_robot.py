@@ -11,6 +11,7 @@ from uuid import uuid4
 import numpy as np
 import pytest
 
+from physicalai.config import ComponentConfigError
 from physicalai.robot.errors import (
     RobotNameConflict,
     RobotNotConnectedError,
@@ -100,29 +101,10 @@ class TestConstruction:
         )
         assert robot._robot == {"class_path": FAKE_ROBOT_CLASS, "init_args": {"port": "/dev/fake0"}}
 
-    def test_constructor_recipe_requires_exportable(self) -> None:
-        class _Bare:
-            def is_connected(self) -> bool:
-                return False
-
-        with pytest.raises(TypeError, match="config-exportable robot"):
-            SharedRobot("left-arm", robot=_Bare())  # type: ignore[arg-type]
-
-    def test_constructor_recipe_rejects_connected_without_disconnect(self) -> None:
-        driver = FakeRobot(port="/dev/fake0")
-        driver.connect()
-        assert driver.is_connected()
-        with pytest.raises(ValueError, match="disconnected driver recipe"):
-            SharedRobot("left-arm", robot=driver)
-        assert driver.is_connected()
-        assert not driver.disconnect_called
-
-    def test_constructor_recipe_accepts_disconnected_driver(self) -> None:
+    def test_constructor_requires_component_config_mapping(self) -> None:
         driver = FakeRobot(port="/dev/fake0", device_ids=("fake:/dev/fake0",))
-        robot = SharedRobot("left-arm", robot=driver)
-        assert robot._robot is not None
-        assert robot._robot["class_path"] == FAKE_ROBOT_CLASS
-        assert robot._robot["init_args"]["port"] == "/dev/fake0"
+        with pytest.raises(ComponentConfigError, match="robot must be a ComponentConfig mapping"):
+            SharedRobot("left-arm", robot=driver)  # type: ignore[arg-type]
 
     def test_satisfies_robot_protocol(self) -> None:
         from physicalai.robot import Robot

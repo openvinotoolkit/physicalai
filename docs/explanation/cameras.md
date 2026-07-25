@@ -52,8 +52,6 @@ shared = SharedCamera.from_config(
 )
 # Equivalent after to_config(disconnected_driver):
 # shared = SharedCamera.from_config(to_config(driver))
-# Or let the constructor export the disconnected driver:
-# shared = SharedCamera(camera=driver)
 shared.connect()
 
 # Safe to read from multiple threads/processes
