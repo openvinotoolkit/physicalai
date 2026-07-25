@@ -52,8 +52,8 @@ def validate_publisher_config(data: Mapping[str, Any]) -> Mapping[str, object]:
     """Validate a trusted publisher stdin payload schema-positively.
 
     Returns:
-        The validated ``camera`` ComponentConfig mapping (not yet
-        public-path-normalized — :func:`normalize_camera_config` does that).
+        The validated ``camera`` ComponentConfig mapping (see
+        :func:`normalize_camera_config` for the JSON-serializability check).
     """
     return validate_envelope(
         data,
@@ -114,19 +114,19 @@ def validate_reconfigure_request(request: Mapping[str, Any]) -> dict[str, int]:
 
 
 def normalize_camera_class(camera_class: type | str) -> str:
-    """Normalize a camera class reference to its public import path.
+    """Normalize a camera class reference to a dotted import path.
 
     Returns:
-        The normalized public dotted path.
+        The public path for a class object, or the string path as given.
     """
     return normalize_class_reference(camera_class, label="camera class_path")
 
 
 def normalize_camera_config(camera: Mapping[str, object]) -> ComponentConfig:
-    """Validate a camera ComponentConfig and normalize ``class_path``.
+    """Validate a camera ComponentConfig without importing its ``class_path``.
 
     Returns:
-        A validated config whose ``class_path`` is the public import path.
+        A validated config whose ``class_path`` is a dotted import path.
     """
     return normalize_component_config(
         camera,
@@ -142,10 +142,11 @@ def derive_service_name(
 ) -> str:
     """Resolve iceoryx2 ``service_name`` for a camera ComponentConfig.
 
-    Built-in public class paths derive ``physicalai/camera/{token}/{device_id}/frame``
-    via the transport class-path → type-token map. Third-party / unknown
-    class paths (including stub types without a shared registry entry) require
-    an explicit *service_name*.
+    Built-in class paths derive ``physicalai/camera/{token}/{device_id}/frame``
+    via the transport class-path → type-token map, which accepts both the
+    public re-export and the internal spelling of each built-in driver.
+    Third-party / unknown class paths (including stub types without a shared
+    registry entry) require an explicit *service_name*.
 
     Args:
         camera: Normalized or raw camera ComponentConfig.

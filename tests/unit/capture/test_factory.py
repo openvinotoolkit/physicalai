@@ -9,6 +9,7 @@ from physicalai.capture.discovery import discover_all
 from physicalai.capture.factory import create_camera
 from physicalai.capture.transport.builtin import (
     builtin_class_path_for_type,
+    builtin_class_paths_for_type,
     builtin_shared_type_tokens,
     builtin_type_for_class_path,
 )
@@ -56,6 +57,34 @@ class TestBuiltinSharedRegistry:
         from physicalai.config import resolve_public_class_path
 
         assert builtin_class_path_for_type("uvc") == resolve_public_class_path(UVCCamera)
+
+    @pytest.mark.parametrize("token", ["uvc", "realsense", "basler"])
+    def test_static_table_matches_drivers(self, token: str) -> None:
+        """Every listed spelling must reach the driver the decorator declares."""
+        from physicalai.config import import_dotted_path, resolve_public_class_path
+
+        paths = builtin_class_paths_for_type(token)
+        expected: object = None
+        try:
+            expected = import_dotted_path(paths[0])
+        except (ImportError, AttributeError) as exc:  # optional camera extra absent
+            pytest.skip(f"{token} driver is not installed: {exc}")
+        assert isinstance(expected, type)
+        assert resolve_public_class_path(expected) == paths[0]
+
+        # Compare by defining name rather than identity: other tests reload
+        # driver modules with a mocked SDK, which replaces the class object.
+        defining = f"{expected.__module__}.{expected.__qualname__}"
+        assert defining == paths[-1]
+        for alias in paths[1:]:
+            resolved = import_dotted_path(alias)
+            assert isinstance(resolved, type)
+            assert f"{resolved.__module__}.{resolved.__qualname__}" == defining
+
+    @pytest.mark.parametrize("token", ["uvc", "realsense", "basler"])
+    def test_every_spelling_maps_back_to_one_token(self, token: str) -> None:
+        for path in builtin_class_paths_for_type(token):
+            assert builtin_type_for_class_path(path) == token
 
     def test_no_phantom_ip_genicam(self) -> None:
         assert builtin_class_path_for_type("ip") is None

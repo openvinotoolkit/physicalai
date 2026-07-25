@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from physicalai.config import ComponentConfigError
+from physicalai.config import ComponentConfigError, ComponentImportError
 from physicalai.robot.transport._owner import RobotOwner
 from physicalai.robot.transport._owner_config import (
     RobotOwnerConfig,
@@ -47,12 +47,13 @@ class TestNormalizeRobotClass:
     def test_class_object(self) -> None:
         assert normalize_robot_class(FakeRobot) == FAKE_ROBOT_CLASS
 
-    def test_string_defining_module_normalizes_to_public(self, mock_scservo_sdk: MagicMock) -> None:
-        # SO101 is defined under so101.so101 but exports physicalai.robot.SO101.
+    def test_string_path_passes_through_without_importing(self) -> None:
+        # No scservo_sdk mock: a string path is trusted and never imported here,
+        # so the owner envelope can be built where the driver is not installed.
         defining = "physicalai.robot.so101.so101.SO101"
-        assert normalize_robot_class(defining) == "physicalai.robot.SO101"
+        assert normalize_robot_class(defining) == defining
 
-    def test_public_path_idempotent(self, mock_scservo_sdk: MagicMock) -> None:
+    def test_public_path_passes_through(self) -> None:
         assert normalize_robot_class("physicalai.robot.SO101") == "physicalai.robot.SO101"
 
     def test_nested_qualname(self) -> None:
@@ -69,13 +70,10 @@ class TestNormalizeRobotClass:
         with pytest.raises(TypeError, match="must be a class or a dotted path string"):
             normalize_robot_class(123)  # type: ignore[arg-type]
 
-    def test_non_class_path_raises(self) -> None:
-        with pytest.raises(TypeError, match="does not resolve to a class"):
-            normalize_robot_class("physicalai.robot.transport._ids.KEY_PREFIX")
-
-    def test_unknown_path_raises(self) -> None:
-        with pytest.raises(ValueError, match="could not import"):
-            normalize_robot_class("totally.unknown.module.Cls")
+    @pytest.mark.parametrize("ref", ["", "   ", "NotDotted"])
+    def test_non_dotted_string_raises(self, ref: str) -> None:
+        with pytest.raises(ValueError, match="must be a nonempty dotted path"):
+            normalize_robot_class(ref)
 
 
 class TestRobotOwnerConfig:
@@ -145,18 +143,20 @@ class TestRobotOwnerConfig:
         assert isinstance(robot, FakeRobot)
 
     def test_build_non_class_path_raises(self) -> None:
-        with pytest.raises(TypeError, match="does not resolve to a class"):
-            RobotOwnerConfig(
-                name="left-arm",
-                robot={"class_path": "physicalai.robot.transport._ids.KEY_PREFIX", "init_args": {}},
-            )
+        config = RobotOwnerConfig(
+            name="left-arm",
+            robot={"class_path": "physicalai.robot.transport._ids.KEY_PREFIX", "init_args": {}},
+        )
+        with pytest.raises(ComponentImportError, match="does not resolve to a class"):
+            config.build()
 
     def test_build_unknown_path_raises(self) -> None:
-        with pytest.raises(ValueError, match="could not import"):
-            RobotOwnerConfig(
-                name="left-arm",
-                robot={"class_path": "totally.unknown.module.Cls", "init_args": {}},
-            )
+        config = RobotOwnerConfig(
+            name="left-arm",
+            robot={"class_path": "totally.unknown.module.Cls", "init_args": {}},
+        )
+        with pytest.raises(ComponentImportError, match="cannot import class_path"):
+            config.build()
 
     def test_flat_stdin_rejected_before_import(self) -> None:
         flat = {
@@ -218,17 +218,19 @@ class TestRobotOwnerConfig:
                 },
             )
 
-    def test_defining_module_path_normalized_on_store(self, mock_scservo_sdk: MagicMock) -> None:
+    def test_defining_module_path_stored_as_given(self) -> None:
+        # No scservo_sdk mock: storing the recipe must not import the driver.
+        defining = "physicalai.robot.so101.so101.SO101"
         config = RobotOwnerConfig(
             name="left-arm",
             robot={
-                "class_path": "physicalai.robot.so101.so101.SO101",
+                "class_path": defining,
                 "init_args": {"port": "/dev/ttyUSB0", "calibration": "./cal.json"},
             },
         )
-        assert config.robot["class_path"] == "physicalai.robot.SO101"
-        assert config.robot_class == "physicalai.robot.SO101"
-        assert config.to_json_dict()["robot"]["class_path"] == "physicalai.robot.SO101"
+        assert config.robot["class_path"] == defining
+        assert config.robot_class == defining
+        assert config.to_json_dict()["robot"]["class_path"] == defining
 
     def test_relative_path_survives_json_and_popen_inherits_cwd(self, monkeypatch: pytest.MonkeyPatch) -> None:
         config = RobotOwnerConfig(

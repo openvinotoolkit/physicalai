@@ -7,59 +7,41 @@ Single source of truth for service-name derivation and
 ``create_camera(..., shared=True)``. Only backends with a real driver
 package under ``cameras/`` are listed — IP/Genicam stubs are intentionally
 absent so shared spawn cannot claim phantom coverage.
+
+The table is static on purpose: a subscriber process derives a service name
+without the vendor SDK installed, so nothing here may import a driver
+module. ``tests/unit/capture/test_factory.py`` asserts the table still
+matches each driver's ``@export_config(class_path=...)`` when the optional
+camera extras are available.
 """
 
 from __future__ import annotations
 
-import importlib
-from functools import lru_cache
-
-from physicalai.config import ComponentConfigError, resolve_public_class_path
-
-# token → (import module, attribute, decorator-declared public class_path).
-# Public paths match ``@export_config(class_path=...)`` on each driver.
-# Fallback strings keep service_name derivation working when an optional
-# camera extra is not installed (must not import pyrealsense2/pypylon).
-_BUILTIN_SHARED: dict[str, tuple[str, str, str]] = {
+# token → accepted class paths. Index 0 is the canonical public path declared
+# by ``@export_config(class_path=...)`` on the driver; the rest are the
+# sub-package re-export and the defining module, so a hand-written config that
+# spells a driver the internal way still derives the same service name instead
+# of demanding an explicit one.
+_BUILTIN_SHARED: dict[str, tuple[str, ...]] = {
     "uvc": (
-        "physicalai.capture.cameras.uvc",
-        "UVCCamera",
         "physicalai.capture.UVCCamera",
+        "physicalai.capture.cameras.uvc.UVCCamera",
+        "physicalai.capture.cameras.uvc._camera.UVCCamera",
     ),
     "realsense": (
-        "physicalai.capture.cameras.realsense",
-        "RealSenseCamera",
         "physicalai.capture.RealSenseCamera",
+        "physicalai.capture.cameras.realsense.RealSenseCamera",
+        "physicalai.capture.cameras.realsense._camera.RealSenseCamera",
     ),
     "basler": (
-        "physicalai.capture.cameras.basler",
-        "BaslerCamera",
         "physicalai.capture.BaslerCamera",
+        "physicalai.capture.cameras.basler.BaslerCamera",
+        "physicalai.capture.cameras.basler._camera.BaslerCamera",
     ),
 }
 
-
-@lru_cache(maxsize=1)
-def _token_to_class_path() -> dict[str, str]:
-    """Resolve public class_path per token, preferring live ``@export_config``.
-
-    Returns:
-        Mapping from shareable type token to public ``class_path``.
-    """
-    resolved: dict[str, str] = {}
-    for token, (module_name, attr, fallback) in _BUILTIN_SHARED.items():
-        try:
-            module = importlib.import_module(module_name)
-            cls = getattr(module, attr)
-            resolved[token] = resolve_public_class_path(cls)
-        except (ImportError, AttributeError, ComponentConfigError, TypeError, ValueError):
-            resolved[token] = fallback
-    return resolved
-
-
-@lru_cache(maxsize=1)
-def _class_path_to_token() -> dict[str, str]:
-    return {path: token for token, path in _token_to_class_path().items()}
+_TOKEN_TO_CLASS_PATH: dict[str, str] = {token: paths[0] for token, paths in _BUILTIN_SHARED.items()}
+_CLASS_PATH_TO_TOKEN: dict[str, str] = {path: token for token, paths in _BUILTIN_SHARED.items() for path in paths}
 
 
 def builtin_shared_type_tokens() -> frozenset[str]:
@@ -67,8 +49,21 @@ def builtin_shared_type_tokens() -> frozenset[str]:
     return frozenset(_BUILTIN_SHARED)
 
 
+def builtin_class_paths_for_type(token: str) -> tuple[str, ...]:
+    r"""Return every class_path spelling accepted for a built-in type token.
+
+    Args:
+        token: Lowercase ``CameraType`` value (e.g. ``\"uvc\"``).
+
+    Returns:
+        Accepted paths with the canonical public one first, or an empty tuple
+        if the token is not a shareable built-in.
+    """
+    return _BUILTIN_SHARED.get(token, ())
+
+
 def builtin_class_path_for_type(token: str) -> str | None:
-    r"""Return the public class_path for a built-in shared camera type token.
+    r"""Return the canonical public class_path for a built-in shared camera type token.
 
     Args:
         token: Lowercase ``CameraType`` value (e.g. ``\"uvc\"``).
@@ -76,17 +71,21 @@ def builtin_class_path_for_type(token: str) -> str | None:
     Returns:
         Public ``class_path``, or ``None`` if the token is not a shareable built-in.
     """
-    return _token_to_class_path().get(token)
+    return _TOKEN_TO_CLASS_PATH.get(token)
 
 
 def builtin_type_for_class_path(class_path: str) -> str | None:
-    """Return the legacy type token for a built-in public class_path.
+    """Return the legacy type token for a built-in camera class_path.
+
+    Accepts the canonical public path plus the internal spellings listed in
+    :data:`_BUILTIN_SHARED`, so the same physical device derives one service
+    name however the config names its driver.
 
     Args:
-        class_path: Normalized public camera ``class_path``.
+        class_path: Camera ``class_path`` as written in the config.
 
     Returns:
         Type token (``uvc`` / ``realsense`` / ``basler``), or ``None`` for
         third-party / stub / unknown paths.
     """
-    return _class_path_to_token().get(class_path)
+    return _CLASS_PATH_TO_TOKEN.get(class_path)

@@ -72,8 +72,8 @@ def validate_owner_config(data: Mapping[str, Any]) -> Mapping[str, object]:
     """Validate an owner stdin payload schema-positively.
 
     Returns:
-        The validated ``robot`` ComponentConfig mapping (not yet
-        public-path-normalized — :func:`normalize_robot_config` does that).
+        The validated ``robot`` ComponentConfig mapping (see
+        :func:`normalize_robot_config` for the JSON-serializability check).
     """
     return validate_envelope(
         data,
@@ -84,19 +84,19 @@ def validate_owner_config(data: Mapping[str, Any]) -> Mapping[str, object]:
 
 
 def normalize_robot_class(robot_class: type | str) -> str:
-    """Normalize a robot class reference to its public import path.
+    """Normalize a robot class reference to a dotted import path.
 
     Returns:
-        The normalized public dotted path.
+        The public path for a class object, or the string path as given.
     """
     return normalize_class_reference(robot_class, label="robot_class")
 
 
 def normalize_robot_config(robot: Mapping[str, object]) -> ComponentConfig:
-    """Validate a robot ComponentConfig and normalize ``class_path``.
+    """Validate a robot ComponentConfig without importing its ``class_path``.
 
     Returns:
-        A validated config whose ``class_path`` is the public import path.
+        A validated config whose ``class_path`` is a dotted import path.
     """
     return normalize_component_config(
         robot,

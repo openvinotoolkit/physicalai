@@ -6,6 +6,9 @@ from __future__ import annotations
 import ctypes
 import importlib.util
 import pickle
+import subprocess
+import sys
+import textwrap
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
@@ -424,6 +427,32 @@ class TestSharedCameraConstruction:
         driver = FakeCamera(width=32, height=32, device_name="d1")
         with pytest.raises(ComponentConfigError, match="camera must be a ComponentConfig mapping"):
             SharedCamera(camera=driver, service_name="physicalai/test/x/frame")  # type: ignore[arg-type]
+
+    def test_subscriber_never_imports_the_vendor_driver(self) -> None:
+        """A subscriber derives a service name without the vendor SDK installed.
+
+        Runs in a fresh interpreter so the assertion is not masked by driver
+        modules other tests already imported.
+        """
+        script = textwrap.dedent("""
+            import sys
+
+            from physicalai.capture import SharedCamera
+
+            camera = SharedCamera(
+                camera={
+                    "class_path": "physicalai.capture.RealSenseCamera",
+                    "init_args": {"serial_number": "0001"},
+                },
+            )
+            assert camera._service_name == "physicalai/camera/realsense/0001/frame"
+            leaked = sorted(
+                name for name in sys.modules
+                if name.startswith("physicalai.capture.cameras.realsense") or name == "pyrealsense2"
+            )
+            assert not leaked, f"subscriber imported the driver package: {leaked}"
+        """)
+        subprocess.run([sys.executable, "-c", script], check=True, timeout=120)
 
     def test_third_party_build_bypasses_create_camera_registry(self) -> None:
         spec = CameraPublisherConfig(

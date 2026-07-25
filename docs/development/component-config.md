@@ -534,13 +534,20 @@ Transport owns naming; `ComponentConfig` never embeds `service_name`.
 
 Spawn has no `camera_type` on the construction config. Rules:
 
-- **Shareable built-in spawn:** a private map from public `class_path` to the
+- **Shareable built-in spawn:** a private map from camera `class_path` to the
   legacy `CameraType` token for backends with a real driver under `cameras/`
   (`uvc`, `realsense`, `basler` only). That map lives in capture transport
   (`builtin.py`), not in `physicalai.config`. Derive `service_name` with the
   existing scheme using that token plus device id from `init_args`
   (`serial_number` else `device`, including `/dev/` symlink resolve). This
   preserves existing attacher discovery.
+- **The map is a static table and must not import a driver module.** Since
+  string `class_path` values are stored as written, the table lists every
+  accepted spelling per backend — the public re-export (canonical, index 0),
+  the sub-package re-export, and the defining module — so one physical device
+  derives one service name however the config names its driver. A test
+  asserts the table still matches each driver's `@export_config(class_path=)`
+  whenever the optional camera extra is installed.
 - **Stub / non-shareable registry types and third-party spawn:** `ip` and
   `genicam` are intentionally absent from the map (same rule as third-party).
   Require an explicit `service_name` on `SharedCamera` / the publisher
@@ -738,21 +745,24 @@ object.
   Prefer `SharedRobot.from_config(...)` when building from a trusted config.
   `robot` is declared via `@export_config(config_args=("robot",))`, so nested
   `instantiate()` passes the recipe through instead of constructing a driver.
-- **Public path normalization:** when accepting a class object or dotted
-  path inside `robot.class_path`, normalize through the same public-path
-  resolution used by `to_config` (decorator `class_path=` override, else
-  `__module__.__qualname__`) **before** store, metadata advertise, and
-  conflict compare. This prevents false mismatches between defining-module
-  paths (for example `physicalai.robot.so101.so101.SO101`) and public
-  re-exports (`physicalai.robot.SO101`).
+- **Public path normalization:** a **class object** given for
+  `robot.class_path` normalizes through the same public-path resolution used
+  by `to_config` (decorator `class_path=` override, else
+  `__module__.__qualname__`). A **string** path is trusted and stored exactly
+  as written — it is deliberately not imported. Envelope construction happens
+  in the subscriber process, which must not load the driver package and often
+  cannot (the vendor SDK is only installed where the hardware lives). Import
+  errors surface in the process that calls `instantiate()`.
+- **Network metadata:** do not rename the advertised key. Keep `robot_class`
+  as the metadata field so `ROBOT_TRANSPORT_PROTOCOL_VERSION` stays
+  unchanged. Populate it from `robot["class_path"]`. Conflict checks compare
+  that string unchanged; because spellings are no longer canonicalized, a
+  defining-module path and a public re-export of the same driver compare as a
+  mismatch. That stays **diagnostic, not fatal** — the warning names both
+  strings and attach proceeds.
 - **CLI `physicalai robot serve`:** require `--robot` (ComponentConfig
   JSON/YAML with `class_path` + `init_args`). Write only the new stdin
   shape.
-- **Network metadata:** do not rename the advertised key. Keep `robot_class`
-  as the metadata field so `ROBOT_TRANSPORT_PROTOCOL_VERSION` stays
-  unchanged. Populate it from the normalized public `robot["class_path"]`.
-  Conflict checks compare that string unchanged. Attach-only / discover
-  paths are unchanged.
 
 ### Public SharedCamera
 
@@ -1027,9 +1037,12 @@ cutovers; do not describe them as schema-preserving.
   `robot=` / `--robot` ComponentConfig (plus `from_config`);
   owner stdin allowlists envelope keys so flat `robot_class` /
   `robot_kwargs` fail as unknown keys (not a public dual API);
-  defining-module paths normalize to public re-exports before
-  store/advertise/compare; metadata `robot_class` equals that public
-  `robot["class_path"]`.
+  a string `class_path` is stored exactly as written and metadata
+  `robot_class` equals that string.
+- Building a transport envelope imports nothing: a subscriber constructs a
+  `SharedRobot` / `SharedCamera` and derives its service name on a machine
+  where the driver package (and its vendor SDK) is not installed. Only the
+  process that calls `instantiate()` imports the `class_path`.
 - The `SharedRobot` constructor takes a `ComponentConfig` mapping only;
   `robot` is declared via `config_args`, so a nested `instantiate()` does not
   construct the driver in the subscriber process (no `from_robot()` sugar).

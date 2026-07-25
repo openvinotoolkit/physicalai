@@ -5,8 +5,12 @@
 
 Robot-owner and camera-publisher stdin envelopes carry one nested
 :class:`ComponentConfig` plus transport-only keys. These helpers keep the
-schema-positive validation and public-path normalization in one place;
-transports supply their key names and allowlists.
+schema-positive validation in one place; transports supply their key names
+and allowlists.
+
+Nothing here imports a ``class_path``. Envelopes are built in the subscriber
+process, which must stay free of the driver package — the import happens in
+the process that calls :func:`~physicalai.config.instantiate`.
 """
 
 from __future__ import annotations
@@ -18,7 +22,6 @@ from typing import TYPE_CHECKING, Any
 from ._errors import ComponentConfigError
 from ._export import resolve_public_class_path
 from ._normalize import validate_component_config
-from .importing import import_dotted_path
 
 if TYPE_CHECKING:
     from ._types import ComponentConfig
@@ -46,8 +49,8 @@ def validate_envelope(
             (for example ``"owner"`` or ``"publisher"``).
 
     Returns:
-        The validated ComponentConfig mapping (not yet public-path-normalized
-        — :func:`normalize_component_config` does that).
+        The validated ComponentConfig mapping (see
+        :func:`normalize_component_config` for the JSON-serializability check).
 
     Raises:
         TypeError: If *data* or the component value is not a mapping.
@@ -79,36 +82,34 @@ def validate_envelope(
 
 
 def normalize_class_reference(ref: type | str, *, label: str) -> str:
-    """Normalize a class object or dotted path to its verified public path.
+    """Normalize a class object to its public path, or pass a dotted path through.
 
-    Matches :func:`to_config` path selection: decorator ``class_path=``
-    override when present, otherwise ``__module__.__qualname__``. String
-    paths are imported first so a defining-module path becomes the public
-    re-export before store, metadata advertise, and conflict compare.
+    A class object is resolved exactly like :func:`to_config` does: decorator
+    ``class_path=`` override when present, otherwise ``__module__.__qualname__``.
+
+    A string is trusted and returned **as given**. It is deliberately not
+    imported here: envelope construction happens in the subscriber process,
+    which must not load the driver package (and often cannot — the vendor SDK
+    is only installed where the hardware lives). Import errors surface later,
+    in the process that actually calls :func:`~physicalai.config.instantiate`.
 
     Args:
         ref: A class object, or its dotted import path as a string.
         label: Argument label for error messages (for example ``"robot_class"``).
 
     Returns:
-        The normalized public dotted path.
+        The dotted path.
 
     Raises:
-        TypeError: If *ref* is neither a string nor a class, or a string path
-            does not resolve to a class.
-        ValueError: If the path cannot be imported, or the public path cannot
-            be resolved (for example a local class).
+        TypeError: If *ref* is neither a string nor a class.
+        ValueError: If a string is not a dotted path, or the public path
+            cannot be resolved (for example a local class).
     """
     if isinstance(ref, str):
-        try:
-            resolved = import_dotted_path(ref)
-        except (ValueError, ImportError, AttributeError) as exc:
-            msg = f"could not import {label} {ref!r}: {exc}"
-            raise ValueError(msg) from exc
-        if not isinstance(resolved, type):
-            msg = f"{label} {ref!r} does not resolve to a class (got {type(resolved).__name__})"
-            raise TypeError(msg)
-        ref = resolved
+        if not ref.strip() or "." not in ref:
+            msg = f"{label} must be a nonempty dotted path, got {ref!r}"
+            raise ValueError(msg)
+        return ref
     if not isinstance(ref, type):
         msg = f"{label} must be a class or a dotted path string, got {type(ref).__name__}"
         raise TypeError(msg)
@@ -126,7 +127,7 @@ def normalize_component_config(
     class_label: str,
     json_hint: str = "",
 ) -> ComponentConfig:
-    """Validate a ComponentConfig and normalize its ``class_path`` to the public path.
+    """Validate a ComponentConfig without importing its ``class_path``.
 
     Args:
         config: Candidate ``class_path`` + ``init_args`` mapping.
@@ -135,11 +136,11 @@ def normalize_component_config(
         json_hint: Optional suffix appended to the JSON-serializability error.
 
     Returns:
-        A validated config whose ``class_path`` is the public import path.
+        A validated config whose ``class_path`` is a dotted import path.
 
     Raises:
         ComponentConfigError: If *config* is not a mapping.
-        ValueError: If ``class_path`` cannot be imported or ``init_args`` is
+        ValueError: If ``class_path`` is not a dotted path or ``init_args`` is
             not JSON-serializable.
     """
     if not isinstance(config, Mapping):
