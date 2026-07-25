@@ -26,7 +26,11 @@ from physicalai.capture.transport._header import (
     encode_frame,
 )
 from physicalai.capture.transport._shared_camera import SharedCamera
-from physicalai.capture.transport._spec import CameraPublisherConfig, derive_service_name
+from physicalai.capture.transport._spec import (
+    CameraPublisherConfig,
+    derive_service_name,
+    validate_reconfigure_request,
+)
 
 from .conftest import FAKE_CAMERA_CLASS
 
@@ -107,6 +111,122 @@ class TestCameraPublisherConfig:
         assert set(payload) == {"camera"}
         assert payload["camera"]["class_path"] == FAKE_CAMERA_CLASS
         assert "service_name" not in payload["camera"]["init_args"]
+
+
+class TestReconfigureRequest:
+    def test_accepts_partial_positive_integer_settings(self) -> None:
+        assert validate_reconfigure_request({
+            "kind": "RECONFIGURE",
+            "settings": {"width": 640, "fps": 30},
+        }) == {"width": 640, "fps": 30}
+
+    @pytest.mark.parametrize("value", [True, 0, -1, 30.0, "30", None])
+    def test_rejects_invalid_setting_values(self, value: object) -> None:
+        with pytest.raises((TypeError, ValueError), match="reconfigure setting"):
+            validate_reconfigure_request({
+                "kind": "RECONFIGURE",
+                "settings": {"fps": value},
+            })
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"kind": "RECONFIGURE", "settings": {}},
+            {"kind": "RECONFIGURE", "settings": {"device": 1}},
+            {"kind": "RECONFIGURE", "settings": {"backend": 1}},
+            {"kind": "RECONFIGURE", "settings": {"class_path": 1}},
+            {"kind": "RECONFIGURE", "spec": {"camera": {}}},
+        ],
+    )
+    def test_rejects_empty_unknown_and_legacy_shapes(self, payload: dict[str, object]) -> None:
+        with pytest.raises((TypeError, ValueError), match="reconfigure"):
+            validate_reconfigure_request(payload)
+
+    def test_worker_patches_only_trusted_camera_settings(self) -> None:
+        from physicalai.capture.transport._publisher_worker import _PublisherState, _handle_reconfigure
+
+        old_camera = MagicMock()
+        old_camera.disconnect.return_value = None
+        replacement = MagicMock()
+        state = _PublisherState(
+            camera=old_camera,
+            publisher=MagicMock(),
+            camera_fps=30,
+            config={
+                "camera": {
+                    "class_path": FAKE_CAMERA_CLASS,
+                    "init_args": {
+                        "device_name": "trusted-device",
+                        "backend": "trusted-backend",
+                        "width": 320,
+                        "height": 240,
+                        "fps": 30,
+                    },
+                },
+                "service_name": "physicalai/test/trusted/frame",
+                "_factory_override": "tests.unit.capture.fake:FakeCamera",
+            },
+        )
+        with patch(
+            "physicalai.capture.transport._publisher_worker.build_camera",
+            return_value=replacement,
+        ) as build:
+            result = _handle_reconfigure(
+                state,
+                {"kind": "RECONFIGURE", "settings": {"width": 640, "fps": 15}},
+                "physicalai/test/trusted/frame",
+            )
+
+        assert result == {"ok": True}
+        new_config = build.call_args.args[0]
+        assert new_config["camera"] == {
+            "class_path": FAKE_CAMERA_CLASS,
+            "init_args": {
+                "device_name": "trusted-device",
+                "backend": "trusted-backend",
+                "width": 640,
+                "height": 240,
+                "fps": 15,
+            },
+        }
+        assert new_config["_factory_override"] == "tests.unit.capture.fake:FakeCamera"
+        old_camera.disconnect.assert_called_once_with()
+        replacement.connect.assert_called_once_with()
+        assert state.camera is replacement
+        assert state.camera_fps == 15
+
+    def test_worker_rejects_component_payload_before_side_effects(self) -> None:
+        from physicalai.capture.transport._publisher_worker import _PublisherState, _handle_reconfigure
+
+        camera = MagicMock()
+        state = _PublisherState(
+            camera=camera,
+            publisher=MagicMock(),
+            camera_fps=30,
+            config={
+                "camera": {"class_path": FAKE_CAMERA_CLASS, "init_args": {"width": 320}},
+                "service_name": "physicalai/test/trusted/frame",
+            },
+        )
+        with patch("physicalai.capture.transport._publisher_worker.build_camera") as build:
+            result = _handle_reconfigure(
+                state,
+                {
+                    "kind": "RECONFIGURE",
+                    "spec": {
+                        "camera": {
+                            "class_path": "subprocess.Popen",
+                            "init_args": {"args": ["touch", "/tmp/unsafe"]},
+                        },
+                    },
+                },
+                "physicalai/test/trusted/frame",
+            )
+
+        assert result["ok"] is False
+        assert "invalid reconfigure request" in result["error"]
+        camera.disconnect.assert_not_called()
+        build.assert_not_called()
 
 
 class TestFrameHeader:

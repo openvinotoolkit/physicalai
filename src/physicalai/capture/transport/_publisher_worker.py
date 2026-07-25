@@ -264,37 +264,32 @@ def _handle_reconfigure(state: _PublisherState, request: dict, service_name: str
 
     Args:
         state: Shared publisher state.
-        request: Parsed JSON request with ``spec`` key.
+        request: Parsed JSON request with allowlisted scalar ``settings``.
         service_name: For logging.
 
     Returns:
         Response dict with ``ok`` and optional ``error``.
     """
-    spec_data = request.get("spec")
-    if not spec_data or not isinstance(spec_data, dict):
-        return {"ok": False, "error": "missing or invalid 'spec' in request"}
+    from ._spec import validate_reconfigure_request  # noqa: PLC0415
+
+    try:
+        settings = validate_reconfigure_request(request)
+    except (TypeError, ValueError) as exc:
+        return {"ok": False, "error": f"invalid reconfigure request: {exc}"}
 
     with state.lock:
         old_config = state.config.copy()
         old_camera = state.camera
         old_fps = state.camera_fps
 
-        from physicalai.config import ComponentConfigError  # noqa: PLC0415
-
-        from ._spec import validate_publisher_config  # noqa: PLC0415
-
-        try:
-            camera_cfg = validate_publisher_config(spec_data)
-        except (TypeError, ValueError, ComponentConfigError) as exc:
-            return {"ok": False, "error": f"invalid reconfigure spec: {exc}"}
-
-        new_config: dict[str, object] = {
-            "camera": dict(camera_cfg),
-            "service_name": service_name,
+        trusted_camera = old_config["camera"]
+        trusted_init_args = trusted_camera["init_args"]
+        new_config = old_config.copy()
+        new_config["camera"] = {
+            "class_path": trusted_camera["class_path"],
+            "init_args": {**trusted_init_args, **settings},
         }
-        # Preserve factory override if present in original config
-        if "_factory_override" in old_config:
-            new_config["_factory_override"] = old_config["_factory_override"]
+        new_config["service_name"] = service_name
 
         try:
             old_camera.disconnect()
@@ -325,7 +320,7 @@ def _handle_reconfigure(state: _PublisherState, request: dict, service_name: str
         state.camera = new_camera
         state.config = new_config
         state.camera_fps = new_fps
-        logger.info(f"Reconfigured publisher for {service_name} with {spec_data}")
+        logger.info(f"Reconfigured publisher for {service_name} with settings {settings}")
         return {"ok": True}
 
 

@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
+from enum import Enum
 from typing import cast
 
 from ._errors import ComponentConfigError, ComponentImportError
@@ -17,6 +19,126 @@ from .importing import import_dotted_path
 
 def _is_nested_config(value: object) -> bool:
     return isinstance(value, Mapping) and "class_path" in value
+
+
+def _check_preflight_depth(path: str, depth: int) -> None:
+    if depth > _MAX_CONFIG_DEPTH:
+        msg = f"{format_path(path)}: nesting depth exceeds {_MAX_CONFIG_DEPTH}"
+        raise ComponentConfigError(msg)
+
+
+def _preflight_config(
+    config: object,
+    *,
+    path: str,
+    depth: int,
+    seen: set[int],
+) -> None:
+    """Validate a complete component subtree before any class import.
+
+    Raises:
+        ComponentConfigError: If the config tree is malformed.
+    """
+    _check_preflight_depth(path, depth)
+
+    validated = validate_component_config(config, path=path)
+    config_id = id(config)
+    if config_id in seen:
+        msg = f"{format_path(path)}: cyclic component config is not instantiable"
+        raise ComponentConfigError(msg)
+    seen.add(config_id)
+    try:
+        for key, item in validated["init_args"].items():
+            child_path = f"{path}.init_args.{key}" if path else f"{validated['class_path']}.init_args.{key}"
+            _preflight_value(item, path=child_path, depth=depth + 1, seen=seen)
+    finally:
+        seen.discard(config_id)
+
+
+def _preflight_mapping(
+    value: dict[object, object],
+    *,
+    path: str,
+    depth: int,
+    seen: set[int],
+) -> None:
+    if "class_path" in value:
+        _preflight_config(value, path=path, depth=depth, seen=seen)
+        return
+
+    value_id = id(value)
+    if value_id in seen:
+        msg = f"{format_path(path)}: cyclic mapping is not instantiable"
+        raise ComponentConfigError(msg)
+    seen.add(value_id)
+    try:
+        for key, item in value.items():
+            if not isinstance(key, str):
+                msg = f"{format_path(path)}: mapping keys must be strings, got {type(key).__name__}"
+                raise ComponentConfigError(msg)
+            child_path = f"{path}.{key}" if path else key
+            _preflight_value(item, path=child_path, depth=depth + 1, seen=seen)
+    finally:
+        seen.discard(value_id)
+
+
+def _preflight_list(
+    value: list[object],
+    *,
+    path: str,
+    depth: int,
+    seen: set[int],
+) -> None:
+    value_id = id(value)
+    if value_id in seen:
+        msg = f"{format_path(path)}: cyclic sequence is not instantiable"
+        raise ComponentConfigError(msg)
+    seen.add(value_id)
+    try:
+        for index, item in enumerate(value):
+            child_path = f"{path}[{index}]" if path else f"[{index}]"
+            _preflight_value(item, path=child_path, depth=depth + 1, seen=seen)
+    finally:
+        seen.discard(value_id)
+
+
+def _preflight_value(
+    value: object,
+    *,
+    path: str,
+    depth: int,
+    seen: set[int],
+) -> None:
+    """Validate one constructor value against the recursive JSON model.
+
+    Raises:
+        ComponentConfigError: If the value is outside the JSON model.
+    """
+    _check_preflight_depth(path, depth)
+
+    if isinstance(value, Enum):
+        msg = f"{format_path(path)}: Enum is not a JSON-compatible component config value; pass its value instead"
+        raise ComponentConfigError(msg)
+    if value is None or isinstance(value, (bool, str)):
+        return
+    if isinstance(value, int):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            msg = f"{format_path(path)}: non-finite float {value!r} is not JSON-portable"
+            raise ComponentConfigError(msg)
+        return
+
+    if isinstance(value, dict):
+        _preflight_mapping(value, path=path, depth=depth, seen=seen)
+        return
+
+    if isinstance(value, list):
+        _preflight_list(value, path=path, depth=depth, seen=seen)
+        return
+
+    msg = f"{format_path(path)}: {type(value).__name__} is not a JSON-compatible component config value"
+    raise ComponentConfigError(msg)
 
 
 def _decode_value(
@@ -140,4 +262,5 @@ def instantiate(config: ComponentConfig | Mapping[str, JsonValue]) -> object:
     Returns:
         A new instance of the configured class.
     """
+    _preflight_config(config, path="", depth=0, seen=set())
     return _instantiate_impl(config, path="", depth=0, seen=set())

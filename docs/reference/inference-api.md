@@ -16,7 +16,8 @@ InferenceModel(
 )
 ```
 
-The model can be constructed directly from an export directory or loaded from config.
+The model can be constructed directly from an export directory or nested in a
+trusted workflow ComponentConfig.
 
 ## Constructors
 
@@ -37,8 +38,6 @@ model = InferenceModel.from_pretrained(
 This downloads the policy package snapshot from the Hugging Face Hub and loads
 it like a local export. Additional keyword arguments are forwarded to the
 constructor (e.g. `backend`, `device`).
-
-> **Note:** `InferenceModel.from_config()` is a planned API.
 
 ## Methods
 

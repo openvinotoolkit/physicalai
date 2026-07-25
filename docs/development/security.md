@@ -21,7 +21,10 @@ These rules apply when writing, editing, or reviewing code under `src/physicalai
    the export directory is trusted. Prefer registered `type` names for
    built-ins. `physicalai.config.instantiate` is a separate trusted-local /
    parent→child-only construction boundary: never pass robot/camera network
-   metadata, Zenoh payloads, or other untrusted peer data into it.
+   metadata, Zenoh payloads, shared-memory control requests, or other
+   untrusted peer data into it. Camera reconfigure requests may carry only
+   explicitly allowlisted scalar settings; the publisher must merge them into
+   its trusted startup recipe without accepting a peer-selected `class_path`.
 
 5. Enforce component nesting limits. `_MAX_COMPONENT_DEPTH` in
    `component_factory.py` caps recursive manifest/YAML instantiation;

@@ -35,6 +35,7 @@ _MAX_CONFIG_DEPTH = 10
 _CAPTURED_INIT_ARGS_ATTR = "_physicalai_captured_init_args"
 _EXPORT_DEPTH_ATTR = "_physicalai_export_config_depth"
 _EXPORT_MARKER_ATTR = "_physicalai_export_config"
+_NORMALIZE_CAPTURED_INIT_ARGS_ATTR = "_physicalai_normalize_captured_init_args"
 # Optional public class_path override stored on the decorated __init__ wrapper.
 _CONFIG_CLASS_PATH_ATTR = "_physicalai_config_class_path"
 

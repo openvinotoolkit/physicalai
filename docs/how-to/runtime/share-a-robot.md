@@ -19,9 +19,9 @@ the Zenoh topics directly. The first `SharedRobot` constructed for a given
 `name` that finds no existing owner spawns one (in a detached subprocess);
 later instances (same or different process, same `name`) attach to it.
 
-Construction is ComponentConfig-only (`robot=` / `from_config` / `from_robot`).
-Prefer `from_config` when you already have a recipe; `from_robot` is sugar
-that exports a disconnected `@export_config` driver:
+Construction uses `robot=` or `from_config()`. Prefer `from_config()` when you
+already have a recipe. A disconnected `@export_config` driver can be passed
+directly to the constructor or exported explicitly:
 
 ```python
 import numpy as np
@@ -33,7 +33,7 @@ driver = SO101(
     calibration="~/.cache/calibration/so101.json",  # path stays relative/as given
 )
 robot = SharedRobot.from_config(to_config(driver), name="left-arm")
-# or: SharedRobot.from_robot(driver, name="left-arm")
+# or: SharedRobot("left-arm", robot=driver)
 # or: SharedRobot("left-arm", robot={"class_path": "physicalai.robot.SO101", "init_args": {...}})
 robot.connect()
 

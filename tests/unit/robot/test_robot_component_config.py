@@ -257,6 +257,24 @@ class TestSharedRobotComponentConfig:
         assert "_connected" not in wire["init_args"]
         assert "session" not in wire["init_args"]
 
+    def test_defining_module_robot_path_is_canonical_on_first_export(self) -> None:
+        from physicalai.robot import SharedRobot
+
+        robot = SharedRobot(
+            "canonical-arm",
+            robot={
+                "class_path": "physicalai.robot.so101.so101.SO101",
+                "init_args": {
+                    "port": "/dev/ttyUSB0",
+                    "calibration": SAMPLE_CALIBRATION,
+                },
+            },
+        )
+        wire = _assert_construction_round_trip(robot)
+        nested = wire["init_args"]["robot"]
+        assert isinstance(nested, dict)
+        assert nested["class_path"] == "physicalai.robot.SO101"
+
     def test_attach_only_round_trip(self) -> None:
         from physicalai.robot import SharedRobot
 

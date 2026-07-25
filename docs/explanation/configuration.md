@@ -1,33 +1,11 @@
 # Configuration
 
-The config system is intended to make Python, YAML, CLI, and Studio payloads use the same workflow shape.
+PhysicalAI uses constructor-shaped data so Python, YAML, the CLI, and Studio
+can describe the same runtime graph.
 
-```bash
-physicalai run --config runtime.yaml
-```
+## Construction Recipes
 
-## Layers
-
-```text
-Config
-  typed constructor args for one class
-
-ComponentSpec
-  target + args for one instantiable component
-
-Workflow config
-  user-authored workflow before execution
-
-Manifest
-  exported package metadata after build/export
-
-Orchestrator
-  live object that executes the workflow
-```
-
-## ComponentSpec
-
-Direct class mode:
+A `ComponentConfig` names one class and the arguments needed to create it.
 
 ```yaml
 class_path: physicalai.capture.UVCCamera
@@ -37,47 +15,40 @@ init_args:
   height: 480
 ```
 
-> **Tip:** Use stable device paths (`/dev/v4l/by-id/...`) in config files. Index-based paths like `/dev/video0` can change after reboot.
+Classes opt in to exporting this recipe with `@export_config`. `to_config()`
+captures construction intent rather than mutable runtime state: supplied
+arguments are preserved, omitted defaults remain omitted, and connections or
+open handles are never exported.
 
-Registry mode:
-
-```yaml
-type: uvc
-device: /dev/v4l/by-id/usb-Example_Camera-video-index0
-width: 640
-height: 480
+```text
+live opted-in component -> to_config() -> JSON/YAML -> instantiate() -> new component
 ```
 
-If both `class_path` and `type` are present, `class_path` takes precedence.
+`instantiate()` calls constructors only. The application remains responsible
+for lifecycle methods such as `connect()` and `run()`.
 
-## Typed Config
+## Workflow Documents
 
-Typed configs are useful when constructor validation and IDE support matter.
+A workflow document adds command-level structure around components. For
+example, `physicalai run` expects runtime constructor arguments under
+`runtime:` and optional run-method arguments under `run:`. A bare exported
+`RobotRuntime` ComponentConfig is also accepted and reshaped by the loader.
 
-```python
-@dataclass
-class Pi05Config(Config):
-    chunk_size: int = 50
-    n_action_steps: int = 50
+Nested components retain the same `class_path` + `init_args` form, so a robot,
+action source, model, camera map, and callbacks form one recursive recipe.
 
-    def __post_init__(self) -> None:
-        if self.n_action_steps > self.chunk_size:
-            raise ValueError("n_action_steps must be <= chunk_size")
-```
+## Manifests
 
-Typed configs do not decide which class to instantiate. They only validate and carry constructor arguments.
+An inference manifest describes an exported policy package: artifacts,
+features, processors, runners, and compatibility metadata. Its
+`ComponentSpec` supports registry aliases and artifact handling and remains
+separate from strict captured `ComponentConfig` data.
 
-```python
-cfg = Pi05Config(chunk_size=50)
-policy = instantiate_obj(cfg, target_cls=Pi05)
-```
+Use workflow configuration for deployment intent. Use manifests for package
+metadata produced during export.
 
-## Execution Boundary
+## Trust
 
-Configuration objects remain passive data. Orchestrators are responsible for creating live objects and executing workflows.
-
-```python
-config = RuntimeConfig.load("runtime.yaml")
-runtime = RobotRuntime.from_config(config)
-runtime.run()
-```
+Resolving `class_path` imports and executes local Python code. Only trusted
+application or user-authored configuration belongs at the instantiation
+boundary; peer metadata and transport control messages do not.

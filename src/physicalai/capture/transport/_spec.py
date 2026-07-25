@@ -34,10 +34,9 @@ from .builtin import builtin_type_for_class_path
 if TYPE_CHECKING:
     from physicalai.capture.camera import Camera
 
-# Allowed keys on publisher stdin and reconfigure ``spec`` payloads.
-# Everything else (including legacy flat camera_type / camera_kwargs) is an
-# unknown-key schema error. Keep this the single allowlist — stdin parse and
-# reconfigure share :func:`validate_publisher_config`.
+# Allowed keys on the trusted publisher stdin handshake. Everything else
+# (including legacy flat camera_type / camera_kwargs) is an unknown-key
+# schema error.
 _PUBLISHER_ENVELOPE_KEYS = frozenset({
     "camera",
     "service_name",
@@ -45,10 +44,12 @@ _PUBLISHER_ENVELOPE_KEYS = frozenset({
     "max_subscribers",
     "_factory_override",
 })
+_RECONFIGURE_REQUEST_KEYS = frozenset({"kind", "settings"})
+_RECONFIGURABLE_SETTINGS = frozenset({"width", "height", "fps"})
 
 
 def validate_publisher_config(data: Mapping[str, Any]) -> Mapping[str, object]:
-    """Validate a publisher stdin or reconfigure payload schema-positively.
+    """Validate a trusted publisher stdin payload schema-positively.
 
     Returns:
         The validated ``camera`` ComponentConfig mapping (not yet
@@ -60,6 +61,56 @@ def validate_publisher_config(data: Mapping[str, Any]) -> Mapping[str, object]:
         allowed_keys=_PUBLISHER_ENVELOPE_KEYS,
         envelope_name="publisher",
     )
+
+
+def validate_reconfigure_request(request: Mapping[str, Any]) -> dict[str, int]:
+    """Validate an untrusted camera reconfigure control request.
+
+    The peer may change only scalar capture settings. The publisher keeps the
+    trusted startup ``class_path`` and all other constructor arguments.
+
+    Returns:
+        Validated settings to patch into the trusted camera recipe.
+
+    Raises:
+        TypeError: If the request or a setting has the wrong type.
+        ValueError: If required fields are missing, unknown, or out of range.
+    """
+    if not isinstance(request, Mapping):
+        msg = f"reconfigure request must be a mapping, got {type(request).__name__}"
+        raise TypeError(msg)
+
+    unknown_request_keys = sorted(set(request) - _RECONFIGURE_REQUEST_KEYS)
+    if unknown_request_keys:
+        msg = f"unknown reconfigure request keys {unknown_request_keys}"
+        raise ValueError(msg)
+    if request.get("kind") != "RECONFIGURE":
+        msg = "reconfigure request kind must be 'RECONFIGURE'"
+        raise ValueError(msg)
+
+    settings = request.get("settings")
+    if not isinstance(settings, Mapping):
+        msg = f"reconfigure 'settings' must be a mapping, got {type(settings).__name__}"
+        raise TypeError(msg)
+    if not settings:
+        msg = "reconfigure 'settings' must not be empty"
+        raise ValueError(msg)
+
+    unknown_settings = sorted(set(settings) - _RECONFIGURABLE_SETTINGS)
+    if unknown_settings:
+        msg = f"unknown reconfigure settings {unknown_settings}; allowed: {sorted(_RECONFIGURABLE_SETTINGS)}"
+        raise ValueError(msg)
+
+    validated: dict[str, int] = {}
+    for key, value in settings.items():
+        if isinstance(value, bool) or not isinstance(value, int):
+            msg = f"reconfigure setting {key!r} must be an integer, got {type(value).__name__}"
+            raise TypeError(msg)
+        if value <= 0:
+            msg = f"reconfigure setting {key!r} must be greater than zero, got {value}"
+            raise ValueError(msg)
+        validated[key] = value
+    return validated
 
 
 def normalize_camera_class(camera_class: type | str) -> str:
@@ -169,9 +220,9 @@ class CameraPublisherConfig:
     def from_json_dict(cls, data: dict[str, Any]) -> CameraPublisherConfig:
         """Deserialize from a JSON dictionary (full publisher envelope or fragment).
 
-        Uses :func:`validate_publisher_config` so stdin and reconfigure share
-        one schema (required ``camera``, known transport keys, unknown keys
-        rejected).
+        Uses :func:`validate_publisher_config` so publisher stdin requires
+        ``camera``, accepts only known transport keys, and rejects unknown
+        keys before construction.
 
         Args:
             data: Dictionary produced by :meth:`to_json_dict` or a publisher

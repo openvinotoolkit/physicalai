@@ -135,6 +135,20 @@ class TestSharedCameraComponentConfig:
         assert "_connected" not in wire["init_args"]
         assert "_node" not in wire["init_args"]
 
+    def test_defining_module_camera_path_is_canonical_on_first_export(self) -> None:
+        from physicalai.capture import SharedCamera
+
+        camera = SharedCamera(
+            camera={
+                "class_path": "physicalai.capture.cameras.uvc._camera.UVCCamera",
+                "init_args": {"device": 0, "backend": "v4l2"},
+            },
+        )
+        wire = _assert_construction_round_trip(camera)
+        nested = wire["init_args"]["camera"]
+        assert isinstance(nested, dict)
+        assert nested["class_path"] == "physicalai.capture.UVCCamera"
+
     def test_attach_only_round_trip(self) -> None:
         from physicalai.capture import SharedCamera
 

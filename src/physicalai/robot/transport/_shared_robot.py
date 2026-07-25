@@ -286,6 +286,12 @@ class SharedRobot:
         self._connected = False
 
     @classmethod
+    def _physicalai_normalize_captured_init_args(cls, supplied: dict[str, object]) -> None:
+        robot = supplied.get("robot")
+        if isinstance(robot, Mapping):
+            supplied["robot"] = normalize_robot_config(robot)
+
+    @classmethod
     def from_config(
         cls,
         robot_config: ComponentConfig | Mapping[str, object],

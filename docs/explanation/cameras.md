@@ -32,12 +32,12 @@ Camera instances are not thread-safe. Use one thread per camera instance or add 
 connection while any number of subscribers read frames over iceoryx2. It
 satisfies the same `Camera` protocol as a direct driver.
 
-Construction is ComponentConfig-only (`from_config` / `from_camera`), matching
-`SharedRobot`. Prefer `from_config` (or YAML) when sharing. `from_camera` is
-export-only sugar after disconnect — it does not hand off an open device into
-the child; the publisher always opens fresh. Never keep a direct camera
-connected to the same device while sharing: another connected holder causes
-open failure.
+Construction uses `camera=` or `from_config()`, matching `SharedRobot`. Prefer
+`from_config()` (or YAML) when sharing. A disconnected `@export_config` camera
+can be passed directly to `camera=`; this exports its recipe rather than
+handing an open device into the child. The publisher always opens fresh. Never
+keep a direct camera connected to the same device while sharing: another
+connected holder causes open failure.
 
 ```python
 from physicalai.capture import SharedCamera
@@ -52,6 +52,8 @@ shared = SharedCamera.from_config(
 )
 # Equivalent after to_config(disconnected_driver):
 # shared = SharedCamera.from_config(to_config(driver))
+# Or let the constructor export the disconnected driver:
+# shared = SharedCamera(camera=driver)
 shared.connect()
 
 # Safe to read from multiple threads/processes

@@ -28,7 +28,7 @@ from physicalai.capture.errors import CaptureError, CaptureTimeoutError, NotConn
 from physicalai.config import export_config
 
 from ._header import FrameHeader, decode_header, decode_rgb
-from ._spec import derive_service_name, normalize_camera_config
+from ._spec import derive_service_name, normalize_camera_config, validate_reconfigure_request
 
 if TYPE_CHECKING:
     from physicalai.capture.frame import Frame
@@ -212,6 +212,12 @@ class SharedCamera(Camera):
         self._node: Any | None = None
         self._subscriber: Any | None = None
         self._listener: Any | None = None
+
+    @classmethod
+    def _physicalai_normalize_captured_init_args(cls, supplied: dict[str, object]) -> None:
+        camera = supplied.get("camera")
+        if isinstance(camera, Mapping):
+            supplied["camera"] = normalize_camera_config(camera)
 
     @classmethod
     def from_config(
@@ -461,6 +467,32 @@ class SharedCamera(Camera):
         self._latest = None
         self._last_header = None
 
+    def _build_reconfigure_request(self) -> dict[str, object]:
+        """Build and validate the settings-only peer control request.
+
+        Returns:
+            A validated `RECONFIGURE` request.
+
+        Raises:
+            CaptureError: If this camera has no valid reconfigurable settings.
+        """
+        if self._camera is None:
+            msg = "reconfigure requires a camera ComponentConfig (attach-only SharedCamera has none)"
+            raise CaptureError(msg)
+
+        init_args = self._camera["init_args"]
+        settings = {key: value for key in ("width", "height", "fps") if (value := init_args.get(key)) is not None}
+        request: dict[str, object] = {
+            "kind": "RECONFIGURE",
+            "settings": settings,
+        }
+        try:
+            validate_reconfigure_request(request)
+        except (TypeError, ValueError) as exc:
+            msg = f"camera config has no valid reconfigure settings: {exc}"
+            raise CaptureError(msg) from exc
+        return request
+
     def _request_reconfigure(self, timeout: float = 5.0) -> dict:
         """Send a RECONFIGURE request to the publisher's control channel.
 
@@ -480,9 +512,7 @@ class SharedCamera(Camera):
         """
         import json  # noqa: PLC0415
 
-        if self._camera is None:
-            msg = "reconfigure requires a camera ComponentConfig (attach-only SharedCamera has none)"
-            raise CaptureError(msg)
+        request = self._build_reconfigure_request()
 
         iox2 = cast("Any", import_module("iceoryx2"))
         control_name = f"{self._service_name}/control"
@@ -500,15 +530,7 @@ class SharedCamera(Camera):
             msg = f"publisher does not support reconfigure (no control service at {control_name})"
             raise CaptureError(msg) from exc
 
-        request_payload = json.dumps({
-            "kind": "RECONFIGURE",
-            "spec": {
-                "camera": {
-                    "class_path": self._camera["class_path"],
-                    "init_args": dict(self._camera["init_args"]),  # type: ignore[arg-type]
-                },
-            },
-        }).encode()
+        request_payload = json.dumps(request).encode()
 
         try:
             sample = client.loan_slice_uninit(len(request_payload))

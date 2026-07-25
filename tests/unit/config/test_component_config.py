@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from enum import Enum
 from pathlib import Path
 from typing import Protocol, cast, runtime_checkable
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -148,6 +149,20 @@ class ListHolder:
 class OptionalName:
     def __init__(self, name: str | None = "default") -> None:
         self.name = name
+
+
+@export_config
+class CanonicalName:
+    normalize_calls = 0
+
+    def __init__(self, name: str = "default") -> None:
+        self.name = name
+
+    @classmethod
+    def _physicalai_normalize_captured_init_args(cls, supplied: dict[str, object]) -> None:
+        cls.normalize_calls += 1
+        if "name" in supplied:
+            supplied["name"] = str(supplied["name"]).lower()
 
 
 @export_config
@@ -411,6 +426,69 @@ class TestNormalizeAndInstantiate:
         notes = getattr(info.value, "__notes__", [])
         assert any("constructor failed" in note for note in notes)
 
+    def test_malformed_nested_config_rejected_before_any_import(self) -> None:
+        config = {
+            "class_path": "tests.unit.config.test_component_config.Point",
+            "init_args": {
+                "x": {
+                    "class_path": "tests.unit.config.test_component_config.Point",
+                    "init_args": None,
+                },
+            },
+        }
+        with (
+            patch("physicalai.config._instantiate.import_dotted_path") as import_path,
+            pytest.raises(ComponentConfigError, match="init_args"),
+        ):
+            instantiate(config)  # type: ignore[arg-type]
+        import_path.assert_not_called()
+
+    @pytest.mark.parametrize("value", [math.nan, math.inf, (1, 2), Path("config.json"), Color.RED, object()])
+    def test_non_json_value_rejected_before_any_import(self, value: object) -> None:
+        config = {
+            "class_path": "tests.unit.config.test_component_config.DomainHolder",
+            "init_args": {"payload": value},
+        }
+        with (
+            patch("physicalai.config._instantiate.import_dotted_path") as import_path,
+            pytest.raises(ComponentConfigError),
+        ):
+            instantiate(config)  # type: ignore[arg-type]
+        import_path.assert_not_called()
+
+    def test_non_string_plain_mapping_key_rejected_before_any_import(self) -> None:
+        config = {
+            "class_path": "tests.unit.config.test_component_config.MappingHolder",
+            "init_args": {"data": {1: "value"}},
+        }
+        with (
+            patch("physicalai.config._instantiate.import_dotted_path") as import_path,
+            pytest.raises(ComponentConfigError, match="mapping keys must be strings"),
+        ):
+            instantiate(config)  # type: ignore[arg-type]
+        import_path.assert_not_called()
+
+    def test_cyclic_component_config_rejected_before_any_import(self) -> None:
+        config: dict[str, object] = {
+            "class_path": "tests.unit.config.test_component_config.Nest",
+            "init_args": {},
+        }
+        cast("dict[str, object]", config["init_args"])["child"] = config
+        with (
+            patch("physicalai.config._instantiate.import_dotted_path") as import_path,
+            pytest.raises(ComponentConfigError, match="cyclic component config"),
+        ):
+            instantiate(config)  # type: ignore[arg-type]
+        import_path.assert_not_called()
+
+    def test_plain_nested_mapping_remains_valid(self) -> None:
+        config = cast("ComponentConfig", {
+            "class_path": "tests.unit.config.test_component_config.MappingHolder",
+            "init_args": {"data": {"nested": {"value": 1}}},
+        })
+        restored = cast(MappingHolder, instantiate(config))
+        assert restored.data == {"nested": {"value": 1}}
+
 
 class TestExportConfig:
     def test_positional_binds_to_names(self) -> None:
@@ -541,6 +619,14 @@ class TestExportConfig:
         point = Point(1)
         assert is_config_exportable(point)
         assert "_physicalai_export_config_depth" not in vars(point)
+
+    def test_private_capture_normalizer_canonicalizes_supplied_args_only(self) -> None:
+        CanonicalName.normalize_calls = 0
+        explicit = CanonicalName("LOUD")
+        omitted = CanonicalName()
+        assert to_config(explicit)["init_args"] == {"name": "loud"}
+        assert to_config(omitted)["init_args"] == {}
+        assert CanonicalName.normalize_calls == 2
 
 
 class TestScalarVarKwargs:

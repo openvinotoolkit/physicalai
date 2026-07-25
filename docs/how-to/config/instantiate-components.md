@@ -1,10 +1,7 @@
 # Instantiate Components
 
-> **Preview:** The config system (`physicalai.config`) is a planned API. The examples below document the target design. Currently, `ComponentSpec` lives in `physicalai.inference.manifest`.
-
-A component spec describes one instantiable object.
-
-The most explicit form uses a class path.
+A `ComponentConfig` is a construction recipe with one importable class and
+its supplied constructor arguments.
 
 ```yaml
 class_path: physicalai.capture.UVCCamera
@@ -14,52 +11,51 @@ init_args:
   height: 480
 ```
 
-The shorter form uses a registry name.
-
-```yaml
-type: uvc
-device: /dev/video0
-width: 640
-height: 480
-```
-
-You can construct and instantiate the same spec from Python.
+Use `instantiate()` to construct trusted local configuration. It calls the
+constructor but does not call lifecycle methods such as `connect()`, `run()`,
+or `start()`.
 
 ```python
-from physicalai.inference.manifest import ComponentSpec
-from physicalai.inference.component_factory import instantiate_component
+from physicalai.config import instantiate
 
-spec = ComponentSpec(
-    class_path="physicalai.capture.UVCCamera",
-    init_args={"device": "/dev/video0", "width": 640, "height": 480},
-)
-
-camera = instantiate_component(spec)
+camera = instantiate({
+    "class_path": "physicalai.capture.UVCCamera",
+    "init_args": {"device": "/dev/video0", "width": 640, "height": 480},
+})
+camera.connect()
 ```
 
-Nested component specs are instantiated recursively.
+## Export a live component
 
-```yaml
-class_path: physicalai.runtime.RobotRuntime
-init_args:
-  robot:
-    class_path: physicalai.robot.so101.SO101
-    init_args:
-      port: /dev/ttyACM0
-  action_source:
-    class_path: physicalai.runtime.PolicySource
-    init_args:
-      model:
-        class_path: physicalai.inference.InferenceModel
-        init_args:
-          export_dir: ./exports/act_policy
-      execution:
-        class_path: physicalai.runtime.SyncExecution
-  cameras:
-    wrist:
-      class_path: physicalai.capture.UVCCamera
-      init_args:
-        device: /dev/video0
+Classes opt in with `@export_config`. The decorator remembers only arguments
+the caller supplied, so omitted constructor defaults remain omitted.
+
+```python
+from physicalai.capture import UVCCamera
+from physicalai.config import to_config
+
+camera = UVCCamera(device="/dev/video0", width=640, height=480)
+config = to_config(camera)
 ```
 
-`ComponentSpec` describes what should be built. Instantiation is the separate step that creates the live object.
+Nested opted-in components use the same shape recursively. Configs contain
+JSON values only; paths become strings, tuples become lists during export,
+and non-finite floats are rejected.
+
+```python
+from physicalai.config import save_yaml
+
+save_yaml(camera, "camera.yaml")
+```
+
+## Trust boundary
+
+`class_path` selects Python code to import and execute. Pass only trusted
+application or user-authored configuration to `instantiate()`. Do not
+instantiate robot metadata, camera metadata, shared-memory messages, or other
+peer-controlled payloads.
+
+Inference manifest `ComponentSpec` is a separate compatibility schema with
+registry aliases and artifact handling. Use `physicalai.config` for captured
+construction recipes; use the manifest APIs when loading exported policy
+metadata.

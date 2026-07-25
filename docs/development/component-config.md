@@ -522,6 +522,12 @@ readers speak only this shape. Flat `camera_type` + `camera_kwargs` are
 rejected before import. Built-in names are public class paths in the new
 shape.
 
+The publisher's runtime control channel is a separate, untrusted peer
+boundary. A `RECONFIGURE` request carries only allowlisted scalar capture
+settings (`width`, `height`, `fps`). The publisher patches those values onto
+the trusted startup recipe; a subscriber can never replace `class_path`,
+device identity, backend, or other constructor arguments.
+
 #### SharedCamera service naming
 
 Transport owns naming; `ComponentConfig` never embeds `service_name`.
@@ -679,6 +685,10 @@ Do not reuse `capture.transport.PROTOCOL_VERSION` or
 robot network payloads respectively, not the one-shot stdin construction
 envelopes. Existing detached owners/publishers are discovered through their
 current transport protocols and do not receive a new startup config.
+
+This hard cutover applies only to trusted parent→child startup stdin. Camera
+reconfigure messages arrive from subscribers and therefore never carry a
+ComponentConfig or enter `instantiate()`.
 
 Decision record: [shared construction wire decision](shared-construction-wire-decision.md).
 
@@ -858,7 +868,9 @@ another untrusted peer.
 Validation makes malformed input predictable; it does not make arbitrary
 imports safe. Transport wire protocols may carry a config only from a trusted
 parent process to the child it spawned. They must not accept component
-configs from network subscribers.
+configs from network subscribers. In particular, camera control requests may
+patch only allowlisted scalar settings onto the publisher's trusted startup
+recipe; they cannot select a class, device, or backend.
 
 An allowlist resolver can be added for contexts that need a narrower trust
 policy, but it does not replace the trusted-input rule for v1.
@@ -1003,6 +1015,10 @@ cutovers; do not describe them as schema-preserving.
   accept only the new `robot:` / `camera: ComponentConfig` shape, and
   schema-positively reject unknown envelope keys (including legacy flat
   `robot_class` / `camera_type` forms) before import.
+- Camera reconfigure control requests accept only positive integer
+  `width` / `height` / `fps` settings, reject ComponentConfig and unknown-key
+  payloads before side effects, and preserve the trusted startup class,
+  device, backend, and remaining constructor arguments.
 - Shareable SharedCamera spawn (`uvc` / `realsense` / `basler`) derives the
   legacy `service_name` via the transport class-path → type-token map inside
   `from_config` / the constructor; stub (`ip` / `genicam`) and third-party

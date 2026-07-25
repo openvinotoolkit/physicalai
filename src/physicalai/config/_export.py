@@ -21,6 +21,7 @@ from ._types import (
     _EXPORT_DEPTH_ATTR,
     _EXPORT_MARKER_ATTR,
     _MAX_CONFIG_DEPTH,
+    _NORMALIZE_CAPTURED_INIT_ARGS_ATTR,
     ComponentConfig,
     JsonValue,
 )
@@ -318,6 +319,12 @@ def _decorate_export_config(
             original_init(self, *args, **kwargs)
             # Only the outermost successful decorated constructor commits.
             if getattr(self, _EXPORT_DEPTH_ATTR, 0) == 1:
+                normalize_captured = getattr(self, _NORMALIZE_CAPTURED_INIT_ARGS_ATTR, None)
+                if normalize_captured is not None:
+                    if not callable(normalize_captured):
+                        msg = f"{cls.__qualname__}: {_NORMALIZE_CAPTURED_INIT_ARGS_ATTR} must be callable"
+                        raise TypeError(msg)
+                    normalize_captured(supplied)
                 setattr(self, _CAPTURED_INIT_ARGS_ATTR, supplied)
         finally:
             setattr(self, _EXPORT_DEPTH_ATTR, depth)
