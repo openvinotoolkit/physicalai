@@ -36,7 +36,6 @@ from typing import TYPE_CHECKING, Any
 from physicalai.config import (
     ComponentConfig,
     instantiate,
-    normalize_class_reference,
     normalize_component_config,
     validate_envelope,
 )
@@ -81,15 +80,6 @@ def validate_owner_config(data: Mapping[str, Any]) -> Mapping[str, object]:
         allowed_keys=_OWNER_ENVELOPE_KEYS,
         envelope_name="owner",
     )
-
-
-def normalize_robot_class(robot_class: type | str) -> str:
-    """Normalize a robot class reference to a dotted import path.
-
-    Returns:
-        The public path for a class object, or the string path as given.
-    """
-    return normalize_class_reference(robot_class, label="robot_class")
 
 
 def normalize_robot_config(robot: Mapping[str, object]) -> ComponentConfig:

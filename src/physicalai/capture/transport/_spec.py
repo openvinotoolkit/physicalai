@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING, Any
 from physicalai.config import (
     ComponentConfig,
     instantiate,
-    normalize_class_reference,
     normalize_component_config,
     validate_envelope,
 )
@@ -111,15 +110,6 @@ def validate_reconfigure_request(request: Mapping[str, Any]) -> dict[str, int]:
             raise ValueError(msg)
         validated[key] = value
     return validated
-
-
-def normalize_camera_class(camera_class: type | str) -> str:
-    """Normalize a camera class reference to a dotted import path.
-
-    Returns:
-        The public path for a class object, or the string path as given.
-    """
-    return normalize_class_reference(camera_class, label="camera class_path")
 
 
 def normalize_camera_config(camera: Mapping[str, object]) -> ComponentConfig:

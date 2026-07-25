@@ -22,7 +22,6 @@ Transport and other callers import public names from here (no private
 """
 
 from ._envelope import (
-    normalize_class_reference,
     normalize_component_config,
     validate_envelope,
 )
@@ -51,7 +50,6 @@ __all__ = [
     "instantiate",
     "is_config_exportable",
     "load_yaml",
-    "normalize_class_reference",
     "normalize_component_config",
     "resolve_public_class_path",
     "save_yaml",

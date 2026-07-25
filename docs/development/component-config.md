@@ -1088,5 +1088,11 @@ cutovers; do not describe them as schema-preserving.
 - Security rules: [runtime security](security.md)
 - Robot owner envelope: `physicalai.robot.transport._owner_config.RobotOwnerConfig`
 - Camera publisher envelope: `physicalai.capture.transport._spec.CameraPublisherConfig`
+  — named for symmetry with `RobotOwnerConfig`, which is itself named that way
+  to avoid colliding with the unrelated `physicalai.inference.manifest.RobotSpec`
+  manifest model. `CameraSpec` would collide with
+  `physicalai.inference.manifest.CameraSpec` the same way, and the type no
+  longer describes a `camera_type` + `camera_kwargs` spec anyway — it wraps one
+  `camera: ComponentConfig`.
 - Review context: Mark's comments on Studio PR #818 (factory wrap; plugins
   should not care about `SharedRobot`)

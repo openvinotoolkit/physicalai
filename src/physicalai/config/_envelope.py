@@ -20,7 +20,6 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from ._errors import ComponentConfigError
-from ._export import resolve_public_class_path
 from ._normalize import validate_component_config
 
 if TYPE_CHECKING:
@@ -81,45 +80,6 @@ def validate_envelope(
     return validate_component_config(dict(component), path=component_key)
 
 
-def normalize_class_reference(ref: type | str, *, label: str) -> str:
-    """Normalize a class object to its public path, or pass a dotted path through.
-
-    A class object is resolved exactly like :func:`to_config` does: decorator
-    ``class_path=`` override when present, otherwise ``__module__.__qualname__``.
-
-    A string is trusted and returned **as given**. It is deliberately not
-    imported here: envelope construction happens in the subscriber process,
-    which must not load the driver package (and often cannot — the vendor SDK
-    is only installed where the hardware lives). Import errors surface later,
-    in the process that actually calls :func:`~physicalai.config.instantiate`.
-
-    Args:
-        ref: A class object, or its dotted import path as a string.
-        label: Argument label for error messages (for example ``"robot_class"``).
-
-    Returns:
-        The dotted path.
-
-    Raises:
-        TypeError: If *ref* is neither a string nor a class.
-        ValueError: If a string is not a dotted path, or the public path
-            cannot be resolved (for example a local class).
-    """
-    if isinstance(ref, str):
-        if not ref.strip() or "." not in ref:
-            msg = f"{label} must be a nonempty dotted path, got {ref!r}"
-            raise ValueError(msg)
-        return ref
-    if not isinstance(ref, type):
-        msg = f"{label} must be a class or a dotted path string, got {type(ref).__name__}"
-        raise TypeError(msg)
-
-    try:
-        return resolve_public_class_path(ref)
-    except ComponentConfigError as exc:
-        raise ValueError(str(exc)) from exc
-
-
 def normalize_component_config(
     config: Mapping[str, object],
     *,
@@ -129,10 +89,16 @@ def normalize_component_config(
 ) -> ComponentConfig:
     """Validate a ComponentConfig without importing its ``class_path``.
 
+    The ``class_path`` is trusted and kept exactly as written: envelopes are
+    built in the subscriber process, which must not load the driver package
+    (and often cannot — the vendor SDK is only installed where the hardware
+    lives). Import errors surface later, in the process that calls
+    :func:`~physicalai.config.instantiate`.
+
     Args:
         config: Candidate ``class_path`` + ``init_args`` mapping.
         component_key: Path prefix for validation errors (``"robot"`` / ``"camera"``).
-        class_label: Argument label for class-reference errors.
+        class_label: Argument label for ``class_path`` errors.
         json_hint: Optional suffix appended to the JSON-serializability error.
 
     Returns:
@@ -147,7 +113,10 @@ def normalize_component_config(
         msg = f"{component_key} must be a ComponentConfig mapping, got {type(config).__name__}"
         raise ComponentConfigError(msg)
     validated = validate_component_config(dict(config), path=component_key)
-    class_path = normalize_class_reference(validated["class_path"], label=class_label)
+    class_path = validated["class_path"]
+    if not class_path.strip() or "." not in class_path:
+        msg = f"{class_label} must be a nonempty dotted path, got {class_path!r}"
+        raise ValueError(msg)
     init_args = validated["init_args"]
     try:
         json.dumps({"class_path": class_path, "init_args": init_args})

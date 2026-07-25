@@ -8,7 +8,7 @@ import pickle
 import subprocess
 import sys
 from typing import Any, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -16,7 +16,6 @@ from physicalai.config import ComponentConfigError, ComponentImportError
 from physicalai.robot.transport._owner import RobotOwner
 from physicalai.robot.transport._owner_config import (
     RobotOwnerConfig,
-    normalize_robot_class,
     normalize_robot_config,
     validate_owner_config,
 )
@@ -32,48 +31,25 @@ def _fake_robot(**init_args: object) -> dict[str, object]:
     return {"class_path": FAKE_ROBOT_CLASS, "init_args": dict(init_args)}
 
 
-@pytest.fixture
-def mock_scservo_sdk() -> Any:
-    sdk = MagicMock()
-    with patch.dict(sys.modules, {"scservo_sdk": sdk}):
-        yield sdk
-
-
-class _Outer:
-    class Inner: ...
-
-
-class TestNormalizeRobotClass:
-    def test_class_object(self) -> None:
-        assert normalize_robot_class(FakeRobot) == FAKE_ROBOT_CLASS
-
-    def test_string_path_passes_through_without_importing(self) -> None:
+class TestNormalizeRobotConfigClassPath:
+    def test_string_path_stored_as_given_without_importing(self) -> None:
         # No scservo_sdk mock: a string path is trusted and never imported here,
         # so the owner envelope can be built where the driver is not installed.
         defining = "physicalai.robot.so101.so101.SO101"
-        assert normalize_robot_class(defining) == defining
+        assert normalize_robot_config({"class_path": defining})["class_path"] == defining
 
-    def test_public_path_passes_through(self) -> None:
-        assert normalize_robot_class("physicalai.robot.SO101") == "physicalai.robot.SO101"
+    def test_public_path_stored_as_given(self) -> None:
+        public = "physicalai.robot.SO101"
+        assert normalize_robot_config({"class_path": public})["class_path"] == public
 
-    def test_nested_qualname(self) -> None:
-        path = normalize_robot_class(_Outer.Inner)
-        assert path.endswith(".test_owner_config._Outer.Inner")
-
-    def test_local_class_raises(self) -> None:
-        class _Local: ...
-
-        with pytest.raises(ValueError, match="local class"):
-            normalize_robot_class(_Local)
-
-    def test_non_class_non_string_raises(self) -> None:
-        with pytest.raises(TypeError, match="must be a class or a dotted path string"):
-            normalize_robot_class(123)  # type: ignore[arg-type]
-
-    @pytest.mark.parametrize("ref", ["", "   ", "NotDotted"])
-    def test_non_dotted_string_raises(self, ref: str) -> None:
+    @pytest.mark.parametrize("class_path", ["   ", "NotDotted"])
+    def test_non_dotted_path_raises(self, class_path: str) -> None:
         with pytest.raises(ValueError, match="must be a nonempty dotted path"):
-            normalize_robot_class(ref)
+            normalize_robot_config({"class_path": class_path})
+
+    def test_empty_path_raises(self) -> None:
+        with pytest.raises(ComponentConfigError, match="must be a non-empty string"):
+            normalize_robot_config({"class_path": ""})
 
 
 class TestRobotOwnerConfig:
