@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Self
 
 import numpy as np
 
+from physicalai.config import export_config
 from physicalai.inference.adapters import adapter_registry, get_adapter
 from physicalai.inference.component_factory import instantiate_component, resolve_artifact
 from physicalai.inference.constants import ACTION
@@ -38,6 +39,7 @@ def _is_safe_policy_name(name: str) -> bool:
     return _SAFE_POLICY_NAME_RE.fullmatch(name) is not None
 
 
+@export_config(class_path="physicalai.inference.InferenceModel", scalar_var_kwargs=True)
 class InferenceModel:
     """Unified inference interface for exported policies.
 

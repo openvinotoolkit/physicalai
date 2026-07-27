@@ -47,21 +47,23 @@ runtime:
     overhead: # scene/workspace view
       class_path: physicalai.capture.SharedCamera
       init_args:
-        camera_type: uvc
-        camera_kwargs:
-          device: /dev/video0 # CHANGE_ME: use /dev/v4l/by-id/... for stable identity
-          width: 640
-          height: 480
-          fps: 30
+        camera:
+          class_path: physicalai.capture.UVCCamera
+          init_args:
+            device: /dev/video0 # CHANGE_ME: use /dev/v4l/by-id/... for stable identity
+            width: 640
+            height: 480
+            fps: 30
     gripper: # wrist-mounted view (rename to ``arm`` if the model expects that key)
       class_path: physicalai.capture.SharedCamera
       init_args:
-        camera_type: uvc
-        camera_kwargs:
-          device: /dev/video2 # CHANGE_ME
-          width: 640
-          height: 480
-          fps: 30
+        camera:
+          class_path: physicalai.capture.UVCCamera
+          init_args:
+            device: /dev/video2 # CHANGE_ME
+            width: 640
+            height: 480
+            fps: 30
 
   fps: 30.0
 
@@ -71,32 +73,10 @@ runtime:
     #   mode: connect
     #   connect_addr: "127.0.0.1:9876"
     # and start ``rerun`` separately.
-    #
-    # Cameras are declared again here so the callback can subscribe to the
-    # same shared-memory streams as the runtime. SharedCamera matches
-    # publishers by ``camera_type`` + ``camera_kwargs``, so keep these blocks
-    # in sync with the runtime ``cameras:`` section above.
+    # Camera frames come from each tick's ``TickEvent.camera_frames`` (same
+    # values the action source saw); no separate camera wiring on this callback.
     - class_path: physicalai.runtime.RerunCallback
       init_args:
-        cameras:
-          overhead:
-            class_path: physicalai.capture.SharedCamera
-            init_args:
-              camera_type: uvc
-              camera_kwargs:
-                device: /dev/video0 # CHANGE_ME: same as overhead camera above
-                width: 640
-                height: 480
-                fps: 30
-          gripper:
-            class_path: physicalai.capture.SharedCamera
-            init_args:
-              camera_type: uvc
-              camera_kwargs:
-                device: /dev/video2 # CHANGE_ME: same as gripper camera above
-                width: 640
-                height: 480
-                fps: 30
         mode: spawn
         log_images: true
         image_decimation: 1 # log every Nth frame; raise to reduce viewer load

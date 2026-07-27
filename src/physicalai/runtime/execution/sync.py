@@ -8,6 +8,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, cast
 
+from physicalai.config import export_config
 from physicalai.runtime.execution.base import NOT_STARTED, Execution
 
 if TYPE_CHECKING:
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
     from physicalai.runtime.execution.queue import ActionQueue, ChunkedActionQueue
 
 
+@export_config(class_path="physicalai.runtime.SyncExecution")
 class SyncExecution(Execution):
     """Synchronous inference in the control thread."""
 

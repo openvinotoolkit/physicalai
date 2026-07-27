@@ -8,10 +8,13 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
+from physicalai.config import export_config
+
 if TYPE_CHECKING:
     from physicalai.runtime.events import LifecycleEvent, TickEvent
 
 
+@export_config(class_path="physicalai.runtime.ConsoleCallback")
 class ConsoleCallback:
     """Periodic one-line summary to stdout, throttled by step count.
 

@@ -14,9 +14,23 @@ These rules apply when writing, editing, or reviewing code under `src/physicalai
        raise ValueError(f"Path escapes base directory: {user_path!r}")
    ```
 
-4. No arbitrary `class_path` import from untrusted manifests or YAML. `instantiate_component` in `inference/component_factory.py` resolves `class_path` via `ComponentRegistry` and `importlib`. Only register trusted short names; treat manifest `class_path` values as untrusted unless the export directory is trusted. Prefer registered `type` names for built-ins.
+4. No arbitrary `class_path` import from untrusted manifests, YAML, or peer
+   payloads. `instantiate_component` in `inference/component_factory.py`
+   resolves `class_path` via `ComponentRegistry` and `importlib`. Only register
+   trusted short names; treat manifest `class_path` values as untrusted unless
+   the export directory is trusted. Prefer registered `type` names for
+   built-ins. `physicalai.config.instantiate` is a separate trusted-local /
+   parent→child-only construction boundary: never pass robot/camera network
+   metadata, Zenoh payloads, shared-memory control requests, or other
+   untrusted peer data into it. Camera reconfigure requests may carry only
+   explicitly allowlisted scalar settings; the publisher must merge them into
+   its trusted startup recipe without accepting a peer-selected `class_path`.
 
-5. Enforce component nesting limits. `_MAX_COMPONENT_DEPTH` in `component_factory.py` caps recursive manifest/YAML instantiation — do not raise or bypass without a security review.
+5. Enforce component nesting limits. `_MAX_COMPONENT_DEPTH` in
+   `component_factory.py` caps recursive manifest/YAML instantiation;
+   `_MAX_CONFIG_DEPTH` in `physicalai.config` caps recursive
+   `to_config` / `instantiate` trees — do not raise or bypass either without a
+   security review.
 
 6. Never use `pickle`, `eval()`, `exec()`, `joblib`, `dill`, or `cloudpickle` on untrusted data. Prefer `json` for structured metadata, `safetensors` for weights, and `numpy.load(..., allow_pickle=False)` for arrays.
 

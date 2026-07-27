@@ -31,9 +31,10 @@ Write a runtime configuration file.
 # runtime.yaml
 runtime:
   robot:
-    class_path: physicalai.robot.so101.SO101
+    class_path: physicalai.robot.SO101
     init_args:
       port: /dev/ttyACM0
+      calibration: ./calibration.json
   action_source:
     class_path: physicalai.runtime.PolicySource
     init_args:

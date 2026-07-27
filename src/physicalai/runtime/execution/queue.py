@@ -11,6 +11,7 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 
+from physicalai.config import export_config
 from physicalai.runtime.smoothers import ChunkSmoother, ReplaceSmoother
 
 
@@ -63,6 +64,7 @@ class ActionQueue(Protocol):
         ...
 
 
+@export_config(class_path="physicalai.runtime.ChunkedActionQueue")
 class ChunkedActionQueue:
     """Thread-safe action queue with chunk smoothing."""
 

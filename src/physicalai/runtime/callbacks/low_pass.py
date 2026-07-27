@@ -7,10 +7,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from physicalai.config import export_config
+
 if TYPE_CHECKING:
     import numpy as np
 
 
+@export_config(class_path="physicalai.runtime.LowPassFilterCallback")
 class LowPassFilterCallback:
     """Stateful low-pass filter (Exponential Moving Average) callback for smooth actions.
 

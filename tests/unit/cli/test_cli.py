@@ -249,6 +249,41 @@ class TestRunParser:
         assert cfg.runtime.robot.class_path == "physicalai.robot.SharedRobot"
         assert cfg.runtime.action_source.init_args.leader.class_path == "physicalai.robot.SharedRobot"
 
+    def test_config_file_accepts_bare_component_export(self, tmp_path: Path) -> None:
+        cfg_file = tmp_path / "export.yaml"
+        cfg_file.write_text(
+            "class_path: physicalai.runtime.RobotRuntime\n"
+            "init_args:\n"
+            "  fps: 30\n"
+            "  robot:\n"
+            f"    class_path: {_FAKE_ROBOT}\n"
+            "    init_args:\n"
+            "      port: /dev/null\n"
+            "  action_source:\n"
+            f"    class_path: {_POLICY_SOURCE}\n"
+            "    init_args:\n"
+            "      model:\n"
+            f"        class_path: {_REAL_MODEL}\n"
+            "        init_args:\n"
+            "          export_dir: /tmp/fake\n"
+            "      execution:\n"
+            f"        class_path: {_REAL_SYNC}\n",
+        )
+        for argv in ([f"--config={cfg_file}"], ["--config", str(cfg_file)]):
+            parser = run_module.build_parser()
+            cfg = parser.parse_args(argv)
+            assert cfg.runtime.fps == 30
+            assert cfg.runtime.robot.class_path == _FAKE_ROBOT
+            assert cfg.runtime.action_source.class_path == _POLICY_SOURCE
+
+    def test_bare_export_foreign_class_path_errors(self, tmp_path: Path) -> None:
+        cfg_file = tmp_path / "foreign.yaml"
+        cfg_file.write_text(f"class_path: {_REAL_SYNC}\ninit_args: {{}}\n")
+        parser = run_module.build_parser()
+        with pytest.raises(SystemExit) as exc:
+            parser.parse_args([f"--config={cfg_file}"])
+        assert exc.value.code != 0
+
     def test_cli_overrides_config_file(self, tmp_path: Path) -> None:
         cfg_file = tmp_path / "runtime.yaml"
         cfg_file.write_text(

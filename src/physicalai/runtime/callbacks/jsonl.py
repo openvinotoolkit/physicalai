@@ -9,12 +9,15 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from physicalai.config import export_config
+
 if TYPE_CHECKING:
     import numpy as np
 
     from physicalai.runtime.events import InferenceEvent, LifecycleEvent, TickEvent
 
 
+@export_config(class_path="physicalai.runtime.JsonlCallback")
 class JsonlCallback:
     """Append-only JSONL recording. Numpy arrays converted to lists."""
 

@@ -13,12 +13,15 @@ import logging
 import threading
 from typing import TYPE_CHECKING
 
+from physicalai.config import export_config
+
 if TYPE_CHECKING:
     import numpy as np
 
 logger = logging.getLogger(__name__)
 
 
+@export_config(class_path="physicalai.runtime.RTCActionQueue")
 class RTCActionQueue:
     """Thread-safe dual-track action queue for RTC inference.
 

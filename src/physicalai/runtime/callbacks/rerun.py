@@ -10,6 +10,8 @@ import logging
 from collections import deque
 from typing import TYPE_CHECKING, Any, Literal
 
+from physicalai.config import export_config
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -21,6 +23,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@export_config(class_path="physicalai.runtime.RerunCallback")
 class RerunCallback:
     """In-process Rerun logging for runtime visualization.
 

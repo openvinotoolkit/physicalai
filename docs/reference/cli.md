@@ -34,11 +34,13 @@ with runtime:
 physicalai robot serve --config examples/so101/serve.yaml
 ```
 
-The flat YAML fields are `name`, `robot_class`, optional `robot_kwargs`, optional
-`allow_remote` (default `false`), and optional positive `rate_hz` (default 100 Hz).
-Direct CLI arguments use the same names, including nested constructor values such as
-`--robot_kwargs.port /dev/ttyACM0`. Serving stays in the foreground until SIGINT or
-SIGTERM and returns nonzero for startup, loop, repeated-read, or disconnect failures.
+The YAML fields are `name`, required `robot` (a ComponentConfig with
+`class_path` + `init_args`), optional `allow_remote` (default `false`), and
+optional positive `rate_hz` (default 100 Hz). Direct CLI arguments use the same
+names, including nested robot constructor values such as
+`--robot.init_args.port /dev/ttyACM0`. Flat `robot_class` / `robot_kwargs` are
+unsupported. Serving stays in the foreground until SIGINT or SIGTERM and returns
+nonzero for startup, loop, repeated-read, or disconnect failures.
 
 Use `--verbose` to include driver construction, lock acquisition, initial observation,
 endpoint declaration, and cleanup details.
