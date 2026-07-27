@@ -208,6 +208,7 @@ markers = [
     "integration: marks tests as integration tests",
     "v4l2: marks tests requiring V4L2 mocking (Linux only)",
     "transport: marks tests requiring iceoryx2",
+    "ov_smoke: OpenVINO smoke tests — three-stage contract (load, tokenizer, predict) against published HF exports",
 ]
 
 [tool.coverage.report]
