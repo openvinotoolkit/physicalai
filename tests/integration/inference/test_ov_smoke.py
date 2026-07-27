@@ -38,19 +38,17 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 import pytest
 
+from physicalai.inference.adapters import OpenVINOAdapter
 from physicalai.inference.constants import TASK, TOKENIZED_PROMPT, TOKENIZED_PROMPT_MASK
 from physicalai.inference.manifest import Manifest
 from physicalai.inference.model import InferenceModel
 from physicalai.inference.preprocessors import OVTokenizer
 from physicalai.inference.utils._hub import download_from_hub
-
-if TYPE_CHECKING:
-    pass
 
 log = logging.getLogger(__name__)
 
@@ -213,6 +211,11 @@ def test_load(all_exports: tuple[Path, _ModelSpec]) -> None:
     # Bypass preprocessors/postprocessors — isolates adapter.load() from the tokenizer stage.
     model = InferenceModel(export_dir=export_dir, device="CPU", preprocessors=[], postprocessors=[])
 
+    # Cast to OpenVINOAdapter so static type checkers (pyrefly) can see compiled_model.
+    # The backend is always openvino for these exports so this assertion always holds.
+    assert isinstance(model.adapter, OpenVINOAdapter), (
+        f"[{spec.short_id}] expected OpenVINOAdapter, got {type(model.adapter).__name__}"
+    )
     assert model.adapter.compiled_model is not None, (
         f"[{spec.short_id}] compiled_model is None after load — "
         "read_model or compile_model failed silently"
@@ -260,6 +263,7 @@ def test_tokenizer(tokenizer_exports: tuple[Path, _ModelSpec]) -> None:
     tokenizer = OVTokenizer(tokenizer_path)
 
     # Run a single tokenisation to confirm the loaded model produces valid outputs.
+    # pyrefly: ignore [bad-argument-type]
     outputs = tokenizer({TASK: ["pick up the red block and place it in the bowl"]})
 
     assert TOKENIZED_PROMPT in outputs, (

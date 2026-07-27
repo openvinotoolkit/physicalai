@@ -67,7 +67,7 @@ class OVTokenizer(Preprocessor):
 
         adapter_output = self._adapter.predict({self._input_name: batch_tasks})
         outputs[TOKENIZED_PROMPT] = adapter_output["input_ids"]
-        outputs[TOKENIZED_PROMPT_MASK] = adapter_output["attention_mask"].astype(np.bool)
+        outputs[TOKENIZED_PROMPT_MASK] = adapter_output["attention_mask"].astype(np.bool_)
 
         return outputs
 
