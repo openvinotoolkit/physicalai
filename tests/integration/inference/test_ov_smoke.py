@@ -123,11 +123,15 @@ def _pkg_version(pkg: str) -> str:
 
 
 def _find_tokenizer_artifact(export_dir: Path) -> Path | None:
-    """Return the absolute path to the OVTokenizer artifact in *export_dir*.
+    """Return the path to the OVTokenizer artifact in *export_dir*.
 
-    Parses ``manifest.json`` and looks for a preprocessor with
-    ``type == "ov_tokenizer"`` or a class_path containing ``OVTokenizer``.
-    Returns ``None`` when no tokenizer preprocessor is declared.
+    Uses os.path.normpath (not Path.resolve) deliberately — same reasoning as
+    component_factory._resolve_artifact_path: HuggingFace Hub snapshot dirs
+    contain symlinks that point into a sibling blobs/ store.  Resolving the
+    symlink would give the raw blob path which has no `.bin` sibling, causing
+    OpenVINO's read_model to fail with "Empty weights data".  normpath keeps
+    the path inside the snapshot dir where the `.xml` and `.bin` symlinks
+    coexist.
     """
     manifest = Manifest.load(export_dir)
     for spec in manifest.model.preprocessors:
@@ -136,7 +140,7 @@ def _find_tokenizer_artifact(export_dir: Path) -> Path | None:
             continue
         artifact = spec.flat_params.get("artifact") or spec.init_args.get("artifact")
         if artifact:
-            return (export_dir / artifact).resolve()
+            return Path(os.path.normpath(export_dir / artifact))
     return None
 
 
