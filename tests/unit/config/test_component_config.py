@@ -7,6 +7,7 @@ from __future__ import annotations
 import inspect
 import json
 import math
+import sys
 from collections.abc import Mapping
 from enum import Enum
 from pathlib import Path
@@ -24,6 +25,7 @@ from physicalai.config import (
     import_dotted_path,
     instantiate,
     is_config_exportable,
+    normalize_component_config,
     to_config,
 )
 
@@ -251,6 +253,60 @@ class InheritsAliasedExport(_HiddenExport):
 class TestImportDottedPath:
     def test_resolves_nested_class(self) -> None:
         assert import_dotted_path("tests.unit.config.test_component_config.Point") is Point
+
+    def test_real_import_failures_are_not_masked(self, tmp_path: Path) -> None:
+        pkg = tmp_path / "mask_pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+        (pkg / "broken.py").write_text(
+            "import totally_missing_dep_xyz\n\nclass Robot:\n    pass\n",
+            encoding="utf-8",
+        )
+        (pkg / "raises_ie.py").write_text(
+            "raise ImportError('boom from module body')\n",
+            encoding="utf-8",
+        )
+        sys.path.insert(0, str(tmp_path))
+        try:
+            with pytest.raises(ModuleNotFoundError, match="totally_missing_dep_xyz"):
+                import_dotted_path("mask_pkg.broken.Robot")
+            with pytest.raises(ImportError, match="boom from module body"):
+                import_dotted_path("mask_pkg.raises_ie.Robot")
+        finally:
+            sys.path.remove(str(tmp_path))
+            sys.modules.pop("mask_pkg.broken", None)
+            sys.modules.pop("mask_pkg.raises_ie", None)
+            sys.modules.pop("mask_pkg", None)
+
+    def test_unimportable_prefix_raises(self) -> None:
+        with pytest.raises(ValueError, match="could not import"):
+            import_dotted_path("totally.unknown.module.Cls")
+
+
+class TestNormalizeComponentConfig:
+    def test_rejects_nan(self) -> None:
+        with pytest.raises(ValueError, match="JSON-serializable"):
+            normalize_component_config(
+                {"class_path": f"{__name__}.Point", "init_args": {"x": math.nan}},
+                component_key="robot",
+                class_label="robot_class",
+            )
+
+    def test_rejects_infinity(self) -> None:
+        with pytest.raises(ValueError, match="JSON-serializable"):
+            normalize_component_config(
+                {"class_path": f"{__name__}.Point", "init_args": {"x": float("inf")}},
+                component_key="camera",
+                class_label="camera_class",
+            )
+
+    def test_rejects_non_serializable_object(self) -> None:
+        with pytest.raises(ValueError, match="JSON-serializable"):
+            normalize_component_config(
+                {"class_path": f"{__name__}.Point", "init_args": {"x": object()}},
+                component_key="robot",
+                class_label="robot_class",
+            )
 
 
 class TestNormalizeAndInstantiate:

@@ -119,8 +119,8 @@ def normalize_component_config(
         raise ValueError(msg)
     init_args = validated["init_args"]
     try:
-        json.dumps({"class_path": class_path, "init_args": init_args})
-    except TypeError as exc:
+        json.dumps({"class_path": class_path, "init_args": init_args}, allow_nan=False)
+    except (TypeError, ValueError) as exc:
         msg = f"{component_key}.init_args must be JSON-serializable{json_hint}: {exc}"
         raise ValueError(msg) from exc
     return {"class_path": class_path, "init_args": dict(init_args)}
