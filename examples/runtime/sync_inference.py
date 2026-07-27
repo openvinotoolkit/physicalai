@@ -30,8 +30,10 @@ from __future__ import annotations
 
 import argparse
 import signal
+from pathlib import Path
 
 from physicalai.capture import select_cameras_interactive
+from physicalai.config import save_yaml, to_config
 from physicalai.inference import InferenceModel
 from physicalai.runtime import (
     ChunkedActionQueue,
@@ -87,6 +89,11 @@ def main() -> None:
     rt_group.add_argument("--duration-s", type=float, default=60.0, help="Duration in seconds")
     rt_group.add_argument("--task", type=str, default=None, help="Task string for the model (e.g. 'pick up the can')")
     rt_group.add_argument("--request-threshold", type=float, default=0.5, help="Request new inference when queue drops below this fraction of chunk_size (default: 0.75 = trigger when 75%% of actions remain)")
+    rt_group.add_argument(
+        "--export-config",
+        type=Path,
+        help="Save the constructed runtime as YAML and exit before connecting hardware.",
+    )
 
     # Rerun
     rr_group = parser.add_argument_group("rerun")
@@ -135,6 +142,11 @@ def main() -> None:
         fps=args.fps,
         callbacks=callbacks,
     )
+
+    if args.export_config:
+        save_yaml(to_config(runtime), args.export_config)
+        print(f"Saved runtime config to {args.export_config}")
+        return
 
     with runtime:
         print(f"Running SYNC at {args.fps} fps for {args.duration_s}s...")

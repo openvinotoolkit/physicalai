@@ -40,8 +40,10 @@ from __future__ import annotations
 
 import argparse
 import signal
+from pathlib import Path
 
 from physicalai.capture import select_cameras_interactive
+from physicalai.config import save_yaml, to_config
 from physicalai.inference import InferenceModel
 from physicalai.runtime import (
     AsyncExecution,
@@ -102,6 +104,11 @@ def main() -> None:
     rt_group.add_argument("--shared-camera", action="store_true", help="Use shared memory cameras (iceoryx2) — faster but incompatible with debugger")
     rt_group.add_argument("--request-threshold", type=float, default=0.75, help="Request new inference when queue drops below this fraction of chunk_size (default: 0.75 = trigger when 75%% of actions remain)")
     rt_group.add_argument("--lerp-frames", type=int, default=3, help="LerpSmoother blend duration in frames (default: 3)")
+    rt_group.add_argument(
+        "--export-config",
+        type=Path,
+        help="Save the constructed runtime as YAML and exit before connecting hardware.",
+    )
 
     # Rerun
     rr_group = parser.add_argument_group("rerun")
@@ -157,6 +164,11 @@ def main() -> None:
         fps=args.fps,
         callbacks=callbacks,
     )
+
+    if args.export_config:
+        save_yaml(to_config(runtime), args.export_config)
+        print(f"Saved runtime config to {args.export_config}")
+        return
 
     with runtime:
         for name, cam in cameras.items():

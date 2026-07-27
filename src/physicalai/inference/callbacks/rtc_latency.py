@@ -17,9 +17,11 @@ from typing import Any
 import numpy as np
 from typing_extensions import override
 
+from physicalai.config import export_config
 from physicalai.inference.callbacks.base import Callback
 
 
+@export_config(class_path="physicalai.inference.callbacks.RTCLatencyTracker")
 class RTCLatencyTracker(Callback):
     """Track inference latency for RTC delay computation.
 

@@ -35,8 +35,10 @@ from __future__ import annotations
 
 import argparse
 import signal
+from pathlib import Path
 
 from physicalai.capture import select_cameras_interactive
+from physicalai.config import save_yaml, to_config
 from physicalai.inference import InferenceModel
 from physicalai.inference.callbacks import RTCLatencyTracker
 from physicalai.runtime import (
@@ -94,6 +96,11 @@ def main() -> None:
     rt_group.add_argument("--duration-s", type=float, default=None, help="Run duration in seconds (default: run indefinitely)")
     rt_group.add_argument("--task", type=str, default=None, help="Task string for the model (e.g. 'pick up the can')")
     rt_group.add_argument("--shared-camera", action="store_true", help="Use shared memory cameras (iceoryx2) — faster but incompatible with debugger")
+    rt_group.add_argument(
+        "--export-config",
+        type=Path,
+        help="Save the constructed runtime as YAML and exit before connecting hardware.",
+    )
 
     # RTC parameters
     rtc_group = parser.add_argument_group("rtc")
@@ -175,6 +182,11 @@ def main() -> None:
         fps=args.fps,
         callbacks=callbacks,
     )
+
+    if args.export_config:
+        save_yaml(to_config(runtime), args.export_config)
+        print(f"Saved runtime config to {args.export_config}")
+        return
 
     with runtime:
         for name, cam in cameras.items():
