@@ -53,7 +53,7 @@ from physicalai.inference.utils._hub import download_from_hub
 log = logging.getLogger(__name__)
 
 # All tests in this module carry both markers.
-pytestmark = [pytest.mark.ov_smoke, pytest.mark.integration]
+pytestmark = [pytest.mark.ov_smoke, pytest.mark.integration, pytest.mark.requires_download]
 
 # Skip the entire module when OpenVINO is not installed — these tests require
 # the real runtime, not a mock.
