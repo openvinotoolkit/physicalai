@@ -16,11 +16,14 @@ from .conftest import FAKE_ROBOT_CLASS, requires_zenoh
 from .fake import FakeRobot
 
 
-def _owner(unique_id: str, **robot_kwargs: object) -> RobotOwner:
+def _fake_robot(**init_args: object) -> dict[str, object]:
+    return {"class_path": FAKE_ROBOT_CLASS, "init_args": dict(init_args)}
+
+
+def _owner(unique_id: str, **robot_init_args: object) -> RobotOwner:
     config = RobotOwnerConfig(
         name=unique_id.replace("/", "-"),
-        robot_class=FAKE_ROBOT_CLASS,
-        robot_kwargs={"device_ids": [f"fake:{unique_id}"], **robot_kwargs},
+        robot=_fake_robot(device_ids=[f"fake:{unique_id}"], **robot_init_args),
         idle_timeout=2.0,
     )
     return RobotOwner(config)
@@ -33,7 +36,7 @@ def test_startup_failure_after_connect_disconnects_and_releases_locks(
     name = unique_id.replace("/", "-")
     device_id = f"fake:{unique_id}"
     driver = FakeRobot(device_ids=(device_id,), fail_observation=True)
-    config = RobotOwnerConfig(name=name, robot_class=FAKE_ROBOT_CLASS)
+    config = RobotOwnerConfig(name=name, robot=_fake_robot())
     monkeypatch.setattr(RobotOwnerConfig, "build", lambda _self: driver)
 
     with pytest.raises(_StartupError, match="fake observation failure") as exc_info:
@@ -47,7 +50,7 @@ def test_startup_failure_after_connect_disconnects_and_releases_locks(
 
 @pytest.mark.parametrize("allow_remote", [False, True])
 def test_metadata_redacts_device_ids_for_remote_owner(allow_remote: bool) -> None:
-    config = RobotOwnerConfig(name="left-arm", robot_class=FAKE_ROBOT_CLASS, allow_remote=allow_remote)
+    config = RobotOwnerConfig(name="left-arm", robot=_fake_robot(), allow_remote=allow_remote)
     metadata = _build_metadata(
         config,
         FakeRobot(device_ids=("serial:ttyUSB0",)),
@@ -56,6 +59,7 @@ def test_metadata_redacts_device_ids_for_remote_owner(allow_remote: bool) -> Non
     )
 
     assert metadata["host"]
+    assert metadata["robot_class"] == FAKE_ROBOT_CLASS
     if allow_remote:
         assert "device_ids" not in metadata
     else:
@@ -72,7 +76,7 @@ def test_endpoint_collision_error_identifies_endpoint_and_remediation(
     bind_host: str,
 ) -> None:
     name = unique_id.replace("/", "-")
-    config = RobotOwnerConfig(name=name, robot_class=FAKE_ROBOT_CLASS, allow_remote=allow_remote)
+    config = RobotOwnerConfig(name=name, robot=_fake_robot(), allow_remote=allow_remote)
 
     def _fail_open_session(*_args: object, **_kwargs: object) -> None:
         raise OSError("address already in use")

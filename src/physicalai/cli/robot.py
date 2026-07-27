@@ -17,6 +17,7 @@ from jsonargparse import ActionConfigFile, ArgumentParser
 from loguru import logger
 
 from physicalai.cli._spec import SubcommandSpec  # noqa: PLC2701
+from physicalai.config import ComponentConfigError
 from physicalai.robot.errors import RobotTransportError
 from physicalai.robot.transport import (
     DEFAULT_RATE_HZ,
@@ -55,12 +56,11 @@ def _build_serve_parser() -> ArgumentParser:
     parser = ArgumentParser(description=_SERVE_HELP)
     parser.add_argument("--config", action=ActionConfigFile, help="YAML/JSON config file.")
     parser.add_argument("--name", type=str, required=True, help="Robot logical name.")
-    parser.add_argument("--robot_class", type=str, required=True, help="Trusted dotted path to the driver class.")
     parser.add_argument(
-        "--robot_kwargs",
+        "--robot",
         type=dict,
-        default=None,
-        help="JSON-serializable driver constructor arguments.",
+        required=True,
+        help="Trusted robot ComponentConfig (class_path + init_args).",
     )
     parser.add_argument(
         "--allow_remote",
@@ -133,6 +133,45 @@ def _log_serve_start(config: RobotOwnerConfig) -> None:
     logger.info(f"Starting robot {config.name!r} using {config.robot_class} [{mode_tag}]")
 
 
+def _mapping_from_cfg(value: object) -> dict[str, object]:
+    """Convert a jsonargparse dict/Namespace value to a plain dict.
+
+    Returns:
+        A shallow ``dict`` copy of *value*.
+
+    Raises:
+        TypeError: If *value* is not ``None``, a ``dict``, or a Namespace-like
+            object with ``as_dict()``.
+    """
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return dict(value)
+    as_dict = getattr(value, "as_dict", None)
+    if callable(as_dict):
+        converted = as_dict()
+        if isinstance(converted, dict):
+            return dict(converted)
+    msg = f"expected a mapping, got {type(value).__name__}"
+    raise TypeError(msg)
+
+
+def _robot_config_from_serve_cfg(cfg: Namespace) -> dict[str, object]:
+    """Require ``--robot`` ComponentConfig for foreground serve.
+
+    Returns:
+        A ComponentConfig mapping for :class:`RobotOwnerConfig`.
+
+    Raises:
+        ValueError: If ``--robot`` is missing.
+    """
+    robot = getattr(cfg, "robot", None)
+    if robot is None:
+        msg = "robot serve requires --robot ComponentConfig (class_path + init_args)"
+        raise ValueError(msg)
+    return _mapping_from_cfg(robot)
+
+
 def _format_duration(seconds: float) -> str:
     """Format elapsed seconds as ``HH:MM:SS``.
 
@@ -174,13 +213,12 @@ def serve(cfg: Namespace) -> int:
     try:
         config = RobotOwnerConfig(
             name=cfg.name,
-            robot_class=cfg.robot_class,
-            robot_kwargs=dict(cfg.robot_kwargs or {}),
+            robot=_robot_config_from_serve_cfg(cfg),
             allow_remote=cfg.allow_remote,
             rate_hz=cfg.rate_hz,
             idle_timeout=None,
         )
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, ComponentConfigError) as exc:
         logger.error(f"Invalid robot configuration: {exc}")
         return 1
 

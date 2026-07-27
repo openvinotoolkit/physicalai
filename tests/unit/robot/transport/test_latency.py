@@ -40,8 +40,10 @@ class TestActionLatency:
     def robot(self, unique_id: str) -> Generator[SharedRobot, None, None]:
         robot = SharedRobot(
             unique_id.replace("/", "-"),
-            robot_class=FAKE_ROBOT_CLASS,
-            robot_kwargs={"device_ids": [f"fake:{unique_id}"]},
+            robot={
+                "class_path": FAKE_ROBOT_CLASS,
+                "init_args": {"device_ids": [f"fake:{unique_id}"]},
+            },
             rate_hz=_RATE_HZ,
             idle_timeout=3.0,
         )

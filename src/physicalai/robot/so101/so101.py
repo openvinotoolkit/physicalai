@@ -41,6 +41,7 @@ from scservo_sdk import (
     PortHandler,
 )
 
+from physicalai.config import export_config
 from physicalai.robot import Robot
 from physicalai.robot.device_ids import device_id_from_serial_port
 from physicalai.robot.so101.calibration import SO101Calibration
@@ -93,6 +94,7 @@ class SO101Observation:
         return self.joint_positions
 
 
+@export_config(class_path="physicalai.robot.SO101")
 class SO101(Robot):
     """Driver for the SO-101 robot arm (6-DOF, Feetech STS3215 servos).
 
@@ -119,12 +121,14 @@ class SO101(Robot):
     def __init__(
         self,
         port: str,
-        calibration: SO101Calibration | str | Path | dict | None,
+        # Defaulted so the required-arg is jsonargparse-loadable when None
+        # (uncalibrated export); the guard below still enforces explicit intent.
+        calibration: SO101Calibration | str | Path | dict | None = None,
         baudrate: int = 1_000_000,
         role: Literal["leader", "follower"] = "follower",
         unit: SO101Unit = "normalized",
         *,
-        _allow_uncalibrated: bool = False,  # must be passed by keyword
+        allow_uncalibrated: bool = False,
     ) -> None:
         """Initialize the SO-101 driver (does not open the connection).
 
@@ -132,7 +136,8 @@ class SO101(Robot):
 
         * ``SO101Calibration`` — use an already loaded calibration object.
         * ``str | Path`` — load LeRobot calibration JSON from disk.
-        * ``None`` — only allowed via :meth:`SO101.uncalibrated` for raw ticks.
+        * ``None`` — raw-ticks mode; requires ``allow_uncalibrated=True``
+          (see :meth:`SO101.uncalibrated`).
 
         Raises:
             ValueError: If ``role`` is not ``"leader"`` or ``"follower"``.
@@ -148,7 +153,7 @@ class SO101(Robot):
         self._unit: SO101Unit = unit
 
         # Calibration -------------------------------------------------------
-        if calibration is None and not _allow_uncalibrated:
+        if calibration is None and not allow_uncalibrated:
             msg = (
                 "calibration is required for SO101. "
                 "Pass a calibration object/path, or use SO101.uncalibrated(...) "
@@ -202,7 +207,7 @@ class SO101(Robot):
             baudrate=baudrate,
             role=role,
             unit=unit,
-            _allow_uncalibrated=True,
+            allow_uncalibrated=True,
         )
 
     @property

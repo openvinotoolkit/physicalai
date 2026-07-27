@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
+from physicalai.config import ComponentConfigError
 from physicalai.robot.errors import RobotTransportError
 from physicalai.robot.interface import Robot
 from physicalai.robot.transport._codec import (  # noqa: PLC2701
@@ -168,7 +169,7 @@ def _build_metadata(
     """Assemble the ``/metadata`` record advertised by the queryable.
 
     Args:
-        config: Worker config (for name / robot_class).
+        config: Worker config (for name / public ``robot.class_path``).
         driver: Connected driver (for joint names).
         device_ids: This owner's sorted, deduplicated device ids. Omitted
             from advertised metadata when remote transport is enabled.
@@ -183,7 +184,9 @@ def _build_metadata(
     metadata: dict[str, Any] = {
         "protocol_version": ROBOT_TRANSPORT_PROTOCOL_VERSION,
         "name": config.name,
-        "robot_class": config.robot_class,
+        # Network key stays ``robot_class`` (protocol version unchanged); value is
+        # the normalized public ComponentConfig class_path.
+        "robot_class": config.robot["class_path"],
         "host": default_host(),
         "joint_names": joint_names,
         "num_joints": len(joint_names),
@@ -436,15 +439,16 @@ def _startup(config: RobotOwnerConfig) -> _Endpoints:
         _StartupError: Naming the failure phase, for the caller to report
             via :func:`signal_error`.
     """
+    class_path = config.robot["class_path"]
     try:
-        logger.trace(f"Constructing robot driver {config.robot_class!r}")
+        logger.trace(f"Constructing robot driver {class_path!r}")
         driver = config.build()
     except Exception as exc:
-        msg = f"failed to construct {config.robot_class!r}: {exc}"
+        msg = f"failed to construct {class_path!r}: {exc}"
         raise _StartupError(msg, phase="construction_failed") from exc
 
     if not isinstance(driver, Robot):
-        msg = f"{config.robot_class!r} does not satisfy the Robot protocol"
+        msg = f"{class_path!r} does not satisfy the Robot protocol"
         raise _StartupError(msg, phase="construction_failed")
 
     device_ids = tuple(sorted(set(driver.device_ids)))
@@ -558,7 +562,7 @@ def main() -> int:
     sys.stdin.close()
     try:
         config = RobotOwnerConfig.from_json_dict(json.loads(raw))
-    except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
+    except (json.JSONDecodeError, ValueError, KeyError, TypeError, ComponentConfigError) as exc:
         signal_error(f"invalid worker config: {exc}", phase="invalid_config")
         return 1
 

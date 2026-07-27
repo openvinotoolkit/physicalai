@@ -4,7 +4,7 @@
 while any number of other processes read its state and send actions over
 [Zenoh](https://zenoh.io/). It satisfies the same `Robot` protocol as a
 direct driver, so it is a drop-in replacement anywhere a robot is expected
-(including `PolicyRuntime`).
+(including `RobotRuntime`).
 
 ## Install
 
@@ -17,21 +17,23 @@ pip install "physicalai[transport]"
 Every `SharedRobot` has a required, caller-chosen logical `name` — it keys
 the Zenoh topics directly. The first `SharedRobot` constructed for a given
 `name` that finds no existing owner spawns one (in a detached subprocess);
-later instances (same or different process, same `name`) attach to it:
+later instances (same or different process, same `name`) attach to it.
+
+Construction uses `robot=` or `from_config()`. Prefer `from_config()` when you
+already have a recipe. A disconnected `@export_config` driver can be passed
+directly to the constructor or exported explicitly:
 
 ```python
 import numpy as np
-from physicalai.robot import SharedRobot
-from physicalai.robot.so101 import SO101
+from physicalai.config import to_config
+from physicalai.robot import SO101, SharedRobot
 
-robot = SharedRobot(
-    "left-arm",
-    robot_class=SO101,
-    robot_kwargs={
-        "port": "/dev/ttyUSB0",
-        "calibration": "~/.cache/calibration/so101.json",  # a path — kwargs must be serializable
-    },
+driver = SO101(
+    port="/dev/ttyUSB0",
+    calibration="~/.cache/calibration/so101.json",  # path stays relative/as given
 )
+robot = SharedRobot.from_config(to_config(driver), name="left-arm")
+# or: SharedRobot("left-arm", robot={"class_path": "physicalai.robot.SO101", "init_args": {...}})
 robot.connect()
 
 obs = robot.get_observation()          # pull latest state, non-blocking
@@ -40,10 +42,9 @@ robot.send_action(np.asarray(obs.joint_positions), goal_time=0.1)
 robot.disconnect()                     # detaches; the owner keeps running
 ```
 
-`robot_class` can be the class object (normalized to its dotted import path)
-or the path itself, e.g. `robot_class="physicalai.robot.so101.SO101"` — any
-importable class works, including third-party plugin robots, with no
-registry to update.
+Any importable `@export_config` robot class works (including third-party
+plugins) — pass its public `class_path` + `init_args`; there is no flat
+`robot_class` / `robot_kwargs` API.
 
 ## Serve a robot in the foreground
 
@@ -145,10 +146,12 @@ loopback port from `name`.
 Opt into cross-host reachability explicitly when you need it:
 
 ```python
-robot = SharedRobot(
-    "left-arm",
-    robot_class=SO101,
-    robot_kwargs={"port": "/dev/ttyUSB0", "calibration": "calibration.json"},
+robot = SharedRobot.from_config(
+    {
+        "class_path": "physicalai.robot.SO101",
+        "init_args": {"port": "/dev/ttyUSB0", "calibration": "calibration.json"},
+    },
+    name="left-arm",
     allow_remote=True,
 )
 ```

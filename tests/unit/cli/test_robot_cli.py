@@ -13,6 +13,7 @@ import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
 
 from loguru import logger
@@ -24,18 +25,28 @@ from physicalai.robot.transport._lock import acquire_locks
 
 from tests.unit.robot.transport.conftest import requires_zenoh
 
+if TYPE_CHECKING:
+    from jsonargparse import Namespace
 
-def _serve_cfg(**overrides: object) -> SimpleNamespace:
+
+def _ns(**values: object) -> Namespace:
+    # Duck-typed stand-in for the jsonargparse Namespace the CLI handlers accept.
+    return cast("Namespace", SimpleNamespace(**values))
+
+
+def _serve_cfg(**overrides: object) -> Namespace:
     values: dict[str, object] = {
         "name": "left-arm",
-        "robot_class": "tests.unit.robot.transport.fake.FakeRobot",
-        "robot_kwargs": {"port": "/dev/fake0"},
+        "robot": {
+            "class_path": "tests.unit.robot.transport.fake.FakeRobot",
+            "init_args": {"port": "/dev/fake0"},
+        },
         "allow_remote": False,
         "rate_hz": 100.0,
         "verbose": False,
     }
     values.update(overrides)
-    return SimpleNamespace(**values)
+    return _ns(**values)
 
 
 def test_serve_runs_owner_in_foreground_with_persistent_timeout(capsys: object) -> None:
@@ -57,9 +68,20 @@ def test_serve_runs_owner_in_foreground_with_persistent_timeout(capsys: object) 
     config = captured["config"]
     assert config.idle_timeout is None  # type: ignore[attr-defined]
     assert config.name == "left-arm"  # type: ignore[attr-defined]
+    assert config.robot == {  # type: ignore[attr-defined]
+        "class_path": "tests.unit.robot.transport.fake.FakeRobot",
+        "init_args": {"port": "/dev/fake0"},
+    }
     stderr = capsys.readouterr().err  # type: ignore[attr-defined]
     assert "unauthenticated" not in stderr
     assert "[local-only]" in stderr
+
+
+def test_serve_requires_robot_component_config(capsys: object) -> None:
+    with patch.object(robot_module, "run_owner") as run:
+        assert robot_module.serve(_serve_cfg(robot=None)) == 1
+    run.assert_not_called()
+    assert "requires --robot" in capsys.readouterr().err  # type: ignore[attr-defined]
 
 
 def test_serve_allow_remote_warns_and_tags_mode(capsys: object) -> None:
@@ -122,7 +144,7 @@ def test_discovery_json_is_sorted_and_clean(capsys: object) -> None:
         {"name": "z-arm", "host": "b", "robot_class": "untrusted.Z", "num_joints": 7},
         {"name": "a-arm", "host": "a", "robot_class": "untrusted.A", "num_joints": 6},
     ]
-    cfg = SimpleNamespace(timeout=1.0, allow_remote=False, json=True)
+    cfg = _ns(timeout=1.0, allow_remote=False, json=True)
     with patch.object(robot_module, "discover_robots", return_value=records):
         assert robot_module.discover(cfg) == 0
 
@@ -136,7 +158,7 @@ def test_discovery_human_output_is_table(capsys: object) -> None:
         {"name": "z-arm", "host": "b", "robot_class": "untrusted.Z", "num_joints": 7},
         {"name": "a-arm", "host": "a", "robot_class": "untrusted.A", "num_joints": 6},
     ]
-    cfg = SimpleNamespace(timeout=1.0, allow_remote=False, json=False)
+    cfg = _ns(timeout=1.0, allow_remote=False, json=False)
     with patch.object(robot_module, "discover_robots", return_value=records):
         assert robot_module.discover(cfg) == 0
 
@@ -194,7 +216,7 @@ def test_verbose_controls_trace_details(capsys: object) -> None:
 
 
 def test_empty_discovery_json_is_array(capsys: object) -> None:
-    cfg = SimpleNamespace(timeout=1.0, allow_remote=False, json=True)
+    cfg = _ns(timeout=1.0, allow_remote=False, json=True)
     with patch.object(robot_module, "discover_robots", return_value=[]):
         assert robot_module.discover(cfg) == 0
     assert capsys.readouterr().out == "[]\n"  # type: ignore[attr-defined]
@@ -203,13 +225,40 @@ def test_empty_discovery_json_is_array(capsys: object) -> None:
 def test_parser_does_not_expose_idle_timeout() -> None:
     parser = robot_module.build_parser()
     cfg = parser.parse_args(
-        ["serve", "--name", "left-arm", "--robot_class", "pkg.mod.Robot"],
+        [
+            "serve",
+            "--name",
+            "left-arm",
+            "--robot.class_path",
+            "pkg.mod.Robot",
+            "--robot.init_args",
+            "{}",
+        ],
     )
     assert not hasattr(cfg.serve, "idle_timeout")
+    assert not hasattr(cfg.serve, "robot_class")
+    assert not hasattr(cfg.serve, "robot_kwargs")
+
+
+def test_parser_accepts_robot_component_config() -> None:
+    parser = robot_module.build_parser()
+    cfg = parser.parse_args(
+        [
+            "serve",
+            "--name",
+            "left-arm",
+            "--robot.class_path",
+            "tests.unit.robot.transport.fake.FakeRobot",
+            "--robot.init_args",
+            '{"port": "/dev/fake0"}',
+        ],
+    )
+    assert cfg.serve.robot["class_path"] == "tests.unit.robot.transport.fake.FakeRobot"
+    assert cfg.serve.robot["init_args"]["port"] == "/dev/fake0"
 
 
 def test_discover_rejects_invalid_timeout(capsys: object) -> None:
-    cfg = SimpleNamespace(timeout=float("nan"), allow_remote=False, json=False)
+    cfg = _ns(timeout=float("nan"), allow_remote=False, json=False)
     with patch.object(robot_module, "discover_robots") as discover:
         assert robot_module.discover(cfg) == 1
     discover.assert_not_called()
@@ -231,12 +280,10 @@ def test_serve_process_sigterm_disconnects_and_releases_locks(tmp_path: Path) ->
             "serve",
             "--name",
             name,
-            "--robot_class",
+            "--robot.class_path",
             "tests.unit.robot.transport.fake.FakeRobot",
-            "--robot_kwargs.port",
-            port,
-            "--robot_kwargs.disconnect_marker",
-            str(marker),
+            "--robot.init_args",
+            json.dumps({"port": port, "disconnect_marker": str(marker)}),
         ],
         stderr=subprocess.PIPE,
         text=True,

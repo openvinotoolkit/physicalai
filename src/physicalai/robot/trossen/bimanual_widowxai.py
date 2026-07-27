@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from physicalai.config import export_config
 from physicalai.robot import Robot
 
 if TYPE_CHECKING:
@@ -58,6 +59,7 @@ class BimanualWidowXAIObservation:
         return self.joint_positions
 
 
+@export_config(class_path="physicalai.robot.BimanualWidowXAI")
 class BimanualWidowXAI(Robot):
     """Two-arm WidowX AI driver composing a left and right :class:`WidowXAI`.
 

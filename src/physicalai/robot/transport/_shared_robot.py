@@ -9,6 +9,13 @@ actions fire-and-forget. The first instance constructed for a given *name*
 that finds no existing owner spawns one; later instances (for the same
 *name*, anywhere reachable) attach.
 
+Construction is :class:`~physicalai.config.ComponentConfig`-only via
+``robot=`` or :meth:`from_config`. ``robot`` is declared as an
+``@export_config(config_args=...)`` argument, so a nested
+:func:`~physicalai.config.instantiate` hands over the recipe instead of
+building a driver this process would immediately discard. Pass ``robot=None``
+(or use :meth:`attach`) for attach-only.
+
 Unlike the superseded connection-derived ``robot_id``, *name* is a required,
 caller-chosen logical identifier — routing never needs a live driver
 instance to resolve. Physical device identity
@@ -25,10 +32,12 @@ and ``get_observation()`` retrieves the newest sample with a non-blocking
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
+from physicalai.config import export_config
 from physicalai.robot.errors import (
     RobotDeviceAlreadyOwned,
     RobotNameConflict,
@@ -40,15 +49,15 @@ from physicalai.robot.errors import (
 from ._codec import ROBOT_TRANSPORT_PROTOCOL_VERSION, TransportObservation, decode_metadata, decode_state, encode_action
 from ._ids import KEY_PREFIX, METADATA_WILDCARD, action_key, metadata_key, state_key, validate_name
 from ._lock import active_owner_device_ids, registered_owner_names
-from ._owner_config import DEFAULT_RATE_HZ, normalize_robot_class
+from ._owner_config import DEFAULT_RATE_HZ, normalize_robot_config
 from ._session import open_session
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
-
     import numpy as np
 
+    from physicalai.config import ComponentConfig
     from physicalai.robot import RobotObservation
+
 
 _PROBE_TIMEOUT = 1.0
 _RACE_RETRY_TIMEOUT = 5.0
@@ -169,6 +178,7 @@ def discover_robots(
     return list({metadata.get("name"): metadata for metadata in robots}.values())
 
 
+@export_config(class_path="physicalai.robot.SharedRobot", config_args=("robot",))
 class SharedRobot:
     """Robot subscriber that attaches to (or spawns) a shared owner process.
 
@@ -177,17 +187,25 @@ class SharedRobot:
     Zenoh. Satisfies the :class:`~physicalai.robot.Robot` protocol, so it
     is a drop-in replacement for a direct driver.
 
+    Prefer :meth:`from_config`. The constructor takes
+    ``robot: ComponentConfig`` to spawn, or ``robot=None`` (attach-only;
+    :meth:`attach` is the explicit form).
+
+    Opted into :func:`~physicalai.config.export_config` as a **construction
+    recipe** only (name, nested ``robot`` ComponentConfig, transport knobs).
+    Connection / Zenoh session / publisher state is never part of
+    :func:`~physicalai.config.to_config`.
+
     Args:
         name: Required logical name — keys the Zenoh topics directly. Two
             instances constructed with the same *name* (anywhere reachable
             under the chosen transport scope) share one owner.
-        robot_class: Driver class (or its dotted import path) to spawn if
-            no owner exists yet for *name*. ``None`` means attach-only —
-            use :meth:`attach` for that case instead of passing this
-            directly.
-        robot_kwargs: JSON-serializable driver constructor kwargs (e.g.
-            ``port``, ``calibration`` as a path, ``role`` as a str), used
-            only when this instance spawns the owner.
+        robot: Trusted driver :class:`~physicalai.config.ComponentConfig` to
+            spawn if no owner exists yet for *name*. ``None`` means
+            attach-only — use :meth:`attach` for that case. Declared as an
+            ``@export_config`` config arg, so nested
+            :func:`~physicalai.config.instantiate` passes the recipe through
+            without constructing the driver here.
         allow_remote: Whether this instance's own session — and, if it
             spawns the owner, the owner's session for its whole lifetime —
             is reachable beyond localhost. Defaults to the secure,
@@ -203,8 +221,7 @@ class SharedRobot:
         self,
         name: str,
         *,
-        robot_class: type | str | None = None,
-        robot_kwargs: Mapping[str, object] | None = None,
+        robot: ComponentConfig | Mapping[str, object] | None = None,
         allow_remote: bool = False,
         rate_hz: float = DEFAULT_RATE_HZ,
         idle_timeout: float = 10.0,
@@ -212,8 +229,7 @@ class SharedRobot:
         _session: object | None = None,
     ) -> None:
         self._name = validate_name(name)
-        self._robot_class = normalize_robot_class(robot_class) if robot_class is not None else None
-        self._robot_kwargs: dict[str, object] = dict(robot_kwargs or {})
+        self._robot = None if robot is None else normalize_robot_config(robot)
         self._allow_remote = allow_remote
         self._rate_hz = rate_hz
         self._idle_timeout = idle_timeout
@@ -228,6 +244,49 @@ class SharedRobot:
         self._metadata: dict[str, Any] | None = None
         self._latest: TransportObservation | None = None
         self._connected = False
+
+    @classmethod
+    def _physicalai_normalize_captured_init_args(cls, supplied: dict[str, object]) -> None:
+        robot = supplied.get("robot")
+        if isinstance(robot, Mapping):
+            supplied["robot"] = normalize_robot_config(robot)
+
+    @classmethod
+    def from_config(
+        cls,
+        robot_config: ComponentConfig | Mapping[str, object],
+        *,
+        name: str,
+        allow_remote: bool = False,
+        rate_hz: float = DEFAULT_RATE_HZ,
+        idle_timeout: float = 10.0,
+        connect_timeout: float = 10.0,
+        _session: object | None = None,
+    ) -> SharedRobot:
+        """Primary API: spawn/attach from a trusted robot ComponentConfig.
+
+        Args:
+            robot_config: Trusted ``class_path`` + ``init_args`` for the driver.
+            name: Logical owner name (Zenoh topic key).
+            allow_remote: Whether this session / spawned owner may leave localhost.
+            rate_hz: Owner loop rate when this instance spawns the owner.
+            idle_timeout: Idle self-exit timeout for a spawned owner.
+            connect_timeout: Overall budget for :meth:`connect`.
+
+        Returns:
+            A ``SharedRobot`` that stores the normalized ComponentConfig and
+            writes only the new owner stdin shape on spawn.
+        """
+        # Omit default None so @export_config does not capture "_session": null.
+        return cls(
+            name,
+            robot=robot_config,
+            allow_remote=allow_remote,
+            rate_hz=rate_hz,
+            idle_timeout=idle_timeout,
+            connect_timeout=connect_timeout,
+            **({} if _session is None else {"_session": _session}),
+        )
 
     @classmethod
     def attach(
@@ -253,7 +312,15 @@ class SharedRobot:
         Returns:
             A ``SharedRobot`` that never spawns an owner.
         """
-        return cls(name, allow_remote=allow_remote, connect_timeout=connect_timeout, _session=_session)
+        # Omit default None so @export_config does not capture "_session": null.
+        if _session is not None:
+            return cls(name, allow_remote=allow_remote, connect_timeout=connect_timeout, _session=_session)
+        return cls(name, allow_remote=allow_remote, connect_timeout=connect_timeout)
+
+    @property
+    def _robot_class(self) -> str | None:
+        """Public ``class_path`` used for metadata conflict diagnostics."""
+        return None if self._robot is None else self._robot["class_path"]
 
     @property
     def name(self) -> str:
@@ -336,8 +403,8 @@ class SharedRobot:
             The owner's metadata record.
 
         Raises:
-            RobotTransportError: If ``robot_class`` was not given (attach-
-                only) or spawning failed for a reason other than a benign
+            RobotTransportError: If no robot config was given (attach-only)
+                or spawning failed for a reason other than a benign
                 same-device race.
             RobotNameConflict: If the race was against a *different*-device
                 owner under the same name.
@@ -345,8 +412,8 @@ class SharedRobot:
                 locked under another name — propagated as-is, no re-probe
                 needed.
         """
-        if self._robot_class is None:
-            msg = f"no owner found for {self._name!r} (attach-only mode: robot_class not provided)"
+        if self._robot is None:
+            msg = f"no owner found for {self._name!r} (attach-only mode: robot config not provided)"
             raise RobotTransportError(msg)
 
         from ._owner import RobotOwner  # noqa: PLC0415
@@ -354,8 +421,7 @@ class SharedRobot:
 
         config = RobotOwnerConfig(
             name=self._name,
-            robot_class=self._robot_class,
-            robot_kwargs=self._robot_kwargs,
+            robot=self._robot,
             allow_remote=self._allow_remote,
             rate_hz=self._rate_hz,
             idle_timeout=self._idle_timeout,
@@ -439,14 +505,16 @@ class SharedRobot:
             msg = f"owner of {self._name!r} published malformed /metadata: {metadata!r}"
             raise RobotTransportError(msg)
 
-        if self._robot_class is not None:
+        if self._robot is not None:
+            expected = self._robot["class_path"]
             advertised = metadata.get("robot_class")
-            if advertised != self._robot_class:
+            if advertised != expected:
                 logger.warning(
-                    f"SharedRobot(name={self._name!r}) was constructed with robot_class={self._robot_class!r} "
-                    f"but the existing owner advertises robot_class={advertised!r}. Not fatal — public "
-                    "re-exports, wrappers, or subclasses can preserve the wire contract — but double-check "
-                    "this is the robot you expect.",
+                    f"SharedRobot(name={self._name!r}) was constructed with "
+                    f"robot.class_path={expected!r} but the existing owner advertises "
+                    f"robot_class={advertised!r}. Not fatal — public re-exports, wrappers, or "
+                    "subclasses can preserve the wire contract — but double-check this is the "
+                    "robot you expect.",
                 )
 
     def _attach(self) -> None:
