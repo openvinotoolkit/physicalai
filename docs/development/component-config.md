@@ -654,12 +654,15 @@ need for a connected-state guard on the constructor. `SharedCamera` declares
 
 ### Private startup envelopes (hard cutover)
 
-Changing `RobotOwnerConfig` from `robot_class` + `robot_kwargs` to
-`robot: ComponentConfig` also changes private startup JSON. Parent and child
-are always the same installed package at `Popen`, and stdin is ephemeral — not
-a persisted document or peer protocol. Hard-cutover both envelopes in the same
-PR as the Shared\* spawn path: rewrite writers, readers, and fixtures; do **not**
-add a `config_format` field, dual-read, or shape-detection fallback.
+**Status:** Accepted.
+
+Private robot-owner and camera-publisher startup stdin is a same-package
+ephemeral `Popen` handshake, not a persisted peer protocol. Changing
+`RobotOwnerConfig` from `robot_class` + `robot_kwargs` to
+`robot: ComponentConfig` also changes that private startup JSON. Hard-cutover
+both envelopes in the same PR as the Shared\* spawn path: rewrite writers,
+readers, and fixtures; do **not** add a `config_format` field, dual-read, or
+shape-detection fallback.
 
 ```text
 # Robot owner stdin — before
@@ -690,8 +693,6 @@ current transport protocols and do not receive a new startup config.
 This hard cutover applies only to trusted parent→child startup stdin. Camera
 reconfigure messages arrive from subscribers and therefore never carry a
 ComponentConfig or enter `instantiate()`.
-
-Decision record: [shared construction wire decision](shared-construction-wire-decision.md).
 
 ### Paths and cwd for local replay / IPC
 
@@ -1061,25 +1062,25 @@ cutovers; do not describe them as schema-preserving.
 
 ## Alternatives considered
 
-| Option                                                               | Why not                                                                                                                               |
-| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `to_dict()` on runtime protocols                                     | Mixes runtime behavior with construction                                                                                              |
-| Studio-only component specs                                          | Creates a parallel config model and does not scale to plugins                                                                         |
-| Transport-specific robot/camera serializers                          | Duplicates the same replay problem by component type                                                                                  |
-| jsonargparse namespace as source of truth                            | Live objects and subprocesses often have no parser namespace                                                                          |
-| Automatic reflection of object attributes                            | Cannot distinguish constructor input, derived state, mutation, or resources                                                           |
-| Arbitrary codec registry in v1                                       | Adds global extension and security complexity before a second use case exists                                                         |
-| Unify with inference `ComponentSpec` / `instantiate_component` in v1 | Different defaults, depth counting, extras, and registry mode; changes the inference critical path without helping robot/camera spawn |
-| Embed `service_name` inside `ComponentConfig`                        | Mixes transport naming with construction                                                                                              |
-| Hash `class_path` into third-party camera service names              | Unstable across arg ordering and omitted defaults; collisions                                                                         |
-| Rename metadata field to `class_path` in v1                          | Would bump `ROBOT_TRANSPORT_PROTOCOL_VERSION`; keep `robot_class` populated from `class_path`                                         |
-| Changing cwd between relative-path export and owner/publisher spawn  | Unsupported in v1; relatives resolve against process cwd at open                                                                      |
-| Public `absolutize_component_paths`                                  | Easy to forget; fights folder-local relative export; redundant with Popen cwd inheritance                                             |
-| Universal string heuristic for IPC path absolutization               | Corrupts URLs / non-path tokens; wrong tool once relatives are first-class                                                            |
-| `__component_path_keys__` in v1                                      | Not needed without an absolutizer; defer until a second concrete need                                                                 |
-| `config_format` / dual-read on owner/publisher stdin                 | Same-package ephemeral `Popen` handshake; hard cutover is enough — see [wire decision](shared-construction-wire-decision.md)          |
-| Shape dual-read (`robot` vs `robot_class`) without a version field   | Soft landing only; fixture churn is in-repo, so rewrite once                                                                          |
-| Attach-only Studio                                                   | Clean separation, but changes operations by requiring serve-first                                                                     |
+| Option                                                               | Why not                                                                                                                                     |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `to_dict()` on runtime protocols                                     | Mixes runtime behavior with construction                                                                                                    |
+| Studio-only component specs                                          | Creates a parallel config model and does not scale to plugins                                                                               |
+| Transport-specific robot/camera serializers                          | Duplicates the same replay problem by component type                                                                                        |
+| jsonargparse namespace as source of truth                            | Live objects and subprocesses often have no parser namespace                                                                                |
+| Automatic reflection of object attributes                            | Cannot distinguish constructor input, derived state, mutation, or resources                                                                 |
+| Arbitrary codec registry in v1                                       | Adds global extension and security complexity before a second use case exists                                                               |
+| Unify with inference `ComponentSpec` / `instantiate_component` in v1 | Different defaults, depth counting, extras, and registry mode; changes the inference critical path without helping robot/camera spawn       |
+| Embed `service_name` inside `ComponentConfig`                        | Mixes transport naming with construction                                                                                                    |
+| Hash `class_path` into third-party camera service names              | Unstable across arg ordering and omitted defaults; collisions                                                                               |
+| Rename metadata field to `class_path` in v1                          | Would bump `ROBOT_TRANSPORT_PROTOCOL_VERSION`; keep `robot_class` populated from `class_path`                                               |
+| Changing cwd between relative-path export and owner/publisher spawn  | Unsupported in v1; relatives resolve against process cwd at open                                                                            |
+| Public `absolutize_component_paths`                                  | Easy to forget; fights folder-local relative export; redundant with Popen cwd inheritance                                                   |
+| Universal string heuristic for IPC path absolutization               | Corrupts URLs / non-path tokens; wrong tool once relatives are first-class                                                                  |
+| `__component_path_keys__` in v1                                      | Not needed without an absolutizer; defer until a second concrete need                                                                       |
+| `config_format` / dual-read on owner/publisher stdin                 | Same-package ephemeral `Popen` handshake; hard cutover is enough — see [Private startup envelopes](#private-startup-envelopes-hard-cutover) |
+| Shape dual-read (`robot` vs `robot_class`) without a version field   | Soft landing only; fixture churn is in-repo, so rewrite once                                                                                |
+| Attach-only Studio                                                   | Clean separation, but changes operations by requiring serve-first                                                                           |
 
 ## References
 
