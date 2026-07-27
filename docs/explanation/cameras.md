@@ -28,16 +28,37 @@ Camera instances are not thread-safe. Use one thread per camera instance or add 
 
 ## SharedCamera
 
-For multi-process or multi-thread access, use `SharedCamera`. It wraps any camera and handles IPC transport automatically.
+`SharedCamera` lets one publisher subprocess own a camera's exclusive hardware
+connection while any number of subscribers read frames over iceoryx2. It
+satisfies the same `Camera` protocol as a direct driver.
+
+Construction uses `camera=` or `from_config()`, matching `SharedRobot`. Prefer
+`from_config()` (or YAML) when sharing. A disconnected `@export_config` camera
+can be passed directly to `camera=`; this exports its recipe rather than
+handing an open device into the child. The publisher always opens fresh. Never
+keep a direct camera connected to the same device while sharing: another
+connected holder causes open failure.
 
 ```python
-from physicalai.capture import SharedCamera, UVCCamera
+from physicalai.capture import SharedCamera
+from physicalai.config import to_config
 
-shared = SharedCamera(UVCCamera(device="/dev/video0"))
+# Prefer config-only / disconnected export — no live direct camera held open
+shared = SharedCamera.from_config(
+    {
+        "class_path": "physicalai.capture.UVCCamera",
+        "init_args": {"device": "/dev/video0", "backend": "v4l2"},
+    },
+)
+# Equivalent after to_config(disconnected_driver):
+# shared = SharedCamera.from_config(to_config(driver))
 shared.connect()
 
 # Safe to read from multiple threads/processes
 frame = shared.read_latest()
 ```
+
+`create_camera(..., shared=True)` remains a convenience for shareable built-ins
+(`uvc`, `realsense`, `basler`) that packs a type into `SharedCamera(camera=...)`.
 
 `SharedCamera` is the recommended approach for production deployments where multiple consumers need camera frames. It avoids the need for manual synchronization and handles frame distribution efficiently.

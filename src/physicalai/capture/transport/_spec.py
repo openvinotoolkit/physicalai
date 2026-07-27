@@ -1,68 +1,255 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Serializable camera construction spec for transport endpoints."""
+"""Serializable camera construction spec for transport endpoints.
+
+Private publisher stdin is ``camera: ComponentConfig`` only. The publisher
+envelope is validated schema-positively: required ``camera``, known transport
+keys, and rejection of unknown keys (including legacy flat
+``camera_type`` / ``camera_kwargs``) before import or hardware access. Public
+``SharedCamera`` uses the same ``camera`` / :meth:`~SharedCamera.from_config`
+shape.
+
+Security: ``class_path`` is trusted local application/config input. It must
+never originate from network-received data.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from physicalai.config import (
+    ComponentConfig,
+    instantiate,
+    normalize_component_config,
+    validate_envelope,
+)
+
+from .builtin import builtin_type_for_class_path
 
 if TYPE_CHECKING:
     from physicalai.capture.camera import Camera
 
+# Allowed keys on the trusted publisher stdin handshake. Everything else
+# (including legacy flat camera_type / camera_kwargs) is an unknown-key
+# schema error.
+_PUBLISHER_ENVELOPE_KEYS = frozenset({
+    "camera",
+    "service_name",
+    "idle_timeout",
+    "max_subscribers",
+    "_factory_override",
+})
+_RECONFIGURE_REQUEST_KEYS = frozenset({"kind", "settings"})
+_RECONFIGURABLE_SETTINGS = frozenset({"width", "height", "fps"})
+
+
+def validate_publisher_config(data: Mapping[str, Any]) -> Mapping[str, object]:
+    """Validate a trusted publisher stdin payload schema-positively.
+
+    Returns:
+        The validated ``camera`` ComponentConfig mapping (see
+        :func:`normalize_camera_config` for the JSON-serializability check).
+    """
+    return validate_envelope(
+        data,
+        component_key="camera",
+        allowed_keys=_PUBLISHER_ENVELOPE_KEYS,
+        envelope_name="publisher",
+    )
+
+
+def validate_reconfigure_request(request: Mapping[str, Any]) -> dict[str, int]:
+    """Validate an untrusted camera reconfigure control request.
+
+    The peer may change only scalar capture settings. The publisher keeps the
+    trusted startup ``class_path`` and all other constructor arguments.
+
+    Returns:
+        Validated settings to patch into the trusted camera recipe.
+
+    Raises:
+        TypeError: If the request or a setting has the wrong type.
+        ValueError: If required fields are missing, unknown, or out of range.
+    """
+    if not isinstance(request, Mapping):
+        msg = f"reconfigure request must be a mapping, got {type(request).__name__}"
+        raise TypeError(msg)
+
+    unknown_request_keys = sorted(set(request) - _RECONFIGURE_REQUEST_KEYS)
+    if unknown_request_keys:
+        msg = f"unknown reconfigure request keys {unknown_request_keys}"
+        raise ValueError(msg)
+    if request.get("kind") != "RECONFIGURE":
+        msg = "reconfigure request kind must be 'RECONFIGURE'"
+        raise ValueError(msg)
+
+    settings = request.get("settings")
+    if not isinstance(settings, Mapping):
+        msg = f"reconfigure 'settings' must be a mapping, got {type(settings).__name__}"
+        raise TypeError(msg)
+    if not settings:
+        msg = "reconfigure 'settings' must not be empty"
+        raise ValueError(msg)
+
+    unknown_settings = sorted(set(settings) - _RECONFIGURABLE_SETTINGS)
+    if unknown_settings:
+        msg = f"unknown reconfigure settings {unknown_settings}; allowed: {sorted(_RECONFIGURABLE_SETTINGS)}"
+        raise ValueError(msg)
+
+    validated: dict[str, int] = {}
+    for key, value in settings.items():
+        if isinstance(value, bool) or not isinstance(value, int):
+            msg = f"reconfigure setting {key!r} must be an integer, got {type(value).__name__}"
+            raise TypeError(msg)
+        if value <= 0:
+            msg = f"reconfigure setting {key!r} must be greater than zero, got {value}"
+            raise ValueError(msg)
+        validated[key] = value
+    return validated
+
+
+def normalize_camera_config(camera: Mapping[str, object]) -> ComponentConfig:
+    """Validate a camera ComponentConfig without importing its ``class_path``.
+
+    Returns:
+        A validated config whose ``class_path`` is a dotted import path.
+    """
+    return normalize_component_config(
+        camera,
+        component_key="camera",
+        class_label="camera class_path",
+    )
+
+
+def derive_service_name(
+    camera: Mapping[str, object],
+    *,
+    service_name: str | None = None,
+) -> str:
+    """Resolve iceoryx2 ``service_name`` for a camera ComponentConfig.
+
+    Built-in class paths derive ``physicalai/camera/{token}/{device_id}/frame``
+    via the transport class-path → type-token map, which accepts both the
+    public re-export and the internal spelling of each built-in driver.
+    Third-party / unknown class paths (including stub types without a shared
+    registry entry) require an explicit *service_name*.
+
+    Args:
+        camera: Normalized or raw camera ComponentConfig.
+        service_name: Explicit override; when set, returned unchanged.
+
+    Returns:
+        Concrete service name for the publisher envelope.
+
+    Raises:
+        ValueError: If *service_name* is omitted for a non-built-in class_path.
+    """
+    if service_name is not None:
+        return service_name
+
+    class_path = str(camera["class_path"])
+    token = builtin_type_for_class_path(class_path)
+    if token is None:
+        msg = (
+            f"camera {class_path!r} requires an explicit service_name; "
+            "built-in derivation only covers shareable physicalai.capture "
+            "backends (uvc, realsense, basler)"
+        )
+        raise ValueError(msg)
+
+    init_args = camera.get("init_args", {})
+    if not isinstance(init_args, Mapping):
+        init_args = {}
+    device_id = init_args.get("serial_number", init_args.get("device", 0))
+    # Resolve symlinks so that /dev/v4l/by-id/... and /dev/videoN produce
+    # the same service name for the same physical device.
+    if isinstance(device_id, str) and device_id.startswith("/dev/"):
+        device_id = Path(device_id).resolve().name
+    return f"physicalai/camera/{token}/{device_id}/frame"
+
 
 @dataclass(frozen=True)
-class CameraSpec:
+class CameraPublisherConfig:
     """Config payload describing how to construct a camera instance.
 
     Attributes:
-        camera_type: Logical camera type passed to :func:`create_camera`.
-        camera_kwargs: Keyword arguments forwarded to the camera constructor.
+        camera: Trusted construction config (``class_path`` + ``init_args``).
     """
 
-    camera_type: str
-    camera_kwargs: dict[str, Any] = field(default_factory=dict)
+    camera: Mapping[str, object]
 
-    # ------------------------------------------------------------------
-    # JSON serialization (used by subprocess publisher protocol)
-    # ------------------------------------------------------------------
+    def __post_init__(self) -> None:
+        """Normalize ``camera`` to a public ComponentConfig."""
+        object.__setattr__(self, "camera", normalize_camera_config(self.camera))
 
     def to_json_dict(self) -> dict[str, Any]:
-        """Serialize to a JSON-safe dictionary.
+        """Serialize the construction fragment for the stdin handshake.
 
         Returns:
-            Dictionary with ``camera_type`` and ``camera_kwargs`` keys.
+            Dictionary with ``camera`` only (transport fields are merged by
+            the publisher).
+
+        Raises:
+            TypeError: If ``camera.init_args`` is not a mapping.
         """
-        return {"camera_type": self.camera_type, "camera_kwargs": self.camera_kwargs}
+        init_args = self.camera["init_args"]
+        if not isinstance(init_args, dict):
+            msg = f"camera.init_args must be a mapping, got {type(init_args).__name__}"
+            raise TypeError(msg)
+        return {
+            "camera": {
+                "class_path": self.camera["class_path"],
+                "init_args": dict(init_args),
+            },
+        }
 
     @classmethod
-    def from_json_dict(cls, data: dict[str, Any]) -> CameraSpec:
-        """Deserialize from a JSON dictionary.
+    def from_json_dict(cls, data: dict[str, Any]) -> CameraPublisherConfig:
+        """Deserialize from a JSON dictionary (full publisher envelope or fragment).
+
+        Uses :func:`validate_publisher_config` so publisher stdin requires
+        ``camera``, accepts only known transport keys, and rejects unknown
+        keys before construction.
 
         Args:
-            data: Dictionary with ``camera_type`` and optional
-                ``camera_kwargs`` keys.
+            data: Dictionary produced by :meth:`to_json_dict` or a publisher
+                stdin envelope containing ``camera``.
 
         Returns:
-            A new :class:`CameraSpec` instance.
-        """
-        return cls(
-            camera_type=data["camera_type"],
-            camera_kwargs=data.get("camera_kwargs", {}),
-        )
+            A new :class:`CameraPublisherConfig` instance.
 
-    # ------------------------------------------------------------------
-    # Factory
-    # ------------------------------------------------------------------
+        Raises:
+            TypeError: If ``data`` is not a mapping.
+        """
+        if not isinstance(data, dict):
+            msg = f"camera spec must be a mapping, got {type(data).__name__}"
+            raise TypeError(msg)
+
+        camera = validate_publisher_config(data)
+        return cls(camera=camera)
 
     def build(self) -> Camera:
         """Instantiate the camera described by this spec.
 
-        Returns:
-            A new camera instance configured from ``camera_type`` and
-            ``camera_kwargs``.
-        """
-        from physicalai.capture.factory import create_camera  # noqa: PLC0415
+        Uses :func:`physicalai.config.instantiate` on the trusted ``camera``
+        ComponentConfig, then verifies the :class:`~physicalai.capture.camera.Camera`
+        protocol. Does not route through :func:`~physicalai.capture.create_camera`,
+        so third-party class paths work without a registry entry.
 
-        return create_camera(self.camera_type, **self.camera_kwargs)
+        Returns:
+            A new, not-yet-connected camera instance.
+
+        Raises:
+            TypeError: If the instantiated object does not satisfy ``Camera``.
+        """
+        from physicalai.capture.camera import Camera  # noqa: PLC0415
+
+        driver = instantiate(self.camera)  # type: ignore[arg-type]
+        if not isinstance(driver, Camera):
+            msg = f"{self.camera['class_path']!r} does not satisfy the Camera protocol (got {type(driver).__name__})"
+            raise TypeError(msg)
+        return driver

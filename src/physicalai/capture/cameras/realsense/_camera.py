@@ -14,11 +14,13 @@ from physicalai.capture.camera import Camera, ColorMode
 from physicalai.capture.errors import CaptureError, CaptureTimeoutError, NotConnectedError
 from physicalai.capture.frame import Frame
 from physicalai.capture.mixins.depth import DepthMixin
+from physicalai.config import export_config
 
 if TYPE_CHECKING:
     from physicalai.capture.discovery import DeviceInfo
 
 
+@export_config(class_path="physicalai.capture.RealSenseCamera")
 class RealSenseCamera(DepthMixin, Camera):
     """RealSense color and depth camera."""
 

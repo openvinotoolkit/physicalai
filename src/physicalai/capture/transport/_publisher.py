@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Self
 from physicalai.capture.errors import CaptureError
 
 if TYPE_CHECKING:
-    from physicalai.capture.transport._spec import CameraSpec
+    from physicalai.capture.transport._spec import CameraPublisherConfig
 
 
 class CameraPublisher:
@@ -25,7 +25,7 @@ class CameraPublisher:
     self-terminates via idle timeout when zero subscribers remain.
 
     Args:
-        spec: Camera construction specification.
+        spec: Camera construction specification (``camera: ComponentConfig``).
         service_name: iceoryx2 service name for the pub-sub channel.
         idle_timeout: Seconds with zero subscribers before self-exit.
         max_subscribers: Maximum concurrent subscribers.
@@ -33,7 +33,7 @@ class CameraPublisher:
 
     def __init__(
         self,
-        spec: CameraSpec,
+        spec: CameraPublisherConfig,
         service_name: str,
         *,
         idle_timeout: float = 5,
@@ -62,8 +62,7 @@ class CameraPublisher:
             return
 
         config: dict = {
-            "camera_type": self._spec.camera_type,
-            "camera_kwargs": self._spec.camera_kwargs,
+            **self._spec.to_json_dict(),
             "service_name": self._service_name,
             "idle_timeout": self._idle_timeout,
             "max_subscribers": self._max_subscribers,
@@ -74,9 +73,9 @@ class CameraPublisher:
         # interpreter) plus a hardcoded internal module path. shell=True is not
         # used, so there is no shell-injection risk. Configuration is delivered
         # to the worker via stdin as JSON, not as argv arguments; callers are
-        # responsible for validating spec fields (camera_type, camera_kwargs,
-        # service_name, _factory_override) before constructing a
-        # CameraPublisher.
+        # responsible for validating spec fields before constructing a
+        # CameraPublisher. No cwd= override — child inherits parent cwd for
+        # relative path resolution in camera init_args.
         self._process = subprocess.Popen(  # nosec: B603
             [sys.executable, "-m", "physicalai.capture.transport._publisher_worker"],
             stdin=subprocess.PIPE,

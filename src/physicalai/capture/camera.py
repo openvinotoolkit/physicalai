@@ -63,14 +63,16 @@ class Camera(ABC):
     def __init__(
         self,
         *,
-        color_mode: ColorMode = ColorMode.RGB,
+        color_mode: ColorMode | str = ColorMode.RGB,
     ) -> None:
         """Store requested capture parameters.
 
         Args:
-            color_mode: Pixel format for colour image reads.
+            color_mode: Pixel format for colour image reads. Accepts
+                :class:`ColorMode` or its string value so
+                :func:`~physicalai.config.instantiate` round-trips work.
         """
-        self._color_mode = color_mode
+        self._color_mode = ColorMode(color_mode)
         self.__executor: ThreadPoolExecutor | None = None
 
     # ------------------------------------------------------------------
