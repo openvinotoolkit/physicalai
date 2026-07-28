@@ -196,7 +196,8 @@ flat/legacy shorthand:
 
 ```yaml
 runtime:
-  robot: { class_path: physicalai.robot.SO101, init_args: { port: /dev/ttyACM0 } }
+  robot:
+    { class_path: physicalai.robot.SO101, init_args: { port: /dev/ttyACM0 } }
   action_source:
     class_path: physicalai.runtime.PolicySource
     init_args:

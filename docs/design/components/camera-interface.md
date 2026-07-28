@@ -1061,6 +1061,7 @@ Linux-only.
 - **SharedCamera** (`_shared_camera.py`): The primary user-facing API for the transport
   layer. A `Camera`-compatible subscriber that connects to a named iceoryx2 service.
   It supports two modes:
+
   - **Auto-spawn mode**: `SharedCamera("realsense", ...)` — automatically spawns a
     background `CameraPublisher` process if one is not already running for the device.
     The publisher remains running as long as it has active subscribers and
@@ -1069,6 +1070,7 @@ Linux-only.
     connects to an existing publisher without attempting to spawn one.
 
   Connect-time configuration handling is controlled by two flags:
+
   - `validate_on_connect=False` (default): if the existing publisher's resolution/fps
     differs from the requested `width`/`height`/`fps`, the mismatch is logged once and
     the existing config is used.
