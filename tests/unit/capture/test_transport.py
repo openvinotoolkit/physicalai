@@ -146,7 +146,7 @@ class TestReconfigureRequest:
         with pytest.raises((TypeError, ValueError), match="reconfigure"):
             validate_reconfigure_request(payload)
 
-    def test_worker_patches_only_trusted_camera_settings(self) -> None:
+    def test_worker_patches_only_local_camera_settings(self) -> None:
         from physicalai.capture.transport._publisher_worker import _PublisherState, _handle_reconfigure
 
         old_camera = MagicMock()
@@ -160,14 +160,14 @@ class TestReconfigureRequest:
                 "camera": {
                     "class_path": FAKE_CAMERA_CLASS,
                     "init_args": {
-                        "device_name": "trusted-device",
-                        "backend": "trusted-backend",
+                        "device_name": "local-device",
+                        "backend": "local-backend",
                         "width": 320,
                         "height": 240,
                         "fps": 30,
                     },
                 },
-                "service_name": "physicalai/test/trusted/frame",
+                "service_name": "physicalai/test/local/frame",
                 "_factory_override": "tests.unit.capture.fake:FakeCamera",
             },
         )
@@ -178,7 +178,7 @@ class TestReconfigureRequest:
             result = _handle_reconfigure(
                 state,
                 {"kind": "RECONFIGURE", "settings": {"width": 640, "fps": 15}},
-                "physicalai/test/trusted/frame",
+                "physicalai/test/local/frame",
             )
 
         assert result == {"ok": True}
@@ -186,8 +186,8 @@ class TestReconfigureRequest:
         assert new_config["camera"] == {
             "class_path": FAKE_CAMERA_CLASS,
             "init_args": {
-                "device_name": "trusted-device",
-                "backend": "trusted-backend",
+                "device_name": "local-device",
+                "backend": "local-backend",
                 "width": 640,
                 "height": 240,
                 "fps": 15,
@@ -209,7 +209,7 @@ class TestReconfigureRequest:
             camera_fps=30,
             config={
                 "camera": {"class_path": FAKE_CAMERA_CLASS, "init_args": {"width": 320}},
-                "service_name": "physicalai/test/trusted/frame",
+                "service_name": "physicalai/test/local/frame",
             },
         )
         with patch("physicalai.capture.transport._publisher_worker.build_camera") as build:
@@ -224,7 +224,7 @@ class TestReconfigureRequest:
                         },
                     },
                 },
-                "physicalai/test/trusted/frame",
+                "physicalai/test/local/frame",
             )
 
         assert result["ok"] is False

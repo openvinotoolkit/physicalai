@@ -109,12 +109,12 @@ class SharedCamera(Camera):
     hand off an already-open device into the child.
 
     Args:
-        camera: Trusted camera :class:`~physicalai.config.ComponentConfig` to
-            spawn if no publisher exists yet for the derived or explicit
-            ``service_name``. ``None`` means attach-only. Declared as an
-            ``@export_config`` config arg, so nested
-            :func:`~physicalai.config.instantiate` passes the recipe through
-            without constructing the camera here.
+        camera: Camera :class:`~physicalai.config.ComponentConfig` from local
+            config input (same boundary as CLI/app args), used to spawn if no
+            publisher exists yet for the derived or explicit ``service_name``.
+            ``None`` means attach-only. Declared as an ``@export_config``
+            config arg, so nested :func:`~physicalai.config.instantiate`
+            passes the recipe through without constructing the camera here.
         color_mode: Pixel format preference for this subscriber.
         zero_copy: If True, returned frames reference the iceoryx2 SHM
             buffer directly (read-only). Otherwise, frames are copied.
@@ -193,10 +193,10 @@ class SharedCamera(Camera):
         overwrite_settings: bool = False,
         idle_timeout: float = 5.0,
     ) -> SharedCamera:
-        """Primary API: spawn/attach from a trusted camera ComponentConfig.
+        """Primary API: spawn/attach from a local camera ComponentConfig.
 
         Args:
-            config: Trusted ``class_path`` + ``init_args`` for the camera.
+            config: Local ``class_path`` + ``init_args`` for the camera.
             service_name: Explicit iceoryx2 name; derived for built-ins when omitted.
             color_mode: Subscriber pixel-format preference.
             zero_copy: Whether frames reference SHM directly.

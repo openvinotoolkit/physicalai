@@ -10,8 +10,8 @@ keys, and rejection of unknown keys (including legacy flat
 ``SharedCamera`` uses the same ``camera`` / :meth:`~SharedCamera.from_config`
 shape.
 
-Security: ``class_path`` is trusted local application/config input. It must
-never originate from network-received data.
+Security: ``class_path`` is local application/config input. It must never
+originate from network-received or control-channel data.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from physicalai.config import (
 if TYPE_CHECKING:
     from physicalai.capture.camera import Camera
 
-# Allowed keys on the trusted publisher stdin handshake. Everything else
+# Allowed keys on the publisher stdin handshake. Everything else
 # (including legacy flat camera_type / camera_kwargs) is an unknown-key
 # schema error.
 _PUBLISHER_ENVELOPE_KEYS = frozenset({
@@ -46,7 +46,7 @@ _RECONFIGURABLE_SETTINGS = frozenset({"width", "height", "fps"})
 
 
 def validate_publisher_config(data: Mapping[str, Any]) -> Mapping[str, object]:
-    """Validate a trusted publisher stdin payload schema-positively.
+    """Validate a publisher stdin payload schema-positively.
 
     Returns:
         The validated ``camera`` ComponentConfig mapping (see
@@ -61,13 +61,13 @@ def validate_publisher_config(data: Mapping[str, Any]) -> Mapping[str, object]:
 
 
 def validate_reconfigure_request(request: Mapping[str, Any]) -> dict[str, int]:
-    """Validate an untrusted camera reconfigure control request.
+    """Validate a control-channel camera reconfigure request.
 
     The peer may change only scalar capture settings. The publisher keeps the
-    trusted startup ``class_path`` and all other constructor arguments.
+    local startup ``class_path`` and all other constructor arguments.
 
     Returns:
-        Validated settings to patch into the trusted camera recipe.
+        Validated settings to patch into the local camera recipe.
 
     Raises:
         TypeError: If the request or a setting has the wrong type.
@@ -163,7 +163,7 @@ class CameraPublisherConfig:
     """Config payload describing how to construct a camera instance.
 
     Attributes:
-        camera: Trusted construction config (``class_path`` + ``init_args``).
+        camera: Local construction config (``class_path`` + ``init_args``).
     """
 
     camera: Mapping[str, object]
@@ -221,7 +221,7 @@ class CameraPublisherConfig:
     def build(self) -> Camera:
         """Instantiate the camera described by this spec.
 
-        Uses :func:`physicalai.config.instantiate` on the trusted ``camera``
+        Uses :func:`physicalai.config.instantiate` on the ``camera``
         ComponentConfig, then verifies the :class:`~physicalai.capture.camera.Camera`
         protocol. Does not route through :func:`~physicalai.capture.create_camera`,
         so third-party class paths work without a registry entry.

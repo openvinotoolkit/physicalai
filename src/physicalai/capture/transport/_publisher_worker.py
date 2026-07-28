@@ -282,12 +282,12 @@ def _handle_reconfigure(state: _PublisherState, request: dict, service_name: str
         old_camera = state.camera
         old_fps = state.camera_fps
 
-        trusted_camera = old_config["camera"]
-        trusted_init_args = trusted_camera["init_args"]
+        local_camera = old_config["camera"]
+        local_init_args = local_camera["init_args"]
         new_config = old_config.copy()
         new_config["camera"] = {
-            "class_path": trusted_camera["class_path"],
-            "init_args": {**trusted_init_args, **settings},
+            "class_path": local_camera["class_path"],
+            "init_args": {**local_init_args, **settings},
         }
         new_config["service_name"] = service_name
 
