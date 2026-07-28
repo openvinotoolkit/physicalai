@@ -61,13 +61,16 @@ jobs:
       - name: Detect if smoke spec was modified
         id: detect
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          INPUT_FULL: ${{ inputs.full }}
         run: |
           SPEC="tests/integration/inference/test_ov_smoke.py"
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "full=${{ inputs.full }}" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            BASE="${{ github.event.pull_request.base.sha }}"
-            if git diff --name-only "$BASE" HEAD -- "$SPEC" | grep -q .; then
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "full=$INPUT_FULL" >> "$GITHUB_OUTPUT"
+          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
+            if git diff --name-only "$PR_BASE_SHA" HEAD -- "$SPEC" | grep -q .; then
               echo "full=true" >> "$GITHUB_OUTPUT"
             else
               echo "full=false" >> "$GITHUB_OUTPUT"
