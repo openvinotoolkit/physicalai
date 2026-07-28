@@ -62,8 +62,8 @@ def _build_serve_parser() -> ArgumentParser:
         required=True,
         help=(
             "Robot ComponentConfig (class_path + init_args). "
-            "Example: --robot='{\"class_path\":\"physicalai.robot.SO101\","
-            "\"init_args\":{\"port\":\"/dev/ttyACM0\"}}'. "
+            'Example: --robot=\'{"class_path":"physicalai.robot.SO101",'
+            '"init_args":{"port":"/dev/ttyACM0"}}\'. '
             "Or nested flags: --robot.class_path=physicalai.robot.SO101 "
             "--robot.init_args.port=/dev/ttyACM0"
         ),

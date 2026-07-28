@@ -197,9 +197,16 @@ class RobotOwnerConfig:
 
         Raises:
             TypeError: If ``data`` is not a mapping.
+            ValueError: If required ``name`` is missing or not a string.
         """
         if not isinstance(data, dict):
             msg = f"owner config must be a mapping, got {type(data).__name__}"
+            raise TypeError(msg)
+        if "name" not in data:
+            msg = "owner config missing required 'name'"
+            raise ValueError(msg)
+        if not isinstance(data["name"], str):
+            msg = f"owner config 'name' must be a string, got {type(data['name']).__name__}"
             raise TypeError(msg)
 
         robot = validate_owner_config(data)

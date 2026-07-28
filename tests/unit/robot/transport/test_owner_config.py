@@ -170,6 +170,15 @@ class TestRobotOwnerConfig:
         with pytest.raises(ValueError, match="missing required 'robot'"):
             RobotOwnerConfig.from_json_dict({"name": "left-arm"})
 
+    def test_missing_name_rejected(self) -> None:
+        with pytest.raises(ValueError, match="missing required 'name'"):
+            RobotOwnerConfig.from_json_dict({"robot": _fake_robot()})
+
+    @pytest.mark.parametrize("bad_name", [None, 1, True])
+    def test_non_string_name_rejected(self, bad_name: object) -> None:
+        with pytest.raises(TypeError, match="owner config 'name' must be a string"):
+            RobotOwnerConfig.from_json_dict({"name": bad_name, "robot": _fake_robot()})
+
     def test_validate_owner_config_shared_helper(self) -> None:
         robot = validate_owner_config(
             {
