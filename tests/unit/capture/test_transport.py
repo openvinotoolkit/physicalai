@@ -232,6 +232,33 @@ class TestReconfigureRequest:
         camera.disconnect.assert_not_called()
         build.assert_not_called()
 
+    def test_reconfigure_failure_restores_old(self) -> None:
+        from physicalai.capture.transport._publisher_worker import _PublisherState, _handle_reconfigure
+
+        old_camera = MagicMock()
+        restored = MagicMock()
+        config = {
+            "camera": {"class_path": FAKE_CAMERA_CLASS, "init_args": {"width": 320, "fps": 30}},
+            "service_name": "physicalai/test/restore/frame",
+        }
+        state = _PublisherState(camera=old_camera, publisher=MagicMock(), camera_fps=30, config=config)
+
+        with patch(
+            "physicalai.capture.transport._publisher_worker.build_camera",
+            side_effect=[RuntimeError("simulated open failure"), restored],
+        ):
+            result = _handle_reconfigure(
+                state,
+                {"kind": "RECONFIGURE", "settings": {"width": 640}},
+                "physicalai/test/restore/frame",
+            )
+
+        assert result == {"ok": False, "error": "RuntimeError: simulated open failure"}
+        assert state.camera is restored
+        assert state.config == config
+        assert state.camera_fps == 30
+        restored.connect.assert_called_once_with()
+
 
 class TestFrameHeader:
 
@@ -1190,36 +1217,6 @@ class TestReconfigureIntegration:
             frame2 = camera.read(timeout=5.0)
             assert frame2.data.shape == (480, 640, 3)
 
-            camera.disconnect()
-        finally:
-            publisher.stop()
-
-    def test_reconfigure_failure_restores_old(self) -> None:
-        from physicalai.capture.transport._publisher import CameraPublisher
-
-        service_name = f"physicalai/test/{uuid4().hex[:8]}/frame"
-        spec = CameraPublisherConfig(
-            camera={"class_path": FAKE_CAMERA_CLASS, "init_args": {"width": 320, "height": 240}},
-        )
-        publisher = CameraPublisher(
-            spec,
-            service_name,
-            _factory_override="tests.unit.capture.fake:FakeCamera",
-        )
-        publisher.start(timeout=10.0)
-
-        try:
-            camera = SharedCamera.from_config(
-                {"class_path": FAKE_CAMERA_CLASS, "init_args": {"width": 320, "height": 240}},
-                service_name=service_name,
-            )
-            camera.connect(timeout=5.0)
-
-            result = camera._request_reconfigure(timeout=5.0)
-            assert result["ok"] is True
-
-            frame = camera.read(timeout=5.0)
-            assert frame.data.shape[0] > 0
             camera.disconnect()
         finally:
             publisher.stop()
