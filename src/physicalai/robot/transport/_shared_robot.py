@@ -214,7 +214,8 @@ class SharedRobot:
             narrows an already-running owner's reachability.
         rate_hz: Owner loop rate when this instance spawns the owner.
         idle_timeout: Seconds with zero subscribers before a spawned owner
-            self-exits (and homes/holds the robot).
+            self-exits (and homes/holds the robot). ``None`` disables idle
+            exit (owner stays up until stopped).
         connect_timeout: Default overall budget for :meth:`connect`.
     """
 
@@ -225,7 +226,7 @@ class SharedRobot:
         robot: ComponentConfig | Mapping[str, object] | None = None,
         allow_remote: bool = False,
         rate_hz: float = DEFAULT_RATE_HZ,
-        idle_timeout: float = 10.0,
+        idle_timeout: float | None = 10.0,
         connect_timeout: float = 10.0,
         _session: object | None = None,
     ) -> None:
@@ -260,7 +261,7 @@ class SharedRobot:
         name: str,
         allow_remote: bool = False,
         rate_hz: float = DEFAULT_RATE_HZ,
-        idle_timeout: float = 10.0,
+        idle_timeout: float | None = 10.0,
         connect_timeout: float = 10.0,
         _session: object | None = None,
     ) -> SharedRobot:
@@ -271,7 +272,8 @@ class SharedRobot:
             name: Logical owner name (Zenoh topic key).
             allow_remote: Whether this session / spawned owner may leave localhost.
             rate_hz: Owner loop rate when this instance spawns the owner.
-            idle_timeout: Idle self-exit timeout for a spawned owner.
+            idle_timeout: Idle self-exit timeout for a spawned owner. ``None``
+                disables idle exit.
             connect_timeout: Overall budget for :meth:`connect`.
 
         Returns:
@@ -279,6 +281,15 @@ class SharedRobot:
             writes only the new owner stdin shape on spawn.
         """
         # Omit default None so @export_config does not capture "_session": null.
+        if _session is None:
+            return cls(
+                name,
+                robot=robot_config,
+                allow_remote=allow_remote,
+                rate_hz=rate_hz,
+                idle_timeout=idle_timeout,
+                connect_timeout=connect_timeout,
+            )
         return cls(
             name,
             robot=robot_config,

@@ -31,14 +31,20 @@ _NUM_JOINTS = 6
 _STATE_DIM = 12  # fake ships positions + velocities
 
 
-def _shared_robot(name: str, *, allow_remote: bool = False, **robot_init_args: object) -> SharedRobot:
+def _shared_robot(
+    name: str,
+    *,
+    allow_remote: bool = False,
+    idle_timeout: float | None = 0.5,
+    **robot_init_args: object,
+) -> SharedRobot:
     return SharedRobot(
         name,
         robot={
             "class_path": FAKE_ROBOT_CLASS,
             "init_args": {"device_ids": [f"fake:{name}"], **robot_init_args},
         },
-        idle_timeout=0.5,
+        idle_timeout=idle_timeout,
         allow_remote=allow_remote,
     )
 
@@ -238,7 +244,9 @@ class TestSharedRobotLifecycle:
         assert robot.metadata["device_ids"] == [f"fake:{robot.name}"]
 
     def test_remote_owner_metadata_redacts_device_ids(self, unique_id: str) -> None:
-        robot = _shared_robot(unique_id.replace("/", "-"), allow_remote=True)
+        # Remote scouting can take longer than the default 0.5s idle timeout;
+        # keep the owner alive until this test attaches and stops it explicitly.
+        robot = _shared_robot(unique_id.replace("/", "-"), allow_remote=True, idle_timeout=None)
         robot.connect()
         try:
             assert robot.metadata is not None
