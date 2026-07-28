@@ -148,18 +148,18 @@ class TestSharedCameraComponentConfig:
         wire = _assert_construction_round_trip(camera)
         nested = wire["init_args"]["camera"]
         assert isinstance(nested, dict)
-        # Stored as written; the class-path alias table still derives one service name.
+        # Stored as written; the terminal class name still derives one service name.
         assert nested["class_path"] == defining
-        assert camera._service_name == "physicalai/camera/uvc/0/frame"
+        assert camera._service_name == "physicalai/camera/UVCCamera/0/frame"
 
     def test_attach_only_round_trip(self) -> None:
         from physicalai.capture import SharedCamera
 
-        camera = SharedCamera(camera=None, service_name="physicalai/camera/uvc/0/frame")
+        camera = SharedCamera(camera=None, service_name="physicalai/camera/UVCCamera/0/frame")
         wire = _assert_construction_round_trip(camera)
         assert wire["class_path"] == "physicalai.capture.SharedCamera"
         assert wire["init_args"]["camera"] is None
-        assert wire["init_args"]["service_name"] == "physicalai/camera/uvc/0/frame"
+        assert wire["init_args"]["service_name"] == "physicalai/camera/UVCCamera/0/frame"
 
     def test_nested_recipe_is_not_instantiated(self) -> None:
         from physicalai.capture import SharedCamera
@@ -171,7 +171,7 @@ class TestSharedCameraComponentConfig:
                     "class_path": "physicalai.capture.UVCCamera",
                     "init_args": {"device": 0, "backend": "v4l2"},
                 },
-                "service_name": "physicalai/camera/uvc/0/frame",
+                "service_name": "physicalai/camera/UVCCamera/0/frame",
             },
         }
         restored = instantiate(config)

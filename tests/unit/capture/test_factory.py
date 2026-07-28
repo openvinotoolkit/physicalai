@@ -6,13 +6,7 @@
 import pytest
 
 from physicalai.capture.discovery import discover_all
-from physicalai.capture.factory import create_camera
-from physicalai.capture.transport.builtin import (
-    builtin_class_path_for_type,
-    builtin_class_paths_for_type,
-    builtin_shared_type_tokens,
-    builtin_type_for_class_path,
-)
+from physicalai.capture.factory import _SHAREABLE_CLASS_PATHS, create_camera
 
 
 class TestCreateCamera:
@@ -37,64 +31,27 @@ class TestCreateCamera:
     def test_shared_builtin_uses_registry_class_path(self) -> None:
         cam = create_camera("uvc", shared=True, device=0, backend="v4l2")
         assert cam._camera is not None  # type: ignore[attr-defined]
-        assert cam._camera["class_path"] == builtin_class_path_for_type("uvc")  # type: ignore[attr-defined]
-        assert cam._service_name == "physicalai/camera/uvc/0/frame"  # type: ignore[attr-defined]
+        assert cam._camera["class_path"] == _SHAREABLE_CLASS_PATHS["uvc"]  # type: ignore[attr-defined]
+        assert cam._service_name == "physicalai/camera/UVCCamera/0/frame"  # type: ignore[attr-defined]
 
 
-class TestBuiltinSharedRegistry:
-    """Single source of truth for shareable type ↔ class_path."""
+class TestShareableClassPaths:
+    """The static token → class_path table must track the drivers it names."""
 
-    def test_shareable_tokens(self) -> None:
-        assert builtin_shared_type_tokens() == frozenset({"uvc", "realsense", "basler"})
-
-    def test_round_trip_uvc(self) -> None:
-        path = builtin_class_path_for_type("uvc")
-        assert path == "physicalai.capture.UVCCamera"
-        assert builtin_type_for_class_path(path) == "uvc"
-
-    def test_matches_export_config_when_importable(self) -> None:
-        from physicalai.capture.cameras.uvc import UVCCamera
-        from physicalai.config import resolve_public_class_path
-
-        assert builtin_class_path_for_type("uvc") == resolve_public_class_path(UVCCamera)
-
-    @pytest.mark.parametrize("token", ["uvc", "realsense", "basler"])
-    def test_static_table_matches_drivers(self, token: str) -> None:
-        """Every listed spelling must reach the driver the decorator declares."""
+    @pytest.mark.parametrize("token", sorted(_SHAREABLE_CLASS_PATHS))
+    def test_matches_export_config_when_importable(self, token: str) -> None:
+        """Keeps the hand-written table honest when the extra is installed."""
         from physicalai.config import import_dotted_path, resolve_public_class_path
 
-        paths = builtin_class_paths_for_type(token)
-        expected: object = None
+        class_path = _SHAREABLE_CLASS_PATHS[token]
+        driver: object = None
         try:
-            expected = import_dotted_path(paths[0])
+            driver = import_dotted_path(class_path)
         except (ImportError, AttributeError) as exc:  # optional camera extra absent
             pytest.skip(f"{token} driver is not installed: {exc}")
-        assert isinstance(expected, type)
-        assert resolve_public_class_path(expected) == paths[0]
+        assert isinstance(driver, type)
+        assert resolve_public_class_path(driver) == class_path
 
-        # Compare by defining name rather than identity: other tests reload
-        # driver modules with a mocked SDK, which replaces the class object.
-        defining = f"{expected.__module__}.{expected.__qualname__}"
-        assert defining == paths[-1]
-        for alias in paths[1:]:
-            try:
-                resolved = import_dotted_path(alias)
-            except (ImportError, AttributeError) as exc:  # optional camera extra absent
-                pytest.skip(f"{token} driver is not installed: {exc}")
-            else:
-                assert isinstance(resolved, type)
-                assert f"{resolved.__module__}.{resolved.__qualname__}" == defining
-
-    @pytest.mark.parametrize("token", ["uvc", "realsense", "basler"])
-    def test_every_spelling_maps_back_to_one_token(self, token: str) -> None:
-        for path in builtin_class_paths_for_type(token):
-            assert builtin_type_for_class_path(path) == token
-
-    def test_no_phantom_ip_genicam(self) -> None:
-        assert builtin_class_path_for_type("ip") is None
-        assert builtin_class_path_for_type("genicam") is None
-        assert builtin_type_for_class_path("physicalai.capture.IPCamera") is None
-        assert builtin_type_for_class_path("physicalai.capture.GenicamCamera") is None
 
 
 class TestDiscoverAll:

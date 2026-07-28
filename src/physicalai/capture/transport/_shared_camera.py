@@ -658,7 +658,7 @@ class SharedCamera(Camera):
 
     @property
     def device_id(self) -> str:
-        # service_name format: physicalai/camera/<type>/<device_id>/frame
+        # service_name format: physicalai/camera/<class_name>/<device_id>/frame
         parts = self._service_name.split("/")
         if (
             len(parts) >= _SERVICE_NAME_EXPECTED_PARTS

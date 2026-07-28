@@ -28,8 +28,6 @@ from physicalai.config import (
     validate_envelope,
 )
 
-from .builtin import builtin_type_for_class_path
-
 if TYPE_CHECKING:
     from physicalai.capture.camera import Camera
 
@@ -132,11 +130,10 @@ def derive_service_name(
 ) -> str:
     """Resolve iceoryx2 ``service_name`` for a camera ComponentConfig.
 
-    Built-in class paths derive ``physicalai/camera/{token}/{device_id}/frame``
-    via the transport class-path → type-token map, which accepts both the
-    public re-export and the internal spelling of each built-in driver.
-    Third-party / unknown class paths (including stub types without a shared
-    registry entry) require an explicit *service_name*.
+    Derives ``physicalai/camera/{class_name}/{device_id}/frame`` from the
+    terminal segment of ``class_path``, without importing it. The bare class
+    name collapses every spelling of one driver onto one publisher; distinct
+    classes sharing a name and device id need an explicit *service_name*.
 
     Args:
         camera: Normalized or raw camera ComponentConfig.
@@ -144,22 +141,11 @@ def derive_service_name(
 
     Returns:
         Concrete service name for the publisher envelope.
-
-    Raises:
-        ValueError: If *service_name* is omitted for a non-built-in class_path.
     """
     if service_name is not None:
         return service_name
 
-    class_path = str(camera["class_path"])
-    token = builtin_type_for_class_path(class_path)
-    if token is None:
-        msg = (
-            f"camera {class_path!r} requires an explicit service_name; "
-            "built-in derivation only covers shareable physicalai.capture "
-            "backends (uvc, realsense, basler)"
-        )
-        raise ValueError(msg)
+    class_name = str(camera["class_path"]).rsplit(".", 1)[-1]
 
     init_args = camera.get("init_args", {})
     if not isinstance(init_args, Mapping):
@@ -169,7 +155,7 @@ def derive_service_name(
     # the same service name for the same physical device.
     if isinstance(device_id, str) and device_id.startswith("/dev/"):
         device_id = Path(device_id).resolve().name
-    return f"physicalai/camera/{token}/{device_id}/frame"
+    return f"physicalai/camera/{class_name}/{device_id}/frame"
 
 
 @dataclass(frozen=True)

@@ -23,6 +23,16 @@ _SHARED_TRANSPORT_KEYS = frozenset({
     "color_mode",
 })
 
+# CameraType token → public class_path for ``create_camera(..., shared=True)``.
+# Static by necessity: subscriber hosts have no vendor SDK, so nothing here may
+# import a driver. Stub types (ip, genicam) are absent so shared spawn cannot
+# claim phantom coverage; test_factory.py checks values against @export_config.
+_SHAREABLE_CLASS_PATHS: dict[str, str] = {
+    "uvc": "physicalai.capture.UVCCamera",
+    "realsense": "physicalai.capture.RealSenseCamera",
+    "basler": "physicalai.capture.BaslerCamera",
+}
+
 
 def create_camera(camera_type: str, *, shared: bool = False, **kwargs: Any) -> Camera:  # noqa: ANN401
     """Create a camera by type name.
@@ -56,15 +66,11 @@ def create_camera(camera_type: str, *, shared: bool = False, **kwargs: Any) -> C
 
     if shared:
         from physicalai.capture.transport import SharedCamera  # noqa: PLC0415
-        from physicalai.capture.transport.builtin import (  # noqa: PLC0415
-            builtin_class_path_for_type,
-            builtin_shared_type_tokens,
-        )
 
-        class_path = builtin_class_path_for_type(camera_type)
+        class_path = _SHAREABLE_CLASS_PATHS.get(camera_type)
         if class_path is None:
             if camera_type in {t.value for t in CameraType}:
-                shareable = ", ".join(sorted(builtin_shared_type_tokens()))
+                shareable = ", ".join(sorted(_SHAREABLE_CLASS_PATHS))
                 msg = (
                     f"camera type {camera_type!r} does not support shared=True "
                     f"(no shareable driver for service-name derivation); "

@@ -380,7 +380,7 @@ class TestSharedCameraConstruction:
         )
         assert cam._camera is not None
         assert cam._camera["class_path"] == "physicalai.capture.UVCCamera"
-        assert cam._service_name == "physicalai/camera/uvc/0/frame"
+        assert cam._service_name == "physicalai/camera/UVCCamera/0/frame"
         assert cam.device_id == "0"
 
     def test_from_publisher(self) -> None:
@@ -405,7 +405,7 @@ class TestSharedCameraConstruction:
                 "init_args": {"serial_number": "12345"},
             },
         )
-        assert name == "physicalai/camera/realsense/12345/frame"
+        assert name == "physicalai/camera/RealSenseCamera/12345/frame"
 
     def test_basler_token_derivation(self) -> None:
         name = derive_service_name(
@@ -414,22 +414,27 @@ class TestSharedCameraConstruction:
                 "init_args": {"serial_number": "abc"},
             },
         )
-        assert name == "physicalai/camera/basler/abc/frame"
+        assert name == "physicalai/camera/BaslerCamera/abc/frame"
 
-    def test_third_party_requires_explicit_service_name(self) -> None:
-        with pytest.raises(ValueError, match="requires an explicit service_name"):
-            SharedCamera.from_config(
-                {"class_path": FAKE_CAMERA_CLASS, "init_args": {"width": 64}},
+    def test_third_party_derives_service_name(self) -> None:
+        """Derivation covers any class_path, not just shareable built-ins."""
+        cam = SharedCamera.from_config(
+            {"class_path": FAKE_CAMERA_CLASS, "init_args": {"device": 2, "width": 64}},
+        )
+        assert cam._service_name == "physicalai/camera/FakeCamera/2/frame"
+        assert cam.device_id == "2"
+
+    def test_aliased_spellings_derive_one_service_name(self) -> None:
+        """Two spellings of one driver must not spawn two publishers."""
+        names = {
+            derive_service_name({"class_path": path, "init_args": {"device": 0}})
+            for path in (
+                "physicalai.capture.UVCCamera",
+                "physicalai.capture.cameras.uvc.UVCCamera",
+                "physicalai.capture.cameras.uvc._camera.UVCCamera",
             )
-
-    def test_ip_genicam_class_paths_require_explicit_service_name(self) -> None:
-        """Stub / phantom paths are not in the shareable builtin map."""
-        for class_path in (
-            "physicalai.capture.IPCamera",
-            "physicalai.capture.GenicamCamera",
-        ):
-            with pytest.raises(ValueError, match="requires an explicit service_name"):
-                derive_service_name({"class_path": class_path, "init_args": {"device": 0}})
+        }
+        assert names == {"physicalai/camera/UVCCamera/0/frame"}
 
     def test_third_party_with_explicit_service_name(self) -> None:
         cam = SharedCamera.from_config(
@@ -472,7 +477,7 @@ class TestSharedCameraConstruction:
                     "init_args": {"serial_number": "0001"},
                 },
             )
-            assert camera._service_name == "physicalai/camera/realsense/0001/frame"
+            assert camera._service_name == "physicalai/camera/RealSenseCamera/0001/frame"
             leaked = sorted(
                 name for name in sys.modules
                 if name.startswith("physicalai.capture.cameras.realsense") or name == "pyrealsense2"
