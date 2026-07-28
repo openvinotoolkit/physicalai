@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/OVPhysicalAIheader.png" alt="OV Physical AI" width="100%">
+  <img src=docs/assets/OVPhysicalAIheader.png alt="OV Physical AI" width="100%">
 </p>
 
 <div align="center">

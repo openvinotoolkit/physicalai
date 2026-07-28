@@ -701,8 +701,6 @@ def run_mujoco_visualization(
         raise RuntimeError("Install mujoco before running the MuJoCo visualization cell.") from exc
 
     frame_count = min(max_rendered_frames, len(actions)) if actions is not None and len(actions) else max_rendered_frames
-    source = "scripted MuJoCo pick-and-place trajectory"
-
     model = mujoco.MjModel.from_xml_string(_mujoco_pick_place_xml())
     data = mujoco.MjData(model)
     renderer = mujoco.Renderer(model, height=640, width=960)
