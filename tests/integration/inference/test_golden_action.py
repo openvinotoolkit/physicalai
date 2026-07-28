@@ -75,6 +75,7 @@ Co-install notes (physicalai + physicalai-train in the same environment):
 from __future__ import annotations
 
 import importlib.metadata
+import importlib.util
 import inspect
 import json
 import logging
@@ -711,6 +712,7 @@ def dataset_observations(
         )
     except ImportError as exc:
         pytest.skip(f"physicalai-train / lerobot not installed: {exc}")
+        raise  # unreachable; satisfies type checker
 
 
 @pytest.fixture(
@@ -741,6 +743,7 @@ def golden_pair(
         from huggingface_hub import snapshot_download  # noqa: PLC0415
     except ImportError as exc:
         pytest.skip(f"huggingface_hub not installed: {exc}")
+        raise  # unreachable; satisfies type checker
 
     hf_kwargs: dict[str, Any] = {}
     if golden_cache_dir is not None:
@@ -752,6 +755,7 @@ def golden_pair(
         native_policy = _load_native_model(native_dir, family=spec.family)
     except (RuntimeError, ImportError) as exc:
         pytest.skip(f"[{spec.short_id}] native model load failed: {exc}")
+        raise  # unreachable; satisfies type checker
 
     return native_policy, ov_model, spec
 
