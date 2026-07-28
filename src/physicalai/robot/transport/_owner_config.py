@@ -9,22 +9,22 @@ pydantic model). Used by the foreground serve path and by the owner
 subprocess stdin handshake.
 
 The owner must construct the robot driver itself: a live serial/socket
-handle cannot cross a process boundary (D15). Only a trusted
+handle cannot cross a process boundary (D15). Only a local
 :class:`~physicalai.config.ComponentConfig` (``class_path`` + ``init_args``)
 survives that boundary — arbitrary robot types, including third-party
 plugins, work without any registry lookup here.
 
 Private stdin is ``robot: ComponentConfig`` only. The owner envelope is
 validated schema-positively: required ``robot``, known transport keys, and
-rejection of unknown keys (including legacy flat ``robot_class`` /
-``robot_kwargs``) before import or hardware access. Public ``SharedRobot``
-and ``physicalai robot serve`` use the same ``robot`` / ``--robot`` shape.
+rejection of unknown keys before import or hardware access. Public
+``SharedRobot`` and ``physicalai robot serve`` use the same
+``robot`` / ``--robot`` shape.
 
-Security: ``class_path`` is trusted local application/config input, exactly
-like a jsonargparse ``class_path`` (``docs/development/security.md`` rules
-4, 9, 11). It must never originate from network-received data (e.g. a
-``/metadata`` payload) — that would let an untrusted peer choose an
-arbitrary module to import.
+Security: ``class_path`` is local application/config input, exactly like a
+jsonargparse ``class_path`` (``docs/development/security.md`` rules 4, 9,
+11). It must never originate from network-received data (e.g. a
+``/metadata`` payload) — that would let a peer choose an arbitrary module to
+import.
 """
 
 from __future__ import annotations
@@ -54,8 +54,8 @@ debt. Override per instance with ``rate_hz`` when hardware measurements
 justify a different value for a specific robot class.
 """
 
-# Allowed keys on owner stdin handshake payloads. Everything else (including
-# legacy flat robot_class / robot_kwargs) is an unknown-key schema error.
+# Allowed keys on owner stdin handshake payloads. Everything else is an
+# unknown-key schema error.
 # Keep this the single allowlist — :meth:`RobotOwnerConfig.from_json_dict`
 # and any future reconfigure path should share :func:`validate_owner_config`.
 _OWNER_ENVELOPE_KEYS = frozenset({
@@ -214,9 +214,9 @@ class RobotOwnerConfig:
     def build(self) -> Robot:
         """Instantiate the robot driver described by this config.
 
-        Owner stdin is a trusted parent→child handshake only — never pass
+        Owner stdin is a parent→child local handshake only — never pass
         network metadata to this path. Uses :func:`physicalai.config.instantiate`
-        on the trusted ``robot`` ComponentConfig, then verifies the
+        on the ``robot`` ComponentConfig, then verifies the
         :class:`~physicalai.robot.Robot` protocol.
 
         Returns:

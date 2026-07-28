@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Dotted-path imports for trusted robot owner configuration.
+"""Dotted-path imports for robot owner configuration.
 
 Canonical implementation lives in :mod:`physicalai.config.importing`. This
 module re-exports for backward-compatible imports without loading export or

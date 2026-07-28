@@ -36,8 +36,8 @@ def validate_envelope(
     """Validate a transport stdin envelope schema-positively.
 
     Requires *component_key* with a valid ComponentConfig shape and allows
-    only *allowed_keys*. Unknown keys (including legacy flat shapes) raise a
-    clear schema error before any import or hardware access.
+    only *allowed_keys*. Unknown keys raise a clear schema error before any
+    import or hardware access.
 
     Args:
         data: Full stdin envelope dict.

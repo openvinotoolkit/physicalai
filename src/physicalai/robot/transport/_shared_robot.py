@@ -200,8 +200,9 @@ class SharedRobot:
         name: Required logical name — keys the Zenoh topics directly. Two
             instances constructed with the same *name* (anywhere reachable
             under the chosen transport scope) share one owner.
-        robot: Trusted driver :class:`~physicalai.config.ComponentConfig` to
-            spawn if no owner exists yet for *name*. ``None`` means
+        robot: Driver :class:`~physicalai.config.ComponentConfig` from local
+            config input (same boundary as CLI/app args), used
+            to spawn if no owner exists yet for *name*. ``None`` means
             attach-only — use :meth:`attach` for that case. Declared as an
             ``@export_config`` config arg, so nested
             :func:`~physicalai.config.instantiate` passes the recipe through
@@ -263,10 +264,10 @@ class SharedRobot:
         connect_timeout: float = 10.0,
         _session: object | None = None,
     ) -> SharedRobot:
-        """Primary API: spawn/attach from a trusted robot ComponentConfig.
+        """Primary API: spawn/attach from a local robot ComponentConfig.
 
         Args:
-            robot_config: Trusted ``class_path`` + ``init_args`` for the driver.
+            robot_config: Local ``class_path`` + ``init_args`` for the driver.
             name: Logical owner name (Zenoh topic key).
             allow_remote: Whether this session / spawned owner may leave localhost.
             rate_hz: Owner loop rate when this instance spawns the owner.
@@ -285,7 +286,7 @@ class SharedRobot:
             rate_hz=rate_hz,
             idle_timeout=idle_timeout,
             connect_timeout=connect_timeout,
-            **({} if _session is None else {"_session": _session}),
+            _session=_session,
         )
 
     @classmethod
@@ -313,9 +314,9 @@ class SharedRobot:
             A ``SharedRobot`` that never spawns an owner.
         """
         # Omit default None so @export_config does not capture "_session": null.
-        if _session is not None:
-            return cls(name, allow_remote=allow_remote, connect_timeout=connect_timeout, _session=_session)
-        return cls(name, allow_remote=allow_remote, connect_timeout=connect_timeout)
+        if _session is None:
+            return cls(name, allow_remote=allow_remote, connect_timeout=connect_timeout)
+        return cls(name, allow_remote=allow_remote, connect_timeout=connect_timeout, _session=_session)
 
     @property
     def _robot_class(self) -> str | None:
