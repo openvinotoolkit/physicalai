@@ -22,13 +22,21 @@ tokenizer stage for pi05 / smolvla — exactly the failure mode that caused the
 openvino pin in pyproject.toml.
 
 Run:
-    pytest -m ov_smoke -s                       # all models, all stages
+    pytest -m ov_smoke -s                       # lite mode — ACT + pi05 tokenizer
+    OV_SMOKE_FULL=1 pytest -m ov_smoke -s       # full mode — all models, all stages
     pytest -m ov_smoke -k pi05                  # pi05 only
     pytest -m ov_smoke -k "load or tokenizer"   # stages 1 and 2 only
 
 Environment:
     OV_SMOKE_CACHE_DIR   optional path for the HuggingFace model cache
                          (avoids re-downloading on repeated runs)
+    OV_SMOKE_FULL        set to ``1`` / ``true`` to enable full coverage:
+                         all three models across all stages with complete
+                         artifact downloads.  Default (unset) is lite mode:
+                         ACT load+predict (minimal download) + pi05 tokenizer
+                         stage (manifest + tokenizer files only via
+                         allow_patterns).  Lite mode is safe for GHA runners
+                         that cannot afford GB-scale downloads per run.
 """
 
 from __future__ import annotations
@@ -80,6 +88,7 @@ class _ModelSpec:
     repo_id: str
     has_tokenizer: bool
     observation: dict[str, Any]
+    revision: str | None = None  # commit SHA for reproducible downloads
 
     @property
     def short_id(self) -> str:
@@ -92,20 +101,36 @@ _ALL_MODELS: list[_ModelSpec] = [
         repo_id="OpenVINO/act-fp16-ov",
         has_tokenizer=False,
         observation={**_LIBERO_IMAGES, **_LIBERO_STATE},
+        revision="e266643956d97c54917ec8418211cd55687e5c39",
     ),
     _ModelSpec(
         repo_id="OpenVINO/pi05-libero-fp16-ov",
         has_tokenizer=True,
         observation={**_LIBERO_IMAGES, **_LIBERO_STATE, **_LIBERO_TASK},
+        revision="d85b932151f9b19b9f71661b4c2d59e553a70573",
     ),
     _ModelSpec(
         repo_id="OpenVINO/smolvla-libero-fp16-ov",
         has_tokenizer=True,
         observation={**_LIBERO_IMAGES, **_LIBERO_STATE, **_LIBERO_TASK},
+        revision="58467e632e7587c1a69b827d056ccc6506821593",
     ),
 ]
 
 _TOKENIZER_MODELS: list[_ModelSpec] = [m for m in _ALL_MODELS if m.has_tokenizer]
+
+# ---------------------------------------------------------------------------
+# Lite vs full coverage
+# ---------------------------------------------------------------------------
+# Lite mode (default): ACT load+predict + pi05 tokenizer-only download.
+# Full mode (OV_SMOKE_FULL=1): all models, all stages, full artifact download.
+_OV_SMOKE_FULL: bool = os.environ.get("OV_SMOKE_FULL", "").lower() in ("1", "true", "yes")
+
+_ACTIVE_MODELS: list[_ModelSpec] = _ALL_MODELS if _OV_SMOKE_FULL else [_ALL_MODELS[0]]
+_ACTIVE_TOKENIZER_MODELS: list[_ModelSpec] = _TOKENIZER_MODELS if _OV_SMOKE_FULL else [_TOKENIZER_MODELS[0]]
+
+# Files needed for the tokenizer stage only — skips multi-GB weight downloads.
+_TOKENIZER_ALLOW_PATTERNS: list[str] = ["manifest.json", "tokenizer.xml", "tokenizer.bin"]
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -164,31 +189,48 @@ def _report_ov_versions() -> None:
 
 @pytest.fixture(
     scope="session",
-    params=_ALL_MODELS,
+    params=_ACTIVE_MODELS,
     ids=lambda m: m.short_id,
 )
 def all_exports(
     request: pytest.FixtureRequest,
     smoke_cache_dir: Path | None,
 ) -> tuple[Path, _ModelSpec]:
-    """Download (or reuse cached) export dir for each model in *_ALL_MODELS*."""
+    """Download (or reuse cached) export dir for each active model.
+
+    In lite mode (default) this is ACT only.  In full mode (OV_SMOKE_FULL=1)
+    this covers all three models.
+    """
     spec: _ModelSpec = request.param
-    export_dir = download_from_hub(spec.repo_id, cache_dir=smoke_cache_dir)
+    export_dir = download_from_hub(spec.repo_id, revision=spec.revision, cache_dir=smoke_cache_dir)
     return export_dir, spec
 
 
 @pytest.fixture(
     scope="session",
-    params=_TOKENIZER_MODELS,
+    params=_ACTIVE_TOKENIZER_MODELS,
     ids=lambda m: m.short_id,
 )
 def tokenizer_exports(
     request: pytest.FixtureRequest,
     smoke_cache_dir: Path | None,
 ) -> tuple[Path, _ModelSpec]:
-    """Download (or reuse cached) export dir for tokenizer-bearing models."""
+    """Download (or reuse cached) tokenizer artifacts for tokenizer-bearing models.
+
+    In lite mode (default) only the tokenizer files are fetched
+    (``allow_patterns=["manifest.json", "tokenizer.xml", "tokenizer.bin"]``)
+    to avoid pulling the multi-GB model weights when only the tokenizer stage
+    is under test.  In full mode (OV_SMOKE_FULL=1) the entire snapshot is
+    downloaded.
+    """
     spec: _ModelSpec = request.param
-    export_dir = download_from_hub(spec.repo_id, cache_dir=smoke_cache_dir)
+    allow_patterns = None if _OV_SMOKE_FULL else _TOKENIZER_ALLOW_PATTERNS
+    export_dir = download_from_hub(
+        spec.repo_id,
+        revision=spec.revision,
+        cache_dir=smoke_cache_dir,
+        allow_patterns=allow_patterns,
+    )
     return export_dir, spec
 
 
