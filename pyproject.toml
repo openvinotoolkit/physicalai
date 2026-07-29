@@ -208,6 +208,8 @@ markers = [
     "integration: marks tests as integration tests",
     "v4l2: marks tests requiring V4L2 mocking (Linux only)",
     "transport: marks tests requiring iceoryx2",
+    "ov_smoke: OpenVINO smoke tests — three-stage contract (load, tokenizer, predict) against published HF exports",
+    "golden_action: OpenVINO golden-action tests — L2 comparison of OV vs native PyTorch action chunks",
 ]
 
 [tool.coverage.report]
