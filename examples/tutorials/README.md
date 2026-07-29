@@ -3,15 +3,50 @@
 Collection of notebooks that walk users through various end-to-end workflows. The notebooks here provide workflows for developers to get started with data collection, physical AI model fine tuning and testing the OpenVINO™ Physical AI APIs for deploying the trained policies.
 
 
-**Getting Started**
+## Getting Started
+
+Install the shared environment before starting any notebook. On Ubuntu 24.04,
+install the native build tools required by LeRobot and the LIBERO benchmark:
+
 ```bash
-pip install jupyter # if jupyter notebook is not already installed
-phython -m venv venv
-source venv/bin/activate
+sudo apt update
+sudo apt install -y build-essential libegl1 libgl1 python3-venv
+```
+
+Create the tutorial environment and install the shared Python requirements:
+
+```bash
 git clone https://github.com/openvinotoolkit/physicalai.git
-cd physicalai/examples/notebooks
+cd physicalai/examples/tutorials
+python3 -m venv venv
+source venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install --force-reinstall "cmake==3.31.10" ninja
+python -m pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt
+```
+
+Verify the environment manually before launching JupyterLab:
+
+```bash
+python -c "import torch, lerobot, openvino; print(torch.__version__, openvino.__version__)"
+python -c "import cmake; print(cmake.__version__)"
+which cmake
+cmake --version
+c++ --version
+export MUJOCO_GL=egl
 jupyter lab
 ```
+
+Individual notebooks may install a small number of workflow-specific packages
+in their first code cell. The CMake pin above is required by the LeRobot version
+used by the Physical AI Studio LIBERO benchmark. CMake 4 removes the legacy
+policy compatibility required by `egl_probe==1.0.2`; CMake 3.31 still supports
+it. The simulation notebook builds that probe without pip build isolation so it
+can use this CMake installation.
+
+On Linux, `MUJOCO_GL=egl` selects MuJoCo's hardware-accelerated headless
+renderer. Set it before starting JupyterLab because the rendering backend is
+chosen when MuJoCo is first imported.
 
 ### List of notebooks:
 

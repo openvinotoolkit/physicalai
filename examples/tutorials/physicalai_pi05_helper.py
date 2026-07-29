@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import json
-from io import BytesIO
+import os
+import sys
 import time
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -321,59 +323,6 @@ def openvino_config_for_device(cache_dir: Path) -> dict[str, str]:
     return {"CACHE_DIR": str(cache_dir)}
 
 
-def benchmark_pi05(
-    *,
-    model_dir: Path,
-    replay: ReplayEpisode,
-    task: str,
-    device: str,
-    cache_dir: Path,
-    runs: int = 5,
-) -> tuple[InferenceModel, dict[str, Any]]:
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    frames = {key: read_replay_rgb_sequence(replay, key, max_frames=1)[0] for key in replay.image_keys}
-    obs = make_policy_observation(frames, replay.episode_df.iloc[0]["observation.state"], task, replay.state_dim)
-
-    start = time.perf_counter()
-    model = InferenceModel.load(model_dir, backend="openvino", device=device, **openvino_config_for_device(cache_dir))
-    load_ms = (time.perf_counter() - start) * 1000
-
-    model.reset()
-    _ = model.predict_action_chunk(obs)
-    first_action = model.select_action(obs)
-    timings = []
-    for _ in range(runs):
-        model.reset()
-        start = time.perf_counter()
-        chunk = model.predict_action_chunk(obs)
-        timings.append((time.perf_counter() - start) * 1000)
-
-    avg_ms = float(np.mean(timings))
-    return model, {
-        "device": device,
-        "load_ms": load_ms,
-        "avg_ms": avg_ms,
-        "p50_ms": float(np.percentile(timings, 50)),
-        "p95_ms": float(np.percentile(timings, 95)),
-        "fps": float(1000 / avg_ms),
-        "chunk_shape": tuple(chunk.shape),
-        "select_action_shape": tuple(np.asarray(first_action).shape),
-    }
-
-
-def benchmark_with_fallback(**kwargs: Any) -> tuple[InferenceModel, dict[str, Any]]:
-    device = kwargs["device"]
-    try:
-        return benchmark_pi05(**kwargs)
-    except RuntimeError as exc:
-        print(f"[WARN] Pi0.5 OpenVINO failed on {device}: {type(exc).__name__}: {exc}")
-        if device == "CPU":
-            raise
-        print("[INFO] Falling back to CPU so the notebook can continue.")
-        kwargs["device"] = "CPU"
-        return benchmark_pi05(**kwargs)
-
-
 def _so101_points(values: np.ndarray, origin: tuple[int, int] = (590, 330), scale: float = 1.0) -> list[tuple[int, int]]:
     vals = np.asarray(values, dtype=np.float32)
     lengths = np.array([70, 58, 48, 34], dtype=np.float32) * scale
@@ -588,10 +537,24 @@ def _mujoco_pick_place_xml() -> str:
     <body name="base" pos="-0.48 -0.38 0.02">
       <geom type="cylinder" size="0.065 0.04" material="joint_dark"/>
       <geom type="capsule" fromto="0 0 0.03 0 0 0.40" size="0.015" material="joint_dark"/>
+      <geom type="sphere" pos="0 0 0.40" size="0.040" material="arm_blue"/>
+    </body>
+    <body name="upper_link">
+      <freejoint name="upper_link_free"/>
+      <geom type="capsule" fromto="0 0 -0.20 0 0 0.20" size="0.026" material="arm_blue" contype="0" conaffinity="0"/>
+    </body>
+    <body name="forearm_link">
+      <freejoint name="forearm_link_free"/>
+      <geom type="capsule" fromto="0 0 -0.21 0 0 0.21" size="0.023" material="arm_orange" contype="0" conaffinity="0"/>
+    </body>
+    <body name="elbow">
+      <freejoint name="elbow_free"/>
+      <geom type="sphere" size="0.038" material="joint_dark" contype="0" conaffinity="0"/>
     </body>
     <body name="ee" pos="0.24 -0.18 0.25">
       <freejoint name="ee_free"/>
       <geom type="capsule" fromto="0 0 0.22 0 0 0.02" size="0.018" material="arm_blue"/>
+      <geom type="sphere" pos="0 0 0.22" size="0.032" material="joint_dark"/>
       <geom type="box" pos="0 0 0" size="0.055 0.032 0.018" material="arm_orange"/>
       <body name="left_finger" pos="0 0.018 -0.055">
         <joint name="left_finger_slide" type="slide" axis="0 1 0" range="0 0.035"/>
@@ -602,7 +565,7 @@ def _mujoco_pick_place_xml() -> str:
         <geom type="box" pos="0 0 -0.03" size="0.014 0.006 0.045" material="arm_orange"/>
       </body>
     </body>
-    <camera name="overview" pos="0.72 -0.92 0.58" xyaxes="0.80 0.60 0.00 -0.32 0.43 0.85"/>
+    <camera name="overview" pos="1.02 -1.34 0.84" xyaxes="0.80 0.60 0.00 -0.21 0.28 0.94" fovy="50"/>
   </worldbody>
 </mujoco>
 """
@@ -619,6 +582,54 @@ def _segment(progress: float, start: float, end: float) -> float:
 
 def _interp(a: np.ndarray, b: np.ndarray, alpha: float) -> np.ndarray:
     return a * (1.0 - alpha) + b * alpha
+
+
+def _quat_from_z_axis(direction: np.ndarray) -> np.ndarray:
+    """Return a wxyz quaternion that rotates the local z-axis onto direction."""
+    vector = np.asarray(direction, dtype=np.float64)
+    vector /= max(float(np.linalg.norm(vector)), 1e-9)
+    dot = float(np.clip(vector[2], -1.0, 1.0))
+    if dot > 1.0 - 1e-8:
+        return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+    if dot < -1.0 + 1e-8:
+        return np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float64)
+
+    scale = np.sqrt(2.0 * (1.0 + dot))
+    axis = np.cross(np.array([0.0, 0.0, 1.0]), vector)
+    return np.array([0.5 * scale, *(axis / scale)], dtype=np.float64)
+
+
+def _link_pose(start: np.ndarray, end: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    return (start + end) * 0.5, _quat_from_z_axis(end - start)
+
+
+def _arm_link_poses(
+    ee_pos: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Solve a visual two-link arm from the fixed shoulder to the moving wrist."""
+    shoulder = np.array([-0.48, -0.38, 0.42], dtype=np.float64)
+    wrist = np.asarray(ee_pos, dtype=np.float64) + np.array([0.0, 0.0, 0.22])
+    upper_length = 0.40
+    forearm_length = 0.42
+
+    shoulder_to_wrist = wrist - shoulder
+    distance = float(np.linalg.norm(shoulder_to_wrist))
+    direction = shoulder_to_wrist / max(distance, 1e-9)
+    distance = float(np.clip(distance, abs(upper_length - forearm_length) + 1e-6, upper_length + forearm_length - 1e-6))
+
+    along = (upper_length**2 - forearm_length**2 + distance**2) / (2.0 * distance)
+    bend_height = np.sqrt(max(upper_length**2 - along**2, 0.0))
+    bend_direction = np.array([0.0, 0.0, 1.0]) - direction[2] * direction
+    bend_norm = float(np.linalg.norm(bend_direction))
+    if bend_norm < 1e-6:
+        bend_direction = np.array([0.0, 1.0, 0.0])
+    else:
+        bend_direction /= bend_norm
+
+    elbow = shoulder + direction * along + bend_direction * bend_height
+    upper_pos, upper_quat = _link_pose(shoulder, elbow)
+    forearm_pos, forearm_quat = _link_pose(elbow, wrist)
+    return upper_pos, upper_quat, forearm_pos, forearm_quat, elbow
 
 
 def _pick_place_state(frame_idx: int, total_frames: int) -> tuple[np.ndarray, np.ndarray, float]:
@@ -695,6 +706,9 @@ def run_mujoco_visualization(
     max_rendered_frames: int = 180,
 ) -> dict[str, Any]:
     """Render a scripted Cartesian gripper pick-and-place scene in MuJoCo."""
+    if sys.platform.startswith("linux"):
+        os.environ["MUJOCO_GL"] = "egl"
+
     try:
         import mujoco
     except ImportError as exc:
@@ -706,10 +720,16 @@ def run_mujoco_visualization(
     renderer = mujoco.Renderer(model, height=640, width=960)
     ee_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "ee_free")
     target_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "target_free")
+    upper_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "upper_link_free")
+    forearm_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "forearm_link_free")
+    elbow_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "elbow_free")
     left_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "left_finger_slide")
     right_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "right_finger_slide")
     ee_qpos_addr = int(model.jnt_qposadr[ee_joint_id])
     target_qpos_addr = int(model.jnt_qposadr[target_joint_id])
+    upper_qpos_addr = int(model.jnt_qposadr[upper_joint_id])
+    forearm_qpos_addr = int(model.jnt_qposadr[forearm_joint_id])
+    elbow_qpos_addr = int(model.jnt_qposadr[elbow_joint_id])
     left_qpos_addr = int(model.jnt_qposadr[left_joint_id])
     right_qpos_addr = int(model.jnt_qposadr[right_joint_id])
 
@@ -717,6 +737,7 @@ def run_mujoco_visualization(
     try:
         for frame_idx in range(frame_count):
             ee_pos, cube_pos, grip_gap = _pick_place_state(frame_idx, frame_count)
+            upper_pos, upper_quat, forearm_pos, forearm_quat, elbow_pos = _arm_link_poses(ee_pos)
             data.qpos[ee_qpos_addr : ee_qpos_addr + 7] = [ee_pos[0], ee_pos[1], ee_pos[2], 1.0, 0.0, 0.0, 0.0]
             data.qpos[target_qpos_addr : target_qpos_addr + 7] = [
                 cube_pos[0],
@@ -727,6 +748,9 @@ def run_mujoco_visualization(
                 0.0,
                 0.0,
             ]
+            data.qpos[upper_qpos_addr : upper_qpos_addr + 7] = [*upper_pos, *upper_quat]
+            data.qpos[forearm_qpos_addr : forearm_qpos_addr + 7] = [*forearm_pos, *forearm_quat]
+            data.qpos[elbow_qpos_addr : elbow_qpos_addr + 7] = [*elbow_pos, 1.0, 0.0, 0.0, 0.0]
             data.qpos[left_qpos_addr] = grip_gap
             data.qpos[right_qpos_addr] = grip_gap
             mujoco.mj_forward(model, data)
