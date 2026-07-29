@@ -129,6 +129,8 @@ def select_cameras_interactive(
     width: int,
     height: int,
     fps: int,
+    *,
+    shared: bool = True,
 ) -> dict[str, Camera]:
     """Discover cameras and let the user pick interactively via stdin.
 
@@ -140,9 +142,10 @@ def select_cameras_interactive(
         width: Requested frame width.
         height: Requested frame height.
         fps: Requested frame rate.
+        shared: Wrap each camera in :class:`SharedCamera` when ``True``.
 
     Returns:
-        Dict mapping user-chosen names to SharedCamera instances.
+        Dict mapping user-chosen names to camera instances.
         Empty dict if no cameras found or none selected.
     """
     from physicalai.capture.discovery import discover_all  # noqa: PLC0415
@@ -192,7 +195,7 @@ def select_cameras_interactive(
             kwargs["serial_number"] = device_id
         else:
             kwargs["device"] = device_id
-        cameras[name] = create_camera(driver, shared=True, **kwargs)
+        cameras[name] = create_camera(driver, shared=shared, **kwargs)
         logger.info("  Added '{}' ({}:{})", name, driver, device_id)
 
     return cameras

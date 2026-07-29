@@ -74,6 +74,15 @@ def main() -> None:
     robot_group.add_argument("--ip", help="Robot IP (widowxai)")
     robot_group.add_argument("--ip-left", help="Left arm IP (bimanual_widowxai)")
     robot_group.add_argument("--ip-right", help="Right arm IP (bimanual_widowxai)")
+    robot_group.add_argument(
+        "--shared-robot",
+        action="store_true",
+        help="Wrap the driver in SharedRobot (Zenoh transport)",
+    )
+    robot_group.add_argument(
+        "--robot-name",
+        help="Logical SharedRobot name (required with --shared-robot)",
+    )
 
     # Model
     model_group = parser.add_argument_group("model")
@@ -126,20 +135,20 @@ def main() -> None:
     # ── Load model ──
     latency_tracker = RTCLatencyTracker(window_size=100)
 
-    print(f"Loading model from {args.model} on {args.device} (this may take a minute)...", flush=True)
     model = InferenceModel(
         args.model,
         device=args.device,
         callbacks=[latency_tracker],
     )
-    print("Model loaded.")
 
     # ── Build robot & cameras ──
     robot = build_robot(args)
     if args.cameras:
         cameras = parse_camera_specs(args.cameras, args.cam_width, args.cam_height, args.cam_fps, shared=args.shared_camera)
     else:
-        cameras = select_cameras_interactive(args.cam_width, args.cam_height, args.cam_fps)
+        cameras = select_cameras_interactive(
+            args.cam_width, args.cam_height, args.cam_fps, shared=args.shared_camera,
+        )
 
     # ── RTC queue and execution ──
     rtc_queue = RTCActionQueue()

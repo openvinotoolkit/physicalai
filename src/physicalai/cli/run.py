@@ -6,12 +6,13 @@
 from __future__ import annotations
 
 import json
-import logging
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import yaml
 from jsonargparse import ActionConfigFile, ArgumentParser
+from loguru import logger
 
 from physicalai.cli._spec import SubcommandSpec  # noqa: PLC2701
 
@@ -19,8 +20,6 @@ if TYPE_CHECKING:
     from jsonargparse import Namespace
 
     from physicalai.runtime import RobotRuntime
-
-logger = logging.getLogger(__name__)
 
 HELP = "Run a trained policy (or any action source) on robot hardware."
 _HELP_TEMPLATE = """usage: {prog} --config CONFIG [--run.duration_s SECONDS]
@@ -31,6 +30,7 @@ options:
   -h, --help                    Show this help message and exit.
   --config CONFIG               YAML/JSON runtime config file.
   --run.duration_s SECONDS      Stop after the given duration in seconds.
+  --verbose                     Enable debug logging during startup and runtime.
 
 Runtime constructor arguments are available under --runtime.* when executing
 the command. Use --print_config with a complete command to inspect the full
@@ -116,6 +116,11 @@ def build_parser() -> ArgumentParser:
 
     parser = ArgumentParser(prog="physicalai run", description=HELP)
     parser.add_argument("--config", action=_RuntimeConfigFile, help="YAML/JSON config file.")
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable debug logging during startup and runtime.",
+    )
     parser.add_class_arguments(RobotRuntime, "runtime")
     parser.add_method_arguments(RobotRuntime, "run", "run")
     return parser
@@ -124,6 +129,17 @@ def build_parser() -> ArgumentParser:
 def print_help(prog: str) -> None:
     """Print lightweight help without building the full runtime parser."""
     print(_HELP_TEMPLATE.format(prog=prog, description=HELP))  # noqa: T201
+
+
+def _configure_run_logging(*, verbose: bool) -> None:
+    """Configure concise process-wide Loguru output for ``physicalai run``."""
+    logger.remove()
+    logger.add(
+        sys.stderr,
+        level="TRACE" if verbose else "INFO",
+        format="<green>{time:HH:mm:ss}</green>  <level>{level: <8}</level> {message}",
+        colorize=sys.stderr.isatty(),
+    )
 
 
 def run(parser: ArgumentParser, cfg: Namespace) -> int:
@@ -136,6 +152,7 @@ def run(parser: ArgumentParser, cfg: Namespace) -> int:
     Returns:
         Process exit code (``0`` on success).
     """
+    _configure_run_logging(verbose=bool(getattr(cfg, "verbose", False)))
     init = parser.instantiate(cfg)
     runtime: RobotRuntime = init.runtime
     run_kwargs: dict = {}
@@ -146,7 +163,7 @@ def run(parser: ArgumentParser, cfg: Namespace) -> int:
     with runtime:
         steps = runtime.run(**run_kwargs)
 
-    logger.info("Run complete: %d steps", steps)
+    logger.info("Run complete: {} steps", steps)
     return 0
 
 

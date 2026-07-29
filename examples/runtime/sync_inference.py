@@ -67,6 +67,15 @@ def main() -> None:
     robot_group.add_argument("--ip", help="Robot IP (widowxai)")
     robot_group.add_argument("--ip-left", help="Left arm IP (bimanual_widowxai)")
     robot_group.add_argument("--ip-right", help="Right arm IP (bimanual_widowxai)")
+    robot_group.add_argument(
+        "--shared-robot",
+        action="store_true",
+        help="Wrap the driver in SharedRobot (Zenoh transport)",
+    )
+    robot_group.add_argument(
+        "--robot-name",
+        help="Logical SharedRobot name (required with --shared-robot)",
+    )
 
     # Model
     model_group = parser.add_argument_group("model")
@@ -88,6 +97,11 @@ def main() -> None:
     rt_group.add_argument("--fps", type=float, default=30.0, help="Control loop FPS (default: 30)")
     rt_group.add_argument("--duration-s", type=float, default=60.0, help="Duration in seconds")
     rt_group.add_argument("--task", type=str, default=None, help="Task string for the model (e.g. 'pick up the can')")
+    rt_group.add_argument(
+        "--shared-camera",
+        action="store_true",
+        help="Use SharedCamera (iceoryx2 transport) — faster but incompatible with debugger",
+    )
     rt_group.add_argument("--request-threshold", type=float, default=0.5, help="Request new inference when queue drops below this fraction of chunk_size (default: 0.75 = trigger when 75%% of actions remain)")
     rt_group.add_argument(
         "--export-config",
@@ -104,16 +118,16 @@ def main() -> None:
     args = parser.parse_args()
 
     # ── Load model ──
-    print(f"Loading model from {args.model} on {args.device}...", flush=True)
     model = InferenceModel(args.model, device=args.device)
-    print("Model loaded.")
 
-    # ── Build robot & cameras (direct, no shared memory — debugger-safe) ──
+    # ── Build robot & cameras ──
     robot = build_robot(args)
     if args.cameras:
-        cameras = parse_camera_specs(args.cameras, args.cam_width, args.cam_height, args.cam_fps, shared=False)
+        cameras = parse_camera_specs(args.cameras, args.cam_width, args.cam_height, args.cam_fps, shared=args.shared_camera)
     else:
-        cameras = select_cameras_interactive(args.cam_width, args.cam_height, args.cam_fps)
+        cameras = select_cameras_interactive(
+            args.cam_width, args.cam_height, args.cam_fps, shared=args.shared_camera,
+        )
 
     # ── Callbacks ──
     callbacks: list = []
