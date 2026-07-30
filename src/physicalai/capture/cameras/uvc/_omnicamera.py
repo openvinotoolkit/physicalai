@@ -4,10 +4,11 @@
 from __future__ import annotations
 
 import contextlib
-import re
 import sys
 import time
-from typing import TYPE_CHECKING, Any, cast
+from collections import Counter
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 import numpy as np
 import pynokhwa as omni_camera  # rename omni_camera references
@@ -23,6 +24,53 @@ if TYPE_CHECKING:
 
 _MISSING_DEP_PKG = "omni_camera"
 _MISSING_DEP_EXTRA = "capture"
+
+_SYSFS_V4L2 = Path("/sys/class/video4linux")
+
+
+class _UsbIdentity(NamedTuple):
+    """USB identity of the device owning a V4L2 node."""
+
+    devpath: str
+    """USB device path, e.g. ``3-6.1``. Unique per physical port."""
+
+    model_key: tuple[str, str, str]
+    """``(idVendor, idProduct, serial)``.
+
+    An unreported serial is empty, which is itself a collision key: udev omits
+    it from the by-id name, so every unit of such a model claims one path.
+    """
+
+
+def _usb_identity(index: int) -> _UsbIdentity | None:
+    """Read the USB identity of a V4L2 node from sysfs.
+
+    This is used purely as *evidence about* the ``/dev/v4l/by-id`` paths and
+    never as an identifier itself. Those paths are derived from the USB
+    iSerial, so they cannot witness their own uniqueness: when a vendor ships
+    one serial for every unit of a model, two cameras claim the same by-id
+    name and udev materialises it for only one of them.
+
+    Args:
+        index: V4L2 node index, i.e. the ``N`` in ``/dev/videoN``.
+
+    Returns:
+        Identity of the owning USB device, or None when it cannot be read
+        (non-Linux, non-USB device, or unreadable sysfs).
+    """
+    try:
+        path = (_SYSFS_V4L2 / f"video{index}" / "device").resolve(strict=True)
+        while not (path / "idVendor").exists():
+            if path.parent == path:
+                return None
+            path = path.parent
+        attrs = tuple(
+            (path / name).read_text().strip() if (path / name).exists() else ""
+            for name in ("idVendor", "idProduct", "serial")
+        )
+    except OSError:
+        return None
+    return _UsbIdentity(devpath=path.name, model_key=cast("tuple[str, str, str]", attrs))
 
 
 class OmniCamera(Camera):
@@ -244,40 +292,41 @@ class OmniCamera(Camera):
         from physicalai.capture.discovery import DeviceInfo  # noqa: PLC0415
 
         infos = omni_camera.query(only_usable=only_usable)
+        on_linux = sys.platform.startswith("linux")
+        usb = {info.index: _usb_identity(info.index) for info in infos} if on_linux else {}
 
-        if sys.platform.startswith("linux"):
-            # V4L2 exposes multiple /dev/videoN nodes per physical camera
-            # (e.g. capture + metadata with distinct by-id paths like
-            # ...-video-index0 and ...-video-index1). Keep only the lowest-
-            # index node per physical device (index0 = capture, index1+ = metadata).
+        if on_linux:
+            # V4L2 exposes several /dev/videoN nodes per physical camera
+            # (capture, metadata, ...). Every node of one camera resolves to
+            # the same USB device path and no two cameras ever share one, so
+            # it groups nodes correctly even when by-id paths collide. Keep
+            # the lowest node index per device: that is the capture node.
             phys_best: dict[str, omni_camera.CameraInfo] = {}
             for info in infos:
-                uid = info.unique_id or ""
-                # Only group by stripped key when the V4L2 multi-node
-                # suffix is present (e.g. ...-video-index0 / -video-index1).
-                # Cameras without that suffix keep their own index key so
-                # genuinely separate devices sharing a serial are not collapsed.
-                if uid and re.search(r"-video-index\d+$", uid):
-                    phys_key = re.sub(r"-video-index\d+$", "", uid)
-                else:
-                    phys_key = str(info.index)
+                identity = usb.get(info.index)
+                phys_key = identity.devpath if identity else str(info.index)
                 if phys_key not in phys_best or info.index < phys_best[phys_key].index:
                     phys_best[phys_key] = info
             infos = list(phys_best.values())
 
-        # Some vendors/models bake the same USB iSerial into every
-        # unit of a model. When a unique_id appears more than once it cannot
-        # identify a specific device, so demote those entries to index-based
-        # fingerprints and let the user manage cable-to-config mapping.
-        unique_id_counts: dict[str, int] = {}
-        for info in infos:
-            if info.unique_id:
-                unique_id_counts[info.unique_id] = unique_id_counts.get(info.unique_id, 0) + 1
-        colliding_ids = {uid for uid, count in unique_id_counts.items() if count > 1}
+        # Some vendors bake the same USB descriptors into every unit of a
+        # model. Both units then claim one /dev/v4l/by-id name, so the by-id
+        # that does exist denotes either camera and must not be trusted. Count
+        # physical devices per model to detect that; counting after dedup
+        # keeps the extra nodes of a single camera from looking like a twin.
+        model_counts = Counter(identity.model_key for info in infos if (identity := usb.get(info.index)) is not None)
+        # Backends without sysfs evidence (macOS, Windows) can only report the
+        # weaker signal of two devices literally advertising the same id.
+        duplicate_ids = {
+            uid for uid, count in Counter(info.unique_id for info in infos if info.unique_id).items() if count > 1
+        }
 
         devices: list[DeviceInfo] = []
         for info in infos:
-            has_collision = bool(info.unique_id) and info.unique_id in colliding_ids
+            identity = usb.get(info.index)
+            has_collision = (identity is not None and model_counts[identity.model_key] > 1) or (
+                info.unique_id in duplicate_ids
+            )
             stable = bool(info.id_stable and info.unique_id and not has_collision)
             devices.append(
                 DeviceInfo(
