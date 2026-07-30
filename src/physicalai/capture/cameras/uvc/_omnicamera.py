@@ -43,20 +43,14 @@ class _UsbIdentity(NamedTuple):
 
 
 def _usb_identity(index: int) -> _UsbIdentity | None:
-    """Read the USB identity of a V4L2 node from sysfs.
+    """Return USB identity for the device behind ``/dev/video<index>``.
 
-    This is used purely as *evidence about* the ``/dev/v4l/by-id`` paths and
-    never as an identifier itself. Those paths are derived from the USB
-    iSerial, so they cannot witness their own uniqueness: when a vendor ships
-    one serial for every unit of a model, two cameras claim the same by-id
-    name and udev materialises it for only one of them.
-
-    Args:
-        index: V4L2 node index, i.e. the ``N`` in ``/dev/videoN``.
+    On Linux, walk from ``/sys/class/video4linux/video<index>/device`` to the
+    owning USB node and read ``idVendor``, ``idProduct``, and ``serial``.
 
     Returns:
-        Identity of the owning USB device, or None when it cannot be read
-        (non-Linux, non-USB device, or unreadable sysfs).
+        The owning device's identity, or None on non-Linux platforms and when
+        sysfs does not expose the required attributes.
     """
     if not sys.platform.startswith("linux"):
         return None
@@ -76,20 +70,10 @@ def _usb_identity(index: int) -> _UsbIdentity | None:
 
 
 def _device_key(info: omni_camera.CameraInfo, usb: dict[int, _UsbIdentity | None]) -> str:
-    """Key a query entry by the physical device behind it.
-
-    Two entries share a key when they are the same camera. The USB device path
-    does that job: a camera's several ``/dev/videoN`` entries (capture,
-    metadata, ...) all sit on one path, and no two cameras share one -- unlike
-    a by-id path, which twins do share.
-
-    Args:
-        info: The query entry to key.
-        usb: Identity per video index, from :func:`_usb_identity`.
+    """Key an entry by the camera behind it: its USB device path, or its own index.
 
     Returns:
-        The USB device path, or the entry's own video index where sysfs said
-        nothing (non-USB device, macOS, Windows), which keys it on its own.
+        A key two entries share only when they are the same camera.
     """
     identity = usb.get(info.index)
     return identity.devpath if identity else str(info.index)
