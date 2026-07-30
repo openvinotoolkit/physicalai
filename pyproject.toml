@@ -153,6 +153,10 @@ unfixable = []
 "src/physicalai/capture/transport/_header.py" = ["RUF012"]
 "src/physicalai/capture/transport/_publisher.py" = ["S603"]
 "src/physicalai/robot/transport/_owner.py" = ["S603"]
+"src/physicalai/config/base.py" = ["DOC201", "DOC501", "PLC0415", "ANN401", "A002"]
+"src/physicalai/config/instantiate.py" = ["DOC201", "DOC501", "ANN401", "TRY004"]
+"src/physicalai/config/mixin.py" = ["DOC201", "DOC501"]
+"src/physicalai/config/serializable.py" = ["DOC201", "DOC501", "PLR0911", "BLE001"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 15

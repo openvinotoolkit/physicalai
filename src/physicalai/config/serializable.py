@@ -1,6 +1,5 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
-# ruff: file-ignore[docstring-missing-returns, docstring-missing-exception]
 
 """Serialization utilities for typed dataclass configs."""
 
@@ -24,7 +23,7 @@ _T = TypeVar("_T")
 __all__ = ["dataclass_to_dict", "dict_to_dataclass"]
 
 
-def dataclass_to_dict(obj: object, *, recursive: bool = True) -> object:  # ruff: ignore[too-many-return-statements]
+def dataclass_to_dict(obj: object, *, recursive: bool = True) -> object:
     """Convert a dataclass or nested structure to plain Python data."""
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         if not recursive:
@@ -50,7 +49,7 @@ def dict_to_dataclass(cls: type[_T], data: Mapping[str, object]) -> _T:
         raise TypeError(msg)
     try:
         hints = get_type_hints(cls)
-    except Exception:  # ruff: ignore[blind-except]
+    except Exception:
         hints = {}
     kwargs = {}
     for field in dataclasses.fields(cls):
@@ -59,7 +58,7 @@ def dict_to_dataclass(cls: type[_T], data: Mapping[str, object]) -> _T:
     return cls(**kwargs)  # type: ignore[return-value]
 
 
-def _reconstruct_value(value: object, field_type: object) -> object:  # ruff: ignore[too-many-return-statements]
+def _reconstruct_value(value: object, field_type: object) -> object:
     if value is None:
         return None
     origin = get_origin(field_type)

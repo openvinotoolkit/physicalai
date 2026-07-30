@@ -6,8 +6,8 @@ dependency.
 
 ## Skills
 
-| Skill | Scope |
-| ----- | ----- |
+| Skill                                                                                       | Scope                                                                             |
+| ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
 | [`physicalai-runtime-working-with-config`](physicalai-runtime-working-with-config/SKILL.md) | `Config`, `@export_config`, `instantiate_obj`, `FromConfig`, YAML, trust boundary |
 
 ## Docs

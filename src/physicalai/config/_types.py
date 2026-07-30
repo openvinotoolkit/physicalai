@@ -11,7 +11,7 @@ JsonScalar = None | bool | int | float | str
 JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 
 
-class _ConfigDict(TypedDict):
+class ValidatedConfigDict(TypedDict):
     class_path: str
     init_args: dict[str, JsonValue]
 

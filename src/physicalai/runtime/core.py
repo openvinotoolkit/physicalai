@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Protocol, Self
 
 from physicalai.capture.errors import CaptureError
 from physicalai.config import export_config
-from physicalai.runtime._callback_bus import _CallbackBus
+from physicalai.runtime._callback_bus import _CallbackBus  # noqa: PLC2701
 from physicalai.runtime.events import LifecycleEvent, TickEvent
 from physicalai.runtime.execution.base import WorkerDiedError
 
@@ -55,7 +55,7 @@ def _unwrap_runtime_document(document: dict[str, Any], *, target: type) -> dict[
     if "class_path" not in document:
         return document
 
-    from physicalai.config import (
+    from physicalai.config import (  # noqa: PLC0415
         ConfigError,
         import_dotted_path,
         validate_config,
@@ -105,7 +105,7 @@ class RuntimeCallback(Protocol):
 class RobotRuntime:
     """Generic robot runtime loop with a required, pluggable action source."""
 
-    def __init__(
+    def __init__(  # noqa: D107
         self,
         robot: Robot,
         action_source: ActionSource,
@@ -204,11 +204,11 @@ class RobotRuntime:
 
         self._connected = False
 
-    def __enter__(self) -> Self:
+    def __enter__(self) -> Self:  # noqa: D105
         self.connect()
         return self
 
-    def __exit__(self, *exc_info: object) -> None:
+    def __exit__(self, *exc_info: object) -> None:  # noqa: D105
         self.disconnect()
 
     @classmethod
@@ -225,9 +225,12 @@ class RobotRuntime:
 
         Returns:
             Instantiated runtime object.
+
+        Raises:
+            TypeError: If the file root is not a mapping.
         """
-        import yaml
-        from jsonargparse import ArgumentParser
+        import yaml  # noqa: PLC0415
+        from jsonargparse import ArgumentParser  # noqa: PLC0415
 
         document = yaml.safe_load(Path(config).read_text(encoding="utf-8"))
         if not isinstance(document, dict):

@@ -53,11 +53,11 @@ metadata produced during export.
 Runtime also ships helpers used heavily by Physical AI Studio and
 `jsonargparse`-driven CLIs:
 
-| Entry point | Use when |
-| ----------- | -------- |
-| [`instantiate_obj`](../how-to/config/instantiate-objects.md) | Generic loaders; class chosen by config |
-| [`FromConfig` / `@from_config`](../how-to/config/use-from-config.md) | Class-level `from_yaml`, `from_dict`, `from_config` |
-| [`Config` dataclass subclasses](../how-to/config/instantiate-components.md) | Typed hyperparameter objects with save/load |
+| Entry point                                                                 | Use when                                            |
+| --------------------------------------------------------------------------- | --------------------------------------------------- |
+| [`instantiate_obj`](../how-to/config/instantiate-objects.md)                | Generic loaders; class chosen by config             |
+| [`FromConfig` / `@from_config`](../how-to/config/use-from-config.md)        | Class-level `from_yaml`, `from_dict`, `from_config` |
+| [`Config` dataclass subclasses](../how-to/config/instantiate-components.md) | Typed hyperparameter objects with save/load         |
 
 Code and tests live under `src/physicalai/config/` and `tests/unit/config/`.
 Studio consumes this package and does not ship a duplicate `physicalai.config`

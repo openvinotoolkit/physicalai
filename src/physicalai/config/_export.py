@@ -24,7 +24,7 @@ from ._types import (
     _MAX_CONFIG_DEPTH,
     _NORMALIZE_CAPTURED_INIT_ARGS_ATTR,
     JsonValue,
-    _ConfigDict,
+    ValidatedConfigDict,
 )
 from .importing import import_dotted_path
 
@@ -170,7 +170,7 @@ def _export_instance(
     _path: str = "",
     _depth: int = 0,
     _seen: set[int] | None = None,
-) -> _ConfigDict:
+) -> ValidatedConfigDict:
     """Export an opted-in live component as JSON-safe ``class_path`` + ``init_args``.
 
     Nested constructor values may be components (``@export_config``) or domain
@@ -225,7 +225,7 @@ def _export_instance(
 
 def to_config(value: object) -> Config:
     """Return the canonical recipe for an ``@export_config`` instance."""
-    from .base import Config
+    from .base import Config  # noqa: PLC0415
 
     return Config.from_instance(value)
 

@@ -146,7 +146,7 @@ class RobotOwnerConfig:
         ):
             msg = f"idle_timeout must be finite and greater than zero, got {self.idle_timeout!r}"
             raise ValueError(msg)
-        from ._ids import validate_name
+        from ._ids import validate_name  # noqa: PLC0415
 
         validate_name(self.name)
         object.__setattr__(self, "robot", normalize_robot_config(self.robot))
@@ -222,7 +222,7 @@ class RobotOwnerConfig:
         Raises:
             TypeError: If the instantiated object does not satisfy ``Robot``.
         """
-        from physicalai.robot.interface import Robot
+        from physicalai.robot.interface import Robot  # noqa: PLC0415
 
         driver = normalize_robot_config(self.robot).instantiate()
         if not isinstance(driver, Robot):

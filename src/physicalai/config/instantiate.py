@@ -1,6 +1,5 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
-# ruff: file-ignore[docstring-missing-returns, docstring-missing-exception, type-check-without-type-error]
 
 """General configuration instantiation helpers."""
 
@@ -43,7 +42,7 @@ def import_class(class_path: str) -> type:
     return value
 
 
-def _instantiate_recursive(value: Any) -> Any:  # ruff: ignore[any-type]
+def _instantiate_recursive(value: Any) -> Any:
     if isinstance(value, dict):
         if "class_path" in value:
             return Config.from_dict(value).instantiate()

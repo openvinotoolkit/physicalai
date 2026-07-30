@@ -30,7 +30,7 @@ from ._export import (
     resolve_public_class_path,
     to_config,
 )
-from ._instantiate import instantiate as _instantiate
+from ._instantiate import instantiate as _strict_instantiate
 from ._normalize import validate_config
 from ._types import ConfigValue, JsonScalar, JsonValue
 from ._yaml import load_yaml, save_yaml, to_yaml
@@ -39,9 +39,7 @@ from .importing import import_dotted_path
 from .instantiate import import_class, instantiate_obj
 from .mixin import FromConfig, from_config
 
-# Importing the public ``instantiate`` helper module sets the package attribute
-# to that module; restore the canonical strict function on the package API.
-instantiate = _instantiate
+instantiate = _strict_instantiate  # noqa: RUF067
 
 __all__ = [
     "Config",

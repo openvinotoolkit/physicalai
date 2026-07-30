@@ -1,6 +1,5 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
-# ruff: file-ignore[docstring-missing-returns, docstring-missing-exception]
 
 """Unified construction-recipe and typed-dataclass configuration class."""
 
@@ -28,7 +27,7 @@ class Config:
         if type(self) is not Config:
             msg = "Config subclasses must be dataclasses"
             raise TypeError(msg)
-        from ._normalize import normalize_config  # ruff: ignore[import-outside-top-level]
+        from ._normalize import normalize_config
 
         validated = normalize_config({"class_path": class_path, "init_args": dict(init_args or {})})
         self.class_path = validated["class_path"]
@@ -40,7 +39,7 @@ class Config:
         if cls is not Config:
             msg = "from_instance() constructs the direct Config recipe type"
             raise TypeError(msg)
-        from ._export import _export_instance  # ruff: ignore[import-outside-top-level]
+        from ._export import _export_instance
 
         recipe = _export_instance(instance)
         return cls(recipe["class_path"], recipe["init_args"])
@@ -62,7 +61,7 @@ class Config:
     def from_dict(cls, data: Mapping[str, Any]) -> Self:
         """Parse a direct recipe or reconstruct a typed dataclass config."""
         if cls is Config:
-            from ._normalize import normalize_config  # ruff: ignore[import-outside-top-level]
+            from ._normalize import normalize_config
 
             validated = normalize_config(data)
             return cls(validated["class_path"], validated["init_args"])
@@ -76,7 +75,7 @@ class Config:
         if type(self) is not Config:
             msg = "instantiate() is only available on a direct Config recipe"
             raise TypeError(msg)
-        from ._instantiate import instantiate  # ruff: ignore[import-outside-top-level]
+        from ._instantiate import instantiate
 
         return instantiate(self)
 
@@ -93,7 +92,7 @@ class Config:
         self,
         path: str | Path,
         *,
-        format: Literal["jsonargparse", "dict"] = "jsonargparse",  # ruff: ignore[builtin-argument-shadowing]
+        format: Literal["jsonargparse", "dict"] = "jsonargparse",
     ) -> None:
         """Save this config to YAML."""
         target = Path(path)

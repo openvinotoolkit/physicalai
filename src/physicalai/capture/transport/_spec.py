@@ -220,7 +220,7 @@ class CameraPublisherConfig:
         Raises:
             TypeError: If the instantiated object does not satisfy ``Camera``.
         """
-        from physicalai.capture.camera import Camera
+        from physicalai.capture.camera import Camera  # noqa: PLC0415
 
         driver = normalize_camera_config(self.camera).instantiate()
         if not isinstance(driver, Camera):
