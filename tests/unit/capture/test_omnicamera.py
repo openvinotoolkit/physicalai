@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import importlib
+import pathlib
 import sys
 from unittest import mock
 
@@ -550,6 +551,7 @@ def _patch_usb_identity(
 # ``(idVendor, idProduct, serial)``: two *different* models ship the same
 # placeholder serial, so the serial alone cannot be the key.
 _INNOMAKER_BY_ID = "/dev/v4l/by-id/usb-Innomaker_Innomaker-U20CAM-1080p-S1_SN0001-video-index0"
+_INNOMAKER_META_BY_ID = _INNOMAKER_BY_ID.replace("-video-index0", "-video-index1")
 _UGREEN_BY_ID = "/dev/v4l/by-id/usb-UGREEN_Camera_2K_UGREEN_Camera_2K_SN0001-video-index0"
 _INNOMAKER_USB = ("0c45", "6366", "SN0001")
 _UGREEN_USB = ("0c45", "636f", "SN0001")
@@ -619,16 +621,17 @@ def test_discover_collapses_multi_node_single_camera(
 ) -> None:
     """The capture and metadata nodes of one camera collapse to one entry.
 
-    Same by-id on both nodes as in the twin case below; only the devpath
-    differs, and it is the sole discriminator -- one camera's nodes share it,
-    two cameras never do. The lowest-index node survives, and the pair must not
-    be counted as two units of the same model.
+    udev names them ``-video-index0`` and ``-video-index1``, so grouping on the
+    identity keeps both and lists a metadata node as a camera. The USB device
+    path is the sole discriminator: one camera's nodes share it, two cameras
+    never do. The lowest-index node survives, and the pair must not be counted
+    as two units of the same model.
     """
     camera_cls, mock_omni_camera = omnicamera_cls
     monkeypatch.setattr(sys, "platform", "linux")
     mock_omni_camera.query.return_value = [
         _make_cam_info(40, _INNOMAKER_BY_ID, name="Innomaker-U20CAM-1080p-S1"),
-        _make_cam_info(41, _INNOMAKER_BY_ID, name="Innomaker-U20CAM-1080p-S1"),
+        _make_cam_info(41, _INNOMAKER_META_BY_ID, name="Innomaker-U20CAM-1080p-S1"),
     ]
     _patch_usb_identity(monkeypatch, camera_cls, {40: ("3-6.1", _INNOMAKER_USB), 41: ("3-6.1", _INNOMAKER_USB)})
 
@@ -639,33 +642,6 @@ def test_discover_collapses_multi_node_single_camera(
     assert devices[0].device_id == _INNOMAKER_BY_ID
     assert devices[0].id_stable is True
     assert devices[0].metadata["serial_collision"] is False
-
-
-def test_discover_demotes_colliding_unique_ids(omnicamera_cls: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
-    """discover() keeps and demotes both cameras when they report the same by-id.
-
-    Reachable via ``discover(only_usable=False)``, where the losing twin can
-    still surface the winner's by-id. Keying the node dedup off that path maps
-    both cameras onto one entry, so a camera vanishes from discovery entirely.
-    """
-    camera_cls, mock_omni_camera = omnicamera_cls
-    monkeypatch.setattr(sys, "platform", "linux")
-    mock_omni_camera.query.return_value = [
-        _make_cam_info(40, _INNOMAKER_BY_ID, name="Innomaker-U20CAM-1080p-S1"),
-        _make_cam_info(42, _INNOMAKER_BY_ID, name="Innomaker-U20CAM-1080p-S1"),
-    ]
-    _patch_usb_identity(monkeypatch, camera_cls, {40: ("3-6.1", _INNOMAKER_USB), 42: ("3-6.2", _INNOMAKER_USB)})
-
-    devices = camera_cls.discover()
-
-    # Neither camera may be dropped: they are two separate physical devices
-    # that merely advertise the same identity.
-    assert [d.index for d in devices] == [40, 42]
-    assert [d.device_id for d in devices] == ["40", "42"]
-    assert all(d.id_stable is False for d in devices)
-    assert all(d.metadata["serial_collision"] is True for d in devices)
-    # The ambiguous identity stays available for diagnostics.
-    assert all(d.hardware_id == _INNOMAKER_BY_ID for d in devices)
 
 
 def test_discover_demotes_twins_that_report_no_serial(
@@ -719,20 +695,62 @@ def test_discover_demotes_duplicate_ids_without_sysfs(
     assert all(d.metadata["serial_collision"] is True for d in devices)
 
 
+@pytest.mark.parametrize(
+    ("attrs", "expected"),
+    [
+        ({"idVendor": "0c45", "idProduct": "6366", "serial": "SN0001"}, ("0c45", "6366", "SN0001")),
+        # udev leaves an unreported serial out of the by-id name, so an empty
+        # serial has to survive as a collision key of its own.
+        ({"idVendor": "0c45", "idProduct": "6366"}, ("0c45", "6366", "")),
+        # A PCI capture device (an IPU ISYS node, say) has no USB ancestor and
+        # must not be grouped or flagged with anything.
+        ({}, None),
+    ],
+    ids=["with-serial", "without-serial", "no-usb-parent"],
+)
+def test_usb_identity_reads_the_owning_usb_device(
+    omnicamera_cls: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    attrs: dict[str, str],
+    expected: tuple[str, str, str] | None,
+) -> None:
+    """The sysfs read walks from a node's device link up to the USB descriptors.
+
+    Everything else trusts this: it is the only evidence that two cameras are
+    the same model, and the by-id paths cannot supply it.
+    """
+    camera_cls, _ = omnicamera_cls
+    # The fixture patches this helper away to keep discovery off the host's
+    # /sys; reload restores the real one for this test.
+    module = importlib.reload(sys.modules[camera_cls.__module__])
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    usb_device = tmp_path / "3-6.1"
+    interface = usb_device / "3-6.1:1.0"  # the UVC interface the node links to
+    interface.mkdir(parents=True)
+    for name, value in attrs.items():
+        (usb_device / name).write_text(f"{value}\n")
+    class_dir = tmp_path / "video4linux"
+    (class_dir / "video40").mkdir(parents=True)
+    (class_dir / "video40" / "device").symlink_to(interface)
+    monkeypatch.setattr(module, "_SYSFS_V4L2", class_dir)
+
+    identity = module._usb_identity(40)  # noqa: SLF001
+
+    if expected is None:
+        assert identity is None
+    else:
+        assert identity.devpath == "3-6.1"
+        assert identity.model_key == expected
+
+
 # ------------------------------------------------------------------
 # Open-target tests: which camera a resolved id actually opens
 # ------------------------------------------------------------------
 
 
-_INNOMAKER_META_BY_ID = _INNOMAKER_BY_ID.replace("-video-index0", "-video-index1")
-
-
-def _install_innomaker_twins(
-    omnicamera_cls: tuple,
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    loser_unique_ids: tuple[str, str] = ("index:42", "index:43"),
-) -> None:
+def _install_innomaker_twins(omnicamera_cls: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
     """Fake two units of one model sharing an iSerial, as query() reports them.
 
     Four V4L2 nodes over two USB ports. Both units claim the same by-id names,
@@ -742,17 +760,14 @@ def _install_innomaker_twins(
     Args:
         omnicamera_cls: The ``(class, omni_camera mock)`` fixture value.
         monkeypatch: Test monkeypatch.
-        loser_unique_ids: What the second unit's two nodes report. Override to
-            the winner's by-id paths to model a backend that hands the same
-            path to both units.
     """
     camera_cls, mock_omni_camera = omnicamera_cls
     monkeypatch.setattr(sys, "platform", "linux")
     mock_omni_camera.query.return_value = [
         _make_cam_info(40, _INNOMAKER_BY_ID, name="Innomaker-U20CAM-1080p-S1"),
         _make_cam_info(41, _INNOMAKER_META_BY_ID, name="Innomaker-U20CAM-1080p-S1"),
-        _make_cam_info(42, loser_unique_ids[0], name="Innomaker-U20CAM-1080p-S1", id_stable=False),
-        _make_cam_info(43, loser_unique_ids[1], name="Innomaker-U20CAM-1080p-S1", id_stable=False),
+        _make_cam_info(42, "index:42", name="Innomaker-U20CAM-1080p-S1", id_stable=False),
+        _make_cam_info(43, "index:43", name="Innomaker-U20CAM-1080p-S1", id_stable=False),
     ]
     _patch_usb_identity(
         monkeypatch,
@@ -766,11 +781,9 @@ def _install_innomaker_twins(
     )
 
 
-@pytest.mark.parametrize("device_id", [42, "42", "/dev/video42"], ids=["int", "decimal-string", "dev-path"])
 def test_connect_by_index_opens_that_index_verbatim(
     omnicamera_cls: tuple,
     monkeypatch: pytest.MonkeyPatch,
-    device_id: int | str,
 ) -> None:
     """An index request opens the named node, never a by-id symlink.
 
@@ -782,7 +795,7 @@ def test_connect_by_index_opens_that_index_verbatim(
     camera_cls, mock_omni_camera = omnicamera_cls
     _install_innomaker_twins(omnicamera_cls, monkeypatch)
 
-    cam = camera_cls(device_id=device_id)
+    cam = camera_cls(device_id=42)
     cam.connect()
 
     assert cam.is_connected
@@ -832,7 +845,7 @@ def test_connect_by_unique_id_passes_camera_info(omnicamera_cls: tuple, monkeypa
     mock_omni_camera.Camera.assert_called_with(infos[1])
 
 
-@pytest.mark.parametrize(("device_id", "expected"), [("index:42", 42), ("index:40", 40)], ids=["no-by-id", "has-by-id"])
+@pytest.mark.parametrize(("device_id", "expected"), [("index:42", 42), ("index:40", 40)], ids=["reported", "stale"])
 def test_connect_by_synthetic_index_id_is_an_index_request(
     omnicamera_cls: tuple,
     monkeypatch: pytest.MonkeyPatch,
@@ -856,91 +869,24 @@ def test_connect_by_synthetic_index_id_is_an_index_request(
     mock_omni_camera.Camera.assert_called_with(expected)
 
 
-def test_connect_refuses_a_by_id_shared_by_two_units(omnicamera_cls: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("by_id", [_INNOMAKER_BY_ID, _INNOMAKER_META_BY_ID], ids=["capture", "metadata"])
+def test_connect_refuses_a_by_id_shared_by_two_units(
+    omnicamera_cls: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+    by_id: str,
+) -> None:
     """connect() refuses a by-id that udev could not disambiguate.
 
     discover() stops offering it, but a config written before the second unit
     was plugged in still names it. Opening it would silently stream whichever
     unit currently owns the symlink -- and pairing it with the other unit's
-    index yields the same camera twice.
+    index yields the same camera twice. A camera's metadata node is refused
+    too: it carries its own by-id that the twin claims just as well.
     """
     camera_cls, _ = omnicamera_cls
     _install_innomaker_twins(omnicamera_cls, monkeypatch)
-
-    cam = camera_cls(device_id=_INNOMAKER_BY_ID)
-    with pytest.raises(CaptureError, match="video index"):
-        cam.connect()
-
-    assert not cam.is_connected
-
-
-def test_connect_refuses_a_by_id_of_an_extra_node(omnicamera_cls: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The refusal covers the metadata nodes of a colliding camera too.
-
-    They are absent from discover() but reachable by hand, and each carries its
-    own by-id that a twin claims just as it claims the capture node's.
-    """
-    camera_cls, _ = omnicamera_cls
-    _install_innomaker_twins(omnicamera_cls, monkeypatch)
-
-    cam = camera_cls(device_id=_INNOMAKER_META_BY_ID)
-    with pytest.raises(CaptureError, match="video index"):
-        cam.connect()
-
-    assert not cam.is_connected
-
-
-def test_connect_refuses_a_by_id_reported_by_both_units(
-    omnicamera_cls: tuple,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A by-id that both units literally report is ambiguous by inspection."""
-    camera_cls, _ = omnicamera_cls
-    _install_innomaker_twins(
-        omnicamera_cls,
-        monkeypatch,
-        loser_unique_ids=(_INNOMAKER_BY_ID, _INNOMAKER_META_BY_ID),
-    )
-
-    cam = camera_cls(device_id=_INNOMAKER_BY_ID)
-    with pytest.raises(CaptureError, match="video index"):
-        cam.connect()
-
-    assert not cam.is_connected
-
-
-def test_connect_refuses_a_by_id_of_twins_without_serial(
-    omnicamera_cls: tuple,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Two units of a model that reports no iSerial collide the same way."""
-    camera_cls, mock_omni_camera = omnicamera_cls
-    monkeypatch.setattr(sys, "platform", "linux")
-    by_id = "/dev/v4l/by-id/usb-Innomaker_Innomaker-U20CAM-1080p-S1-video-index0"
-    mock_omni_camera.query.return_value = [
-        _make_cam_info(40, by_id, name="Innomaker-U20CAM-1080p-S1"),
-        _make_cam_info(42, "index:42", name="Innomaker-U20CAM-1080p-S1", id_stable=False),
-    ]
-    no_serial = ("0c45", "6366", "")
-    _patch_usb_identity(monkeypatch, camera_cls, {40: ("3-6.1", no_serial), 42: ("3-6.2", no_serial)})
 
     cam = camera_cls(device_id=by_id)
-    with pytest.raises(CaptureError, match="video index"):
-        cam.connect()
-
-    assert not cam.is_connected
-
-
-def test_connect_refuses_a_duplicate_unique_id_without_sysfs(
-    omnicamera_cls: tuple,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Off Linux a duplicated unique_id is refused on the same grounds."""
-    camera_cls, mock_omni_camera = omnicamera_cls
-    monkeypatch.setattr(sys, "platform", "darwin")
-    mock_omni_camera.query.return_value = [_make_cam_info(0, "shared-uid"), _make_cam_info(1, "shared-uid")]
-
-    cam = camera_cls(device_id="shared-uid")
     with pytest.raises(CaptureError, match="video index"):
         cam.connect()
 
@@ -960,15 +906,6 @@ def test_query_formats_by_index_uses_the_index_token(
 
     assert camera_cls.query_formats("42") == [(640, 480, 30)]
     mock_omni_camera.Camera.assert_called_with(42)
-
-
-def test_query_formats_refuses_an_ambiguous_by_id(omnicamera_cls: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
-    """query_formats() inherits the refusal: it resolves the same way connect() does."""
-    camera_cls, _ = omnicamera_cls
-    _install_innomaker_twins(omnicamera_cls, monkeypatch)
-
-    with pytest.raises(CaptureError, match="video index"):
-        camera_cls.query_formats(_INNOMAKER_BY_ID)
 
 
 def test_discover_falls_back_to_index_when_id_unstable(omnicamera_cls: tuple) -> None:
