@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from collections.abc import Mapping
 from enum import Enum
@@ -229,6 +230,15 @@ def _instantiate_impl(
 
     validated = validate_config(config, path=path)
     cls = _resolve_class(validated["class_path"], path=path)
+
+    if cls is Config:
+        inner = validated["init_args"]
+        if not isinstance(inner, dict):
+            loc = path or validated["class_path"]
+            msg = f"{format_path(loc)}: Config init_args must be a mapping"
+            raise ConfigError(msg)
+        return cls.from_dict(inner)
+
     config_args = declared_config_args(cls)
 
     decoded_args: dict[str, object] = {}
@@ -242,7 +252,7 @@ def _instantiate_impl(
         decoded_args[key] = _decode_value(item, path=child_path, depth=depth + 1, seen=seen)
 
     try:
-        if issubclass(cls, Config):
+        if dataclasses.is_dataclass(cls) and issubclass(cls, Config):
             return cls.from_dict(decoded_args)
         return cls(**decoded_args)
     except Exception as exc:

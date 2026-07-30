@@ -85,3 +85,32 @@ def test_general_instantiation_delegates_recipe_to_strict_config() -> None:
     target = instantiate_obj({"class_path": f"{__name__}.Target", "init_args": {"value": 9}})
     assert isinstance(target, Target)
     assert target.value == 9
+
+
+def test_instantiate_config_class_path_builds_nested_recipe() -> None:
+    from physicalai.config import instantiate
+
+    cfg = instantiate(
+        {
+            "class_path": "physicalai.config.Config",
+            "init_args": {
+                "class_path": "builtins.dict",
+                "init_args": {"k": {"class_path": "builtins.int", "init_args": {}}},
+            },
+        },
+    )
+
+    assert isinstance(cfg, Config)
+    assert cfg.class_path == "builtins.dict"
+    nested = cfg.init_args["k"]
+    assert isinstance(nested, dict)
+    assert nested["class_path"] == "builtins.int"
+
+
+def test_instantiate_config_class_path_requires_inner_recipe() -> None:
+    import pytest
+
+    from physicalai.config import ConfigError, instantiate
+
+    with pytest.raises(ConfigError, match="class_path"):
+        instantiate({"class_path": "physicalai.config.Config", "init_args": {}})
