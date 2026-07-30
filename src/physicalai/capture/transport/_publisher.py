@@ -25,7 +25,7 @@ class CameraPublisher:
     self-terminates via idle timeout when zero subscribers remain.
 
     Args:
-        spec: Camera construction specification (``camera: ComponentConfig``).
+        spec: Camera construction specification (``camera: Config``).
         service_name: iceoryx2 service name for the pub-sub channel.
         idle_timeout: Seconds with zero subscribers before self-exit.
         max_subscribers: Maximum concurrent subscribers.

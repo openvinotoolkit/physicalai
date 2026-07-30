@@ -4,13 +4,14 @@ Physical AI Runtime is the deployment-side repo for the Physical AI workflow: lo
 
 ## Repository Layout
 
+- `src/physicalai/config/`: unified `Config` construction recipes — `Config.from_instance()` / `instantiate()`, `@export_config`, typed dataclass configs, YAML. Shared with Studio (runtime owns `physicalai.config`).
 - `src/physicalai/inference/`: `InferenceModel`, manifests, adapters, preprocessors/postprocessors, runners.
 - `src/physicalai/capture/`: unified camera API, discovery, transport.
 - `src/physicalai/runtime/`: `PolicyRuntime`, execution modes, action queues, callbacks.
 - `src/physicalai/robot/`: robot protocol and hardware integrations.
 - `src/physicalai/cli/`: `physicalai` / `pai` host CLI (`run` and entry-point subcommands from other packages).
 - `src/physicalai/benchmark/`: inference performance tooling.
-- `skills/inference/`, `skills/capture/`, `skills/runtime/`: agent skills (canonical). Adapter symlinks under `.claude/skills/` and `.agents/skills/` are committed so clones work out of the box. See `skills/README.md`.
+- `skills/inference/`, `skills/capture/`, `skills/runtime/`, `skills/config/`: agent skills (canonical). Adapter symlinks under `.claude/skills/` and `.agents/skills/` are committed so clones work out of the box. See `skills/README.md`.
 - `docs/`: user and contributor documentation (MkDocs).
 
 ## Setup
@@ -27,6 +28,7 @@ Physical AI Runtime is the deployment-side repo for the Physical AI workflow: lo
 ## Cross-Repo Rules
 
 - Runtime owns the `physicalai` executable and `pai` alias. Studio contributes training/export subcommands through `physicalai.cli.subcommands` entry points.
+- Runtime owns `physicalai.config` (single `Config` object). Studio consumes it from the runtime package; Studio must not ship its own `physicalai/config/` package.
 - Runtime-owned CLI surface includes `physicalai run` (policy on hardware from config).
 - Studio owns export; Runtime consumes exported artifacts via `InferenceModel` / `InferenceModel.from_pretrained(...)`.
 - Keep customer-facing instructions stable and avoid exposing internal scaffolding unless the user is contributing to the repo.

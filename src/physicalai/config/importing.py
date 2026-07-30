@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Dotted-path imports for trusted component configuration."""
+"""Dotted-path imports for trusted configuration."""
 
 from __future__ import annotations
 

@@ -34,7 +34,7 @@ with runtime:
 physicalai robot serve --config examples/so101/serve.yaml
 ```
 
-The YAML fields are `name`, required `robot` (a ComponentConfig with
+The YAML fields are `name`, required `robot` (a `Config` with
 `class_path` + `init_args`), optional `allow_remote` (default `false`), and
 optional positive `rate_hz` (default 100 Hz). Direct CLI arguments use the same
 names, including nested robot constructor values such as

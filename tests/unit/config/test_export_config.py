@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
-# ruff:file-ignore[undocumented-public-module, undocumented-public-class, undocumented-public-method, undocumented-public-init, undocumented-magic-method, bad-dunder-method-name, magic-value-comparison, no-self-use, assert, unused-method-argument, too-many-public-methods]
+# ruff:file-ignore[undocumented-public-module, undocumented-public-class, undocumented-public-method, undocumented-public-init, magic-value-comparison, no-self-use, assert, unused-method-argument, too-many-public-methods]
 
 from __future__ import annotations
 
@@ -8,24 +8,26 @@ import inspect
 import json
 import math
 import sys
-from collections.abc import Mapping
 from enum import Enum
 from pathlib import Path
-from typing import Protocol, cast, runtime_checkable
-from unittest.mock import MagicMock, patch
+from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
+from unittest.mock import patch
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 import pytest
 
 from physicalai.config import (
-    ComponentConfig,
-    ComponentConfigError,
-    ComponentImportError,
+    Config,
+    ConfigError,
+    ConfigImportError,
     JsonValue,
     export_config,
     import_dotted_path,
     instantiate,
     is_config_exportable,
-    normalize_component_config,
+    normalize_config,
     to_config,
 )
 
@@ -131,7 +133,7 @@ class Leaf:
 
 @export_config(config_args=("recipe",))
 class Holder:
-    def __init__(self, recipe: ComponentConfig, eager: object) -> None:
+    def __init__(self, recipe: Config, eager: object) -> None:
         self.recipe = recipe
         self.eager = eager
 
@@ -235,7 +237,7 @@ class DomainHolder:
         self.payload = payload
 
 
-@export_config(class_path="tests.unit.config.test_component_config.ExportAlias")
+@export_config(class_path="tests.unit.config.test_export_config.ExportAlias")
 class _HiddenExport:
     """Defining-module class with a public re-export alias (see ExportAlias)."""
 
@@ -252,7 +254,7 @@ class InheritsAliasedExport(_HiddenExport):
 
 class TestImportDottedPath:
     def test_resolves_nested_class(self) -> None:
-        assert import_dotted_path("tests.unit.config.test_component_config.Point") is Point
+        assert import_dotted_path("tests.unit.config.test_export_config.Point") is Point
 
     def test_real_import_failures_are_not_masked(self, tmp_path: Path) -> None:
         pkg = tmp_path / "mask_pkg"
@@ -283,10 +285,10 @@ class TestImportDottedPath:
             import_dotted_path("totally.unknown.module.Cls")
 
 
-class TestNormalizeComponentConfig:
+class TestNormalizeConfig:
     def test_rejects_nan(self) -> None:
         with pytest.raises(ValueError, match="JSON-serializable"):
-            normalize_component_config(
+            normalize_config(
                 {"class_path": f"{__name__}.Point", "init_args": {"x": math.nan}},
                 component_key="robot",
                 class_label="robot_class",
@@ -294,7 +296,7 @@ class TestNormalizeComponentConfig:
 
     def test_rejects_infinity(self) -> None:
         with pytest.raises(ValueError, match="JSON-serializable"):
-            normalize_component_config(
+            normalize_config(
                 {"class_path": f"{__name__}.Point", "init_args": {"x": float("inf")}},
                 component_key="camera",
                 class_label="camera_class",
@@ -302,7 +304,7 @@ class TestNormalizeComponentConfig:
 
     def test_rejects_non_serializable_object(self) -> None:
         with pytest.raises(ValueError, match="JSON-serializable"):
-            normalize_component_config(
+            normalize_config(
                 {"class_path": f"{__name__}.Point", "init_args": {"x": object()}},
                 component_key="robot",
                 class_label="robot_class",
@@ -313,7 +315,7 @@ class TestNormalizeAndInstantiate:
     def test_primitives_round_trip(self) -> None:
         point = Point(1, y=2)
         config = to_config(point)
-        wire = json.loads(json.dumps(config))
+        wire = json.loads(json.dumps(config.to_dict()))
         restored = instantiate(wire)
         assert isinstance(restored, Point)
         assert restored.x == 1
@@ -324,14 +326,14 @@ class TestNormalizeAndInstantiate:
         point = Point(3)
         config = to_config(point)
         assert config["init_args"] == {"x": 3}
-        restored = cast(Point, instantiate(config))
+        restored = cast("Point", instantiate(config))
         assert restored.y == 0
 
     def test_explicit_none_is_preserved(self) -> None:
         obj = OptionalName(None)
         config = to_config(obj)
         assert config["init_args"] == {"name": None}
-        restored = cast(OptionalName, instantiate(config))
+        restored = cast("OptionalName", instantiate(config))
         assert restored.name is None
 
     def test_path_as_given(self) -> None:
@@ -346,23 +348,23 @@ class TestNormalizeAndInstantiate:
         holder = EnumHolder(Color.RED)
         config = to_config(holder)
         assert config["init_args"]["color"] == "red"
-        restored = cast(EnumHolder, instantiate(config))
+        restored = cast("EnumHolder", instantiate(config))
         assert restored.color is Color.RED
 
     def test_non_finite_float_rejected(self) -> None:
         holder = MappingHolder({"x": math.nan})
-        with pytest.raises(ComponentConfigError, match="non-finite"):
+        with pytest.raises(ConfigError, match="non-finite"):
             to_config(holder)
 
     def test_nested_component(self) -> None:
         box = Box(Point(1, 2), label="b")
         config = to_config(box)
         origin = _as_mapping(config["init_args"]["origin"])
-        assert cast(str, origin["class_path"]).endswith(".Point")
+        assert cast("str", origin["class_path"]).endswith(".Point")
         assert origin["init_args"] == {"x": 1, "y": 2}
-        restored = cast(Box, instantiate(json.loads(json.dumps(config))))
+        restored = cast("Box", instantiate(json.loads(json.dumps(config.to_dict()))))
         assert restored.origin.x == 1
-        assert to_config(restored) == json.loads(json.dumps(config))
+        assert to_config(restored) == json.loads(json.dumps(config.to_dict()))
 
     def test_list_and_mapping(self) -> None:
         holder = ListHolder([Point(1), {"a": 1}])
@@ -371,7 +373,7 @@ class TestNormalizeAndInstantiate:
         first = _as_mapping(items[0])
         assert _as_mapping(first["init_args"])["x"] == 1
         assert items[1] == {"a": 1}
-        restored = cast(ListHolder, instantiate(config))
+        restored = cast("ListHolder", instantiate(config))
         assert isinstance(restored.items[0], Point)
 
     def test_mutable_container_snapshot(self) -> None:
@@ -384,7 +386,7 @@ class TestNormalizeAndInstantiate:
         data: dict[str, object] = {}
         data["self"] = data
         holder = MappingHolder(data)
-        with pytest.raises(ComponentConfigError, match="cyclic"):
+        with pytest.raises(ConfigError, match="cyclic"):
             to_config(holder)
 
     def test_depth_limit_on_mappings(self) -> None:
@@ -392,7 +394,7 @@ class TestNormalizeAndInstantiate:
         for _ in range(_MAX_CONFIG_DEPTH + 2):
             nested = {"child": nested}
         holder = MappingHolder(nested)
-        with pytest.raises(ComponentConfigError, match="nesting depth"):
+        with pytest.raises(ConfigError, match="nesting depth"):
             to_config(holder)
 
     def test_nested_component_depth_symmetric(self) -> None:
@@ -417,56 +419,55 @@ class TestNormalizeAndInstantiate:
         assert to_config(restored) == config
 
         too_deep = nest_chain(_MAX_CONFIG_DEPTH + 1)
-        with pytest.raises(ComponentConfigError, match="nesting depth"):
+        with pytest.raises(ConfigError, match="nesting depth"):
             to_config(too_deep)
 
-        deeper: ComponentConfig = {
-            "class_path": "tests.unit.config.test_component_config.Nest",
-            "init_args": cast("dict[str, JsonValue]", {"child": config}),
-        }
-        with pytest.raises(ComponentConfigError, match="nesting depth"):
-            instantiate(deeper)
+        with pytest.raises(ConfigError, match="nesting depth"):
+            Config(
+                "tests.unit.config.test_export_config.Nest",
+                cast("dict[str, JsonValue]", {"child": config}),
+            )
 
     def test_nested_error_path_includes_parent(self) -> None:
         outer = Outer(BadInner(lambda: None))
-        with pytest.raises(ComponentConfigError, match=r"Outer\.init_args\.child\.init_args\.fn"):
+        with pytest.raises(ConfigError, match=r"Outer\.init_args\.child\.init_args\.fn"):
             to_config(outer)
 
     def test_malformed_nested_config_before_import(self) -> None:
-        with pytest.raises(ComponentConfigError, match="unexpected keys"):
+        with pytest.raises(ConfigError, match="unexpected keys"):
             instantiate({
-                "class_path": "tests.unit.config.test_component_config.Point",
+                "class_path": "tests.unit.config.test_export_config.Point",
                 "init_args": {},
                 "extra": 1,
             })
 
     def test_null_init_args_rejected(self) -> None:
-        with pytest.raises(ComponentConfigError, match="init_args"):
+        with pytest.raises(ConfigError, match="init_args"):
             instantiate({
-                "class_path": "tests.unit.config.test_component_config.Point",
+                "class_path": "tests.unit.config.test_export_config.Point",
                 "init_args": None,
             })
 
     def test_missing_class_path_rejected(self) -> None:
-        with pytest.raises(ComponentConfigError, match="missing required"):
+        with pytest.raises(ConfigError, match="missing required"):
             instantiate({"init_args": {}})  # type: ignore[arg-type]
 
     def test_non_class_import_target(self) -> None:
-        with pytest.raises(ComponentImportError, match="does not resolve to a class"):
+        with pytest.raises(ConfigImportError, match="does not resolve to a class"):
             instantiate({"class_path": "os.path.join", "init_args": {}})
 
     def test_unimportable_class_path(self) -> None:
-        with pytest.raises(ComponentImportError, match="cannot import"):
+        with pytest.raises(ConfigImportError, match="cannot import"):
             instantiate({"class_path": "totally.unknown.module.Cls", "init_args": {}})
 
     def test_dict_with_class_path_is_reserved(self) -> None:
         holder = MappingHolder({"class_path": "not.a.component", "other": 1})
-        with pytest.raises(ComponentConfigError, match="to_config_value"):
+        with pytest.raises(ConfigError, match="to_config_value"):
             to_config(holder)
 
     def test_unsupported_object_reports_path(self) -> None:
         holder = MappingHolder({"fn": lambda: None})
-        with pytest.raises(ComponentConfigError, match=r"init_args\.data\.fn"):
+        with pytest.raises(ConfigError, match=r"init_args\.data\.fn"):
             to_config(holder)
 
     def test_local_class_export_fails(self) -> None:
@@ -476,20 +477,20 @@ class TestNormalizeAndInstantiate:
                 self.x = x
 
         obj = LocalPoint(1)
-        with pytest.raises(ComponentConfigError, match="<locals>"):
+        with pytest.raises(ConfigError, match="<locals>"):
             to_config(obj)
 
     def test_local_class_instantiate_fails(self) -> None:
-        with pytest.raises(ComponentConfigError, match="<locals>"):
+        with pytest.raises(ConfigError, match="<locals>"):
             instantiate({
-                "class_path": "tests.unit.config.test_component_config.Local.<locals>.X",
+                "class_path": "tests.unit.config.test_export_config.Local.<locals>.X",
                 "init_args": {},
             })
 
     def test_constructor_failure_propagates_with_note(self) -> None:
         with pytest.raises(ValueError, match="boom") as info:
             instantiate({
-                "class_path": "tests.unit.config.test_component_config.CtorBoom",
+                "class_path": "tests.unit.config.test_export_config.CtorBoom",
                 "init_args": {"x": 1},
             })
         notes = getattr(info.value, "__notes__", [])
@@ -497,17 +498,17 @@ class TestNormalizeAndInstantiate:
 
     def test_malformed_nested_config_rejected_before_any_import(self) -> None:
         config = {
-            "class_path": "tests.unit.config.test_component_config.Point",
+            "class_path": "tests.unit.config.test_export_config.Point",
             "init_args": {
                 "x": {
-                    "class_path": "tests.unit.config.test_component_config.Point",
+                    "class_path": "tests.unit.config.test_export_config.Point",
                     "init_args": None,
                 },
             },
         }
         with (
             patch("physicalai.config._instantiate.import_dotted_path") as import_path,
-            pytest.raises(ComponentConfigError, match="init_args"),
+            pytest.raises(ConfigError, match="init_args"),
         ):
             instantiate(config)  # type: ignore[arg-type]
         import_path.assert_not_called()
@@ -515,47 +516,47 @@ class TestNormalizeAndInstantiate:
     @pytest.mark.parametrize("value", [math.nan, math.inf, (1, 2), Path("config.json"), Color.RED, object()])
     def test_non_json_value_rejected_before_any_import(self, value: object) -> None:
         config = {
-            "class_path": "tests.unit.config.test_component_config.DomainHolder",
+            "class_path": "tests.unit.config.test_export_config.DomainHolder",
             "init_args": {"payload": value},
         }
         with (
             patch("physicalai.config._instantiate.import_dotted_path") as import_path,
-            pytest.raises(ComponentConfigError),
+            pytest.raises(ConfigError),
         ):
             instantiate(config)  # type: ignore[arg-type]
         import_path.assert_not_called()
 
     def test_non_string_plain_mapping_key_rejected_before_any_import(self) -> None:
         config = {
-            "class_path": "tests.unit.config.test_component_config.MappingHolder",
+            "class_path": "tests.unit.config.test_export_config.MappingHolder",
             "init_args": {"data": {1: "value"}},
         }
         with (
             patch("physicalai.config._instantiate.import_dotted_path") as import_path,
-            pytest.raises(ComponentConfigError, match="mapping keys must be strings"),
+            pytest.raises(ConfigError, match="mapping keys must be strings"),
         ):
             instantiate(config)  # type: ignore[arg-type]
         import_path.assert_not_called()
 
-    def test_cyclic_component_config_rejected_before_any_import(self) -> None:
+    def test_cyclic_config_rejected_before_any_import(self) -> None:
         config: dict[str, object] = {
-            "class_path": "tests.unit.config.test_component_config.Nest",
+            "class_path": "tests.unit.config.test_export_config.Nest",
             "init_args": {},
         }
         cast("dict[str, object]", config["init_args"])["child"] = config
         with (
             patch("physicalai.config._instantiate.import_dotted_path") as import_path,
-            pytest.raises(ComponentConfigError, match="cyclic component config"),
+            pytest.raises(ConfigError, match="cyclic config"),
         ):
             instantiate(config)  # type: ignore[arg-type]
         import_path.assert_not_called()
 
     def test_plain_nested_mapping_remains_valid(self) -> None:
-        config = cast("ComponentConfig", {
-            "class_path": "tests.unit.config.test_component_config.MappingHolder",
-            "init_args": {"data": {"nested": {"value": 1}}},
-        })
-        restored = cast(MappingHolder, instantiate(config))
+        config = Config(
+            "tests.unit.config.test_export_config.MappingHolder",
+            {"data": {"nested": {"value": 1}}},
+        )
+        restored = cast("MappingHolder", instantiate(config))
         assert restored.data == {"nested": {"value": 1}}
 
 
@@ -600,7 +601,7 @@ class TestExportConfig:
     def test_undecorated_override_fails(self) -> None:
         obj = UndecoratedOverride("n", 1)
         assert not is_config_exportable(obj)
-        with pytest.raises(ComponentConfigError, match="not config-exportable"):
+        with pytest.raises(ConfigError, match="not config-exportable"):
             to_config(obj)
 
     def test_inherited_decorated_constructor(self) -> None:
@@ -618,7 +619,7 @@ class TestExportConfig:
         obj = _HiddenExport(3)
         assert is_config_exportable(obj)
         config = to_config(obj)
-        assert config["class_path"] == "tests.unit.config.test_component_config.ExportAlias"
+        assert config["class_path"] == "tests.unit.config.test_export_config.ExportAlias"
         assert config["init_args"] == {"x": 3}
         restored = instantiate(config)
         assert type(restored) is _HiddenExport
@@ -628,9 +629,7 @@ class TestExportConfig:
         obj = InheritsAliasedExport(9)
         assert is_config_exportable(obj)
         config = to_config(obj)
-        assert config["class_path"] == (
-            "tests.unit.config.test_component_config.InheritsAliasedExport"
-        )
+        assert config["class_path"] == ("tests.unit.config.test_export_config.InheritsAliasedExport")
         assert config["init_args"] == {"x": 9}
         restored = instantiate(config)
         assert type(restored) is InheritsAliasedExport
@@ -639,8 +638,8 @@ class TestExportConfig:
         holder = DomainHolder(DomainPayload(42))
         config = to_config(holder)
         assert config["init_args"]["payload"] == {"amount": 42}
-        wire = json.loads(json.dumps(config))
-        restored = cast(DomainHolder, instantiate(wire))
+        wire = json.loads(json.dumps(config.to_dict()))
+        restored = cast("DomainHolder", instantiate(wire))
         assert restored.payload == {"amount": 42}
         assert to_config(restored) == wire
 
@@ -648,8 +647,8 @@ class TestExportConfig:
         holder = DomainHolder(NullDomain())
         config = to_config(holder)
         assert config["init_args"]["payload"] is None
-        wire = json.loads(json.dumps(config))
-        restored = cast(DomainHolder, instantiate(wire))
+        wire = json.loads(json.dumps(config.to_dict()))
+        restored = cast("DomainHolder", instantiate(wire))
         assert restored.payload is None
 
     def test_domain_value_codec_cycle_raises(self) -> None:
@@ -658,27 +657,27 @@ class TestExportConfig:
         left.other = right
         right.other = left
         holder = DomainHolder(left)
-        with pytest.raises(ComponentConfigError, match="cyclic to_config_value"):
+        with pytest.raises(ConfigError, match="cyclic to_config_value"):
             to_config(holder)
 
     def test_domain_value_hook_output_is_renormalized(self) -> None:
         holder = DomainHolder(BadNanDomain())
-        with pytest.raises(ComponentConfigError, match="non-finite"):
+        with pytest.raises(ConfigError, match="non-finite"):
             to_config(holder)
 
     def test_domain_value_hook_reserved_class_path_validated(self) -> None:
         holder = DomainHolder(BadReservedDomain())
-        with pytest.raises(ComponentConfigError, match="to_config_value"):
+        with pytest.raises(ConfigError, match="to_config_value"):
             to_config(holder)
 
-    def test_instance_to_config_sugar(self) -> None:
+    def test_export_config_does_not_inject_to_config(self) -> None:
         point = Point(1, 2)
-        assert point.to_config() == to_config(point)  # type: ignore[attr-defined]
+        assert not hasattr(point, "to_config")
 
-    def test_injected_to_config_does_not_break_protocol(self) -> None:
+    def test_export_config_does_not_break_protocol(self) -> None:
         widget = BaseWidget("ok")
         assert isinstance(widget, Named)
-        assert widget.to_config()["init_args"] == {"name": "ok"}  # type: ignore[attr-defined]
+        assert Config.from_instance(widget)["init_args"] == {"name": "ok"}
 
     def test_signature_preserved(self) -> None:
         sig = inspect.signature(Point.__init__)
@@ -709,18 +708,18 @@ class TestScalarVarKwargs:
             "label": "x",
             "missing": None,
         }
-        restored = cast(ScalarVarKwargs, instantiate(json.loads(json.dumps(config))))
+        restored = cast("ScalarVarKwargs", instantiate(json.loads(json.dumps(config.to_dict()))))
         assert restored.base == 1
         assert restored.kwargs == {"count": 2, "flag": True, "label": "x", "missing": None}
 
     def test_non_scalar_dict_var_kwarg_fails(self) -> None:
         obj = ScalarVarKwargs(1, config_blob={"a": 1})
-        with pytest.raises(ComponentConfigError, match=r"init_args\.config_blob"):
+        with pytest.raises(ConfigError, match=r"init_args\.config_blob"):
             to_config(obj)
 
     def test_non_scalar_list_var_kwarg_fails(self) -> None:
         obj = ScalarVarKwargs(1, tags=["x", "y"])
-        with pytest.raises(ComponentConfigError, match=r"init_args\.tags"):
+        with pytest.raises(ConfigError, match=r"init_args\.tags"):
             to_config(obj)
 
     def test_named_mapping_still_exports_without_scalar_flag(self) -> None:
@@ -739,27 +738,24 @@ class TestScalarVarKwargs:
 
 class TestConfigArgs:
     def test_declared_config_arg_is_not_instantiated(self) -> None:
-        config: ComponentConfig = {
-            "class_path": f"{__name__}.Holder",
-            "init_args": {
+        config = Config(
+            f"{__name__}.Holder",
+            {
                 "recipe": {"class_path": f"{__name__}.Leaf", "init_args": {"value": 3}},
                 "eager": {"class_path": f"{__name__}.Leaf", "init_args": {"value": 3}},
             },
-        }
-        holder = cast(Holder, instantiate(config))
+        )
+        holder = cast("Holder", instantiate(config))
         assert holder.recipe == config["init_args"]["recipe"]
         assert isinstance(holder.eager, Leaf)
 
     def test_declared_config_arg_round_trips(self) -> None:
-        recipe: ComponentConfig = {
-            "class_path": f"{__name__}.Leaf",
-            "init_args": {"value": 3},
-        }
+        recipe = Config(f"{__name__}.Leaf", {"value": 3})
         holder = Holder(recipe=recipe, eager=Leaf(value=3))
         config = to_config(holder)
-        assert config["init_args"]["recipe"] == recipe
-        wire = json.loads(json.dumps(config))
-        restored = cast(Holder, instantiate(wire))
+        assert config["init_args"]["recipe"] == recipe.to_dict()
+        wire = json.loads(json.dumps(config.to_dict()))
+        restored = cast("Holder", instantiate(wire))
         assert to_config(restored) == wire
 
     def test_unknown_config_arg_name_rejected(self) -> None:

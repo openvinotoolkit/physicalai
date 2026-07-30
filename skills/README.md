@@ -9,6 +9,7 @@ Canonical, repo-specific agent skills for Physical AI Runtime. Skills are groupe
 | **Inference** | [`inference/`](inference/) | `src/physicalai/inference/`: `InferenceModel`, manifests, adapters, preprocessors/postprocessors, runners         |
 | **Capture**   | [`capture/`](capture/)     | `src/physicalai/capture/`: cameras, discovery, transport                                                          |
 | **Runtime**   | [`runtime/`](runtime/)     | `src/physicalai/runtime/`, `src/physicalai/robot/`, `src/physicalai/cli/`: control loop, robots, `physicalai run` |
+| **Config**    | [`config/`](config/)       | `src/physicalai/config/`: `Config`, export, instantiation, YAML, shared with Studio                               |
 
 Each bucket has its own skill list and [`EVALUATION.md`](inference/EVALUATION.md) scenarios.
 
@@ -30,6 +31,9 @@ skills/
 └── runtime/
     ├── README.md
     ├── EVALUATION.md
+    └── <skill-name>/
+└── config/
+    ├── README.md
     └── <skill-name>/
 ```
 

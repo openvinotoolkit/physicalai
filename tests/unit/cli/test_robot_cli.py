@@ -77,7 +77,7 @@ def test_serve_runs_owner_in_foreground_with_persistent_timeout(capsys: object) 
     assert "[local-only]" in stderr
 
 
-def test_serve_requires_robot_component_config(capsys: object) -> None:
+def test_serve_requires_robot_config(capsys: object) -> None:
     with patch.object(robot_module, "run_owner") as run:
         assert robot_module.serve(_serve_cfg(robot=None)) == 1
     run.assert_not_called()
@@ -240,7 +240,7 @@ def test_parser_does_not_expose_idle_timeout() -> None:
     assert not hasattr(cfg.serve, "robot_kwargs")
 
 
-def test_parser_accepts_robot_component_config() -> None:
+def test_parser_accepts_robot_config() -> None:
     parser = robot_module.build_parser()
     cfg = parser.parse_args(
         [

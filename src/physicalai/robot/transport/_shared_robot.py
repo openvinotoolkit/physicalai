@@ -9,7 +9,7 @@ actions fire-and-forget. The first instance constructed for a given *name*
 that finds no existing owner spawns one; later instances (for the same
 *name*, anywhere reachable) attach.
 
-Construction is :class:`~physicalai.config.ComponentConfig`-only via
+Construction is :class:`~physicalai.config.Config`-only via
 ``robot=`` or :meth:`from_config`. ``robot`` is declared as an
 ``@export_config(config_args=...)`` argument, so a nested
 :func:`~physicalai.config.instantiate` hands over the recipe instead of
@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
-from physicalai.config import export_config
+from physicalai.config import Config, export_config
 from physicalai.robot.errors import (
     RobotDeviceAlreadyOwned,
     RobotNameConflict,
@@ -55,7 +55,6 @@ from ._session import open_session
 if TYPE_CHECKING:
     import numpy as np
 
-    from physicalai.config import ComponentConfig
     from physicalai.robot import RobotObservation
 
 
@@ -188,11 +187,11 @@ class SharedRobot:
     is a drop-in replacement for a direct driver.
 
     Prefer :meth:`from_config`. The constructor takes
-    ``robot: ComponentConfig`` to spawn, or ``robot=None`` (attach-only;
+    ``robot: Config`` to spawn, or ``robot=None`` (attach-only;
     :meth:`attach` is the explicit form).
 
     Opted into :func:`~physicalai.config.export_config` as a **construction
-    recipe** only (name, nested ``robot`` ComponentConfig, transport knobs).
+    recipe** only (name, nested ``robot`` Config, transport knobs).
     Connection / Zenoh session / publisher state is never part of
     :func:`~physicalai.config.to_config`.
 
@@ -200,7 +199,7 @@ class SharedRobot:
         name: Required logical name — keys the Zenoh topics directly. Two
             instances constructed with the same *name* (anywhere reachable
             under the chosen transport scope) share one owner.
-        robot: Driver :class:`~physicalai.config.ComponentConfig` from local
+        robot: Driver :class:`~physicalai.config.Config` from local
             config input (same boundary as CLI/app args), used
             to spawn if no owner exists yet for *name*. ``None`` means
             attach-only — use :meth:`attach` for that case. Declared as an
@@ -223,7 +222,7 @@ class SharedRobot:
         self,
         name: str,
         *,
-        robot: ComponentConfig | Mapping[str, object] | None = None,
+        robot: Config | Mapping[str, object] | None = None,
         allow_remote: bool = False,
         rate_hz: float = DEFAULT_RATE_HZ,
         idle_timeout: float | None = 10.0,
@@ -250,13 +249,13 @@ class SharedRobot:
     @classmethod
     def _physicalai_normalize_captured_init_args(cls, supplied: dict[str, object]) -> None:
         robot = supplied.get("robot")
-        if isinstance(robot, Mapping):
-            supplied["robot"] = normalize_robot_config(robot)
+        if isinstance(robot, Mapping) or type(robot) is Config:
+            supplied["robot"] = normalize_robot_config(robot).to_dict()
 
     @classmethod
     def from_config(
         cls,
-        robot_config: ComponentConfig | Mapping[str, object],
+        robot_config: Config | Mapping[str, object],
         *,
         name: str,
         allow_remote: bool = False,
@@ -265,7 +264,7 @@ class SharedRobot:
         connect_timeout: float = 10.0,
         _session: object | None = None,
     ) -> SharedRobot:
-        """Primary API: spawn/attach from a local robot ComponentConfig.
+        """Primary API: spawn/attach from a local robot Config.
 
         Args:
             robot_config: Local ``class_path`` + ``init_args`` for the driver.
@@ -277,7 +276,7 @@ class SharedRobot:
             connect_timeout: Overall budget for :meth:`connect`.
 
         Returns:
-            A ``SharedRobot`` that stores the normalized ComponentConfig and
+            A ``SharedRobot`` that stores the normalized Config and
             writes only the new owner stdin shape on spawn.
         """
         # Omit default None so @export_config does not capture "_session": null.

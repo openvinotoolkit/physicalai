@@ -132,7 +132,7 @@ def build_camera(config: dict) -> Camera:
     """Instantiate a camera from a JSON config dict.
 
     Args:
-        config: Publisher envelope with ``camera: ComponentConfig``, and
+        config: Publisher envelope with ``camera: Config``, and
             optional ``_factory_override`` for tests.
 
     Returns:
@@ -159,7 +159,7 @@ def build_camera(config: dict) -> Camera:
 
 
 def _camera_fps_from_config(config: dict[str, object]) -> int:
-    """Extract fps from camera ComponentConfig init_args.
+    """Extract fps from camera Config init_args.
 
     Returns:
         Requested fps value, or 0 when absent or invalid.

@@ -33,7 +33,7 @@ import signal
 from pathlib import Path
 
 from physicalai.capture import select_cameras_interactive
-from physicalai.config import save_yaml, to_config
+from physicalai.config import Config, save_yaml
 from physicalai.inference import InferenceModel
 from physicalai.runtime import (
     ChunkedActionQueue,
@@ -76,7 +76,10 @@ def main() -> None:
     # Cameras
     cam_group = parser.add_argument_group("cameras")
     cam_group.add_argument(
-        "--camera", action="append", dest="cameras", metavar="NAME:DRIVER:DEVICE",
+        "--camera",
+        action="append",
+        dest="cameras",
+        metavar="NAME:DRIVER:DEVICE",
         help="Camera as name:driver:device_id (repeatable). Omit for interactive selection.",
     )
     cam_group.add_argument("--cam-width", type=int, default=640, help="Camera width (default: 640)")
@@ -88,7 +91,12 @@ def main() -> None:
     rt_group.add_argument("--fps", type=float, default=30.0, help="Control loop FPS (default: 30)")
     rt_group.add_argument("--duration-s", type=float, default=60.0, help="Duration in seconds")
     rt_group.add_argument("--task", type=str, default=None, help="Task string for the model (e.g. 'pick up the can')")
-    rt_group.add_argument("--request-threshold", type=float, default=0.5, help="Request new inference when queue drops below this fraction of chunk_size (default: 0.75 = trigger when 75%% of actions remain)")
+    rt_group.add_argument(
+        "--request-threshold",
+        type=float,
+        default=0.5,
+        help="Request new inference when queue drops below this fraction of chunk_size (default: 0.75 = trigger when 75%% of actions remain)",
+    )
     rt_group.add_argument(
         "--export-config",
         type=Path,
@@ -144,7 +152,7 @@ def main() -> None:
     )
 
     if args.export_config:
-        save_yaml(to_config(runtime), args.export_config)
+        save_yaml(Config.from_instance(runtime), args.export_config)
         print(f"Saved runtime config to {args.export_config}")
         return
 
@@ -154,8 +162,10 @@ def main() -> None:
             print(f"  task: {args.task!r}")
         print("  (inference blocks the loop — expect pauses)")
         steps = runtime.run(duration_s=args.duration_s)
-        print(f"\nDone — {steps} steps, {execution.inference_count} inferences, "
-              f"{policy_source.action_queue.total_holds} holds")
+        print(
+            f"\nDone — {steps} steps, {execution.inference_count} inferences, "
+            f"{policy_source.action_queue.total_holds} holds"
+        )
         prompt_torque_disable(robot)
 
 

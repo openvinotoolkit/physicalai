@@ -34,7 +34,7 @@ from physicalai.capture.transport._spec import (
     derive_service_name,
     validate_reconfigure_request,
 )
-from physicalai.config import ComponentConfigError
+from physicalai.config import ConfigError
 
 from .conftest import FAKE_CAMERA_CLASS
 
@@ -453,11 +453,11 @@ class TestSharedCameraConstruction:
         assert "service_name" not in cam._camera["init_args"]
         assert derive_service_name(cam._camera) == cam._service_name
 
-    def test_constructor_requires_component_config_mapping(self) -> None:
+    def test_constructor_requires_config_mapping(self) -> None:
         from tests.unit.capture.fake import FakeCamera
 
         driver = FakeCamera(width=32, height=32, device_name="d1")
-        with pytest.raises(ComponentConfigError, match="camera must be a ComponentConfig mapping"):
+        with pytest.raises(ConfigError, match="camera must be a Config mapping"):
             SharedCamera(camera=driver, service_name="physicalai/test/x/frame")  # type: ignore[arg-type]
 
     def test_subscriber_never_imports_the_vendor_driver(self) -> None:
@@ -1238,7 +1238,7 @@ class TestReconfigureIntegration:
 
     def test_attach_only_reconfigure_requires_camera_config(self) -> None:
         camera = SharedCamera.from_publisher(f"physicalai/test/{uuid4().hex[:8]}/frame")
-        with pytest.raises(CaptureError, match="requires a camera ComponentConfig"):
+        with pytest.raises(CaptureError, match="requires a camera Config"):
             camera._request_reconfigure(timeout=1.0)
 
     def test_end_to_end_overwrite_on_connect(self) -> None:

@@ -16,7 +16,7 @@ from pathlib import Path
 
 _SCRIPT = "python3 .github/scripts/skills/agent_skills.py"
 
-_BUCKETS = ("inference", "capture", "runtime")
+_BUCKETS = ("inference", "capture", "runtime", "config")
 
 
 def repo_root() -> Path:
