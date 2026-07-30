@@ -26,6 +26,12 @@ observation["image.wrist"] = wrist_camera.read_latest()
 
 Camera instances are not thread-safe. Use one thread per camera instance or add external synchronization.
 
+## Device Identity
+
+`discover()` prefers a stable identifier over a video index, so a camera keeps
+the same `device_id` across reboot and replug. `id_stable=True` marks a
+`device_id` that is safe to persist in config.
+
 ## SharedCamera
 
 `SharedCamera` lets one publisher subprocess own a camera's exclusive hardware
