@@ -358,17 +358,17 @@ class TestSharedRobotConfig:
         from physicalai.config import instantiate
         from physicalai.robot import SharedRobot
 
-        config: Config = {
-            "class_path": "physicalai.robot.SharedRobot",
-            "init_args": {
+        config = Config(
+            "physicalai.robot.SharedRobot",
+            {
                 "name": "nested-arm",
                 "robot": {
                     "class_path": "tests.unit.robot.transport.fake.FakeRobot",
                     "init_args": {"port": "/dev/fake-nested", "device_ids": ["fake:follower"]},
                 },
             },
-        }
+        )
         restored = instantiate(config)
         assert isinstance(restored, SharedRobot)
         # The declared config arg stays a mapping — no driver is built here.
-        assert restored._robot == config["init_args"]["robot"]
+        assert restored._robot == config.init_args["robot"]

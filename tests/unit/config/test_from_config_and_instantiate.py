@@ -100,7 +100,9 @@ class TestInstantiateObj:
             "class_path": "builtins.dict",
             "init_args": {"nested": {"class_path": "builtins.dict", "init_args": {"k": "v"}}},
         }
-        assert instantiate_obj(config)["nested"] == {"k": "v"}
+        result = instantiate_obj(config)
+        assert isinstance(result, dict)
+        assert result["nested"] == {"k": "v"}
 
     def test_from_file(self, tmp_path) -> None:
         (tmp_path / "config.yaml").write_text("class_path: builtins.dict\ninit_args:\n  key: value")

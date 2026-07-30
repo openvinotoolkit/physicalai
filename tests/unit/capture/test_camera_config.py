@@ -164,17 +164,17 @@ class TestSharedCameraConfig:
     def test_nested_recipe_is_not_instantiated(self) -> None:
         from physicalai.capture import SharedCamera
 
-        config: Config = {
-            "class_path": "physicalai.capture.SharedCamera",
-            "init_args": {
+        config = Config(
+            "physicalai.capture.SharedCamera",
+            {
                 "camera": {
                     "class_path": "physicalai.capture.UVCCamera",
                     "init_args": {"device": 0, "backend": "v4l2"},
                 },
                 "service_name": "physicalai/camera/UVCCamera/0/frame",
             },
-        }
+        )
         restored = instantiate(config)
         assert isinstance(restored, SharedCamera)
         # The declared config arg stays a mapping — no UVCCamera is built here.
-        assert restored._camera == config["init_args"]["camera"]
+        assert restored._camera == config.init_args["camera"]

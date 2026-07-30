@@ -34,7 +34,7 @@ from physicalai.capture.transport._spec import (
     derive_service_name,
     validate_reconfigure_request,
 )
-from physicalai.config import ConfigError
+from physicalai.config import Config, ConfigError
 
 from .conftest import FAKE_CAMERA_CLASS
 
@@ -1207,10 +1207,10 @@ class TestReconfigureIntegration:
             assert frame.data.shape == (240, 320, 3)
 
             camera._overwrite_settings = True
-            camera._camera = {
-                "class_path": FAKE_CAMERA_CLASS,
-                "init_args": {"width": 640, "height": 480},
-            }
+            camera._camera = Config(
+                FAKE_CAMERA_CLASS,
+                {"width": 640, "height": 480},
+            )
 
             result = camera._request_reconfigure(timeout=5.0)
             assert result["ok"] is True
