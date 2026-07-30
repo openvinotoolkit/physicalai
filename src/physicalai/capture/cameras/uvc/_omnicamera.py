@@ -58,6 +58,8 @@ def _usb_identity(index: int) -> _UsbIdentity | None:
         Identity of the owning USB device, or None when it cannot be read
         (non-Linux, non-USB device, or unreadable sysfs).
     """
+    if not sys.platform.startswith("linux"):
+        return None
     try:
         path = (_SYSFS_V4L2 / f"video{index}" / "device").resolve(strict=True)
         while not (path / "idVendor").exists():
@@ -71,6 +73,26 @@ def _usb_identity(index: int) -> _UsbIdentity | None:
     except OSError:
         return None
     return _UsbIdentity(devpath=path.name, model_key=cast("tuple[str, str, str]", attrs))
+
+
+def _device_key(info: omni_camera.CameraInfo, usb: dict[int, _UsbIdentity | None]) -> str:
+    """Key a query entry by the physical device behind it.
+
+    Two entries share a key when they are the same camera. The USB device path
+    does that job: a camera's several ``/dev/videoN`` entries (capture,
+    metadata, ...) all sit on one path, and no two cameras share one -- unlike
+    a by-id path, which twins do share.
+
+    Args:
+        info: The query entry to key.
+        usb: Identity per video index, from :func:`_usb_identity`.
+
+    Returns:
+        The USB device path, or the entry's own video index where sysfs said
+        nothing (non-USB device, macOS, Windows), which keys it on its own.
+    """
+    identity = usb.get(info.index)
+    return identity.devpath if identity else str(info.index)
 
 
 class OmniCamera(Camera):
@@ -97,60 +119,67 @@ class OmniCamera(Camera):
         self._last_frame: np.ndarray | None = None
 
     @staticmethod
-    def _physical_devices(infos: list[omni_camera.CameraInfo]) -> tuple[list[omni_camera.CameraInfo], set[int]]:
-        """Reduce a query list to one entry per physical camera and flag ambiguous nodes.
+    def _physical_cameras(infos: list[omni_camera.CameraInfo]) -> list[omni_camera.CameraInfo]:
+        """Reduce a query list to one entry per physical camera.
+
+        V4L2 lists a camera several times, once per ``/dev/videoN`` it exposes
+        (capture, metadata, ...). Grouping those by USB device rather than by
+        by-id path is what keeps twins that share a by-id name from collapsing
+        into one camera.
 
         Args:
-            infos: Raw query list, one entry per V4L2 node.
+            infos: Raw query list.
 
         Returns:
-            The deduped infos, and the indices of every node -- including the
-            extra nodes of one camera -- whose advertised identity cannot single
-            out a physical device.
+            The lowest-indexed entry of each camera, which is its capture device.
         """
-        on_linux = sys.platform.startswith("linux")
-        usb = {info.index: _usb_identity(info.index) for info in infos} if on_linux else {}
+        usb = {info.index: _usb_identity(info.index) for info in infos}
+        by_device: dict[str, omni_camera.CameraInfo] = {}
+        for info in infos:
+            device = _device_key(info, usb)
+            if device not in by_device or info.index < by_device[device].index:
+                by_device[device] = info
+        return list(by_device.values())
 
-        def phys_key(info: omni_camera.CameraInfo) -> str:
-            # Without sysfs evidence every node counts as its own device.
-            identity = usb.get(info.index)
-            return identity.devpath if identity else str(info.index)
+    @classmethod
+    def _ambiguous_indices(cls, infos: list[omni_camera.CameraInfo]) -> set[int]:
+        """Find the video indices whose advertised identity denotes several cameras.
 
-        devices = infos
-        if on_linux:
-            # V4L2 exposes several /dev/videoN nodes per physical camera
-            # (capture, metadata, ...). Every node of one camera resolves to
-            # the same USB device path and no two cameras ever share one, so
-            # it groups nodes correctly even when by-id paths collide. Keep
-            # the lowest node index per device: that is the capture node.
-            phys_best: dict[str, omni_camera.CameraInfo] = {}
-            for info in infos:
-                key = phys_key(info)
-                if key not in phys_best or info.index < phys_best[key].index:
-                    phys_best[key] = info
-            devices = list(phys_best.values())
+        Args:
+            infos: Raw query list.
 
-        # Some vendors bake the same USB descriptors into every unit of a
-        # model. Both units then claim one /dev/v4l/by-id name, so the by-id
-        # that does exist denotes either camera and must not be trusted. Count
-        # physical devices per model to detect that; counting after dedup
-        # keeps the extra nodes of a single camera from looking like a twin.
-        model_counts = Counter(identity.model_key for info in devices if (identity := usb.get(info.index)) is not None)
-        # Backends without sysfs evidence (macOS, Windows) can only report the
-        # weaker signal of two devices literally advertising the same id.
-        duplicate_ids = {
-            uid for uid, count in Counter(info.unique_id for info in devices if info.unique_id).items() if count > 1
+        Returns:
+            The indices no configuration can single a camera out by, a camera's
+            extra entries included. Empty unless two cameras answer to one
+            identity.
+        """
+        usb = {info.index: _usb_identity(info.index) for info in infos}
+        cameras = cls._physical_cameras(infos)
+
+        # Vendors that ship one iSerial for every unit of a model -- or none,
+        # which udev likewise leaves out of the name -- have both units claim
+        # one by-id name, and udev materialises it for one of them, so it
+        # denotes either unit. Counting per camera rather than per entry keeps
+        # one camera's extra entries from looking like a twin.
+        cameras_per_model = Counter(
+            identity.model_key for info in cameras if (identity := usb.get(info.index)) is not None
+        )
+        # Without sysfs the only evidence left is two cameras advertising the
+        # same identifier outright.
+        duplicated_ids = {
+            uid for uid, count in Counter(info.unique_id for info in cameras if info.unique_id).items() if count > 1
         }
 
-        def collides(info: omni_camera.CameraInfo) -> bool:
+        def shares_identity(info: omni_camera.CameraInfo) -> bool:
             identity = usb.get(info.index)
-            return (identity is not None and model_counts[identity.model_key] > 1) or info.unique_id in duplicate_ids
+            return (identity is not None and cameras_per_model[identity.model_key] > 1) or (
+                info.unique_id in duplicated_ids
+            )
 
-        colliding_keys = {phys_key(info) for info in devices if collides(info)}
-        # The extra nodes of a flagged camera are ambiguous too: each carries
-        # its own by-id, and a twin claims that name just as it claims the
-        # capture node's.
-        return devices, {info.index for info in infos if phys_key(info) in colliding_keys}
+        shared_devices = {_device_key(info, usb) for info in cameras if shares_identity(info)}
+        # Every entry of a flagged camera is affected, not just its capture
+        # device: each carries a by-id name that the twin claims as well.
+        return {info.index for info in infos if _device_key(info, usb) in shared_devices}
 
     @staticmethod
     def _resolve_device_info(infos: list[omni_camera.CameraInfo], device_id: int | str) -> omni_camera.CameraInfo:
@@ -164,7 +193,7 @@ class OmniCamera(Camera):
         normalized_device_id: int
         if isinstance(device_id, str):
             # ``index:N`` is the backend's own spelling of a video index; it
-            # reports one for every node that owns no by-id name, so it can
+            # reports one for every camera that owns no by-id name, so it can
             # reach us through a persisted hardware_id.
             stripped = device_id.removeprefix("index:")
             if stripped.isdecimal():
@@ -198,42 +227,47 @@ class OmniCamera(Camera):
     ) -> omni_camera.CameraInfo | int:
         """Resolve *device_id* to something safe to hand to ``omni_camera.Camera``.
 
-        Handed a ``CameraInfo``, the backend prefers ``info.unique_id`` over
-        ``info.index``: on Linux it resolves the by-id symlink back to whichever
-        node it points at, elsewhere it asks the platform to look the id up. An
-        index request must not go through that, or the index escape hatch a
-        colliding device is demoted to would land on whichever unit owns the
-        shared identity. An index request therefore resolves to the bare index,
-        which the backend opens directly -- its own fallback for a camera that
-        reports no unique_id.
-
         Args:
             infos: Raw query list.
             device_id: Video index, ``/dev/videoN`` path, or unique_id.
 
         Returns:
-            The matched ``CameraInfo`` for an unambiguous unique_id request, or
-            the video index for an index request.
+            A bare index when *device_id* names a video index, the
+            ``CameraInfo`` when it names the camera's unique_id.
 
         Raises:
-            CaptureError: The requested unique_id denotes more than one device.
+            CaptureError: The requested unique_id denotes more than one camera.
         """
         info = cls._resolve_device_info(infos, device_id)
-        # ``index:N`` is what the backend synthesises for a node with no by-id
-        # name of its own. It denotes exactly one node, so it is an index
-        # request rather than an identity udev could have handed to a twin.
-        by_unique_id = isinstance(device_id, str) and info.unique_id == device_id and not device_id.startswith("index:")
-        if not by_unique_id:
+
+        # Did the config name the camera's unique_id, or a video index?
+        # ``index:N`` is an index: it is the backend's own spelling of one,
+        # reported for any camera with no by-id name of its own, and no twin
+        # can claim it.
+        def names_unique_id() -> bool:
+            if not isinstance(device_id, str) or info.unique_id != device_id:
+                return False
+            return not device_id.startswith("index:")
+
+        if not names_unique_id():
+            # Handing over the CameraInfo instead would let the backend prefer
+            # info.unique_id and resolve the by-id symlink, which for twins can
+            # be the *other* camera -- defeating the index that a colliding
+            # camera is demoted to. A bare index is opened directly; it is the
+            # backend's own fallback for a camera that reports no unique_id.
             return info.index
 
-        _, ambiguous = cls._physical_devices(infos)
-        if info.index in ambiguous:
+        if info.index in cls._ambiguous_indices(infos):
             msg = (
                 f"Camera identity {device_id!r} is shared by more than one connected device "
                 "(duplicate or absent USB serial), so it cannot select a specific camera. "
                 "Open the camera by video index (e.g. device=0 or device='/dev/video0') instead."
             )
             raise CaptureError(msg)
+
+        # The camera owns this unique_id, so hand over the CameraInfo and let
+        # the backend re-resolve it. That is what lets a stable id keep finding
+        # its camera after the video indices have shifted.
         return info
 
     def _resolve_format(self) -> omni_camera.CameraFormat:
@@ -397,11 +431,12 @@ class OmniCamera(Camera):
     def discover(cls, *, only_usable: bool = True) -> list[DeviceInfo]:
         from physicalai.capture.discovery import DeviceInfo  # noqa: PLC0415
 
-        infos, colliding = cls._physical_devices(omni_camera.query(only_usable=only_usable))
+        infos = omni_camera.query(only_usable=only_usable)
+        ambiguous = cls._ambiguous_indices(infos)
 
         devices: list[DeviceInfo] = []
-        for info in infos:
-            has_collision = info.index in colliding
+        for info in cls._physical_cameras(infos):
+            has_collision = info.index in ambiguous
             stable = bool(info.id_stable and info.unique_id and not has_collision)
             devices.append(
                 DeviceInfo(
