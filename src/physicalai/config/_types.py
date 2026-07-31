@@ -16,6 +16,11 @@ class ValidatedConfigDict(TypedDict):
     init_args: dict[str, JsonValue]
 
 
+class JsonArgparseEnvelope(TypedDict):
+    class_path: str
+    init_args: dict[str, JsonValue]
+
+
 @runtime_checkable
 class ConfigValue(Protocol):
     """Domain value that encodes to constructor-compatible JSON for export."""

@@ -8,11 +8,14 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal, Self
+from typing import TYPE_CHECKING, Literal, Self, cast, overload
 
 import yaml
 
 from .serializable import dataclass_to_dict, dict_to_dataclass
+
+if TYPE_CHECKING:
+    from ._types import JsonArgparseEnvelope, JsonValue
 
 __all__ = ["Config"]
 
@@ -34,8 +37,8 @@ class Config:
         from ._normalize import normalize_config  # ruff: ignore[PLC0415]
 
         validated = normalize_config({"class_path": class_path, "init_args": dict(init_args or {})})
-        self.class_path = validated["class_path"]
-        self.init_args = validated["init_args"]
+        self.class_path: str = validated["class_path"]
+        self.init_args: dict[str, JsonValue] = validated["init_args"]
 
     @classmethod
     def from_instance(cls, instance: object) -> Config:
@@ -111,17 +114,20 @@ class Config:
 
         return instantiate(self)
 
-    def to_jsonargparse(self) -> dict[str, object]:
+    def to_jsonargparse(self) -> JsonArgparseEnvelope:
         """Convert this config to a ``class_path``/``init_args`` envelope.
 
         Returns:
             A jsonargparse-compatible mapping.
         """
         if type(self) is Config:
-            return self.to_dict()
+            return {
+                "class_path": self.class_path,
+                "init_args": self.init_args,
+            }
         return {
             "class_path": f"{type(self).__module__}.{type(self).__qualname__}",
-            "init_args": self.to_dict(),
+            "init_args": cast("dict[str, JsonValue]", dataclass_to_dict(self)),
         }
 
     def save(
@@ -172,13 +178,22 @@ class Config:
                 raise TypeError(msg)
         return cls.from_dict(data)
 
-    def __getitem__(self, key: str) -> object:
+    @overload
+    def __getitem__(self, key: Literal["class_path"]) -> str: ...
+
+    @overload
+    def __getitem__(self, key: Literal["init_args"]) -> dict[str, JsonValue]: ...
+
+    @overload
+    def __getitem__(self, key: str) -> JsonValue: ...
+
+    def __getitem__(self, key: str) -> JsonValue:
         """Expose direct recipe keys for gradual internal migration.
 
         Returns:
             The value for ``key`` in :meth:`to_dict`.
         """
-        return self.to_dict()[key]
+        return cast("JsonValue", self.to_dict()[key])
 
     def get(self, key: str, default: object | None = None) -> object | None:
         """Return a direct recipe value, or *default* when absent.

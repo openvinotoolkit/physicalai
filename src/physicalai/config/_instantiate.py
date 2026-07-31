@@ -285,6 +285,7 @@ def instantiate(config: Config | Mapping[str, JsonValue]) -> object:
     Returns:
         A new instance of the configured class.
     """
-    raw = config.to_dict() if type(config) is Config else config
+    raw: Config | Mapping[str, JsonValue]
+    raw = {"class_path": config.class_path, "init_args": config.init_args} if type(config) is Config else config
     _preflight_config(raw, path="", depth=0, seen=set())
     return _instantiate_impl(raw, path="", depth=0, seen=set())
