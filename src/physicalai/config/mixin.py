@@ -25,17 +25,29 @@ class FromConfig:
 
     @classmethod
     def from_yaml(cls, file_path: str | Path, *, key: str | None = None) -> Self:
-        """Load configuration from YAML and instantiate the class."""
+        """Load configuration from YAML and instantiate the class.
+
+        Returns:
+            An instance of ``cls``.
+        """
         return cast("Self", instantiate_obj_from_file(file_path, key=key, target_cls=cls))
 
     @classmethod
     def from_dict(cls, config: Mapping[str, Any], *, key: str | None = None) -> Self:
-        """Instantiate the class from a mapping."""
+        """Instantiate the class from a mapping.
+
+        Returns:
+            An instance of ``cls``.
+        """
         return cast("Self", instantiate_obj_from_dict(config, key=key, target_cls=cls))
 
     @classmethod
     def from_pydantic(cls, config: BaseModel, *, key: str | None = None, recursive: bool = False) -> Self:
-        """Instantiate the class from a Pydantic model."""
+        """Instantiate the class from a Pydantic model.
+
+        Returns:
+            An instance of ``cls``.
+        """
         values = (
             config.model_dump()
             if recursive
@@ -45,7 +57,14 @@ class FromConfig:
 
     @classmethod
     def from_dataclass(cls, config: object, *, key: str | None = None, recursive: bool = False) -> Self:
-        """Instantiate the class from a dataclass instance."""
+        """Instantiate the class from a dataclass instance.
+
+        Returns:
+            An instance of ``cls``.
+
+        Raises:
+            TypeError: If ``config`` is not a dataclass instance.
+        """
         if not dataclasses.is_dataclass(config) or isinstance(config, type):
             msg = f"Expected dataclass instance, got {type(config)}"
             raise TypeError(msg)
@@ -60,7 +79,14 @@ class FromConfig:
         key: str | None = None,
         recursive: bool = False,
     ) -> Self:
-        """Dispatch to the matching configuration constructor."""
+        """Dispatch to the matching configuration constructor.
+
+        Returns:
+            An instance of ``cls``.
+
+        Raises:
+            TypeError: If ``config`` has an unsupported type.
+        """
         if isinstance(config, (str, Path)):
             return cls.from_yaml(config, key=key)
         if isinstance(config, BaseModel):
@@ -74,7 +100,11 @@ class FromConfig:
 
 
 def from_config(cls: _T) -> _T:
-    """Decorate a class with the constructors provided by :class:`FromConfig`."""
+    """Decorate a class with the constructors provided by :class:`FromConfig`.
+
+    Returns:
+        The same class with ``from_*`` constructors attached.
+    """
     for name in ("from_yaml", "from_dict", "from_pydantic", "from_dataclass", "from_config"):
         setattr(cls, name, FromConfig.__dict__[name])
     return cls

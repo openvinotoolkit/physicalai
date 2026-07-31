@@ -39,7 +39,7 @@ from .importing import import_dotted_path
 from .instantiate import import_class, instantiate_obj
 from .mixin import FromConfig, from_config
 
-instantiate = _strict_instantiate  # noqa: RUF067
+instantiate = _strict_instantiate  # ruff: ignore[RUF067]
 
 __all__ = [
     "Config",

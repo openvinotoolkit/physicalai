@@ -8,7 +8,6 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 import yaml
 from pydantic import BaseModel
@@ -17,7 +16,7 @@ from ._instantiate import instantiate
 from .base import Config
 from .importing import import_dotted_path
 
-ConfigMapping = Mapping[str, Any]
+ConfigMapping = Mapping[str, object]
 
 __all__ = [
     "import_class",
@@ -30,7 +29,15 @@ __all__ = [
 
 
 def import_class(class_path: str) -> type:
-    """Import and validate a class from a dotted path."""
+    """Import and validate a class from a dotted path.
+
+    Returns:
+        The imported class.
+
+    Raises:
+        ImportError: If the module or attribute cannot be imported.
+        TypeError: If the path resolves to a non-class object.
+    """
     try:
         value = import_dotted_path(class_path)
     except (ValueError, ImportError, AttributeError) as exc:
@@ -38,11 +45,11 @@ def import_class(class_path: str) -> type:
         raise ImportError(msg) from exc
     if not isinstance(value, type):
         msg = f"{class_path!r} does not resolve to a class"
-        raise ImportError(msg)
+        raise TypeError(msg)
     return value
 
 
-def _instantiate_recursive(value: Any) -> Any:
+def _instantiate_recursive(value: object) -> object:
     if isinstance(value, dict):
         if "class_path" in value:
             return Config.from_dict(value).instantiate()
@@ -60,7 +67,15 @@ def instantiate_obj_from_dict(
     key: str | None = None,
     target_cls: type | None = None,
 ) -> object:
-    """Instantiate an object from a configuration mapping."""
+    """Instantiate an object from a configuration mapping.
+
+    Returns:
+        The constructed object.
+
+    Raises:
+        ValueError: If ``key`` is missing or no ``class_path``/``target_cls`` is available.
+        TypeError: If a selected sub-config is not a mapping.
+    """
     selected: object = config
     if key is not None:
         if key not in config:
@@ -92,7 +107,11 @@ def instantiate_obj_from_pydantic(
     key: str | None = None,
     target_cls: type | None = None,
 ) -> object:
-    """Instantiate from a Pydantic model."""
+    """Instantiate from a Pydantic model.
+
+    Returns:
+        The constructed object.
+    """
     return instantiate_obj_from_dict(config.model_dump(), key=key, target_cls=target_cls)
 
 
@@ -102,7 +121,14 @@ def instantiate_obj_from_dataclass(
     key: str | None = None,
     target_cls: type | None = None,
 ) -> object:
-    """Instantiate from a dataclass instance."""
+    """Instantiate from a dataclass instance.
+
+    Returns:
+        The constructed object.
+
+    Raises:
+        TypeError: If ``config`` is not a dataclass instance.
+    """
     if not dataclasses.is_dataclass(config) or isinstance(config, type):
         msg = f"Expected dataclass instance, got {type(config)}"
         raise TypeError(msg)
@@ -115,7 +141,14 @@ def instantiate_obj_from_file(
     key: str | None = None,
     target_cls: type | None = None,
 ) -> object:
-    """Instantiate from a YAML or JSON file."""
+    """Instantiate from a YAML or JSON file.
+
+    Returns:
+        The constructed object.
+
+    Raises:
+        TypeError: If the file root is not a mapping.
+    """
     config = yaml.safe_load(Path(file_path).read_text(encoding="utf-8"))
     if config is None:
         config = {}
@@ -131,7 +164,14 @@ def instantiate_obj(
     key: str | None = None,
     target_cls: type | None = None,
 ) -> object:
-    """Instantiate from a recipe, mapping, model, dataclass, or file."""
+    """Instantiate from a recipe, mapping, model, dataclass, or file.
+
+    Returns:
+        The constructed object.
+
+    Raises:
+        TypeError: If ``config`` has an unsupported type.
+    """
     if type(config) is Config:
         return config.instantiate()
     if isinstance(config, (str, Path)):

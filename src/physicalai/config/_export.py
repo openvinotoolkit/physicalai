@@ -225,7 +225,7 @@ def _export_instance(
 
 def to_config(value: object) -> Config:
     """Return the canonical recipe for an ``@export_config`` instance."""
-    from .base import Config  # noqa: PLC0415
+    from .base import Config  # ruff: ignore[PLC0415]
 
     return Config.from_instance(value)
 

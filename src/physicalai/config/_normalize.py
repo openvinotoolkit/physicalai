@@ -246,7 +246,7 @@ def _unsupported_message(value: object, *, path: str) -> str:
     return f"{format_path(path)}: cannot encode {type_name} {repr_value}; omit it or use a supported component value"
 
 
-def normalize_value(  # noqa: PLR0911, PLR0912
+def normalize_value(  # ruff: ignore[PLR0911, PLR0912]
     value: object,
     *,
     path: str = "",
@@ -292,7 +292,7 @@ def normalize_value(  # noqa: PLR0911, PLR0912
     if isinstance(value, Enum):
         return _normalize_enum(value, path=path)
 
-    from .base import Config  # noqa: PLC0415
+    from .base import Config  # ruff: ignore[PLC0415]
 
     if isinstance(value, Config):
         return normalize_value(
@@ -374,12 +374,8 @@ def normalize_config(config: object, *, path: str = "") -> ValidatedConfigDict:
     Returns:
         A JSON-safe direct recipe mapping.
     """
-    from ._export import (  # noqa: PLC0415
-        _encode_domain_value,
-        _export_instance,
-        is_config_exportable,
-    )
-    from .base import Config  # noqa: PLC0415
+    from ._export import _encode_domain_value, _export_instance, is_config_exportable  # ruff: ignore[PLC0415]
+    from .base import Config  # ruff: ignore[PLC0415]
 
     raw = config.to_dict() if type(config) is Config else config
     validated = validate_config(raw, path=path)

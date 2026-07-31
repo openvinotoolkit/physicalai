@@ -23,8 +23,12 @@ _T = TypeVar("_T")
 __all__ = ["dataclass_to_dict", "dict_to_dataclass"]
 
 
-def dataclass_to_dict(obj: object, *, recursive: bool = True) -> object:
-    """Convert a dataclass or nested structure to plain Python data."""
+def dataclass_to_dict(obj: object, *, recursive: bool = True) -> object:  # ruff: ignore[PLR0911]
+    """Convert a dataclass or nested structure to plain Python data.
+
+    Returns:
+        Plain dicts, lists, and scalars suitable for ``torch.save(weights_only=True)``.
+    """
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         if not recursive:
             return {field.name: getattr(obj, field.name) for field in dataclasses.fields(obj)}
@@ -43,13 +47,20 @@ def dataclass_to_dict(obj: object, *, recursive: bool = True) -> object:
 
 
 def dict_to_dataclass(cls: type[_T], data: Mapping[str, object]) -> _T:
-    """Reconstruct a dataclass from a mapping using its type hints."""
+    """Reconstruct a dataclass from a mapping using its type hints.
+
+    Returns:
+        An instance of ``cls``.
+
+    Raises:
+        TypeError: If ``cls`` is not a dataclass.
+    """
     if not dataclasses.is_dataclass(cls):
         msg = f"Expected dataclass, got {cls}"
         raise TypeError(msg)
     try:
         hints = get_type_hints(cls)
-    except Exception:
+    except (NameError, TypeError, AttributeError, KeyError):
         hints = {}
     kwargs = {}
     for field in dataclasses.fields(cls):
@@ -58,7 +69,7 @@ def dict_to_dataclass(cls: type[_T], data: Mapping[str, object]) -> _T:
     return cls(**kwargs)  # type: ignore[return-value]
 
 
-def _reconstruct_value(value: object, field_type: object) -> object:
+def _reconstruct_value(value: object, field_type: object) -> object:  # ruff: ignore[PLR0911]
     if value is None:
         return None
     origin = get_origin(field_type)
