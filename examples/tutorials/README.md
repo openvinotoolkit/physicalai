@@ -10,7 +10,7 @@ install the native build tools required by LeRobot and the LIBERO benchmark:
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential libegl1 libgl1 python3-venv
+sudo apt install -y build-essential ffmpeg libegl1 libgl1 python3-venv
 ```
 
 Create the tutorial environment and install the shared Python requirements:
