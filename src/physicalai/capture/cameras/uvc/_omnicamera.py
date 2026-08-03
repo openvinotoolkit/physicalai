@@ -4,10 +4,11 @@
 from __future__ import annotations
 
 import contextlib
-import re
 import sys
 import time
-from typing import TYPE_CHECKING, Any, cast
+from collections import Counter
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 import numpy as np
 import pynokhwa as omni_camera  # rename omni_camera references
@@ -23,6 +24,59 @@ if TYPE_CHECKING:
 
 _MISSING_DEP_PKG = "omni_camera"
 _MISSING_DEP_EXTRA = "capture"
+
+_SYSFS_V4L2 = Path("/sys/class/video4linux")
+
+
+class _UsbIdentity(NamedTuple):
+    """USB identity of the device owning a V4L2 node."""
+
+    devpath: str
+    """USB device path, e.g. ``3-6.1``. Unique per physical port."""
+
+    model_key: tuple[str, str, str]
+    """``(idVendor, idProduct, serial)``.
+
+    An unreported serial is empty, which is itself a collision key: udev omits
+    it from the by-id name, so every unit of such a model claims one path.
+    """
+
+
+def _usb_identity(index: int) -> _UsbIdentity | None:
+    """Return USB identity for the device behind ``/dev/video<index>``.
+
+    On Linux, walk from ``/sys/class/video4linux/video<index>/device`` to the
+    owning USB node and read ``idVendor``, ``idProduct``, and ``serial``.
+
+    Returns:
+        The owning device's identity, or None on non-Linux platforms and when
+        sysfs does not expose the required attributes.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        path = (_SYSFS_V4L2 / f"video{index}" / "device").resolve(strict=True)
+        while not (path / "idVendor").exists():
+            if path.parent == path:
+                return None
+            path = path.parent
+        attrs = tuple(
+            (path / name).read_text().strip() if (path / name).exists() else ""
+            for name in ("idVendor", "idProduct", "serial")
+        )
+    except OSError:
+        return None
+    return _UsbIdentity(devpath=path.name, model_key=cast("tuple[str, str, str]", attrs))
+
+
+def _device_key(info: omni_camera.CameraInfo, usb: dict[int, _UsbIdentity | None]) -> str:
+    """Key an entry by the camera behind it: its USB device path, or its own index.
+
+    Returns:
+        A key two entries share only when they are the same camera.
+    """
+    identity = usb.get(info.index)
+    return identity.devpath if identity else str(info.index)
 
 
 class OmniCamera(Camera):
@@ -49,6 +103,69 @@ class OmniCamera(Camera):
         self._last_frame: np.ndarray | None = None
 
     @staticmethod
+    def _physical_cameras(infos: list[omni_camera.CameraInfo]) -> list[omni_camera.CameraInfo]:
+        """Reduce a query list to one entry per physical camera.
+
+        V4L2 lists a camera several times, once per ``/dev/videoN`` it exposes
+        (capture, metadata, ...). Grouping those by USB device rather than by
+        by-id path is what keeps twins that share a by-id name from collapsing
+        into one camera.
+
+        Args:
+            infos: Raw query list.
+
+        Returns:
+            The lowest-indexed entry of each camera, which is its capture device.
+        """
+        usb = {info.index: _usb_identity(info.index) for info in infos}
+        by_device: dict[str, omni_camera.CameraInfo] = {}
+        for info in infos:
+            device = _device_key(info, usb)
+            if device not in by_device or info.index < by_device[device].index:
+                by_device[device] = info
+        return list(by_device.values())
+
+    @classmethod
+    def _ambiguous_indices(cls, infos: list[omni_camera.CameraInfo]) -> set[int]:
+        """Find the video indices whose advertised identity denotes several cameras.
+
+        Args:
+            infos: Raw query list.
+
+        Returns:
+            The indices no configuration can single a camera out by, a camera's
+            extra entries included. Empty unless two cameras answer to one
+            identity.
+        """
+        usb = {info.index: _usb_identity(info.index) for info in infos}
+        cameras = cls._physical_cameras(infos)
+
+        # Vendors that ship one iSerial for every unit of a model -- or none,
+        # which udev likewise leaves out of the name -- have both units claim
+        # one by-id name, and udev materialises it for one of them, so it
+        # denotes either unit. Counting per camera rather than per entry keeps
+        # one camera's extra entries from looking like a twin.
+        cameras_per_model = Counter(
+            identity.model_key for info in cameras if (identity := usb.get(info.index)) is not None
+        )
+        # Without sysfs the only evidence left is two cameras advertising the
+        # same identifier outright.
+        duplicated_ids = {
+            uid for uid, count in Counter(info.unique_id for info in cameras if info.unique_id).items() if count > 1
+        }
+
+        def shares_identity(info: omni_camera.CameraInfo) -> bool:
+            identity = usb.get(info.index)
+            return (identity is not None and cameras_per_model[identity.model_key] > 1) or (
+                info.unique_id in duplicated_ids
+            )
+
+        shared_devices = {_device_key(info, usb) for info in cameras if shares_identity(info)}
+        # Every entry of a flagged camera is affected, not just its capture
+        # device: each carries a by-id name that the twin claims as well.
+        return {info.index for info in infos if _device_key(info, usb) in shared_devices}
+
+    @staticmethod
     def _resolve_device_info(infos: list[omni_camera.CameraInfo], device_id: int | str) -> omni_camera.CameraInfo:
         # Try unique_id match first for string identifiers.
         if isinstance(device_id, str) and device_id:
@@ -59,8 +176,12 @@ class OmniCamera(Camera):
         # Fall back to index-based resolution.
         normalized_device_id: int
         if isinstance(device_id, str):
-            if device_id.isdecimal():
-                normalized_device_id = int(device_id)
+            # ``index:N`` is the backend's own spelling of a video index; it
+            # reports one for every camera that owns no by-id name, so it can
+            # reach us through a persisted hardware_id.
+            stripped = device_id.removeprefix("index:")
+            if stripped.isdecimal():
+                normalized_device_id = int(stripped)
             elif device_id.startswith("/dev/video"):
                 suffix = device_id.removeprefix("/dev/video")
                 if not suffix.isdecimal():
@@ -80,6 +201,57 @@ class OmniCamera(Camera):
         if info is None:
             msg = f"No camera found at index {normalized_device_id}"
             raise CaptureError(msg)
+        return info
+
+    @classmethod
+    def _resolve_open_target(
+        cls,
+        infos: list[omni_camera.CameraInfo],
+        device_id: int | str,
+    ) -> omni_camera.CameraInfo | int:
+        """Resolve *device_id* to something safe to hand to ``omni_camera.Camera``.
+
+        Args:
+            infos: Raw query list.
+            device_id: Video index, ``/dev/videoN`` path, or unique_id.
+
+        Returns:
+            A bare index when *device_id* names a video index, the
+            ``CameraInfo`` when it names the camera's unique_id.
+
+        Raises:
+            CaptureError: The requested unique_id denotes more than one camera.
+        """
+        info = cls._resolve_device_info(infos, device_id)
+
+        # Did the config name the camera's unique_id, or a video index?
+        # ``index:N`` is an index: it is the backend's own spelling of one,
+        # reported for any camera with no by-id name of its own, and no twin
+        # can claim it.
+        def names_unique_id() -> bool:
+            if not isinstance(device_id, str) or info.unique_id != device_id:
+                return False
+            return not device_id.startswith("index:")
+
+        if not names_unique_id():
+            # Handing over the CameraInfo instead would let the backend prefer
+            # info.unique_id and resolve the by-id symlink, which for twins can
+            # be the *other* camera -- defeating the index that a colliding
+            # camera is demoted to. A bare index is opened directly; it is the
+            # backend's own fallback for a camera that reports no unique_id.
+            return info.index
+
+        if info.index in cls._ambiguous_indices(infos):
+            msg = (
+                f"Camera identity {device_id!r} is shared by more than one connected device "
+                "(duplicate or absent USB serial), so it cannot select a specific camera. "
+                "Open the camera by video index (e.g. device=0 or device='/dev/video0') instead."
+            )
+            raise CaptureError(msg)
+
+        # The camera owns this unique_id, so hand over the CameraInfo and let
+        # the backend re-resolve it. That is what lets a stable id keep finding
+        # its camera after the video indices have shifted.
         return info
 
     def _resolve_format(self) -> omni_camera.CameraFormat:
@@ -120,10 +292,10 @@ class OmniCamera(Camera):
         while not infos and time.monotonic() < query_deadline:
             time.sleep(0.1)
             infos = omni_camera.query(only_usable=False)
-        info = self._resolve_device_info(infos, self._device_id_raw)
+        target = self._resolve_open_target(infos, self._device_id_raw)
 
         try:
-            self._cam = omni_camera.Camera(info)
+            self._cam = omni_camera.Camera(target)
             fmt = self._resolve_format()
 
             self._cam.open(fmt)
@@ -244,40 +416,11 @@ class OmniCamera(Camera):
         from physicalai.capture.discovery import DeviceInfo  # noqa: PLC0415
 
         infos = omni_camera.query(only_usable=only_usable)
-
-        if sys.platform.startswith("linux"):
-            # V4L2 exposes multiple /dev/videoN nodes per physical camera
-            # (e.g. capture + metadata with distinct by-id paths like
-            # ...-video-index0 and ...-video-index1). Keep only the lowest-
-            # index node per physical device (index0 = capture, index1+ = metadata).
-            phys_best: dict[str, omni_camera.CameraInfo] = {}
-            for info in infos:
-                uid = info.unique_id or ""
-                # Only group by stripped key when the V4L2 multi-node
-                # suffix is present (e.g. ...-video-index0 / -video-index1).
-                # Cameras without that suffix keep their own index key so
-                # genuinely separate devices sharing a serial are not collapsed.
-                if uid and re.search(r"-video-index\d+$", uid):
-                    phys_key = re.sub(r"-video-index\d+$", "", uid)
-                else:
-                    phys_key = str(info.index)
-                if phys_key not in phys_best or info.index < phys_best[phys_key].index:
-                    phys_best[phys_key] = info
-            infos = list(phys_best.values())
-
-        # Some vendors/models bake the same USB iSerial into every
-        # unit of a model. When a unique_id appears more than once it cannot
-        # identify a specific device, so demote those entries to index-based
-        # fingerprints and let the user manage cable-to-config mapping.
-        unique_id_counts: dict[str, int] = {}
-        for info in infos:
-            if info.unique_id:
-                unique_id_counts[info.unique_id] = unique_id_counts.get(info.unique_id, 0) + 1
-        colliding_ids = {uid for uid, count in unique_id_counts.items() if count > 1}
+        ambiguous = cls._ambiguous_indices(infos)
 
         devices: list[DeviceInfo] = []
-        for info in infos:
-            has_collision = bool(info.unique_id) and info.unique_id in colliding_ids
+        for info in cls._physical_cameras(infos):
+            has_collision = info.index in ambiguous
             stable = bool(info.id_stable and info.unique_id and not has_collision)
             devices.append(
                 DeviceInfo(
@@ -312,8 +455,7 @@ class OmniCamera(Camera):
         """
         infos = omni_camera.query(only_usable=False)
         resolved_id: int | str = int(device_id) if device_id.isdecimal() else device_id
-        info = cls._resolve_device_info(infos, resolved_id)
-        cam = omni_camera.Camera(info)
+        cam = omni_camera.Camera(cls._resolve_open_target(infos, resolved_id))
         fmts = cam.get_format_options()
         return sorted({(f.width, f.height, int(f.frame_rate)) for f in fmts})
 

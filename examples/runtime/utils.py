@@ -13,7 +13,12 @@ from physicalai.robot.interface import Robot
 
 
 def build_robot(args: argparse.Namespace) -> Robot:
-    """Construct a robot from CLI args (--robot, --port, --ip, etc.)."""
+    """Construct a robot from CLI args (--robot, --port, --ip, etc.).
+
+    When ``--shared-robot`` is set, wraps the driver in
+    :class:`~physicalai.robot.SharedRobot` via ComponentConfig.
+    """
+    driver: Robot
     if args.robot == "so101":
         from physicalai.robot import SO101
 
@@ -21,25 +26,33 @@ def build_robot(args: argparse.Namespace) -> Robot:
             sys.exit("error: --port is required for so101")
         if not args.calibration:
             sys.exit("error: --calibration is required for so101")
-        return SO101(port=args.port, calibration=args.calibration, role="follower")
-
-    if args.robot == "widowxai":
+        driver = SO101(port=args.port, calibration=args.calibration, role="follower")
+    elif args.robot == "widowxai":
         from physicalai.robot import WidowXAI
 
         if not args.ip:
             sys.exit("error: --ip is required for widowxai")
-        return WidowXAI(ip=args.ip, role="follower")
-
-    if args.robot == "bimanual_widowxai":
+        driver = WidowXAI(ip=args.ip, role="follower")
+    elif args.robot == "bimanual_widowxai":
         from physicalai.robot import BimanualWidowXAI, WidowXAI
 
         if not args.ip_left or not args.ip_right:
             sys.exit("error: --ip-left and --ip-right are required for bimanual")
         left = WidowXAI(ip=args.ip_left, role="follower")
         right = WidowXAI(ip=args.ip_right, role="follower")
-        return BimanualWidowXAI(left, right)
+        driver = BimanualWidowXAI(left, right)
+    else:
+        sys.exit(f"error: unknown robot type: {args.robot}")
 
-    sys.exit(f"error: unknown robot type: {args.robot}")
+    if getattr(args, "shared_robot", False):
+        if not getattr(args, "robot_name", None):
+            sys.exit("error: --robot-name is required with --shared-robot")
+        from physicalai.config import to_config
+        from physicalai.robot import SharedRobot
+
+        return SharedRobot.from_config(to_config(driver), name=args.robot_name)
+
+    return driver
 
 
 def parse_camera_specs(

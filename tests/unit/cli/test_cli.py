@@ -345,6 +345,34 @@ class TestRunDispatcher:
 
         fake.run.assert_called_once_with(duration_s=None)
 
+    def test_configures_logging_before_instantiate(self) -> None:
+        parser = run_module.build_parser()
+        cfg = parser.parse_args(list(_MINIMAL_ARGV))
+        fake = self._fake_runtime(0)
+
+        with (
+            patch.object(run_module, "_configure_run_logging") as configure,
+            patch.object(parser, "instantiate") as inst,
+        ):
+            inst.return_value = MagicMock(runtime=fake)
+            run_module.run(parser, cfg)
+
+        configure.assert_called_once_with(verbose=False)
+
+    def test_verbose_flag_enables_debug_logging(self) -> None:
+        parser = run_module.build_parser()
+        cfg = parser.parse_args([*_MINIMAL_ARGV, "--verbose"])
+        fake = self._fake_runtime(0)
+
+        with (
+            patch.object(run_module, "_configure_run_logging") as configure,
+            patch.object(parser, "instantiate") as inst,
+        ):
+            inst.return_value = MagicMock(runtime=fake)
+            run_module.run(parser, cfg)
+
+        configure.assert_called_once_with(verbose=True)
+
 
 class TestMainDispatch:
     """End-to-end ``main()`` dispatch."""

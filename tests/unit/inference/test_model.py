@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
+from loguru import logger
 
 from physicalai.inference.adapters import RuntimeAdapter
 from physicalai.inference.manifest import ComponentSpec, Manifest, ModelSpec
@@ -151,6 +152,23 @@ class TestInferenceModelInit:
         assert model.policy_name == "act"
         assert model.backend == "openvino"
         assert isinstance(model.runner, SinglePass)
+
+    def test_init_logs_load_phases(self, tmp_path: Path) -> None:
+        export_dir = _make_export_dir(tmp_path)
+        messages: list[str] = []
+        handler_id = logger.add(lambda message: messages.append(message.record["message"]), level="INFO")
+
+        try:
+            InferenceModel(export_dir)
+        finally:
+            logger.remove(handler_id)
+
+        joined = "\n".join(messages)
+        assert "Loading policy from" in joined
+        assert "Loaded manifest:" in joined
+        assert "Compiling openvino model on" in joined
+        assert "Model compiled in" in joined
+        assert "InferenceModel ready" in joined
 
     def test_init_with_nonexistent_directory(self) -> None:
         with pytest.raises(FileNotFoundError, match="Export directory not found"):
