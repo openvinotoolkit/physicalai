@@ -500,6 +500,13 @@ class TestFromConfig:
         with pytest.raises(SystemExit):
             RobotRuntime.from_config(cfg_path)
 
+    def test_empty_yaml_fails_via_parser_not_type_error(self, tmp_path: Path) -> None:
+        cfg_path = tmp_path / "runtime.yaml"
+        cfg_path.write_text("", encoding="utf-8")
+
+        with pytest.raises(SystemExit):
+            RobotRuntime.from_config(cfg_path)
+
     def test_returns_disconnected_runtime(self, tmp_path: Path) -> None:
         cfg_path = tmp_path / "runtime.yaml"
         cfg_path.write_text(_minimal_yaml())

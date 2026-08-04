@@ -84,3 +84,10 @@ class TestSaveLoadYaml:
 
         with pytest.raises(ConfigError, match="must be a mapping"):
             load_yaml(target)
+
+    def test_load_empty_file_as_empty_mapping(self, tmp_path: Path) -> None:
+        target = tmp_path / "empty.yaml"
+        target.write_text("", encoding="utf-8")
+
+        with pytest.raises(ConfigError, match="class_path"):
+            load_yaml(target)

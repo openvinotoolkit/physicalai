@@ -74,6 +74,8 @@ def load_yaml(path: str | Path) -> Config:
         ConfigError: If the document is not a mapping.
     """
     loaded = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    if loaded is None:
+        loaded = {}
     if not isinstance(loaded, dict):
         msg = f"{str(path)!r}: YAML config must be a mapping, got {type(loaded).__name__}"
         raise ConfigError(msg)

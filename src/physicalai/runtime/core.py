@@ -233,6 +233,8 @@ class RobotRuntime:
         from jsonargparse import ArgumentParser  # noqa: PLC0415
 
         document = yaml.safe_load(Path(config).read_text(encoding="utf-8"))
+        if document is None:
+            document = {}
         if not isinstance(document, dict):
             msg = f"runtime config must be a mapping, got {type(document).__name__}"
             raise TypeError(msg)
