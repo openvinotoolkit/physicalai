@@ -29,7 +29,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           # fetch-depth 2 lets us compare HEAD~1 for push events to detect
@@ -37,15 +37,15 @@ jobs:
           fetch-depth: 2
 
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           # renovate: datasource=github-releases depName=astral-sh/uv
-          version: "0.8.8"
+          version: 0.11.32
 
       - name: Install dependencies
         run: uv sync --frozen --extra tests
@@ -88,7 +88,7 @@ jobs:
       # updating the pinned revision SHAs automatically invalidates the cache
       # and forces a fresh download of the new model artifacts.
       - name: Restore HF model cache
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/huggingface
           key: ov-smoke-hf-${{ runner.os }}-${{ hashFiles('tests/integration/inference/test_ov_smoke.py') }}
