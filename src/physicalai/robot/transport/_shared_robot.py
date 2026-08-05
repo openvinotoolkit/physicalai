@@ -49,7 +49,7 @@ from physicalai.robot.errors import (
 from ._codec import ROBOT_TRANSPORT_PROTOCOL_VERSION, TransportObservation, decode_metadata, decode_state, encode_action
 from ._ids import KEY_PREFIX, METADATA_WILDCARD, action_key, metadata_key, state_key, validate_name
 from ._lock import active_owner_device_ids, registered_owner_names
-from ._owner_config import DEFAULT_RATE_HZ, normalize_robot_config
+from ._owner_config import DEFAULT_RATE_HZ, coerce_robot_config_input, normalize_robot_config
 from ._session import open_session
 
 if TYPE_CHECKING:
@@ -222,7 +222,7 @@ class SharedRobot:
         self,
         name: str,
         *,
-        robot: Config | Mapping[str, object] | None = None,
+        robot: Config | Mapping[str, Any] | None = None,
         allow_remote: bool = False,
         rate_hz: float = DEFAULT_RATE_HZ,
         idle_timeout: float | None = 10.0,
@@ -249,13 +249,15 @@ class SharedRobot:
     @classmethod
     def _physicalai_normalize_captured_init_args(cls, supplied: dict[str, object]) -> None:
         robot = supplied.get("robot")
+        if robot is None:
+            return
         if isinstance(robot, Mapping) or type(robot) is Config:
             supplied["robot"] = normalize_robot_config(robot).to_dict()
 
     @classmethod
     def from_config(
         cls,
-        robot_config: Config | Mapping[str, object],
+        robot_config: Config | Mapping[str, Any] | object,
         *,
         name: str,
         allow_remote: bool = False,
@@ -267,7 +269,9 @@ class SharedRobot:
         """Primary API: spawn/attach from a local robot Config.
 
         Args:
-            robot_config: Local ``class_path`` + ``init_args`` for the driver.
+            robot_config: Local ``class_path`` + ``init_args``, a mapping, or a
+                live ``@export_config`` driver (exported via
+                :meth:`~physicalai.config.Config.from_instance`).
             name: Logical owner name (Zenoh topic key).
             allow_remote: Whether this session / spawned owner may leave localhost.
             rate_hz: Owner loop rate when this instance spawns the owner.
@@ -280,6 +284,7 @@ class SharedRobot:
             writes only the new owner stdin shape on spawn.
         """
         # Omit default None so @export_config does not capture "_session": null.
+        robot_config = coerce_robot_config_input(robot_config)
         if _session is None:
             return cls(
                 name,

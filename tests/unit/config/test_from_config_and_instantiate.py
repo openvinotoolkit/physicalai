@@ -16,7 +16,7 @@ import pytest
 from pydantic import BaseModel
 
 from physicalai.config import Config, from_config
-from physicalai.config.instantiate import import_class, instantiate_obj
+from physicalai.config.loading import import_class, instantiate_obj
 from physicalai.config.mixin import FromConfig
 
 

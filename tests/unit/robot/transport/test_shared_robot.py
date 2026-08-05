@@ -107,10 +107,15 @@ class TestConstruction:
         )
         assert robot._robot == {"class_path": FAKE_ROBOT_CLASS, "init_args": {"port": "/dev/fake0"}}
 
-    def test_constructor_requires_config_mapping(self) -> None:
+    def test_constructor_accepts_exportable_driver(self) -> None:
         driver = FakeRobot(port="/dev/fake0", device_ids=("fake:/dev/fake0",))
+        robot = SharedRobot.from_config(driver, name="left-arm")
+        assert robot._robot is not None
+        assert robot._robot.init_args["port"] == "/dev/fake0"
+
+    def test_constructor_rejects_non_config_object(self) -> None:
         with pytest.raises(ConfigError, match="robot must be a Config mapping"):
-            SharedRobot("left-arm", robot=driver)  # type: ignore[arg-type]
+            SharedRobot("left-arm", robot=object())  # type: ignore[arg-type]
 
     def test_satisfies_robot_protocol(self) -> None:
         from physicalai.robot import Robot

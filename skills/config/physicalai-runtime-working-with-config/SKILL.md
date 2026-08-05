@@ -13,7 +13,8 @@ Physical AI Studio.
 
 1. **Pick the API** — strict transport/export uses `Config`, `@export_config`,
    and `instantiate()` from `physicalai.config`; generic CLI/YAML loaders use
-   `instantiate_obj` and `FromConfig` from `physicalai.config.instantiate` /
+   `instantiate_obj` and `FromConfig` from `physicalai.config` /
+   `physicalai.config.loading` /
    `physicalai.config.mixin`; typed policy hyperparameters subclass
    `physicalai.config.base.Config`.
    - Done when: the change touches the module that matches the call site.

@@ -1,6 +1,6 @@
 # Instantiate Objects from Config
 
-`physicalai.config.instantiate_obj` is the generic entry point for turning
+`physicalai.config.instantiate_obj()` is the generic entry point for turning
 config-like inputs into Python objects. Training CLIs, Lightning integration,
 and infrastructure code use it when the concrete class may come from YAML or
 when you do not want a `FromConfig` mixin on the target type.

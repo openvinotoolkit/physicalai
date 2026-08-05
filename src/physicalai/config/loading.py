@@ -12,7 +12,9 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel
 
+from ._errors import ConfigError
 from ._instantiate import instantiate
+from ._types import _MAX_CONFIG_DEPTH
 from .base import Config
 from .importing import import_dotted_path
 
@@ -49,15 +51,18 @@ def import_class(class_path: str) -> type:
     return value
 
 
-def _instantiate_recursive(value: object) -> object:
+def _instantiate_recursive(value: object, *, depth: int = 0) -> object:
+    if depth > _MAX_CONFIG_DEPTH:
+        msg = f"Configuration nesting depth exceeds {_MAX_CONFIG_DEPTH}"
+        raise ConfigError(msg)
     if isinstance(value, dict):
         if "class_path" in value:
             return Config.from_dict(value).instantiate()
-        return {key: _instantiate_recursive(item) for key, item in value.items()}
+        return {key: _instantiate_recursive(item, depth=depth + 1) for key, item in value.items()}
     if isinstance(value, list):
-        return [_instantiate_recursive(item) for item in value]
+        return [_instantiate_recursive(item, depth=depth + 1) for item in value]
     if isinstance(value, tuple):
-        return tuple(_instantiate_recursive(item) for item in value)
+        return tuple(_instantiate_recursive(item, depth=depth + 1) for item in value)
     return value
 
 
@@ -68,6 +73,11 @@ def instantiate_obj_from_dict(
     target_cls: type | None = None,
 ) -> object:
     """Instantiate an object from a configuration mapping.
+
+    When ``target_cls`` is set and the selected mapping has no ``class_path``,
+    entries are passed as keyword arguments after recursive instantiation.
+    The reserved key ``args`` supplies positional constructor arguments (a
+    sequence); it is removed from ``init_args`` before ``target_cls`` is called.
 
     Returns:
         The constructed object.

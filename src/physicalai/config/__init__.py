@@ -6,6 +6,13 @@
 Trusted local application and parent→child startup configs only. Never pass
 network metadata or untrusted peer payloads to :func:`instantiate`.
 
+Two instantiation entry points:
+
+- :func:`instantiate` — strict captured ``class_path`` + ``init_args`` recipes
+  (transport, ``@export_config`` components).
+- :func:`instantiate_obj` — generic jsonargparse / Studio loaders; see
+  :mod:`physicalai.config.loading`.
+
 Opt-in path:
 
 - ``@export_config`` / ``@export_config(class_path=...)`` — remember
@@ -36,7 +43,7 @@ from ._types import ConfigValue, JsonScalar, JsonValue
 from ._yaml import load_yaml, save_yaml, to_yaml
 from .base import Config
 from .importing import import_dotted_path
-from .instantiate import import_class, instantiate_obj
+from .loading import import_class, instantiate_obj
 from .mixin import FromConfig, from_config
 
 instantiate = _strict_instantiate  # ruff: ignore[RUF067]

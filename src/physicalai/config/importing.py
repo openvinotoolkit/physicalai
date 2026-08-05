@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import importlib
 
+__all__ = ["import_dotted_path"]
+
 
 def import_dotted_path(path: str) -> object:
     """Resolve a fully-qualified path, including nested attributes.

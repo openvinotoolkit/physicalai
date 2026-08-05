@@ -32,7 +32,8 @@ driver = SO101(
     port="/dev/ttyUSB0",
     calibration="~/.cache/calibration/so101.json",  # path stays relative/as given
 )
-robot = SharedRobot.from_config(Config.from_instance(driver), name="left-arm")
+robot = SharedRobot.from_config(driver, name="left-arm")
+# equivalent: SharedRobot.from_config(Config.from_instance(driver), name="left-arm")
 # or: SharedRobot("left-arm", robot={"class_path": "physicalai.robot.SO101", "init_args": {...}})
 robot.connect()
 

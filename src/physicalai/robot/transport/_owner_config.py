@@ -30,18 +30,18 @@ import.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from physicalai.config import (
     Config,
+    is_config_exportable,
     normalize_config,
     validate_envelope,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
-
     from physicalai.robot.interface import Robot
 
 DEFAULT_RATE_HZ = 100.0
@@ -93,6 +93,26 @@ def normalize_robot_config(robot: Config | Mapping[str, object]) -> Config:
         class_label="robot_class",
         json_hint=" (e.g. paths as str, not objects)",
     )
+
+
+def coerce_robot_config_input(robot: Config | Mapping[str, object] | object) -> Config | Mapping[str, object]:
+    """Accept a recipe, mapping, or live ``@export_config`` driver instance.
+
+    Returns:
+        A value suitable for :func:`normalize_robot_config`.
+
+    Raises:
+        TypeError: If ``robot`` is not a supported config shape.
+    """
+    if type(robot) is Config or isinstance(robot, Mapping):
+        return robot
+    if is_config_exportable(robot):
+        return Config.from_instance(robot)
+    msg = (
+        "robot config must be physicalai.config.Config, a class_path mapping, "
+        f"or an @export_config instance; got {type(robot).__name__}"
+    )
+    raise TypeError(msg)
 
 
 @dataclass(frozen=True)
@@ -200,10 +220,14 @@ class RobotOwnerConfig:
             raise TypeError(msg)
 
         robot = validate_owner_config(data)
+        allow_remote = data.get("allow_remote", False)
+        if not isinstance(allow_remote, bool):
+            msg = f"owner config 'allow_remote' must be a bool, got {type(allow_remote).__name__}"
+            raise TypeError(msg)
         return cls(
             name=data["name"],
             robot=robot,
-            allow_remote=data.get("allow_remote", False),
+            allow_remote=allow_remote,
             rate_hz=data.get("rate_hz", DEFAULT_RATE_HZ),
             idle_timeout=data.get("idle_timeout", 10.0),
         )

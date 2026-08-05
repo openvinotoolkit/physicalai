@@ -79,8 +79,12 @@ class Config:
         return {"class_path": self.class_path, "init_args": dataclass_to_dict(self.init_args)}
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, object]) -> Self:
+    def from_dict(cls, data: Mapping[str, object], *, strict: bool = True) -> Self:
         """Parse a direct recipe or reconstruct a typed dataclass config.
+
+        Args:
+            data: Recipe envelope or dataclass field mapping.
+            strict: When reconstructing a typed dataclass, reject unknown keys.
 
         Returns:
             A :class:`Config` recipe or dataclass instance.
@@ -96,7 +100,7 @@ class Config:
         if not dataclasses.is_dataclass(cls):
             msg = f"{cls.__name__} must be a dataclass to use Config"
             raise TypeError(msg)
-        return dict_to_dataclass(cls, data)
+        return dict_to_dataclass(cls, data, strict=strict)
 
     def instantiate(self) -> object:
         """Instantiate this direct construction recipe through the strict core.

@@ -11,6 +11,7 @@ import types
 from enum import Enum
 from functools import reduce
 from itertools import starmap
+from pathlib import PurePath
 from typing import TYPE_CHECKING, TypeVar, Union, get_args, get_origin, get_type_hints
 
 if TYPE_CHECKING:
@@ -41,23 +42,36 @@ def dataclass_to_dict(obj: object, *, recursive: bool = True) -> object:  # ruff
         return [dataclass_to_dict(item) for item in obj]
     if isinstance(obj, Enum):
         return obj.value
+    if isinstance(obj, PurePath):
+        return str(obj)
     if hasattr(obj, "tolist") and hasattr(obj, "ndim"):
         return obj.tolist()  # type: ignore[union-attr]
     return obj
 
 
-def dict_to_dataclass(cls: type[_T], data: Mapping[str, object]) -> _T:
+def dict_to_dataclass(cls: type[_T], data: Mapping[str, object], *, strict: bool = True) -> _T:
     """Reconstruct a dataclass from a mapping using its type hints.
+
+    Args:
+        cls: Dataclass type to construct.
+        data: Field values (typically from YAML or a checkpoint).
+        strict: When ``True``, reject keys that are not dataclass fields.
 
     Returns:
         An instance of ``cls``.
 
     Raises:
-        TypeError: If ``cls`` is not a dataclass.
+        TypeError: If ``cls`` is not a dataclass or ``strict`` rejects extra keys.
     """
     if not dataclasses.is_dataclass(cls):
         msg = f"Expected dataclass, got {cls}"
         raise TypeError(msg)
+    if strict:
+        field_names = {field.name for field in dataclasses.fields(cls)}
+        extras = set(data.keys()) - field_names
+        if extras:
+            msg = f"Unexpected keys for {cls.__name__}: {sorted(extras)}"
+            raise TypeError(msg)
     try:
         hints = get_type_hints(cls)
     except (NameError, TypeError, AttributeError, KeyError):
@@ -91,6 +105,8 @@ def _reconstruct_value(value: object, field_type: object) -> object:  # ruff: ig
     actual_type = origin or field_type
     if isinstance(actual_type, type) and dataclasses.is_dataclass(actual_type) and isinstance(value, dict):
         return dict_to_dataclass(actual_type, value)
+    if isinstance(actual_type, type) and issubclass(actual_type, PurePath) and isinstance(value, str):
+        return actual_type(value)
     if isinstance(actual_type, type) and issubclass(actual_type, Enum) and not isinstance(value, Enum):
         return actual_type(value)
     return value

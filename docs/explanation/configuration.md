@@ -59,9 +59,10 @@ Runtime also ships helpers used heavily by Physical AI Studio and
 | [`FromConfig` / `@from_config`](../how-to/config/use-from-config.md)        | Class-level `from_yaml`, `from_dict`, `from_config` |
 | [`Config` dataclass subclasses](../how-to/config/instantiate-components.md) | Typed hyperparameter objects with save/load         |
 
-Code and tests live under `src/physicalai/config/` and `tests/unit/config/`.
-Studio consumes this package and does not ship a duplicate `physicalai.config`
-tree.
+Strict captured recipes use the package-level :func:`instantiate`; generic
+loaders use the package-level :func:`instantiate_obj`. Both are intentionally
+available from one public import surface. Generic loader helpers are
+implemented in `physicalai.config.loading`.
 
 ## Trust
 

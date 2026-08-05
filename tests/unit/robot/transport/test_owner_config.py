@@ -179,6 +179,12 @@ class TestRobotOwnerConfig:
         with pytest.raises(TypeError, match="owner config 'name' must be a string"):
             RobotOwnerConfig.from_json_dict({"name": bad_name, "robot": _fake_robot()})
 
+    def test_non_bool_allow_remote_rejected(self) -> None:
+        with pytest.raises(TypeError, match="allow_remote' must be a bool"):
+            RobotOwnerConfig.from_json_dict(
+                {"name": "left-arm", "robot": _fake_robot(), "allow_remote": "no"},
+            )
+
     def test_validate_owner_config_shared_helper(self) -> None:
         robot = validate_owner_config(
             {

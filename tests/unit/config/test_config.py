@@ -6,12 +6,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING
+from pathlib import Path
 
-from physicalai.config import Config, FromConfig, export_config, instantiate_obj
-
-if TYPE_CHECKING:
-    from pathlib import Path
+import pytest
+from physicalai.config import Config, ConfigError, FromConfig, export_config, instantiate_obj
 
 
 class Mode(Enum):
@@ -114,3 +112,37 @@ def test_instantiate_config_class_path_requires_inner_recipe() -> None:
 
     with pytest.raises(ConfigError, match="class_path"):
         instantiate({"class_path": "physicalai.config.Config", "init_args": {}})
+
+
+@dataclass
+class PathConfig(Config):
+    root: Path
+
+
+def test_typed_dataclass_strict_rejects_extra_keys() -> None:
+    with pytest.raises(TypeError, match="Unexpected keys"):
+        TypedConfig.from_dict(
+            {"nested": {"value": 1}, "mode": "fast", "shape": [1, 1], "epochs": 1},
+            strict=True,
+        )
+
+
+def test_typed_dataclass_path_round_trip() -> None:
+    cfg = PathConfig(Path("/tmp/data"))
+    restored = PathConfig.from_dict(cfg.to_dict())
+    assert restored.root == Path("/tmp/data")
+
+
+def test_instantiate_recursive_depth_limit() -> None:
+    nested: dict[str, object] = {"value": 1}
+    current = nested
+    for _ in range(12):
+        current["child"] = {"value": 1}
+        current = current["child"]  # type: ignore[assignment]
+
+    class Leaf:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+    with pytest.raises(ConfigError, match="nesting depth exceeds"):
+        instantiate_obj({"nested": nested}, target_cls=Leaf)

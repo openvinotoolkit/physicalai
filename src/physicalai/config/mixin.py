@@ -12,7 +12,7 @@ from typing import Any, Self, TypeVar, cast
 
 from pydantic import BaseModel
 
-from .instantiate import instantiate_obj_from_dict, instantiate_obj_from_file
+from .loading import instantiate_obj_from_dict, instantiate_obj_from_file
 from .serializable import dataclass_to_dict
 
 __all__ = ["FromConfig", "from_config"]
