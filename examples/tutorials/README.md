@@ -13,36 +13,46 @@ sudo apt update
 sudo apt install -y build-essential ffmpeg libegl1 libgl1 python3-venv
 ```
 
-Create the tutorial environment and install the shared Python requirements:
+Create the repository environment with `uv` from the repository root:
 
 ```bash
 git clone https://github.com/openvinotoolkit/physicalai.git
-cd physicalai/examples/tutorials
-python3 -m venv venv
-source venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install --force-reinstall "cmake==3.31.10" ninja
-python -m pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt
+cd physicalai
+uv sync --frozen --extra notebooks
 ```
 
-Verify the environment manually before launching JupyterLab:
+Register the uv-managed project environment as a dedicated Jupyter kernel:
 
 ```bash
-python -c "import torch, lerobot, openvino; print(torch.__version__, openvino.__version__)"
-python -c "import cmake; print(cmake.__version__)"
-which cmake
-cmake --version
-c++ --version
-export MUJOCO_GL=egl
-jupyter lab
+uv run python -m ipykernel install --user \
+    --env VIRTUAL_ENV "$(pwd)/.venv" \
+    --name physicalai-tutorials \
+    --display-name "PhysicalAI Tutorials (uv)"
 ```
 
+Verify the project environment, then launch JupyterLab from the tutorials
+directory and select the **PhysicalAI Tutorials (uv)** kernel:
+
+```bash
+uv run python -c "import sys, openvino, physicalai; print(sys.executable, openvino.__version__)"
+c++ --version
+cd examples/tutorials
+export MUJOCO_GL=egl
+uv run --project ../.. --with jupyter jupyter lab
+```
+
+Do not use the generic Python kernel created inside `~/.cache/uv/builds-v0` by
+the temporary Jupyter environment. The notebook requests the dedicated kernel
+above, whose Python executable is `<repository>/.venv/bin/python`.
+
 Individual notebooks may install a small number of workflow-specific packages
-in their first code cell. The CMake pin above is required by the LeRobot version
-used by the Physical AI Studio LIBERO benchmark. CMake 4 removes the legacy
-policy compatibility required by `egl_probe==1.0.2`; CMake 3.31 still supports
-it. The simulation notebook builds that probe without pip build isolation so it
-can use this CMake installation.
+in their first code cell. They use `uv pip --python <kernel-python>` so packages
+are installed into the selected project kernel instead of a separate Jupyter
+environment. The simulation notebook pins CMake 3.31.10 and builds
+`hf-egl-probe==1.0.2` without build isolation because CMake 4 removes the legacy
+policy compatibility required by that package. It also selects CPU-only
+PyTorch wheels for the simulation dependencies; this does not limit the
+OpenVINO device selected later in the notebook.
 
 On Linux, `MUJOCO_GL=egl` selects MuJoCo's hardware-accelerated headless
 renderer. Set it before starting JupyterLab because the rendering backend is
