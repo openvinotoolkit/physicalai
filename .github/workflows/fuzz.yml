@@ -9,7 +9,7 @@ on:
     inputs:
       duration_s:
         description: "Fuzzing duration per target (seconds)"
-        default: "300"
+        default: "1800"
         required: false
   pull_request:
     paths:
@@ -93,10 +93,11 @@ jobs:
       - name: Run fuzzer
         id: run_fuzzer
         env:
+          # TODO: revert PR duration back to '30' once done testing longer fuzz runs.
           FUZZ_DURATION: >-
             ${{
-              github.event_name == 'pull_request' && '30' ||
-              github.event.inputs.duration_s || '120'
+              github.event_name == 'pull_request' && '1800' ||
+              github.event.inputs.duration_s || '1800'
             }}
           # Dump the Python stack trace on crashes.
           PYTHONFAULTHANDLER: "1"
@@ -110,7 +111,7 @@ jobs:
             -rss_limit_mb=2048 \
             -print_final_stats=1 \
             2>&1 | tee "fuzz_output_${{ matrix.harness }}.txt"
-        timeout-minutes: 15
+        timeout-minutes: 360
 
       # ── Crash detection ───────────────────────────────────────────────────
       # libFuzzer writes four artifact types to the working directory:
