@@ -135,10 +135,11 @@ def test_typed_dataclass_path_round_trip() -> None:
 
 def test_instantiate_recursive_depth_limit() -> None:
     nested: dict[str, object] = {"value": 1}
-    current = nested
+    current: dict[str, object] = nested
     for _ in range(12):
-        current["child"] = {"value": 1}
-        current = current["child"]  # type: ignore[assignment]
+        child: dict[str, object] = {"value": 1}
+        current["child"] = child
+        current = child
 
     class Leaf:
         def __init__(self, **kwargs: object) -> None:
