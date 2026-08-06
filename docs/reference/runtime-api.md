@@ -24,7 +24,7 @@ runtime.stop() -> None
 runtime.last_run_reason -> RunReason | None
 ```
 
-`RobotRuntime` also supports context-manager usage so connections are cleaned up automatically. A "step" is one iteration of the control loop at `fps`: read an observation, get one action from `action_source`, and send it to the robot. `run()` returns the number of steps completed this run — there is no aggregate stats object. Other stats are read directly off the objects the caller already holds, e.g. `runtime.action_source.action_queue.total_pops` or `execution.inference_count`.
+`RobotRuntime` also supports context-manager usage so connections are cleaned up automatically. A "step" is one iteration of the control loop at `fps`: read an observation, get one action from `action_source`, and send it to the robot. `run()` returns the number of steps completed this run — there is no aggregate stats object. Other stats are read directly off the objects the caller already holds, e.g. `runtime.action_source.action_queue.total_pops` or `execution.inference_count`. Each `run()` starts those counters from zero, so they describe the latest run rather than a running total.
 
 ```python
 with RobotRuntime(...) as runtime:
@@ -40,6 +40,8 @@ from physicalai.runtime import StopSignal   # Protocol: is_set() -> bool
 ```
 
 Calling `stop()` when no run is active is remembered rather than ignored: the next `run()` sees it, returns immediately, and reports zero steps. The request is cleared once a run ends, so one runtime can serve consecutive sessions.
+
+Running again starts a fresh session rather than continuing the old one. Actions still queued from the previous run are dropped, because they were computed from observations that are now out of date. If a background worker is still inside the model when the next run starts, `run()` waits a moment for it and then raises `RuntimeError` if it is still busy, rather than letting two runs share one model.
 
 `run()` returns the step count. `last_run_reason` reports why it ended, and the same string is emitted as `reason` in the `shutdown` lifecycle event.
 
