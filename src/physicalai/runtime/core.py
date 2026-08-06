@@ -362,6 +362,15 @@ class RobotRuntime:
             while True:
                 if self._stop.is_set() or (stop_event is not None and stop_event.is_set()):
                     reason = "stop_requested"
+                    # Fires after the last tick. Callbacks may take control of the robot from this point.
+                    self._bus.emit_lifecycle(
+                        LifecycleEvent(
+                            session_id=self._session_id,
+                            timestamp=time.time(),
+                            event="stop_requested",
+                            metadata={"step": step},
+                        )
+                    )
                     break
                 if duration_s is not None and step * goal_time >= duration_s:
                     reason = "duration_elapsed"
