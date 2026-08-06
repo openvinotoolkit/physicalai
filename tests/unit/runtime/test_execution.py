@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -311,122 +313,83 @@ class TestRTCExecutionObsSlot:
             ex.stop()
 
 
+def _blocking_model(entered: threading.Event, release: threading.Event, rows: int = 6) -> MagicMock:
+    """Model whose inference blocks until *release* is set."""
+
+    def blocking(_obs: object) -> np.ndarray:
+        entered.set()
+        release.wait(timeout=30.0)
+        return np.zeros((rows, 4), dtype=np.float32)
+
+    model = MagicMock()
+    model.predict_action_chunk.side_effect = blocking
+    return model
+
+
+def _rtc_model(chunk_size: int = 20, action_dim: int = 3) -> MagicMock:
+    model = MagicMock()
+    model.chunk_size = chunk_size
+    model.postprocessors = []
+    model.return_value = {"action": np.random.randn(1, chunk_size, action_dim).astype(np.float32)}
+    return model
+
+
 class TestRestartAfterStop:
     """``start()`` must hand back a usable execution after a previous ``stop()``.
 
-    A runtime can be stopped and run again, which calls ``stop()`` then
-    ``start()`` on the same execution object. Per-session state left over from
-    the previous run has to be cleared here, or the second run misbehaves
-    silently rather than failing loudly.
+    A stopped runtime can be run again, which calls ``stop()`` then ``start()``
+    on the same execution. Per-run state left behind here makes the second run
+    misbehave silently rather than fail.
     """
 
-    def test_async_revives_worker_after_stop(self) -> None:
-        """The worker must actually infer again, not exit on a stale stop flag."""
-        chunk = np.random.randn(6, 4).astype(np.float32)
-        model = _make_mock_model(chunk)
-        queue = ChunkedActionQueue()
-
-        ex = AsyncExecution()
-        ex.start(model, queue)
-        ex.warmup({"state": np.zeros(4, dtype=np.float32)})
-        ex.stop()
-
-        # Second session on the same object.
-        queue.clear()
-        ex.start(model, queue)
-        try:
-            assert ex._thread is not None  # noqa: SLF001
-            assert ex._thread.is_alive(), "worker exited immediately on a stale _stop_event"  # noqa: SLF001
-            # start() begins a fresh count, so any inference below is this session's.
-            assert ex.inference_count == 0
-
-            ex.warmup({"state": np.zeros(4, dtype=np.float32)})
-            for _ in range(len(chunk)):
-                queue.pop()
-            ex.maybe_request({"state": np.zeros(4, dtype=np.float32)})
-
-            deadline = time.perf_counter() + 5.0
-            while ex.inference_count == 0 and time.perf_counter() < deadline:
-                time.sleep(0.01)
-
-            assert ex.inference_count >= 1, "worker never ran inference in the second session"
-        finally:
-            ex.stop()
-
-    def test_async_start_clears_stale_death_cause(self) -> None:
-        """A worker death in run 1 must not fail run 2."""
+    def test_async_clears_stale_per_run_state(self) -> None:
         model = _make_mock_model()
         queue = ChunkedActionQueue()
         ex = AsyncExecution()
         ex.start(model, queue)
         ex.stop()
-        ex._death_cause = RuntimeError("died in the previous session")  # noqa: SLF001
 
-        ex.start(model, queue)
-        try:
-            assert ex._death_cause is None  # noqa: SLF001
-            ex.maybe_request({"state": np.zeros(4, dtype=np.float32)})  # must not raise
-        finally:
-            ex.stop()
-
-    def test_async_start_drops_stale_observation(self) -> None:
-        """A leftover observation must not be inferred on as if it were current."""
-        model = _make_mock_model()
-        queue = ChunkedActionQueue()
-        ex = AsyncExecution()
-        ex.start(model, queue)
-        ex.stop()
+        # Leftovers from the finished run.
+        ex._death_cause = RuntimeError("died previously")  # noqa: SLF001
+        ex._inference_count = 5  # noqa: SLF001
         with ex._lock:  # noqa: SLF001
             ex._obs_slot = {"state": np.full(4, 99.0, dtype=np.float32)}  # noqa: SLF001
             ex._running_inference = True  # noqa: SLF001
 
         ex.start(model, queue)
         try:
-            with ex._lock:  # noqa: SLF001
-                assert ex._obs_slot is None  # noqa: SLF001
-                assert ex._running_inference is False  # noqa: SLF001
-            # _busy is derived from both, so a submission is possible again.
-            assert ex._busy is False  # noqa: SLF001
+            assert ex._death_cause is None  # noqa: SLF001
+            assert ex.inference_count == 0
+            assert ex._busy is False  # derived from _obs_slot and _running_inference  # noqa: SLF001
+            ex.maybe_request({"state": np.zeros(4, dtype=np.float32)})  # must not raise WorkerDiedError
         finally:
             ex.stop()
 
-    def test_rtc_start_clears_stale_death_cause_and_observation(self) -> None:
+    def test_rtc_clears_stale_per_run_state(self) -> None:
         from physicalai.runtime import RTCActionQueue, RTCExecution
 
-        chunk_size, action_dim = 20, 3
-        model = MagicMock()
-        model.chunk_size = chunk_size
-        model.postprocessors = []
-        model.return_value = {"action": np.random.randn(1, chunk_size, action_dim).astype(np.float32)}
-
+        model = _rtc_model()
         queue = RTCActionQueue()
-        ex = RTCExecution(chunk_size=chunk_size, max_action_dim=action_dim, fps=30.0)
+        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
         ex.start(model, queue)
         ex.stop()
-        ex._death_cause = RuntimeError("died in the previous session")  # noqa: SLF001
+
+        ex._death_cause = RuntimeError("died previously")  # noqa: SLF001
         with ex._obs_lock:  # noqa: SLF001
-            ex._obs_slot = {"state": np.full(action_dim, 99.0, dtype=np.float32)}  # noqa: SLF001
+            ex._obs_slot = {"state": np.full(3, 99.0, dtype=np.float32)}  # noqa: SLF001
 
         ex.start(model, queue)
         try:
             assert ex._death_cause is None  # noqa: SLF001
+            assert ex.inference_count == 0
             with ex._obs_lock:  # noqa: SLF001
                 assert ex._obs_slot is None  # noqa: SLF001
-            # warmup() blocks on _first_chunk_ready, which start() also reset.
-            ex.warmup({"state": np.zeros(action_dim, dtype=np.float32)})
+            # warmup() blocks on _first_chunk_ready, which start() also replaced.
+            ex.warmup({"state": np.zeros(3, dtype=np.float32)})
         finally:
             ex.stop()
 
-
-class TestInferenceCountIsPerRun:
-    """``inference_count`` describes one run, matching the queue's counters.
-
-    ``docs/reference/runtime-api.md`` points callers at both
-    ``action_queue.total_pops`` and ``execution.inference_count`` for run
-    stats, so the two must agree on scope.
-    """
-
-    def test_sync_resets_on_start(self) -> None:
+    def test_sync_inference_count_is_per_run(self) -> None:
         model = _make_mock_model()
         queue = ChunkedActionQueue()
         ex = SyncExecution()
@@ -441,42 +404,22 @@ class TestInferenceCountIsPerRun:
         ex.start(model, queue)
         assert ex.inference_count == 0
 
-    def test_async_resets_on_start(self) -> None:
-        model = _make_mock_model()
-        queue = ChunkedActionQueue()
-        ex = AsyncExecution()
-        ex.start(model, queue)
-        ex._inference_count = 5  # noqa: SLF001 — stand in for a completed run
-        ex.stop()
-
-        ex.start(model, queue)
-        try:
-            assert ex.inference_count == 0
-        finally:
-            ex.stop()
-
     def test_rtc_resets_stat_but_not_the_cold_start_gate(self) -> None:
         """The public stat restarts; the compilation-warmup gate does not.
 
-        Model compilation is paid once per process, so a second run must not
-        re-discard its latency samples as though they were cold. Asserted on
-        the gated behaviour — whether ``on_reset()`` fires — not just on the
-        counters, so wiring the gate back to the per-run count is caught.
+        Compilation is paid once per process, so a second run must not discard
+        its latency samples as though they were cold. Asserted on whether
+        ``on_reset()`` fires, so rewiring the gate to the per-run count is caught.
         """
         from physicalai.runtime import RTCActionQueue, RTCExecution
 
-        chunk_size, action_dim = 20, 3
-        model = MagicMock()
-        model.chunk_size = chunk_size
-        model.postprocessors = []
-        model.return_value = {"action": np.random.randn(1, chunk_size, action_dim).astype(np.float32)}
-
         tracker = MagicMock()
         tracker.compute_delay.return_value = 0
+        model = _rtc_model()
         queue = RTCActionQueue()
         ex = RTCExecution(
-            chunk_size=chunk_size,
-            max_action_dim=action_dim,
+            chunk_size=20,
+            max_action_dim=3,
             fps=30.0,
             latency_tracker=tracker,
             warmup_inferences=1,
@@ -484,25 +427,133 @@ class TestInferenceCountIsPerRun:
 
         ex.start(model, queue)
         try:
-            ex.warmup({"state": np.zeros(action_dim, dtype=np.float32)})
+            ex.warmup({"state": np.zeros(3, dtype=np.float32)})
+            lifetime = ex._lifetime_inferences  # noqa: SLF001
             assert ex.inference_count >= 1
-            lifetime_after_first = ex._lifetime_inferences  # noqa: SLF001
-            assert lifetime_after_first >= 1
-            assert tracker.on_reset.call_count == 1, "cold-start discard should fire once"
+            assert tracker.on_reset.call_count == 1
         finally:
             ex.stop()
 
         tracker.on_reset.reset_mock()
         ex.start(model, queue)
         try:
-            # Public stat restarts...
             assert ex.inference_count == 0
-            # ...while the lifetime count carries on, keeping the gate closed.
-            assert ex._lifetime_inferences == lifetime_after_first  # noqa: SLF001
-
+            assert ex._lifetime_inferences == lifetime  # noqa: SLF001
             queue.clear()
-            ex.warmup({"state": np.zeros(action_dim, dtype=np.float32)})
-            assert ex.inference_count >= 1
+            ex.warmup({"state": np.zeros(3, dtype=np.float32)})
             tracker.on_reset.assert_not_called()
         finally:
             ex.stop()
+
+
+def _async_setup() -> tuple[Any, MagicMock, Any]:
+    return AsyncExecution(), _make_mock_model(), ChunkedActionQueue()
+
+
+def _rtc_setup() -> tuple[Any, MagicMock, Any]:
+    from physicalai.runtime import RTCActionQueue, RTCExecution
+
+    return RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0), _rtc_model(), RTCActionQueue()
+
+
+class TestStopTimeoutStraggler:
+    """``stop()`` only joins with a timeout, so a worker can outlive it.
+
+    Such a straggler must not be revived by a later ``start()``, must discard the
+    result it was computing, and must not run concurrently with a new worker
+    through the same unsynchronised ``InferenceModel``.
+    """
+
+    @staticmethod
+    def _timed_out_stop(ex: Any) -> None:
+        """Call ``stop()`` with ``join`` neutered, simulating a timeout fast."""
+        with patch.object(threading.Thread, "join", lambda _self, timeout=None: None):  # noqa: ARG005
+            ex.stop()
+
+    @pytest.mark.parametrize("setup", [_async_setup, _rtc_setup], ids=["async", "rtc"])
+    def test_outgoing_runs_stop_flag_survives_a_new_start(self, setup: Callable[[], tuple[Any, MagicMock, Any]]) -> None:
+        """Each run owns its stop event, so a new run cannot un-stop the old one.
+
+        Clearing a shared event here is what previously revived a straggler.
+        """
+        ex, model, queue = setup()
+        ex.start(model, queue)
+        outgoing = ex._stop_event  # noqa: SLF001
+        ex.stop()
+        assert outgoing.is_set()
+
+        ex.start(model, queue)
+        try:
+            assert outgoing.is_set(), "outgoing run's flag was cleared — its worker would be revived"
+            assert ex._stop_event is not outgoing  # noqa: SLF001
+            assert not ex._stop_event.is_set()  # noqa: SLF001
+        finally:
+            ex.stop()
+
+    @pytest.mark.parametrize("kind", ["async", "rtc"], ids=["async", "rtc"])
+    def test_straggler_discards_the_result_it_was_computing(self, kind: str, caplog: pytest.LogCaptureFixture) -> None:
+        """A result finished after its run ended describes a stale observation."""
+        entered, release = threading.Event(), threading.Event()
+        obs = {"state": np.zeros(3 if kind == "rtc" else 4, dtype=np.float32)}
+
+        if kind == "async":
+            ex, _model, queue = _async_setup()
+            model = _blocking_model(entered, release)
+            ex.start(model, queue)
+            ex._threshold_count = 1  # noqa: SLF001 — submit on an empty queue
+            ex.maybe_request(obs)
+        else:
+            ex, model, queue = _rtc_setup()
+
+            def blocking(*_args: object, **_kwargs: object) -> dict[str, np.ndarray]:
+                entered.set()
+                release.wait(timeout=30.0)
+                return {"action": np.zeros((1, 20, 3), dtype=np.float32)}
+
+            model.side_effect = blocking
+            ex.start(model, queue)
+            with ex._obs_lock:  # noqa: SLF001
+                ex._obs_slot = dict(obs)  # noqa: SLF001
+
+        assert entered.wait(timeout=5.0), "worker never entered inference"
+        straggler = ex._thread  # noqa: SLF001
+        assert straggler is not None
+
+        self._timed_out_stop(ex)
+        assert straggler.is_alive()
+        # A worker outliving the join is reported, not silently abandoned.
+        assert "did not exit within" in caplog.text
+
+        release.set()
+        straggler.join(timeout=5.0)
+        assert not straggler.is_alive()
+        # The discard happens before the counter and the push, so both stay put.
+        assert ex.inference_count == 0
+        assert queue.remaining == 0
+
+    def test_start_refuses_while_straggler_holds_the_model(self) -> None:
+        """Two threads through one InferenceModel is worse than a failed resume."""
+        from physicalai.runtime.execution import async_execution
+
+        entered, release = threading.Event(), threading.Event()
+        model = _blocking_model(entered, release)
+        queue = ChunkedActionQueue()
+
+        ex = AsyncExecution()
+        ex.start(model, queue)
+        ex._threshold_count = 1  # noqa: SLF001
+        ex.maybe_request({"state": np.zeros(4, dtype=np.float32)})
+        assert entered.wait(timeout=5.0)
+        straggler = ex._thread  # noqa: SLF001
+        assert straggler is not None
+
+        self._timed_out_stop(ex)
+        try:
+            with (
+                patch.object(async_execution, "_STRAGGLER_GRACE_S", 0.05),
+                pytest.raises(RuntimeError, match="not safe for concurrent use"),
+            ):
+                ex.start(model, queue)
+        finally:
+            release.set()
+            straggler.join(timeout=5.0)

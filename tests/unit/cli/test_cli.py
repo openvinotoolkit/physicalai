@@ -190,7 +190,7 @@ class TestRunParser:
         assert "fps: 30" in output
         assert "FakeRobot" in output
 
-    def test_stop_event_absent_from_schema(self) -> None:
+    def test_stop_event_absent_from_cli_surface(self) -> None:
         """``run(stop_event=...)`` is a live object, so it is skipped from the CLI.
 
         Without ``skip={"stop_event"}`` jsonargparse adds ``run.stop_event`` and
@@ -201,9 +201,6 @@ class TestRunParser:
         dests = {action.dest for action in parser._actions}  # noqa: SLF001
         assert "run.duration_s" in dests
         assert not any(dest.startswith("run.stop_event") for dest in dests)
-
-    def test_stop_event_absent_from_help_and_print_config(self) -> None:
-        parser = run_module.build_parser()
         assert "stop_event" not in parser.format_help()
 
         buf = io.StringIO()

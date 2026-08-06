@@ -22,6 +22,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_JOIN_TIMEOUT_S: float = 10.0
+_STRAGGLER_GRACE_S: float = 2.0
+
 
 @export_config(class_path="physicalai.runtime.AsyncExecution")
 class AsyncExecution(Execution):
@@ -63,11 +66,26 @@ class AsyncExecution(Execution):
         self._session_id: str = ""
 
     def start(self, model: InferenceModel, action_queue: ActionQueue) -> None:
-        """Bind model/queue and spawn inference thread."""
+        """Bind model/queue and spawn a worker owned by this run.
+
+        Each run gets fresh stop and wake events, passed straight to its worker.
+        A straggler from a previous run therefore keeps its own, already-set stop
+        event: this ``start()`` cannot revive it, it cannot steal the new
+        worker's wake-up, and it discards its in-flight result instead of pushing
+        it into this run's queue.
+
+        Raises:
+            RuntimeError: If the previous worker is still inside the model after
+                a short grace period. Running anyway would put two threads
+                through one ``InferenceModel``, which is not synchronised.
+        """  # noqa: DOC502 — raised by the delegated _await_previous_worker(), but callers see it here.
+        self._await_previous_worker()
+
         self._model = model
         self._queue = cast("ChunkedActionQueue", action_queue)
-        self._stop_event.clear()
-        self._obs_ready.clear()
+        # New objects, not clear(): a straggler keeps its own set stop event.
+        self._stop_event = threading.Event()
+        self._obs_ready = threading.Event()
         self._inference_count = 0
         with self._lock:
             # A stale observation would be inferred on as if it were current.
@@ -77,8 +95,41 @@ class AsyncExecution(Execution):
             self._pops_at_request = 0
         # A death from the previous run must not fail this one.
         self._death_cause = None
-        self._thread = threading.Thread(target=self._run, name="InferenceThread", daemon=True)
+        self._thread = threading.Thread(
+            target=self._run,
+            args=(self._stop_event, self._obs_ready),
+            name="InferenceThread",
+            daemon=True,
+        )
         self._thread.start()
+
+    def _await_previous_worker(self) -> None:
+        """Wait briefly for a worker that outlived ``stop()``, then refuse.
+
+        ``InferenceModel`` is not synchronised, so letting a new run start while
+        a straggler is still inside the model would put two threads through one
+        model instance. Failing loudly here beats corrupting both.
+
+        Raises:
+            RuntimeError: If the straggler is still running after the grace period.
+        """
+        previous = self._thread
+        if previous is None or not previous.is_alive():
+            return
+
+        logger.warning(
+            "Previous inference worker is still running — waiting up to %.1fs for it to exit.",
+            _STRAGGLER_GRACE_S,
+        )
+        previous.join(timeout=_STRAGGLER_GRACE_S)
+        if previous.is_alive():
+            msg = (
+                "Previous inference worker is still inside the model after "
+                f"{_JOIN_TIMEOUT_S + _STRAGGLER_GRACE_S:.1f}s. Refusing to start a second "
+                "worker: InferenceModel is not safe for concurrent use. Wait for the "
+                "inference to finish, or build a new execution with its own model."
+            )
+            raise RuntimeError(msg)
 
     def warmup(self, sample_observation: dict[str, np.ndarray]) -> None:
         """Run one inference in main thread, seed queue, discover chunk_size.
@@ -119,11 +170,23 @@ class AsyncExecution(Execution):
             self._obs_ready.set()
 
     def stop(self) -> None:
-        """Signal thread and join with timeout."""
+        """Signal the worker and join it, with a timeout.
+
+        Best-effort by nature: a worker inside a blocking inference cannot be
+        preempted. It is left to finish and discard its result, so this never
+        raises — teardown must not fail. A worker that outlives the join is
+        logged, and the next :meth:`start` refuses to run alongside it.
+        """
         if self._thread is not None:
             self._stop_event.set()
             self._obs_ready.set()
-            self._thread.join(timeout=10.0)
+            self._thread.join(timeout=_JOIN_TIMEOUT_S)
+            if self._thread.is_alive():
+                logger.warning(
+                    "Inference worker did not exit within %.1fs — still inside the model. "
+                    "It will discard its result and exit on its own.",
+                    _JOIN_TIMEOUT_S,
+                )
 
     @property
     def chunk_size(self) -> int:
@@ -158,13 +221,27 @@ class AsyncExecution(Execution):
             self._running_inference = False
         logger.warning("Force reset — cleared stuck inference state")
 
-    def _run(self) -> None:
-        try:
-            while not self._stop_event.is_set():
-                self._obs_ready.wait()
-                self._obs_ready.clear()
+    def _run(self, stop_event: threading.Event, obs_ready: threading.Event) -> None:
+        """Worker loop for one run.
 
-                if self._stop_event.is_set():
+        Takes its own events rather than reading ``self``, so a worker that
+        outlives ``stop()`` keeps observing its own set stop event even after a
+        later ``start()`` has installed fresh ones.
+
+        Nothing propagates out of this thread.
+
+        Raises:
+            RuntimeError: If the model or queue is unset. Captured into
+                ``_death_cause`` rather than leaving this thread; the control
+                thread surfaces it as ``WorkerDiedError`` on the next
+                ``maybe_request()``.
+        """
+        try:
+            while not stop_event.is_set():
+                obs_ready.wait()
+                obs_ready.clear()
+
+                if stop_event.is_set():
                     return
 
                 with self._lock:
@@ -179,6 +256,12 @@ class AsyncExecution(Execution):
                 t0 = time.perf_counter()
                 actions = self._model.predict_action_chunk(obs)
                 latency = time.perf_counter() - t0
+
+                if stop_event.is_set():
+                    # This run ended while the inference was in flight. The
+                    # actions describe an observation from a finished session,
+                    # so they must not reach a later run's queue.
+                    return
 
                 # Offset = actions actually sent since the observation was
                 # captured. This is exact (no fps estimation error).

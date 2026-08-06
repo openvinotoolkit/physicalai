@@ -35,6 +35,7 @@ _IDLE_SLEEP_S: float = 0.005
 _ERROR_RETRY_DELAY_S: float = 0.5
 _MAX_CONSECUTIVE_ERRORS: int = 10
 _JOIN_TIMEOUT_S: float = 5.0
+_STRAGGLER_GRACE_S: float = 2.0
 
 
 @export_config(class_path="physicalai.runtime.RTCExecution")
@@ -167,7 +168,16 @@ class RTCExecution(Execution):
         Args:
             model: The inference model.
             action_queue: The RTC dual-track action queue.
-        """
+
+        Raises:
+            RuntimeError: If the previous worker is still inside the model after
+                a short grace period. Running anyway would put two threads
+                through one ``InferenceModel``, which is not synchronised.
+        """  # noqa: DOC502 — raised by the delegated _await_previous_worker(), but callers see it here.
+        # First, before any state is touched: a refusal here must not leave the
+        # execution half-configured or the model stripped of its postprocessors.
+        self._await_previous_worker()
+
         self._model = model
         self._rtc_queue = action_queue
 
@@ -206,8 +216,11 @@ class RTCExecution(Execution):
             self._postprocessors = model.postprocessors
             model.postprocessors = []  # Clear from model so they aren't run twice
 
-        self._stop_event.clear()
-        self._first_chunk_ready.clear()
+        # Fresh events rather than clearing the shared ones: a worker that
+        # outlived stop() keeps its own set stop event, so it cannot be revived
+        # by this start(), and its in-flight chunk is discarded.
+        self._stop_event = threading.Event()
+        self._first_chunk_ready = threading.Event()
         self._inference_count = 0
         # A death from the previous run must not fail this one, and a stale
         # observation must not be inferred on as if it were current.
@@ -216,6 +229,7 @@ class RTCExecution(Execution):
             self._obs_slot = None
         self._thread = threading.Thread(
             target=self._rtc_loop,
+            args=(self._stop_event, self._first_chunk_ready),
             name="rtc-inference",
             daemon=True,
         )
@@ -278,22 +292,67 @@ class RTCExecution(Execution):
             self._obs_slot = {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in observation.items()}
 
     def stop(self) -> None:
-        """Signal shutdown and join the background thread."""
+        """Signal the worker and join it, with a timeout.
+
+        Best-effort by nature: a worker inside a blocking inference cannot be
+        preempted. It is left to finish and discard its chunk, so this never
+        raises — teardown must not fail. A worker that outlives the join keeps
+        its reference here so the next :meth:`start` can refuse to run
+        alongside it.
+        """
         if self._thread is not None:
             self._stop_event.set()
             self._thread.join(timeout=_JOIN_TIMEOUT_S)
             if self._thread.is_alive():
-                logger.warning("RTC thread did not join within %.1fs", _JOIN_TIMEOUT_S)
-            self._thread = None
+                logger.warning(
+                    "RTC worker did not exit within %.1fs — still inside the model. "
+                    "It will discard its chunk and exit on its own.",
+                    _JOIN_TIMEOUT_S,
+                )
+            else:
+                self._thread = None
             logger.info("RTCExecution stopped (%d inferences)", self._inference_count)
 
-    def _rtc_loop(self) -> None:
-        """Background loop: infer chunks and merge into queue."""
+    def _await_previous_worker(self) -> None:
+        """Wait briefly for a worker that outlived ``stop()``, then refuse.
+
+        ``InferenceModel`` is not synchronised, so letting a new run start while
+        a straggler is still inside the model would put two threads through one
+        model instance. Failing loudly here beats corrupting both.
+
+        Raises:
+            RuntimeError: If the straggler is still running after the grace period.
+        """
+        previous = self._thread
+        if previous is None or not previous.is_alive():
+            return
+
+        logger.warning(
+            "Previous RTC worker is still running — waiting up to %.1fs for it to exit.",
+            _STRAGGLER_GRACE_S,
+        )
+        previous.join(timeout=_STRAGGLER_GRACE_S)
+        if previous.is_alive():
+            msg = (
+                "Previous RTC worker is still inside the model after "
+                f"{_JOIN_TIMEOUT_S + _STRAGGLER_GRACE_S:.1f}s. Refusing to start a second "
+                "worker: InferenceModel is not safe for concurrent use. Wait for the "
+                "inference to finish, or build a new execution with its own model."
+            )
+            raise RuntimeError(msg)
+
+    def _rtc_loop(self, stop_event: threading.Event, first_chunk_ready: threading.Event) -> None:
+        """Background loop for one run: infer chunks and merge into queue.
+
+        Takes its own events rather than reading ``self``, so a worker that
+        outlives ``stop()`` keeps observing its own set stop event even after a
+        later ``start()`` has installed fresh ones.
+        """
         assert self._model is not None  # noqa: S101
         assert self._rtc_queue is not None  # noqa: S101
         consecutive_errors = 0
 
-        while not self._stop_event.is_set():
+        while not stop_event.is_set():
             # Only re-infer when queue is running low
             if not self._rtc_queue.below_threshold(self.queue_threshold):
                 time.sleep(_IDLE_SLEEP_S)
@@ -334,6 +393,12 @@ class RTCExecution(Execution):
                 time.sleep(_ERROR_RETRY_DELAY_S)
                 continue
 
+            if stop_event.is_set():
+                # This run ended while the inference was in flight. The chunk
+                # describes an observation from a finished session, so it must
+                # not reach a later run's queue.
+                return
+
             self._inference_count += 1
             self._lifetime_inferences += 1
 
@@ -367,7 +432,7 @@ class RTCExecution(Execution):
                 processed_actions,
                 action_index_before_inference=action_index_before,
             )
-            self._first_chunk_ready.set()
+            first_chunk_ready.set()
 
             # Emit inference event so callbacks (e.g. RerunCallback) can
             # plot predicted future actions.
