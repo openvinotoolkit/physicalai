@@ -111,7 +111,8 @@ jobs:
             -rss_limit_mb=2048 \
             -print_final_stats=1 \
             2>&1 | tee "fuzz_output_${{ matrix.harness }}.txt"
-        timeout-minutes: 360
+        # TODO: use 15 for PR
+        timeout-minutes: ${{ github.event_name == 'pull_request' && 45 || 360 }}
 
       # ── Crash detection ───────────────────────────────────────────────────
       # libFuzzer writes four artifact types to the working directory:
