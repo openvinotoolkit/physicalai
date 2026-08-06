@@ -19,6 +19,7 @@ def import_dotted_path(path: str) -> object:
 
     Raises:
         ValueError: If no module prefix can be imported, *path* has no ``'.'``,
+            *path* contains an empty segment (leading/trailing/consecutive ``'.'``),
             or the resolved module has no attribute matching the remaining segments.
         ModuleNotFoundError: If an existing module prefix fails because a
             dependency is missing (not merely because a longer prefix is not a
@@ -29,6 +30,13 @@ def import_dotted_path(path: str) -> object:
         raise ValueError(msg)
 
     segments = path.split(".")
+    # Reject leading/trailing/consecutive dots up front — an empty segment
+    # here would produce a relative-import module name (e.g. ".foo") that
+    # makes importlib raise TypeError instead of ModuleNotFoundError.
+    if any(not segment for segment in segments):
+        msg = f"dotted path must not contain empty segments: {path!r}"
+        raise ValueError(msg)
+
     for split_index in range(len(segments), 0, -1):
         module_name = ".".join(segments[:split_index])
         try:

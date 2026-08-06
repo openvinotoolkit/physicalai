@@ -282,6 +282,14 @@ class TestImportDottedPath:
         with pytest.raises(ValueError, match="could not import"):
             import_dotted_path("totally.unknown.module.Cls")
 
+    @pytest.mark.parametrize("path", [".foo", "foo.", "foo..bar", ".", ".."])
+    def test_empty_segment_raises_value_error(self, path: str) -> None:
+        # Regression test: an empty segment (e.g. a leading '.') produces a
+        # relative-import module name, which importlib rejects with TypeError
+        # instead of ModuleNotFoundError if not caught up front.
+        with pytest.raises(ValueError, match="empty segment"):
+            import_dotted_path(path)
+
 
 class TestNormalizeComponentConfig:
     def test_rejects_nan(self) -> None:
