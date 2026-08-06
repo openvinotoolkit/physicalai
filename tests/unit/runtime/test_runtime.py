@@ -5,9 +5,12 @@
 
 from __future__ import annotations
 
+import multiprocessing as mp
+import threading
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -15,7 +18,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from physicalai.runtime import ChunkedActionQueue as ActionQueue, ChunkedActionQueue, PolicySource, RobotRuntime, SyncExecution, WorkerDiedError
+from physicalai.runtime import ChunkedActionQueue as ActionQueue, ChunkedActionQueue, LifecycleEvent, PolicySource, RobotRuntime, StopSignal, SyncExecution, WorkerDiedError
 from physicalai.robot.interface import RobotObservation
 from physicalai.inference.model import InferenceModel
 from physicalai.inference.constants import IMAGES, STATE, TASK
@@ -631,3 +634,485 @@ class TestPolicySourceModelInput:
 
         assert model_input[TASK] == ["pick the cube"]
 
+
+@dataclass
+class _LifecycleRecorder:
+    """Callback capturing lifecycle events and bus close, for shutdown assertions."""
+
+    events: list[str] = field(default_factory=list)
+    metadata: list[dict[str, Any]] = field(default_factory=list)
+    closed: bool = False
+
+    def on_lifecycle(self, event: LifecycleEvent) -> None:
+        self.events.append(event.event)
+        self.metadata.append(event.metadata)
+
+    def close(self) -> None:
+        self.closed = True
+
+    @property
+    def shutdown_metadata(self) -> dict[str, Any]:
+        return next(m for e, m in zip(self.events, self.metadata, strict=True) if e == "shutdown")
+
+
+@dataclass
+class _StopBeforeSend:
+    """Requests a stop from ``on_action_ready`` — i.e. *before* the tick's send.
+
+    Stopping here is what makes the "in-flight action is still sent" guarantee
+    falsifiable: an implementation that bailed out between the stop check and
+    ``_resilient_send`` would drop this tick's action and fail the assertion.
+    Wired post-construction because the runtime needs its callbacks at
+    construction time.
+    """
+
+    step: int
+    runtime: RobotRuntime | None = None
+
+    def on_action_ready(self, *, action: np.ndarray, step: int) -> np.ndarray:
+        if step >= self.step:
+            assert self.runtime is not None
+            self.runtime.stop()
+        return action
+
+
+@dataclass
+class _RaisingActionSource:
+    """Action source whose ``update()`` always raises, to drive the exit paths."""
+
+    exc: BaseException
+    connect_exc: BaseException | None = None
+    disconnect_exc: BaseException | None = None
+    disconnected: bool = False
+
+    def connect(self, *, bus: Any, session_id: str) -> None:
+        if self.connect_exc is not None:
+            raise self.connect_exc
+
+    def update(self, robot_state: Any, camera_frames: Any, step: int) -> np.ndarray:
+        raise self.exc
+
+    def disconnect(self) -> None:
+        self.disconnected = True
+        if self.disconnect_exc is not None:
+            raise self.disconnect_exc
+
+
+class _InterruptOnceOnShutdown:
+    """Raises ``KeyboardInterrupt`` from ``on_lifecycle``, once, on shutdown.
+
+    Fires a single time so a follow-up ``run()`` in the same test tears down
+    cleanly and can prove the stop flag did not survive.
+    """
+
+    def __init__(self) -> None:
+        self.fired = False
+
+    def on_lifecycle(self, event: LifecycleEvent) -> None:
+        if event.event == "shutdown" and not self.fired:
+            self.fired = True
+            raise KeyboardInterrupt
+
+
+class _CountdownStopSignal:
+    """Stop signal that trips after *polls* checks.
+
+    Implements only ``is_set()`` — nothing else — so it proves the runtime
+    duck-types the signal and never reaches for ``isinstance``.
+    """
+
+    def __init__(self, polls: int) -> None:
+        self.polls = polls
+        self.calls = 0
+
+    def is_set(self) -> bool:
+        self.calls += 1
+        return self.calls > self.polls
+
+
+@contextmanager
+def _frozen_time() -> Iterator[MagicMock]:
+    """Patch ``core.time`` so ticks are instantaneous and deterministic.
+
+    Yields:
+        The mock standing in for ``physicalai.runtime.core.time``.
+    """
+    with patch("physicalai.runtime.core.time") as mock_time:
+        mock_time.perf_counter.return_value = 0.0
+        mock_time.time.return_value = 0.0
+        mock_time.sleep = MagicMock()
+        yield mock_time
+
+
+def _stop_runtime(**kwargs: Any) -> tuple[RobotRuntime, MagicMock]:
+    """Build a connected runtime with a trivial action source.
+
+    Returns:
+        Tuple ``(runtime, robot_mock)``.
+    """
+    robot = kwargs.pop("robot", None) or _make_mock_robot()
+    source = kwargs.pop("action_source", None) or FakeActionSource(next_action=np.zeros(3, dtype=np.float32))
+    fps = kwargs.pop("fps", 10.0)
+    runtime = RobotRuntime(robot=robot, action_source=source, fps=fps, **kwargs)
+    runtime._connected = True  # noqa: SLF001
+    return runtime, robot
+
+
+class TestCooperativeStop:
+    """``stop()`` / ``stop_event`` — the cooperative exit path."""
+
+    def test_stop_mid_run_still_sends_the_in_flight_action(self) -> None:
+        """A stop raised before the send still lets that tick's action through."""
+        stopper = _StopBeforeSend(step=2)
+        runtime, robot = _stop_runtime(callbacks=[stopper])
+        stopper.runtime = runtime
+
+        with _frozen_time():
+            steps = runtime.run(duration_s=100.0)
+
+        assert steps == 3
+        # Step 2 requested the stop before its send; that send must still happen.
+        assert robot.send_action.call_count == 3
+        assert runtime.last_run_reason == "stop_requested"
+
+    def test_stop_before_run_exits_at_zero_steps(self) -> None:
+        """One code path, asserted end to end: the loop's stop check at step 0.
+
+        A ``stop()`` arriving before ``run()`` — between ``connect()`` and
+        ``run()``, or on a fully idle runtime — is remembered rather than
+        dropped, and repeating it changes nothing. The next ``run()`` sees it
+        and returns immediately without sending anything.
+        """
+        runtime, robot = _stop_runtime()
+
+        runtime.stop()
+        runtime.stop()  # idempotent
+        assert runtime.last_run_reason is None  # stop() alone reports nothing
+
+        with _frozen_time():
+            steps = runtime.run(duration_s=100.0)
+
+        assert steps == 0
+        assert type(steps) is int  # noqa: E721 — must not be np.int64
+        robot.send_action.assert_not_called()
+        assert runtime.last_run_reason == "stop_requested"
+
+    @pytest.mark.parametrize(
+        "make_event",
+        [threading.Event, mp.Event],
+        ids=["threading", "multiprocessing"],
+    )
+    def test_external_stop_event(self, make_event: Callable[[], Any]) -> None:
+        """Both Event flavours work; multiprocessing is the parent-process case.
+
+        Parametrized on the factory, not an instance, so no multiprocessing
+        semaphore is created at collection time.
+        """
+        runtime, robot = _stop_runtime()
+        stop_event = make_event()
+        stop_event.set()
+
+        with _frozen_time():
+            steps = runtime.run(duration_s=100.0, stop_event=stop_event)
+
+        assert steps == 0
+        robot.send_action.assert_not_called()
+        assert runtime.last_run_reason == "stop_requested"
+
+    def test_duck_typed_stop_signal_needs_only_is_set(self) -> None:
+        runtime, robot = _stop_runtime()
+        signal = _CountdownStopSignal(polls=3)
+
+        with _frozen_time():
+            steps = runtime.run(duration_s=100.0, stop_event=signal)
+
+        assert steps == 3
+        assert robot.send_action.call_count == 3
+        assert runtime.last_run_reason == "stop_requested"
+
+    def test_stop_signal_is_not_runtime_checkable(self) -> None:
+        """The runtime does no isinstance anywhere; the protocol must not invite it."""
+        with pytest.raises(TypeError):
+            isinstance(threading.Event(), StopSignal)  # type: ignore[misc]  # noqa: S101
+
+    def test_stop_from_another_thread_ends_a_live_loop(self) -> None:
+        """The headline claim, against a real running loop and real time."""
+        first_tick = threading.Event()
+
+        class _Signal:
+            def on_action_sent(self, *, action: np.ndarray, step: int) -> None:  # noqa: ARG002
+                first_tick.set()
+
+        runtime, _robot = _stop_runtime(fps=50.0, callbacks=[_Signal()])
+
+        def stopper() -> None:
+            first_tick.wait(timeout=5.0)
+            runtime.stop()
+
+        thread = threading.Thread(target=stopper)
+        thread.start()
+        try:
+            steps = runtime.run(duration_s=30.0)
+        finally:
+            thread.join(timeout=5.0)
+
+        assert runtime.last_run_reason == "stop_requested"
+        # Ended on the stop, nowhere near the 1500 steps duration_s allows.
+        assert 1 <= steps < 500
+
+    def test_stop_checked_before_duration(self) -> None:
+        """Both exits satisfied at once reports stop_requested, not duration_elapsed."""
+        runtime, _robot = _stop_runtime()
+        runtime.stop()
+
+        with _frozen_time():
+            steps = runtime.run(duration_s=0.0)
+
+        assert steps == 0
+        assert runtime.last_run_reason == "stop_requested"
+
+    def test_runtime_reusable_after_stop(self) -> None:
+        """_shutdown() clears the flag, so the next run() is unaffected."""
+        runtime, robot = _stop_runtime()
+
+        runtime.stop()
+        with _frozen_time():
+            assert runtime.run(duration_s=100.0) == 0
+            assert runtime.last_run_reason == "stop_requested"
+
+            second = runtime.run(duration_s=0.3)
+
+        assert second == 3
+        assert robot.send_action.call_count == 3
+        assert runtime.last_run_reason == "duration_elapsed"
+
+
+class TestStopFlagLifecycle:
+    """The stop flag must never survive a run, however that run ended."""
+
+    def test_action_source_connect_failure_does_not_poison_runtime(self) -> None:
+        """A failed connect() still runs _shutdown(), so the flag cannot leak."""
+        source = _RaisingActionSource(
+            exc=RuntimeError("unused"),
+            connect_exc=RuntimeError("model load failed"),
+        )
+        recorder = _LifecycleRecorder()
+        runtime, robot = _stop_runtime(action_source=source, callbacks=[recorder])
+
+        runtime.stop()
+        with _frozen_time(), pytest.raises(RuntimeError, match="model load failed"):
+            runtime.run(duration_s=1.0)
+
+        assert runtime.last_run_reason == "error"
+        assert recorder.shutdown_metadata["reason"] == "error"
+        assert recorder.closed
+
+        # The flag is gone, so a healthy source runs normally afterwards.
+        runtime._action_source = FakeActionSource(next_action=np.zeros(3, dtype=np.float32))  # noqa: SLF001
+        with _frozen_time():
+            assert runtime.run(duration_s=0.3) == 3
+        assert robot.send_action.call_count == 3
+
+    def test_base_exception_in_disconnect_still_completes_shutdown(self) -> None:
+        """A Ctrl+C mid-teardown must not skip the shutdown event or the flush."""
+        source = _RaisingActionSource(exc=RuntimeError("unused"), disconnect_exc=KeyboardInterrupt())
+        recorder = _LifecycleRecorder()
+        runtime, _robot = _stop_runtime(action_source=source, callbacks=[recorder])
+        runtime.stop()
+
+        with _frozen_time(), pytest.raises(KeyboardInterrupt):
+            runtime.run(duration_s=1.0)
+
+        assert "shutdown" in recorder.events
+        assert recorder.closed
+        assert runtime.last_run_reason == "stop_requested"
+
+    def test_base_exception_in_lifecycle_callback_still_clears_flag(self) -> None:
+        """The mirror of the disconnect case: a Ctrl+C from ``on_lifecycle``.
+
+        The bus isolates ``Exception`` but deliberately lets ``BaseException``
+        through (``_callback_bus.emit_lifecycle``/``close``), so the flush and
+        the flag clear each need their own ``finally``. Without them the flag
+        survives and the next ``run()`` silently zero-steps.
+        """
+        recorder = _LifecycleRecorder()
+        # Registered after the recorder, so the recorder still receives the
+        # event; fires once, so the follow-up run tears down cleanly.
+        interrupter = _InterruptOnceOnShutdown()
+        runtime, robot = _stop_runtime(callbacks=[recorder, interrupter])
+        runtime.stop()
+
+        with _frozen_time(), pytest.raises(KeyboardInterrupt):
+            runtime.run(duration_s=1.0)
+
+        assert interrupter.fired
+        assert runtime.last_run_reason == "stop_requested"
+        assert recorder.shutdown_metadata["reason"] == "stop_requested"
+        assert recorder.closed  # the flush ran despite the BaseException
+
+        # The flag did not survive into the next session.
+        with _frozen_time():
+            assert runtime.run(duration_s=0.3) == 3
+        assert robot.send_action.call_count == 3
+
+    def test_not_connected_run_leaves_previous_reason_untouched(self) -> None:
+        """Documented behaviour: a run rejected before it starts changes nothing."""
+        runtime, _robot = _stop_runtime()
+        with _frozen_time():
+            runtime.run(duration_s=0.1)
+        assert runtime.last_run_reason == "duration_elapsed"
+
+        runtime._connected = False  # noqa: SLF001
+        with pytest.raises(RuntimeError, match="connect"):
+            runtime.run(duration_s=0.1)
+
+        assert runtime.last_run_reason == "duration_elapsed"
+
+    def test_stop_during_teardown_does_not_leak_into_next_run(self) -> None:
+        """Teardown is slow (joining workers, flushing sinks); a stop landing in
+        that window must not silently zero-step the following session.
+
+        This is why the flag clears at the *end* of ``_shutdown()``: clearing it
+        first would let this stop survive into the next ``run()``.
+        """
+
+        class _StopOnDisconnect:
+            runtime: RobotRuntime | None = None
+
+            def connect(self, *, bus: Any, session_id: str) -> None:
+                pass
+
+            def update(self, robot_state: Any, camera_frames: Any, step: int) -> np.ndarray:
+                return np.zeros(3, dtype=np.float32)
+
+            def disconnect(self) -> None:
+                assert self.runtime is not None
+                self.runtime.stop()
+
+        source = _StopOnDisconnect()
+        runtime, _robot = _stop_runtime(action_source=source)
+        source.runtime = runtime
+
+        with _frozen_time():
+            assert runtime.run(duration_s=0.2) == 2
+            assert runtime.last_run_reason == "duration_elapsed"
+            assert runtime.run(duration_s=0.3) == 3
+
+        assert runtime.last_run_reason == "duration_elapsed"
+
+
+class TestRunReason:
+    """All four exit reasons, on both the property and the shutdown event."""
+
+    @staticmethod
+    def _runtime(action_source: Any, recorder: _LifecycleRecorder) -> RobotRuntime:
+        runtime, _robot = _stop_runtime(action_source=action_source, callbacks=[recorder])
+        return runtime
+
+    def test_duration_elapsed(self) -> None:
+        recorder = _LifecycleRecorder()
+        runtime = self._runtime(FakeActionSource(next_action=np.zeros(3, dtype=np.float32)), recorder)
+
+        with _frozen_time():
+            runtime.run(duration_s=0.2)
+
+        assert runtime.last_run_reason == "duration_elapsed"
+        assert recorder.shutdown_metadata["reason"] == "duration_elapsed"
+
+    def test_stop_requested(self) -> None:
+        recorder = _LifecycleRecorder()
+        runtime = self._runtime(FakeActionSource(next_action=np.zeros(3, dtype=np.float32)), recorder)
+        runtime.stop()
+
+        with _frozen_time():
+            runtime.run(duration_s=100.0)
+
+        assert runtime.last_run_reason == "stop_requested"
+        assert recorder.shutdown_metadata["reason"] == "stop_requested"
+
+    def test_interrupted(self) -> None:
+        """KeyboardInterrupt is still swallowed, and now labelled."""
+        recorder = _LifecycleRecorder()
+        runtime = self._runtime(_RaisingActionSource(exc=KeyboardInterrupt()), recorder)
+
+        with _frozen_time():
+            steps = runtime.run(duration_s=100.0)
+
+        assert steps == 0
+        assert runtime.last_run_reason == "interrupted"
+        assert recorder.shutdown_metadata["reason"] == "interrupted"
+
+    @pytest.mark.parametrize(
+        ("exc_type", "message"),
+        [(ConnectionError, "link down"), (WorkerDiedError, "dead")],
+        ids=["connection_error", "worker_died"],
+    )
+    def test_error_on_propagating_exception(self, exc_type: type[Exception], message: str) -> None:
+        """A crashed run is not mislabelled as a normal exit."""
+        recorder = _LifecycleRecorder()
+        runtime = self._runtime(_RaisingActionSource(exc=exc_type(message)), recorder)
+
+        with _frozen_time(), pytest.raises(exc_type, match=message):
+            runtime.run(duration_s=100.0)
+
+        assert runtime.last_run_reason == "error"
+        assert recorder.shutdown_metadata["reason"] == "error"
+
+    def test_error_on_callback_raising_in_action_ready(self) -> None:
+        bad = MagicMock()
+        bad.on_action_ready.side_effect = RuntimeError("filter blew up")
+        recorder = _LifecycleRecorder()
+        runtime, _robot = _stop_runtime(callbacks=[recorder, bad])
+
+        with _frozen_time(), pytest.raises(RuntimeError, match="filter blew up"):
+            runtime.run(duration_s=100.0)
+
+        assert runtime.last_run_reason == "error"
+        assert recorder.shutdown_metadata["reason"] == "error"
+
+    def test_reason_is_none_while_run_in_flight(self) -> None:
+        """_reset_session() clears the previous run's reason at the top of run()."""
+        seen: list[Any] = []
+
+        class _ReasonProbe:
+            def on_action_sent(self, *, action: np.ndarray, step: int) -> None:  # noqa: ARG002
+                seen.append(runtime.last_run_reason)
+
+        runtime, _robot = _stop_runtime(callbacks=[_ReasonProbe()])
+
+        with _frozen_time():
+            runtime.run(duration_s=0.1)
+            assert runtime.last_run_reason == "duration_elapsed"
+            runtime.run(duration_s=0.1)
+
+        # Mid-run the property reports None, never the prior run's reason.
+        assert seen == [None, None]
+
+
+class TestStopEventNotInConfigSchema:
+    """``stop_event`` is a live object; it must never reach the config surface."""
+
+    def test_from_config_still_loads(self, tmp_path: Path) -> None:
+        cfg_path = tmp_path / "runtime.yaml"
+        cfg_path.write_text(_minimal_yaml(include_run_block=True))
+
+        assert isinstance(RobotRuntime.from_config(cfg_path), RobotRuntime)
+
+    def test_from_config_rejects_stop_event_as_unknown_option(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Asserts the *reason* for rejection, which is what the skip controls.
+
+        Without ``skip={"stop_event"}`` the key is a known option and fails
+        type validation instead ("Parser key ..."), so asserting on plain
+        ``SystemExit`` would pass either way and cover nothing.
+        """
+        cfg_path = tmp_path / "runtime.yaml"
+        cfg_path.write_text(_minimal_yaml() + "run:\n  stop_event: something\n")
+
+        with pytest.raises(SystemExit):
+            RobotRuntime.from_config(cfg_path)
+
+        assert "does not accept option 'stop_event'" in capsys.readouterr().err

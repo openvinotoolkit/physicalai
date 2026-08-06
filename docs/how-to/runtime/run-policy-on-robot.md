@@ -23,6 +23,28 @@ with runtime:
     runtime.run(duration_s=60)
 ```
 
+## Stop Without a Fixed Duration
+
+Omit `duration_s` and the run continues until something stops it. Pass a `threading.Event` as `stop_event`, run the loop on a worker thread, and set the event when you want it to finish.
+
+```python
+import threading
+
+runtime = RobotRuntime(fps=30, robot=robot, action_source=source)
+stop = threading.Event()
+
+with runtime:
+    worker = threading.Thread(target=runtime.run, kwargs={"stop_event": stop})
+    worker.start()
+    ...
+    stop.set()          # finishes the current tick, then returns
+    worker.join()
+
+print(runtime.last_run_reason)      # stop_requested
+```
+
+The event only has to provide `is_set()`, so a `multiprocessing.Event` works the same way when the session runs in a subprocess. Either way the run ends through the normal shutdown path: the `shutdown` lifecycle event fires, callbacks are flushed, and the action source is disconnected.
+
 ## From Config
 
 Write a runtime configuration file.

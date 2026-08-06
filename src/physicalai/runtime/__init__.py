@@ -7,6 +7,7 @@ Public API::
 
     from physicalai.runtime import ActionSource, PolicySource, TeleopSource
     from physicalai.runtime import RobotRuntime, RuntimeCallback
+    from physicalai.runtime import RunReason, StopSignal
     from physicalai.runtime import SyncExecution, AsyncExecution, Execution, WorkerDiedError
     from physicalai.runtime import ActionQueue, ChunkedActionQueue
     from physicalai.runtime import ChunkSmoother, LerpSmoother, ReplaceSmoother
@@ -22,7 +23,7 @@ from physicalai.runtime.callbacks import (
     LowPassFilterCallback,
     RerunCallback,
 )
-from physicalai.runtime.core import RobotRuntime, RuntimeCallback
+from physicalai.runtime.core import RobotRuntime, RunReason, RuntimeCallback, StopSignal
 from physicalai.runtime.events import InferenceEvent, LifecycleEvent, MetricsEvent, TickEvent
 from physicalai.runtime.execution import (
     ActionQueue,
@@ -57,7 +58,9 @@ __all__ = [
     "ReplaceSmoother",
     "RerunCallback",
     "RobotRuntime",
+    "RunReason",
     "RuntimeCallback",
+    "StopSignal",
     "SyncExecution",
     "TeleopSource",
     "TickEvent",

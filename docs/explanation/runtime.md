@@ -30,6 +30,8 @@ The runtime loop follows this general pattern:
 
 ```text
 while running:
+    if stop_requested() or duration_reached():
+        break
     robot_state, camera_frames = read_observation()
     action = action_source.update(robot_state, camera_frames, step)
     action = on_action_ready(action)  # callback hook, may transform
@@ -39,6 +41,14 @@ while running:
 ```
 
 The exact observation structure and merging strategy may change as the API stabilizes. Everything left of `action_source.update()` — deciding whether to run inference, pulling from the queue, holding the last action — is internal to the action source; `RobotRuntime` itself only ever sees one action per tick.
+
+## Stopping
+
+A stop takes effect between ticks, never inside one. The tick already underway finishes and sends its action, so the robot is never left halfway through a command. That means a stop is not instant: it lands once the current tick is done, and a tick that happens to be waiting on inference or a slow robot read takes as long as it takes.
+
+Use `runtime.stop()` when the code asking for the stop lives in the same program. Use `run(stop_event=...)` when it does not: pass any object with an `is_set()` method, and one process can stop a session running in another. The runtime checks both, so whichever comes first ends the run.
+
+Stopping is not the same as shutting down. It ends the control loop, but the robot and cameras stay connected until the context manager releases them, so one runtime can stop and run again. `last_run_reason` and the `shutdown` event's `reason` field say why a run ended.
 
 ## Execution Modes
 

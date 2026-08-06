@@ -190,6 +190,27 @@ class TestRunParser:
         assert "fps: 30" in output
         assert "FakeRobot" in output
 
+    def test_stop_event_absent_from_schema(self) -> None:
+        """``run(stop_event=...)`` is a live object, so it is skipped from the CLI.
+
+        Without ``skip={"stop_event"}`` jsonargparse adds ``run.stop_event`` and
+        ``run.stop_event.help``, and the dispatcher then forwards
+        ``stop_event=None`` into ``run()``.
+        """
+        parser = run_module.build_parser()
+        dests = {action.dest for action in parser._actions}  # noqa: SLF001
+        assert "run.duration_s" in dests
+        assert not any(dest.startswith("run.stop_event") for dest in dests)
+
+    def test_stop_event_absent_from_help_and_print_config(self) -> None:
+        parser = run_module.build_parser()
+        assert "stop_event" not in parser.format_help()
+
+        buf = io.StringIO()
+        with redirect_stdout(buf), pytest.raises(SystemExit):
+            parser.parse_args([*_MINIMAL_ARGV, "--print_config"])
+        assert "stop_event" not in buf.getvalue()
+
     def test_parses_minimal_argv(self) -> None:
         parser = run_module.build_parser()
         cfg = parser.parse_args(list(_MINIMAL_ARGV))
@@ -344,6 +365,18 @@ class TestRunDispatcher:
             run_module.run(parser, cfg)
 
         fake.run.assert_called_once_with(duration_s=None)
+
+    def test_never_forwards_stop_event_to_run(self) -> None:
+        """The dispatcher splats ``cfg.run``, so a leaked key would reach run()."""
+        parser = run_module.build_parser()
+        cfg = parser.parse_args([*_MINIMAL_ARGV, "--run.duration_s=3"])
+        fake = self._fake_runtime(0)
+
+        with patch.object(parser, "instantiate") as inst:
+            inst.return_value = MagicMock(runtime=fake)
+            run_module.run(parser, cfg)
+
+        assert "stop_event" not in fake.run.call_args.kwargs
 
     def test_configures_logging_before_instantiate(self) -> None:
         parser = run_module.build_parser()

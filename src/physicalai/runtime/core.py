@@ -6,10 +6,11 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, Self
+from typing import TYPE_CHECKING, Literal, Protocol, Self
 
 from physicalai.capture.errors import CaptureError
 from physicalai.config import export_config
@@ -35,6 +36,9 @@ _MAX_OBS_RETRIES = 3
 _MAX_SEND_RETRIES = 2
 _RETRY_BACKOFF_S = 0.001
 _GOAL_TIME_TICKS = 3
+
+RunReason = Literal["stop_requested", "duration_elapsed", "interrupted", "error"]
+"""Why a :meth:`RobotRuntime.run` call ended."""
 
 
 def _unwrap_runtime_document(document: dict[str, Any], *, target: type) -> dict[str, Any]:
@@ -71,6 +75,24 @@ def _unwrap_runtime_document(document: dict[str, Any], *, target: type) -> dict[
         )
         raise ConfigError(msg)
     return {"runtime": dict(config["init_args"])}
+
+
+class StopSignal(Protocol):
+    """A stop flag the control loop polls once per tick.
+
+    Anything exposing a thread- or process-safe ``is_set()`` satisfies it, so
+    ``threading.Event`` and ``multiprocessing.Event`` both work unchanged. Duck
+    typing is the point: a parent process can end a session process directly,
+    with no mailbox round-trip, and the loop keeps its no-``isinstance`` rule.
+    """
+
+    def is_set(self) -> bool:
+        """Report whether a stop has been requested.
+
+        Returns:
+            ``True`` once a stop has been requested.
+        """
+        ...
 
 
 class RuntimeCallback(Protocol):
@@ -131,6 +153,11 @@ class RobotRuntime:
         self._transient_errors: int = 0
         self._session_id: str = ""
         self._last_tick_stale: bool = False
+        # Cleared in _shutdown(), not _reset_session(): _reset_session() runs at
+        # the top of run(), so clearing there would drop a stop() that landed
+        # between connect() and run() and the session would never end.
+        self._stop = threading.Event()
+        self._last_run_reason: RunReason | None = None
 
     @property
     def robot(self) -> Robot:
@@ -151,6 +178,22 @@ class RobotRuntime:
         after ``run()`` returns.
         """
         return self._action_source
+
+    @property
+    def last_run_reason(self) -> RunReason | None:
+        """Why the most recent :meth:`run` ended.
+
+        Also emitted as ``reason`` in the ``shutdown`` lifecycle event, so
+        telemetry sinks receive it without the caller wiring up a callback.
+
+        Reports ``None`` before any run has started and while a run is in
+        flight. A :meth:`run` rejected before it starts — the not-connected
+        ``RuntimeError`` — leaves the previous run's value untouched.
+
+        Returns:
+            The reason the last started run ended, or ``None``.
+        """
+        return self._last_run_reason
 
     def connect(self) -> None:
         """Connect robot and cameras.
@@ -241,12 +284,39 @@ class RobotRuntime:
         document = _unwrap_runtime_document(document, target=cls)
         parser = ArgumentParser()
         parser.add_class_arguments(cls, "runtime")
-        parser.add_method_arguments(cls, "run", "run")
+        # stop_event is a live in-process object with no serializable form, so
+        # it stays out of the config schema entirely.
+        parser.add_method_arguments(cls, "run", "run", skip={"stop_event"})
         ns = parser.parse_object(document)
         return parser.instantiate(ns).runtime
 
-    def run(self, *, duration_s: float | None = None) -> int:
+    def stop(self) -> None:
+        """Request the loop to exit after the current tick. Thread-safe.
+
+        The tick already in flight finishes and its action is still sent, so the
+        robot is never left mid-command. Safe to call before :meth:`run` (that
+        run then exits after zero steps), from another thread while :meth:`run`
+        is in flight, or on an idle runtime. The flag clears once the run ends,
+        so the runtime stays reusable.
+
+        Distinct from ``Execution.stop()`` (tear down the inference worker) and
+        ``ActionSource.disconnect()`` (release source-owned resources): this
+        only asks the control loop to finish.
+        """
+        self._stop.set()
+
+    def run(self, *, duration_s: float | None = None, stop_event: StopSignal | None = None) -> int:
         """Run the control loop.
+
+        Exits on the first of: a stop request (:meth:`stop` or *stop_event*),
+        *duration_s* elapsing, ``KeyboardInterrupt``, or a propagating
+        exception. :attr:`last_run_reason` records which one it was.
+
+        Args:
+            duration_s: Maximum duration in seconds. ``None`` runs until stopped.
+            stop_event: External stop flag polled once per tick, honoured in
+                addition to :meth:`stop`. Any object with ``is_set()`` works,
+                ``multiprocessing.Event`` included — see :class:`StopSignal`.
 
         Returns:
             Number of steps completed this run.
@@ -262,27 +332,39 @@ class RobotRuntime:
             raise RuntimeError(msg)
 
         self._reset_session()
-        self._action_source.connect(bus=self._bus, session_id=self._session_id)
-        self._bus.emit_lifecycle(
-            LifecycleEvent(
-                session_id=self._session_id,
-                timestamp=time.time(),
-                event="start",
-                metadata={
-                    "fps": self._fps,
-                    "duration_s": duration_s,
-                    "cameras": list(self._cameras.keys()),
-                    "joint_names": self._robot.joint_names,
-                },
-            )
-        )
 
         goal_time = 1.0 / self._fps
         step = 0
+        # Every normal exit overwrites this, so only a propagating exception
+        # leaves "error" in place — the shutdown event then reports the truth
+        # instead of inheriting whichever normal reason happened to be set.
+        reason: RunReason = "error"
 
+        # Source connect and the start event sit inside the try so a failure
+        # there still runs _shutdown(): otherwise the stop flag would survive
+        # into the next run() and silently zero-step every later session.
         try:
+            self._action_source.connect(bus=self._bus, session_id=self._session_id)
+            self._bus.emit_lifecycle(
+                LifecycleEvent(
+                    session_id=self._session_id,
+                    timestamp=time.time(),
+                    event="start",
+                    metadata={
+                        "fps": self._fps,
+                        "duration_s": duration_s,
+                        "cameras": list(self._cameras.keys()),
+                        "joint_names": self._robot.joint_names,
+                    },
+                )
+            )
+
             while True:
+                if self._stop.is_set() or (stop_event is not None and stop_event.is_set()):
+                    reason = "stop_requested"
+                    break
                 if duration_s is not None and step * goal_time >= duration_s:
+                    reason = "duration_elapsed"
                     break
 
                 loop_start = time.perf_counter()
@@ -311,17 +393,23 @@ class RobotRuntime:
                 step += 1
 
         except KeyboardInterrupt:
+            reason = "interrupted"
             logger.info("Interrupted by user")
         except WorkerDiedError:
             logger.exception("Worker died during runtime")
             raise
         finally:
-            self._shutdown(step)
+            self._shutdown(step, reason=reason)
 
         return step
 
     def _reset_session(self) -> None:
-        """Reset all session-scoped state for a fresh run."""
+        """Reset all session-scoped state for a fresh run.
+
+        Deliberately leaves ``self._stop`` alone: this runs at the top of
+        ``run()``, so clearing the flag here would discard a ``stop()`` that
+        arrived between ``connect()`` and ``run()``. ``_shutdown()`` clears it.
+        """
         # Telemetry/log correlation id only (ties together events from one run()
         # call), not a security token or capability.
         self._session_id = uuid.uuid4().hex[:8]
@@ -331,6 +419,7 @@ class RobotRuntime:
         self._stale_obs_ticks = 0
         self._transient_errors = 0
         self._last_tick_stale = False
+        self._last_run_reason = None
 
     @staticmethod
     def _tick_sleep(loop_start: float, goal_time: float) -> tuple[float, float]:
@@ -474,24 +563,50 @@ class RobotRuntime:
             last_error,
         )
 
-    def _shutdown(self, step: int) -> None:
+    def _disconnect_and_log_errors(self) -> None:
+        """Release action-source resources, logging rather than raising on failure.
+
+        Only ``Exception`` is swallowed. A ``BaseException`` — a Ctrl+C landing
+        mid-teardown — still propagates; the caller's ``finally`` chain keeps the
+        rest of shutdown intact.
+        """
         try:
             self._action_source.disconnect()
         except Exception:
             logger.exception("Action source disconnect failed")
 
-        self._bus.emit_lifecycle(
-            LifecycleEvent(
-                session_id=self._session_id,
-                timestamp=time.time(),
-                event="shutdown",
-                metadata={
-                    "steps": step,
-                    "transient_errors": self._transient_errors,
-                    "stale_obs_ticks": self._stale_obs_ticks,
-                },
+    def _emit_shutdown(self, step: int, *, reason: RunReason) -> None:
+        """Emit the shutdown lifecycle event, then flush every callback."""
+        try:
+            self._bus.emit_lifecycle(
+                LifecycleEvent(
+                    session_id=self._session_id,
+                    timestamp=time.time(),
+                    event="shutdown",
+                    metadata={
+                        "steps": step,
+                        "reason": reason,
+                        "transient_errors": self._transient_errors,
+                        "stale_obs_ticks": self._stale_obs_ticks,
+                    },
+                )
             )
-        )
-        self._bus.close()
+        finally:
+            # The bus isolates Exception but deliberately lets BaseException
+            # through, so the flush needs its own guarantee — otherwise a Ctrl+C
+            # in on_lifecycle loses the session's buffered telemetry.
+            self._bus.close()
 
-        logger.info("Shutdown complete — %d steps", step)
+    def _shutdown(self, step: int, *, reason: RunReason) -> None:
+        self._last_run_reason = reason
+        try:
+            self._disconnect_and_log_errors()
+        finally:
+            try:
+                self._emit_shutdown(step, reason=reason)
+            finally:
+                # Outermost guarantee: whatever a callback throws — including a
+                # Ctrl+C the bus does not swallow — the stop flag must not
+                # survive into the next run() and silently zero-step it.
+                self._stop.clear()
+                logger.info("Shutdown complete — %d steps (%s)", step, reason)

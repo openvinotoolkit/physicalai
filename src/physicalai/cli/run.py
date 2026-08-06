@@ -122,7 +122,9 @@ def build_parser() -> ArgumentParser:
         help="Enable debug logging during startup and runtime.",
     )
     parser.add_class_arguments(RobotRuntime, "runtime")
-    parser.add_method_arguments(RobotRuntime, "run", "run")
+    # stop_event is a live in-process object with no serializable form, so it is
+    # kept out of the CLI schema; the CLI stops via --run.duration_s or Ctrl+C.
+    parser.add_method_arguments(RobotRuntime, "run", "run", skip={"stop_event"})
     return parser
 
 
