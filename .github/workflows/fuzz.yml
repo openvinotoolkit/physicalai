@@ -15,7 +15,6 @@ on:
     paths:
       - "tests/fuzz/**"
       - ".github/workflows/fuzz.yml"
-      - "src/**"
 
 permissions: {}
 
