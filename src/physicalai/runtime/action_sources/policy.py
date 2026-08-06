@@ -77,8 +77,12 @@ class PolicySource(ActionSource):
             self._session_id = session_id
             self._execution.set_bus(bus, session_id)
             self._execution.start(self._model, self._action_queue)
-            self._action_queue.clear()
+            # reset(): also zeroes total_pops/total_holds, so the
+            # queue's counters describe this run rather than every run so far.
+            self._action_queue.reset()
             self._last = None
+            # Re-seed on every run. connect() has just emptied the queue
+            self._warmed_up = False
 
     def update(self, robot_state: RobotObservation, camera_frames: Mapping[str, Frame], step: int) -> np.ndarray:
         """Maybe request inference and return the next action.

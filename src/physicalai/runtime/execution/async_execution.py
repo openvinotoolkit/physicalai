@@ -66,6 +66,17 @@ class AsyncExecution(Execution):
         """Bind model/queue and spawn inference thread."""
         self._model = model
         self._queue = cast("ChunkedActionQueue", action_queue)
+        self._stop_event.clear()
+        self._obs_ready.clear()
+        self._inference_count = 0
+        with self._lock:
+            # A stale observation would be inferred on as if it were current.
+            self._obs_slot = None
+            self._running_inference = False
+            self._request_time = 0.0
+            self._pops_at_request = 0
+        # A death from the previous run must not fail this one.
+        self._death_cause = None
         self._thread = threading.Thread(target=self._run, name="InferenceThread", daemon=True)
         self._thread.start()
 

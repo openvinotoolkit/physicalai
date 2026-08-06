@@ -130,6 +130,10 @@ class RTCExecution(Execution):
         self._thread: threading.Thread | None = None
         self._death_cause: BaseException | None = None
         self._inference_count: int = 0
+        # Separate from _inference_count, which restarts each run: model
+        # compilation overhead is paid once per process, so the cold-start
+        # latency discard must not re-arm on a second run.
+        self._lifetime_inferences: int = 0
         self._bus: _CallbackBus | None = None
         self._session_id: str = ""
 
@@ -204,6 +208,12 @@ class RTCExecution(Execution):
 
         self._stop_event.clear()
         self._first_chunk_ready.clear()
+        self._inference_count = 0
+        # A death from the previous run must not fail this one, and a stale
+        # observation must not be inferred on as if it were current.
+        self._death_cause = None
+        with self._obs_lock:
+            self._obs_slot = None
         self._thread = threading.Thread(
             target=self._rtc_loop,
             name="rtc-inference",
@@ -325,14 +335,17 @@ class RTCExecution(Execution):
                 continue
 
             self._inference_count += 1
+            self._lifetime_inferences += 1
 
             # Reset latency tracker after warmup inferences to discard
-            # compilation overhead (e.g. OpenVINO first-run latency).
-            if self._inference_count <= self._warmup_inferences and self._latency_tracker is not None:
+            # compilation overhead (e.g. OpenVINO first-run latency). Gated on
+            # the lifetime count: the model is compiled once, so a second run
+            # must not discard its perfectly good samples.
+            if self._lifetime_inferences <= self._warmup_inferences and self._latency_tracker is not None:
                 self._latency_tracker.on_reset()
                 logger.info(
                     "Warmup inference %d/%d complete (%.2fs) — latency tracker reset",
-                    self._inference_count,
+                    self._lifetime_inferences,
                     self._warmup_inferences,
                     elapsed,
                 )

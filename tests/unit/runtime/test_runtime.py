@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from physicalai.runtime import ChunkedActionQueue as ActionQueue, ChunkedActionQueue, LifecycleEvent, PolicySource, RobotRuntime, StopSignal, SyncExecution, WorkerDiedError
+from physicalai.runtime import AsyncExecution, ChunkedActionQueue as ActionQueue, ChunkedActionQueue, LifecycleEvent, PolicySource, RobotRuntime, StopSignal, SyncExecution, WorkerDiedError
 from physicalai.robot.interface import RobotObservation
 from physicalai.inference.model import InferenceModel
 from physicalai.inference.constants import IMAGES, STATE, TASK
@@ -1116,3 +1116,103 @@ class TestStopEventNotInConfigSchema:
             RobotRuntime.from_config(cfg_path)
 
         assert "does not accept option 'stop_event'" in capsys.readouterr().err
+
+
+class TestPolicySourceRerun:
+    """A runtime carrying a real ``PolicySource`` must survive being run twice.
+
+    ``stop()`` makes stop-then-run-again a normal workflow, and the reuse test
+    above covers it with a trivial action source. These cover the real one,
+    where the queue and the inference worker both have to come back.
+    """
+
+    @staticmethod
+    def _model(chunk_rows: int = 5, action_dim: int = 3) -> MagicMock:
+        model = MagicMock()
+        model.predict_action_chunk.side_effect = lambda _obs: np.zeros((chunk_rows, action_dim), dtype=np.float32)
+        return model
+
+    def test_rerun_with_sync_execution(self) -> None:
+        source = PolicySource(model=self._model(), execution=SyncExecution())
+        runtime, robot = _stop_runtime(action_source=source)
+
+        with _frozen_time():
+            first = runtime.run(duration_s=0.5)
+            second = runtime.run(duration_s=0.5)
+
+        assert first == second == 5
+        assert robot.send_action.call_count == 10
+
+    def test_queue_counters_describe_one_run_not_all_runs(self) -> None:
+        """``connect()`` calls ``reset()``, so the counters are per-session.
+
+        ``docs/reference/runtime-api.md`` points callers at
+        ``action_source.action_queue.total_pops`` for run stats, and
+        ``RobotRuntime._reset_session()`` zeroes its own counters each run — the
+        queue has to agree, or half the stats are cumulative and half are not.
+        """
+        source = PolicySource(model=self._model(), execution=SyncExecution())
+        runtime, _robot = _stop_runtime(action_source=source)
+
+        with _frozen_time():
+            first = runtime.run(duration_s=0.5)
+            assert source.action_queue.total_pops == first
+
+            second = runtime.run(duration_s=0.5)
+
+        # Not first + second: the second run starts the count over.
+        assert source.action_queue.total_pops == second
+
+    def test_previous_queue_contents_are_never_replayed(self) -> None:
+        """Actions computed in run 1 must not reach the robot in run 2.
+
+        A stopped run leaves unsent actions in the queue. They were computed
+        from observations that are now stale, so ``connect()`` drops them
+        instead of resuming mid-chunk.
+        """
+        tag = {"value": 1.0}
+        model = MagicMock()
+        model.predict_action_chunk.side_effect = lambda _obs: np.full((8, 3), tag["value"], dtype=np.float32)
+        source = PolicySource(model=model, execution=SyncExecution())
+        runtime, robot = _stop_runtime(action_source=source)
+
+        with _frozen_time():
+            runtime.run(duration_s=0.2)
+        assert source.action_queue.remaining > 0, "run 1 should leave unsent actions behind"
+
+        tag["value"] = 2.0
+        robot.send_action.reset_mock()
+        with _frozen_time():
+            runtime.run(duration_s=0.2)
+
+        sent = [float(call[0][0][0]) for call in robot.send_action.call_args_list]
+        assert sent, "run 2 sent nothing"
+        assert all(value == 2.0 for value in sent), f"run 1 actions replayed: {sent}"
+
+    def test_rerun_with_async_execution_keeps_inferring(self) -> None:
+        """The second run must be driven by fresh inference, not a frozen action.
+
+        Regression guard for two separate faults that made a re-run *look*
+        fine: ``PolicySource`` skipping warmup on an emptied queue, and
+        ``AsyncExecution`` spawning a worker that saw a stale stop flag and
+        exited. Together they produced a full-length run with zero inference
+        and the robot repeating one action.
+
+        Uses real time, since the whole point is that a background thread runs.
+        """
+        execution = AsyncExecution()
+        source = PolicySource(model=self._model(chunk_rows=5), execution=execution)
+        runtime, _robot = _stop_runtime(action_source=source, fps=50.0)
+
+        steps_first = runtime.run(duration_s=0.6)
+        steps_second = runtime.run(duration_s=0.6)
+        # Both counters restart each run, so read them directly rather than
+        # differencing against the previous run.
+        inferences_during_second = execution.inference_count
+        holds_during_second = source.action_queue.total_holds
+
+        assert steps_first == steps_second == 30
+        # A 5-row chunk over 30 steps needs several refills; the bug gave zero.
+        assert inferences_during_second >= 2, "no background inference in the second run"
+        # The bug held a stale action for 25 of 30 ticks.
+        assert holds_during_second < steps_second // 3, f"queue starved: {holds_during_second} holds"

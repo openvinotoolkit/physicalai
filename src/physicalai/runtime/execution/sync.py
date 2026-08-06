@@ -46,9 +46,10 @@ class SyncExecution(Execution):
         self._session_id: str = ""
 
     def start(self, model: InferenceModel, action_queue: ActionQueue) -> None:
-        """Bind model and queue."""
+        """Bind model and queue, and start a fresh inference count for this run."""
         self._model = model
         self._queue = cast("ChunkedActionQueue", action_queue)
+        self._inference_count = 0
 
     def warmup(self, sample_observation: dict[str, np.ndarray]) -> None:
         """Run one inference, seed queue, discover chunk_size.
