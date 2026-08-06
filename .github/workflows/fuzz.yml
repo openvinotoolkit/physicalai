@@ -173,10 +173,13 @@ jobs:
       # ── Fail the job ──────────────────────────────────────────────────────
       - name: Fail on crashes or startup failure
         if: ${{ always() && (steps.run_fuzzer.conclusion == 'failure' || steps.crash_check.outputs.crashes_found == 'true') }}
+        env:
+          CRASHES_FOUND: ${{ steps.crash_check.outputs.crashes_found }}
+          HARNESS: ${{ matrix.harness }}
         run: |
-          if [ "${{ steps.crash_check.outputs.crashes_found }}" == "true" ]; then
-            echo "::error::Crashes detected in ${{ matrix.harness }} — see crash artifacts"
+          if [ "$CRASHES_FOUND" == "true" ]; then
+            echo "::error::Crashes detected in ${HARNESS} — see crash artifacts"
           else
-            echo "::error::Fuzzer exited non-zero without crash files in ${{ matrix.harness }} — startup failure, see diagnostic log"
+            echo "::error::Fuzzer exited non-zero without crash files in ${HARNESS} — startup failure, see diagnostic log"
           fi
           exit 1
