@@ -93,10 +93,9 @@ jobs:
       - name: Run fuzzer
         id: run_fuzzer
         env:
-          # TODO: revert PR duration back to '30' once done testing longer fuzz runs.
           FUZZ_DURATION: >-
             ${{
-              github.event_name == 'pull_request' && '1800' ||
+              github.event_name == 'pull_request' && '30' ||
               github.event.inputs.duration_s || '1800'
             }}
           # Dump the Python stack trace on crashes.
@@ -111,8 +110,7 @@ jobs:
             -rss_limit_mb=2048 \
             -print_final_stats=1 \
             2>&1 | tee "fuzz_output_${{ matrix.harness }}.txt"
-        # TODO: use 15 for PR
-        timeout-minutes: ${{ github.event_name == 'pull_request' && 45 || 360 }}
+        timeout-minutes: ${{ github.event_name == 'pull_request' && 15 || 360 }}
 
       # ── Crash detection ───────────────────────────────────────────────────
       # libFuzzer writes four artifact types to the working directory:
@@ -154,7 +152,7 @@ jobs:
             slow-unit-*
             fuzz_output_${{ matrix.harness }}.txt
           if-no-files-found: warn
-          retention-days: 90
+          retention-days: 7
 
       - name: Upload diagnostic log
         if: >-
@@ -169,7 +167,7 @@ jobs:
           name: log-${{ matrix.harness }}-${{ github.run_id }}
           path: fuzz_output_${{ matrix.harness }}.txt
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 7
 
       # ── Fail the job ──────────────────────────────────────────────────────
       - name: Fail on crashes or startup failure
