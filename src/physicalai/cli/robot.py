@@ -17,7 +17,7 @@ from jsonargparse import ActionConfigFile, ArgumentParser
 from loguru import logger
 
 from physicalai.cli._spec import SubcommandSpec  # noqa: PLC2701
-from physicalai.config import ComponentConfigError
+from physicalai.config import ConfigError
 from physicalai.robot.errors import RobotTransportError
 from physicalai.robot.transport import (
     DEFAULT_RATE_HZ,
@@ -61,7 +61,7 @@ def _build_serve_parser() -> ArgumentParser:
         type=dict,
         required=True,
         help=(
-            "Robot ComponentConfig (class_path + init_args). "
+            "Robot Config (class_path + init_args). "
             'Example: --robot=\'{"class_path":"physicalai.robot.SO101",'
             '"init_args":{"port":"/dev/ttyACM0"}}\'. '
             "Or nested flags: --robot.class_path=physicalai.robot.SO101 "
@@ -163,17 +163,17 @@ def _mapping_from_cfg(value: object) -> dict[str, object]:
 
 
 def _robot_config_from_serve_cfg(cfg: Namespace) -> dict[str, object]:
-    """Require ``--robot`` ComponentConfig for foreground serve.
+    """Require ``--robot`` Config for foreground serve.
 
     Returns:
-        A ComponentConfig mapping for :class:`RobotOwnerConfig`.
+        A Config mapping for :class:`RobotOwnerConfig`.
 
     Raises:
         ValueError: If ``--robot`` is missing.
     """
     robot = getattr(cfg, "robot", None)
     if robot is None:
-        msg = "robot serve requires --robot ComponentConfig (class_path + init_args)"
+        msg = "robot serve requires --robot Config (class_path + init_args)"
         raise ValueError(msg)
     return _mapping_from_cfg(robot)
 
@@ -224,7 +224,7 @@ def serve(cfg: Namespace) -> int:
             rate_hz=cfg.rate_hz,
             idle_timeout=None,
         )
-    except (TypeError, ValueError, ComponentConfigError) as exc:
+    except (TypeError, ValueError, ConfigError) as exc:
         logger.error(f"Invalid robot configuration: {exc}")
         return 1
 

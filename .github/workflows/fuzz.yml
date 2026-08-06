@@ -9,12 +9,13 @@ on:
     inputs:
       duration_s:
         description: "Fuzzing duration per target (seconds)"
-        default: "300"
+        default: "1800"
         required: false
   pull_request:
     paths:
       - "tests/fuzz/**"
       - ".github/workflows/fuzz.yml"
+      - "src/**"
 
 permissions: {}
 
@@ -96,7 +97,7 @@ jobs:
           FUZZ_DURATION: >-
             ${{
               github.event_name == 'pull_request' && '30' ||
-              github.event.inputs.duration_s || '120'
+              github.event.inputs.duration_s || '1800'
             }}
           # Dump the Python stack trace on crashes.
           PYTHONFAULTHANDLER: "1"
@@ -110,7 +111,7 @@ jobs:
             -rss_limit_mb=2048 \
             -print_final_stats=1 \
             2>&1 | tee "fuzz_output_${{ matrix.harness }}.txt"
-        timeout-minutes: 15
+        timeout-minutes: ${{ github.event_name == 'pull_request' && 15 || 360 }}
 
       # ── Crash detection ───────────────────────────────────────────────────
       # libFuzzer writes four artifact types to the working directory:
@@ -152,7 +153,7 @@ jobs:
             slow-unit-*
             fuzz_output_${{ matrix.harness }}.txt
           if-no-files-found: warn
-          retention-days: 90
+          retention-days: 7
 
       - name: Upload diagnostic log
         if: >-
@@ -167,15 +168,18 @@ jobs:
           name: log-${{ matrix.harness }}-${{ github.run_id }}
           path: fuzz_output_${{ matrix.harness }}.txt
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 7
 
       # ── Fail the job ──────────────────────────────────────────────────────
       - name: Fail on crashes or startup failure
         if: ${{ always() && (steps.run_fuzzer.conclusion == 'failure' || steps.crash_check.outputs.crashes_found == 'true') }}
+        env:
+          CRASHES_FOUND: ${{ steps.crash_check.outputs.crashes_found }}
+          HARNESS: ${{ matrix.harness }}
         run: |
-          if [ "${{ steps.crash_check.outputs.crashes_found }}" == "true" ]; then
-            echo "::error::Crashes detected in ${{ matrix.harness }} — see crash artifacts"
+          if [ "$CRASHES_FOUND" == "true" ]; then
+            echo "::error::Crashes detected in ${HARNESS} — see crash artifacts"
           else
-            echo "::error::Fuzzer exited non-zero without crash files in ${{ matrix.harness }} — startup failure, see diagnostic log"
+            echo "::error::Fuzzer exited non-zero without crash files in ${HARNESS} — startup failure, see diagnostic log"
           fi
           exit 1

@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared argument-path formatting for component-config errors."""
+"""Shared argument-path formatting for config errors."""
 
 from __future__ import annotations
 

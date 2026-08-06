@@ -10,11 +10,11 @@ subprocess stdin handshake.
 
 The owner must construct the robot driver itself: a live serial/socket
 handle cannot cross a process boundary (D15). Only a local
-:class:`~physicalai.config.ComponentConfig` (``class_path`` + ``init_args``)
+:class:`~physicalai.config.Config` (``class_path`` + ``init_args``)
 survives that boundary — arbitrary robot types, including third-party
 plugins, work without any registry lookup here.
 
-Private stdin is ``robot: ComponentConfig`` only. The owner envelope is
+Private stdin is ``robot: Config`` only. The owner envelope is
 validated schema-positively: required ``robot``, known transport keys, and
 rejection of unknown keys before import or hardware access. Public
 ``SharedRobot`` and ``physicalai robot serve`` use the same
@@ -30,19 +30,18 @@ import.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from physicalai.config import (
-    ComponentConfig,
-    instantiate,
-    normalize_component_config,
+    Config,
+    is_config_exportable,
+    normalize_config,
     validate_envelope,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
-
     from physicalai.robot.interface import Robot
 
 DEFAULT_RATE_HZ = 100.0
@@ -67,11 +66,11 @@ _OWNER_ENVELOPE_KEYS = frozenset({
 })
 
 
-def validate_owner_config(data: Mapping[str, Any]) -> Mapping[str, object]:
+def validate_owner_config(data: Mapping[str, Any]) -> Config:
     """Validate an owner stdin payload schema-positively.
 
     Returns:
-        The validated ``robot`` ComponentConfig mapping (see
+        The validated ``robot`` Config mapping (see
         :func:`normalize_robot_config` for the JSON-serializability check).
     """
     return validate_envelope(
@@ -82,18 +81,38 @@ def validate_owner_config(data: Mapping[str, Any]) -> Mapping[str, object]:
     )
 
 
-def normalize_robot_config(robot: Mapping[str, object]) -> ComponentConfig:
-    """Validate a robot ComponentConfig without importing its ``class_path``.
+def normalize_robot_config(robot: Config | Mapping[str, object]) -> Config:
+    """Validate a robot Config without importing its ``class_path``.
 
     Returns:
         A validated config whose ``class_path`` is a dotted import path.
     """
-    return normalize_component_config(
+    return normalize_config(
         robot,
         component_key="robot",
         class_label="robot_class",
         json_hint=" (e.g. paths as str, not objects)",
     )
+
+
+def coerce_robot_config_input(robot: Config | Mapping[str, object] | object) -> Config | Mapping[str, object]:
+    """Accept a recipe, mapping, or live ``@export_config`` driver instance.
+
+    Returns:
+        A value suitable for :func:`normalize_robot_config`.
+
+    Raises:
+        TypeError: If ``robot`` is not a supported config shape.
+    """
+    if type(robot) is Config or isinstance(robot, Mapping):
+        return robot
+    if is_config_exportable(robot):
+        return Config.from_instance(robot)
+    msg = (
+        "robot config must be physicalai.config.Config, a class_path mapping, "
+        f"or an @export_config instance; got {type(robot).__name__}"
+    )
+    raise TypeError(msg)
 
 
 @dataclass(frozen=True)
@@ -119,17 +138,17 @@ class RobotOwnerConfig:
     """
 
     name: str
-    robot: Mapping[str, object]
+    robot: Config | Mapping[str, object]
     allow_remote: bool = False
     rate_hz: float = DEFAULT_RATE_HZ
     idle_timeout: float | None = 10.0
 
     def __post_init__(self) -> None:
-        """Validate transport fields and normalize ``robot`` to a public ComponentConfig.
+        """Validate transport fields and normalize ``robot`` to a public Config.
 
         Raises:
             ValueError: If ``rate_hz`` / ``idle_timeout`` are invalid, or
-                ``robot`` is not a JSON-serializable ComponentConfig.
+                ``robot`` is not a JSON-serializable Config.
         """
         if (
             isinstance(self.rate_hz, bool)
@@ -163,19 +182,10 @@ class RobotOwnerConfig:
         Returns:
             Dictionary with every dataclass field (new ``robot:`` shape only).
 
-        Raises:
-            TypeError: If ``robot.init_args`` is not a mapping.
         """
-        init_args = self.robot["init_args"]
-        if not isinstance(init_args, dict):
-            msg = f"robot.init_args must be a mapping, got {type(init_args).__name__}"
-            raise TypeError(msg)
         return {
             "name": self.name,
-            "robot": {
-                "class_path": self.robot["class_path"],
-                "init_args": dict(init_args),
-            },
+            "robot": normalize_robot_config(self.robot).to_dict(),
             "allow_remote": self.allow_remote,
             "rate_hz": self.rate_hz,
             "idle_timeout": self.idle_timeout,
@@ -210,10 +220,14 @@ class RobotOwnerConfig:
             raise TypeError(msg)
 
         robot = validate_owner_config(data)
+        allow_remote = data.get("allow_remote", False)
+        if not isinstance(allow_remote, bool):
+            msg = f"owner config 'allow_remote' must be a bool, got {type(allow_remote).__name__}"
+            raise TypeError(msg)
         return cls(
             name=data["name"],
             robot=robot,
-            allow_remote=data.get("allow_remote", False),
+            allow_remote=allow_remote,
             rate_hz=data.get("rate_hz", DEFAULT_RATE_HZ),
             idle_timeout=data.get("idle_timeout", 10.0),
         )
@@ -223,7 +237,7 @@ class RobotOwnerConfig:
 
         Owner stdin is a parent→child local handshake only — never pass
         network metadata to this path. Uses :func:`physicalai.config.instantiate`
-        on the ``robot`` ComponentConfig, then verifies the
+        on the ``robot`` Config, then verifies the
         :class:`~physicalai.robot.Robot` protocol.
 
         Returns:
@@ -234,7 +248,7 @@ class RobotOwnerConfig:
         """
         from physicalai.robot.interface import Robot  # noqa: PLC0415
 
-        driver = instantiate(self.robot)  # type: ignore[arg-type]
+        driver = normalize_robot_config(self.robot).instantiate()
         if not isinstance(driver, Robot):
             msg = f"{self.robot_class!r} does not satisfy the Robot protocol (got {type(driver).__name__})"
             raise TypeError(msg)

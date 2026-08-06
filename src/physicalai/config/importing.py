@@ -1,11 +1,13 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Dotted-path imports for trusted component configuration."""
+"""Dotted-path imports for trusted configuration."""
 
 from __future__ import annotations
 
 import importlib
+
+__all__ = ["import_dotted_path"]
 
 
 def import_dotted_path(path: str) -> object:

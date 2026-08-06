@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from physicalai.config import ComponentConfigError, ComponentImportError
+from physicalai.config import ConfigError, ConfigImportError
 from physicalai.robot.transport._owner import RobotOwner
 from physicalai.robot.transport._owner_config import (
     RobotOwnerConfig,
@@ -48,7 +48,7 @@ class TestNormalizeRobotConfigClassPath:
             normalize_robot_config({"class_path": class_path})
 
     def test_empty_path_raises(self) -> None:
-        with pytest.raises(ComponentConfigError, match="must be a non-empty string"):
+        with pytest.raises(ConfigError, match="must be a non-empty string"):
             normalize_robot_config({"class_path": ""})
 
 
@@ -123,7 +123,7 @@ class TestRobotOwnerConfig:
             name="left-arm",
             robot={"class_path": "physicalai.robot.transport._ids.KEY_PREFIX", "init_args": {}},
         )
-        with pytest.raises(ComponentImportError, match="does not resolve to a class"):
+        with pytest.raises(ConfigImportError, match="does not resolve to a class"):
             config.build()
 
     def test_build_unknown_path_raises(self) -> None:
@@ -131,7 +131,7 @@ class TestRobotOwnerConfig:
             name="left-arm",
             robot={"class_path": "totally.unknown.module.Cls", "init_args": {}},
         )
-        with pytest.raises(ComponentImportError, match="cannot import class_path"):
+        with pytest.raises(ConfigImportError, match="cannot import class_path"):
             config.build()
 
     def test_flat_stdin_rejected_before_import(self) -> None:
@@ -179,6 +179,12 @@ class TestRobotOwnerConfig:
         with pytest.raises(TypeError, match="owner config 'name' must be a string"):
             RobotOwnerConfig.from_json_dict({"name": bad_name, "robot": _fake_robot()})
 
+    def test_non_bool_allow_remote_rejected(self) -> None:
+        with pytest.raises(TypeError, match="allow_remote' must be a bool"):
+            RobotOwnerConfig.from_json_dict(
+                {"name": "left-arm", "robot": _fake_robot(), "allow_remote": "no"},
+            )
+
     def test_validate_owner_config_shared_helper(self) -> None:
         robot = validate_owner_config(
             {
@@ -195,7 +201,7 @@ class TestRobotOwnerConfig:
         assert init_args["port"] == "/dev/ttyUSB0"
 
     def test_malformed_robot_rejected_before_import(self) -> None:
-        with pytest.raises(ComponentConfigError):
+        with pytest.raises(ConfigError):
             RobotOwnerConfig.from_json_dict(
                 {
                     "name": "left-arm",
@@ -268,5 +274,5 @@ class TestRobotOwnerConfig:
 
 class TestNormalizeRobotConfig:
     def test_normalize_robot_config_rejects_malformed(self) -> None:
-        with pytest.raises(ComponentConfigError):
+        with pytest.raises(ConfigError):
             normalize_robot_config({"class_path": FAKE_ROBOT_CLASS, "extra": True})

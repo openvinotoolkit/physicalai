@@ -11,7 +11,7 @@ from uuid import uuid4
 import numpy as np
 import pytest
 
-from physicalai.config import ComponentConfigError
+from physicalai.config import ConfigError
 from physicalai.robot.errors import (
     RobotNameConflict,
     RobotNotConnectedError,
@@ -90,7 +90,7 @@ class TestConstruction:
         assert robot._robot is None
         assert robot.device_ids == ()
 
-    def test_robot_component_config_normalized(self) -> None:
+    def test_robot_config_normalized(self) -> None:
         robot = SharedRobot(
             "left-arm",
             robot={"class_path": FAKE_ROBOT_CLASS, "init_args": {"port": "/dev/ttyUSB0"}},
@@ -100,17 +100,22 @@ class TestConstruction:
             "init_args": {"port": "/dev/ttyUSB0"},
         }
 
-    def test_from_config_stores_component_config(self) -> None:
+    def test_from_config_stores_config(self) -> None:
         robot = SharedRobot.from_config(
             {"class_path": FAKE_ROBOT_CLASS, "init_args": {"port": "/dev/fake0"}},
             name="left-arm",
         )
         assert robot._robot == {"class_path": FAKE_ROBOT_CLASS, "init_args": {"port": "/dev/fake0"}}
 
-    def test_constructor_requires_component_config_mapping(self) -> None:
+    def test_constructor_accepts_exportable_driver(self) -> None:
         driver = FakeRobot(port="/dev/fake0", device_ids=("fake:/dev/fake0",))
-        with pytest.raises(ComponentConfigError, match="robot must be a ComponentConfig mapping"):
-            SharedRobot("left-arm", robot=driver)  # type: ignore[arg-type]
+        robot = SharedRobot.from_config(driver, name="left-arm")
+        assert robot._robot is not None
+        assert robot._robot.init_args["port"] == "/dev/fake0"
+
+    def test_constructor_rejects_non_config_object(self) -> None:
+        with pytest.raises(ConfigError, match="robot must be a Config mapping"):
+            SharedRobot("left-arm", robot=object())  # type: ignore[arg-type]
 
     def test_satisfies_robot_protocol(self) -> None:
         from physicalai.robot import Robot

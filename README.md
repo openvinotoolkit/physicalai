@@ -12,6 +12,12 @@
 [Inference](#inference) •
 [Docs](#documentation)
 
+[![PyPI version](https://img.shields.io/pypi/v/physicalai?label=PyPI)](https://pypi.org/project/physicalai/)
+[![Downloads](https://static.pepy.tech/personalized-badge/physicalai?period=total&units=international_system&left_color=grey&right_color=green&left_text=PyPI%20Downloads)](https://pepy.tech/project/physicalai)
+[![License](https://img.shields.io/github/license/openvinotoolkit/physicalai?label=License)](https://github.com/openvinotoolkit/physicalai/blob/main/LICENSE)
+[![OpenSSF Scorecard](https://img.shields.io/ossf-scorecard/github.com/openvinotoolkit/physicalai?label=OpenSSF%20Scorecard)](https://scorecard.dev/viewer/?uri=github.com/openvinotoolkit/physicalai)
+[![Fuzz testing status](https://github.com/openvinotoolkit/physicalai/actions/workflows/fuzz.yml/badge.svg)](https://github.com/openvinotoolkit/physicalai/actions/workflows/fuzz.yml)
+
 </div>
 
 ---

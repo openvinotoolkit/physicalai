@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
-# ruff:file-ignore[undocumented-public-module, undocumented-public-class, undocumented-public-method, undocumented-public-init, undocumented-magic-method, magic-value-comparison, no-self-use, assert]
+# ruff:file-ignore[undocumented-public-module, undocumented-public-class, undocumented-public-method, undocumented-public-init, magic-value-comparison, no-self-use, assert]
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest
 import yaml
 
 from physicalai.config import (
-    ComponentConfigError,
+    ConfigError,
     export_config,
     instantiate,
     load_yaml,
@@ -49,7 +49,7 @@ class TestToYaml:
         assert rebuilt.gadget.size == 3
         assert rebuilt.gadget.label == "inner"
 
-    def test_accepts_existing_component_config_mapping(self) -> None:
+    def test_accepts_existing_config_mapping(self) -> None:
         config = to_config(Gadget(7))
 
         text = to_yaml(config)
@@ -58,11 +58,11 @@ class TestToYaml:
         assert loaded == {"class_path": f"{__name__}.Gadget", "init_args": {"size": 7}}
 
     def test_rejects_malformed_mapping(self) -> None:
-        with pytest.raises(ComponentConfigError, match="class_path"):
+        with pytest.raises(ConfigError, match="class_path"):
             to_yaml({"init_args": {"size": 1}})
 
     def test_rejects_non_exportable_object(self) -> None:
-        with pytest.raises(ComponentConfigError):
+        with pytest.raises(ConfigError):
             to_yaml(object())
 
 
@@ -82,5 +82,12 @@ class TestSaveLoadYaml:
         target = tmp_path / "list.yaml"
         target.write_text("- 1\n- 2\n", encoding="utf-8")
 
-        with pytest.raises(ComponentConfigError, match="must be a mapping"):
+        with pytest.raises(ConfigError, match="must be a mapping"):
+            load_yaml(target)
+
+    def test_load_empty_file_as_empty_mapping(self, tmp_path: Path) -> None:
+        target = tmp_path / "empty.yaml"
+        target.write_text("", encoding="utf-8")
+
+        with pytest.raises(ConfigError, match="class_path"):
             load_yaml(target)

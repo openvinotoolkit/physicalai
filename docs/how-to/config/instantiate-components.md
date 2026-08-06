@@ -1,6 +1,6 @@
 # Instantiate Components
 
-A `ComponentConfig` is a construction recipe with one importable class and
+A `Config` is a construction recipe with one importable class and
 its supplied constructor arguments.
 
 ```yaml
@@ -11,17 +11,18 @@ init_args:
   height: 480
 ```
 
-Use `instantiate()` to construct trusted local configuration. It calls the
+Use `Config.instantiate()` to construct trusted local configuration. It calls the
 constructor but does not call lifecycle methods such as `connect()`, `run()`,
 or `start()`.
 
 ```python
-from physicalai.config import instantiate
+from physicalai.config import Config
 
-camera = instantiate({
+config = Config.from_dict({
     "class_path": "physicalai.capture.UVCCamera",
     "init_args": {"device": "/dev/video0", "width": 640, "height": 480},
 })
+camera = config.instantiate()
 camera.connect()
 ```
 
@@ -32,10 +33,10 @@ the caller supplied, so omitted constructor defaults remain omitted.
 
 ```python
 from physicalai.capture import UVCCamera
-from physicalai.config import to_config
+from physicalai.config import Config
 
 camera = UVCCamera(device="/dev/video0", width=640, height=480)
-config = to_config(camera)
+config = Config.from_instance(camera)
 ```
 
 Nested opted-in components use the same shape recursively. Configs contain
@@ -51,7 +52,7 @@ save_yaml(camera, "camera.yaml")
 ## Trust boundary
 
 `class_path` selects Python code to import and execute. Pass only trusted
-application or user-authored configuration to `instantiate()`. Do not
+application or user-authored configuration to `Config.instantiate()`. Do not
 instantiate robot metadata, camera metadata, shared-memory messages, or other
 peer-controlled payloads.
 

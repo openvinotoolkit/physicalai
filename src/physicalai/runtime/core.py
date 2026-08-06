@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, Self
 
 from physicalai.capture.errors import CaptureError
@@ -18,7 +19,6 @@ from physicalai.runtime.execution.base import WorkerDiedError
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
-    from pathlib import Path
     from typing import Any
 
     import numpy as np
@@ -38,38 +38,38 @@ _GOAL_TIME_TICKS = 3
 
 
 def _unwrap_runtime_document(document: dict[str, Any], *, target: type) -> dict[str, Any]:
-    """Rewrite a bare exported ComponentConfig document to the CLI ``runtime:`` shape.
+    """Rewrite a bare exported Config document to the CLI ``runtime:`` shape.
 
     A document without a top-level ``class_path`` is returned unchanged (it is
     already a CLI document). Otherwise it must be a valid
-    :class:`~physicalai.config.ComponentConfig` whose ``class_path`` resolves
+    :class:`~physicalai.config.Config` whose ``class_path`` resolves
     to *target* (or a subclass), and its ``init_args`` become the ``runtime:``
-    section — making ``to_config(runtime)`` → YAML → CLI round-trip.
+    section — making ``Config.from_instance(runtime)`` → YAML → CLI round-trip.
 
     Returns:
         A CLI-shaped document with constructor args under ``runtime:``.
 
     Raises:
-        ComponentConfigError: If ``class_path`` does not resolve to *target*.
+        ConfigError: If ``class_path`` does not resolve to *target*.
     """
     if "class_path" not in document:
         return document
 
     from physicalai.config import (  # noqa: PLC0415
-        ComponentConfigError,
+        ConfigError,
         import_dotted_path,
-        validate_component_config,
+        validate_config,
     )
 
-    config = validate_component_config(document)
+    config = validate_config(document)
     resolved = import_dotted_path(config["class_path"])
     if not (isinstance(resolved, type) and issubclass(resolved, target)):
         msg = (
             f"config class_path {config['class_path']!r} does not resolve to "
             f"{target.__module__}.{target.__qualname__} (or a subclass); "
-            "expected a runtime config exported via to_config(runtime)"
+            "expected a runtime config exported via Config.from_instance(runtime)"
         )
-        raise ComponentConfigError(msg)
+        raise ConfigError(msg)
     return {"runtime": dict(config["init_args"])}
 
 
@@ -217,7 +217,7 @@ class RobotRuntime:
 
         Accepts two document shapes: the CLI document (constructor args under
         ``runtime:``, optional ``run:``) and a bare exported
-        :class:`~physicalai.config.ComponentConfig` as produced by
+        :class:`~physicalai.config.Config` as produced by
         :func:`~physicalai.config.to_config` / :func:`~physicalai.config.save_yaml`
         (top-level ``class_path`` resolving to this class).
         ``action_source:`` is always required and explicit — one schema, no
@@ -225,12 +225,20 @@ class RobotRuntime:
 
         Returns:
             Instantiated runtime object.
+
+        Raises:
+            TypeError: If the file root is not a mapping.
         """
+        import yaml  # noqa: PLC0415
         from jsonargparse import ArgumentParser  # noqa: PLC0415
 
-        from physicalai.config import load_yaml  # noqa: PLC0415
-
-        document = _unwrap_runtime_document(load_yaml(config), target=cls)
+        document = yaml.safe_load(Path(config).read_text(encoding="utf-8"))
+        if document is None:
+            document = {}
+        if not isinstance(document, dict):
+            msg = f"runtime config must be a mapping, got {type(document).__name__}"
+            raise TypeError(msg)
+        document = _unwrap_runtime_document(document, target=cls)
         parser = ArgumentParser()
         parser.add_class_arguments(cls, "runtime")
         parser.add_method_arguments(cls, "run", "run")

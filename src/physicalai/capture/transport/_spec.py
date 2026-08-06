@@ -3,7 +3,7 @@
 
 """Serializable camera construction spec for transport endpoints.
 
-Private publisher stdin is ``camera: ComponentConfig`` only. The publisher
+Private publisher stdin is ``camera: Config`` only. The publisher
 envelope is validated schema-positively: required ``camera``, known transport
 keys, and rejection of unknown keys (including legacy flat
 ``camera_type`` / ``camera_kwargs``) before import or hardware access. Public
@@ -22,9 +22,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from physicalai.config import (
-    ComponentConfig,
-    instantiate,
-    normalize_component_config,
+    Config,
+    normalize_config,
     validate_envelope,
 )
 
@@ -45,11 +44,11 @@ _RECONFIGURE_REQUEST_KEYS = frozenset({"kind", "settings"})
 _RECONFIGURABLE_SETTINGS = frozenset({"width", "height", "fps"})
 
 
-def validate_publisher_config(data: Mapping[str, Any]) -> Mapping[str, object]:
+def validate_publisher_config(data: Mapping[str, Any]) -> Config:
     """Validate a publisher stdin payload schema-positively.
 
     Returns:
-        The validated ``camera`` ComponentConfig mapping (see
+        The validated ``camera`` Config mapping (see
         :func:`normalize_camera_config` for the JSON-serializability check).
     """
     return validate_envelope(
@@ -110,13 +109,13 @@ def validate_reconfigure_request(request: Mapping[str, Any]) -> dict[str, int]:
     return validated
 
 
-def normalize_camera_config(camera: Mapping[str, object]) -> ComponentConfig:
-    """Validate a camera ComponentConfig without importing its ``class_path``.
+def normalize_camera_config(camera: Config | Mapping[str, object]) -> Config:
+    """Validate a camera Config without importing its ``class_path``.
 
     Returns:
         A validated config whose ``class_path`` is a dotted import path.
     """
-    return normalize_component_config(
+    return normalize_config(
         camera,
         component_key="camera",
         class_label="camera class_path",
@@ -124,11 +123,11 @@ def normalize_camera_config(camera: Mapping[str, object]) -> ComponentConfig:
 
 
 def derive_service_name(
-    camera: Mapping[str, object],
+    camera: Config | Mapping[str, object],
     *,
     service_name: str | None = None,
 ) -> str:
-    """Resolve iceoryx2 ``service_name`` for a camera ComponentConfig.
+    """Resolve iceoryx2 ``service_name`` for a camera Config.
 
     Derives ``physicalai/camera/{class_name}/{device_id}/frame`` from the
     terminal segment of ``class_path``, without importing it. The bare class
@@ -136,7 +135,7 @@ def derive_service_name(
     classes sharing a name and device id need an explicit *service_name*.
 
     Args:
-        camera: Normalized or raw camera ComponentConfig.
+        camera: Normalized or raw camera Config.
         service_name: Explicit override; when set, returned unchanged.
 
     Returns:
@@ -166,10 +165,10 @@ class CameraPublisherConfig:
         camera: Local construction config (``class_path`` + ``init_args``).
     """
 
-    camera: Mapping[str, object]
+    camera: Config | Mapping[str, object]
 
     def __post_init__(self) -> None:
-        """Normalize ``camera`` to a public ComponentConfig."""
+        """Normalize ``camera`` to a public Config."""
         object.__setattr__(self, "camera", normalize_camera_config(self.camera))
 
     def to_json_dict(self) -> dict[str, Any]:
@@ -179,19 +178,8 @@ class CameraPublisherConfig:
             Dictionary with ``camera`` only (transport fields are merged by
             the publisher).
 
-        Raises:
-            TypeError: If ``camera.init_args`` is not a mapping.
         """
-        init_args = self.camera["init_args"]
-        if not isinstance(init_args, dict):
-            msg = f"camera.init_args must be a mapping, got {type(init_args).__name__}"
-            raise TypeError(msg)
-        return {
-            "camera": {
-                "class_path": self.camera["class_path"],
-                "init_args": dict(init_args),
-            },
-        }
+        return {"camera": normalize_camera_config(self.camera).to_dict()}
 
     @classmethod
     def from_json_dict(cls, data: dict[str, Any]) -> CameraPublisherConfig:
@@ -222,7 +210,7 @@ class CameraPublisherConfig:
         """Instantiate the camera described by this spec.
 
         Uses :func:`physicalai.config.instantiate` on the ``camera``
-        ComponentConfig, then verifies the :class:`~physicalai.capture.camera.Camera`
+        Config, then verifies the :class:`~physicalai.capture.camera.Camera`
         protocol. Does not route through :func:`~physicalai.capture.create_camera`,
         so third-party class paths work without a registry entry.
 
@@ -234,7 +222,7 @@ class CameraPublisherConfig:
         """
         from physicalai.capture.camera import Camera  # noqa: PLC0415
 
-        driver = instantiate(self.camera)  # type: ignore[arg-type]
+        driver = normalize_camera_config(self.camera).instantiate()
         if not isinstance(driver, Camera):
             msg = f"{self.camera['class_path']!r} does not satisfy the Camera protocol (got {type(driver).__name__})"
             raise TypeError(msg)

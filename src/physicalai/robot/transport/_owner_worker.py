@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
-from physicalai.config import ComponentConfigError
+from physicalai.config import ConfigError
 from physicalai.robot.errors import RobotTransportError
 from physicalai.robot.interface import Robot
 from physicalai.robot.transport._codec import (  # noqa: PLC2701
@@ -185,7 +185,7 @@ def _build_metadata(
         "protocol_version": ROBOT_TRANSPORT_PROTOCOL_VERSION,
         "name": config.name,
         # Network key stays ``robot_class`` (protocol version unchanged); value is
-        # the normalized public ComponentConfig class_path.
+        # the normalized public Config class_path.
         "robot_class": config.robot["class_path"],
         "host": default_host(),
         "joint_names": joint_names,
@@ -562,7 +562,7 @@ def main() -> int:
     sys.stdin.close()
     try:
         config = RobotOwnerConfig.from_json_dict(json.loads(raw))
-    except (json.JSONDecodeError, ValueError, KeyError, TypeError, ComponentConfigError) as exc:
+    except (json.JSONDecodeError, ValueError, KeyError, TypeError, ConfigError) as exc:
         signal_error(f"invalid worker config: {exc}", phase="invalid_config")
         return 1
 

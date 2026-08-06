@@ -15,14 +15,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from physicalai.capture.camera import Camera, ColorMode
-from physicalai.config import ComponentConfig, instantiate, is_config_exportable, to_config
+from physicalai.config import Config, instantiate, is_config_exportable, to_config
 
 
 def _assert_construction_round_trip(camera: object) -> dict[str, Any]:
     assert is_config_exportable(camera)
     assert isinstance(camera, Camera)
     config = to_config(camera)
-    wire: dict[str, Any] = json.loads(json.dumps(config))
+    wire: dict[str, Any] = json.loads(json.dumps(config.to_dict()))
     restored = instantiate(wire)
     assert type(restored) is type(camera)
     assert to_config(restored) == wire
@@ -30,7 +30,7 @@ def _assert_construction_round_trip(camera: object) -> dict[str, Any]:
     return wire
 
 
-class TestUVCCameraComponentConfig:
+class TestUVCCameraConfig:
     def test_v4l2_backend_round_trip(self) -> None:
         from physicalai.capture import UVCCamera
 
@@ -59,7 +59,7 @@ def mock_pyrealsense2() -> Generator[MagicMock, None, None]:
         yield mock_rs
 
 
-class TestRealSenseCameraComponentConfig:
+class TestRealSenseCameraConfig:
     def test_round_trip(self, mock_pyrealsense2: MagicMock) -> None:
         from physicalai.capture.cameras.realsense import RealSenseCamera
 
@@ -87,7 +87,7 @@ def mock_pypylon() -> Generator[None, None, None]:
         yield
 
 
-class TestBaslerCameraComponentConfig:
+class TestBaslerCameraConfig:
     def test_round_trip(self, mock_pypylon: None) -> None:
         from physicalai.capture.cameras.basler import BaslerCamera
 
@@ -105,7 +105,7 @@ class TestBaslerCameraComponentConfig:
 # ---------------------------------------------------------------------------
 
 
-class TestSharedCameraComponentConfig:
+class TestSharedCameraConfig:
     def test_spawn_recipe_round_trip(self) -> None:
         from physicalai.capture import SharedCamera
 
@@ -164,17 +164,17 @@ class TestSharedCameraComponentConfig:
     def test_nested_recipe_is_not_instantiated(self) -> None:
         from physicalai.capture import SharedCamera
 
-        config: ComponentConfig = {
-            "class_path": "physicalai.capture.SharedCamera",
-            "init_args": {
+        config = Config(
+            "physicalai.capture.SharedCamera",
+            {
                 "camera": {
                     "class_path": "physicalai.capture.UVCCamera",
                     "init_args": {"device": 0, "backend": "v4l2"},
                 },
                 "service_name": "physicalai/camera/UVCCamera/0/frame",
             },
-        }
+        )
         restored = instantiate(config)
         assert isinstance(restored, SharedCamera)
         # The declared config arg stays a mapping — no UVCCamera is built here.
-        assert restored._camera == config["init_args"]["camera"]
+        assert restored._camera == config.init_args["camera"]

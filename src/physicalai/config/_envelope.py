@@ -4,7 +4,7 @@
 """Shared validation for transport construction envelopes.
 
 Robot-owner and camera-publisher stdin envelopes carry one nested
-:class:`ComponentConfig` plus transport-only keys. These helpers keep the
+:class:`Config` plus transport-only keys. These helpers keep the
 schema-positive validation in one place; transports supply their key names
 and allowlists.
 
@@ -17,13 +17,11 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-from ._errors import ComponentConfigError
-from ._normalize import validate_component_config
-
-if TYPE_CHECKING:
-    from ._types import ComponentConfig
+from ._errors import ConfigError
+from ._normalize import validate_config
+from .base import Config
 
 
 def validate_envelope(
@@ -32,24 +30,24 @@ def validate_envelope(
     component_key: str,
     allowed_keys: frozenset[str],
     envelope_name: str,
-) -> Mapping[str, object]:
+) -> Config:
     """Validate a transport stdin envelope schema-positively.
 
-    Requires *component_key* with a valid ComponentConfig shape and allows
+    Requires *component_key* with a valid Config shape and allows
     only *allowed_keys*. Unknown keys raise a clear schema error before any
     import or hardware access.
 
     Args:
         data: Full stdin envelope dict.
-        component_key: Envelope key holding the nested ComponentConfig
+        component_key: Envelope key holding the nested Config
             (for example ``"robot"`` or ``"camera"``).
         allowed_keys: Complete allowlist of envelope keys.
         envelope_name: Short envelope label for error messages
             (for example ``"owner"`` or ``"publisher"``).
 
     Returns:
-        The validated ComponentConfig mapping (see
-        :func:`normalize_component_config` for the JSON-serializability check).
+        The validated Config mapping (see
+        :func:`normalize_config` for the JSON-serializability check).
 
     Raises:
         TypeError: If *data* or the component value is not a mapping.
@@ -69,7 +67,7 @@ def validate_envelope(
         raise ValueError(msg)
 
     if component_key not in data:
-        msg = f"{envelope_name} config missing required {component_key!r} ComponentConfig"
+        msg = f"{envelope_name} config missing required {component_key!r} Config"
         raise ValueError(msg)
 
     component = data[component_key]
@@ -77,17 +75,17 @@ def validate_envelope(
         msg = f"{envelope_name} {component_key!r} must be a mapping, got {type(component).__name__}"
         raise TypeError(msg)
 
-    return validate_component_config(dict(component), path=component_key)
+    return Config.from_dict(validate_config(dict(component), path=component_key))
 
 
-def normalize_component_config(
-    config: Mapping[str, object],
+def normalize_config(
+    config: Config | Mapping[str, object],
     *,
     component_key: str,
     class_label: str,
     json_hint: str = "",
-) -> ComponentConfig:
-    """Validate a ComponentConfig without importing its ``class_path``.
+) -> Config:
+    """Validate a Config without importing its ``class_path``.
 
     The ``class_path`` is trusted and kept exactly as written: envelopes are
     built in the subscriber process, which must not load the driver package
@@ -105,14 +103,16 @@ def normalize_component_config(
         A validated config whose ``class_path`` is a dotted import path.
 
     Raises:
-        ComponentConfigError: If *config* is not a mapping.
+        ConfigError: If *config* is not a mapping.
         ValueError: If ``class_path`` is not a dotted path or ``init_args`` is
             not JSON-serializable.
     """
+    if type(config) is Config:
+        config = config.to_dict()
     if not isinstance(config, Mapping):
-        msg = f"{component_key} must be a ComponentConfig mapping, got {type(config).__name__}"
-        raise ComponentConfigError(msg)
-    validated = validate_component_config(dict(config), path=component_key)
+        msg = f"{component_key} must be a Config mapping, got {type(config).__name__}"
+        raise ConfigError(msg)
+    validated = validate_config(dict(config), path=component_key)
     class_path = validated["class_path"]
     if not class_path.strip() or "." not in class_path:
         msg = f"{class_label} must be a nonempty dotted path, got {class_path!r}"
@@ -123,4 +123,4 @@ def normalize_component_config(
     except (TypeError, ValueError) as exc:
         msg = f"{component_key}.init_args must be JSON-serializable{json_hint}: {exc}"
         raise ValueError(msg) from exc
-    return {"class_path": class_path, "init_args": dict(init_args)}
+    return Config(class_path, dict(init_args))

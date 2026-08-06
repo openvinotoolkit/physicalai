@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from physicalai.config import ComponentConfigError, instantiate, is_config_exportable, to_config
+from physicalai.config import ConfigError, instantiate, is_config_exportable, to_config
 
 # SO101 imports scservo_sdk at module load; keep unit tests hardware-free.
 # Use setdefault — not patch.dict(sys.modules) — because patch.dict restores by
@@ -27,7 +27,7 @@ sys.modules.setdefault("scservo_sdk", MagicMock())
 def _assert_construction_round_trip(value: object) -> dict[str, Any]:
     assert is_config_exportable(value)
     config = to_config(value)
-    wire: dict[str, Any] = json.loads(json.dumps(config))
+    wire: dict[str, Any] = json.loads(json.dumps(config.to_dict()))
     restored = instantiate(wire)
     assert type(restored) is type(value)
     assert to_config(restored) == wire
@@ -85,7 +85,7 @@ def inference_model(tmp_path: Path, _patch_adapter: MagicMock) -> Any:
 # ---------------------------------------------------------------------------
 
 
-class TestSmootherComponentConfig:
+class TestSmootherConfig:
     def test_lerp_round_trip(self) -> None:
         from physicalai.runtime import LerpSmoother
 
@@ -107,7 +107,7 @@ class TestSmootherComponentConfig:
         assert wire["init_args"] == {}
 
 
-class TestActionQueueComponentConfig:
+class TestActionQueueConfig:
     def test_chunked_bare_restores_replace_smoother(self) -> None:
         from physicalai.runtime import ChunkedActionQueue, ReplaceSmoother
 
@@ -137,7 +137,7 @@ class TestActionQueueComponentConfig:
                 return incoming
 
         queue = ChunkedActionQueue(smoother=UndecoratedSmoother())
-        with pytest.raises(ComponentConfigError, match=r"init_args\.smoother"):
+        with pytest.raises(ConfigError, match=r"init_args\.smoother"):
             to_config(queue)
 
     def test_rtc_action_queue_round_trip(self) -> None:
@@ -148,7 +148,7 @@ class TestActionQueueComponentConfig:
         assert wire["init_args"] == {}
 
 
-class TestExecutionComponentConfig:
+class TestExecutionConfig:
     def test_sync_default_omitted(self) -> None:
         from physicalai.runtime import SyncExecution
 
@@ -189,14 +189,14 @@ class TestExecutionComponentConfig:
         from physicalai.runtime import RTCExecution
 
         execution = RTCExecution(latency_tracker=MagicMock())
-        with pytest.raises(ComponentConfigError, match=r"init_args\.latency_tracker"):
+        with pytest.raises(ConfigError, match=r"init_args\.latency_tracker"):
             to_config(execution)
 
     def test_rtc_live_postprocessors_fail(self) -> None:
         from physicalai.runtime import RTCExecution
 
         execution = RTCExecution(postprocessors=[MagicMock()])
-        with pytest.raises(ComponentConfigError, match=r"init_args\.postprocessors"):
+        with pytest.raises(ConfigError, match=r"init_args\.postprocessors"):
             to_config(execution)
 
 
@@ -205,7 +205,7 @@ class TestExecutionComponentConfig:
 # ---------------------------------------------------------------------------
 
 
-class TestPolicySourceComponentConfig:
+class TestPolicySourceConfig:
     def test_model_only_omits_execution_and_queue(
         self, inference_model: Any, _patch_adapter: MagicMock
     ) -> None:
@@ -263,7 +263,7 @@ class TestPolicySourceComponentConfig:
 # ---------------------------------------------------------------------------
 
 
-class TestTeleopSourceComponentConfig:
+class TestTeleopSourceConfig:
     def test_leader_nested_round_trip(self) -> None:
         from physicalai.robot import SO101
         from physicalai.runtime import TeleopSource
@@ -297,7 +297,7 @@ class TestTeleopSourceComponentConfig:
         }
         leader = SO101(port="/dev/ttyUSB0", calibration=calibration, role="leader")
         source = TeleopSource(leader=leader, to_action=lambda obs: obs.joint_positions)
-        with pytest.raises(ComponentConfigError, match=r"init_args\.to_action"):
+        with pytest.raises(ConfigError, match=r"init_args\.to_action"):
             to_config(source)
 
 
@@ -306,7 +306,7 @@ class TestTeleopSourceComponentConfig:
 # ---------------------------------------------------------------------------
 
 
-class TestCallbackComponentConfig:
+class TestCallbackConfig:
     def test_console_round_trip(self) -> None:
         from physicalai.runtime import ConsoleCallback
 
@@ -330,7 +330,7 @@ class TestCallbackComponentConfig:
         try:
             assert is_config_exportable(cb)
             config = to_config(cb)
-            wire: dict[str, Any] = json.loads(json.dumps(config))
+            wire: dict[str, Any] = json.loads(json.dumps(config.to_dict()))
             restored = instantiate(wire)
             assert type(restored) is type(cb)
             assert to_config(restored) == wire
@@ -389,7 +389,7 @@ class TestCallbackComponentConfig:
 
         cb = AsyncCallback(UndecoratedTickCallback())
         try:
-            with pytest.raises(ComponentConfigError, match=r"init_args\.inner"):
+            with pytest.raises(ConfigError, match=r"init_args\.inner"):
                 to_config(cb)
         finally:
             cb.close()
@@ -439,7 +439,7 @@ def _make_full_runtime(inference_model: Any) -> Any:
     )
 
 
-class TestRobotRuntimeComponentConfig:
+class TestRobotRuntimeConfig:
     def test_complete_tree_instantiate_round_trip(
         self, inference_model: Any, _patch_adapter: MagicMock
     ) -> None:
@@ -474,7 +474,7 @@ class TestRobotRuntimeComponentConfig:
 
         runtime = _make_full_runtime(inference_model)
         wire = to_config(runtime)
-        # CLI nests constructor args under ``runtime:`` (not the bare ComponentConfig).
+        # CLI nests constructor args under ``runtime:`` (not the bare Config).
         # Prefer JSON for the ActionConfigFile payload — avoids PyYAML C-loader
         # interaction with ``yaml.safe_dump`` that can poison later YAML parses in
         # the same process.
@@ -495,7 +495,7 @@ class TestRobotRuntimeComponentConfig:
         assert isinstance(restored._bus._callbacks[0], ConsoleCallback)  # noqa: SLF001
         # jsonargparse may supply omitted ctor defaults; check public class_path shape
         # after a JSON boundary (strips StrEnum identity / applied defaults noise).
-        restored_wire = json.loads(json.dumps(to_config(restored)))
+        restored_wire = json.loads(json.dumps(to_config(restored).to_dict()))
         assert restored_wire["class_path"] == "physicalai.runtime.RobotRuntime"
         assert restored_wire["init_args"]["fps"] == 30.0
         assert restored_wire["init_args"]["robot"]["class_path"] == "physicalai.robot.SO101"
@@ -521,7 +521,7 @@ class TestRobotRuntimeComponentConfig:
         # The bare to_config shape (top-level class_path) — no manual rewrite
         # to ``runtime:`` needed on either load path.
         cfg_path = tmp_path / "runtime_export.json"
-        cfg_path.write_text(json.dumps(to_config(runtime)))
+        cfg_path.write_text(json.dumps(to_config(runtime).to_dict()))
 
         parser = build_parser()
         ns = parser.parse_args(["--config", str(cfg_path)])
@@ -535,13 +535,13 @@ class TestRobotRuntimeComponentConfig:
         assert via_from_config._fps == 30.0  # noqa: SLF001
 
     def test_bare_export_foreign_class_path_rejected(self, tmp_path: Path) -> None:
-        from physicalai.config import ComponentConfigError
+        from physicalai.config import ConfigError
         from physicalai.runtime import RobotRuntime
 
         cfg_path = tmp_path / "not_runtime.json"
         cfg_path.write_text(json.dumps({"class_path": "physicalai.runtime.SyncExecution", "init_args": {}}))
 
-        with pytest.raises(ComponentConfigError, match="does not resolve to"):
+        with pytest.raises(ConfigError, match="does not resolve to"):
             RobotRuntime.from_config(cfg_path)
 
     def test_omitted_cameras_and_callbacks(
@@ -586,7 +586,7 @@ class TestRobotRuntimeComponentConfig:
             action_source=PolicySource(model=inference_model),
             fps=10.0,
         )
-        with pytest.raises(ComponentConfigError, match=r"init_args\.robot"):
+        with pytest.raises(ConfigError, match=r"init_args\.robot"):
             to_config(runtime)
 
     def test_undecorated_action_source_fails(self) -> None:
@@ -603,7 +603,7 @@ class TestRobotRuntimeComponentConfig:
             action_source=UndecoratedSource(),  # type: ignore[arg-type]
             fps=10.0,
         )
-        with pytest.raises(ComponentConfigError, match=r"init_args\.action_source"):
+        with pytest.raises(ConfigError, match=r"init_args\.action_source"):
             to_config(runtime)
 
     def test_undecorated_camera_fails(
@@ -621,7 +621,7 @@ class TestRobotRuntimeComponentConfig:
             fps=10.0,
             cameras={"wrist": UndecoratedCamera()},  # type: ignore[dict-item]
         )
-        with pytest.raises(ComponentConfigError, match=r"init_args\.cameras\.wrist"):
+        with pytest.raises(ConfigError, match=r"init_args\.cameras\.wrist"):
             to_config(runtime)
 
     def test_undecorated_callback_fails(
@@ -639,7 +639,7 @@ class TestRobotRuntimeComponentConfig:
             fps=10.0,
             callbacks=[UndecoratedCallback()],
         )
-        with pytest.raises(ComponentConfigError, match=r"init_args\.callbacks\[0\]"):
+        with pytest.raises(ConfigError, match=r"init_args\.callbacks\[0\]"):
             to_config(runtime)
 
     def test_jsonargparse_sees_original_ctor_signature(self) -> None:

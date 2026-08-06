@@ -29,7 +29,7 @@ These rules apply when writing, editing, or reviewing code under `src/physicalai
 5. Enforce component nesting limits. `_MAX_COMPONENT_DEPTH` in
    `component_factory.py` caps recursive manifest/YAML instantiation;
    `_MAX_CONFIG_DEPTH` in `physicalai.config` caps recursive
-   `to_config` / `instantiate` trees — do not raise or bypass either without a
+   `Config.from_instance` / `instantiate` trees — do not raise or bypass either without a
    security review.
 
 6. Never use `pickle`, `eval()`, `exec()`, `joblib`, `dill`, or `cloudpickle` on untrusted data. Prefer `json` for structured metadata, `safetensors` for weights, and `numpy.load(..., allow_pickle=False)` for arrays.

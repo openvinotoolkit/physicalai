@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from physicalai.config import ComponentConfig, instantiate, is_config_exportable, to_config
+from physicalai.config import Config, instantiate, is_config_exportable, to_config
 from physicalai.robot import Robot
 
 # SO101 imports scservo_sdk at module load; keep unit tests hardware-free.
@@ -35,7 +35,7 @@ def _assert_construction_round_trip(robot: object) -> dict[str, Any]:
     assert is_config_exportable(robot)
     assert isinstance(robot, Robot)
     config = to_config(robot)
-    wire: dict[str, Any] = json.loads(json.dumps(config))
+    wire: dict[str, Any] = json.loads(json.dumps(config.to_dict()))
     restored = instantiate(wire)
     assert type(restored) is type(robot)
     assert to_config(restored) == wire
@@ -56,7 +56,7 @@ def mock_scservo_sdk() -> Generator[MagicMock, None, None]:
         yield sdk
 
 
-class TestSO101ComponentConfig:
+class TestSO101Config:
     def test_dict_calibration_round_trip(self, mock_scservo_sdk: MagicMock) -> None:
         from physicalai.robot import SO101
 
@@ -141,7 +141,7 @@ class TestSO101ComponentConfig:
 
         robot = SO101(port="/dev/ttyUSB0", calibration=SAMPLE_CALIBRATION)
         assert isinstance(robot, Robot)
-        assert robot.to_config() == to_config(robot)  # type: ignore[attr-defined]
+        assert Config.from_instance(robot) == to_config(robot)
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +177,7 @@ def mock_trossen_arm() -> Generator[MagicMock, None, None]:
         yield mock_module
 
 
-class TestWidowXAIComponentConfig:
+class TestWidowXAIConfig:
     def test_default_role_omitted(self, mock_trossen_arm: MagicMock) -> None:
         from physicalai.robot import WidowXAI
 
@@ -198,10 +198,10 @@ class TestWidowXAIComponentConfig:
 
         robot = WidowXAI(ip="192.168.1.2")
         assert isinstance(robot, Robot)
-        assert robot.to_config() == to_config(robot)  # type: ignore[attr-defined]
+        assert Config.from_instance(robot) == to_config(robot)
 
 
-class TestBimanualWidowXAIComponentConfig:
+class TestBimanualWidowXAIConfig:
     def test_nested_arms_round_trip(self, mock_trossen_arm: MagicMock) -> None:
         from physicalai.robot import BimanualWidowXAI, WidowXAI
 
@@ -225,7 +225,7 @@ class TestBimanualWidowXAIComponentConfig:
 # ---------------------------------------------------------------------------
 
 
-class TestSharedRobotComponentConfig:
+class TestSharedRobotConfig:
     def test_spawn_recipe_round_trip(self) -> None:
         from physicalai.robot import SharedRobot
 
@@ -295,11 +295,11 @@ class TestSharedRobotComponentConfig:
         assert wire["init_args"]["robot"] is None
 
     def test_live_session_arg_fails_at_to_config(self) -> None:
-        from physicalai.config import ComponentConfigError
+        from physicalai.config import ConfigError
         from physicalai.robot import SharedRobot
 
         robot = SharedRobot("sess", _session=object())
-        with pytest.raises(ComponentConfigError, match=r"init_args\._session"):
+        with pytest.raises(ConfigError, match=r"init_args\._session"):
             to_config(robot)
 
     def test_from_config_omits_null_session(self) -> None:
@@ -336,7 +336,7 @@ class TestSharedRobotComponentConfig:
         assert "_session" not in wire["init_args"]
 
     def test_classmethod_live_session_still_fails_at_to_config(self) -> None:
-        from physicalai.config import ComponentConfigError
+        from physicalai.config import ConfigError
         from physicalai.robot import SharedRobot
 
         session = object()
@@ -351,24 +351,24 @@ class TestSharedRobotComponentConfig:
             ),
             SharedRobot.attach("live-attach", _session=session),
         ):
-            with pytest.raises(ComponentConfigError, match=r"init_args\._session"):
+            with pytest.raises(ConfigError, match=r"init_args\._session"):
                 to_config(robot)
 
     def test_nested_recipe_is_not_instantiated(self) -> None:
         from physicalai.config import instantiate
         from physicalai.robot import SharedRobot
 
-        config: ComponentConfig = {
-            "class_path": "physicalai.robot.SharedRobot",
-            "init_args": {
+        config = Config(
+            "physicalai.robot.SharedRobot",
+            {
                 "name": "nested-arm",
                 "robot": {
                     "class_path": "tests.unit.robot.transport.fake.FakeRobot",
                     "init_args": {"port": "/dev/fake-nested", "device_ids": ["fake:follower"]},
                 },
             },
-        }
+        )
         restored = instantiate(config)
         assert isinstance(restored, SharedRobot)
         # The declared config arg stays a mapping — no driver is built here.
-        assert restored._robot == config["init_args"]["robot"]
+        assert restored._robot == config.init_args["robot"]

@@ -38,7 +38,7 @@ import signal
 from pathlib import Path
 
 from physicalai.capture import select_cameras_interactive
-from physicalai.config import save_yaml, to_config
+from physicalai.config import Config, save_yaml
 from physicalai.inference import InferenceModel
 from physicalai.inference.callbacks import RTCLatencyTracker
 from physicalai.runtime import (
@@ -92,7 +92,10 @@ def main() -> None:
     # Cameras
     cam_group = parser.add_argument_group("cameras")
     cam_group.add_argument(
-        "--camera", action="append", dest="cameras", metavar="NAME:DRIVER:DEVICE",
+        "--camera",
+        action="append",
+        dest="cameras",
+        metavar="NAME:DRIVER:DEVICE",
         help="Camera as name:driver:device_id (repeatable). Omit for interactive selection.",
     )
     cam_group.add_argument("--cam-width", type=int, default=640, help="Camera width (default: 640)")
@@ -102,9 +105,15 @@ def main() -> None:
     # Runtime
     rt_group = parser.add_argument_group("runtime")
     rt_group.add_argument("--fps", type=float, default=30.0, help="Control loop FPS (default: 30)")
-    rt_group.add_argument("--duration-s", type=float, default=None, help="Run duration in seconds (default: run indefinitely)")
+    rt_group.add_argument(
+        "--duration-s", type=float, default=None, help="Run duration in seconds (default: run indefinitely)"
+    )
     rt_group.add_argument("--task", type=str, default=None, help="Task string for the model (e.g. 'pick up the can')")
-    rt_group.add_argument("--shared-camera", action="store_true", help="Use shared memory cameras (iceoryx2) — faster but incompatible with debugger")
+    rt_group.add_argument(
+        "--shared-camera",
+        action="store_true",
+        help="Use shared memory cameras (iceoryx2) — faster but incompatible with debugger",
+    )
     rt_group.add_argument(
         "--export-config",
         type=Path,
@@ -118,7 +127,12 @@ def main() -> None:
     rtc_group.add_argument("--max-action-dim", type=int, default=32)
     rtc_group.add_argument("--max-guidance-weight", type=float, default=7.0)
     rtc_group.add_argument("--queue-threshold", type=int, default=30)
-    rtc_group.add_argument("--low-pass-alpha", type=float, default=None, help="Alpha parameter for stateful LowPassFilterCallback. E.g. 0.5. Defaults to None (disabled).")
+    rtc_group.add_argument(
+        "--low-pass-alpha",
+        type=float,
+        default=None,
+        help="Alpha parameter for stateful LowPassFilterCallback. E.g. 0.5. Defaults to None (disabled).",
+    )
 
     # Rerun
     rr_group = parser.add_argument_group("rerun")
@@ -127,8 +141,15 @@ def main() -> None:
     rr_group.add_argument("--rerun-save-path", default="run.rrd")
     rr_group.add_argument("--rerun-no-images", action="store_true", help="Scalars only")
     rr_group.add_argument("--rerun-image-decimation", type=int, default=1, help="Only send 1/N frames to Rerun")
-    rr_group.add_argument("--rerun-jpeg-quality", type=int, default=None, help="JPEG quality for Rerun images (0-100, default: no re-encoding)")
-    rr_group.add_argument("--rerun-image-max-dim", type=int, default=None, help="Max width/height for Rerun images (default: no resizing)")
+    rr_group.add_argument(
+        "--rerun-jpeg-quality",
+        type=int,
+        default=None,
+        help="JPEG quality for Rerun images (0-100, default: no re-encoding)",
+    )
+    rr_group.add_argument(
+        "--rerun-image-max-dim", type=int, default=None, help="Max width/height for Rerun images (default: no resizing)"
+    )
 
     args = parser.parse_args()
 
@@ -144,7 +165,9 @@ def main() -> None:
     # ── Build robot & cameras ──
     robot = build_robot(args)
     if args.cameras:
-        cameras = parse_camera_specs(args.cameras, args.cam_width, args.cam_height, args.cam_fps, shared=args.shared_camera)
+        cameras = parse_camera_specs(
+            args.cameras, args.cam_width, args.cam_height, args.cam_fps, shared=args.shared_camera
+        )
     else:
         cameras = select_cameras_interactive(
             args.cam_width, args.cam_height, args.cam_fps, shared=args.shared_camera,
@@ -193,7 +216,7 @@ def main() -> None:
     )
 
     if args.export_config:
-        save_yaml(to_config(runtime), args.export_config)
+        save_yaml(Config.from_instance(runtime), args.export_config)
         print(f"Saved runtime config to {args.export_config}")
         return
 
@@ -203,10 +226,7 @@ def main() -> None:
             h = getattr(cam, "actual_height", None)
             f = getattr(cam, "actual_fps", None)
             print(f"  {name}: {w}x{h} @ {f}fps" if w and h else f"  {name}: connected")
-        print(
-            f"Running RTC — chunk={args.chunk_size}, "
-            f"horizon={args.execution_horizon}, fps={args.fps}"
-        )
+        print(f"Running RTC — chunk={args.chunk_size}, horizon={args.execution_horizon}, fps={args.fps}")
         if args.task:
             print(f"  task: {args.task!r}")
         steps = runtime.run(duration_s=args.duration_s)
@@ -214,10 +234,7 @@ def main() -> None:
             f"\nDone — {steps} steps, {execution.inference_count} inferences, "
             f"{policy_source.action_queue.total_holds} holds"
         )
-        print(
-            f"Latency — max={latency_tracker.max_latency_s:.3f}s, "
-            f"p95={latency_tracker.percentile_s(95):.3f}s"
-        )
+        print(f"Latency — max={latency_tracker.max_latency_s:.3f}s, p95={latency_tracker.percentile_s(95):.3f}s")
         prompt_torque_disable(robot)
 
 

@@ -39,6 +39,8 @@ nav:
           - Write Runtime Config: how-to/config/write-runtime-config.md
           - Write Inference Config: how-to/config/write-inference-config.md
           - Instantiate Components: how-to/config/instantiate-components.md
+          - Instantiate Objects: how-to/config/instantiate-objects.md
+          - Use FromConfig: how-to/config/use-from-config.md
       - CLI:
           - Run: how-to/cli/run.md
   - Explanation:

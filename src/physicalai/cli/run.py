@@ -50,7 +50,7 @@ def _reshape_config_value(parser: ArgumentParser, value: object) -> object:
     """Return CLI-shaped config content for a bare exported runtime document.
 
     A ``--config`` value that points to a document with a top-level
-    ``class_path`` (as produced by ``to_config(runtime)`` / ``save_yaml``) is
+    ``class_path`` (as produced by ``Config.from_instance(runtime)`` / ``save_yaml``) is
     loaded and unwrapped to the ``runtime:`` mapping the parser expects,
     returned as JSON content (valid YAML that ``ActionConfigFile`` accepts
     inline). Any other value — a non-path, an unreadable file, or a
@@ -70,23 +70,23 @@ def _reshape_config_value(parser: ArgumentParser, value: object) -> object:
     if not isinstance(document, dict) or "class_path" not in document:
         return value
 
-    from physicalai.config import ComponentConfigError  # noqa: PLC0415
+    from physicalai.config import ConfigError  # noqa: PLC0415
     from physicalai.runtime import RobotRuntime  # noqa: PLC0415
     from physicalai.runtime.core import _unwrap_runtime_document  # noqa: PLC0415, PLC2701
 
     try:
         return json.dumps(_unwrap_runtime_document(document, target=RobotRuntime))
-    except ComponentConfigError as exc:
+    except ConfigError as exc:
         parser.error(str(exc))
 
 
 class _RuntimeConfigFile(ActionConfigFile):
     """``--config`` action accepting both the CLI document and a bare export.
 
-    Reshapes a bare exported ``RobotRuntime`` ComponentConfig (a document with a
+    Reshapes a bare exported ``RobotRuntime`` Config (a document with a
     top-level ``class_path``) into the ``runtime:`` document jsonargparse
     expects before applying it; a ``runtime:`` / ``run:`` CLI document is passed
-    through unchanged. This keeps ``to_config(runtime)`` → ``save_yaml`` →
+    through unchanged. This keeps ``Config.from_instance(runtime)`` → ``save_yaml`` →
     ``physicalai run --config`` a single-shape round-trip.
     """
 
@@ -107,7 +107,7 @@ def build_parser() -> ArgumentParser:
     One path: ``RobotRuntime`` constructor arguments (``action_source:``
     always explicit) plus ``run()`` method arguments. ``--config`` accepts
     both the CLI document (``runtime:`` / ``run:``) and a bare exported
-    ComponentConfig produced by ``to_config(runtime)``.
+    Config produced by ``Config.from_instance(runtime)``.
 
     Returns:
         Parser for the ``physicalai run`` subcommand.

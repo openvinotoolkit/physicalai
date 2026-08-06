@@ -9,7 +9,7 @@ actions fire-and-forget. The first instance constructed for a given *name*
 that finds no existing owner spawns one; later instances (for the same
 *name*, anywhere reachable) attach.
 
-Construction is :class:`~physicalai.config.ComponentConfig`-only via
+Construction is :class:`~physicalai.config.Config`-only via
 ``robot=`` or :meth:`from_config`. ``robot`` is declared as an
 ``@export_config(config_args=...)`` argument, so a nested
 :func:`~physicalai.config.instantiate` hands over the recipe instead of
@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
-from physicalai.config import export_config
+from physicalai.config import Config, export_config
 from physicalai.robot.errors import (
     RobotDeviceAlreadyOwned,
     RobotNameConflict,
@@ -49,13 +49,12 @@ from physicalai.robot.errors import (
 from ._codec import ROBOT_TRANSPORT_PROTOCOL_VERSION, TransportObservation, decode_metadata, decode_state, encode_action
 from ._ids import KEY_PREFIX, METADATA_WILDCARD, action_key, metadata_key, state_key, validate_name
 from ._lock import active_owner_device_ids, registered_owner_names
-from ._owner_config import DEFAULT_RATE_HZ, normalize_robot_config
+from ._owner_config import DEFAULT_RATE_HZ, coerce_robot_config_input, normalize_robot_config
 from ._session import open_session
 
 if TYPE_CHECKING:
     import numpy as np
 
-    from physicalai.config import ComponentConfig
     from physicalai.robot import RobotObservation
 
 
@@ -188,11 +187,11 @@ class SharedRobot:
     is a drop-in replacement for a direct driver.
 
     Prefer :meth:`from_config`. The constructor takes
-    ``robot: ComponentConfig`` to spawn, or ``robot=None`` (attach-only;
+    ``robot: Config`` to spawn, or ``robot=None`` (attach-only;
     :meth:`attach` is the explicit form).
 
     Opted into :func:`~physicalai.config.export_config` as a **construction
-    recipe** only (name, nested ``robot`` ComponentConfig, transport knobs).
+    recipe** only (name, nested ``robot`` Config, transport knobs).
     Connection / Zenoh session / publisher state is never part of
     :func:`~physicalai.config.to_config`.
 
@@ -200,7 +199,7 @@ class SharedRobot:
         name: Required logical name — keys the Zenoh topics directly. Two
             instances constructed with the same *name* (anywhere reachable
             under the chosen transport scope) share one owner.
-        robot: Driver :class:`~physicalai.config.ComponentConfig` from local
+        robot: Driver :class:`~physicalai.config.Config` from local
             config input (same boundary as CLI/app args), used
             to spawn if no owner exists yet for *name*. ``None`` means
             attach-only — use :meth:`attach` for that case. Declared as an
@@ -223,7 +222,7 @@ class SharedRobot:
         self,
         name: str,
         *,
-        robot: ComponentConfig | Mapping[str, object] | None = None,
+        robot: Config | Mapping[str, Any] | None = None,
         allow_remote: bool = False,
         rate_hz: float = DEFAULT_RATE_HZ,
         idle_timeout: float | None = 10.0,
@@ -250,13 +249,15 @@ class SharedRobot:
     @classmethod
     def _physicalai_normalize_captured_init_args(cls, supplied: dict[str, object]) -> None:
         robot = supplied.get("robot")
-        if isinstance(robot, Mapping):
-            supplied["robot"] = normalize_robot_config(robot)
+        if robot is None:
+            return
+        if isinstance(robot, Mapping) or type(robot) is Config:
+            supplied["robot"] = normalize_robot_config(robot).to_dict()
 
     @classmethod
     def from_config(
         cls,
-        robot_config: ComponentConfig | Mapping[str, object],
+        robot_config: Config | Mapping[str, Any] | object,
         *,
         name: str,
         allow_remote: bool = False,
@@ -265,10 +266,12 @@ class SharedRobot:
         connect_timeout: float = 10.0,
         _session: object | None = None,
     ) -> SharedRobot:
-        """Primary API: spawn/attach from a local robot ComponentConfig.
+        """Primary API: spawn/attach from a local robot Config.
 
         Args:
-            robot_config: Local ``class_path`` + ``init_args`` for the driver.
+            robot_config: Local ``class_path`` + ``init_args``, a mapping, or a
+                live ``@export_config`` driver (exported via
+                :meth:`~physicalai.config.Config.from_instance`).
             name: Logical owner name (Zenoh topic key).
             allow_remote: Whether this session / spawned owner may leave localhost.
             rate_hz: Owner loop rate when this instance spawns the owner.
@@ -277,10 +280,11 @@ class SharedRobot:
             connect_timeout: Overall budget for :meth:`connect`.
 
         Returns:
-            A ``SharedRobot`` that stores the normalized ComponentConfig and
+            A ``SharedRobot`` that stores the normalized Config and
             writes only the new owner stdin shape on spawn.
         """
         # Omit default None so @export_config does not capture "_session": null.
+        robot_config = coerce_robot_config_input(robot_config)
         if _session is None:
             return cls(
                 name,

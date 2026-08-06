@@ -1,8 +1,8 @@
 # Config Schema Reference
 
-## ComponentConfig
+## Config
 
-`physicalai.config.ComponentConfig` uses the jsonargparse-compatible
+`physicalai.config.Config` uses the jsonargparse-compatible
 `class_path` + `init_args` shape.
 
 ```yaml
@@ -20,7 +20,7 @@ Omitted `init_args` means an empty mapping. No other top-level keys are
 accepted.
 
 Values may be `null`, booleans, integers, finite floats, strings, lists, or
-string-keyed mappings. Nested components use another `ComponentConfig`.
+string-keyed mappings. Nested components use another `Config`.
 Every mapping containing `class_path` is reserved as a nested component and
 must contain only `class_path` and optional `init_args`. Nesting through
 components, lists, and mappings is limited to 10 levels.
@@ -54,14 +54,14 @@ run:
 ```
 
 `physicalai run --config` and `RobotRuntime.from_config()` also accept a bare
-exported `RobotRuntime` ComponentConfig whose top-level `class_path` is
+exported `RobotRuntime` Config whose top-level `class_path` is
 `physicalai.runtime.RobotRuntime`.
 
 ## Manifest ComponentSpec
 
 Inference manifests retain their separate `ComponentSpec` compatibility
 model. It supports registry `type` aliases, artifact resolution, and existing
-extra-field behavior. It is not the strict captured `ComponentConfig` schema;
+extra-field behavior. It is not the strict captured `Config` schema;
 manifest unification is a separate design decision.
 
 ## Security

@@ -3,7 +3,7 @@
 
 """Shared-memory camera subscriber transport based on iceoryx2.
 
-Construction is :class:`~physicalai.config.ComponentConfig`-only via
+Construction is :class:`~physicalai.config.Config`-only via
 ``camera=`` or :meth:`SharedCamera.from_config`. ``camera`` is declared as an
 ``@export_config(config_args=...)`` argument, so a nested
 :func:`~physicalai.config.instantiate` hands over the recipe instead of
@@ -27,7 +27,7 @@ from loguru import logger
 
 from physicalai.capture.camera import Camera, ColorMode
 from physicalai.capture.errors import CaptureError, CaptureTimeoutError, NotConnectedError
-from physicalai.config import export_config
+from physicalai.config import Config, export_config
 
 from ._header import FrameHeader, decode_header, decode_rgb
 from ._spec import derive_service_name, normalize_camera_config, validate_reconfigure_request
@@ -35,7 +35,6 @@ from ._spec import derive_service_name, normalize_camera_config, validate_reconf
 if TYPE_CHECKING:
     from physicalai.capture.frame import Frame
     from physicalai.capture.transport._publisher import CameraPublisher
-    from physicalai.config import ComponentConfig
 
 
 _SERVICE_NAME_EXPECTED_PARTS = 5
@@ -95,12 +94,12 @@ class SharedCamera(Camera):
     for zero-copy fan-out.
 
     Prefer :meth:`from_config` when sharing; never keep a direct camera open
-    while sharing. The constructor takes ``camera: ComponentConfig`` to spawn,
+    while sharing. The constructor takes ``camera: Config`` to spawn,
     or ``camera=None`` + ``service_name`` for attach-only
     (:meth:`from_publisher` is the explicit form).
 
     Opted into :func:`~physicalai.config.export_config` as a **construction
-    recipe** only (nested ``camera`` ComponentConfig, ``service_name``,
+    recipe** only (nested ``camera`` Config, ``service_name``,
     ``color_mode``, transport knobs). Publisher / iceoryx2 session / frame
     state is never part of :func:`~physicalai.config.to_config`.
 
@@ -109,7 +108,7 @@ class SharedCamera(Camera):
     hand off an already-open device into the child.
 
     Args:
-        camera: Camera :class:`~physicalai.config.ComponentConfig` from local
+        camera: Camera :class:`~physicalai.config.Config` from local
             config input (same boundary as CLI/app args), used to spawn if no
             publisher exists yet for the derived or explicit ``service_name``.
             ``None`` means attach-only. Declared as an ``@export_config``
@@ -139,7 +138,7 @@ class SharedCamera(Camera):
     def __init__(
         self,
         *,
-        camera: ComponentConfig | Mapping[str, object] | None = None,
+        camera: Config | Mapping[str, object] | None = None,
         color_mode: ColorMode | str = ColorMode.RGB,
         zero_copy: bool = False,
         service_name: str | None = None,
@@ -148,7 +147,7 @@ class SharedCamera(Camera):
         idle_timeout: float = 5.0,
     ) -> None:
         if camera is None and service_name is None:
-            msg = "must provide camera ComponentConfig or service_name"
+            msg = "must provide camera Config or service_name"
             raise ValueError(msg)
 
         recipe = None if camera is None else normalize_camera_config(camera)
@@ -178,13 +177,13 @@ class SharedCamera(Camera):
     @classmethod
     def _physicalai_normalize_captured_init_args(cls, supplied: dict[str, object]) -> None:
         camera = supplied.get("camera")
-        if isinstance(camera, Mapping):
-            supplied["camera"] = normalize_camera_config(camera)
+        if isinstance(camera, Mapping) or type(camera) is Config:
+            supplied["camera"] = normalize_camera_config(camera).to_dict()
 
     @classmethod
     def from_config(
         cls,
-        config: ComponentConfig | Mapping[str, object],
+        config: Config | Mapping[str, object],
         *,
         service_name: str | None = None,
         color_mode: ColorMode | str = ColorMode.RGB,
@@ -193,7 +192,7 @@ class SharedCamera(Camera):
         overwrite_settings: bool = False,
         idle_timeout: float = 5.0,
     ) -> SharedCamera:
-        """Primary API: spawn/attach from a local camera ComponentConfig.
+        """Primary API: spawn/attach from a local camera Config.
 
         Args:
             config: Local ``class_path`` + ``init_args`` for the camera.
@@ -205,7 +204,7 @@ class SharedCamera(Camera):
             idle_timeout: Idle self-exit timeout for a spawned publisher.
 
         Returns:
-            A ``SharedCamera`` that stores the normalized ComponentConfig and
+            A ``SharedCamera`` that stores the normalized Config and
             writes only the new publisher stdin shape on spawn.
         """
         return cls(
@@ -439,7 +438,7 @@ class SharedCamera(Camera):
             CaptureError: If this camera has no valid reconfigurable settings.
         """
         if self._camera is None:
-            msg = "reconfigure requires a camera ComponentConfig (attach-only SharedCamera has none)"
+            msg = "reconfigure requires a camera Config (attach-only SharedCamera has none)"
             raise CaptureError(msg)
 
         init_args = self._camera["init_args"]

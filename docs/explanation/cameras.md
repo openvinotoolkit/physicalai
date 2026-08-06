@@ -47,7 +47,7 @@ connected holder causes open failure.
 
 ```python
 from physicalai.capture import SharedCamera
-from physicalai.config import to_config
+from physicalai.config import Config
 
 # Prefer config-only / disconnected export — no live direct camera held open
 shared = SharedCamera.from_config(
@@ -56,8 +56,8 @@ shared = SharedCamera.from_config(
         "init_args": {"device": "/dev/video0", "backend": "v4l2"},
     },
 )
-# Equivalent after to_config(disconnected_driver):
-# shared = SharedCamera.from_config(to_config(driver))
+# Equivalent from a disconnected live driver:
+# shared = SharedCamera.from_config(Config.from_instance(driver))
 shared.connect()
 
 # Safe to read from multiple threads/processes

@@ -9,7 +9,7 @@ import functools
 import inspect
 from typing import TYPE_CHECKING, TypeVar, overload
 
-from ._errors import ComponentConfigError
+from ._errors import ConfigError
 from ._normalize import (
     normalize_value,
     snapshot_captured_value,
@@ -23,13 +23,15 @@ from ._types import (
     _EXPORT_MARKER_ATTR,
     _MAX_CONFIG_DEPTH,
     _NORMALIZE_CAPTURED_INIT_ARGS_ATTR,
-    ComponentConfig,
     JsonValue,
+    ValidatedConfigDict,
 )
 from .importing import import_dotted_path
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
+
+    from .base import Config
 
 _T = TypeVar("_T", bound=type)
 
@@ -78,7 +80,7 @@ def _encode_domain_value(value: object) -> tuple[JsonValue] | None:
 
 
 def is_config_exportable(value: object) -> bool:
-    """Return whether *value* can export a :class:`ComponentConfig`.
+    """Return whether *value* can export a :class:`Config`.
 
     A value is exportable if and only if its most-derived class's effective
     ``__init__`` carries the ``@export_config`` marker.
@@ -88,7 +90,7 @@ def is_config_exportable(value: object) -> bool:
 
 
 def declared_config_args(cls: type) -> frozenset[str]:
-    """Return init-arg names *cls* consumes as ComponentConfig data.
+    """Return init-arg names *cls* consumes as Config data.
 
     Declared via ``@export_config(config_args=...)``. :func:`instantiate`
     passes these arguments through as plain mappings instead of building the
@@ -131,23 +133,23 @@ def resolve_public_class_path(cls: type) -> str:
         The importable public dotted path.
 
     Raises:
-        ComponentConfigError: If *cls* is local, the path is not importable, or
+        ConfigError: If *cls* is local, the path is not importable, or
             the path resolves to a different object.
     """
     path = _class_path_override(cls) or f"{cls.__module__}.{cls.__qualname__}"
 
     if "<locals>" in cls.__qualname__:
         msg = f"local class {path!r} cannot export a stable class_path"
-        raise ComponentConfigError(msg)
+        raise ConfigError(msg)
 
     try:
         resolved = import_dotted_path(path)
     except (ValueError, ImportError, AttributeError) as exc:
         msg = f"class_path {path!r} for {cls.__qualname__} is not importable: {exc}"
-        raise ComponentConfigError(msg) from exc
+        raise ConfigError(msg) from exc
     if resolved is not cls:
         msg = f"class_path {path!r} resolves to {resolved!r}, expected exactly {cls!r}"
-        raise ComponentConfigError(msg)
+        raise ConfigError(msg)
     return path
 
 
@@ -162,13 +164,13 @@ def _arg_path(prefix: str, class_path: str, key: str) -> str:
     return f"{class_path}.init_args.{key}"
 
 
-def to_config(
+def _export_instance(
     value: object,
     *,
     _path: str = "",
     _depth: int = 0,
     _seen: set[int] | None = None,
-) -> ComponentConfig:
+) -> ValidatedConfigDict:
     """Export an opted-in live component as JSON-safe ``class_path`` + ``init_args``.
 
     Nested constructor values may be components (``@export_config``) or domain
@@ -179,15 +181,15 @@ def to_config(
         value: An instance whose class uses ``@export_config``.
 
     Returns:
-        A :class:`ComponentConfig` describing the object as constructed.
+        A :class:`Config` describing the object as constructed.
 
     Raises:
-        ComponentConfigError: If *value* is not exportable or captured values
+        ConfigError: If *value* is not exportable or captured values
             cannot be normalized.
     """
     if _depth > _MAX_CONFIG_DEPTH:
         msg = f"{format_path(_path)}: nesting depth exceeds {_MAX_CONFIG_DEPTH}"
-        raise ComponentConfigError(msg)
+        raise ConfigError(msg)
 
     seen = _seen if _seen is not None else set()
 
@@ -196,7 +198,7 @@ def to_config(
             f"{_path or _component_path_prefix(value)}: not config-exportable; "
             "decorate the concrete class with @export_config"
         )
-        raise ComponentConfigError(msg)
+        raise ConfigError(msg)
 
     captured = getattr(value, _CAPTURED_INIT_ARGS_ATTR, None)
     if captured is None:
@@ -204,7 +206,7 @@ def to_config(
             f"{_path or _component_path_prefix(value)}: no captured constructor "
             "arguments; the object was not constructed through the decorated __init__"
         )
-        raise ComponentConfigError(msg)
+        raise ConfigError(msg)
 
     class_path = resolve_public_class_path(type(value))
     init_args: dict[str, JsonValue] = {}
@@ -214,20 +216,18 @@ def to_config(
             path=_arg_path(_path, class_path, key),
             depth=_depth + 1,
             seen=seen,
-            to_config=to_config,
+            to_config=_export_instance,
             is_exportable=is_config_exportable,
             domain_codec=_encode_domain_value,
         )
     return {"class_path": class_path, "init_args": init_args}
 
 
-def _instance_to_config(self: object) -> ComponentConfig:
-    """Instance-method sugar for :func:`to_config`; prefer the module function.
+def to_config(value: object) -> Config:
+    """Return the canonical recipe for an ``@export_config`` instance."""
+    from .base import Config  # ruff: ignore[PLC0415]
 
-    Returns:
-        The component config for *self*.
-    """
-    return to_config(self)
+    return Config.from_instance(value)
 
 
 def _validate_replayable_signature(cls: type, signature: inspect.Signature) -> None:
@@ -388,8 +388,6 @@ def _decorate_export_config(
     if declared:
         setattr(wrapped_init, _CONFIG_ARGS_ATTR, declared)
     cls.__init__ = wrapped_init  # type: ignore[method-assign]
-    # Convenience method; type checkers do not see the injection — prefer module to_config.
-    cls.to_config = _instance_to_config  # type: ignore[attr-defined]
     return cls
 
 
@@ -417,9 +415,7 @@ def export_config(
     """Opt a concrete class into constructor-config export via :func:`to_config`.
 
     Remembers caller-supplied ``__init__`` arguments (not defaults). Rejects
-    constructors that declare positional-only parameters or ``*args``. Injects
-    an instance ``to_config()`` convenience method; library code should still
-    call the module-level :func:`to_config`.
+    constructors that declare positional-only parameters or ``*args``.
 
     Usage::
 
@@ -464,7 +460,7 @@ def export_config(
             export to resolve exactly to the decorated class.
         scalar_var_kwargs: When ``True``, seal flattened ``**kwargs`` to JSON
             scalars so non-scalars fail at :func:`to_config`.
-        config_args: Init-arg names the class consumes as ComponentConfig
+        config_args: Init-arg names the class consumes as Config
             *data*. :func:`instantiate` passes these through as plain mappings
             instead of constructing the nested component — use it for spawn
             recipes that must cross a process boundary (for example

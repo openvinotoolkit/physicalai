@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Normalize live values into JSON-safe component configuration fragments."""
+"""Normalize live values into JSON-safe configuration fragments."""
 
 from __future__ import annotations
 
@@ -11,28 +11,28 @@ from enum import Enum
 from pathlib import Path
 from typing import cast
 
-from ._errors import ComponentConfigError
+from ._errors import ConfigError
 from ._path import format_path
 from ._types import (
     _MAX_CONFIG_DEPTH,
     _REPR_LIMIT,
-    ComponentConfig,
     JsonValue,
+    ValidatedConfigDict,
 )
 
-ToConfigFn = Callable[..., ComponentConfig]
+ToConfigFn = Callable[..., Mapping[str, object]]
 IsExportableFn = Callable[[object], bool]
 # Present codec result is a 1-tuple so JSON ``null`` (``None``) is distinct from
 # “no codec” (plain ``None`` return from the codec function).
 DomainCodecFn = Callable[[object], tuple[JsonValue] | None]
 
 
-def _is_component_config_mapping(value: Mapping[object, object]) -> bool:
+def _is_config_mapping(value: Mapping[object, object]) -> bool:
     return "class_path" in value
 
 
-def validate_component_config(config: object, *, path: str = "") -> ComponentConfig:
-    """Validate a mapping as a :class:`ComponentConfig` without importing.
+def validate_config(config: object, *, path: str = "") -> ValidatedConfigDict:
+    """Validate a construction recipe mapping without importing.
 
     Args:
         config: Candidate config mapping.
@@ -42,12 +42,12 @@ def validate_component_config(config: object, *, path: str = "") -> ComponentCon
         The validated config (``init_args`` defaulted to ``{}`` when omitted).
 
     Raises:
-        ComponentConfigError: If the mapping is malformed.
+        ConfigError: If the mapping is malformed.
     """
     loc = format_path(path)
     if not isinstance(config, dict):
-        msg = f"{loc}: component config must be a mapping, got {type(config).__name__}"
-        raise ComponentConfigError(msg)
+        msg = f"{loc}: config must be a mapping, got {type(config).__name__}"
+        raise ConfigError(msg)
 
     keys = set(config)
     allowed = {"class_path", "init_args"}
@@ -55,20 +55,20 @@ def validate_component_config(config: object, *, path: str = "") -> ComponentCon
     if extra:
         extras = ", ".join(sorted(repr(k) for k in extra))
         msg = (
-            f"{loc}: nested component config may only contain 'class_path' and "
+            f"{loc}: nested config may only contain 'class_path' and "
             f"'init_args'; unexpected keys: {extras}. For an ordinary mapping that "
             "needs a 'class_path' data key, encode it via to_config_value() "
-            "(or another domain wrapper) instead of nesting it as a component config"
+            "(or another domain wrapper) instead of nesting it as a config"
         )
-        raise ComponentConfigError(msg)
+        raise ConfigError(msg)
     if "class_path" not in config:
-        msg = f"{loc}: component config missing required 'class_path'"
-        raise ComponentConfigError(msg)
+        msg = f"{loc}: config missing required 'class_path'"
+        raise ConfigError(msg)
 
     class_path = config["class_path"]
     if not isinstance(class_path, str) or not class_path:
         msg = f"{loc}: 'class_path' must be a non-empty string"
-        raise ComponentConfigError(msg)
+        raise ConfigError(msg)
 
     if "init_args" not in config:
         init_args: object = {}
@@ -76,29 +76,29 @@ def validate_component_config(config: object, *, path: str = "") -> ComponentCon
         init_args = config["init_args"]
         if init_args is None:
             msg = f"{loc}: 'init_args' must be a mapping, got None"
-            raise ComponentConfigError(msg)
+            raise ConfigError(msg)
     if not isinstance(init_args, dict):
         msg = f"{loc}: 'init_args' must be a mapping, got {type(init_args).__name__}"
-        raise ComponentConfigError(msg)
+        raise ConfigError(msg)
     for key in init_args:
         if not isinstance(key, str):
             msg = f"{loc}.init_args: keys must be strings, got {type(key).__name__}"
-            raise ComponentConfigError(msg)
+            raise ConfigError(msg)
 
-    return {"class_path": class_path, "init_args": dict(init_args)}
+    return {"class_path": class_path, "init_args": cast("dict[str, JsonValue]", dict(init_args))}
 
 
 def _check_depth(path: str, depth: int) -> None:
     if depth > _MAX_CONFIG_DEPTH:
         msg = f"{format_path(path)}: nesting depth exceeds {_MAX_CONFIG_DEPTH}"
-        raise ComponentConfigError(msg)
+        raise ConfigError(msg)
 
 
 def _try_normalize_scalar(value: object, *, path: str) -> tuple[bool, JsonValue]:
     """Return ``(True, json_value)`` for scalars/Path, else ``(False, None)``.
 
     Raises:
-        ComponentConfigError: If *value* is a non-finite float.
+        ConfigError: If *value* is a non-finite float.
     """
     if value is None or isinstance(value, (bool, str)):
         return True, value
@@ -107,7 +107,7 @@ def _try_normalize_scalar(value: object, *, path: str) -> tuple[bool, JsonValue]
     if isinstance(value, float):
         if not math.isfinite(value):
             msg = f"{format_path(path)}: non-finite float {value!r} is not JSON-portable"
-            raise ComponentConfigError(msg)
+            raise ConfigError(msg)
         return True, value
     if isinstance(value, Path):
         return True, str(value)
@@ -121,10 +121,10 @@ def _normalize_enum(value: Enum, *, path: str) -> JsonValue:
     ):
         if isinstance(enum_value, float) and not math.isfinite(enum_value):
             msg = f"{format_path(path)}: non-finite enum value {enum_value!r}"
-            raise ComponentConfigError(msg)
+            raise ConfigError(msg)
         return enum_value  # type: ignore[return-value]
     msg = f"{format_path(path)}: enum {type(value).__name__} value {type(enum_value).__name__} is not JSON-safe"
-    raise ComponentConfigError(msg)
+    raise ConfigError(msg)
 
 
 def _normalize_exportable(
@@ -135,7 +135,7 @@ def _normalize_exportable(
     seen: set[int],
     to_config: ToConfigFn,
 ) -> JsonValue:
-    # Match instantiate: a nested component config found at *depth* is itself at
+    # Match instantiate: a nested config found at *depth* is itself at
     # *depth* (its init_args then advance to depth + 1 inside to_config).
     nested = to_config(value, _path=path, _depth=depth, _seen=seen)
     return cast("JsonValue", dict(nested))
@@ -155,10 +155,10 @@ def _normalize_mapping(
     obj_id = id(value)
     if obj_id in seen:
         msg = f"{format_path(path)}: cyclic mapping is not serializable"
-        raise ComponentConfigError(msg)
+        raise ConfigError(msg)
 
-    if _is_component_config_mapping(value):
-        validated = validate_component_config(value, path=path)
+    if _is_config_mapping(value):
+        validated = validate_config(value, path=path)
         nested_args: dict[str, JsonValue] = {}
         seen.add(obj_id)
         try:
@@ -184,7 +184,7 @@ def _normalize_mapping(
         for key, item in value.items():
             if not isinstance(key, str):
                 msg = f"{format_path(path)}: mapping keys must be strings, got {type(key).__name__}"
-                raise ComponentConfigError(msg)
+                raise ConfigError(msg)
             child_path = f"{path}.{key}" if path else key
             result[key] = normalize_value(
                 item,
@@ -215,7 +215,7 @@ def _normalize_sequence(
     obj_id = id(value)
     if obj_id in seen:
         msg = f"{format_path(path)}: cyclic sequence is not serializable"
-        raise ComponentConfigError(msg)
+        raise ConfigError(msg)
     seen.add(obj_id)
     try:
         items: list[JsonValue] = []
@@ -246,7 +246,7 @@ def _unsupported_message(value: object, *, path: str) -> str:
     return f"{format_path(path)}: cannot encode {type_name} {repr_value}; omit it or use a supported component value"
 
 
-def normalize_value(
+def normalize_value(  # ruff: ignore[PLR0911, PLR0912]
     value: object,
     *,
     path: str = "",
@@ -276,7 +276,7 @@ def normalize_value(
         A JSON-safe value.
 
     Raises:
-        ComponentConfigError: On unsupported values, cycles, depth overflow,
+        ConfigError: On unsupported values, cycles, depth overflow,
             or a domain codec that returns the same object identity.
     """
     _check_depth(path, depth)
@@ -292,6 +292,20 @@ def normalize_value(
     if isinstance(value, Enum):
         return _normalize_enum(value, path=path)
 
+    from .base import Config  # ruff: ignore[PLC0415]
+
+    if isinstance(value, Config):
+        return normalize_value(
+            value.to_jsonargparse(),
+            path=path,
+            depth=depth,
+            seen=seen,
+            codec_seen=codec_seen,
+            to_config=to_config,
+            is_exportable=is_exportable,
+            domain_codec=domain_codec,
+        )
+
     if is_exportable is not None and to_config is not None and is_exportable(value):
         return _normalize_exportable(value, path=path, depth=depth, seen=seen, to_config=to_config)
 
@@ -301,7 +315,7 @@ def normalize_value(
             obj_id = id(value)
             if obj_id in codec_seen:
                 msg = f"{format_path(path)}: cyclic to_config_value() encoding is not serializable"
-                raise ComponentConfigError(msg)
+                raise ConfigError(msg)
             (encoded,) = encoded_result
             # Identity guard: a method that returns self would recurse forever.
             if encoded is value:
@@ -310,7 +324,7 @@ def normalize_value(
                     "JSON-compatible value, not the same object "
                     "(absence of the method means no codec)"
                 )
-                raise ComponentConfigError(msg)
+                raise ConfigError(msg)
             codec_seen.add(obj_id)
             try:
                 return normalize_value(
@@ -351,7 +365,32 @@ def normalize_value(
         )
 
     msg = _unsupported_message(value, path=path)
-    raise ComponentConfigError(msg)
+    raise ConfigError(msg)
+
+
+def normalize_config(config: object, *, path: str = "") -> ValidatedConfigDict:
+    """Normalize a recipe and its constructor values to the strict JSON model.
+
+    Returns:
+        A JSON-safe direct recipe mapping.
+    """
+    from ._export import _encode_domain_value, _export_instance, is_config_exportable  # ruff: ignore[PLC0415]
+    from .base import Config  # ruff: ignore[PLC0415]
+
+    raw = config.to_dict() if type(config) is Config else config
+    validated = validate_config(raw, path=path)
+    normalized: dict[str, JsonValue] = {}
+    for key, value in validated["init_args"].items():
+        child_path = f"{path}.init_args.{key}" if path else f"{validated['class_path']}.init_args.{key}"
+        normalized[key] = normalize_value(
+            value,
+            path=child_path,
+            depth=1,
+            to_config=_export_instance,
+            is_exportable=is_config_exportable,
+            domain_codec=_encode_domain_value,
+        )
+    return {"class_path": validated["class_path"], "init_args": normalized}
 
 
 def snapshot_captured_value(
@@ -364,7 +403,7 @@ def snapshot_captured_value(
     Non-container values — including nested exportable components and domain
     values — are retained by identity so their own conversion remains
     authoritative. Cyclic containers are preserved via *memo* so
-    :func:`~physicalai.config.to_config` can reject them during normalization.
+            :meth:`~physicalai.config.Config.from_instance` can reject them during normalization.
 
     Returns:
         A snapshot of *value* suitable for later normalization.

@@ -17,7 +17,7 @@ InferenceModel(
 ```
 
 The model can be constructed directly from an export directory or nested in a
-trusted workflow ComponentConfig.
+trusted workflow `Config`.
 
 ## Constructors
 

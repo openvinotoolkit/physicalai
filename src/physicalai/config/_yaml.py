@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""YAML round-trip helpers for component configs.
+"""YAML round-trip helpers for configs.
 
 ``to_yaml`` / ``save_yaml`` serialize a live ``@export_config`` component (or
 an existing ``class_path`` + ``init_args`` mapping) to a YAML document that
@@ -17,16 +17,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import yaml
 
-from ._errors import ComponentConfigError
+from ._errors import ConfigError
 from ._export import to_config
-from ._normalize import validate_component_config
-
-if TYPE_CHECKING:
-    from ._types import ComponentConfig, JsonValue
+from ._normalize import normalize_config
+from .base import Config
 
 
 def to_yaml(component: object) -> str:
@@ -34,14 +31,18 @@ def to_yaml(component: object) -> str:
 
     Args:
         component: A live ``@export_config`` instance, or an existing
-            :class:`ComponentConfig` mapping (validated, not re-exported).
+            :class:`Config` mapping (validated, not re-exported).
 
     Returns:
-        YAML text of the validated :class:`ComponentConfig`.
+        YAML text of the validated :class:`Config`.
     """
-    config: ComponentConfig
-    config = validate_component_config(dict(component)) if isinstance(component, Mapping) else to_config(component)
-    return yaml.safe_dump(dict(config), sort_keys=False, default_flow_style=False)
+    if type(component) is Config:
+        config = component
+    elif isinstance(component, Mapping):
+        config = Config.from_dict(component)
+    else:
+        config = to_config(component)
+    return yaml.safe_dump(config.to_dict(), sort_keys=False, default_flow_style=False)
 
 
 def save_yaml(component: object, path: str | Path) -> None:
@@ -49,13 +50,13 @@ def save_yaml(component: object, path: str | Path) -> None:
 
     Args:
         component: A live ``@export_config`` instance or a
-            :class:`ComponentConfig` mapping.
+            :class:`Config` mapping.
         path: Destination file path.
     """
     Path(path).write_text(to_yaml(component), encoding="utf-8")
 
 
-def load_yaml(path: str | Path) -> dict[str, JsonValue]:
+def load_yaml(path: str | Path) -> Config:
     """Load a YAML document as a mapping, ready for :func:`~physicalai.config.instantiate`.
 
     The document is parsed with ``yaml.safe_load`` and only shape-checked to
@@ -70,10 +71,12 @@ def load_yaml(path: str | Path) -> dict[str, JsonValue]:
         The loaded top-level mapping.
 
     Raises:
-        ComponentConfigError: If the document is not a mapping.
+        ConfigError: If the document is not a mapping.
     """
     loaded = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    if loaded is None:
+        loaded = {}
     if not isinstance(loaded, dict):
         msg = f"{str(path)!r}: YAML config must be a mapping, got {type(loaded).__name__}"
-        raise ComponentConfigError(msg)
-    return loaded
+        raise ConfigError(msg)
+    return Config.from_dict(normalize_config(loaded))

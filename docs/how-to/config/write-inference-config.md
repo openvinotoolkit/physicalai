@@ -21,6 +21,6 @@ action = model.select_action(observation)
 Use workflow config to express user-authored intent. Use a manifest to describe exported package metadata.
 
 To export a model's supplied constructor arguments from Python, call
-`physicalai.config.to_config(model)`. Rebuild that trusted local recipe with
-`physicalai.config.instantiate(config)`; construction loads the model package
+`Config.from_instance(model)`. Rebuild that trusted local recipe with
+`config.instantiate()`; construction loads the model package
 and can allocate substantial resources.

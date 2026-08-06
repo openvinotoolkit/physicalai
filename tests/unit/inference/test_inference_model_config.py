@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from physicalai.config import ComponentConfigError, instantiate, is_config_exportable, to_config
+from physicalai.config import ConfigError, instantiate, is_config_exportable, to_config
 
 
 def _make_export_dir(tmp_path: Path, *, backend: str = "openvino") -> Path:
@@ -44,7 +44,7 @@ def _make_export_dir(tmp_path: Path, *, backend: str = "openvino") -> Path:
 def _assert_construction_round_trip(model: object) -> dict[str, Any]:
     assert is_config_exportable(model)
     config = to_config(model)
-    wire: dict[str, Any] = json.loads(json.dumps(config))
+    wire: dict[str, Any] = json.loads(json.dumps(config.to_dict()))
     restored = instantiate(wire)
     assert type(restored) is type(model)
     assert to_config(restored) == wire
@@ -66,7 +66,7 @@ def _patch_adapter(mock_adapter: MagicMock) -> Generator[MagicMock, None, None]:
         yield mock_adapter
 
 
-class TestInferenceModelComponentConfig:
+class TestInferenceModelConfig:
     def test_path_rooted_round_trip(self, tmp_path: Path, _patch_adapter: MagicMock) -> None:
         from physicalai.inference import InferenceModel
 
@@ -129,7 +129,7 @@ class TestInferenceModelComponentConfig:
             device="cpu",
             runner=SinglePass(),
         )
-        with pytest.raises(ComponentConfigError, match=r"init_args\.runner"):
+        with pytest.raises(ConfigError, match=r"init_args\.runner"):
             to_config(model)
 
     def test_live_preprocessors_fail(self, tmp_path: Path, _patch_adapter: MagicMock) -> None:
@@ -141,7 +141,7 @@ class TestInferenceModelComponentConfig:
             device="cpu",
             preprocessors=[MagicMock()],
         )
-        with pytest.raises(ComponentConfigError, match=r"init_args\.preprocessors"):
+        with pytest.raises(ConfigError, match=r"init_args\.preprocessors"):
             to_config(model)
 
     def test_live_postprocessors_fail(self, tmp_path: Path, _patch_adapter: MagicMock) -> None:
@@ -153,7 +153,7 @@ class TestInferenceModelComponentConfig:
             device="cpu",
             postprocessors=[MagicMock()],
         )
-        with pytest.raises(ComponentConfigError, match=r"init_args\.postprocessors"):
+        with pytest.raises(ConfigError, match=r"init_args\.postprocessors"):
             to_config(model)
 
     def test_live_callbacks_fail(self, tmp_path: Path, _patch_adapter: MagicMock) -> None:
@@ -165,7 +165,7 @@ class TestInferenceModelComponentConfig:
             device="cpu",
             callbacks=[MagicMock()],
         )
-        with pytest.raises(ComponentConfigError, match=r"init_args\.callbacks"):
+        with pytest.raises(ConfigError, match=r"init_args\.callbacks"):
             to_config(model)
 
     def test_non_scalar_dict_adapter_kwarg_fails(self, tmp_path: Path, _patch_adapter: MagicMock) -> None:
@@ -177,7 +177,7 @@ class TestInferenceModelComponentConfig:
             device="cpu",
             config_blob={"a": 1},
         )
-        with pytest.raises(ComponentConfigError, match=r"init_args\.config_blob"):
+        with pytest.raises(ConfigError, match=r"init_args\.config_blob"):
             to_config(model)
 
     def test_non_scalar_list_adapter_kwarg_fails(self, tmp_path: Path, _patch_adapter: MagicMock) -> None:
@@ -189,5 +189,5 @@ class TestInferenceModelComponentConfig:
             device="cpu",
             tags=["x", "y"],
         )
-        with pytest.raises(ComponentConfigError, match=r"init_args\.tags"):
+        with pytest.raises(ConfigError, match=r"init_args\.tags"):
             to_config(model)
