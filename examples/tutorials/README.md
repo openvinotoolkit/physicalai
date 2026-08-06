@@ -21,14 +21,72 @@ cd physicalai
 uv sync --frozen --extra notebooks
 ```
 
-Register the uv-managed project environment as a dedicated Jupyter kernel:
+`uv sync` creates the virtual environment at `<repository>/.venv`. It also
+installs the repository and the `notebooks` extra into that environment.
+
+### Optional: Notebook 004 LIBERO dependencies
+
+Skip this section unless you plan to run
+`004_Test_Deployment_Without_Robot.ipynb`. Other tutorials do not require
+LIBERO or these simulation packages. Install them once from the repository
+root before launching JupyterLab:
+
+```bash
+export CMAKE_POLICY_VERSION_MINIMUM=3.5
+export UV_TORCH_BACKEND=cpu
+
+uv pip install "cmake==3.31.10" ninja setuptools wheel
+
+uv pip install \
+    --no-cache \
+    --no-build-isolation-package hf-egl-probe \
+    "hf-egl-probe==1.0.2"
+
+uv pip install \
+    --torch-backend cpu \
+    --no-build-isolation-package hf-egl-probe \
+    "ipywidgets>=8,<9" \
+    "physicalai-train[libero] @ git+https://github.com/open-edge-platform/physical-ai-studio.git@main#subdirectory=library" \
+    "cmake==3.31.10"
+
+uv pip install \
+    "physicalai @ git+https://github.com/openvinotoolkit/physicalai.git@main"
+
+printf "n\n" | uv run --no-sync python -c \
+    "from libero.libero import set_libero_default_path; set_libero_default_path()"
+```
+
+The Studio and PhysicalAI Git dependencies are installed separately because
+Studio currently declares a compatibility commit of PhysicalAI and uv rejects
+both URLs in one resolution. The PhysicalAI `main` runtime is installed last.
+The final command updates LIBERO's resource configuration to the package in the
+current `.venv`; its input selects the default dataset location when no LIBERO
+configuration exists yet.
+
+Register that environment as a dedicated Jupyter kernel:
 
 ```bash
 uv run python -m ipykernel install --user \
-    --env VIRTUAL_ENV "$(pwd)/.venv" \
     --name physicalai-tutorials \
     --display-name "PhysicalAI Tutorials (uv)"
 ```
+
+Activation with `source .venv/bin/activate` is optional. `uv run` selects the
+project environment automatically, and the registered kernel launches
+`<repository>/.venv/bin/python` directly. For a checkout in a new path, run
+`uv sync` and register the kernel again from that checkout before opening its
+notebooks.
+
+If accessing Hugging Face from the PRC fails because of a connection issue,
+set the Hugging Face endpoint to [HF-Mirror](https://hf-mirror.com) before
+launching JupyterLab:
+
+```bash
+export HF_ENDPOINT=https://hf-mirror.com
+```
+
+Run this command in the same terminal that launches JupyterLab. It affects
+model and dataset downloads made through `huggingface_hub`.
 
 Verify the project environment, then launch JupyterLab from the tutorials
 directory and select the **PhysicalAI Tutorials (uv)** kernel:
