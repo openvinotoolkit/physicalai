@@ -48,21 +48,19 @@ separate from strict captured `Config` data.
 Use workflow configuration for deployment intent. Use manifests for package
 metadata produced during export.
 
-## Generic instantiation (Training and plugins)
+## Typed configuration
 
-Runtime also ships helpers used heavily by Physical AI Studio and
-`jsonargparse`-driven CLIs:
+Typed classes, workflows, and CLIs use jsonargparse directly:
 
-| Entry point                                                                 | Use when                                            |
-| --------------------------------------------------------------------------- | --------------------------------------------------- |
-| [`instantiate_obj`](../how-to/config/instantiate-objects.md)                | Generic loaders; class chosen by config             |
-| [`FromConfig` / `@from_config`](../how-to/config/use-from-config.md)        | Class-level `from_yaml`, `from_dict`, `from_config` |
-| [`Config` dataclass subclasses](../how-to/config/instantiate-components.md) | Typed hyperparameter objects with save/load         |
+```python
+parser = ArgumentParser(exit_on_error=False)
+parser.add_class_arguments(Trainer, "trainer")
+parsed = parser.parse_object(document, defaults=False)
+trainer = parser.instantiate(parsed).trainer
+```
 
-Strict captured recipes use the package-level :func:`instantiate`; generic
-loaders use the package-level :func:`instantiate_obj`. Both are intentionally
-available from one public import surface. Generic loader helpers are
-implemented in `physicalai.config.loading`.
+`physicalai.config.Config` is the portable `class_path` recipe and live-object
+capture boundary. It is not a generic loader framework.
 
 ## Trust
 

@@ -107,7 +107,7 @@ class TestRobotOwnerConfig:
             RobotOwnerConfig(name="left-arm", robot=_fake_robot(), rate_hz=float("inf"))
 
     def test_non_serializable_init_args_raises(self) -> None:
-        with pytest.raises(ValueError, match="JSON-serializable"):
+        with pytest.raises(ConfigError, match="cannot encode"):
             RobotOwnerConfig(
                 name="left-arm",
                 robot={"class_path": FAKE_ROBOT_CLASS, "init_args": {"calibration": object()}},

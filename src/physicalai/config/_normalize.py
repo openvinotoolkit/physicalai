@@ -115,7 +115,7 @@ def _try_normalize_scalar(value: object, *, path: str) -> tuple[bool, JsonValue]
 
 
 def _normalize_enum(value: Enum, *, path: str) -> JsonValue:
-    enum_value = value.value
+    enum_value = value.name
     if isinstance(enum_value, (bool, str)) or (
         isinstance(enum_value, (int, float)) and not isinstance(enum_value, bool)
     ):

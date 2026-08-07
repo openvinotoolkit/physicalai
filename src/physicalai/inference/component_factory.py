@@ -18,7 +18,7 @@ from pathlib import Path
 
 from jsonargparse import ArgumentParser
 
-from physicalai.config import validate_config
+from physicalai.config import Config
 
 from ._importing import import_dotted_path
 from .manifest import ComponentSpec
@@ -244,5 +244,4 @@ def _canonical_spec(spec: ComponentSpec, *, registry: ComponentRegistry) -> dict
     else:
         class_path = registry.resolve(spec.type)
         init_args = spec.flat_params
-    validated = validate_config({"class_path": class_path, "init_args": dict(init_args)})
-    return {"class_path": validated["class_path"], "init_args": validated["init_args"]}
+    return Config(class_path, init_args).to_dict()

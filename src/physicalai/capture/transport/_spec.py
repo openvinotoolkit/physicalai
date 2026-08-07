@@ -23,8 +23,6 @@ from typing import TYPE_CHECKING, Any
 
 from physicalai.config import (
     Config,
-    normalize_config,
-    validate_envelope,
 )
 
 if TYPE_CHECKING:
@@ -50,13 +48,23 @@ def validate_publisher_config(data: Mapping[str, Any]) -> Config:
     Returns:
         The validated ``camera`` Config mapping (see
         :func:`normalize_camera_config` for the JSON-serializability check).
+
+    Raises:
+        TypeError: If the camera entry is not a mapping.
+        ValueError: If required or unknown envelope keys are present.
     """
-    return validate_envelope(
-        data,
-        component_key="camera",
-        allowed_keys=_PUBLISHER_ENVELOPE_KEYS,
-        envelope_name="publisher",
-    )
+    unknown = sorted(set(data) - _PUBLISHER_ENVELOPE_KEYS)
+    if unknown:
+        msg = f"unknown publisher config keys {unknown}"
+        raise ValueError(msg)
+    if "camera" not in data:
+        msg = "publisher config missing required 'camera' Config"
+        raise ValueError(msg)
+    camera = data["camera"]
+    if not isinstance(camera, Mapping):
+        msg = f"camera must be a Config mapping, got {type(camera).__name__}"
+        raise TypeError(msg)
+    return normalize_camera_config(camera)
 
 
 def validate_reconfigure_request(request: Mapping[str, Any]) -> dict[str, int]:
@@ -114,12 +122,15 @@ def normalize_camera_config(camera: Config | Mapping[str, object]) -> Config:
 
     Returns:
         A validated config whose ``class_path`` is a dotted import path.
+
+    Raises:
+        ValueError: If the class path is not a nonempty dotted path.
     """
-    return normalize_config(
-        camera,
-        component_key="camera",
-        class_label="camera class_path",
-    )
+    recipe = camera if isinstance(camera, Config) else Config.from_dict(camera)
+    if "." not in recipe.class_path or not recipe.class_path.strip():
+        msg = f"camera class_path must be a nonempty dotted path, got {recipe.class_path!r}"
+        raise ValueError(msg)
+    return recipe
 
 
 def derive_service_name(

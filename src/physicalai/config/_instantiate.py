@@ -11,14 +11,12 @@ from collections.abc import Mapping
 from enum import Enum
 from typing import TypeVar, cast
 
-from jsonargparse import ArgumentParser
-
 from ._errors import ConfigError, ConfigImportError
 from ._export import declared_config_args
 from ._normalize import validate_config
 from ._path import format_path
 from ._types import _MAX_CONFIG_DEPTH, JsonValue
-from .base import Config
+from .base import Config, parse_class_config
 from .importing import import_dotted_path
 
 _T = TypeVar("_T")
@@ -299,7 +297,6 @@ def instantiate(config: Config | Mapping[str, JsonValue], *, expected_type: type
     raw = {"class_path": config.class_path, "init_args": config.init_args} if type(config) is Config else config
     _preflight_config(raw, path="", depth=0, seen=set())
     if expected_type is not None:
-        parser = ArgumentParser(exit_on_error=False)
         class_path = cast("str", raw["class_path"])
         try:
             target = import_dotted_path(class_path)
@@ -309,18 +306,9 @@ def instantiate(config: Config | Mapping[str, JsonValue], *, expected_type: type
         if not isinstance(target, type):
             msg = f"{class_path!r} does not resolve to a class"
             raise ConfigImportError(msg)
-        if getattr(expected_type, "_is_protocol", False):
-            parser.add_class_arguments(target, "component")
-            namespace = parser.parse_object({"component": raw["init_args"]}, defaults=False)
-            result = parser.instantiate(namespace).component
-            if not isinstance(result, expected_type):
-                msg = f"{class_path!r} does not satisfy {expected_type.__name__}"
-                raise ConfigError(msg)
-            return result
-        parser.add_subclass_arguments(expected_type, "component", required=True)
-        namespace = parser.parse_object(
-            {"component": cast("dict[str, JsonValue]", raw)},
-            defaults=False,
-        )
-        return cast("_T", parser.instantiate(namespace).component)
+        result = parse_class_config(target, cast("Mapping[str, object]", raw["init_args"]))
+        if not isinstance(result, expected_type):
+            msg = f"{class_path!r} does not satisfy {expected_type.__name__}"
+            raise ConfigError(msg)
+        return result
     return _instantiate_impl(raw, path="", depth=0, seen=set())

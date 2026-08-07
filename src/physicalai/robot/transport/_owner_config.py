@@ -29,6 +29,7 @@ import.
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -36,9 +37,6 @@ from typing import TYPE_CHECKING, Any
 
 from physicalai.config import (
     Config,
-    is_config_exportable,
-    normalize_config,
-    validate_envelope,
 )
 
 if TYPE_CHECKING:
@@ -72,13 +70,23 @@ def validate_owner_config(data: Mapping[str, Any]) -> Config:
     Returns:
         The validated ``robot`` Config mapping (see
         :func:`normalize_robot_config` for the JSON-serializability check).
+
+    Raises:
+        TypeError: If the robot entry is not a mapping.
+        ValueError: If required or unknown envelope keys are present.
     """
-    return validate_envelope(
-        data,
-        component_key="robot",
-        allowed_keys=_OWNER_ENVELOPE_KEYS,
-        envelope_name="owner",
-    )
+    unknown = sorted(set(data) - _OWNER_ENVELOPE_KEYS)
+    if unknown:
+        msg = f"unknown owner config keys {unknown}"
+        raise ValueError(msg)
+    if "robot" not in data:
+        msg = "owner config missing required 'robot' Config"
+        raise ValueError(msg)
+    robot = data["robot"]
+    if not isinstance(robot, Mapping):
+        msg = f"robot must be a Config mapping, got {type(robot).__name__}"
+        raise TypeError(msg)
+    return normalize_robot_config(robot)
 
 
 def normalize_robot_config(robot: Config | Mapping[str, object]) -> Config:
@@ -86,13 +94,20 @@ def normalize_robot_config(robot: Config | Mapping[str, object]) -> Config:
 
     Returns:
         A validated config whose ``class_path`` is a dotted import path.
+
+    Raises:
+        ValueError: If the path or recipe is not JSON portable.
     """
-    return normalize_config(
-        robot,
-        component_key="robot",
-        class_label="robot_class",
-        json_hint=" (e.g. paths as str, not objects)",
-    )
+    recipe = robot if isinstance(robot, Config) else Config.from_dict(robot)
+    if "." not in recipe.class_path or not recipe.class_path.strip():
+        msg = f"robot_class must be a nonempty dotted path, got {recipe.class_path!r}"
+        raise ValueError(msg)
+    try:
+        json.dumps(recipe.to_dict())
+    except (TypeError, ValueError) as exc:
+        msg = "robot config must be JSON-serializable (e.g. paths as str, not objects)"
+        raise ValueError(msg) from exc
+    return recipe
 
 
 def coerce_robot_config_input(robot: Config | Mapping[str, object] | object) -> Config | Mapping[str, object]:
@@ -106,7 +121,7 @@ def coerce_robot_config_input(robot: Config | Mapping[str, object] | object) -> 
     """
     if type(robot) is Config or isinstance(robot, Mapping):
         return robot
-    if is_config_exportable(robot):
+    if Config.is_exportable(robot):
         return Config.from_instance(robot)
     msg = (
         "robot config must be physicalai.config.Config, a class_path mapping, "

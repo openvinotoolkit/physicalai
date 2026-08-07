@@ -9,7 +9,7 @@ from enum import Enum
 from pathlib import Path
 
 import pytest
-from physicalai.config import Config, ConfigError, FromConfig, export_config, instantiate_obj
+from physicalai.config import Config, ConfigError, export_config
 
 
 class Mode(Enum):
@@ -28,7 +28,7 @@ class TypedConfig(Config):
     shape: tuple[int, int]
 
 
-class Target(FromConfig):
+class Target:
     def __init__(self, value: int) -> None:
         self.value = value
 
@@ -58,12 +58,12 @@ def test_typed_dataclass_semantics(tmp_path: Path) -> None:
     restored = TypedConfig.load(path)
 
     assert restored == config
-    assert config.to_dict() == {"nested": {"value": 3}, "mode": "fast", "shape": [2, 4]}
+    assert config.to_dict() == {"nested": {"value": 3}, "mode": "FAST", "shape": [2, 4]}
     assert config.to_jsonargparse()["init_args"] == config.to_dict()
 
 
 def test_typed_config_load_accepts_mapping() -> None:
-    config = TypedConfig.load({"nested": {"value": 3}, "mode": "fast", "shape": [2, 4]})
+    config = TypedConfig.load({"nested": {"value": 3}, "mode": "FAST", "shape": [2, 4]})
 
     assert config == TypedConfig(Nested(3), Mode.FAST, (2, 4))
 
@@ -71,7 +71,7 @@ def test_typed_config_load_accepts_mapping() -> None:
 def test_typed_dataclass_dynamic_instantiation() -> None:
     config = TypedConfig(Nested(3), Mode.FAST, (2, 4))
 
-    restored = instantiate_obj(config.to_jsonargparse())
+    restored = Config.from_dict(config.to_jsonargparse()).instantiate()
 
     assert restored == config
 
@@ -86,38 +86,9 @@ def test_typed_dataclass_nested_in_exported_instance() -> None:
 
 
 def test_general_instantiation_delegates_recipe_to_strict_config() -> None:
-    target = instantiate_obj({"class_path": f"{__name__}.Target", "init_args": {"value": 9}})
+    target = Config(f"{__name__}.Target", {"value": 9}).instantiate()
     assert isinstance(target, Target)
     assert target.value == 9
-
-
-def test_instantiate_config_class_path_builds_nested_recipe() -> None:
-    from physicalai.config import instantiate
-
-    cfg = instantiate(
-        {
-            "class_path": "physicalai.config.Config",
-            "init_args": {
-                "class_path": "builtins.dict",
-                "init_args": {"k": {"class_path": "builtins.int", "init_args": {}}},
-            },
-        },
-    )
-
-    assert isinstance(cfg, Config)
-    assert cfg.class_path == "builtins.dict"
-    nested = cfg.init_args["k"]
-    assert isinstance(nested, dict)
-    assert nested["class_path"] == "builtins.int"
-
-
-def test_instantiate_config_class_path_requires_inner_recipe() -> None:
-    import pytest
-
-    from physicalai.config import ConfigError, instantiate
-
-    with pytest.raises(ConfigError, match="class_path"):
-        instantiate({"class_path": "physicalai.config.Config", "init_args": {}})
 
 
 @dataclass
@@ -128,7 +99,7 @@ class PathConfig(Config):
 def test_typed_dataclass_strict_rejects_extra_keys() -> None:
     with pytest.raises(TypeError, match="Unexpected keys"):
         TypedConfig.from_dict(
-            {"nested": {"value": 1}, "mode": "fast", "shape": [1, 1], "epochs": 1},
+            {"nested": {"value": 1}, "mode": "FAST", "shape": [1, 1], "epochs": 1},
             strict=True,
         )
 
@@ -137,19 +108,3 @@ def test_typed_dataclass_path_round_trip() -> None:
     cfg = PathConfig(Path("/tmp/data"))
     restored = PathConfig.from_dict(cfg.to_dict())
     assert restored.root == Path("/tmp/data")
-
-
-def test_instantiate_recursive_depth_limit() -> None:
-    nested: dict[str, object] = {"value": 1}
-    current: dict[str, object] = nested
-    for _ in range(12):
-        child: dict[str, object] = {"value": 1}
-        current["child"] = child
-        current = child
-
-    class Leaf:
-        def __init__(self, **kwargs: object) -> None:
-            pass
-
-    with pytest.raises(ConfigError, match="nesting depth exceeds"):
-        instantiate_obj({"nested": nested}, target_cls=Leaf)

@@ -44,9 +44,9 @@ JSON values only; paths become strings, tuples become lists during export,
 and non-finite floats are rejected.
 
 ```python
-from physicalai.config import save_yaml
+from physicalai.config import Config
 
-save_yaml(camera, "camera.yaml")
+Config.from_instance(camera).save("camera.yaml")
 ```
 
 ## Trust boundary

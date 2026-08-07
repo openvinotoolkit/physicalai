@@ -246,34 +246,35 @@ src/physicalai/config/
   importing.py      temporary public import compatibility
 ```
 
-### Compatibility facades
+### Removed utility facades
 
-These may remain during the transition but are not used by Runtime production
-code:
+The implementation removes these modules rather than preserving low-value
+utility compatibility:
 
 ```text
 loading.py
 mixin.py
 serializable.py
 _yaml.py
+_envelope.py
 ```
 
 Expected disposition:
 
-| Current code                                | Action                                                                                |
-| ------------------------------------------- | ------------------------------------------------------------------------------------- |
-| `instantiate_obj`                           | Delegate to jsonargparse with known type; schema-free fallback only for compatibility |
-| `instantiate_obj_from_*`                    | Deprecate aliases; remove after downstream migration                                  |
-| `_instantiate_recursive`                    | Delete                                                                                |
-| positional `args` convention                | Deprecate and remove                                                                  |
-| flattened arbitrary `**kwargs` construction | Deprecate or explicitly translate; do not inspect signatures manually                 |
-| `FromConfig`                                | Delegate to `jsonargparse.FromConfigMixin` plus input conversion                      |
-| `@from_config`                              | Deprecate method-copying decorator                                                    |
-| `dict_to_dataclass`                         | Delete immediately                                                                    |
-| `dataclass_to_dict`                         | Retain only for legacy wire/checkpoint compatibility                                  |
-| `_yaml.py`                                  | Thin wrappers over `Config.load/save`; remove after compatibility period              |
-| `import_class`                              | Deprecated wrapper only                                                               |
-| inference/robot import shims                | Delete                                                                                |
+| Current code                                | Action                                                                |
+| ------------------------------------------- | --------------------------------------------------------------------- |
+| `instantiate_obj`                           | Removed; use jsonargparse or `Config`                                 |
+| `instantiate_obj_from_*`                    | Removed                                                               |
+| `_instantiate_recursive`                    | Delete                                                                |
+| positional `args` convention                | Deprecate and remove                                                  |
+| flattened arbitrary `**kwargs` construction | Deprecate or explicitly translate; do not inspect signatures manually |
+| `FromConfig`                                | Removed; inherit `jsonargparse.FromConfigMixin` directly              |
+| `@from_config`                              | Removed                                                               |
+| `dict_to_dataclass`                         | Delete immediately                                                    |
+| `dataclass_to_dict`                         | Retain only for legacy wire/checkpoint compatibility                  |
+| `_yaml.py`                                  | Removed; use `Config.load/save`                                       |
+| `import_class`                              | Deprecated wrapper only                                               |
+| inference/robot import shims                | Delete                                                                |
 
 ### Domain ownership
 
@@ -439,12 +440,12 @@ Before deleting code, add tests for:
 3. Establish one defaults and serialization policy.
 4. Remove duplicate config reshaping and source dispatch.
 
-### Phase 3: compatibility facades
+### Phase 3: compatibility removal
 
-1. Replace `FromConfig` internals with `FromConfigMixin` delegation.
-2. Replace `instantiate_obj` internals with canonical known-type construction.
+1. Remove `FromConfig` and direct users use `FromConfigMixin`.
+2. Remove `instantiate_obj`; known types use jsonargparse directly.
 3. Delete direct constructor and recursive helper branches.
-4. Add deprecation warnings and migration documentation.
+4. Remove utility-only documentation and tests.
 
 ### Phase 4: downstream migration
 

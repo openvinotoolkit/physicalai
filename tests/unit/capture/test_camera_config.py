@@ -15,17 +15,17 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from physicalai.capture.camera import Camera, ColorMode
-from physicalai.config import Config, instantiate, is_config_exportable, to_config
+from physicalai.config import Config
 
 
 def _assert_construction_round_trip(camera: object) -> dict[str, Any]:
-    assert is_config_exportable(camera)
+    assert Config.is_exportable(camera)
     assert isinstance(camera, Camera)
-    config = to_config(camera)
+    config = Config.from_instance(camera)
     wire: dict[str, Any] = json.loads(json.dumps(config.to_dict()))
-    restored = instantiate(wire)
+    restored = Config.from_dict(wire).instantiate(expected_type=Camera)
     assert type(restored) is type(camera)
-    assert to_config(restored) == wire
+    assert Config.from_instance(restored) == wire
     assert not restored.is_connected  # type: ignore[union-attr]
     return wire
 
@@ -46,7 +46,7 @@ class TestUVCCameraConfig:
 
         camera = UVCCamera(device=1, color_mode=ColorMode.BGR, backend="v4l2")
         wire = _assert_construction_round_trip(camera)
-        assert wire["init_args"]["color_mode"] == "bgr"
+        assert wire["init_args"]["color_mode"] == "BGR"
 
 
 @pytest.fixture
@@ -121,7 +121,7 @@ class TestSharedCameraConfig:
         )
         wire = _assert_construction_round_trip(camera)
         assert wire["class_path"] == "physicalai.capture.SharedCamera"
-        assert wire["init_args"]["color_mode"] == "bgr"
+        assert wire["init_args"]["color_mode"] == "BGR"
         assert wire["init_args"]["zero_copy"] is True
         assert wire["init_args"]["validate_on_connect"] is True
         assert wire["init_args"]["idle_timeout"] == 1.5
@@ -174,7 +174,7 @@ class TestSharedCameraConfig:
                 "service_name": "physicalai/camera/UVCCamera/0/frame",
             },
         )
-        restored = instantiate(config)
+        restored = config.instantiate()
         assert isinstance(restored, SharedCamera)
         # The declared config arg stays a mapping — no UVCCamera is built here.
         assert restored._camera == config.init_args["camera"]

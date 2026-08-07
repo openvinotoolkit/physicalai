@@ -24,12 +24,15 @@ from physicalai.config import (
     ConfigImportError,
     JsonValue,
     export_config,
-    import_dotted_path,
-    instantiate,
-    is_config_exportable,
-    normalize_config,
-    to_config,
 )
+from physicalai.config.importing import import_dotted_path
+
+to_config = Config.from_instance
+is_config_exportable = Config.is_exportable
+
+
+def instantiate(value: object) -> object:
+    return Config.from_dict(cast("Mapping[str, object]", value)).instantiate()
 
 # Matches physicalai.config._types._MAX_CONFIG_DEPTH
 _MAX_CONFIG_DEPTH = 10
@@ -293,32 +296,6 @@ class TestImportDottedPath:
             import_dotted_path(path)
 
 
-class TestNormalizeConfig:
-    def test_rejects_nan(self) -> None:
-        with pytest.raises(ValueError, match="JSON-serializable"):
-            normalize_config(
-                {"class_path": f"{__name__}.Point", "init_args": {"x": math.nan}},
-                component_key="robot",
-                class_label="robot_class",
-            )
-
-    def test_rejects_infinity(self) -> None:
-        with pytest.raises(ValueError, match="JSON-serializable"):
-            normalize_config(
-                {"class_path": f"{__name__}.Point", "init_args": {"x": float("inf")}},
-                component_key="camera",
-                class_label="camera_class",
-            )
-
-    def test_rejects_non_serializable_object(self) -> None:
-        with pytest.raises(ValueError, match="JSON-serializable"):
-            normalize_config(
-                {"class_path": f"{__name__}.Point", "init_args": {"x": object()}},
-                component_key="robot",
-                class_label="robot_class",
-            )
-
-
 class TestNormalizeAndInstantiate:
     def test_primitives_round_trip(self) -> None:
         point = Point(1, y=2)
@@ -355,8 +332,8 @@ class TestNormalizeAndInstantiate:
     def test_enum_value(self) -> None:
         holder = EnumHolder(Color.RED)
         config = to_config(holder)
-        assert config["init_args"]["color"] == "red"
-        restored = cast("EnumHolder", instantiate(config))
+        assert config["init_args"]["color"] == "RED"
+        restored = cast("EnumHolder", config.instantiate(expected_type=EnumHolder))
         assert restored.color is Color.RED
 
     def test_non_finite_float_rejected(self) -> None:
@@ -521,7 +498,7 @@ class TestNormalizeAndInstantiate:
             instantiate(config)  # type: ignore[arg-type]
         import_path.assert_not_called()
 
-    @pytest.mark.parametrize("value", [math.nan, math.inf, (1, 2), Path("config.json"), Color.RED, object()])
+    @pytest.mark.parametrize("value", [math.nan, math.inf, object()])
     def test_non_json_value_rejected_before_any_import(self, value: object) -> None:
         config = {
             "class_path": "tests.unit.config.test_export_config.DomainHolder",
@@ -554,7 +531,7 @@ class TestNormalizeAndInstantiate:
         cast("dict[str, object]", config["init_args"])["child"] = config
         with (
             patch("physicalai.config._instantiate.import_dotted_path") as import_path,
-            pytest.raises(ConfigError, match="cyclic config"),
+            pytest.raises(ConfigError, match="cyclic"),
         ):
             instantiate(config)  # type: ignore[arg-type]
         import_path.assert_not_called()

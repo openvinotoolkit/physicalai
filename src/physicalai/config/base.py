@@ -10,59 +10,19 @@ import dataclasses
 from collections.abc import Mapping
 from enum import Enum
 from pathlib import Path
-from types import UnionType
-from typing import TYPE_CHECKING, Literal, Self, TypeVar, Union, cast, get_args, get_origin, get_type_hints, overload
+from typing import TYPE_CHECKING, Literal, Self, TypeVar, cast, overload
 
 import yaml
 from jsonargparse import ArgumentParser
 
-from .serializable import dataclass_to_dict
-
 if TYPE_CHECKING:
     from ._types import JsonArgparseEnvelope, JsonValue
+
+from ._errors import ConfigImportError
 
 __all__ = ["Config"]
 
 _T = TypeVar("_T")
-
-
-def _enum_wire_values(value: object, annotation: object) -> object:
-    """Adapt existing value-based enum serialization to jsonargparse names.
-
-    Returns:
-        A value compatible with jsonargparse type adaptation.
-    """
-    if value is None:
-        return None
-    origin = get_origin(annotation)
-    args = get_args(annotation)
-    if origin in {UnionType, Union}:
-        for option in args:
-            if option is type(None):
-                continue
-            converted = _enum_wire_values(value, option)
-            if converted is not value:
-                return converted
-        return value
-    if isinstance(annotation, type) and issubclass(annotation, Enum):
-        if isinstance(value, annotation):
-            return value.name
-        return next((member.name for member in annotation if member.value == value), value)
-    if origin in {list, tuple, set} and isinstance(value, (list, tuple)):
-        item_type = args[0] if args else object
-        return [_enum_wire_values(item, item_type) for item in value]
-    if origin is dict and isinstance(value, Mapping):
-        value_type = args[1] if len(args) > 1 else object
-        return {key: _enum_wire_values(item, value_type) for key, item in value.items()}
-    if isinstance(annotation, type) and dataclasses.is_dataclass(annotation) and isinstance(value, Mapping):
-        hints = get_type_hints(annotation)
-        return {
-            field.name: _enum_wire_values(item, hints.get(field.name, field.type))
-            for field in dataclasses.fields(annotation)
-            if field.name in value
-            for item in [value[field.name]]
-        }
-    return value
 
 
 def parse_class_config(target: type[_T], data: Mapping[str, object], *, defaults: bool = False) -> _T:
@@ -73,8 +33,7 @@ def parse_class_config(target: type[_T], data: Mapping[str, object], *, defaults
     """
     parser = ArgumentParser(exit_on_error=False)
     parser.add_class_arguments(target, "object")
-    values = _enum_wire_values(dict(data), target)
-    namespace = parser.parse_object({"object": values}, defaults=defaults)
+    namespace = parser.parse_object({"object": dict(data)}, defaults=defaults)
     return cast("_T", parser.instantiate(namespace).object)
 
 
@@ -102,12 +61,28 @@ def save_class_config(value: _T, path: str | Path) -> None:
     """Serialize a typed config through jsonargparse."""
     parser = ArgumentParser(exit_on_error=False)
     parser.add_class_arguments(type(value), "object")
-    values = _enum_wire_values(dataclasses.asdict(cast("dataclasses.DataclassInstance", value)), type(value))
+    values = dataclasses.asdict(cast("dataclasses.DataclassInstance", value))
     namespace = parser.parse_object({"object": values}, defaults=False)
     dumped = yaml.safe_load(parser.dump(namespace, format="yaml"))
     if isinstance(dumped, Mapping) and "object" in dumped:
         dumped = dumped["object"]
     Path(path).write_text(yaml.safe_dump(dumped, sort_keys=False), encoding="utf-8")
+
+
+def _plain_value(value: object) -> object:
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return {field.name: _plain_value(getattr(value, field.name)) for field in dataclasses.fields(value)}
+    if isinstance(value, dict):
+        return {key: _plain_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_value(item) for item in value]
+    if isinstance(value, Enum):
+        return value.name
+    if isinstance(value, Path):
+        return str(value)
+    if hasattr(value, "tolist") and hasattr(value, "ndim"):
+        return value.tolist()  # type: ignore[union-attr]
+    return value
 
 
 class Config:
@@ -148,6 +123,30 @@ class Config:
         recipe = _export_instance(instance)
         return cls(recipe["class_path"], recipe["init_args"])
 
+    @staticmethod
+    def is_exportable(instance: object) -> bool:
+        """Return whether *instance* opted into constructor capture."""
+        from ._export import is_config_exportable
+
+        return is_config_exportable(instance)
+
+    def resolve_type(self) -> type:
+        """Import and return the configured class.
+
+        Returns:
+            The configured class.
+
+        Raises:
+            ConfigImportError: If the path does not resolve to a class.
+        """
+        from .importing import import_dotted_path
+
+        resolved = import_dotted_path(self.class_path)
+        if not isinstance(resolved, type):
+            msg = f"{self.class_path!r} does not resolve to a class"
+            raise ConfigImportError(msg)
+        return resolved
+
     def to_dict(self) -> dict[str, object]:
         """Convert this config to its plain serialization form.
 
@@ -158,7 +157,7 @@ class Config:
             TypeError: If this instance is not a dataclass subclass or direct recipe.
         """
         if dataclasses.is_dataclass(self):
-            result = dataclass_to_dict(self)
+            result = _plain_value(self)
             if not isinstance(result, dict):
                 msg = f"Expected dict from dataclass_to_dict, got {type(result)}"
                 raise TypeError(msg)
@@ -166,7 +165,7 @@ class Config:
         if type(self) is not Config:
             msg = f"{type(self).__name__} must be a dataclass to use Config"
             raise TypeError(msg)
-        return {"class_path": self.class_path, "init_args": dataclass_to_dict(self.init_args)}
+        return {"class_path": self.class_path, "init_args": _plain_value(self.init_args)}
 
     @classmethod
     def from_dict(cls, data: Mapping[str, object], *, strict: bool = True) -> Self:
@@ -227,7 +226,7 @@ class Config:
             }
         return {
             "class_path": f"{type(self).__module__}.{type(self).__qualname__}",
-            "init_args": cast("dict[str, JsonValue]", dataclass_to_dict(self)),
+            "init_args": cast("dict[str, JsonValue]", _plain_value(self)),
         }
 
     def save(
@@ -252,9 +251,7 @@ class Config:
             )
             return
         if type(self) is Config:
-            from ._yaml import save_yaml
-
-            save_yaml(self.to_jsonargparse(), target)
+            target.write_text(yaml.safe_dump(self.to_dict(), sort_keys=False), encoding="utf-8")
             return
         save_class_config(self, target)
 
@@ -276,9 +273,11 @@ class Config:
             if source_path.suffix not in {".yaml", ".yml"}:
                 msg = f"Unsupported file extension: {source_path.suffix}. Use .yaml or .yml"
                 raise ValueError(msg)
-            from ._yaml import load_yaml
-
-            return cls.from_dict(cast("Mapping[str, object]", load_yaml(source_path)))
+            loaded = yaml.safe_load(source_path.read_text(encoding="utf-8")) or {}
+            if not isinstance(loaded, Mapping):
+                msg = f"Expected YAML root to be a mapping, got {type(loaded).__name__}"
+                raise TypeError(msg)
+            return cls.from_dict(loaded)
 
         if isinstance(source, Mapping):
             values: Mapping[str, object] = source
