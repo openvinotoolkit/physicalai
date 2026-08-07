@@ -33,7 +33,7 @@ dependencies = [
     "onnxruntime",
     "openvino>=2026.3.0",
     "openvino_tokenizers>=2026.3.0.0",
-    "jsonargparse[signatures,shtab]>=4.36",
+    "jsonargparse[signatures,shtab]>=4.50,<5",
     "typing-extensions>=4.5",
 ]
 

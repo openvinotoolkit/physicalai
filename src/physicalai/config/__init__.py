@@ -37,7 +37,7 @@ from ._export import (
     resolve_public_class_path,
     to_config,
 )
-from ._instantiate import instantiate as _strict_instantiate
+from ._instantiate import instantiate
 from ._normalize import validate_config
 from ._types import ConfigValue, JsonScalar, JsonValue
 from ._yaml import load_yaml, save_yaml, to_yaml
@@ -45,8 +45,6 @@ from .base import Config
 from .importing import import_dotted_path
 from .loading import import_class, instantiate_obj
 from .mixin import FromConfig, from_config
-
-instantiate = _strict_instantiate  # ruff: ignore[RUF067]
 
 __all__ = [
     "Config",

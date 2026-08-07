@@ -1,5 +1,6 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
+# ruff: noqa: PLC0415
 
 """Mixins for configuration-based construction."""
 
@@ -10,9 +11,9 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Self, TypeVar, cast
 
+from jsonargparse import FromConfigMixin
 from pydantic import BaseModel
 
-from .loading import instantiate_obj_from_dict, instantiate_obj_from_file
 from .serializable import dataclass_to_dict
 
 __all__ = ["FromConfig", "from_config"]
@@ -20,7 +21,7 @@ __all__ = ["FromConfig", "from_config"]
 _T = TypeVar("_T", bound=type)
 
 
-class FromConfig:
+class FromConfig(FromConfigMixin):
     """Mixin adding constructors for mapping, YAML, Pydantic, and dataclass configs."""
 
     @classmethod
@@ -29,8 +30,16 @@ class FromConfig:
 
         Returns:
             An instance of ``cls``.
+
+        Raises:
+            TypeError: If ``key`` is supplied for a file input.
         """
-        return cast("Self", instantiate_obj_from_file(file_path, key=key, target_cls=cls))
+        if key is not None:
+            msg = "key= is supported only for mapping compatibility inputs"
+            raise TypeError(msg)
+        from .base import parse_class_config_file
+
+        return parse_class_config_file(cls, file_path)
 
     @classmethod
     def from_dict(cls, config: Mapping[str, Any], *, key: str | None = None) -> Self:
@@ -38,8 +47,25 @@ class FromConfig:
 
         Returns:
             An instance of ``cls``.
+
+        Raises:
+            TypeError: If ``key`` or a class recipe envelope is malformed.
         """
-        return cast("Self", instantiate_obj_from_dict(config, key=key, target_cls=cls))
+        values: Mapping[str, Any] = config
+        if key is not None:
+            selected = values.get(key)
+            if not isinstance(selected, Mapping):
+                msg = f"Configuration at key {key!r} must be a mapping"
+                raise TypeError(msg)
+            values = selected
+        if "class_path" in values and "init_args" in values:
+            values = values["init_args"]
+            if not isinstance(values, Mapping):
+                msg = "Expected 'init_args' to be a mapping"
+                raise TypeError(msg)
+        from .base import parse_class_config
+
+        return parse_class_config(cls, values)
 
     @classmethod
     def from_pydantic(cls, config: BaseModel, *, key: str | None = None, recursive: bool = False) -> Self:
@@ -69,7 +95,13 @@ class FromConfig:
             msg = f"Expected dataclass instance, got {type(config)}"
             raise TypeError(msg)
         values = cast("dict[str, Any]", dataclass_to_dict(config, recursive=recursive))
-        return cls.from_dict(values, key=key)
+        if key is not None:
+            nested = values.get(key)
+            if not isinstance(nested, Mapping):
+                msg = f"Configuration at key {key!r} must be a mapping"
+                raise TypeError(msg)
+            values = nested
+        return cls(**values)
 
     @classmethod
     def from_config(

@@ -1,5 +1,6 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
+# ruff: noqa: PLC0415, A002, PLR0911
 
 """Unified construction-recipe and typed-dataclass configuration class."""
 
@@ -7,17 +8,106 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Mapping
+from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Self, cast, overload
+from types import UnionType
+from typing import TYPE_CHECKING, Literal, Self, TypeVar, Union, cast, get_args, get_origin, get_type_hints, overload
 
 import yaml
+from jsonargparse import ArgumentParser
 
-from .serializable import dataclass_to_dict, dict_to_dataclass
+from .serializable import dataclass_to_dict
 
 if TYPE_CHECKING:
     from ._types import JsonArgparseEnvelope, JsonValue
 
 __all__ = ["Config"]
+
+_T = TypeVar("_T")
+
+
+def _enum_wire_values(value: object, annotation: object) -> object:
+    """Adapt existing value-based enum serialization to jsonargparse names.
+
+    Returns:
+        A value compatible with jsonargparse type adaptation.
+    """
+    if value is None:
+        return None
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+    if origin in {UnionType, Union}:
+        for option in args:
+            if option is type(None):
+                continue
+            converted = _enum_wire_values(value, option)
+            if converted is not value:
+                return converted
+        return value
+    if isinstance(annotation, type) and issubclass(annotation, Enum):
+        if isinstance(value, annotation):
+            return value.name
+        return next((member.name for member in annotation if member.value == value), value)
+    if origin in {list, tuple, set} and isinstance(value, (list, tuple)):
+        item_type = args[0] if args else object
+        return [_enum_wire_values(item, item_type) for item in value]
+    if origin is dict and isinstance(value, Mapping):
+        value_type = args[1] if len(args) > 1 else object
+        return {key: _enum_wire_values(item, value_type) for key, item in value.items()}
+    if isinstance(annotation, type) and dataclasses.is_dataclass(annotation) and isinstance(value, Mapping):
+        hints = get_type_hints(annotation)
+        return {
+            field.name: _enum_wire_values(item, hints.get(field.name, field.type))
+            for field in dataclasses.fields(annotation)
+            if field.name in value
+            for item in [value[field.name]]
+        }
+    return value
+
+
+def parse_class_config(target: type[_T], data: Mapping[str, object], *, defaults: bool = False) -> _T:
+    """Parse and instantiate a known class through jsonargparse.
+
+    Returns:
+        An instance of *target*.
+    """
+    parser = ArgumentParser(exit_on_error=False)
+    parser.add_class_arguments(target, "object")
+    values = _enum_wire_values(dict(data), target)
+    namespace = parser.parse_object({"object": values}, defaults=defaults)
+    return cast("_T", parser.instantiate(namespace).object)
+
+
+def parse_class_config_file(target: type[_T], path: str | Path, *, defaults: bool = False) -> _T:
+    """Parse a typed config file while preserving the existing bare YAML shape.
+
+    Returns:
+        An instance of *target*.
+
+    Raises:
+        TypeError: If the configuration root is not a mapping.
+    """
+    data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    if not isinstance(data, Mapping):
+        msg = f"Expected configuration root to be a mapping, got {type(data).__name__}"
+        raise TypeError(msg)
+    values = data.get("object", data)
+    if not isinstance(values, Mapping):
+        msg = "Expected configuration values to be a mapping"
+        raise TypeError(msg)
+    return parse_class_config(target, values, defaults=defaults)
+
+
+def save_class_config(value: _T, path: str | Path) -> None:
+    """Serialize a typed config through jsonargparse."""
+    parser = ArgumentParser(exit_on_error=False)
+    parser.add_class_arguments(type(value), "object")
+    values = _enum_wire_values(dataclasses.asdict(cast("dataclasses.DataclassInstance", value)), type(value))
+    namespace = parser.parse_object({"object": values}, defaults=False)
+    dumped = yaml.safe_load(parser.dump(namespace, format="yaml"))
+    if isinstance(dumped, Mapping) and "object" in dumped:
+        dumped = dumped["object"]
+    Path(path).write_text(yaml.safe_dump(dumped, sort_keys=False), encoding="utf-8")
 
 
 class Config:
@@ -34,7 +124,7 @@ class Config:
         if type(self) is not Config:
             msg = "Config subclasses must be dataclasses"
             raise TypeError(msg)
-        from ._normalize import normalize_config  # ruff: ignore[PLC0415]
+        from ._normalize import normalize_config
 
         validated = normalize_config({"class_path": class_path, "init_args": dict(init_args or {})})
         self.class_path: str = validated["class_path"]
@@ -53,7 +143,7 @@ class Config:
         if cls is not Config:
             msg = "from_instance() constructs the direct Config recipe type"
             raise TypeError(msg)
-        from ._export import _export_instance  # ruff: ignore[PLC0415]
+        from ._export import _export_instance
 
         recipe = _export_instance(instance)
         return cls(recipe["class_path"], recipe["init_args"])
@@ -93,14 +183,20 @@ class Config:
             TypeError: If ``cls`` is not a dataclass when reconstructing nested fields.
         """
         if cls is Config:
-            from ._normalize import normalize_config  # ruff: ignore[PLC0415]
+            from ._normalize import normalize_config
 
             validated = normalize_config(data)
             return cls(validated["class_path"], validated["init_args"])
         if not dataclasses.is_dataclass(cls):
             msg = f"{cls.__name__} must be a dataclass to use Config"
             raise TypeError(msg)
-        return dict_to_dataclass(cls, data, strict=strict)
+        if strict:
+            field_names = {field.name for field in dataclasses.fields(cls)}
+            extras = set(data) - field_names
+            if extras:
+                msg = f"Unexpected keys for {cls.__name__}: {sorted(extras)}"
+                raise TypeError(msg)
+        return parse_class_config(cls, data)
 
     def instantiate(self) -> object:
         """Instantiate this direct construction recipe through the strict core.
@@ -114,7 +210,7 @@ class Config:
         if type(self) is not Config:
             msg = "instantiate() is only available on a direct Config recipe"
             raise TypeError(msg)
-        from ._instantiate import instantiate  # ruff: ignore[PLC0415]
+        from ._instantiate import instantiate
 
         return instantiate(self)
 
@@ -138,7 +234,7 @@ class Config:
         self,
         path: str | Path,
         *,
-        format: Literal["jsonargparse", "dict"] = "jsonargparse",  # ruff: ignore[A002]
+        format: Literal["jsonargparse", "dict"] = "jsonargparse",
     ) -> None:
         """Save this config to YAML.
 
@@ -149,12 +245,22 @@ class Config:
         if target.suffix not in {".yaml", ".yml"}:
             msg = f"Unsupported file extension: {target.suffix}. Use .yaml or .yml"
             raise ValueError(msg)
-        data = self.to_dict() if format == "dict" else self.to_jsonargparse()
-        target.write_text(yaml.safe_dump(data, default_flow_style=False, sort_keys=False), encoding="utf-8")
+        if format == "dict":
+            target.write_text(
+                yaml.safe_dump(self.to_dict(), default_flow_style=False, sort_keys=False),
+                encoding="utf-8",
+            )
+            return
+        if type(self) is Config:
+            from ._yaml import save_yaml
+
+            save_yaml(self.to_jsonargparse(), target)
+            return
+        save_class_config(self, target)
 
     @classmethod
-    def load(cls, path: str | Path) -> Self:
-        """Load a direct recipe or typed config from YAML.
+    def load(cls, source: Mapping[str, object] | str | Path) -> Self:
+        """Load a direct recipe or typed config from a mapping or YAML file.
 
         Returns:
             A reconstructed config instance.
@@ -163,24 +269,32 @@ class Config:
             ValueError: If the path extension is not ``.yaml`` or ``.yml``.
             TypeError: If the YAML root or ``init_args`` is not a mapping.
         """
-        source = Path(path)
-        if source.suffix not in {".yaml", ".yml"}:
-            msg = f"Unsupported file extension: {source.suffix}. Use .yaml or .yml"
+        if cls is Config:
+            if isinstance(source, Mapping):
+                return cls.from_dict(source)
+            source_path = Path(source)
+            if source_path.suffix not in {".yaml", ".yml"}:
+                msg = f"Unsupported file extension: {source_path.suffix}. Use .yaml or .yml"
+                raise ValueError(msg)
+            from ._yaml import load_yaml
+
+            return cls.from_dict(cast("Mapping[str, object]", load_yaml(source_path)))
+
+        if isinstance(source, Mapping):
+            values: Mapping[str, object] = source
+            if "init_args" in values:
+                inner = values["init_args"]
+                if inner is None or not isinstance(inner, Mapping):
+                    msg = "Expected 'init_args' to be a mapping"
+                    raise TypeError(msg)
+                values = inner
+            return parse_class_config(cls, values)
+
+        source_path = Path(source)
+        if source_path.suffix not in {".yaml", ".yml"}:
+            msg = f"Unsupported file extension: {source_path.suffix}. Use .yaml or .yml"
             raise ValueError(msg)
-        data = yaml.safe_load(source.read_text(encoding="utf-8"))
-        if data is None:
-            data = {}
-        if not isinstance(data, Mapping):
-            msg = f"Expected YAML root to be a mapping, got {type(data).__name__}"
-            raise TypeError(msg)
-        if cls is not Config and "init_args" in data:
-            data = data["init_args"]
-            if data is None:
-                data = {}
-            if not isinstance(data, Mapping):
-                msg = f"Expected 'init_args' to be a mapping, got {type(data).__name__}"
-                raise TypeError(msg)
-        return cls.from_dict(data)
+        return parse_class_config_file(cls, source_path)
 
     @overload
     def __getitem__(self, key: Literal["class_path"]) -> str: ...

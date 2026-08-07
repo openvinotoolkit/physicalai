@@ -62,6 +62,12 @@ def test_typed_dataclass_semantics(tmp_path: Path) -> None:
     assert config.to_jsonargparse()["init_args"] == config.to_dict()
 
 
+def test_typed_config_load_accepts_mapping() -> None:
+    config = TypedConfig.load({"nested": {"value": 3}, "mode": "fast", "shape": [2, 4]})
+
+    assert config == TypedConfig(Nested(3), Mode.FAST, (2, 4))
+
+
 def test_typed_dataclass_dynamic_instantiation() -> None:
     config = TypedConfig(Nested(3), Mode.FAST, (2, 4))
 

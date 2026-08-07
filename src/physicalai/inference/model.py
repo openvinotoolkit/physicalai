@@ -1,5 +1,6 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
+# ruff: noqa: PLC2701, ANN401, PLR2004
 
 """Production-ready inference model with unified API."""
 
@@ -20,14 +21,14 @@ from physicalai.inference.component_factory import instantiate_component, resolv
 from physicalai.inference.constants import ACTION
 from physicalai.inference.data.features import InferenceFeature
 from physicalai.inference.manifest import ComponentSpec, Manifest
+from physicalai.inference.postprocessors.base import Postprocessor
+from physicalai.inference.preprocessors.base import Preprocessor
 from physicalai.inference.runners import get_runner
-from physicalai.inference.utils._hub import download_from_hub  # noqa: PLC2701
+from physicalai.inference.utils._hub import download_from_hub
 
 if TYPE_CHECKING:
     from physicalai.inference.adapters.base import RuntimeAdapter
     from physicalai.inference.callbacks.base import Callback
-    from physicalai.inference.postprocessors.base import Postprocessor
-    from physicalai.inference.preprocessors.base import Preprocessor
     from physicalai.inference.runners.base import InferenceRunner
 
 
@@ -79,7 +80,7 @@ class InferenceModel:
         preprocessors: list[Preprocessor] | None = None,
         postprocessors: list[Postprocessor] | None = None,
         callbacks: list[Callback] | None = None,
-        **adapter_kwargs: Any,  # noqa: ANN401
+        **adapter_kwargs: Any,
     ) -> None:
         """Initialize InferenceModel with optional auto-detection.
 
@@ -147,10 +148,14 @@ class InferenceModel:
         self.runner: InferenceRunner = runner if runner is not None else get_runner(self.manifest)
 
         self.preprocessors: list[Preprocessor] = (
-            preprocessors if preprocessors is not None else self._load_processors(self.manifest.model.preprocessors)
+            preprocessors
+            if preprocessors is not None
+            else self._load_processors(self.manifest.model.preprocessors, Preprocessor)
         )
         self.postprocessors: list[Postprocessor] = (
-            postprocessors if postprocessors is not None else self._load_processors(self.manifest.model.postprocessors)
+            postprocessors
+            if postprocessors is not None
+            else self._load_processors(self.manifest.model.postprocessors, Postprocessor)
         )
         logger.info(
             "Loaded {} preprocessors, {} postprocessors",
@@ -195,7 +200,7 @@ class InferenceModel:
         revision: str | None = None,
         cache_dir: str | Path | None = None,
         allow_patterns: list[str] | None = None,
-        **kwargs: Any,  # noqa: ANN401
+        **kwargs: Any,
     ) -> InferenceModel:
         """Load an inference model from a Hugging Face Hub repository or local path.
 
@@ -321,7 +326,7 @@ class InferenceModel:
         outputs = self(observation)
         actions = outputs[ACTION]
         # Strip the batch dimension; reject actual batches (batch > 1).
-        if actions.ndim == 3:  # noqa: PLR2004
+        if actions.ndim == 3:
             if actions.shape[0] != 1:
                 msg = (
                     f"Batched inference is not supported by predict_action_chunk: "
@@ -427,7 +432,7 @@ class InferenceModel:
             return Manifest.load(manifest_path)
         return Manifest()
 
-    def _load_processors(self, specs: list[ComponentSpec]) -> list[Any]:
+    def _load_processors(self, specs: list[ComponentSpec], base: type) -> list[Any]:
         """Instantiate preprocessors or postprocessors from component specs.
 
         Resolves relative ``artifact`` paths to absolute paths using
@@ -435,11 +440,12 @@ class InferenceModel:
 
         Args:
             specs: List of component specifications to instantiate.
+            base: Expected processor base class.
 
         Returns:
             List of instantiated processor objects.
         """
-        return [instantiate_component(resolve_artifact(spec, self.export_dir)) for spec in specs]
+        return [instantiate_component(base, resolve_artifact(spec, self.export_dir)) for spec in specs]
 
     def _load_features(self, specs: list[ComponentSpec]) -> list[InferenceFeature]:
         """Instantiate :class:`InferenceFeature` objects from manifest specs.
@@ -457,7 +463,7 @@ class InferenceModel:
         """
         features: list[InferenceFeature] = []
         for spec in specs:
-            component = instantiate_component(resolve_artifact(spec, self.export_dir))
+            component = instantiate_component(InferenceFeature, resolve_artifact(spec, self.export_dir))
             if not isinstance(component, InferenceFeature):
                 msg = f"Expected an InferenceFeature instance from spec, got {type(component).__name__}"
                 raise TypeError(msg)

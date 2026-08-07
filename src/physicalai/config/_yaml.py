@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 import yaml
 
@@ -79,4 +80,4 @@ def load_yaml(path: str | Path) -> Config:
     if not isinstance(loaded, dict):
         msg = f"{str(path)!r}: YAML config must be a mapping, got {type(loaded).__name__}"
         raise ConfigError(msg)
-    return Config.from_dict(normalize_config(loaded))
+    return Config.from_dict(cast("Mapping[str, object]", normalize_config(loaded)))
