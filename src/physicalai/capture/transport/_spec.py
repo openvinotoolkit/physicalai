@@ -222,7 +222,7 @@ class CameraPublisherConfig:
         """
         from physicalai.capture.camera import Camera  # noqa: PLC0415
 
-        driver = normalize_camera_config(self.camera).instantiate()
+        driver = normalize_camera_config(self.camera).instantiate(expected_type=Camera)
         if not isinstance(driver, Camera):
             msg = f"{self.camera['class_path']!r} does not satisfy the Camera protocol (got {type(driver).__name__})"
             raise TypeError(msg)

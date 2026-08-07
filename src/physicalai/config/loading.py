@@ -117,7 +117,10 @@ def instantiate_obj_from_dict(
         msg = f"Configuration must be a mapping, got {type(selected).__name__}"
         raise TypeError(msg)
     if "class_path" in selected:
-        return instantiate(Config.from_dict(selected))
+        recipe = Config.from_dict(selected)
+        if target_cls is not None:
+            return recipe.instantiate(expected_type=target_cls)
+        return instantiate(recipe)
     if target_cls is None:
         msg = (
             "Configuration must contain 'class_path' for instantiation, "

@@ -198,7 +198,7 @@ class Config:
                 raise TypeError(msg)
         return parse_class_config(cls, data)
 
-    def instantiate(self) -> object:
+    def instantiate(self, *, expected_type: type[_T] | None = None) -> _T | object:
         """Instantiate this direct construction recipe through the strict core.
 
         Returns:
@@ -212,7 +212,7 @@ class Config:
             raise TypeError(msg)
         from ._instantiate import instantiate
 
-        return instantiate(self)
+        return instantiate(self, expected_type=expected_type)
 
     def to_jsonargparse(self) -> JsonArgparseEnvelope:
         """Convert this config to a ``class_path``/``init_args`` envelope.

@@ -9,7 +9,9 @@ import dataclasses
 import math
 from collections.abc import Mapping
 from enum import Enum
-from typing import cast
+from typing import TypeVar, cast
+
+from jsonargparse import ArgumentParser
 
 from ._errors import ConfigError, ConfigImportError
 from ._export import declared_config_args
@@ -18,6 +20,8 @@ from ._path import format_path
 from ._types import _MAX_CONFIG_DEPTH, JsonValue
 from .base import Config
 from .importing import import_dotted_path
+
+_T = TypeVar("_T")
 
 
 def _is_nested_config(value: object) -> bool:
@@ -261,7 +265,7 @@ def _instantiate_impl(
         raise
 
 
-def instantiate(config: Config | Mapping[str, JsonValue]) -> object:
+def instantiate(config: Config | Mapping[str, JsonValue], *, expected_type: type[_T] | None = None) -> _T | object:
     """Build a fresh component from a trusted :class:`Config`.
 
     Validates *config* before importing. Recursively instantiates nested
@@ -281,11 +285,42 @@ def instantiate(config: Config | Mapping[str, JsonValue]) -> object:
 
     Args:
         config: Trusted ``class_path`` + ``init_args`` mapping.
+        expected_type: Optional known base class or protocol. When supplied,
+            jsonargparse performs typed construction and validation.
 
     Returns:
-        A new instance of the configured class.
+        The constructed object, optionally constrained to *expected_type*.
+
+    Raises:
+        ConfigError: If the recipe is malformed or fails portable preflight.
+        ConfigImportError: If the configured class cannot be imported.
     """
     raw: Config | Mapping[str, JsonValue]
     raw = {"class_path": config.class_path, "init_args": config.init_args} if type(config) is Config else config
     _preflight_config(raw, path="", depth=0, seen=set())
+    if expected_type is not None:
+        parser = ArgumentParser(exit_on_error=False)
+        class_path = cast("str", raw["class_path"])
+        try:
+            target = import_dotted_path(class_path)
+        except (ValueError, ImportError, AttributeError) as exc:
+            msg = f"cannot import class_path {class_path!r}: {exc}"
+            raise ConfigImportError(msg) from exc
+        if not isinstance(target, type):
+            msg = f"{class_path!r} does not resolve to a class"
+            raise ConfigImportError(msg)
+        if getattr(expected_type, "_is_protocol", False):
+            parser.add_class_arguments(target, "component")
+            namespace = parser.parse_object({"component": raw["init_args"]}, defaults=False)
+            result = parser.instantiate(namespace).component
+            if not isinstance(result, expected_type):
+                msg = f"{class_path!r} does not satisfy {expected_type.__name__}"
+                raise ConfigError(msg)
+            return result
+        parser.add_subclass_arguments(expected_type, "component", required=True)
+        namespace = parser.parse_object(
+            {"component": cast("dict[str, JsonValue]", raw)},
+            defaults=False,
+        )
+        return cast("_T", parser.instantiate(namespace).component)
     return _instantiate_impl(raw, path="", depth=0, seen=set())

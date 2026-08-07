@@ -248,7 +248,7 @@ class RobotOwnerConfig:
         """
         from physicalai.robot.interface import Robot  # noqa: PLC0415
 
-        driver = normalize_robot_config(self.robot).instantiate()
+        driver = normalize_robot_config(self.robot).instantiate(expected_type=Robot)
         if not isinstance(driver, Robot):
             msg = f"{self.robot_class!r} does not satisfy the Robot protocol (got {type(driver).__name__})"
             raise TypeError(msg)
