@@ -212,3 +212,100 @@ class TestResizeSmolVLAResizeWithPad:
         img = np.zeros((1, 3, 64, 0), dtype=np.float32)
         with pytest.raises(ValueError, match="zero spatial dimension"):
             prep({IMAGES: img})
+
+
+class TestResizeSmolVLAImageKeyReorderMapInit:
+    """Tests for image_key_reorder_map and num_cameras params added for physical-ai-studio compat."""
+
+    def test_accepts_image_key_reorder_map(self) -> None:
+        prep = ResizeSmolVLA(image_key_reorder_map={"left": 0, "right": 1})
+        assert prep._image_key_reorder_map == {"left": 0, "right": 1}
+
+    def test_accepts_num_cameras(self) -> None:
+        prep = ResizeSmolVLA(num_cameras=3)
+        assert prep._num_cameras == 3
+
+    def test_none_image_key_reorder_map_normalised_to_empty_dict(self) -> None:
+        prep = ResizeSmolVLA(image_key_reorder_map=None)
+        assert prep._image_key_reorder_map == {}
+
+    def test_default_image_key_reorder_map_is_empty_dict(self) -> None:
+        assert ResizeSmolVLA()._image_key_reorder_map == {}
+
+    def test_default_num_cameras_is_zero(self) -> None:
+        assert ResizeSmolVLA()._num_cameras == 0
+
+
+class TestResizeSmolVLAResolveImageOrder:
+    def test_natural_order_when_no_map(self) -> None:
+        prep = ResizeSmolVLA()
+        assert prep._resolve_image_order(["b", "a", "c"]) == ["b", "a", "c"]
+
+    def test_reorder_by_map(self) -> None:
+        prep = ResizeSmolVLA(image_key_reorder_map={"right": 0, "left": 1})
+        assert prep._resolve_image_order(["left", "right"]) == ["right", "left"]
+
+    def test_num_cameras_fills_none_slots(self) -> None:
+        prep = ResizeSmolVLA(image_key_reorder_map={"cam": 1}, num_cameras=3)
+        layout = prep._resolve_image_order(["cam"])
+        assert len(layout) == 3
+        assert layout[1] == "cam"
+        assert layout[0] is None
+        assert layout[2] is None
+
+    def test_exact_camera_count_no_none_slots(self) -> None:
+        prep = ResizeSmolVLA(image_key_reorder_map={"a": 0, "b": 1}, num_cameras=2)
+        assert prep._resolve_image_order(["a", "b"]) == ["a", "b"]
+
+
+class TestResizeSmolVLANoneCameraSlot:
+    def test_none_slot_produces_black_image(self) -> None:
+        # num_cameras=2, only slot 1 supplied → slot 0 is None → black image
+        prep = ResizeSmolVLA(image_key_reorder_map={"cam": 1}, num_cameras=2, image_resolution=(8, 8))
+        img = np.ones((1, 3, 8, 8), dtype=np.float32)
+        result = prep({IMAGES: {"cam": img}})
+        assert result[IMAGES].shape[0] == 2
+        np.testing.assert_allclose(result[IMAGES][0], -1.0, atol=1e-5)
+
+    def test_none_slot_mask_is_false(self) -> None:
+        prep = ResizeSmolVLA(image_key_reorder_map={"cam": 1}, num_cameras=2, image_resolution=(8, 8))
+        img = np.ones((1, 3, 8, 8), dtype=np.float32)
+        result = prep({IMAGES: {"cam": img}})
+        assert not result[IMAGE_MASKS][0].any()
+
+    def test_real_slot_mask_is_true(self) -> None:
+        prep = ResizeSmolVLA(image_key_reorder_map={"cam": 1}, num_cameras=2, image_resolution=(8, 8))
+        img = np.ones((1, 3, 8, 8), dtype=np.float32)
+        result = prep({IMAGES: {"cam": img}})
+        assert result[IMAGE_MASKS][1].all()
+
+
+class TestResizeSmolVLAComponentSpecCompat:
+    """Regression: physical-ai-studio exports image_key_reorder_map and num_cameras
+    into ComponentSpec; instantiate_component must forward them to ResizeSmolVLA.__init__."""
+
+    def test_instantiate_via_component_spec(self) -> None:
+        from physicalai.inference.component_factory import instantiate_component
+        from physicalai.inference.manifest import ComponentSpec
+
+        spec = ComponentSpec(
+            type="smolvla_resize",
+            image_resolution=[64, 64],
+            image_key_reorder_map={"left": 0, "right": 1},
+            num_cameras=2,
+        )
+        prep = instantiate_component(spec)
+        assert isinstance(prep, ResizeSmolVLA)
+        assert prep._image_key_reorder_map == {"left": 0, "right": 1}
+        assert prep._num_cameras == 2
+
+    def test_instantiate_via_component_spec_empty_map(self) -> None:
+        from physicalai.inference.component_factory import instantiate_component
+        from physicalai.inference.manifest import ComponentSpec
+
+        # Mirrors the default export when no reordering is needed
+        spec = ComponentSpec(type="smolvla_resize", image_resolution=[512, 512], image_key_reorder_map={}, num_cameras=0)
+        prep = instantiate_component(spec)
+        assert isinstance(prep, ResizeSmolVLA)
+        assert prep._image_key_reorder_map == {}
+        assert prep._num_cameras == 0
