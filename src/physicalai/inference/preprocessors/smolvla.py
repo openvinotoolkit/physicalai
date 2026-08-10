@@ -25,15 +25,27 @@ class ResizeSmolVLA(Preprocessor):
             as (height, width). Defaults to (512, 512).
     """
 
-    def __init__(self, image_resolution: tuple[int, int] = (512, 512)) -> None:
-        """Initialize the SmolVLA numpy-based preprocessor.
-
-        Args:
-            image_resolution (tuple[int, int]): The target resolution for input images
-                as (height, width). Defaults to (512, 512).
-        """
+    def __init__(
+        self,
+        image_resolution: tuple[int, int] = (512, 512),
+        image_key_reorder_map: dict[str, int] | None = None,
+        num_cameras: int = 0,
+    ) -> None:
         super().__init__()
         self.image_resolution = image_resolution
+        # image_key_reorder_map maps input key → camera slot index for reordering
+        self._image_key_reorder_map: dict[str, int] = image_key_reorder_map or {}
+        self._num_cameras = num_cameras
+
+    def _resolve_image_order(self, img_keys: list[str]) -> list[str | None]:
+        """Return keys sorted by camera slot; None slots filled when num_cameras > 0."""
+        slot_by_key = self._image_key_reorder_map if self._image_key_reorder_map else {k: i for i, k in enumerate(img_keys)}
+        if self._num_cameras > 0:
+            layout: list[str | None] = [None] * self._num_cameras
+            for key, slot in slot_by_key.items():
+                layout[slot] = key
+            return layout
+        return sorted(img_keys, key=lambda k: slot_by_key[k])
 
     def __call__(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         """Process and prepare images for model inference.
@@ -62,15 +74,27 @@ class ResizeSmolVLA(Preprocessor):
         if IMAGES in inputs and isinstance(inputs[IMAGES], np.ndarray):
             images = [inputs[IMAGES]]
         elif IMAGES in inputs and isinstance(inputs[IMAGES], dict):
-            images = list(inputs[IMAGES].values())
+            img_keys = list(inputs[IMAGES].keys())
+            ordered = self._resolve_image_order(img_keys)
+            images = [inputs[IMAGES][k] if k is not None else None for k in ordered]
         else:
             img_keys = [key for key in inputs if key.startswith(IMAGES)]
-            images = [inputs[img_keys[0]]] if len(img_keys) == 1 else [inputs[key] for key in img_keys]
+            if len(img_keys) == 1:
+                images = [inputs[img_keys[0]]]
+            else:
+                ordered = self._resolve_image_order(img_keys)
+                images = [inputs[k] if k is not None else None for k in ordered]
 
         img_masks = []
         resized_images = []
 
         for img in images:
+            if img is None:
+                # empty camera slot — filled with black image and zero mask
+                h, w = self.image_resolution
+                resized_images.append(np.full((1, 3, h, w), -1.0, dtype=np.float32))
+                img_masks.append(np.zeros(1, dtype=np.bool_))
+                continue
             if img.dtype == np.uint8:
                 img_fp32 = img.astype(np.float32) / 255.0
             elif np.issubdtype(img.dtype, np.floating):
@@ -93,7 +117,7 @@ class ResizeSmolVLA(Preprocessor):
             resized_img = self._resize_with_pad(img_fp32, *self.image_resolution, pad_value=0)
             resized_img = resized_img * 2.0 - 1.0
             bsize = resized_img.shape[0]
-            mask = np.ones(bsize, dtype=np.bool)
+            mask = np.ones(bsize, dtype=np.bool_)
             resized_images.append(resized_img)
             img_masks.append(mask)
 
