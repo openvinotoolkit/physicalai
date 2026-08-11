@@ -23,7 +23,7 @@ from physicalai.inference.manifest import ComponentSpec, Manifest
 from physicalai.inference.postprocessors.base import Postprocessor
 from physicalai.inference.preprocessors.base import Preprocessor
 from physicalai.inference.runners import get_runner
-from physicalai.inference.utils._hub import download_from_hub  # ruff: ignore[import-private-name]
+from physicalai.inference.utils._hub import download_from_hub  # noqa: PLC2701
 
 if TYPE_CHECKING:
     from physicalai.inference.adapters.base import RuntimeAdapter
@@ -79,7 +79,7 @@ class InferenceModel:
         preprocessors: list[Preprocessor] | None = None,
         postprocessors: list[Postprocessor] | None = None,
         callbacks: list[Callback] | None = None,
-        **adapter_kwargs: Any,  # ruff: ignore[any-type]
+        **adapter_kwargs: Any,  # noqa: ANN401
     ) -> None:
         """Initialize InferenceModel with optional auto-detection.
 
@@ -199,7 +199,7 @@ class InferenceModel:
         revision: str | None = None,
         cache_dir: str | Path | None = None,
         allow_patterns: list[str] | None = None,
-        **kwargs: Any,  # ruff: ignore[any-type]
+        **kwargs: Any,  # noqa: ANN401
     ) -> InferenceModel:
         """Load an inference model from a Hugging Face Hub repository or local path.
 
@@ -325,7 +325,7 @@ class InferenceModel:
         outputs = self(observation)
         actions = outputs[ACTION]
         # Strip the batch dimension; reject actual batches (batch > 1).
-        if actions.ndim == 3:  # ruff: ignore[magic-value-comparison]
+        if actions.ndim == 3:  # noqa: PLR2004
             if actions.shape[0] != 1:
                 msg = (
                     f"Batched inference is not supported by predict_action_chunk: "

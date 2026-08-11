@@ -5,7 +5,10 @@
 
 from __future__ import annotations
 
-from typing import Protocol, TypedDict, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, TypedDict, runtime_checkable
+
+if TYPE_CHECKING:
+    from .base import Config
 
 JsonScalar = None | bool | int | float | str
 JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -27,6 +30,24 @@ class ConfigValue(Protocol):
 
     def to_config_value(self) -> JsonValue:
         """Return ctor-compatible JSON for config export."""
+        ...
+
+
+@runtime_checkable
+class ConfigExportable(Protocol):
+    """Internal typing protocol for ``@export_config`` instances.
+
+    Instances gain :meth:`supports_config_export` and :meth:`as_config` when
+    their class is decorated; subclasses inherit them when they reuse a
+    decorated constructor without overriding ``__init__``.
+    """
+
+    def supports_config_export(self) -> bool:
+        """Return whether this instance can export a portable construction recipe."""
+        ...
+
+    def as_config(self) -> Config:
+        """Return the :class:`~physicalai.config.Config` recipe for this instance."""
         ...
 
 

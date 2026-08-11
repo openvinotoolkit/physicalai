@@ -37,7 +37,10 @@ __all__ = [
     "instantiate_obj_from_pydantic",
 ]
 
-_REPLACEMENT = "jsonargparse.ArgumentParser.add_class_arguments with parser.instantiate(), or Config.instantiate() for portable recipes"
+_REPLACEMENT = (
+    "jsonargparse.ArgumentParser.add_class_arguments with parser.instantiate(), "
+    "or Config.instantiate() for portable recipes"
+)
 
 
 def import_class(class_path: str) -> type:
@@ -131,7 +134,7 @@ def instantiate_obj_from_dict(
         return target_cls(*args, **decoded)
     try:
         return parse_class_config(target_cls, init_args)
-    except Exception:
+    except Exception:  # noqa: BLE001
         decoded = {name: _instantiate_recursive(value) for name, value in init_args.items()}
         return target_cls(**decoded)
 

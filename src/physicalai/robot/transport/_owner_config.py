@@ -33,13 +33,12 @@ import json
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
-from physicalai.config import (
-    Config,
-)
+from physicalai.config import Config
 
 if TYPE_CHECKING:
+    from physicalai.config._types import ConfigExportable
     from physicalai.robot.interface import Robot
 
 DEFAULT_RATE_HZ = 100.0
@@ -110,7 +109,9 @@ def normalize_robot_config(robot: Config | Mapping[str, object]) -> Config:
     return recipe
 
 
-def coerce_robot_config_input(robot: Config | Mapping[str, object] | object) -> Config | Mapping[str, object]:
+def coerce_robot_config_input(
+    robot: Config | Mapping[str, object] | ConfigExportable,
+) -> Config | Mapping[str, object]:
     """Accept a recipe, mapping, or live ``@export_config`` driver instance.
 
     Returns:
@@ -119,10 +120,13 @@ def coerce_robot_config_input(robot: Config | Mapping[str, object] | object) -> 
     Raises:
         TypeError: If ``robot`` is not a supported config shape.
     """
-    if type(robot) is Config or isinstance(robot, Mapping):
+    if type(robot) is Config:
         return robot
-    if Config.is_exportable(robot):
-        return Config.from_instance(robot)
+    if isinstance(robot, Mapping):
+        return robot
+    exportable = cast("ConfigExportable", robot)
+    if exportable.supports_config_export():
+        return exportable.as_config()
     msg = (
         "robot config must be physicalai.config.Config, a class_path mapping, "
         f"or an @export_config instance; got {type(robot).__name__}"

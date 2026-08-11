@@ -286,7 +286,7 @@ Expected disposition:
 | `_instantiate_recursive`                    | Delete                                                                |
 | positional `args` convention                | Deprecate and remove                                                  |
 | flattened arbitrary `**kwargs` construction | Deprecate or explicitly translate; do not inspect signatures manually |
-| `FromConfig`                                | Deprecated facade over `jsonargparse.FromConfigMixin`                  |
+| `FromConfig`                                | Deprecated facade over `jsonargparse.FromConfigMixin`                 |
 | `@from_config`                              | Removed                                                               |
 | `dict_to_dataclass`                         | Delete immediately                                                    |
 | `dataclass_to_dict`                         | Retain only for legacy wire/checkpoint compatibility                  |

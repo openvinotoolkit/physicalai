@@ -15,7 +15,8 @@ Legacy helpers in :mod:`physicalai.config.loading` and
 Opt-in export:
 
 - ``@export_config`` — record constructor arguments for
-  :meth:`Config.from_instance`.
+  :meth:`Config.from_instance` and add ``supports_config_export()`` /
+  ``as_config()`` on instances.
 - ``@export_config(..., scalar_var_kwargs=True)`` — only JSON-safe ``**kwargs``.
 - :meth:`~ConfigValue.to_config_value` — custom JSON fragments for domain types.
 

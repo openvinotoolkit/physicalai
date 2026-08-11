@@ -68,7 +68,7 @@ def save_class_config(value: _T, path: str | Path) -> None:
     Path(path).write_text(yaml.safe_dump(dumped, sort_keys=False), encoding="utf-8")
 
 
-def _plain_value(value: object) -> object:  # ruff: ignore[too-many-return-statements]
+def _plain_value(value: object) -> object:  # noqa: PLR0911
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return {field.name: _plain_value(getattr(value, field.name)) for field in dataclasses.fields(value)}
     if isinstance(value, dict):
@@ -98,7 +98,7 @@ class Config:
         if type(self) is not Config:
             msg = "Config subclasses must be dataclasses"
             raise TypeError(msg)
-        from ._normalize import normalize_config  # ruff: ignore[import-outside-top-level]
+        from ._normalize import normalize_config  # noqa: PLC0415
 
         validated = normalize_config({"class_path": class_path, "init_args": dict(init_args or {})})
         self.class_path: str = validated["class_path"]
@@ -117,7 +117,7 @@ class Config:
         if cls is not Config:
             msg = "from_instance() constructs the direct Config recipe type"
             raise TypeError(msg)
-        from ._export import _export_instance  # ruff: ignore[import-outside-top-level]
+        from ._export import _export_instance  # noqa: PLC0415
 
         recipe = _export_instance(instance)
         return cls(recipe["class_path"], recipe["init_args"])
@@ -125,7 +125,7 @@ class Config:
     @staticmethod
     def is_exportable(instance: object) -> bool:
         """Return whether *instance* opted into constructor capture."""
-        from ._export import is_config_exportable  # ruff: ignore[import-outside-top-level]
+        from ._export import is_config_exportable  # noqa: PLC0415
 
         return is_config_exportable(instance)
 
@@ -138,7 +138,7 @@ class Config:
         Raises:
             ConfigImportError: If the path does not resolve to a class.
         """
-        from .importing import import_dotted_path  # ruff: ignore[import-outside-top-level]
+        from .importing import import_dotted_path  # noqa: PLC0415
 
         resolved = import_dotted_path(self.class_path)
         if not isinstance(resolved, type):
@@ -181,7 +181,7 @@ class Config:
             TypeError: If ``cls`` is not a dataclass when reconstructing nested fields.
         """
         if cls is Config:
-            from ._normalize import normalize_config  # ruff: ignore[import-outside-top-level]
+            from ._normalize import normalize_config  # noqa: PLC0415
 
             validated = normalize_config(data)
             return cls(validated["class_path"], validated["init_args"])
@@ -208,7 +208,7 @@ class Config:
         if type(self) is not Config:
             msg = "instantiate() is only available on a direct Config recipe"
             raise TypeError(msg)
-        from ._instantiate import instantiate  # ruff: ignore[import-outside-top-level]
+        from ._instantiate import instantiate  # noqa: PLC0415
 
         return instantiate(self, expected_type=expected_type)
 
@@ -232,7 +232,7 @@ class Config:
         self,
         path: str | Path,
         *,
-        format: Literal["jsonargparse", "dict"] = "jsonargparse",  # ruff: ignore[builtin-argument-shadowing]
+        format: Literal["jsonargparse", "dict"] = "jsonargparse",  # noqa: A002
     ) -> None:
         """Save this config to YAML.
 

@@ -25,6 +25,7 @@ from physicalai.config import (
     JsonValue,
     export_config,
 )
+from physicalai.config._types import ConfigExportable
 from physicalai.config.importing import import_dotted_path
 
 to_config = Config.from_instance
@@ -655,8 +656,11 @@ class TestExportConfig:
         with pytest.raises(ConfigError, match="to_config_value"):
             to_config(holder)
 
-    def test_export_config_does_not_inject_to_config(self) -> None:
+    def test_export_config_injects_as_config_api(self) -> None:
         point = Point(1, 2)
+        exportable = cast(ConfigExportable, point)
+        assert exportable.supports_config_export()
+        assert exportable.as_config() == Config.from_instance(point)
         assert not hasattr(point, "to_config")
 
     def test_export_config_does_not_break_protocol(self) -> None:
