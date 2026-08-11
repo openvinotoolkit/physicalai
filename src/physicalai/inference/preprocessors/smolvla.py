@@ -112,14 +112,14 @@ class ResizeSmolVLA(Preprocessor):
             resized_img = self._resize_with_pad(img_fp32, target_width, target_height, pad_value=0)
             resized_img = resized_img * 2.0 - 1.0
             bsize = resized_img.shape[0]
-            mask = np.ones(bsize, dtype=np.bool)
+            mask = np.ones(bsize, dtype=np.bool_)
             resized_images.append(resized_img)
             img_masks.append(mask)
 
         reference_img = next((img for img in resized_images if img is not None), None)
         if reference_img is None:
             inputs[IMAGES] = np.empty(0, dtype=np.float32)
-            inputs[IMAGE_MASKS] = np.empty(0, dtype=np.bool)
+            inputs[IMAGE_MASKS] = np.empty(0, dtype=np.bool_)
             return inputs
 
         reference_mask = next(mask for mask in img_masks if mask is not None)
