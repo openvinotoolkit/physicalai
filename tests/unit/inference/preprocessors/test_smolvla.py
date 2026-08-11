@@ -86,6 +86,13 @@ class TestResizeSmolVLACall:
         assert result[IMAGES].shape[3] == 64
         assert result[IMAGES].shape[4] == 64
 
+    def test_non_square_resolution_not_transposed(self) -> None:
+        # Regression: image_resolution is (height, width); _resize_with_pad takes (width, height).
+        prep = ResizeSmolVLA(image_resolution=(120, 240))
+        img = np.random.rand(1, 3, 60, 60).astype(np.float32)
+        result = prep({IMAGES: img})
+        assert result[IMAGES].shape == (1, 1, 3, 120, 240)
+
     def test_dict_images_stacked(self) -> None:
         prep = ResizeSmolVLA(image_resolution=(64, 64))
         inputs = {

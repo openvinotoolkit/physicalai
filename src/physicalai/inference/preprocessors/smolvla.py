@@ -61,21 +61,23 @@ class ResizeSmolVLA(Preprocessor):
         - (B, C, H, W) or (B, H, W, C) with uint8 values in [0, 255]
 
         Args:
-            inputs: Dictionary containing IMAGES key with numpy array(s) of shape
-                    (height, width, channels) or list of such arrays.
+            inputs: Dictionary containing image arrays under the ``images`` key (single
+                array or camera-name dict) or under flat ``images.<camera>`` keys.
 
         Returns:
             Dictionary with processed:
-            - IMAGES: Stacked resized images of shape (batch_size, height, width, channels)
+            - IMAGES: Stacked resized images of shape (n_cameras, batch, channels, height, width)
                         with pixel values normalized to [-1, 1].
-            - IMAGE_MASKS: Boolean masks of shape (batch_size, height, width) indicating
-                             valid image regions (all ones for padded images).
+            - IMAGE_MASKS: Boolean masks of shape (n_cameras, batch) marking which camera
+                             slots hold a real image.
 
         Raises:
-            ValueError: If input images have unsupported data types.
+            ValueError: If input images have unsupported data types, have an ambiguous
+                channel layout, or the camera slots cannot be resolved.
         """
         inputs = dict(inputs)
 
+        target_height, target_width = self.image_resolution
         images_by_key = self._collect_images(inputs)
 
         img_masks: list[np.ndarray | None] = []
@@ -107,7 +109,7 @@ class ResizeSmolVLA(Preprocessor):
             if img_fp32.ndim == 4 and img_fp32.shape[-1] in {1, 2, 3, 4} and img_fp32.shape[1] not in {1, 2, 3, 4}:  # noqa: PLR2004
                 img_fp32 = np.transpose(img_fp32, (0, 3, 1, 2))  # (B, H, W, C) to (B, C, H, W)
 
-            resized_img = self._resize_with_pad(img_fp32, *self.image_resolution, pad_value=0)
+            resized_img = self._resize_with_pad(img_fp32, target_width, target_height, pad_value=0)
             resized_img = resized_img * 2.0 - 1.0
             bsize = resized_img.shape[0]
             mask = np.ones(bsize, dtype=np.bool)
@@ -206,7 +208,20 @@ class ResizeSmolVLA(Preprocessor):
 
     @staticmethod
     def _resize_with_pad(img: np.ndarray, width: int, height: int, pad_value: int = -1) -> np.ndarray:
-        # assume no-op when width height fits already
+        """Resize a batch to fit ``width`` x ``height``, padding the top and left edges.
+
+        Args:
+            img: Image batch of shape (B, C, H, W).
+            width: Target width.
+            height: Target height.
+            pad_value: Fill value for the padded region.
+
+        Returns:
+            Resized batch of shape (B, C, height, width).
+
+        Raises:
+            ValueError: If ``img`` is not 4D or has a zero spatial dimension.
+        """
         img_dim = 4
         if img.ndim != img_dim:
             msg = f"(b,c,h,w) expected, but {img.shape}"
