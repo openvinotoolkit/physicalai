@@ -46,9 +46,7 @@ class ResizeSmolVLA(Preprocessor):
         self.image_resolution = image_resolution
         # Normalise to bare keys so both "wrist" and "images.wrist" map entries match flat runtime keys.
         self._image_key_reorder_map: dict[str, int] | None = (
-            {self._bare_key(k): v for k, v in image_key_reorder_map.items()}
-            if image_key_reorder_map
-            else None
+            {self._bare_key(k): v for k, v in image_key_reorder_map.items()} if image_key_reorder_map else None
         )
         self._num_cameras = num_cameras
 
@@ -77,10 +75,7 @@ class ResizeSmolVLA(Preprocessor):
             raise ValueError(msg)
         if self._num_cameras > 0:
             if self._num_cameras < len(img_keys):
-                msg = (
-                    f"num_cameras ({self._num_cameras}) is smaller than "
-                    f"provided image count ({len(img_keys)})"
-                )
+                msg = f"num_cameras ({self._num_cameras}) is smaller than provided image count ({len(img_keys)})"
                 raise ValueError(msg)
             layout: list[str | None] = [None] * self._num_cameras
             for orig_key, bare_key in zip(img_keys, bare_keys, strict=False):
@@ -92,10 +87,7 @@ class ResizeSmolVLA(Preprocessor):
                     )
                     raise ValueError(msg)
                 if layout[slot] is not None:
-                    msg = (
-                        f"Duplicate camera slot index {slot} "
-                        f"for keys {layout[slot]!r} and {orig_key!r}"
-                    )
+                    msg = f"Duplicate camera slot index {slot} for keys {layout[slot]!r} and {orig_key!r}"
                     raise ValueError(msg)
                 layout[slot] = orig_key
             return layout
@@ -160,13 +152,13 @@ class ResizeSmolVLA(Preprocessor):
                 raise ValueError(msg)
 
             # Heuristic: standard channel counts are {1, 2, 3, 4}; spatial dims are typically larger.
-            if img_fp32.ndim == 4 and img_fp32.shape[-1] in {1, 2, 3, 4} and img_fp32.shape[1] in {1, 2, 3, 4}:  # ruff: ignore[magic-value-comparison]
+            if img_fp32.ndim == 4 and img_fp32.shape[-1] in {1, 2, 3, 4} and img_fp32.shape[1] in {1, 2, 3, 4}:  # noqa: PLR2004
                 msg = (
                     f"ambiguous layout: both dim 1 ({img_fp32.shape[1]}) and dim -1 ({img_fp32.shape[-1]}) "
                     "look like standard channel counts; provide input with spatial dims > 4"
                 )
                 raise ValueError(msg)
-            if img_fp32.ndim == 4 and img_fp32.shape[-1] in {1, 2, 3, 4} and img_fp32.shape[1] not in {1, 2, 3, 4}:  # ruff: ignore[magic-value-comparison]
+            if img_fp32.ndim == 4 and img_fp32.shape[-1] in {1, 2, 3, 4} and img_fp32.shape[1] not in {1, 2, 3, 4}:  # noqa: PLR2004
                 img_fp32 = np.transpose(img_fp32, (0, 3, 1, 2))  # (B, H, W, C) to (B, C, H, W)
 
             resized_img = self._resize_with_pad(
