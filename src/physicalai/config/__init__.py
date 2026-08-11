@@ -35,7 +35,7 @@ from ._export import (
     to_config,
 )
 from ._instantiate import instantiate as _strict_instantiate
-from ._normalize import validate_config as _validate_config_recipe
+from ._normalize import validate_config
 from ._types import ConfigValue, JsonScalar, JsonValue
 from ._yaml import load_yaml, save_yaml, to_yaml
 from .base import Config
@@ -69,6 +69,3 @@ __all__ = [
     "validate_config",
     "validate_envelope",
 ]
-
-# Recipe validation helper exported as validate_config (see _normalize).
-validate_config = _validate_config_recipe
