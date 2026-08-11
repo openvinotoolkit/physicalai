@@ -12,6 +12,9 @@ from physicalai.inference.constants import IMAGE_MASKS, IMAGES
 
 from .base import Preprocessor
 
+# Dummy camera slots assume RGB, matching the SigLIP vision tower.
+_RGB_CHANNELS = 3
+
 
 class ResizeSmolVLA(Preprocessor):
     """Preprocessor for resizing images for SmolVLA model using numpy operations.
@@ -42,8 +45,10 @@ class ResizeSmolVLA(Preprocessor):
                 camera indices used for deterministic ordering. Keys may be given with
                 or without the ``images.`` prefix.
             num_cameras: Total number of camera slots expected by the model. Slots left
-                unfilled by the input image keys are filled with masked dummy images.
-                Values <= 0 keep only the input cameras, without any dummy images.
+                unfilled by the input image keys are filled with masked dummy images
+                shaped after the real cameras, or after ``image_resolution`` with a
+                single RGB frame when no real camera is present. Values <= 0 keep only
+                the input cameras, without any dummy images.
 
         Raises:
             ValueError: If ``image_key_reorder_map`` contains negative or duplicate slot
@@ -132,12 +137,17 @@ class ResizeSmolVLA(Preprocessor):
             img_masks.append(mask)
 
         reference_img = next((img for img in resized_images if img is not None), None)
-        if reference_img is None:
+        if reference_img is not None:
+            reference_mask = next(mask for mask in img_masks if mask is not None)
+        elif resized_images:
+            # All slots are dummies, so there is no real frame to copy shape from.
+            reference_img = np.empty((1, _RGB_CHANNELS, target_height, target_width), dtype=np.float32)
+            reference_mask = np.empty(1, dtype=np.bool_)
+        else:
             inputs[IMAGES] = np.empty(0, dtype=np.float32)
             inputs[IMAGE_MASKS] = np.empty(0, dtype=np.bool_)
             return inputs
 
-        reference_mask = next(mask for mask in img_masks if mask is not None)
         inputs[IMAGES] = np.stack(
             [np.full_like(reference_img, -1.0) if img is None else img for img in resized_images],
             axis=0,

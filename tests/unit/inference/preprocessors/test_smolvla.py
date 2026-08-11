@@ -299,6 +299,14 @@ class TestResizeSmolVLACameraSlots:
         assert result[IMAGES].size == 0
         assert result[IMAGE_MASKS].size == 0
 
+    def test_no_images_with_num_cameras_returns_dummy_slots(self) -> None:
+        prep = ResizeSmolVLA(image_resolution=(48, 64), num_cameras=2)
+        result = prep({"task": "pick up"})
+        assert result[IMAGES].shape == (2, 1, 3, 48, 64)
+        assert result[IMAGE_MASKS].shape == (2, 1)
+        np.testing.assert_allclose(result[IMAGES], -1.0)
+        assert not result[IMAGE_MASKS].any()
+
     def test_single_array_input_with_num_cameras(self) -> None:
         prep = ResizeSmolVLA(image_resolution=(64, 64), num_cameras=2)
         img = np.ones((1, 3, 64, 64), dtype=np.float32)
