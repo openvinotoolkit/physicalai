@@ -44,6 +44,10 @@ class ResizeSmolVLA(Preprocessor):
             num_cameras: Total number of camera slots expected by the model. Slots left
                 unfilled by the input image keys are filled with masked dummy images.
                 Values <= 0 keep only the input cameras, without any dummy images.
+
+        Raises:
+            ValueError: If ``image_key_reorder_map`` contains negative or duplicate slot
+                indices.
         """
         super().__init__()
         self.image_resolution = image_resolution
@@ -51,6 +55,17 @@ class ResizeSmolVLA(Preprocessor):
             self._normalize_image_key(key): order for key, order in (image_key_reorder_map or {}).items()
         }
         self.num_cameras = num_cameras
+
+        negative = sorted(key for key, slot in self.image_key_reorder_map.items() if slot < 0)
+        if negative:
+            msg = f"image_key_reorder_map slot indices must be non-negative, got negative values for {negative}."
+            raise ValueError(msg)
+
+        slots = list(self.image_key_reorder_map.values())
+        if len(set(slots)) != len(slots):
+            duplicates = sorted({slot for slot in slots if slots.count(slot) > 1})
+            msg = f"image_key_reorder_map slot indices must be unique, got duplicates {duplicates}."
+            raise ValueError(msg)
 
     def __call__(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         """Process and prepare images for model inference.

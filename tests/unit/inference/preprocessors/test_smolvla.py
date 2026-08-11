@@ -249,6 +249,14 @@ class TestResizeSmolVLACameraSlots:
         with pytest.raises(ValueError, match="must match the input image keys exactly"):
             prep(self._inputs())
 
+    def test_negative_slot_index_raises(self) -> None:
+        with pytest.raises(ValueError, match="must be non-negative"):
+            ResizeSmolVLA(image_resolution=(64, 64), image_key_reorder_map={"top": -1, "wrist": 0})
+
+    def test_duplicate_slot_index_raises(self) -> None:
+        with pytest.raises(ValueError, match="must be unique"):
+            ResizeSmolVLA(image_resolution=(64, 64), image_key_reorder_map={"top": 0, "wrist": 0})
+
     def test_num_cameras_pads_empty_slots(self) -> None:
         prep = ResizeSmolVLA(image_resolution=(64, 64), num_cameras=3)
         result = prep(self._inputs())
