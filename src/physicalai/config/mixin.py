@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Self, TypeVar, cast
 
-from jsonargparse import FromConfigMixin as _JsonargparseFromConfigMixin
+from jsonargparse import FromConfigMixin
 from pydantic import BaseModel
 
 from ._deprecate import deprecate
@@ -30,7 +30,7 @@ _T = TypeVar("_T", bound=type)
 _REPLACEMENT = "jsonargparse.FromConfigMixin.from_config or parse_class_config via physicalai.config.Config"
 
 
-class FromConfig(_JsonargparseFromConfigMixin):
+class FromConfig(FromConfigMixin):
     """Mixin adding constructors for mapping, YAML, Pydantic, and dataclass configs.
 
     .. deprecated::
