@@ -24,15 +24,28 @@ class TestCreateCamera:
         assert isinstance(cam, UVCCamera)
 
     def test_shared_stub_types_rejected(self) -> None:
-        for stub in ("ip", "genicam"):
-            with pytest.raises(ValueError, match="does not support shared=True"):
-                create_camera(stub, shared=True, device=0)
+        with pytest.raises(ValueError, match="does not support shared=True"):
+            create_camera("genicam", shared=True, device=0)
 
     def test_shared_builtin_uses_registry_class_path(self) -> None:
         cam = create_camera("uvc", shared=True, device=0, backend="v4l2")
         assert cam._camera is not None  # type: ignore[attr-defined]
         assert cam._camera["class_path"] == _SHAREABLE_CLASS_PATHS["uvc"]  # type: ignore[attr-defined]
         assert cam._service_name == "physicalai/camera/UVCCamera/0/frame"  # type: ignore[attr-defined]
+
+    def test_shared_ip_derives_service_name_from_url_not_credentials(self) -> None:
+        cam = create_camera(
+            "ip",
+            shared=True,
+            url="rtsp://admin:s3cr3t@192.168.1.140:554/h264Preview_01_main",
+        )
+        assert cam._camera is not None  # type: ignore[attr-defined]
+        assert cam._camera["class_path"] == _SHAREABLE_CLASS_PATHS["ip"]  # type: ignore[attr-defined]
+        service_name = cam._service_name  # type: ignore[attr-defined]
+        assert service_name.startswith("physicalai/camera/IPCamera/")
+        assert service_name.endswith("/frame")
+        assert "s3cr3t" not in service_name
+        assert "admin" not in service_name
 
 
 class TestShareableClassPaths:

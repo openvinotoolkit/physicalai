@@ -95,6 +95,19 @@ with BaslerCamera(serial_number="12345678", width=1920, height=1080, fps=60) as 
 </details>
 
 <details>
+<summary><strong>IP / Network Camera (RTSP, HTTP)</strong></summary>
+
+```python
+from physicalai.capture import IPCamera
+
+with IPCamera(url="rtsp://user:pass@192.168.1.50:554/stream", width=1280, height=720) as camera:
+    frame = camera.read_latest()
+    print(frame.data.shape)  # (720, 1280, 3)
+```
+
+</details>
+
+<details>
 <summary><strong>Multi-Camera Sync</strong></summary>
 
 ```python

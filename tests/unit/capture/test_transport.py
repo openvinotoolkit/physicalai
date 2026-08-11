@@ -416,6 +416,35 @@ class TestSharedCameraConstruction:
         )
         assert name == "physicalai/camera/BaslerCamera/abc/frame"
 
+    def test_ip_camera_service_name_excludes_credentials(self) -> None:
+        """IPCamera has no serial_number/device — its identifying config is a
+        URL, which may embed `user:pass@`. The derived service name (visible
+        OS-wide, and logged verbatim by SharedCamera) must never contain it.
+        """
+        name = derive_service_name(
+            {
+                "class_path": "physicalai.capture.IPCamera",
+                "init_args": {"url": "rtsp://admin:s3cr3t@192.168.1.140:554/h264Preview_01_main"},
+            },
+        )
+        assert name.startswith("physicalai/camera/IPCamera/")
+        assert name.endswith("/frame")
+        assert "s3cr3t" not in name
+        assert "admin" not in name
+        assert "/" not in name.removeprefix("physicalai/camera/IPCamera/").removesuffix("/frame")
+
+    def test_ip_camera_service_name_deterministic_and_distinct_per_url(self) -> None:
+        main = {
+            "class_path": "physicalai.capture.IPCamera",
+            "init_args": {"url": "rtsp://admin:s3cr3t@192.168.1.140:554/h264Preview_01_main"},
+        }
+        sub = {
+            "class_path": "physicalai.capture.IPCamera",
+            "init_args": {"url": "rtsp://admin:s3cr3t@192.168.1.140:554/h264Preview_01_sub"},
+        }
+        assert derive_service_name(main) == derive_service_name(main)
+        assert derive_service_name(main) != derive_service_name(sub)
+
     def test_third_party_derives_service_name(self) -> None:
         """Derivation covers any class_path, not just shareable built-ins."""
         cam = SharedCamera.from_config(

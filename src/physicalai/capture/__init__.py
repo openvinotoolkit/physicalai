@@ -10,7 +10,7 @@ Public API::
     from physicalai.capture import create_camera, discover_all
     from physicalai.capture import DeviceInfo, DepthMixin
     from physicalai.capture import UVCCamera   # requires: opencv-python on macos/win32 or PyTurboJPEG on linux
-    from physicalai.capture import IPCamera    # stub — not yet implemented
+    from physicalai.capture import IPCamera    # RTSP/HTTP network cameras, via opencv-python-headless
 """
 
 from typing import TYPE_CHECKING
@@ -32,9 +32,8 @@ from physicalai.capture.mixins import DepthMixin
 from physicalai.capture.multi import SyncedFrames, async_read_cameras, read_cameras
 
 if TYPE_CHECKING:
-    from physicalai.capture.cameras.ip import IPCamera
-
     from physicalai.capture.cameras.basler import BaslerCamera
+    from physicalai.capture.cameras.ip import IPCamera
     from physicalai.capture.cameras.realsense import RealSenseCamera
     from physicalai.capture.cameras.uvc import UVCCamera
     from physicalai.capture.transport import SharedCamera

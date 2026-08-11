@@ -25,12 +25,15 @@ _SHARED_TRANSPORT_KEYS = frozenset({
 
 # CameraType token → public class_path for ``create_camera(..., shared=True)``.
 # Static by necessity: subscriber hosts have no vendor SDK, so nothing here may
-# import a driver. Stub types (ip, genicam) are absent so shared spawn cannot
-# claim phantom coverage; test_factory.py checks values against @export_config.
+# import a driver. ``genicam`` is still an unimplemented stub, so it's absent.
+# ``ip`` derives its service name from a hash of its URL with credentials
+# stripped (see ``_url_token`` in transport/_spec.py) — never the raw URL.
+# test_factory.py checks values against @export_config.
 _SHAREABLE_CLASS_PATHS: dict[str, str] = {
     "uvc": "physicalai.capture.UVCCamera",
     "realsense": "physicalai.capture.RealSenseCamera",
     "basler": "physicalai.capture.BaslerCamera",
+    "ip": "physicalai.capture.IPCamera",
 }
 
 
@@ -44,8 +47,8 @@ def create_camera(camera_type: str, *, shared: bool = False, **kwargs: Any) -> C
         shared: If True, wrap the camera in a :class:`SharedCamera`
             (iceoryx2 shared-memory transport). Requires the
             ``transport`` extra. Only backends with a real shared registry
-            entry (``uvc``, ``realsense``, ``basler``) support derived
-            ``service_name``; stub types must use
+            entry (``uvc``, ``realsense``, ``basler``, ``ip``) support
+            derived ``service_name``; stub types must use
             :meth:`SharedCamera.from_config` with an explicit
             ``service_name`` once a driver exists.
         **kwargs: Forwarded to the camera constructor. When *shared* is
