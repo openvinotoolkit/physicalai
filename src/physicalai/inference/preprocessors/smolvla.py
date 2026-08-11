@@ -23,17 +23,34 @@ class ResizeSmolVLA(Preprocessor):
     Attributes:
         image_resolution (tuple[int, int]): The target resolution for input images
             as (height, width). Defaults to (512, 512).
+        image_key_reorder_map (dict[str, int]): Mapping from image key to camera slot index.
+        num_cameras (int): Total number of camera slots expected by the model.
     """
 
-    def __init__(self, image_resolution: tuple[int, int] = (512, 512)) -> None:
+    def __init__(
+        self,
+        image_resolution: tuple[int, int] = (512, 512),
+        image_key_reorder_map: dict[str, int] | None = None,
+        num_cameras: int = 0,
+    ) -> None:
         """Initialize the SmolVLA numpy-based preprocessor.
 
         Args:
             image_resolution (tuple[int, int]): The target resolution for input images
                 as (height, width). Defaults to (512, 512).
+            image_key_reorder_map: Optional mapping from source image keys to target
+                camera indices used for deterministic ordering. Keys may be given with
+                or without the ``images.`` prefix.
+            num_cameras: Total number of camera slots expected by the model. Slots left
+                unfilled by the input image keys are filled with masked dummy images.
+                Values <= 0 keep only the input cameras, without any dummy images.
         """
         super().__init__()
         self.image_resolution = image_resolution
+        self.image_key_reorder_map = {
+            self._normalize_image_key(key): order for key, order in (image_key_reorder_map or {}).items()
+        }
+        self.num_cameras = num_cameras
 
     def __call__(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         """Process and prepare images for model inference.
@@ -59,18 +76,18 @@ class ResizeSmolVLA(Preprocessor):
         """
         inputs = dict(inputs)
 
-        if IMAGES in inputs and isinstance(inputs[IMAGES], np.ndarray):
-            images = [inputs[IMAGES]]
-        elif IMAGES in inputs and isinstance(inputs[IMAGES], dict):
-            images = list(inputs[IMAGES].values())
-        else:
-            img_keys = [key for key in inputs if key.startswith(IMAGES)]
-            images = [inputs[img_keys[0]]] if len(img_keys) == 1 else [inputs[key] for key in img_keys]
+        images_by_key = self._collect_images(inputs)
 
-        img_masks = []
-        resized_images = []
+        img_masks: list[np.ndarray | None] = []
+        resized_images: list[np.ndarray | None] = []
 
-        for img in images:
+        for key in self._camera_slot_layout(list(images_by_key)):
+            if key is None:
+                resized_images.append(None)
+                img_masks.append(None)
+                continue
+
+            img = images_by_key[key]
             if img.dtype == np.uint8:
                 img_fp32 = img.astype(np.float32) / 255.0
             elif np.issubdtype(img.dtype, np.floating):
@@ -97,10 +114,95 @@ class ResizeSmolVLA(Preprocessor):
             resized_images.append(resized_img)
             img_masks.append(mask)
 
-        inputs[IMAGES] = np.stack(resized_images, axis=0)
-        inputs[IMAGE_MASKS] = np.stack(img_masks, axis=0)
+        reference_img = next((img for img in resized_images if img is not None), None)
+        if reference_img is None:
+            inputs[IMAGES] = np.empty(0, dtype=np.float32)
+            inputs[IMAGE_MASKS] = np.empty(0, dtype=np.bool)
+            return inputs
+
+        reference_mask = next(mask for mask in img_masks if mask is not None)
+        inputs[IMAGES] = np.stack(
+            [np.full_like(reference_img, -1.0) if img is None else img for img in resized_images],
+            axis=0,
+        )
+        inputs[IMAGE_MASKS] = np.stack(
+            [np.zeros_like(reference_mask) if mask is None else mask for mask in img_masks],
+            axis=0,
+        )
 
         return inputs
+
+    @staticmethod
+    def _normalize_image_key(key: str) -> str:
+        """Prefix a bare camera name with ``images.``.
+
+        Args:
+            key: Image key or camera name.
+
+        Returns:
+            Key in canonical ``images.<camera>`` form, or ``images`` when already exact.
+        """
+        if key == IMAGES or key.startswith(f"{IMAGES}."):
+            return key
+        return f"{IMAGES}.{key}"
+
+    @staticmethod
+    def _collect_images(inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        """Gather camera images from the input dict, keyed by canonical image key.
+
+        Args:
+            inputs: Preprocessor input dict.
+
+        Returns:
+            Mapping of image key to image array, in input order.
+        """
+        images_value = inputs.get(IMAGES)
+        if isinstance(images_value, np.ndarray):
+            return {IMAGES: images_value}
+        if isinstance(images_value, dict):
+            return {ResizeSmolVLA._normalize_image_key(name): img for name, img in images_value.items()}
+        return {key: value for key, value in inputs.items() if key.startswith(f"{IMAGES}.")}
+
+    def _camera_slot_layout(self, image_keys: list[str]) -> list[str | None]:
+        """Resolve the camera slot layout for a set of image keys.
+
+        Args:
+            image_keys: Image keys present in the input.
+
+        Returns:
+            List of camera slots, where each entry is either an image key or ``None``
+            for a slot that must be filled with an empty camera.
+
+        Raises:
+            ValueError: If ``image_key_reorder_map`` is set and its keys do not match
+                the input image keys exactly, or if the resolved slots do not fit into
+                ``num_cameras``.
+        """
+        if self.image_key_reorder_map:
+            if set(self.image_key_reorder_map) != set(image_keys):
+                msg = (
+                    "image_key_reorder_map keys must match the input image keys exactly. "
+                    f"Expected {sorted(self.image_key_reorder_map)}, got {sorted(image_keys)}."
+                )
+                raise ValueError(msg)
+            slot_by_key = {key: self.image_key_reorder_map[key] for key in image_keys}
+        else:
+            slot_by_key = {key: index for index, key in enumerate(image_keys)}
+
+        if self.num_cameras <= 0:
+            return sorted(image_keys, key=lambda key: slot_by_key[key])
+
+        if any(slot >= self.num_cameras for slot in slot_by_key.values()):
+            msg = (
+                f"num_cameras={self.num_cameras} is too small for the resolved camera slots "
+                f"{sorted(slot_by_key.values())} of image keys {sorted(image_keys)}."
+            )
+            raise ValueError(msg)
+
+        layout: list[str | None] = [None] * self.num_cameras
+        for key, slot in slot_by_key.items():
+            layout[slot] = key
+        return layout
 
     @staticmethod
     def _resize_with_pad(img: np.ndarray, width: int, height: int, pad_value: int = -1) -> np.ndarray:
