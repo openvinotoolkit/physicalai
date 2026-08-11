@@ -16,10 +16,12 @@ originate from network-received or control-channel data.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit, urlunsplit
 
 from physicalai.config import (
     Config,
@@ -122,6 +124,27 @@ def normalize_camera_config(camera: Config | Mapping[str, object]) -> Config:
     )
 
 
+def _url_token(url: str) -> str:
+    """Credential-free, slash-free token identifying a stream URL.
+
+    Used as the ``device_id`` segment of a derived service name for
+    ``IPCamera`` (``init_args={"url": ...}``), whose identifying config is a
+    URL rather than a ``serial_number``/``device`` — and may embed
+    ``user:pass@`` credentials that must never end up in a service name
+    (visible OS-wide) or a log line (``service_name`` is logged verbatim in
+    ``SharedCamera``). Hashing the credential-stripped URL keeps distinct
+    cameras (different host/path) on distinct services without leaking or
+    even reversibly encoding the URL itself.
+
+    Returns:
+        First 12 hex chars of a sha256 hash of the URL with any userinfo removed.
+    """
+    parts = urlsplit(url)
+    netloc = parts.netloc.rsplit("@", 1)[-1]
+    sanitized = urlunsplit((parts.scheme, netloc, parts.path, parts.query, ""))
+    return hashlib.sha256(sanitized.encode()).hexdigest()[:12]
+
+
 def derive_service_name(
     camera: Config | Mapping[str, object],
     *,
@@ -149,7 +172,12 @@ def derive_service_name(
     init_args = camera.get("init_args", {})
     if not isinstance(init_args, Mapping):
         init_args = {}
-    device_id = init_args.get("serial_number", init_args.get("device", 0))
+    device_id = init_args.get("serial_number", init_args.get("device"))
+    if device_id is None:
+        # IPCamera has no serial_number/device — its identifying config is a
+        # URL, which is sanitized
+        url = init_args.get("url")
+        device_id = _url_token(url) if isinstance(url, str) else 0
     # Resolve symlinks so that /dev/v4l/by-id/... and /dev/videoN produce
     # the same service name for the same physical device.
     if isinstance(device_id, str) and device_id.startswith("/dev/"):
