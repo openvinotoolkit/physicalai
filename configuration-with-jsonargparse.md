@@ -2,6 +2,20 @@
 
 Status: implementation specification
 
+## Plain-language summary
+
+Physical AI uses two complementary patterns:
+
+1. **Known class** — You already know the Python type (trainer, dataclass, CLI
+   model). Parse YAML or CLI with jsonargparse and call `instantiate()`.
+2. **Portable recipe** — You store `class_path` + `init_args` in YAML so
+   runtime, robots, and cameras can share the same shape. Validate the recipe,
+   then construct when you are ready to import the class.
+
+Legacy helper names (`instantiate_obj`, `FromConfig`, YAML helpers) remain for
+Studio compatibility, emit `DeprecationWarning`, and will be removed after Studio
+migrates.
+
 ## Decision
 
 Use jsonargparse as the construction engine whenever the expected Python type is
@@ -15,18 +29,17 @@ This applies to:
 - components with a known base class or protocol;
 - nested typed objects described by constructor annotations.
 
-Runtime retains custom code only for behavior that jsonargparse does not
-provide:
+Runtime keeps a small amount of custom code where jsonargparse alone is not enough:
 
-- portable `class_path` / `init_args` validation before imports;
-- cycle, depth, finite-float, and JSON-value checks;
-- live-object constructor capture through `@export_config`;
-- transport envelopes that must be validated without importing drivers;
-- explicit aliases, artifact paths, and import policy;
-- temporary schema-free recipe instantiation for backward compatibility.
+- check portable `class_path` / `init_args` recipes before any import;
+- detect cycles, excessive nesting, and non-JSON values;
+- capture live objects with `@export_config`;
+- validate robot/camera transport payloads without importing drivers;
+- resolve inference aliases and artifact paths;
+- support older recipe-only instantiation during the Studio migration.
 
-Do not add another general parsing, signature inspection, serialization, or
-recursive construction engine around jsonargparse.
+Extend jsonargparse for typed construction; avoid parallel generic loaders in
+`physicalai.config`.
 
 ## Construction lanes
 
@@ -89,13 +102,9 @@ only for shipped public compatibility.
 
 ### `Config`
 
-PR #212 establishes Runtime ownership of `Config`. During migration it has two
-roles:
-
-1. direct portable recipe;
-2. base class for typed dataclass configs used by downstream Studio releases.
-
-Do not expand this dual role. The steady-state `Config` is recipe-only.
+PR #212 establishes Runtime ownership of `Config`. During migration it serves two
+roles: a portable recipe type and a base class for typed dataclass configs in
+Studio. The long-term shape is recipe-only; avoid growing the dual role further.
 
 #### Portable recipe API
 
@@ -173,9 +182,8 @@ def instantiate_component(base: type[T], spec: ClassSpec) -> T:
     return cast(T, parser.instantiate(parsed).component)
 ```
 
-This helper is optional convenience, not a framework. It must not implement
-imports, signature parsing, recursive constructor calls, alias lookup, artifact
-resolution, or registry discovery.
+This helper is a thin wrapper around jsonargparse. Alias lookup, artifact paths,
+and registry resolution stay in inference code before the call.
 
 Package code performs policy before calling it:
 
@@ -205,19 +213,19 @@ instantiate_component(Postprocessor, recipe)
 
 ## Compatibility policy
 
-Backward compatibility does not make an API canonical.
+Older public APIs stay for now with `DeprecationWarning` and delegation to the
+paths above. Runtime production code should use the canonical APIs listed below.
 
-The following APIs and modules may remain temporarily for downstream users:
+Temporary compatibility surface:
 
 - `instantiate_obj` and `instantiate_obj_from_*`;
 - `FromConfig` and `@from_config`;
 - `load_yaml`, `save_yaml`, and `to_yaml`;
 - typed `Config` subclasses;
 - `import_class` and older module import paths;
-- schema-free `instantiate`.
+- recipe-only `instantiate()` without an expected type.
 
-Runtime production code must not use these compatibility APIs after migration.
-Replace internal usage with:
+Replace internal Runtime usage with:
 
 - package-owned parser builders;
 - direct jsonargparse parsing for known classes;
@@ -225,14 +233,8 @@ Replace internal usage with:
 - `Config.from_dict()` for portable recipe validation;
 - domain-owned transport or manifest policy.
 
-Compatibility facades must delegate to the canonical engine. They must not:
-
-- inspect constructor signatures themselves;
-- recursively instantiate mappings themselves;
-- directly call `cls(**values)` or `target_cls(*args, **kwargs)`;
-- define a second default or unknown-key policy;
-- silently ignore `class_path`;
-- accept inputs that canonical APIs reject without explicit deprecation tests.
+Compatibility facades delegate to jsonargparse or `Config` and should avoid
+duplicating parsing, recursive construction, or unknown-key policy.
 
 Use `DeprecationWarning` with a correct stack level for APIs scheduled for
 removal.
@@ -294,13 +296,13 @@ Expected disposition:
 
 ### Domain ownership
 
-These concerns do not belong in generic config helpers:
+Keep these concerns in their owning packages:
 
 - inference aliases and artifacts: `physicalai.inference`;
 - runtime workflow parser: `physicalai.runtime`;
-- camera publisher envelope: `physicalai.capture.transport`;
-- robot owner envelope: `physicalai.robot.transport`;
-- trust policy: the package accepting the external input.
+- camera publisher validation: `physicalai.capture.transport`;
+- robot owner validation: `physicalai.robot.transport`;
+- trust policy: the package that accepts external input.
 
 ## Required migrations
 

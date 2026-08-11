@@ -1,33 +1,31 @@
 ---
 name: physicalai-runtime-working-with-config
-description: Works with the shared physicalai.config package (Config recipes, export_config, jsonargparse, YAML). Use when changing src/physicalai/config, wiring class_path configs, policy or runtime construction from YAML, or docs under docs/how-to/config and docs/explanation/configuration.md. Runtime owns this module; Studio consumes it.
+description: Works with physicalai.config (Config recipes, export_config, jsonargparse, YAML). Use when editing src/physicalai/config, class_path YAML, runtime or policy construction, or docs under docs/how-to/config and docs/explanation/configuration.md. Runtime owns this module; Studio imports it from physicalai.
 license: Apache-2.0
 ---
 
 # Working with `physicalai.config`
 
-Runtime owns `src/physicalai/config/`. Do not add a parallel config tree in
-Physical AI Studio.
+Runtime owns `src/physicalai/config/`. Physical AI Studio should import this
+package from `physicalai`, not copy it under `library/`.
 
 ## Workflow
 
-1. **Pick the API** — portable transport/export uses `Config` and
-   `@export_config`; typed classes and workflows use jsonargparse directly.
-   - Done when: the change touches the module that matches the call site.
-2. **Author or edit a recipe** — use `class_path` + `init_args` for dynamic
-   dispatch; nest recipes inside `init_args` only for trusted local configs.
-   See `docs/how-to/config/instantiate-components.md`.
-   - Done when: YAML/dict round-trips through `validate_config` without
-     `ConfigError`.
-3. **Export live components** — decorate constructors with `@export_config`,
-   capture with `Config.from_instance(obj)` and persist with `Config.save()`.
-   Never feed network or untrusted payloads into construction.
-   - Done when: exported YAML reloads via `instantiate()` on a test double.
-4. **Use jsonargparse for typed construction** — package-owned parsers define
-   known classes, workflows, and CLI/file behavior. Do not add generic loader
-   utilities under `physicalai.config`.
-5. **Document and test** — update `docs/explanation/configuration.md` or the
-   relevant how-to under `docs/how-to/config/`; extend `tests/unit/config/`.
+1. **Pick the API**
+   - Portable YAML recipes (robots, cameras, exported components): `Config` and
+     `@export_config`.
+   - Known Python types (trainers, dataclass configs, CLI models): jsonargparse
+     (`ArgumentParser`, `add_class_arguments`, `parse_object`, `instantiate`).
+2. **Author a recipe** — `class_path` + `init_args`; nest recipes only for
+   trusted local config. See `docs/how-to/config/instantiate-components.md`.
+   - Done when: dict/YAML passes validation without `ConfigError`.
+3. **Export live objects** — `@export_config`, then `Config.from_instance(obj)`
+   and `Config.save()`. Only trusted local sources.
+   - Done when: saved YAML reloads with `instantiate()` in tests.
+4. **Typed construction** — use jsonargparse in the owning package (runtime CLI,
+   inference, and so on). Avoid new generic loaders under `physicalai.config`.
+5. **Document and test** — update `docs/explanation/configuration.md` or
+   `docs/how-to/config/`; extend `tests/unit/config/`.
 
 ## Validation loop
 
@@ -38,11 +36,9 @@ prek run ruff-check --all-files
 
 ## Required checks
 
-- Recursive walkers respect `_MAX_CONFIG_DEPTH` and raise `ConfigError` on overflow.
-- `class_path` strings resolve only from trusted local config (see
-  `docs/development/security.md`).
-- Studio must import `Config` from the runtime package, not ship
-  `library/src/physicalai/config/`.
+- Deeply nested config hits `_MAX_CONFIG_DEPTH` and raises `ConfigError`.
+- `class_path` comes only from trusted local config (`docs/development/security.md`).
+- Studio imports `Config` from runtime, not a duplicate tree in the library.
 
 ## References
 
