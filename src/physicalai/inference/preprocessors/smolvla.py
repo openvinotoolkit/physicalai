@@ -36,7 +36,7 @@ class ResizeSmolVLA(Preprocessor):
         """Initialize the SmolVLA numpy-based preprocessor.
 
         Args:
-            image_resolution (tuple[int, int]): The target resolution for input images
+            image_resolution: The target resolution for input images
                 as (height, width). Defaults to (512, 512).
             image_key_reorder_map: Optional mapping from source image keys to target
                 camera indices used for deterministic ordering. Keys may be given with
