@@ -257,8 +257,8 @@ class RobotRuntime:
         Accepts two document shapes: the CLI document (constructor args under
         ``runtime:``, optional ``run:``) and a bare exported
         :class:`~physicalai.config.Config` as produced by
-        :func:`~physicalai.config.to_config` / :func:`~physicalai.config.save_yaml`
-        (top-level ``class_path`` resolving to this class).
+        :meth:`~physicalai.config.Config.from_instance` (top-level ``class_path``
+        resolving to this class).
         ``action_source:`` is always required and explicit — one schema, no
         flat/legacy shorthand.
 

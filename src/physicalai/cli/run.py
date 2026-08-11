@@ -50,7 +50,7 @@ def _reshape_config_value(parser: ArgumentParser, value: object) -> object:
     """Return CLI-shaped config content for a bare exported runtime document.
 
     A ``--config`` value that points to a document with a top-level
-    ``class_path`` (as produced by ``Config.from_instance(runtime)`` / ``save_yaml``) is
+    ``class_path`` (as produced by ``Config.from_instance(runtime)`` / ``Config.save``) is
     loaded and unwrapped to the ``runtime:`` mapping the parser expects,
     returned as JSON content (valid YAML that ``ActionConfigFile`` accepts
     inline). Any other value — a non-path, an unreadable file, or a
@@ -86,7 +86,7 @@ class _RuntimeConfigFile(ActionConfigFile):
     Reshapes a bare exported ``RobotRuntime`` Config (a document with a
     top-level ``class_path``) into the ``runtime:`` document jsonargparse
     expects before applying it; a ``runtime:`` / ``run:`` CLI document is passed
-    through unchanged. This keeps ``Config.from_instance(runtime)`` → ``save_yaml`` →
+    through unchanged. This keeps ``Config.from_instance(runtime)`` → ``Config.save`` →
     ``physicalai run --config`` a single-shape round-trip.
     """
 

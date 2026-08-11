@@ -224,9 +224,15 @@ def _export_instance(
 
 
 def to_config(value: object) -> Config:
-    """Return the canonical recipe for an ``@export_config`` instance."""
+    """Return the canonical recipe for an ``@export_config`` instance.
+
+    .. deprecated::
+        Use :meth:`~physicalai.config.Config.from_instance` instead.
+    """
+    from ._deprecate import deprecate  # ruff: ignore[PLC0415]
     from .base import Config  # ruff: ignore[PLC0415]
 
+    deprecate("physicalai.config.to_config", "Config.from_instance")
     return Config.from_instance(value)
 
 

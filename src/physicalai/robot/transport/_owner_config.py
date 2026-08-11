@@ -251,7 +251,7 @@ class RobotOwnerConfig:
         """Instantiate the robot driver described by this config.
 
         Owner stdin is a parent→child local handshake only — never pass
-        network metadata to this path. Uses :func:`physicalai.config.instantiate`
+        network metadata to this path. Uses :meth:`~physicalai.config.Config.instantiate`
         on the ``robot`` Config, then verifies the
         :class:`~physicalai.robot.Robot` protocol.
 

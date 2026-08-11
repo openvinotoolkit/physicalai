@@ -195,6 +195,14 @@ instantiate_component(Preprocessor, recipe)
 instantiate_component(Postprocessor, recipe)
 ```
 
+## Rollout phases
+
+1. **Runtime PR (this change):** jsonargparse construction engine plus deprecated
+   facades that delegate to it (`DeprecationWarning` on use).
+2. **Studio PR:** migrate library code to canonical APIs only
+   (`FromConfigMixin`, `Config.load` / `save`, jsonargparse parsers).
+3. **Runtime cleanup PR:** remove deprecated modules after Studio ships.
+
 ## Compatibility policy
 
 Backward compatibility does not make an API canonical.
@@ -240,24 +248,32 @@ src/physicalai/config/
   _export.py        @export_config and Config.from_instance
   _instantiate.py   expected-type path plus schema-free compatibility
   _normalize.py     portable JSON recipe normalization and preflight
-  _envelope.py      package-neutral no-import envelope validation
+  _envelope.py      deprecated transport envelope helpers (domain owns steady state)
+  _deprecate.py     shared DeprecationWarning helper
+  loading.py        deprecated instantiate_obj* facades
+  mixin.py          deprecated FromConfig / @from_config
+  serializable.py   deprecated dataclass_to_dict / dict_to_dataclass
+  _yaml.py          deprecated load_yaml / save_yaml / to_yaml
   _errors.py        public error taxonomy
   _types.py         ClassSpec, JsonValue, ConfigValue
   importing.py      temporary public import compatibility
 ```
 
-### Removed utility facades
+### Removed in cleanup phase (PR3)
 
-The implementation removes these modules rather than preserving low-value
-utility compatibility:
+The following are **deprecated facades in PR1**, not deleted yet:
 
 ```text
 loading.py
 mixin.py
 serializable.py
 _yaml.py
-_envelope.py
+_envelope.py (transport helpers only)
 ```
+
+After Studio migration, delete these modules and narrow `__init__.py` exports.
+
+### Previously planned immediate removal (superseded)
 
 Expected disposition:
 
@@ -268,7 +284,7 @@ Expected disposition:
 | `_instantiate_recursive`                    | Delete                                                                |
 | positional `args` convention                | Deprecate and remove                                                  |
 | flattened arbitrary `**kwargs` construction | Deprecate or explicitly translate; do not inspect signatures manually |
-| `FromConfig`                                | Removed; inherit `jsonargparse.FromConfigMixin` directly              |
+| `FromConfig`                                | Deprecated facade over `jsonargparse.FromConfigMixin`                  |
 | `@from_config`                              | Removed                                                               |
 | `dict_to_dataclass`                         | Delete immediately                                                    |
 | `dataclass_to_dict`                         | Retain only for legacy wire/checkpoint compatibility                  |

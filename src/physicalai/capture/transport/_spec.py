@@ -220,7 +220,7 @@ class CameraPublisherConfig:
     def build(self) -> Camera:
         """Instantiate the camera described by this spec.
 
-        Uses :func:`physicalai.config.instantiate` on the ``camera``
+        Uses :meth:`~physicalai.config.Config.instantiate` on the ``camera``
         Config, then verifies the :class:`~physicalai.capture.camera.Camera`
         protocol. Does not route through :func:`~physicalai.capture.create_camera`,
         so third-party class paths work without a registry entry.
