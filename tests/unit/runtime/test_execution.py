@@ -409,6 +409,33 @@ class TestAsyncExecution:
 
 
 class TestRTCExecutionObsSlot:
+    def test_worker_releases_obs_lock_before_idle_wait(self) -> None:
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+        from physicalai.runtime.execution import rtc
+
+        model = _rtc_model(chunk_size=20, action_dim=3)
+        queue = RTCActionQueue()
+        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        idle_wait_observed = threading.Event()
+        lock_was_available = False
+
+        def inspect_idle_wait(_seconds: float) -> None:
+            nonlocal lock_was_available
+            lock_was_available = ex._obs_lock.acquire(blocking=False)  # noqa: SLF001
+            if lock_was_available:
+                ex._obs_lock.release()  # noqa: SLF001
+            idle_wait_observed.set()
+            ex._stop_event.set()  # noqa: SLF001
+
+        with patch.object(rtc.time, "sleep", side_effect=inspect_idle_wait):
+            ex.start(model, queue)
+            try:
+                assert idle_wait_observed.wait(timeout=5.0)
+            finally:
+                ex.stop()
+
+        assert lock_was_available
+
     def test_worker_clears_obs_slot_after_consuming_warmup_sample(self) -> None:
         from physicalai.runtime import RTCActionQueue, RTCExecution
 

@@ -420,15 +420,13 @@ class RTCExecution(Execution):
             # Snapshot observation and consume the slot so a stale sample
             # (e.g. the warmup observation) is never reused for a later refill.
             with self._obs_lock:
-                if self._obs_slot is None:
-                    time.sleep(_IDLE_SLEEP_S)
-                    continue
                 request = self._obs_slot
                 self._obs_slot = None
-                if request is None:
-                    continue
-                inputs, episode_id, signal = request
-                inputs = deepcopy(inputs)
+            if request is None:
+                time.sleep(_IDLE_SLEEP_S)
+                continue
+            inputs, episode_id, signal = request
+            inputs = deepcopy(inputs)
 
             # Build RTC-specific inputs
             inputs = self._inject_rtc_inputs(inputs)
