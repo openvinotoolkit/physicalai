@@ -211,3 +211,6 @@ __marimo__/
 
 # Misc
 .DS_Store
+
+# Local jsonargparse migration spec (not shipped in PRs)
+configuration-with-jsonargparse.md
