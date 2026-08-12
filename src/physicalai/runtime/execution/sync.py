@@ -5,15 +5,14 @@
 
 from __future__ import annotations
 
+import threading
 import time
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from physicalai.config import export_config
 from physicalai.runtime.execution.base import NOT_STARTED, Execution
 
 if TYPE_CHECKING:
-    import numpy as np
-
     from physicalai.inference.model import InferenceModel
     from physicalai.runtime._callback_bus import _CallbackBus
     from physicalai.runtime.execution.queue import ActionQueue, ChunkedActionQueue
@@ -42,6 +41,7 @@ class SyncExecution(Execution):
         self._threshold_frac = request_threshold
         self._threshold_count: int = 0
         self._inference_count: int = 0
+        self._model_lock = threading.Lock()
         self._bus: _CallbackBus | None = None
         self._session_id: str = ""
 
@@ -51,7 +51,7 @@ class SyncExecution(Execution):
         self._queue = cast("ChunkedActionQueue", action_queue)
         self._inference_count = 0
 
-    def warmup(self, sample_observation: dict[str, np.ndarray]) -> None:
+    def warmup(self, sample_observation: dict[str, Any]) -> None:
         """Run one inference, seed queue, discover chunk_size.
 
         Raises:
@@ -59,12 +59,13 @@ class SyncExecution(Execution):
         """
         if self._model is None or self._queue is None:
             raise RuntimeError(NOT_STARTED)
-        actions = self._model.predict_action_chunk(sample_observation)
-        self._chunk_size = actions.shape[0]
-        self._threshold_count = max(1, int(self._chunk_size * self._threshold_frac))
-        self._queue.push_chunk(actions, offset=0)
+        with self._model_lock:
+            actions = self._model.predict_action_chunk(sample_observation)
+            self._chunk_size = actions.shape[0]
+            self._threshold_count = max(1, int(self._chunk_size * self._threshold_frac))
+            self._queue.push_chunk(actions, offset=0)
 
-    def maybe_request(self, observation: dict[str, np.ndarray]) -> None:
+    def maybe_request(self, observation: dict[str, Any]) -> None:
         """Refill queue synchronously when below threshold.
 
         Raises:
@@ -74,9 +75,10 @@ class SyncExecution(Execution):
             raise RuntimeError(NOT_STARTED)
         if self._queue.below_threshold(self._threshold_count):
             t0 = time.perf_counter()
-            actions = self._model.predict_action_chunk(observation)
-            latency = time.perf_counter() - t0
-            self._queue.push_chunk(actions, offset=0)
+            with self._model_lock:
+                actions = self._model.predict_action_chunk(observation)
+                latency = time.perf_counter() - t0
+                self._queue.push_chunk(actions, offset=0)
             self._inference_count += 1
             if self._bus:
                 from physicalai.runtime.events import InferenceEvent  # noqa: PLC0415
@@ -90,6 +92,18 @@ class SyncExecution(Execution):
                         chunk=actions,
                     )
                 )
+
+    def reset(self, *, reset_model: bool = True) -> None:
+        """Wait for current inference and optionally reset model state.
+
+        Raises:
+            RuntimeError: If :meth:`start` has not been called.
+        """
+        if self._model is None:
+            raise RuntimeError(NOT_STARTED)
+        if reset_model:
+            with self._model_lock:
+                self._model.reset()
 
     def stop(self) -> None:
         """No-op for synchronous execution."""

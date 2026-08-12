@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import multiprocessing as mp
 import threading
 import time
@@ -18,7 +19,8 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from physicalai.runtime import AsyncExecution, ChunkedActionQueue as ActionQueue, ChunkedActionQueue, LifecycleEvent, PolicySource, RobotRuntime, StopSignal, SyncExecution, WorkerDiedError
+from physicalai.runtime import AsyncCallback, AsyncExecution, ChunkedActionQueue as ActionQueue, ChunkedActionQueue, Execution, JsonlCallback, LifecycleEvent, PolicySource, RobotRuntime, StopSignal, SyncExecution, WorkerDiedError
+from physicalai.runtime._callback_bus import _CallbackBus
 from physicalai.robot.interface import RobotObservation
 from physicalai.inference.model import InferenceModel
 from physicalai.inference.constants import IMAGES, STATE, TASK
@@ -184,6 +186,16 @@ class TestRobotRuntimeWithPolicySource:
             mock_time.time.return_value = 0.0
             runtime.run(duration_s=1.0)
 
+    def test_execution_start_failure_does_not_call_stop(self) -> None:
+        execution = MagicMock()
+        execution.start.side_effect = RuntimeError("previous worker is busy")
+        runtime, _source = _make_runtime(execution=execution)
+
+        with pytest.raises(RuntimeError, match="previous worker is busy"):
+            runtime.run(duration_s=1.0)
+
+        execution.stop.assert_not_called()
+
     def test_shutdown_does_not_disconnect(self) -> None:
         robot = _make_mock_robot()
         model = _make_mock_model()
@@ -218,6 +230,29 @@ class TestRobotRuntimeWithPolicySource:
 
         with pytest.raises(RuntimeError, match="connect"):
             runtime.run(duration_s=1.0)
+
+    def test_failed_connect_can_be_retried_directly(self) -> None:
+        robot = _make_mock_robot()
+        robot.connect.side_effect = [ConnectionError("not ready"), None]
+        runtime = RobotRuntime(robot=robot, action_source=FakeActionSource(), fps=10.0)
+
+        with pytest.raises(ConnectionError, match="not ready"):
+            runtime.connect()
+
+        runtime.connect()
+        assert robot.connect.call_count == 2
+
+    def test_disconnect_after_failed_connect_is_terminal(self) -> None:
+        robot = _make_mock_robot()
+        robot.connect.side_effect = ConnectionError("not ready")
+        runtime = RobotRuntime(robot=robot, action_source=FakeActionSource(), fps=10.0)
+
+        with pytest.raises(ConnectionError, match="not ready"):
+            runtime.connect()
+        runtime.disconnect()
+
+        with pytest.raises(RuntimeError, match="cannot be connected again"):
+            runtime.connect()
 
 
 class TestGenericActionSource:
@@ -637,7 +672,7 @@ class TestPolicySourceModelInput:
 
 @dataclass
 class _LifecycleRecorder:
-    """Captures lifecycle events and bus close, for shutdown assertions."""
+    """Captures lifecycle events and final callback disposal."""
 
     events: list[str] = field(default_factory=list)
     metadata: list[dict[str, Any]] = field(default_factory=list)
@@ -847,7 +882,7 @@ class TestStopFlagLifecycle:
 
         assert runtime.last_run_reason == "error"
         assert recorder.shutdown_metadata["reason"] == "error"
-        assert recorder.closed
+        assert not recorder.closed
 
         runtime._action_source = FakeActionSource(next_action=np.zeros(3, dtype=np.float32))  # noqa: SLF001
         with _frozen_time():
@@ -876,7 +911,7 @@ class TestStopFlagLifecycle:
             runtime.run(duration_s=1.0)
 
         assert recorder.shutdown_metadata["reason"] == "stop_requested"
-        assert recorder.closed
+        assert not recorder.closed
         assert runtime.last_run_reason == "stop_requested"
 
         # The flag did not survive into the next session.
@@ -1100,3 +1135,210 @@ class TestPolicySourceRerun:
         assert execution.inference_count >= 2, "no background inference in the second run"
         holds = source.action_queue.total_holds
         assert holds < steps_second // 3, f"queue starved: {holds} holds"
+
+
+class TestPolicySourceEpisodeReset:
+    @staticmethod
+    def _observation(value: float) -> FakeRobotObservation:
+        return FakeRobotObservation(
+            joint_positions=np.full(3, value, dtype=np.float32),
+            timestamp=0.0,
+            sensor_data=None,
+            images=None,
+        )
+
+    def test_explicit_warmup_seeds_first_update_without_repeating_inference(self) -> None:
+        model = MagicMock()
+        model.predict_action_chunk.side_effect = lambda obs: np.repeat(obs[STATE], 4, axis=0)
+        source = PolicySource(model=model, execution=SyncExecution())
+        source.connect(bus=_CallbackBus([]), session_id="session")
+        try:
+            source.warmup(source.to_model_input(self._observation(2.0), {}))
+            action = source.update(self._observation(3.0), {}, step=0)
+
+            np.testing.assert_array_equal(action, np.full(3, 2.0, dtype=np.float32))
+            model.predict_action_chunk.assert_called_once()
+        finally:
+            source.disconnect()
+
+    def test_reset_reseeds_from_current_observation(self) -> None:
+        model = MagicMock()
+        model.predict_action_chunk.side_effect = lambda obs: np.repeat(obs[STATE], 4, axis=0)
+        source = PolicySource(model=model, execution=SyncExecution())
+        source.connect(bus=_CallbackBus([]), session_id="session")
+        try:
+            first = source.update(self._observation(1.0), {}, step=0)
+            np.testing.assert_array_equal(first, np.full(3, 1.0, dtype=np.float32))
+            assert source.action_queue.remaining > 0
+
+            resets_after_connect = model.reset.call_count
+            source.reset(reset_model=False)
+            assert source.action_queue.remaining == 0
+            second = source.update(self._observation(9.0), {}, step=1)
+
+            np.testing.assert_array_equal(second, np.full(3, 9.0, dtype=np.float32))
+            assert model.reset.call_count == resets_after_connect
+        finally:
+            source.disconnect()
+
+    def test_custom_execution_runs_but_rejects_episode_reset(self) -> None:
+        class LegacyExecution(Execution):
+            def start(self, model: Any, action_queue: Any) -> None:
+                self.model = model
+                self.queue = action_queue
+
+            def maybe_request(self, observation: dict[str, Any]) -> None:
+                pass
+
+            def warmup(self, sample_observation: dict[str, Any]) -> None:
+                self.queue.push_chunk(self.model.predict_action_chunk(sample_observation))
+
+            def stop(self) -> None:
+                pass
+
+            @property
+            def chunk_size(self) -> int:
+                return 1
+
+        model = MagicMock()
+        model.predict_action_chunk.return_value = np.ones((1, 3), dtype=np.float32)
+        source = PolicySource(model=model, execution=LegacyExecution())
+
+        source.connect(bus=_CallbackBus([]), session_id="session")
+        try:
+            action = source.update(self._observation(1.0), {}, step=0)
+            np.testing.assert_array_equal(action, np.ones(3, dtype=np.float32))
+            remaining = source.action_queue.remaining
+            with pytest.raises(RuntimeError, match="does not support safe episode reset"):
+                source.reset()
+            assert source.action_queue.remaining == remaining
+        finally:
+            source.disconnect()
+
+    def test_duck_typed_execution_with_reset_is_supported(self) -> None:
+        class DuckExecution:
+            def set_bus(self, bus: Any, session_id: str) -> None:
+                pass
+
+            def start(self, model: Any, action_queue: Any) -> None:
+                self.model = model
+                self.queue = action_queue
+
+            def reset(self, *, reset_model: bool = True) -> None:
+                if reset_model:
+                    self.model.reset()
+
+            def maybe_request(self, observation: dict[str, Any]) -> None:
+                pass
+
+            def warmup(self, sample_observation: dict[str, Any]) -> None:
+                self.queue.push_chunk(self.model.predict_action_chunk(sample_observation))
+
+            def stop(self) -> None:
+                pass
+
+        model = MagicMock()
+        model.predict_action_chunk.return_value = np.ones((1, 3), dtype=np.float32)
+        source = PolicySource(model=model, execution=DuckExecution())  # type: ignore[arg-type]
+
+        source.connect(bus=_CallbackBus([]), session_id="session")
+        try:
+            source.reset()
+            assert model.reset.call_count == 2
+        finally:
+            source.disconnect()
+
+    def test_reset_and_warmup_require_connection(self) -> None:
+        source = PolicySource(model=MagicMock(), execution=SyncExecution())
+
+        with pytest.raises(RuntimeError, match=r"reset\(\) requires connect"):
+            source.reset()
+        with pytest.raises(RuntimeError, match=r"warmup\(\) requires connect"):
+            source.warmup({STATE: np.zeros((1, 3), dtype=np.float32)})
+
+
+class TestRuntimeCallbackReuse:
+    def test_jsonl_callback_records_two_runs_and_closes_on_disconnect(self, tmp_path: Path) -> None:
+        path = tmp_path / "runs.jsonl"
+        callback = JsonlCallback(path)
+        robot = _make_mock_robot()
+        robot.joint_names = ["joint_1", "joint_2", "joint_3"]
+        runtime, _robot = _stop_runtime(robot=robot, callbacks=[callback])
+
+        with _frozen_time():
+            runtime.run(duration_s=0.1)
+            runtime.run(duration_s=0.1)
+
+        records = [json.loads(line) for line in path.read_text().splitlines()]
+        starts = [record for record in records if record.get("event") == "start"]
+        shutdowns = [record for record in records if record.get("event") == "shutdown"]
+        assert len(starts) == len(shutdowns) == 2
+        assert starts[0]["session_id"] != starts[1]["session_id"]
+
+        runtime.disconnect()
+        assert callback._file.closed  # noqa: SLF001
+        with pytest.raises(RuntimeError, match="cannot be connected again"):
+            runtime.connect()
+
+    def test_async_callback_delivers_two_runs_before_final_close(self) -> None:
+        inner = MagicMock(spec=["on_tick", "on_lifecycle", "close"])
+        callback = AsyncCallback(inner)
+        runtime, _robot = _stop_runtime(callbacks=[callback])
+
+        with _frozen_time():
+            runtime.run(duration_s=0.1)
+            runtime.run(duration_s=0.1)
+
+        lifecycle_events = [call.args[0].event for call in inner.on_lifecycle.call_args_list]
+        assert lifecycle_events == ["start", "shutdown", "start", "shutdown"]
+        assert inner.on_tick.call_count == 2
+        assert callback._thread.is_alive()  # noqa: SLF001
+        inner.close.assert_not_called()
+
+        runtime.disconnect()
+        assert not callback._thread.is_alive()  # noqa: SLF001
+        inner.close.assert_called_once()
+        runtime.disconnect()
+        inner.close.assert_called_once()
+
+    def test_concurrent_disconnect_is_idempotent(self) -> None:
+        callback = MagicMock(spec=["close"])
+        runtime, _robot = _stop_runtime(callbacks=[callback])
+        errors: list[BaseException] = []
+
+        def disconnect() -> None:
+            try:
+                runtime.disconnect()
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=disconnect) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5.0)
+
+        assert errors == []
+        callback.close.assert_called_once()
+
+    @pytest.mark.parametrize("operation", ["connect", "disconnect", "run"])
+    def test_lifecycle_operation_rejected_while_run_active(self, operation: str) -> None:
+        first_tick = threading.Event()
+        release = threading.Event()
+
+        class BlockingSource(FakeActionSource):
+            def update(self, robot_state: Any, camera_frames: Any, step: int) -> np.ndarray:
+                first_tick.set()
+                assert release.wait(timeout=5.0)
+                return np.zeros(3, dtype=np.float32)
+
+        runtime, _robot = _stop_runtime(action_source=BlockingSource())
+        run_thread = threading.Thread(target=runtime.run, kwargs={"duration_s": 0.1})
+        run_thread.start()
+        assert first_tick.wait(timeout=5.0)
+        try:
+            with pytest.raises(RuntimeError, match="active"):
+                getattr(runtime, operation)()
+        finally:
+            release.set()
+            run_thread.join(timeout=5.0)

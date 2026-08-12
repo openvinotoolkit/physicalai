@@ -43,7 +43,7 @@ with runtime:
 print(runtime.last_run_reason)      # stop_requested
 ```
 
-The event only has to provide `is_set()`, so a `multiprocessing.Event` works the same way when the session runs in a subprocess. Either way the run ends through the normal shutdown path: the `shutdown` lifecycle event fires, callbacks are flushed, and the action source is disconnected.
+The event only has to provide `is_set()`, so a `multiprocessing.Event` works the same way when the session runs in a subprocess. Either way the run ends through the normal shutdown path: the `shutdown` lifecycle event fires, callbacks are flushed, and the action source is disconnected. Callback resources remain open for another `run()` and close when the runtime context exits or `disconnect()` is called.
 
 ## From Config
 

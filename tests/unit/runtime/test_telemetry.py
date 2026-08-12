@@ -215,6 +215,47 @@ class TestCallbackBus:
         bus.close()
         cb.close.assert_called_once()
 
+    def test_close_is_idempotent(self) -> None:
+        cb = MagicMock()
+        bus = _CallbackBus([cb])
+
+        bus.close()
+        bus.close()
+
+        cb.close.assert_called_once()
+
+    def test_close_attempts_all_callbacks_before_propagating_base_exception(self) -> None:
+        interrupted = MagicMock()
+        interrupted.close.side_effect = KeyboardInterrupt
+        remaining = MagicMock()
+        bus = _CallbackBus([interrupted, remaining])
+
+        with pytest.raises(KeyboardInterrupt):
+            bus.close()
+
+        remaining.close.assert_called_once()
+
+    def test_concurrent_close_calls_callbacks_once(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        cb = MagicMock()
+
+        def close() -> None:
+            entered.set()
+            assert release.wait(timeout=5.0)
+
+        cb.close.side_effect = close
+        bus = _CallbackBus([cb])
+        threads = [threading.Thread(target=bus.close) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        assert entered.wait(timeout=5.0)
+        release.set()
+        for thread in threads:
+            thread.join(timeout=5.0)
+
+        cb.close.assert_called_once()
+
     def test_missing_methods_skipped(self) -> None:
         class MinimalCallback:
             pass
@@ -301,4 +342,16 @@ class TestAsyncCallback:
         cb = AsyncCallback(inner)
         cb.close()
         assert not cb._thread.is_alive()
+        inner.close.assert_called_once()
+
+    def test_concurrent_close_closes_inner_once(self) -> None:
+        inner = MagicMock(spec=["close"])
+        cb = AsyncCallback(inner)
+        threads = [threading.Thread(target=cb.close) for _ in range(2)]
+
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5.0)
+
         inner.close.assert_called_once()

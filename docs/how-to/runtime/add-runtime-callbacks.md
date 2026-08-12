@@ -25,4 +25,6 @@ runtime = RobotRuntime(
 )
 ```
 
+The same callback instances receive every `run()` performed before the runtime is disconnected. Use the `start` and `shutdown` lifecycle events to separate per-run state. `RobotRuntime.disconnect()` or context exit closes callback resources exactly once and permanently disposes that runtime.
+
 As a general rule, keep workflow-specific logic in callbacks unless the same behavior becomes a reusable runtime primitive.

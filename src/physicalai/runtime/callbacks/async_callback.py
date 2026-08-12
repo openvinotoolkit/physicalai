@@ -8,6 +8,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import threading
+import time
 from collections import deque
 from typing import TYPE_CHECKING, Any
 
@@ -19,18 +20,24 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_CLOSE_TIMEOUT_S = 5.0
+_QUEUE_POLL_INTERVAL_S = 0.001
+
 
 @export_config(class_path="physicalai.runtime.AsyncCallback")
 class AsyncCallback:
     """Wraps a callback so all hooks run on a dedicated background thread.
 
-    The control loop only pays deque.append per event. On overflow, oldest
-    events are dropped.
+    The control loop takes two short locks and appends to a deque per event. On
+    overflow, oldest events are dropped.
     """
 
     _ACTION_HOOKS = ("on_action_ready", "on_action_sent")
 
     def __init__(self, inner: Any, max_queue: int = 1024) -> None:  # noqa: D107, ANN401
+        if max_queue <= 0:
+            msg = f"max_queue must be positive, got {max_queue}"
+            raise ValueError(msg)
         dropped = [h for h in self._ACTION_HOOKS if hasattr(inner, h)]
         if dropped:
             msg = (
@@ -39,9 +46,13 @@ class AsyncCallback:
             )
             raise TypeError(msg)
         self._inner = inner
+        self._max_queue = max_queue
         self._queue: deque[tuple[str, Any]] = deque(maxlen=max_queue)
+        self._queue_lock = threading.Lock()
+        self._close_lock = threading.Lock()
         self._stop = threading.Event()
         self._has_work = threading.Event()
+        self._closed = False
         self._thread = threading.Thread(target=self._worker, name="AsyncCallbackWorker", daemon=True)
         self._thread.start()
 
@@ -77,24 +88,71 @@ class AsyncCallback:
         self._enqueue("on_metrics", event)
 
     def close(self) -> None:
-        """Stop the worker thread and close the inner callback."""
-        self._stop.set()
+        """Drain queued events, stop the worker, and close the inner callback."""
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+        deadline = time.monotonic() + _CLOSE_TIMEOUT_S
+        try:
+            self._flush_until(deadline)
+        finally:
+            self._stop.set()
+            self._has_work.set()
+            self._thread.join(timeout=max(0.0, deadline - time.monotonic()))
+            close_fn = getattr(self._inner, "close", None)
+            if close_fn is not None:
+                close_fn()
+
+    def flush(self) -> None:
+        """Wait until all events queued before this call are delivered."""
+        self._flush_until(time.monotonic() + _CLOSE_TIMEOUT_S)
+
+    def _flush_until(self, deadline: float) -> None:
+        if not self._thread.is_alive():
+            return
+        done = threading.Event()
+        while self._thread.is_alive():
+            with self._queue_lock:
+                if len(self._queue) < self._max_queue:
+                    self._queue.append(("_flush", done))
+                    break
+            if time.monotonic() >= deadline:
+                logger.warning("Async callback did not flush within %.1fs", _CLOSE_TIMEOUT_S)
+                return
+            time.sleep(_QUEUE_POLL_INTERVAL_S)
+        else:
+            return
         self._has_work.set()
-        self._thread.join(timeout=5.0)
-        close_fn = getattr(self._inner, "close", None)
-        if close_fn is not None:
-            close_fn()
+        if not done.wait(timeout=max(0.0, deadline - time.monotonic())):
+            logger.warning("Async callback did not flush within %.1fs", _CLOSE_TIMEOUT_S)
 
     def _enqueue(self, method: str, event: Any) -> None:  # noqa: ANN401
-        self._queue.append((method, event))
+        with self._close_lock:
+            if self._closed:
+                return
+            with self._queue_lock:
+                self._queue.append((method, event))
         self._has_work.set()
 
     def _worker(self) -> None:
         while not self._stop.is_set():
             self._has_work.wait()
             self._has_work.clear()
-            while self._queue:
-                method, event = self._queue.popleft()
+            while True:
+                with self._queue_lock:
+                    if not self._queue:
+                        break
+                    method, event = self._queue.popleft()
+                if method == "_flush":
+                    flush_fn = getattr(self._inner, "flush", None)
+                    if flush_fn is not None:
+                        try:
+                            flush_fn()
+                        except Exception:
+                            logger.exception("AsyncCallback inner %r.flush failed", self._inner)
+                    event.set()
+                    continue
                 fn = getattr(self._inner, method, None)
                 if fn is not None:
                     try:

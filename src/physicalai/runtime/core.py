@@ -9,6 +9,7 @@ import logging
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, Self
 
@@ -19,7 +20,7 @@ from physicalai.runtime.events import LifecycleEvent, TickEvent
 from physicalai.runtime.execution.base import WorkerDiedError
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Iterator, Mapping, Sequence
     from typing import Any
 
     import numpy as np
@@ -145,6 +146,9 @@ class RobotRuntime:
         self._bus = _CallbackBus(callbacks)
         self._goal_time = (1.0 / fps) * _GOAL_TIME_TICKS
         self._connected = False
+        self._closed = False
+        self._lifecycle_lock = threading.Lock()
+        self._run_lock = threading.Lock()
         self._last_robot_obs: RobotObservation | None = None
         self._last_camera_frames: dict[str, Frame] = {}
         self._consecutive_error_ticks: int = 0
@@ -202,50 +206,70 @@ class RobotRuntime:
         disconnects everything already connected and re-raises.
 
         Idempotent — calling on an already-connected runtime is a no-op.
+
+        Raises:
+            RuntimeError: If a run is active or this runtime was disconnected.
         """
-        if self._connected:
-            logger.debug("connect() called but already connected — no-op")
-            return
+        with self._lifecycle_lock:
+            if self._run_lock.locked():
+                msg = "Cannot connect RobotRuntime while run() is active"
+                raise RuntimeError(msg)
+            if self._closed:
+                msg = "RobotRuntime has been disconnected and cannot be connected again; create a new runtime"
+                raise RuntimeError(msg)
+            if self._connected:
+                logger.debug("connect() called but already connected — no-op")
+                return
 
-        self._robot.connect()
-        connected_cameras: list[str] = []
-        try:
-            for name, cam in self._cameras.items():
-                cam.connect()
-                connected_cameras.append(name)
-        except Exception:
-            for cam_name in connected_cameras:
-                try:
-                    self._cameras[cam_name].disconnect()
-                except Exception:
-                    logger.warning("Failed to disconnect camera '%s' during rollback", cam_name, exc_info=True)
+            self._robot.connect()
+            connected_cameras: list[str] = []
             try:
-                self._robot.disconnect()
+                for name, cam in self._cameras.items():
+                    cam.connect()
+                    connected_cameras.append(name)
             except Exception:
-                logger.warning("Failed to disconnect robot during rollback", exc_info=True)
-            raise
-
-        self._connected = True
+                for cam_name in connected_cameras:
+                    try:
+                        self._cameras[cam_name].disconnect()
+                    except Exception:
+                        logger.warning("Failed to disconnect camera '%s' during rollback", cam_name, exc_info=True)
+                try:
+                    self._robot.disconnect()
+                except Exception:
+                    logger.warning("Failed to disconnect robot during rollback", exc_info=True)
+                raise
+            self._connected = True
 
     def disconnect(self) -> None:
-        """Disconnect cameras then robot. Never raises.
+        """Permanently close callbacks and disconnect cameras then robot.
 
-        Idempotent — calling on an already-disconnected runtime is a no-op.
+        Idempotent. A disconnected runtime cannot be connected again; construct
+        a new runtime with fresh callbacks instead.
+
+        Raises:
+            RuntimeError: If a run is still active.
         """
-        if not self._connected:
-            return
-
-        for name, cam in self._cameras.items():
+        with self._lifecycle_lock:
+            if self._closed:
+                return
+            if self._run_lock.locked():
+                msg = "Cannot disconnect RobotRuntime while run() is active; stop it and wait for run() to return"
+                raise RuntimeError(msg)
             try:
-                cam.disconnect()
-            except Exception:
-                logger.warning("Failed to disconnect camera '%s'", name, exc_info=True)
-        try:
-            self._robot.disconnect()
-        except Exception:
-            logger.warning("Failed to disconnect robot", exc_info=True)
-
-        self._connected = False
+                if self._connected:
+                    for name, cam in self._cameras.items():
+                        try:
+                            cam.disconnect()
+                        except Exception:
+                            logger.warning("Failed to disconnect camera '%s'", name, exc_info=True)
+                    try:
+                        self._robot.disconnect()
+                    except Exception:
+                        logger.warning("Failed to disconnect robot", exc_info=True)
+            finally:
+                self._connected = False
+                self._closed = True
+                self._bus.close()
 
     def __enter__(self) -> Self:  # noqa: D105
         self.connect()
@@ -326,13 +350,7 @@ class RobotRuntime:
         Raises:
             RuntimeError: If called before ``connect()``.
             WorkerDiedError: If the action source's execution worker dies.
-        """
-        if not self._connected:
-            msg = "RobotRuntime.run() called before connect(). Use 'with runtime:' or call runtime.connect() first."
-            raise RuntimeError(msg)
-
-        self._reset_session()
-
+        """  # noqa: DOC502
         goal_time = 1.0 / self._fps
         step = 0
         # Every normal exit overwrites this, so only a propagating exception
@@ -340,77 +358,104 @@ class RobotRuntime:
         # instead of inheriting whichever normal reason happened to be set.
         reason: RunReason = "error"
 
-        # Source connect and the start event sit inside the try so a failure
-        # there still runs _shutdown(): otherwise the stop flag would survive
-        # into the next run() and silently zero-step every later session.
-        try:
-            self._action_source.connect(bus=self._bus, session_id=self._session_id)
-            self._bus.emit_lifecycle(
-                LifecycleEvent(
-                    session_id=self._session_id,
-                    timestamp=time.time(),
-                    event="start",
-                    metadata={
-                        "fps": self._fps,
-                        "duration_s": duration_s,
-                        "cameras": list(self._cameras.keys()),
-                        "joint_names": self._robot.joint_names,
-                    },
+        with self._active_run():
+            # Source connect and the start event sit inside the try so a failure
+            # there still runs _shutdown(): otherwise the stop flag would survive
+            # into the next run() and silently zero-step every later session.
+            try:
+                self._reset_session()
+                self._action_source.connect(bus=self._bus, session_id=self._session_id)
+                self._bus.emit_lifecycle(
+                    LifecycleEvent(
+                        session_id=self._session_id,
+                        timestamp=time.time(),
+                        event="start",
+                        metadata={
+                            "fps": self._fps,
+                            "duration_s": duration_s,
+                            "cameras": list(self._cameras.keys()),
+                            "joint_names": self._robot.joint_names,
+                        },
+                    )
                 )
-            )
 
-            while True:
-                if self._stop.is_set() or (stop_event is not None and stop_event.is_set()):
-                    reason = "stop_requested"
-                    # Fires after the last tick. Callbacks may take control of the robot from this point.
-                    self._bus.emit_lifecycle(
-                        LifecycleEvent(
+                while True:
+                    if self._stop.is_set() or (stop_event is not None and stop_event.is_set()):
+                        reason = "stop_requested"
+                        # Fires after the last tick. Callbacks may take control of the robot from this point.
+                        self._bus.emit_lifecycle(
+                            LifecycleEvent(
+                                session_id=self._session_id,
+                                timestamp=time.time(),
+                                event="stop_requested",
+                                metadata={"step": step},
+                            )
+                        )
+                        break
+                    if duration_s is not None and step * goal_time >= duration_s:
+                        reason = "duration_elapsed"
+                        break
+
+                    loop_start = time.perf_counter()
+                    robot_state, camera_frames = self._read_observation()
+
+                    action = self._action_source.update(robot_state, camera_frames, step)
+                    action = self._bus.invoke_on_action_ready(action=action, step=step)
+
+                    self._resilient_send(action)
+                    self._bus.invoke_on_action_sent(action=action, step=step)
+
+                    elapsed, sleep_time = self._tick_sleep(loop_start, goal_time)
+                    self._bus.emit_tick(
+                        TickEvent(
                             session_id=self._session_id,
+                            step=step,
                             timestamp=time.time(),
-                            event="stop_requested",
-                            metadata={"step": step},
+                            robot_state=robot_state,
+                            camera_frames=camera_frames,
+                            action_sent=action,
+                            loop_duration_s=elapsed,
+                            sleep_time_s=max(sleep_time, 0.0),
+                            stale_obs=self._last_tick_stale,
                         )
                     )
-                    break
-                if duration_s is not None and step * goal_time >= duration_s:
-                    reason = "duration_elapsed"
-                    break
+                    step += 1
 
-                loop_start = time.perf_counter()
-                robot_state, camera_frames = self._read_observation()
-
-                action = self._action_source.update(robot_state, camera_frames, step)
-                action = self._bus.invoke_on_action_ready(action=action, step=step)
-
-                self._resilient_send(action)
-                self._bus.invoke_on_action_sent(action=action, step=step)
-
-                elapsed, sleep_time = self._tick_sleep(loop_start, goal_time)
-                self._bus.emit_tick(
-                    TickEvent(
-                        session_id=self._session_id,
-                        step=step,
-                        timestamp=time.time(),
-                        robot_state=robot_state,
-                        camera_frames=camera_frames,
-                        action_sent=action,
-                        loop_duration_s=elapsed,
-                        sleep_time_s=max(sleep_time, 0.0),
-                        stale_obs=self._last_tick_stale,
-                    )
-                )
-                step += 1
-
-        except KeyboardInterrupt:
-            reason = "interrupted"
-            logger.info("Interrupted by user")
-        except WorkerDiedError:
-            logger.exception("Worker died during runtime")
-            raise
-        finally:
-            self._shutdown(step, reason=reason)
+            except KeyboardInterrupt:
+                reason = "interrupted"
+                logger.info("Interrupted by user")
+            except WorkerDiedError:
+                logger.exception("Worker died during runtime")
+                raise
+            finally:
+                self._shutdown(step, reason=reason)
 
         return step
+
+    @contextmanager
+    def _active_run(self) -> Iterator[None]:
+        """Acquire the run slot and release it after the caller's block.
+
+        Raises:
+            RuntimeError: If another run is active or the runtime is not connected.
+        """
+        acquired = False
+        try:
+            with self._lifecycle_lock:
+                acquired = self._run_lock.acquire(blocking=False)
+                if not acquired:
+                    msg = "RobotRuntime.run() is already active"
+                    raise RuntimeError(msg)
+                if not self._connected:
+                    msg = (
+                        "RobotRuntime.run() called before connect(). "
+                        "Use 'with runtime:' or call runtime.connect() first."
+                    )
+                    raise RuntimeError(msg)
+            yield
+        finally:
+            if acquired:
+                self._run_lock.release()
 
     def _reset_session(self) -> None:
         """Reset all session-scoped state for a fresh run.
@@ -601,10 +646,8 @@ class RobotRuntime:
                 )
             )
         finally:
-            # The bus isolates Exception but deliberately lets BaseException
-            # through, so the flush needs its own guarantee — otherwise a Ctrl+C
-            # in on_lifecycle loses the session's buffered telemetry.
-            self._bus.close()
+            # A Ctrl+C in on_lifecycle must not lose buffered telemetry.
+            self._bus.flush()
 
     def _shutdown(self, step: int, *, reason: RunReason) -> None:
         self._last_run_reason = reason

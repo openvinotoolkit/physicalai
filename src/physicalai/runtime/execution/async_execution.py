@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -53,7 +53,8 @@ class AsyncExecution(Execution):
         self._threshold_count: int = 0
 
         self._lock = threading.Lock()
-        self._obs_slot: dict[str, np.ndarray] | None = None
+        self._model_lock = threading.Lock()
+        self._obs_slot: tuple[dict[str, Any], int] | None = None
         self._obs_ready = threading.Event()
         self._running_inference = False
         self._request_time: float = 0.0
@@ -62,6 +63,11 @@ class AsyncExecution(Execution):
         self._thread: threading.Thread | None = None
         self._death_cause: BaseException | None = None
         self._inference_count: int = 0
+        # Episode counter bumped by start()/reset(). Each observation handed to
+        # the worker carries the current value; if reset() lands while inference
+        # is in flight, the worker's episode_id no longer matches and the result
+        # is discarded instead of reaching the queue.
+        self._episode_id: int = 0
         self._bus: _CallbackBus | None = None
         self._session_id: str = ""
 
@@ -88,6 +94,7 @@ class AsyncExecution(Execution):
         self._obs_ready = threading.Event()
         self._inference_count = 0
         with self._lock:
+            self._episode_id += 1
             # A stale observation would be inferred on as if it were current.
             self._obs_slot = None
             self._running_inference = False
@@ -131,7 +138,7 @@ class AsyncExecution(Execution):
             )
             raise RuntimeError(msg)
 
-    def warmup(self, sample_observation: dict[str, np.ndarray]) -> None:
+    def warmup(self, sample_observation: dict[str, Any]) -> None:
         """Run one inference in main thread, seed queue, discover chunk_size.
 
         Raises:
@@ -139,12 +146,19 @@ class AsyncExecution(Execution):
         """
         if self._model is None or self._queue is None:
             raise RuntimeError(NOT_STARTED)
-        actions = self._model.predict_action_chunk(sample_observation)
-        self._chunk_size = actions.shape[0]
-        self._threshold_count = int(self._chunk_size * self._threshold_frac)
-        self._queue.push_chunk(actions, offset=0)
+        with self._lock:
+            episode_id = self._episode_id
+        with self._model_lock:
+            actions = self._model.predict_action_chunk(sample_observation)
+        with self._lock:
+            if episode_id != self._episode_id:
+                msg = "AsyncExecution warmup cancelled by reset"
+                raise RuntimeError(msg)
+            self._chunk_size = actions.shape[0]
+            self._threshold_count = int(self._chunk_size * self._threshold_frac)
+            self._queue.push_chunk(actions, offset=0)
 
-    def maybe_request(self, observation: dict[str, np.ndarray]) -> None:
+    def maybe_request(self, observation: dict[str, Any]) -> None:
         """Submit observation for background inference if queue is low and worker idle.
 
         Raises:
@@ -164,10 +178,30 @@ class AsyncExecution(Execution):
         if self._queue.below_threshold(self._threshold_count) and not self._busy:
             snapshot = {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in observation.items()}
             with self._lock:
-                self._obs_slot = snapshot
+                self._obs_slot = (snapshot, self._episode_id)
                 self._request_time = time.perf_counter()
                 self._pops_at_request = self._queue.total_pops
             self._obs_ready.set()
+
+    def reset(self, *, reset_model: bool = True) -> None:
+        """Invalidate queued requests and optionally wait for active inference.
+
+        The worker remains alive. A result whose inference began before this
+        method is discarded even if it completes after the reset. With
+        ``reset_model=True``, waits for inference already inside the model.
+
+        Raises:
+            RuntimeError: If :meth:`start` has not been called.
+        """
+        if self._model is None:
+            raise RuntimeError(NOT_STARTED)
+        with self._lock:
+            self._episode_id += 1
+            self._obs_slot = None
+            self._request_time = time.perf_counter()
+        if reset_model:
+            with self._model_lock:
+                self._model.reset()
 
     def stop(self) -> None:
         """Signal the worker and join it, with a timeout.
@@ -245,17 +279,23 @@ class AsyncExecution(Execution):
                     return
 
                 with self._lock:
-                    obs = self._obs_slot
+                    request = self._obs_slot
                     self._obs_slot = None
-                    if obs is None:
+                    if request is None:
                         continue
+                    obs, episode_id = request
                     self._running_inference = True
 
                 if self._model is None or self._queue is None:
                     raise RuntimeError(NOT_STARTED)  # noqa: TRY301
                 t0 = time.perf_counter()
-                actions = self._model.predict_action_chunk(obs)
-                latency = time.perf_counter() - t0
+                with self._model_lock:
+                    with self._lock:
+                        if episode_id != self._episode_id:
+                            self._running_inference = False
+                            continue
+                    actions = self._model.predict_action_chunk(obs)
+                    latency = time.perf_counter() - t0
 
                 if stop_event.is_set():
                     # This run ended while the inference was in flight. The
@@ -266,9 +306,12 @@ class AsyncExecution(Execution):
                 # Offset = actions actually sent since the observation was
                 # captured. This is exact (no fps estimation error).
                 with self._lock:
+                    if episode_id != self._episode_id:
+                        self._running_inference = False
+                        continue
                     pops_since = self._queue.total_pops - self._pops_at_request
-                offset = min(max(pops_since, 0), len(actions) - 1)
-                self._queue.push_chunk(actions, offset=offset)
+                    offset = min(max(pops_since, 0), len(actions) - 1)
+                    self._queue.push_chunk(actions, offset=offset)
                 self._inference_count += 1
 
                 if self._bus:
