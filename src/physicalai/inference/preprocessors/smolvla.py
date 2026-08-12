@@ -43,7 +43,9 @@ class ResizeSmolVLA(Preprocessor):
                 as (height, width). Defaults to (512, 512).
             image_key_reorder_map: Optional mapping from source image keys to target
                 camera indices used for deterministic ordering. Keys may be given with
-                or without the ``images.`` prefix.
+                or without the ``images.`` prefix. When the input holds a single unnamed
+                image under ``images``, a single-entry map applies to it regardless of
+                its key name.
             num_cameras: Total number of camera slots expected by the model. Slots left
                 unfilled by the input image keys are filled with masked dummy images
                 shaped after the real cameras, or after ``image_resolution`` with a
@@ -203,16 +205,21 @@ class ResizeSmolVLA(Preprocessor):
         Raises:
             ValueError: If ``image_key_reorder_map`` is set and its keys do not match
                 the input image keys exactly, or if the resolved slots do not fit into
-                ``num_cameras``.
+                ``num_cameras``. A single-entry map is exempt from the name check when
+                the input is one unnamed image.
         """
         if self.image_key_reorder_map:
-            if set(self.image_key_reorder_map) != set(image_keys):
+            # An unnamed single image cannot be matched by name, so a single-entry map applies to it.
+            if image_keys == [IMAGES] and len(self.image_key_reorder_map) == 1:
+                slot_by_key = {IMAGES: next(iter(self.image_key_reorder_map.values()))}
+            elif set(self.image_key_reorder_map) != set(image_keys):
                 msg = (
                     "image_key_reorder_map keys must match the input image keys exactly. "
                     f"Expected {sorted(self.image_key_reorder_map)}, got {sorted(image_keys)}."
                 )
                 raise ValueError(msg)
-            slot_by_key = {key: self.image_key_reorder_map[key] for key in image_keys}
+            else:
+                slot_by_key = {key: self.image_key_reorder_map[key] for key in image_keys}
         else:
             slot_by_key = {key: index for index, key in enumerate(image_keys)}
 

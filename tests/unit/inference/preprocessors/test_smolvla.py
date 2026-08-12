@@ -317,6 +317,22 @@ class TestResizeSmolVLACameraSlots:
         assert result[IMAGE_MASKS][0].all()
         assert not result[IMAGE_MASKS][1].any()
 
+    def test_single_array_input_uses_single_entry_reorder_map(self) -> None:
+        prep = ResizeSmolVLA(image_resolution=(64, 64), image_key_reorder_map={"top": 1}, num_cameras=3)
+        result = prep({IMAGES: np.ones((1, 3, 64, 64), dtype=np.float32)})
+        assert result[IMAGES].shape == (3, 1, 3, 64, 64)
+        np.testing.assert_allclose(result[IMAGES][1].max(), 1.0, atol=1e-5)
+        np.testing.assert_allclose(result[IMAGES][0], -1.0)
+        np.testing.assert_allclose(result[IMAGES][2], -1.0)
+        assert result[IMAGE_MASKS][1].all()
+        assert not result[IMAGE_MASKS][0].any()
+        assert not result[IMAGE_MASKS][2].any()
+
+    def test_single_array_input_with_multi_entry_reorder_map_raises(self) -> None:
+        prep = ResizeSmolVLA(image_resolution=(64, 64), image_key_reorder_map={"top": 1, "wrist": 0}, num_cameras=2)
+        with pytest.raises(ValueError, match="must match the input image keys exactly"):
+            prep({IMAGES: np.ones((1, 3, 64, 64), dtype=np.float32)})
+
     def test_single_array_input_unaffected_by_defaults(self) -> None:
         prep = ResizeSmolVLA(image_resolution=(64, 64))
         img = np.random.rand(2, 3, 32, 32).astype(np.float32)
