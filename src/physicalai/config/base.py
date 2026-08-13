@@ -53,19 +53,26 @@ def parse_class_config_file(target: type[_T], path: str | Path, *, defaults: boo
     if not isinstance(values, Mapping):
         msg = "Expected configuration values to be a mapping"
         raise TypeError(msg)
+    if "init_args" in values:
+        inner = values["init_args"]
+        if inner is None or not isinstance(inner, Mapping):
+            msg = "Expected 'init_args' to be a mapping"
+            raise TypeError(msg)
+        values = inner
     return parse_class_config(target, values, defaults=defaults)
 
 
 def save_class_config(value: _T, path: str | Path) -> None:
-    """Serialize a typed config through jsonargparse."""
-    parser = ArgumentParser(exit_on_error=False)
-    parser.add_class_arguments(type(value), "object")
-    values = dataclasses.asdict(cast("dataclasses.DataclassInstance", value))
-    namespace = parser.parse_object({"object": values}, defaults=False)
-    dumped = yaml.safe_load(parser.dump(namespace, format="yaml"))
-    if isinstance(dumped, Mapping) and "object" in dumped:
-        dumped = dumped["object"]
-    Path(path).write_text(yaml.safe_dump(dumped, sort_keys=False), encoding="utf-8")
+    """Serialize a typed config as a ``class_path``/``init_args`` YAML envelope.
+
+    Raises:
+        TypeError: If *value* is not a typed :class:`Config` dataclass instance.
+    """
+    if not isinstance(value, Config):
+        msg = "save_class_config expects a typed Config dataclass instance"
+        raise TypeError(msg)
+    envelope = value.to_jsonargparse()
+    Path(path).write_text(yaml.safe_dump(envelope, sort_keys=False), encoding="utf-8")
 
 
 def _plain_value(value: object) -> object:  # noqa: PLR0911

@@ -56,10 +56,43 @@ def test_typed_dataclass_semantics(tmp_path: Path) -> None:
     config.save(path)
 
     restored = TypedConfig.load(path)
+    saved_text = path.read_text()
 
     assert restored == config
     assert config.to_dict() == {"nested": {"value": 3}, "mode": "FAST", "shape": [2, 4]}
     assert config.to_jsonargparse()["init_args"] == config.to_dict()
+    assert "class_path:" in saved_text
+    assert "init_args:" in saved_text
+    assert "class_path: tests.unit.config.test_config.Nested" not in saved_text
+
+
+def test_typed_config_load_legacy_envelope_file(tmp_path: Path) -> None:
+    path = tmp_path / "legacy.yaml"
+    path.write_text(
+        "class_path: tests.unit.config.test_config.TypedConfig\n"
+        "init_args:\n"
+        "  nested:\n"
+        "    value: 3\n"
+        "  mode: FAST\n"
+        "  shape: [2, 4]\n",
+        encoding="utf-8",
+    )
+
+    restored = TypedConfig.load(path)
+
+    assert restored == TypedConfig(Nested(3), Mode.FAST, (2, 4))
+
+
+def test_typed_config_load_bare_fields_file(tmp_path: Path) -> None:
+    path = tmp_path / "bare.yaml"
+    path.write_text(
+        "nested:\n  value: 3\nmode: FAST\nshape: [2, 4]\n",
+        encoding="utf-8",
+    )
+
+    restored = TypedConfig.load(path)
+
+    assert restored == TypedConfig(Nested(3), Mode.FAST, (2, 4))
 
 
 def test_typed_config_load_accepts_mapping() -> None:
