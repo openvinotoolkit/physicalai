@@ -65,7 +65,7 @@ frame = shared.read_latest()
 ```
 
 `create_camera(..., shared=True)` remains a convenience for shareable built-ins
-(`uvc`, `realsense`, `basler`) that packs a type into `SharedCamera(camera=...)`.
+(`uvc`, `realsense`, `basler`, `ip`) that packs a type into `SharedCamera(camera=...)`.
 
 `from_config()` derives `service_name` as
 `physicalai/camera/<ClassName>/<device_id>/frame` for any `class_path`,

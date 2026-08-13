@@ -104,7 +104,15 @@ include = [
 
 [tool.pyrefly]
 python-version = "3.11"
+search-path = ["src"]
+project-includes = ["src", "tests"]
 ignore-missing-imports = ["*"]
+
+[tool.mypy]
+files = ["src", "tests"]
+mypy_path = "src"
+ignore_missing_imports = true
+explicit_package_bases = true
 
 [tool.uv]
 default-groups = ["dev"]
@@ -113,6 +121,7 @@ default-groups = ["dev"]
 target-version = "py311"
 line-length = 120
 preview = true
+include = ["src/**/*.py", "src/**/*.pyi"]
 exclude = [
     ".bzr",
     ".direnv",
@@ -225,6 +234,9 @@ exclude_lines = [
     "raise ValueError",
     "except ImportError:",
 ]
+
+[tool.coverage.run]
+source = ["src/physicalai"]
 
 [tool.coverage.paths]
 source = ["src"]

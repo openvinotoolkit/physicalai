@@ -17,7 +17,9 @@ repos:
     hooks:
       - id: ruff-check
         args: [--fix, --unsafe-fixes]
+        files: ^src/
       - id: ruff-format
+        files: ^src/
 
   - repo: https://github.com/astral-sh/uv-pre-commit
     rev: "0.9.7"
@@ -32,7 +34,7 @@ repos:
         name: pyrefly (type checking)
         entry: pyrefly check
         language: python
-        additional_dependencies: [pyrefly==0.57.1]
+        additional_dependencies: [pyrefly==1.2.0]
         pass_filenames: false
         types: [python]
 
