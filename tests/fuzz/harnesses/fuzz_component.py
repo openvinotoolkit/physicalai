@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+from argparse import ArgumentError
 from pathlib import Path
 
 import atheris
@@ -78,8 +79,8 @@ def _sub_depth_limit(fdp: atheris.FuzzedDataProvider) -> None:
             assert "depth" in str(exc).lower() or "nesting" in str(exc).lower(), (
                 f"Expected depth-limit ValueError for depth={depth}, got: {exc}"
             )
-    except (TypeError, AttributeError):
-        pass  # Constructor errors are fine; what matters is no crash before depth limit
+    except (TypeError, AttributeError, ArgumentError):
+        pass  # Constructor or parser errors are fine; what matters is no crash before depth limit
 
 
 @atheris.instrument_func
@@ -95,7 +96,7 @@ def _sub_flat_params(fdp: atheris.FuzzedDataProvider) -> None:
     try:
         spec = ComponentSpec.model_validate(spec_dict)
         instantiate_component(spec)
-    except (TypeError, ValueError, AttributeError):
+    except (TypeError, ValueError, AttributeError, ArgumentError):
         pass
 
 

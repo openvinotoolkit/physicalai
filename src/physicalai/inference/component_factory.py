@@ -14,6 +14,7 @@ to an object instance, supporting both ``type`` + flat params and
 from __future__ import annotations
 
 import os
+from argparse import ArgumentError
 from pathlib import Path
 
 from jsonargparse import ArgumentParser
@@ -225,11 +226,14 @@ def instantiate_component(
         raise TypeError(msg)
     parser = ArgumentParser(exit_on_error=False)
     parser.add_subclass_arguments(base, "component", required=True)
-    namespace = parser.parse_object(
-        {"component": {"class_path": class_path, "init_args": init_args}},
-        defaults=False,
-    )
-    return parser.instantiate(namespace).component
+    try:
+        namespace = parser.parse_object(
+            {"component": {"class_path": class_path, "init_args": init_args}},
+            defaults=False,
+        )
+        return parser.instantiate(namespace).component
+    except ArgumentError as exc:
+        raise TypeError(str(exc)) from exc
 
 
 def _canonical_spec(spec: ComponentSpec, *, registry: ComponentRegistry) -> dict[str, object]:

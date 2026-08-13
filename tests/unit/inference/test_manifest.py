@@ -217,6 +217,11 @@ class TestInstantiateComponent:
         runner = instantiate_component(spec)
         assert isinstance(runner, SinglePass)
 
+    def test_instantiate_rejects_invalid_flat_params(self) -> None:
+        spec = ComponentSpec.model_validate({"type": "single_pass", "": ""})
+        with pytest.raises(TypeError, match='Empty nested key'):
+            instantiate_component(spec)
+
 
 class TestModelSpec:
     def test_defaults(self) -> None:
