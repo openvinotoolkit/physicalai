@@ -402,8 +402,10 @@ class TestIndependentSpawn:
 
     def test_spawn_failure_raises(self, unique_id: str) -> None:
         robot = _shared_robot(unique_id.replace("/", "-"), fail_connect=True)
-        with pytest.raises(RobotTransportError, match="failed to start robot owner"):
+        with pytest.raises(RobotTransportError, match="failed to start robot owner") as exc_info:
             robot.connect()
+        assert exc_info.value.phase == "unexpected_startup_failure"
+        assert "fail_connect" in str(exc_info.value)
         assert not robot.is_connected()
 
     def test_owner_exits_and_disconnects_driver_after_idle(self, unique_id: str) -> None:

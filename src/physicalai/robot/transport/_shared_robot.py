@@ -471,8 +471,8 @@ class SharedRobot:
                         f"this instance={mine_ids}, existing owner={winner_ids}"
                     )
                     raise RobotNameConflict(msg, phase=exc.phase) from exc
-            msg = f"failed to start robot owner for {self._name!r}"
-            raise RobotTransportError(msg) from exc
+            msg = f"failed to start robot owner for {self._name!r}: {exc}"
+            raise RobotTransportError(msg, phase=exc.phase, device_ids=exc.device_ids) from exc
         else:
             # Keep the handle alive; the detached owner self-terminates via
             # idle timeout, so disconnect() never stops it explicitly.
