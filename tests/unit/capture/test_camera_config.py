@@ -48,6 +48,21 @@ class TestUVCCameraConfig:
         wire = _assert_construction_round_trip(camera)
         assert wire["init_args"]["color_mode"] == "BGR"
 
+    def test_from_instance_instantiate_without_json_detour(self) -> None:
+        from physicalai.capture import UVCCamera
+
+        camera = UVCCamera(device=1, color_mode=ColorMode.BGR, backend="v4l2")
+        config = Config.from_instance(camera)
+        assert config.init_args["color_mode"] == "BGR"
+        assert not isinstance(config.init_args["color_mode"], ColorMode)
+        restored = config.instantiate(expected_type=Camera)
+        assert type(restored) is UVCCamera
+        assert restored.color_mode is ColorMode.BGR
+        assert not restored.is_connected
+        schema_free = config.instantiate()
+        assert type(schema_free) is UVCCamera
+        assert schema_free.color_mode is ColorMode.BGR
+
 
 @pytest.fixture
 def mock_pyrealsense2() -> Generator[MagicMock, None, None]:

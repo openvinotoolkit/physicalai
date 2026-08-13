@@ -334,7 +334,15 @@ class TestNormalizeAndInstantiate:
         holder = EnumHolder(Color.RED)
         config = to_config(holder)
         assert config["init_args"]["color"] == "RED"
+        assert not isinstance(config["init_args"]["color"], Color)
         restored = cast("EnumHolder", config.instantiate(expected_type=EnumHolder))
+        assert restored.color is Color.RED
+
+    def test_enum_round_trip_without_expected_type(self) -> None:
+        holder = EnumHolder(Color.RED)
+        config = Config.from_instance(holder)
+        assert config.init_args["color"] == "RED"
+        restored = cast("EnumHolder", instantiate(config))
         assert restored.color is Color.RED
 
     def test_non_finite_float_rejected(self) -> None:

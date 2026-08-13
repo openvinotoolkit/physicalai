@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import math
+import types
 from collections.abc import Mapping
 from enum import Enum
-from typing import TypeVar, cast
+from typing import TypeVar, Union, cast, get_args, get_origin, get_type_hints
 
 from ._errors import ConfigError, ConfigImportError
 from ._export import declared_config_args
@@ -219,6 +221,53 @@ def _resolve_class(class_path: str, *, path: str) -> type:
     return obj
 
 
+def _enum_type_from_hint(hint: object) -> type[Enum] | None:
+    if isinstance(hint, type) and issubclass(hint, Enum):
+        return hint
+    origin = get_origin(hint)
+    if origin in {types.UnionType, Union}:
+        for arg in get_args(hint):
+            if isinstance(arg, type) and issubclass(arg, Enum):
+                return arg
+    return None
+
+
+def _enum_from_wire(enum_cls: type[Enum], wire: str) -> Enum:
+    try:
+        return enum_cls(wire)
+    except ValueError:
+        return enum_cls[wire]
+
+
+def _coerce_constructor_args(cls: type, args: Mapping[str, object]) -> dict[str, object]:
+    """Coerce JSON wire values (e.g. enum names) before ``cls(**args)`` construction.
+
+    Returns:
+        Constructor kwargs with enum-typed parameters resolved from wire strings.
+    """
+    try:
+        signature = inspect.signature(cls.__init__)
+        module = inspect.getmodule(cls)
+        globalns = vars(module) if module is not None else {}
+        hints = get_type_hints(cls.__init__, globalns=globalns, localns=globalns)
+    except (TypeError, ValueError, NameError):
+        return dict(args)
+    coerced = dict(args)
+    for name, param in signature.parameters.items():
+        if name in {"self", "args", "kwargs"} or name not in coerced:
+            continue
+        value = coerced[name]
+        if isinstance(value, Enum):
+            continue
+        hint = hints.get(name, param.annotation)
+        if hint is inspect.Parameter.empty:
+            continue
+        enum_cls = _enum_type_from_hint(hint)
+        if enum_cls is not None and isinstance(value, str):
+            coerced[name] = _enum_from_wire(enum_cls, value)
+    return coerced
+
+
 def _instantiate_impl(
     config: Config | Mapping[str, JsonValue],
     *,
@@ -256,7 +305,7 @@ def _instantiate_impl(
     try:
         if dataclasses.is_dataclass(cls) and issubclass(cls, Config):
             return cls.from_dict(decoded_args)
-        return cls(**decoded_args)
+        return cls(**_coerce_constructor_args(cls, decoded_args))
     except Exception as exc:
         loc = path or validated["class_path"]
         exc.add_note(f"{format_path(loc)}: constructor failed while instantiating config")
