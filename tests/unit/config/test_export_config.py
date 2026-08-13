@@ -33,6 +33,8 @@ is_config_exportable = Config.is_exportable
 
 
 def instantiate(value: object) -> object:
+    if type(value) is Config:
+        return value.instantiate()
     return Config.from_dict(cast("Mapping[str, object]", value)).instantiate()
 
 # Matches physicalai.config._types._MAX_CONFIG_DEPTH
@@ -65,6 +67,16 @@ class Point:
     def __init__(self, x: int, y: int = 0) -> None:
         self.x = x
         self.y = y
+
+
+_evil_instantiate_side_effect = False
+
+
+@export_config
+class EvilSideEffect:
+    def __init__(self) -> None:
+        global _evil_instantiate_side_effect
+        _evil_instantiate_side_effect = True
 
 
 @export_config
@@ -552,6 +564,20 @@ class TestNormalizeAndInstantiate:
         )
         restored = cast("MappingHolder", instantiate(config))
         assert restored.data == {"nested": {"value": 1}}
+
+    def test_expected_type_rejects_incompatible_class_before_construct(self) -> None:
+        global _evil_instantiate_side_effect
+        _evil_instantiate_side_effect = False
+        recipe = Config(f"{__name__}.EvilSideEffect", {})
+        with pytest.raises(ConfigError, match="does not satisfy"):
+            recipe.instantiate(expected_type=Point)
+        assert _evil_instantiate_side_effect is False
+
+    def test_instantiate_helper_accepts_config_recipe(self) -> None:
+        recipe = Config.from_instance(Point(2, 3))
+        restored = cast("Point", instantiate(recipe))
+        assert restored.x == 2
+        assert restored.y == 3
 
 
 class TestExportConfig:

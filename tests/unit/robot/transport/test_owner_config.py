@@ -7,6 +7,7 @@ import json
 import pickle
 import subprocess
 import sys
+import math
 from typing import Any, cast
 from unittest.mock import MagicMock
 
@@ -284,6 +285,12 @@ class TestRobotOwnerConfig:
 
 
 class TestNormalizeRobotConfig:
+    def test_normalize_robot_config_rejects_non_finite_floats(self) -> None:
+        recipe = Config(FAKE_ROBOT_CLASS, {})
+        recipe.init_args["rate"] = math.nan
+        with pytest.raises(ValueError, match="JSON-serializable"):
+            normalize_robot_config(recipe)
+
     def test_normalize_robot_config_rejects_malformed(self) -> None:
         with pytest.raises(ConfigError):
             normalize_robot_config({"class_path": FAKE_ROBOT_CLASS, "extra": True})

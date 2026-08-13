@@ -102,7 +102,7 @@ def normalize_robot_config(robot: Config | Mapping[str, object]) -> Config:
         msg = f"robot_class must be a nonempty dotted path, got {recipe.class_path!r}"
         raise ValueError(msg)
     try:
-        json.dumps(recipe.to_dict())
+        json.dumps(recipe.to_dict(), allow_nan=False)
     except (TypeError, ValueError) as exc:
         msg = "robot config must be JSON-serializable (e.g. paths as str, not objects)"
         raise ValueError(msg) from exc

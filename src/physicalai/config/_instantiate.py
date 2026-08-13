@@ -24,6 +24,14 @@ from .importing import import_dotted_path
 _T = TypeVar("_T")
 
 
+def _resolved_type_satisfies_expected(resolved: type[object], expected_type: type[object]) -> bool | None:
+    """Return whether *resolved* is a subclass of *expected_type*, if checkable."""
+    try:
+        return issubclass(resolved, expected_type)
+    except TypeError:
+        return None
+
+
 def _is_nested_config(value: object) -> bool:
     return isinstance(value, Mapping) and "class_path" in value
 
@@ -355,8 +363,12 @@ def instantiate(config: Config | Mapping[str, JsonValue], *, expected_type: type
         if not isinstance(target, type):
             msg = f"{class_path!r} does not resolve to a class"
             raise ConfigImportError(msg)
+        satisfies = _resolved_type_satisfies_expected(target, expected_type)
+        if satisfies is False:
+            msg = f"{class_path!r} does not satisfy {expected_type.__name__}"
+            raise ConfigError(msg)
         result = parse_class_config(target, cast("Mapping[str, object]", raw["init_args"]))
-        if not isinstance(result, expected_type):
+        if satisfies is None and not isinstance(result, expected_type):
             msg = f"{class_path!r} does not satisfy {expected_type.__name__}"
             raise ConfigError(msg)
         return result
