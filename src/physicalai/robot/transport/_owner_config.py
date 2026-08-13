@@ -33,12 +33,12 @@ import json
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from physicalai.config import Config
+from physicalai.config._types import ConfigExportable  # noqa: PLC2701
 
 if TYPE_CHECKING:
-    from physicalai.config._types import ConfigExportable
     from physicalai.robot.interface import Robot
 
 DEFAULT_RATE_HZ = 100.0
@@ -124,9 +124,8 @@ def coerce_robot_config_input(
         return robot
     if isinstance(robot, Mapping):
         return robot
-    exportable = cast("ConfigExportable", robot)
-    if exportable.supports_config_export():
-        return exportable.as_config()
+    if isinstance(robot, ConfigExportable):
+        return robot.as_config()
     msg = (
         "robot config must be physicalai.config.Config, a class_path mapping, "
         f"or an @export_config instance; got {type(robot).__name__}"
