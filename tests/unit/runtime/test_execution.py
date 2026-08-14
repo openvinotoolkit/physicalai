@@ -349,12 +349,12 @@ class TestAsyncExecution:
                 time.sleep(0.001)
             assert ex._running_inference  # noqa: SLF001
 
-            episode_id = ex._episode_id  # noqa: SLF001
+            incarnation = ex._incarnation  # noqa: SLF001
             reset_thread = threading.Thread(target=ex.reset)
             reset_thread.start()
-            while ex._episode_id == episode_id and time.monotonic() < deadline:  # noqa: SLF001
+            while ex._incarnation == incarnation and time.monotonic() < deadline:  # noqa: SLF001
                 time.sleep(0.001)
-            assert ex._episode_id > episode_id  # noqa: SLF001
+            assert ex._incarnation > incarnation  # noqa: SLF001
         finally:
             ex._model_lock.release()  # noqa: SLF001
             if reset_thread is not None:
@@ -503,7 +503,7 @@ class TestRTCExecutionObsSlot:
         worker = ex._thread  # noqa: SLF001
         with ex._obs_lock:  # noqa: SLF001
             observation = {"state": np.zeros(3, dtype=np.float32)}
-            ex._obs_slot = (observation, ex._episode_id, None)  # noqa: SLF001
+            ex._obs_slot = (observation, ex._incarnation, None)  # noqa: SLF001
         assert entered.wait(timeout=5.0)
 
         reset_done = threading.Event()
@@ -540,18 +540,18 @@ class TestRTCExecutionObsSlot:
         try:
             with ex._obs_lock:  # noqa: SLF001
                 observation = {"state": np.zeros(3, dtype=np.float32)}
-                ex._obs_slot = (observation, ex._episode_id, None)  # noqa: SLF001
+                ex._obs_slot = (observation, ex._incarnation, None)  # noqa: SLF001
             deadline = time.monotonic() + 5.0
             while ex._obs_slot is not None and time.monotonic() < deadline:  # noqa: SLF001
                 time.sleep(0.001)
             assert ex._obs_slot is None  # noqa: SLF001
 
-            episode_id = ex._episode_id  # noqa: SLF001
+            incarnation = ex._incarnation  # noqa: SLF001
             reset_thread = threading.Thread(target=ex.reset)
             reset_thread.start()
-            while ex._episode_id == episode_id and time.monotonic() < deadline:  # noqa: SLF001
+            while ex._incarnation == incarnation and time.monotonic() < deadline:  # noqa: SLF001
                 time.sleep(0.001)
-            assert ex._episode_id > episode_id  # noqa: SLF001
+            assert ex._incarnation > incarnation  # noqa: SLF001
         finally:
             ex._model_lock.release()  # noqa: SLF001
             if reset_thread is not None:
@@ -781,7 +781,7 @@ class TestRestartAfterStop:
         ex._inference_count = 5  # noqa: SLF001
         with ex._lock:  # noqa: SLF001
             stale = {"state": np.full(4, 99.0, dtype=np.float32)}
-            ex._obs_slot = (stale, ex._episode_id)  # noqa: SLF001
+            ex._obs_slot = (stale, ex._incarnation)  # noqa: SLF001
             ex._running_inference = True  # noqa: SLF001
 
         ex.start(model, queue)
@@ -805,7 +805,7 @@ class TestRestartAfterStop:
         ex._death_cause = RuntimeError("died previously")  # noqa: SLF001
         with ex._obs_lock:  # noqa: SLF001
             stale = {"state": np.full(3, 99.0, dtype=np.float32)}
-            ex._obs_slot = (stale, ex._episode_id, None)  # noqa: SLF001
+            ex._obs_slot = (stale, ex._incarnation, None)  # noqa: SLF001
 
         ex.start(model, queue)
         try:
@@ -942,7 +942,7 @@ class TestStopTimeoutStraggler:
             model.side_effect = blocking
             ex.start(model, queue)
             with ex._obs_lock:  # noqa: SLF001
-                ex._obs_slot = (dict(obs), ex._episode_id, None)  # noqa: SLF001
+                ex._obs_slot = (dict(obs), ex._incarnation, None)  # noqa: SLF001
 
         assert entered.wait(timeout=5.0), "worker never entered inference"
         straggler = ex._thread  # noqa: SLF001

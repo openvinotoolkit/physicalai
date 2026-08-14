@@ -63,11 +63,11 @@ class AsyncExecution(Execution):
         self._thread: threading.Thread | None = None
         self._death_cause: BaseException | None = None
         self._inference_count: int = 0
-        # Episode counter bumped by start()/reset(). Each observation handed to
-        # the worker carries the current value; if reset() lands while inference
-        # is in flight, the worker's episode_id no longer matches and the result
-        # is discarded instead of reaching the queue.
-        self._episode_id: int = 0
+        # Incarnation counter bumped by start()/reset(). Each observation handed
+        # to the worker carries the current value; if reset() lands while
+        # inference is in flight, the worker's incarnation no longer matches
+        # and the result is discarded instead of reaching the queue.
+        self._incarnation: int = 0
         self._bus: _CallbackBus | None = None
         self._session_id: str = ""
 
@@ -94,7 +94,7 @@ class AsyncExecution(Execution):
         self._obs_ready = threading.Event()
         self._inference_count = 0
         with self._lock:
-            self._episode_id += 1
+            self._incarnation += 1
             # A stale observation would be inferred on as if it were current.
             self._obs_slot = None
             self._running_inference = False
@@ -147,11 +147,11 @@ class AsyncExecution(Execution):
         if self._model is None or self._queue is None:
             raise RuntimeError(NOT_STARTED)
         with self._lock:
-            episode_id = self._episode_id
+            incarnation = self._incarnation
         with self._model_lock:
             actions = self._model.predict_action_chunk(sample_observation)
         with self._lock:
-            if episode_id != self._episode_id:
+            if incarnation != self._incarnation:
                 msg = "AsyncExecution warmup cancelled by reset"
                 raise RuntimeError(msg)
             self._chunk_size = actions.shape[0]
@@ -178,7 +178,7 @@ class AsyncExecution(Execution):
         if self._queue.below_threshold(self._threshold_count) and not self._busy:
             snapshot = {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in observation.items()}
             with self._lock:
-                self._obs_slot = (snapshot, self._episode_id)
+                self._obs_slot = (snapshot, self._incarnation)
                 self._request_time = time.perf_counter()
                 self._pops_at_request = self._queue.total_pops
             self._obs_ready.set()
@@ -196,7 +196,7 @@ class AsyncExecution(Execution):
         if self._model is None:
             raise RuntimeError(NOT_STARTED)
         with self._lock:
-            self._episode_id += 1
+            self._incarnation += 1
             self._obs_slot = None
             self._request_time = time.perf_counter()
         if reset_model:
@@ -283,7 +283,7 @@ class AsyncExecution(Execution):
                     self._obs_slot = None
                     if request is None:
                         continue
-                    obs, episode_id = request
+                    obs, incarnation = request
                     self._running_inference = True
 
                 if self._model is None or self._queue is None:
@@ -291,7 +291,7 @@ class AsyncExecution(Execution):
                 t0 = time.perf_counter()
                 with self._model_lock:
                     with self._lock:
-                        if episode_id != self._episode_id:
+                        if incarnation != self._incarnation:
                             self._running_inference = False
                             continue
                     actions = self._model.predict_action_chunk(obs)
@@ -306,7 +306,7 @@ class AsyncExecution(Execution):
                 # Offset = actions actually sent since the observation was
                 # captured. This is exact (no fps estimation error).
                 with self._lock:
-                    if episode_id != self._episode_id:
+                    if incarnation != self._incarnation:
                         self._running_inference = False
                         continue
                     pops_since = self._queue.total_pops - self._pops_at_request

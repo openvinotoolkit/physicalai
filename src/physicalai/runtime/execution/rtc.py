@@ -141,11 +141,11 @@ class RTCExecution(Execution):
         self._thread: threading.Thread | None = None
         self._death_cause: BaseException | None = None
         self._inference_count: int = 0
-        # Episode counter bumped by start()/reset(). Each observation handed to
-        # the worker carries the current value; if reset() lands while inference
-        # is in flight, the worker's episode_id no longer matches and the result
-        # is discarded instead of reaching the queue.
-        self._episode_id: int = 0
+        # Incarnation counter bumped by start()/reset(). Each observation handed
+        # to the worker carries the current value; if reset() lands while
+        # inference is in flight, the worker's incarnation no longer matches
+        # and the result is discarded instead of reaching the queue.
+        self._incarnation: int = 0
         # Separate from _inference_count, which restarts each run. This gate
         # prevents RTC's own cold-start discard from re-arming. A caller may
         # still reset the model's latency callback at an episode boundary.
@@ -192,7 +192,7 @@ class RTCExecution(Execution):
         # Wake direct warmup callers before waiting on or refusing an active
         # worker. Otherwise they can remain blocked until the 120 s timeout.
         with self._obs_lock:
-            self._episode_id += 1
+            self._incarnation += 1
             self._obs_slot = None
             self._cancel_warmup_locked("RTCExecution warmup cancelled by restart")
 
@@ -281,9 +281,9 @@ class RTCExecution(Execution):
             if self._warmup_signal is not None:
                 msg = "RTCExecution warmup is already in progress"
                 raise RuntimeError(msg)
-            episode_id = self._episode_id
+            incarnation = self._incarnation
             self._warmup_signal = signal
-            self._obs_slot = (deepcopy(sample_observation), episode_id, signal)
+            self._obs_slot = (deepcopy(sample_observation), incarnation, signal)
 
         # Wait for the first chunk with a generous timeout
         if not signal.event.wait(timeout=120.0):
@@ -326,7 +326,7 @@ class RTCExecution(Execution):
 
         with self._obs_lock:
             snapshot = {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in observation.items()}
-            self._obs_slot = (snapshot, self._episode_id, None)
+            self._obs_slot = (snapshot, self._incarnation, None)
 
     def reset(self, *, reset_model: bool = True) -> None:
         """Invalidate pending RTC work and optionally wait for active inference.
@@ -339,7 +339,7 @@ class RTCExecution(Execution):
         if self._model is None:
             raise RuntimeError(_NOT_STARTED)
         with self._obs_lock:
-            self._episode_id += 1
+            self._incarnation += 1
             self._obs_slot = None
             self._cancel_warmup_locked("RTCExecution warmup cancelled by reset")
         if reset_model:
@@ -356,7 +356,7 @@ class RTCExecution(Execution):
         alongside it.
         """
         with self._obs_lock:
-            self._episode_id += 1
+            self._incarnation += 1
             self._obs_slot = None
             self._cancel_warmup_locked("RTCExecution warmup cancelled because execution stopped")
         if self._thread is not None:
@@ -425,7 +425,7 @@ class RTCExecution(Execution):
             if request is None:
                 time.sleep(_IDLE_SLEEP_S)
                 continue
-            inputs, episode_id, signal = request
+            inputs, incarnation, signal = request
             inputs = deepcopy(inputs)
 
             # Build RTC-specific inputs
@@ -439,7 +439,7 @@ class RTCExecution(Execution):
                 t0 = time.perf_counter()
                 with self._model_lock:
                     with self._obs_lock:
-                        if episode_id != self._episode_id:
+                        if incarnation != self._incarnation:
                             self._cancel_signal_locked(signal, "RTCExecution warmup cancelled by reset")
                             continue
                     outputs = self._model(inputs)
@@ -471,7 +471,7 @@ class RTCExecution(Execution):
 
             processed_actions = self._accept_result(
                 outputs,
-                episode_id=episode_id,
+                incarnation=incarnation,
                 signal=signal,
                 elapsed=elapsed,
                 action_index_before=action_index_before,
@@ -504,15 +504,15 @@ class RTCExecution(Execution):
         self,
         outputs: dict[str, np.ndarray],
         *,
-        episode_id: int,
+        incarnation: int,
         signal: _WarmupSignal | None,
         elapsed: float,
         action_index_before: int,
     ) -> np.ndarray | None:
-        """Merge a result only if it belongs to the current episode.
+        """Merge a result only if it belongs to the current incarnation.
 
         Returns:
-            Processed actions, or ``None`` when the episode has changed.
+            Processed actions, or ``None`` when the incarnation has changed.
         """
         assert self._rtc_queue is not None  # noqa: S101
         raw_actions = outputs["action"]
@@ -521,7 +521,7 @@ class RTCExecution(Execution):
         processed_actions = self._postprocess(raw_actions)
 
         with self._obs_lock:
-            if episode_id != self._episode_id:
+            if incarnation != self._incarnation:
                 self._cancel_signal_locked(signal, "RTCExecution warmup cancelled by reset")
                 return None
 
