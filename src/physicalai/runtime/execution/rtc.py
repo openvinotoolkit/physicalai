@@ -148,7 +148,7 @@ class RTCExecution(Execution):
         self._incarnation: int = 0
         # Separate from _inference_count, which restarts each run. This gate
         # prevents RTC's own cold-start discard from re-arming. A caller may
-        # still reset the model's latency callback at an episode boundary.
+        # still reset the model's latency callback at an incarnation boundary.
         self._lifetime_inferences: int = 0
         self._bus: _CallbackBus | None = None
         self._session_id: str = ""
