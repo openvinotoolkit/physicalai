@@ -30,9 +30,12 @@ def parse_class_config(target: type[_T], data: Mapping[str, object], *, defaults
     Returns:
         An instance of *target*.
     """
+    from ._typed_wire import coerce_typed_config_wire  # noqa: PLC0415
+
     parser = ArgumentParser(exit_on_error=False)
     parser.add_class_arguments(target, "object")
-    namespace = parser.parse_object({"object": dict(data)}, defaults=defaults)
+    wire = coerce_typed_config_wire(target, data)
+    namespace = parser.parse_object({"object": wire}, defaults=defaults)
     return cast("_T", parser.instantiate(namespace).object)
 
 

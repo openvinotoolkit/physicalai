@@ -95,8 +95,31 @@ def test_typed_config_load_bare_fields_file(tmp_path: Path) -> None:
     assert restored == TypedConfig(Nested(3), Mode.FAST, (2, 4))
 
 
+def test_typed_config_load_legacy_enum_value_in_envelope(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-enum-value.yaml"
+    path.write_text(
+        "class_path: tests.unit.config.test_config.TypedConfig\n"
+        "init_args:\n"
+        "  nested:\n"
+        "    value: 3\n"
+        "  mode: fast\n"
+        "  shape: [2, 4]\n",
+        encoding="utf-8",
+    )
+
+    restored = TypedConfig.load(path)
+
+    assert restored == TypedConfig(Nested(3), Mode.FAST, (2, 4))
+
+
 def test_typed_config_load_accepts_mapping() -> None:
     config = TypedConfig.load({"nested": {"value": 3}, "mode": "FAST", "shape": [2, 4]})
+
+    assert config == TypedConfig(Nested(3), Mode.FAST, (2, 4))
+
+
+def test_typed_config_load_accepts_legacy_enum_values_in_mapping() -> None:
+    config = TypedConfig.load({"nested": {"value": 3}, "mode": "fast", "shape": [2, 4]})
 
     assert config == TypedConfig(Nested(3), Mode.FAST, (2, 4))
 

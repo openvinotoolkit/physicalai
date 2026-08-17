@@ -17,6 +17,7 @@ from ._errors import ConfigError, ConfigImportError
 from ._export import declared_config_args
 from ._normalize import validate_config
 from ._path import format_path
+from ._typed_wire import enum_from_wire
 from ._types import _MAX_CONFIG_DEPTH, JsonValue
 from .base import Config, parse_class_config
 from .importing import import_dotted_path
@@ -240,13 +241,6 @@ def _enum_type_from_hint(hint: object) -> type[Enum] | None:
     return None
 
 
-def _enum_from_wire(enum_cls: type[Enum], wire: str) -> Enum:
-    try:
-        return enum_cls(wire)
-    except ValueError:
-        return enum_cls[wire]
-
-
 def _coerce_constructor_args(cls: type, args: Mapping[str, object]) -> dict[str, object]:
     """Coerce JSON wire values (e.g. enum names) before ``cls(**args)`` construction.
 
@@ -272,7 +266,7 @@ def _coerce_constructor_args(cls: type, args: Mapping[str, object]) -> dict[str,
             continue
         enum_cls = _enum_type_from_hint(hint)
         if enum_cls is not None and isinstance(value, str):
-            coerced[name] = _enum_from_wire(enum_cls, value)
+            coerced[name] = enum_from_wire(enum_cls, value)
     return coerced
 
 
