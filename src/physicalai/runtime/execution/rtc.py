@@ -14,6 +14,7 @@ import logging
 import threading
 import time
 from copy import deepcopy
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -36,6 +37,14 @@ _ERROR_RETRY_DELAY_S: float = 0.5
 _MAX_CONSECUTIVE_ERRORS: int = 10
 _JOIN_TIMEOUT_S: float = 5.0
 _STRAGGLER_GRACE_S: float = 2.0
+
+
+@dataclass
+class _WarmupSignal:
+    """Completion state for one blocking warmup request."""
+
+    event: threading.Event = field(default_factory=threading.Event)
+    error: BaseException | None = None
 
 
 @export_config(class_path="physicalai.runtime.RTCExecution")
@@ -125,15 +134,21 @@ class RTCExecution(Execution):
 
         # Thread state
         self._obs_lock = threading.Lock()
-        self._obs_slot: dict[str, np.ndarray] | None = None
+        self._model_lock = threading.Lock()
+        self._obs_slot: tuple[dict[str, Any], int, _WarmupSignal | None] | None = None
+        self._warmup_signal: _WarmupSignal | None = None
         self._stop_event = threading.Event()
-        self._first_chunk_ready = threading.Event()
         self._thread: threading.Thread | None = None
         self._death_cause: BaseException | None = None
         self._inference_count: int = 0
-        # Separate from _inference_count, which restarts each run: model
-        # compilation overhead is paid once per process, so the cold-start
-        # latency discard must not re-arm on a second run.
+        # Incarnation counter bumped by start()/reset(). Each observation handed
+        # to the worker carries the current value; if reset() lands while
+        # inference is in flight, the worker's incarnation no longer matches
+        # and the result is discarded instead of reaching the queue.
+        self._incarnation: int = 0
+        # Separate from _inference_count, which restarts each run. This gate
+        # prevents RTC's own cold-start discard from re-arming. A caller may
+        # still reset the model's latency callback at an incarnation boundary.
         self._lifetime_inferences: int = 0
         self._bus: _CallbackBus | None = None
         self._session_id: str = ""
@@ -174,8 +189,15 @@ class RTCExecution(Execution):
                 a short grace period. Running anyway would put two threads
                 through one ``InferenceModel``, which is not synchronised.
         """  # noqa: DOC502 — raised by the delegated _await_previous_worker(), but callers see it here.
-        # First, before any state is touched: a refusal here must not leave the
-        # execution half-configured or the model stripped of its postprocessors.
+        # Wake direct warmup callers before waiting on or refusing an active
+        # worker. Otherwise they can remain blocked until the 120 s timeout.
+        with self._obs_lock:
+            self._incarnation += 1
+            self._obs_slot = None
+            self._cancel_warmup_locked("RTCExecution warmup cancelled by restart")
+
+        # Before model/queue bindings are changed, refuse to run two workers
+        # through the same unsynchronised model.
         self._await_previous_worker()
 
         self._model = model
@@ -220,7 +242,6 @@ class RTCExecution(Execution):
         # outlived stop() keeps its own set stop event, so it cannot be revived
         # by this start(), and its in-flight chunk is discarded.
         self._stop_event = threading.Event()
-        self._first_chunk_ready = threading.Event()
         self._inference_count = 0
         # A death from the previous run must not fail this one, and a stale
         # observation must not be inferred on as if it were current.
@@ -229,7 +250,7 @@ class RTCExecution(Execution):
             self._obs_slot = None
         self._thread = threading.Thread(
             target=self._rtc_loop,
-            args=(self._stop_event, self._first_chunk_ready),
+            args=(self._stop_event,),
             name="rtc-inference",
             daemon=True,
         )
@@ -242,7 +263,7 @@ class RTCExecution(Execution):
             self.queue_threshold,
         )
 
-    def warmup(self, sample_observation: dict[str, np.ndarray]) -> None:
+    def warmup(self, sample_observation: dict[str, Any]) -> None:
         """Run one inference to seed the queue and discover chunk size.
 
         Blocks until the first chunk is produced by the background
@@ -255,22 +276,37 @@ class RTCExecution(Execution):
         if self._model is None or self._rtc_queue is None:
             raise RuntimeError(_NOT_STARTED)
 
-        # Publish the sample observation for the background thread
+        signal = _WarmupSignal()
         with self._obs_lock:
-            self._obs_slot = deepcopy(sample_observation)
+            if self._warmup_signal is not None:
+                msg = "RTCExecution warmup is already in progress"
+                raise RuntimeError(msg)
+            incarnation = self._incarnation
+            self._warmup_signal = signal
+            self._obs_slot = (deepcopy(sample_observation), incarnation, signal)
 
         # Wait for the first chunk with a generous timeout
-        if not self._first_chunk_ready.wait(timeout=120.0):
+        if not signal.event.wait(timeout=120.0):
+            with self._obs_lock:
+                if self._warmup_signal is signal:
+                    self._warmup_signal = None
             if self._death_cause is not None:
                 msg = f"RTC thread died during warmup: {self._death_cause}"
                 raise WorkerDiedError(msg) from self._death_cause
             msg = "RTCExecution warmup timed out waiting for first chunk"
             raise RuntimeError(msg)
 
+        with self._obs_lock:
+            if self._warmup_signal is signal:
+                self._warmup_signal = None
+            error = signal.error
+        if error is not None:
+            raise error
+
         self._chunk_size_discovered = self._chunk_size
         logger.info("RTCExecution warmup complete — chunk_size=%d", self._chunk_size_discovered)
 
-    def maybe_request(self, observation: dict[str, np.ndarray]) -> None:
+    def maybe_request(self, observation: dict[str, Any]) -> None:
         """Publish the given observation for the background thread.
 
         The background thread decides when to re-infer based on
@@ -289,7 +325,26 @@ class RTCExecution(Execution):
             return
 
         with self._obs_lock:
-            self._obs_slot = {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in observation.items()}
+            snapshot = {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in observation.items()}
+            self._obs_slot = (snapshot, self._incarnation, None)
+
+    def reset(self, *, reset_model: bool = True) -> None:
+        """Invalidate pending RTC work and optionally wait for active inference.
+
+        With ``reset_model=True``, waits for inference already inside the model.
+
+        Raises:
+            RuntimeError: If :meth:`start` has not been called.
+        """
+        if self._model is None:
+            raise RuntimeError(_NOT_STARTED)
+        with self._obs_lock:
+            self._incarnation += 1
+            self._obs_slot = None
+            self._cancel_warmup_locked("RTCExecution warmup cancelled by reset")
+        if reset_model:
+            with self._model_lock:
+                self._model.reset()
 
     def stop(self) -> None:
         """Signal the worker and join it, with a timeout.
@@ -300,6 +355,10 @@ class RTCExecution(Execution):
         its reference here so the next :meth:`start` can refuse to run
         alongside it.
         """
+        with self._obs_lock:
+            self._incarnation += 1
+            self._obs_slot = None
+            self._cancel_warmup_locked("RTCExecution warmup cancelled because execution stopped")
         if self._thread is not None:
             self._stop_event.set()
             self._thread.join(timeout=_JOIN_TIMEOUT_S)
@@ -341,7 +400,7 @@ class RTCExecution(Execution):
             )
             raise RuntimeError(msg)
 
-    def _rtc_loop(self, stop_event: threading.Event, first_chunk_ready: threading.Event) -> None:
+    def _rtc_loop(self, stop_event: threading.Event) -> None:
         """Background loop for one run: infer chunks and merge into queue.
 
         Takes its own events rather than reading ``self``, so a worker that
@@ -361,11 +420,13 @@ class RTCExecution(Execution):
             # Snapshot observation and consume the slot so a stale sample
             # (e.g. the warmup observation) is never reused for a later refill.
             with self._obs_lock:
-                if self._obs_slot is None:
-                    time.sleep(_IDLE_SLEEP_S)
-                    continue
-                inputs = deepcopy(self._obs_slot)
+                request = self._obs_slot
                 self._obs_slot = None
+            if request is None:
+                time.sleep(_IDLE_SLEEP_S)
+                continue
+            inputs, incarnation, signal = request
+            inputs = deepcopy(inputs)
 
             # Build RTC-specific inputs
             inputs = self._inject_rtc_inputs(inputs)
@@ -376,10 +437,17 @@ class RTCExecution(Execution):
             # Run inference (callbacks fire inside model.__call__)
             try:
                 t0 = time.perf_counter()
-                outputs = self._model(inputs)
-                elapsed = time.perf_counter() - t0
+                with self._model_lock:
+                    with self._obs_lock:
+                        if incarnation != self._incarnation:
+                            self._cancel_signal_locked(signal, "RTCExecution warmup cancelled by reset")
+                            continue
+                    outputs = self._model(inputs)
+                    elapsed = time.perf_counter() - t0
                 consecutive_errors = 0
             except Exception:
+                with self._obs_lock:
+                    self._cancel_signal_locked(signal, "RTCExecution warmup inference failed")
                 consecutive_errors += 1
                 logger.exception(
                     "RTC inference error (%d/%d)",
@@ -397,42 +465,19 @@ class RTCExecution(Execution):
                 # This run ended while the inference was in flight. The chunk
                 # describes an observation from a finished session, so it must
                 # not reach a later run's queue.
+                with self._obs_lock:
+                    self._cancel_signal_locked(signal, "RTCExecution warmup cancelled because execution stopped")
                 return
 
-            self._inference_count += 1
-            self._lifetime_inferences += 1
-
-            # Reset latency tracker after warmup inferences to discard
-            # compilation overhead (e.g. OpenVINO first-run latency). Gated on
-            # the lifetime count: the model is compiled once, so a second run
-            # must not discard its perfectly good samples.
-            if self._lifetime_inferences <= self._warmup_inferences and self._latency_tracker is not None:
-                self._latency_tracker.on_reset()
-                logger.info(
-                    "Warmup inference %d/%d complete (%.2fs) — latency tracker reset",
-                    self._lifetime_inferences,
-                    self._warmup_inferences,
-                    elapsed,
-                )
-
-            # Extract raw actions: (1, chunk_size, action_dim) → (chunk_size, action_dim)
-            raw_actions = outputs["action"]
-            if raw_actions.ndim == 3:  # noqa: PLR2004
-                raw_actions = raw_actions[0]
-
-            # Postprocess (denormalize) for robot
-            processed_actions = self._postprocess(raw_actions)
-
-            # Merge into dual-track queue — trim is based on actual
-            # actions consumed (cursor movement) during inference, NOT
-            # wall-clock time.  For the first chunk nothing was consumed
-            # so trim=0 and the full chunk is kept.
-            self._rtc_queue.merge(
-                raw_actions,
-                processed_actions,
-                action_index_before_inference=action_index_before,
+            processed_actions = self._accept_result(
+                outputs,
+                incarnation=incarnation,
+                signal=signal,
+                elapsed=elapsed,
+                action_index_before=action_index_before,
             )
-            first_chunk_ready.set()
+            if processed_actions is None:
+                continue
 
             # Emit inference event so callbacks (e.g. RerunCallback) can
             # plot predicted future actions.
@@ -454,6 +499,65 @@ class RTCExecution(Execution):
                 elapsed,
                 self._rtc_queue.remaining,
             )
+
+    def _accept_result(
+        self,
+        outputs: dict[str, np.ndarray],
+        *,
+        incarnation: int,
+        signal: _WarmupSignal | None,
+        elapsed: float,
+        action_index_before: int,
+    ) -> np.ndarray | None:
+        """Merge a result only if it belongs to the current incarnation.
+
+        Returns:
+            Processed actions, or ``None`` when the incarnation has changed.
+        """
+        assert self._rtc_queue is not None  # noqa: S101
+        raw_actions = outputs["action"]
+        if raw_actions.ndim == 3:  # noqa: PLR2004
+            raw_actions = raw_actions[0]
+        processed_actions = self._postprocess(raw_actions)
+
+        with self._obs_lock:
+            if incarnation != self._incarnation:
+                self._cancel_signal_locked(signal, "RTCExecution warmup cancelled by reset")
+                return None
+
+            self._inference_count += 1
+            self._lifetime_inferences += 1
+            if self._lifetime_inferences <= self._warmup_inferences and self._latency_tracker is not None:
+                self._latency_tracker.on_reset()
+                logger.info(
+                    "Warmup inference %d/%d complete (%.2fs) — latency tracker reset",
+                    self._lifetime_inferences,
+                    self._warmup_inferences,
+                    elapsed,
+                )
+
+            self._rtc_queue.merge(
+                raw_actions,
+                processed_actions,
+                action_index_before_inference=action_index_before,
+            )
+            if signal is not None:
+                signal.event.set()
+            return processed_actions
+
+    def _cancel_warmup_locked(self, message: str) -> None:
+        signal = self._warmup_signal
+        if signal is None:
+            return
+        self._cancel_signal_locked(signal, message)
+        self._warmup_signal = None
+
+    @staticmethod
+    def _cancel_signal_locked(signal: _WarmupSignal | None, message: str) -> None:
+        if signal is None or signal.event.is_set():
+            return
+        signal.error = RuntimeError(message)
+        signal.event.set()
 
     def _inject_rtc_inputs(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         """Add RTC-specific model inputs.

@@ -48,7 +48,9 @@ A stop takes effect between ticks, never inside one. The tick already underway f
 
 Use `runtime.stop()` when the code asking for the stop lives in the same program. Use `run(stop_event=...)` when it does not: pass any object with an `is_set()` method, and one process can stop a session running in another. The runtime checks both, so whichever comes first ends the run.
 
-Stopping is not the same as shutting down. It ends the control loop, but the robot and cameras stay connected until the context manager releases them, so one runtime can stop and run again. `last_run_reason` and the `shutdown` event's `reason` field say why a run ended.
+Stopping is not the same as shutting down. It ends the control loop, but the robot, cameras, and callbacks stay active, so one runtime can stop and run again. Each run emits its own `start` and `shutdown` lifecycle events. `last_run_reason` and the `shutdown` event's `reason` field say why a run ended.
+
+`disconnect()` is final. It closes callbacks and disconnects hardware exactly once; create a new runtime to connect again. A failed `connect()` already rolls back partial hardware setup, so retry it by calling `connect()` again without calling `disconnect()`. This keeps callback resources such as files and background threads usable across runs while giving them one clear disposal point.
 
 ## Execution Modes
 

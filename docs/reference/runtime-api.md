@@ -26,6 +26,8 @@ runtime.last_run_reason -> RunReason | None
 
 `RobotRuntime` also supports context-manager usage so connections are cleaned up automatically. A "step" is one iteration of the control loop at `fps`: read an observation, get one action from `action_source`, and send it to the robot. `run()` returns the number of steps completed this run — there is no aggregate stats object. Other stats are read directly off the objects the caller already holds, e.g. `runtime.action_source.action_queue.total_pops` or `execution.inference_count`. Each `run()` starts those counters from zero, so they describe the latest run rather than a running total.
 
+Callbacks belong to the runtime. They remain open across consecutive `run()` calls and receive a separate `start` and `shutdown` lifecycle event for each one. `disconnect()` means the caller is finished with the runtime: it closes callbacks and hardware exactly once, and the runtime cannot reconnect. If `connect()` fails, it rolls back partially connected hardware; call `connect()` again directly to retry.
+
 ```python
 with RobotRuntime(...) as runtime:
     steps = runtime.run(duration_s=60)
@@ -65,7 +67,7 @@ class ActionSource(Protocol):
     def disconnect(self) -> None: ...
 ```
 
-`bus` is an internal callback bus injected fresh by `RobotRuntime` on every `run()`; action sources typically only forward it into an `Execution` strategy (see `PolicySource` below) rather than using it directly.
+`bus` is an internal, runtime-scoped callback bus injected by `RobotRuntime` on every `run()`; action sources typically only forward it into an `Execution` strategy (see `PolicySource` below) rather than using it directly.
 
 The action-source implementations shipped today are listed below.
 
@@ -83,6 +85,9 @@ PolicySource(
     task: str | None = None,
 )
 
+source.reset(*, reset_model: bool = True) -> None
+source.warmup(observation: dict[str, Any]) -> None
+
 TeleopSource(
     leader: Robot,
     *,
@@ -90,13 +95,18 @@ TeleopSource(
 )
 ```
 
+`reset()` starts a fresh policy episode without stopping the execution worker. It discards queued, pending, and in-flight actions, clears the last action, and resets model state by default. If inference is already running, reset waits for that model call to finish before resetting model state, while rejecting its stale result. Model or execution reset errors propagate to the caller. Pass `reset_model=False` only when model state should continue across the episode boundary. Custom execution strategies must implement `Execution.reset()` before they can support this operation.
+
+`warmup()` accepts model-ready input, such as `source.to_model_input(robot_state, camera_frames)`, and seeds the queue before the next control tick. It is optional: `update()` performs the same warmup lazily after `connect()` or `reset()`.
+
 ## `Execution`
 
 ```python
 class Execution:
     def start(self, model: InferenceModel, action_queue: ActionQueue) -> None: ...
-    def maybe_request(self, observation: dict[str, np.ndarray]) -> None: ...
-    def warmup(self, sample_observation: dict[str, np.ndarray]) -> None: ...
+    def maybe_request(self, observation: dict[str, Any]) -> None: ...
+    def warmup(self, sample_observation: dict[str, Any]) -> None: ...
+    def reset(self, *, reset_model: bool = True) -> None: ...
     def stop(self) -> None: ...
     @property
     def chunk_size(self) -> int: ...

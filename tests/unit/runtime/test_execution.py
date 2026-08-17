@@ -285,8 +285,157 @@ class TestAsyncExecution:
         release_inference.set()
         ex.stop()
 
+    def test_reset_discards_in_flight_result_without_restarting_worker(self) -> None:
+        chunk = np.ones((4, 2), dtype=np.float32)
+        entered = threading.Event()
+        release = threading.Event()
+        calls = 0
+
+        def predict(_obs: dict[str, Any]) -> np.ndarray:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                entered.set()
+                assert release.wait(timeout=5.0)
+            return chunk
+
+        model = _make_mock_model(chunk)
+        model.predict_action_chunk.side_effect = predict
+        queue = ChunkedActionQueue()
+        ex = AsyncExecution(request_threshold=0.5)
+        ex.start(model, queue)
+        ex.warmup({"state": np.zeros(2)})
+        for _ in range(4):
+            queue.pop()
+
+        worker = ex._thread  # noqa: SLF001
+        ex.maybe_request({"state": np.ones(2)})
+        assert entered.wait(timeout=5.0)
+
+        reset_done = threading.Event()
+
+        def reset() -> None:
+            ex.reset()
+            reset_done.set()
+
+        reset_thread = threading.Thread(target=reset)
+        reset_thread.start()
+        try:
+            assert not reset_done.wait(timeout=0.05)
+            release.set()
+            assert reset_done.wait(timeout=5.0)
+            assert queue.remaining == 0
+            assert ex._thread is worker  # noqa: SLF001
+            assert worker is not None and worker.is_alive()
+            model.reset.assert_called_once()
+        finally:
+            release.set()
+            reset_thread.join(timeout=5.0)
+            ex.stop()
+
+    def test_reset_skips_dequeued_request_that_has_not_entered_model(self) -> None:
+        model = _make_mock_model()
+        queue = ChunkedActionQueue()
+        ex = AsyncExecution()
+        ex.start(model, queue)
+        ex._threshold_count = 1  # noqa: SLF001
+
+        ex._model_lock.acquire()  # noqa: SLF001
+        reset_thread: threading.Thread | None = None
+        try:
+            ex.maybe_request({"state": np.zeros(4, dtype=np.float32)})
+            deadline = time.monotonic() + 5.0
+            while not ex._running_inference and time.monotonic() < deadline:  # noqa: SLF001
+                time.sleep(0.001)
+            assert ex._running_inference  # noqa: SLF001
+
+            incarnation = ex._incarnation  # noqa: SLF001
+            reset_thread = threading.Thread(target=ex.reset)
+            reset_thread.start()
+            while ex._incarnation == incarnation and time.monotonic() < deadline:  # noqa: SLF001
+                time.sleep(0.001)
+            assert ex._incarnation > incarnation  # noqa: SLF001
+        finally:
+            ex._model_lock.release()  # noqa: SLF001
+            if reset_thread is not None:
+                reset_thread.join(timeout=5.0)
+            ex.stop()
+
+        model.predict_action_chunk.assert_not_called()
+        model.reset.assert_called_once()
+        assert queue.remaining == 0
+
+    def test_reset_cancels_explicit_warmup(self) -> None:
+        chunk = np.ones((4, 2), dtype=np.float32)
+        entered = threading.Event()
+        release = threading.Event()
+
+        def predict(_obs: dict[str, Any]) -> np.ndarray:
+            entered.set()
+            assert release.wait(timeout=5.0)
+            return chunk
+
+        model = _make_mock_model(chunk)
+        model.predict_action_chunk.side_effect = predict
+        queue = ChunkedActionQueue()
+        ex = AsyncExecution()
+        ex.start(model, queue)
+        warmup_error: list[BaseException] = []
+
+        def warmup() -> None:
+            try:
+                ex.warmup({"state": np.zeros(2, dtype=np.float32)})
+            except BaseException as exc:
+                warmup_error.append(exc)
+
+        warmup_thread = threading.Thread(target=warmup)
+        warmup_thread.start()
+        assert entered.wait(timeout=5.0)
+        reset_thread = threading.Thread(target=ex.reset, kwargs={"reset_model": False})
+        reset_thread.start()
+        try:
+            release.set()
+            warmup_thread.join(timeout=5.0)
+            reset_thread.join(timeout=5.0)
+
+            assert len(warmup_error) == 1
+            assert "cancelled by reset" in str(warmup_error[0])
+            assert queue.remaining == 0
+        finally:
+            release.set()
+            warmup_thread.join(timeout=5.0)
+            reset_thread.join(timeout=5.0)
+            ex.stop()
+
 
 class TestRTCExecutionObsSlot:
+    def test_worker_releases_obs_lock_before_idle_wait(self) -> None:
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+        from physicalai.runtime.execution import rtc
+
+        model = _rtc_model(chunk_size=20, action_dim=3)
+        queue = RTCActionQueue()
+        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        idle_wait_observed = threading.Event()
+        lock_was_available = False
+
+        def inspect_idle_wait(_seconds: float) -> None:
+            nonlocal lock_was_available
+            lock_was_available = ex._obs_lock.acquire(blocking=False)  # noqa: SLF001
+            if lock_was_available:
+                ex._obs_lock.release()  # noqa: SLF001
+            idle_wait_observed.set()
+            ex._stop_event.set()  # noqa: SLF001
+
+        with patch.object(rtc.time, "sleep", side_effect=inspect_idle_wait):
+            ex.start(model, queue)
+            try:
+                assert idle_wait_observed.wait(timeout=5.0)
+            finally:
+                ex.stop()
+
+        assert lock_was_available
+
     def test_worker_clears_obs_slot_after_consuming_warmup_sample(self) -> None:
         from physicalai.runtime import RTCActionQueue, RTCExecution
 
@@ -311,6 +460,284 @@ class TestRTCExecutionObsSlot:
                 assert ex._obs_slot is None  # noqa: SLF001
         finally:
             ex.stop()
+
+    def test_reset_rearms_warmup_without_restarting_worker(self) -> None:
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+
+        model = _rtc_model(chunk_size=20, action_dim=3)
+        queue = RTCActionQueue()
+        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        ex.start(model, queue)
+        try:
+            ex.warmup({"state": np.zeros(3, dtype=np.float32)})
+            worker = ex._thread  # noqa: SLF001
+            assert queue.remaining == 20
+
+            queue.reset()
+            ex.reset(reset_model=False)
+            ex.warmup({"state": np.ones(3, dtype=np.float32)})
+
+            assert queue.remaining == 20
+            assert ex._thread is worker  # noqa: SLF001
+            assert worker is not None and worker.is_alive()
+            assert model.call_count == 2
+        finally:
+            ex.stop()
+
+    def test_reset_discards_in_flight_chunk(self) -> None:
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+
+        entered = threading.Event()
+        release = threading.Event()
+        model = _rtc_model(chunk_size=20, action_dim=3)
+
+        def predict(_inputs: dict[str, Any]) -> dict[str, np.ndarray]:
+            entered.set()
+            assert release.wait(timeout=5.0)
+            return {"action": np.ones((1, 20, 3), dtype=np.float32)}
+
+        model.side_effect = predict
+        queue = RTCActionQueue()
+        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        ex.start(model, queue)
+        worker = ex._thread  # noqa: SLF001
+        with ex._obs_lock:  # noqa: SLF001
+            observation = {"state": np.zeros(3, dtype=np.float32)}
+            ex._obs_slot = (observation, ex._incarnation, None)  # noqa: SLF001
+        assert entered.wait(timeout=5.0)
+
+        reset_done = threading.Event()
+
+        def reset() -> None:
+            ex.reset()
+            reset_done.set()
+
+        reset_thread = threading.Thread(target=reset)
+        reset_thread.start()
+        try:
+            assert not reset_done.wait(timeout=0.05)
+            release.set()
+            assert reset_done.wait(timeout=5.0)
+            assert queue.remaining == 0
+            assert ex._thread is worker  # noqa: SLF001
+            assert worker is not None and worker.is_alive()
+            model.reset.assert_called_once()
+        finally:
+            release.set()
+            reset_thread.join(timeout=5.0)
+            ex.stop()
+
+    def test_reset_skips_dequeued_chunk_that_has_not_entered_model(self) -> None:
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+
+        model = _rtc_model(chunk_size=20, action_dim=3)
+        queue = RTCActionQueue()
+        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        ex.start(model, queue)
+
+        ex._model_lock.acquire()  # noqa: SLF001
+        reset_thread: threading.Thread | None = None
+        try:
+            with ex._obs_lock:  # noqa: SLF001
+                observation = {"state": np.zeros(3, dtype=np.float32)}
+                ex._obs_slot = (observation, ex._incarnation, None)  # noqa: SLF001
+            deadline = time.monotonic() + 5.0
+            while ex._obs_slot is not None and time.monotonic() < deadline:  # noqa: SLF001
+                time.sleep(0.001)
+            assert ex._obs_slot is None  # noqa: SLF001
+
+            incarnation = ex._incarnation  # noqa: SLF001
+            reset_thread = threading.Thread(target=ex.reset)
+            reset_thread.start()
+            while ex._incarnation == incarnation and time.monotonic() < deadline:  # noqa: SLF001
+                time.sleep(0.001)
+            assert ex._incarnation > incarnation  # noqa: SLF001
+        finally:
+            ex._model_lock.release()  # noqa: SLF001
+            if reset_thread is not None:
+                reset_thread.join(timeout=5.0)
+            ex.stop()
+
+        model.assert_not_called()
+        model.reset.assert_called_once()
+        assert queue.remaining == 0
+
+    def test_reset_cancels_warmup_waiting_for_model_lock(self) -> None:
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+
+        model = _rtc_model(chunk_size=20, action_dim=3)
+        queue = RTCActionQueue()
+        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        ex.start(model, queue)
+        ex._model_lock.acquire()  # noqa: SLF001
+        warmup_error: list[BaseException] = []
+
+        def warmup() -> None:
+            try:
+                ex.warmup({"state": np.zeros(3, dtype=np.float32)})
+            except BaseException as exc:
+                warmup_error.append(exc)
+
+        warmup_thread = threading.Thread(target=warmup)
+        warmup_thread.start()
+        try:
+            deadline = time.monotonic() + 5.0
+            while ex._warmup_signal is None and time.monotonic() < deadline:  # noqa: SLF001
+                time.sleep(0.001)
+            assert ex._warmup_signal is not None  # noqa: SLF001
+            while ex._obs_slot is not None and time.monotonic() < deadline:  # noqa: SLF001
+                time.sleep(0.001)
+            assert ex._obs_slot is None  # noqa: SLF001
+
+            ex.reset(reset_model=False)
+            warmup_thread.join(timeout=1.0)
+
+            assert not warmup_thread.is_alive()
+            assert len(warmup_error) == 1
+            assert isinstance(warmup_error[0], RuntimeError)
+            assert "cancelled by reset" in str(warmup_error[0])
+            model.assert_not_called()
+        finally:
+            ex._model_lock.release()  # noqa: SLF001
+            warmup_thread.join(timeout=5.0)
+            ex.stop()
+
+    def test_reset_cancels_warmup_during_inference(self) -> None:
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+
+        entered = threading.Event()
+        release = threading.Event()
+        model = _rtc_model(chunk_size=20, action_dim=3)
+
+        def predict(_inputs: dict[str, Any]) -> dict[str, np.ndarray]:
+            entered.set()
+            assert release.wait(timeout=5.0)
+            return {"action": np.ones((1, 20, 3), dtype=np.float32)}
+
+        model.side_effect = predict
+        queue = RTCActionQueue()
+        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        ex.start(model, queue)
+        warmup_error: list[BaseException] = []
+
+        def warmup() -> None:
+            try:
+                ex.warmup({"state": np.zeros(3, dtype=np.float32)})
+            except BaseException as exc:
+                warmup_error.append(exc)
+
+        warmup_thread = threading.Thread(target=warmup)
+        warmup_thread.start()
+        assert entered.wait(timeout=5.0)
+
+        reset_thread = threading.Thread(target=ex.reset, kwargs={"reset_model": False})
+        reset_thread.start()
+        try:
+            warmup_thread.join(timeout=1.0)
+            assert not warmup_thread.is_alive()
+            assert len(warmup_error) == 1
+            assert "cancelled by reset" in str(warmup_error[0])
+        finally:
+            release.set()
+            reset_thread.join(timeout=5.0)
+            warmup_thread.join(timeout=5.0)
+            ex.stop()
+
+        assert queue.remaining == 0
+
+    def test_start_cancels_existing_warmup_before_refusing_active_worker(self) -> None:
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+        from physicalai.runtime.execution import rtc
+
+        entered = threading.Event()
+        release = threading.Event()
+        model = _rtc_model(chunk_size=20, action_dim=3)
+
+        def predict(_inputs: dict[str, Any]) -> dict[str, np.ndarray]:
+            entered.set()
+            assert release.wait(timeout=5.0)
+            return {"action": np.ones((1, 20, 3), dtype=np.float32)}
+
+        model.side_effect = predict
+        queue = RTCActionQueue()
+        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        ex.start(model, queue)
+        warmup_error: list[BaseException] = []
+
+        def warmup() -> None:
+            try:
+                ex.warmup({"state": np.zeros(3, dtype=np.float32)})
+            except BaseException as exc:
+                warmup_error.append(exc)
+
+        warmup_thread = threading.Thread(target=warmup)
+        warmup_thread.start()
+        assert entered.wait(timeout=5.0)
+
+        start_error: list[BaseException] = []
+
+        def restart() -> None:
+            try:
+                with patch.object(rtc, "_STRAGGLER_GRACE_S", 0.05):
+                    ex.start(model, queue)
+            except BaseException as exc:
+                start_error.append(exc)
+
+        start_thread = threading.Thread(target=restart)
+        start_thread.start()
+        try:
+            warmup_thread.join(timeout=1.0)
+            start_thread.join(timeout=1.0)
+            assert not warmup_thread.is_alive()
+            assert len(warmup_error) == 1
+            assert "cancelled by restart" in str(warmup_error[0])
+            assert len(start_error) == 1
+            assert isinstance(start_error[0], RuntimeError)
+        finally:
+            release.set()
+            warmup_thread.join(timeout=5.0)
+            start_thread.join(timeout=5.0)
+            ex.stop()
+
+    def test_stop_cancels_warmup_before_joining_worker(self) -> None:
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+
+        entered = threading.Event()
+        release = threading.Event()
+        model = _rtc_model(chunk_size=20, action_dim=3)
+
+        def predict(_inputs: dict[str, Any]) -> dict[str, np.ndarray]:
+            entered.set()
+            assert release.wait(timeout=5.0)
+            return {"action": np.ones((1, 20, 3), dtype=np.float32)}
+
+        model.side_effect = predict
+        queue = RTCActionQueue()
+        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        ex.start(model, queue)
+        warmup_error: list[BaseException] = []
+
+        def warmup() -> None:
+            try:
+                ex.warmup({"state": np.zeros(3, dtype=np.float32)})
+            except BaseException as exc:
+                warmup_error.append(exc)
+
+        warmup_thread = threading.Thread(target=warmup)
+        warmup_thread.start()
+        assert entered.wait(timeout=5.0)
+
+        stop_thread = threading.Thread(target=ex.stop)
+        stop_thread.start()
+        try:
+            warmup_thread.join(timeout=1.0)
+            assert not warmup_thread.is_alive()
+            assert len(warmup_error) == 1
+            assert "cancelled because execution stopped" in str(warmup_error[0])
+        finally:
+            release.set()
+            warmup_thread.join(timeout=5.0)
+            stop_thread.join(timeout=5.0)
 
 
 def _blocking_model(entered: threading.Event, release: threading.Event, rows: int = 6) -> MagicMock:
@@ -353,7 +780,8 @@ class TestRestartAfterStop:
         ex._death_cause = RuntimeError("died previously")  # noqa: SLF001
         ex._inference_count = 5  # noqa: SLF001
         with ex._lock:  # noqa: SLF001
-            ex._obs_slot = {"state": np.full(4, 99.0, dtype=np.float32)}  # noqa: SLF001
+            stale = {"state": np.full(4, 99.0, dtype=np.float32)}
+            ex._obs_slot = (stale, ex._incarnation)  # noqa: SLF001
             ex._running_inference = True  # noqa: SLF001
 
         ex.start(model, queue)
@@ -376,7 +804,8 @@ class TestRestartAfterStop:
 
         ex._death_cause = RuntimeError("died previously")  # noqa: SLF001
         with ex._obs_lock:  # noqa: SLF001
-            ex._obs_slot = {"state": np.full(3, 99.0, dtype=np.float32)}  # noqa: SLF001
+            stale = {"state": np.full(3, 99.0, dtype=np.float32)}
+            ex._obs_slot = (stale, ex._incarnation, None)  # noqa: SLF001
 
         ex.start(model, queue)
         try:
@@ -384,7 +813,7 @@ class TestRestartAfterStop:
             assert ex.inference_count == 0
             with ex._obs_lock:  # noqa: SLF001
                 assert ex._obs_slot is None  # noqa: SLF001
-            # warmup() blocks on _first_chunk_ready, which start() also replaced.
+            # warmup() blocks on a per-request signal created after restart.
             ex.warmup({"state": np.zeros(3, dtype=np.float32)})
         finally:
             ex.stop()
@@ -513,7 +942,7 @@ class TestStopTimeoutStraggler:
             model.side_effect = blocking
             ex.start(model, queue)
             with ex._obs_lock:  # noqa: SLF001
-                ex._obs_slot = dict(obs)  # noqa: SLF001
+                ex._obs_slot = (dict(obs), ex._incarnation, None)  # noqa: SLF001
 
         assert entered.wait(timeout=5.0), "worker never entered inference"
         straggler = ex._thread  # noqa: SLF001

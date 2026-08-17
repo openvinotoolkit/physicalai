@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from collections import deque
 from typing import TYPE_CHECKING, Any
 
@@ -40,6 +41,8 @@ class _CallbackBus:
     def __init__(self, callbacks: Sequence[Any]) -> None:
         self._callbacks = list(callbacks)
         self._inference_queue: deque[InferenceEvent] = deque(maxlen=_INFERENCE_QUEUE_MAXLEN)
+        self._close_lock = threading.Lock()
+        self._closed = False
 
     def emit_tick(self, event: TickEvent) -> None:
         self._drain_inference()
@@ -125,13 +128,38 @@ class _CallbackBus:
                 logger.exception("Callback %r failed in on_metrics", cb)
 
     def close(self) -> None:
+        """Flush and close every callback exactly once."""
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+        try:
+            self.flush()
+        finally:
+            first_base_exception: BaseException | None = None
+            for cb in self._callbacks:
+                close_fn = getattr(cb, "close", None)
+                if close_fn is not None:
+                    try:
+                        close_fn()
+                    except Exception:
+                        logger.exception("Callback %r failed in close", cb)
+                    except BaseException as exc:  # noqa: BLE001
+                        if first_base_exception is None:
+                            first_base_exception = exc
+            if first_base_exception is not None:
+                raise first_base_exception
+
+    def flush(self) -> None:
+        """Deliver queued inference events and flush callback-owned buffers."""
+        self._drain_inference()
         for cb in self._callbacks:
-            close_fn = getattr(cb, "close", None)
-            if close_fn is not None:
+            flush_fn = getattr(cb, "flush", None)
+            if flush_fn is not None:
                 try:
-                    close_fn()
+                    flush_fn()
                 except Exception:
-                    logger.exception("Callback %r failed in close", cb)
+                    logger.exception("Callback %r failed in flush", cb)
 
     def _drain_inference(self) -> None:
         while self._inference_queue:
