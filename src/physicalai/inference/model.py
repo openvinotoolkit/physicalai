@@ -144,7 +144,7 @@ class InferenceModel:
         self.adapter.load(model_path)
         logger.info("Model compiled in {:.1f}s", time.monotonic() - compile_started)
 
-        self.runner: InferenceRunner = runner if runner is not None else get_runner(self.manifest)
+        self.runner: InferenceRunner = runner if runner is not None else get_runner(self.manifest, self.export_dir)
 
         self.preprocessors: list[Preprocessor] = (
             preprocessors if preprocessors is not None else self._load_processors(self.manifest.model.preprocessors)

@@ -98,6 +98,7 @@ component_registry = ComponentRegistry()
 
 # Runners
 component_registry.register("single_pass", "physicalai.inference.runners.SinglePass")
+component_registry.register("two_stage", "physicalai.inference.runners.TwoStage")
 
 # Preprocessors
 component_registry.register("normalize", "physicalai.inference.preprocessors.StatsNormalizer")
