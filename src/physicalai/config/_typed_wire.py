@@ -13,7 +13,11 @@ from typing import Union, get_args, get_origin, get_type_hints
 
 
 def enum_from_wire(enum_cls: type[Enum], wire: str) -> Enum:
-    """Resolve an enum from a persisted wire string (value first, then member name)."""
+    """Resolve an enum from a persisted wire string (value first, then member name).
+
+    Returns:
+        The matching enum member.
+    """
     try:
         return enum_cls(wire)
     except ValueError:
@@ -41,7 +45,11 @@ def _coerce_field_wire(field_type: object, value: object) -> object:
 
 
 def coerce_typed_config_wire(cls: type[object], data: Mapping[str, object]) -> dict[str, object]:
-    """Normalize legacy wire shapes (e.g. enum values) before jsonargparse parses *cls*."""
+    """Normalize legacy wire shapes (e.g. enum values) before jsonargparse parses *cls*.
+
+    Returns:
+        A mapping safe to pass to jsonargparse ``parse_object`` for *cls*.
+    """
     if not dataclasses.is_dataclass(cls):
         return dict(data)
     try:
