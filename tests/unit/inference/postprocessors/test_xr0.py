@@ -6,7 +6,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from physicalai.inference.constants import ACTION
+from physicalai.inference.constants import ACTION, STATE
 from physicalai.inference.postprocessors import Postprocessor, XR0Postprocessor
 
 
@@ -51,3 +51,58 @@ class TestXR0PostprocessorCall:
         normalized = (raw - mean) / (std + 1e-6)
         out = post({ACTION: normalized})
         np.testing.assert_allclose(out[ACTION], raw, atol=1e-4)
+
+
+class TestXR0PostprocessorDelta:
+    """Delta mode re-adds the current-frame state to the denormalized delta."""
+
+    def _delta_post(self, chunk: int = 5, dim: int = 8, action_dim: int = 6) -> XR0Postprocessor:
+        # Identity delta stats (mean 0 / std 1) so the graph output is the raw delta.
+        return XR0Postprocessor(
+            action_mean=np.zeros((chunk, dim), dtype=np.float32).tolist(),
+            action_std=np.ones((chunk, dim), dtype=np.float32).tolist(),
+            action_dim=action_dim,
+            action_mode="delta",
+        )
+
+    def test_adds_current_state(self) -> None:
+        post = self._delta_post()
+        delta = np.random.rand(1, 5, 8).astype(np.float32)
+        state = np.random.rand(1, 1, 8).astype(np.float32)  # (B, T=1, D)
+        out = post({ACTION: delta, STATE: state})
+        # delta + state on the first action_dim=6 channels, sliced to 6.
+        expected = delta[..., :6] + state[:, -1, :][:, None, :6]
+        assert out[ACTION].shape == (1, 5, 6)
+        np.testing.assert_allclose(out[ACTION], expected, atol=1e-5)
+
+    def test_roundtrip_reconstructs_absolute(self) -> None:
+        mean = np.random.rand(5, 8).astype(np.float32)
+        std = (np.random.rand(5, 8) + 0.5).astype(np.float32)
+        post = XR0Postprocessor(
+            action_mean=mean.tolist(),
+            action_std=std.tolist(),
+            action_dim=6,
+            action_mode="delta",
+        )
+        absolute = np.random.rand(1, 5, 6).astype(np.float32)
+        state = np.random.rand(1, 1, 8).astype(np.float32)
+        # Studio-side target: normalized delta = ((absolute - state) - mean) / (std + eps),
+        # padded to width 8.
+        delta = absolute - state[:, -1, :][:, None, :6]
+        padded = np.zeros((1, 5, 8), dtype=np.float32)
+        padded[..., :6] = delta
+        normalized = (padded - mean) / (std + 1e-6)
+        out = post({ACTION: normalized, STATE: state})
+        np.testing.assert_allclose(out[ACTION], absolute, atol=1e-4)
+
+    def test_delta_requires_state(self) -> None:
+        post = self._delta_post()
+        with pytest.raises(ValueError, match="state"):
+            post({ACTION: np.zeros((1, 5, 8), dtype=np.float32)})
+
+    def test_absolute_mode_ignores_state(self) -> None:
+        post = XR0Postprocessor(action_mean=[0.0] * 8, action_std=[1.0] * 8, action_dim=6)
+        action = np.ones((1, 5, 8), dtype=np.float32)
+        with_state = post({ACTION: action, STATE: np.ones((1, 1, 8), dtype=np.float32)})[ACTION]
+        without_state = post({ACTION: action})[ACTION]
+        np.testing.assert_allclose(with_state, without_state, atol=1e-6)
