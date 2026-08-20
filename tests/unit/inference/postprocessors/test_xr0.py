@@ -6,7 +6,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from physicalai.inference.constants import ACTION, STATE
+from physicalai.inference.constants import ACTION, STATE_PASSTHROUGH
 from physicalai.inference.postprocessors import Postprocessor, XR0Postprocessor
 
 
@@ -69,7 +69,7 @@ class TestXR0PostprocessorDelta:
         post = self._delta_post()
         delta = np.random.rand(1, 5, 8).astype(np.float32)
         state = np.random.rand(1, 1, 8).astype(np.float32)  # (B, T=1, D)
-        out = post({ACTION: delta, STATE: state})
+        out = post({ACTION: delta, STATE_PASSTHROUGH: state})
         # delta + state on the first action_dim=6 channels, sliced to 6.
         expected = delta[..., :6] + state[:, -1, :][:, None, :6]
         assert out[ACTION].shape == (1, 5, 6)
@@ -92,7 +92,7 @@ class TestXR0PostprocessorDelta:
         padded = np.zeros((1, 5, 8), dtype=np.float32)
         padded[..., :6] = delta
         normalized = (padded - mean) / (std + 1e-6)
-        out = post({ACTION: normalized, STATE: state})
+        out = post({ACTION: normalized, STATE_PASSTHROUGH: state})
         np.testing.assert_allclose(out[ACTION], absolute, atol=1e-4)
 
     def test_delta_requires_state(self) -> None:
@@ -103,6 +103,6 @@ class TestXR0PostprocessorDelta:
     def test_absolute_mode_ignores_state(self) -> None:
         post = XR0Postprocessor(action_mean=[0.0] * 8, action_std=[1.0] * 8, action_dim=6)
         action = np.ones((1, 5, 8), dtype=np.float32)
-        with_state = post({ACTION: action, STATE: np.ones((1, 1, 8), dtype=np.float32)})[ACTION]
+        with_state = post({ACTION: action, STATE_PASSTHROUGH: np.ones((1, 1, 8), dtype=np.float32)})[ACTION]
         without_state = post({ACTION: action})[ACTION]
         np.testing.assert_allclose(with_state, without_state, atol=1e-6)

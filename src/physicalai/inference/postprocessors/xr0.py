@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from typing_extensions import override
 
-from physicalai.inference.constants import ACTION, STATE
+from physicalai.inference.constants import ACTION, STATE_PASSTHROUGH
 from physicalai.inference.postprocessors.base import Postprocessor
 
 if TYPE_CHECKING:
@@ -110,7 +110,7 @@ class XR0Postprocessor(Postprocessor):
         # Mirror io.denormalize_action: action * (std + eps) + mean.
         action = action * (self._std + self._eps) + self._mean
         if self._action_mode == "delta":
-            action = self._add_current_state(action, outputs.get(STATE))
+            action = self._add_current_state(action, outputs.get(STATE_PASSTHROUGH))
         if self._action_dim is not None:
             action = action[..., : self._action_dim]
         result = dict(outputs)
@@ -131,7 +131,7 @@ class XR0Postprocessor(Postprocessor):
             ValueError: If ``state`` is missing.
         """
         if state is None:
-            msg = "action_mode='delta' requires the graph's 'state' output to invert the delta prediction."
+            msg = "action_mode='delta' requires the graph's 'state_passthrough' output to invert the delta prediction."
             raise ValueError(msg)
         current = np.asarray(state, dtype=np.float32)
         if current.ndim == 3:  # (B, T, D) -> current (last) frame  # noqa: PLR2004
