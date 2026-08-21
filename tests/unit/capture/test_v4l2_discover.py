@@ -120,7 +120,7 @@ def test_discover_single_capture_device() -> None:
     assert device.index == 0
     assert device.name == "Test Cam"
     assert device.driver == "v4l2"
-    assert device.hardware_payload == {"path": "usb-0000:00:14.0-1"}
+    assert device.hardware_payload == {"bus": "usb-0000:00:14.0-1"}
     assert device.model == "Test Cam"
     assert device.metadata is not None
     assert "device_caps" in device.metadata
@@ -324,6 +324,6 @@ def test_discover_enriches_with_by_id_symlink() -> None:
 
     assert len(result) == 1
     assert result[0].hardware_payload is not None
-    assert result[0].hardware_payload["path"] == "/dev/v4l/by-id/usb-TestCam_12345-video-index0"
+    assert result[0].hardware_payload["bus"] == "usb-0000:00:14.0-1"
     assert result[0].metadata is not None
     assert result[0].metadata["by_id"] == "usb-TestCam_12345-video-index0"

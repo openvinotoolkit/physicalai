@@ -456,7 +456,7 @@ def test_discover_returns_device_info(omnicamera_cls: tuple) -> None:
 
     assert len(devices) == 1
     assert isinstance(devices[0], DeviceInfo)
-    assert devices[0].device_id == "0"
+    assert devices[0].device_id == "index:0"
     assert devices[0].index == 0
     assert devices[0].name == "Test Camera"
     assert devices[0].driver == "uvc"
@@ -489,7 +489,7 @@ def test_device_selector_invalid_path_raises_value_error(omnicamera_cls: tuple) 
     """connect() with a non-video path string raises ValueError."""
     camera_cls, _ = omnicamera_cls
     cam = camera_cls(device_id="/dev/sda1")
-    with pytest.raises(ValueError, match="integer camera index"):
+    with pytest.raises(CaptureError, match="integer camera index"):
         cam.connect()
 
 
@@ -517,7 +517,7 @@ def test_discover_passes_through_arbitrary_device_meta_json(omnicamera_cls: tupl
     assert len(devices) == 1
     # discover() always identifies a device by its video index -- resolving
     # an identity to a single camera, ambiguity included, is connect()'s job.
-    assert devices[0].device_id == "0"
+    assert devices[0].device_id == "index:0"
     assert devices[0].hardware_payload == {"sensor": "isys-2", "bus": "usb-0000:00:14.0-5.1"}
 
 
@@ -579,7 +579,7 @@ def test_discover_collapses_multi_node_single_camera(
 
     assert len(devices) == 1
     assert devices[0].index == 40
-    assert devices[0].device_id == "40"
+    assert devices[0].device_id == "SN0001-innomaker-capture"
 
 
 @pytest.mark.parametrize(
