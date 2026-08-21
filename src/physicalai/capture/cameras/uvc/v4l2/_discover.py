@@ -143,15 +143,16 @@ def discover_v4l2() -> list[DeviceInfo]:
             by_id = _find_symlink(_V4L_BY_ID, device_path)
             by_path = _find_symlink(_V4L_BY_PATH, device_path)
 
-            hardware_id = f"/dev/v4l/by-id/{by_id}" if by_id else (bus_info or None)
-
             devices.append(
                 DeviceInfo(
                     device_id=device_path,
                     index=video_index,
                     name=card_name,
                     driver="v4l2",
-                    hardware_payload={"path": hardware_id},
+                    hardware_payload={
+                        k: v for k, v in {"serial": serial, "bus": bus_info, "index": video_index}.items() if v
+                    }
+                    or None,
                     manufacturer=manufacturer,
                     model=product or card_name,
                     metadata={

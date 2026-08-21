@@ -308,11 +308,21 @@ class RealSenseCamera(DepthMixin, Camera):
 
         Returns:
             Sorted list of ``(width, height, fps)`` tuples.
+
+        Raises:
+            ValueError: If the device_id dict does not include a "serial" key.
         """
         rs_any = cast("Any", rs)
         ctx = rs_any.context()
 
-        serial_number = device_id["serial"] if isinstance(device_id, dict) else device_id
+        if isinstance(device_id, dict):
+            serial_value = device_id.get("serial")
+            if not serial_value:
+                msg = 'device_id dict must include a non-empty "serial" key'
+                raise ValueError(msg)
+            serial_number = str(serial_value)
+        else:
+            serial_number = str(device_id)
 
         target_dev = None
         for dev in ctx.query_devices():
