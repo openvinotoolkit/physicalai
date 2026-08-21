@@ -66,7 +66,7 @@ class UVCCamera(Camera):
         elif isinstance(device, str):
             self._device_path: str = device
         elif isinstance(device, dict):
-            index = device["index"] if "index" in device else 0 # macOS / Windows will not have an index key
+            index = device.get("index", "0")
             self._device_path = f"/dev/video{index}"
         else:
             self._device_path = f"/dev/video{device}"
