@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from physicalai.inference.data.features import InferenceFeature, InferenceFeatureDtype, InferenceFeatureType
 from physicalai.inference.component_factory import (
     ComponentRegistry,
     component_registry,
@@ -216,6 +217,21 @@ class TestInstantiateComponent:
         spec = ComponentSpec.model_validate({"type": "single_pass"})
         runner = instantiate_component(spec)
         assert isinstance(runner, SinglePass)
+
+    def test_instantiate_concrete_dataclass(self) -> None:
+        spec = ComponentSpec.model_validate({
+            "class_path": "physicalai.inference.data.features.InferenceFeature",
+            "init_args": {"ftype": "STATE", "shape": [3], "name": "state", "dtype": "float32"},
+        })
+
+        feature = instantiate_component(InferenceFeature, spec)
+
+        assert feature == InferenceFeature(
+            ftype=InferenceFeatureType.STATE,
+            shape=(3,),
+            name="state",
+            dtype=InferenceFeatureDtype.FLOAT32,
+        )
 
     def test_instantiate_rejects_invalid_flat_params(self) -> None:
         spec = ComponentSpec.model_validate({"type": "single_pass", "": ""})

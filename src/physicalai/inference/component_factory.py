@@ -20,6 +20,7 @@ from pathlib import Path
 from jsonargparse import ArgumentParser
 
 from physicalai.config import Config
+from physicalai.config.base import parse_class_config
 
 from ._importing import import_dotted_path
 from .manifest import ComponentSpec
@@ -224,15 +225,23 @@ def instantiate_component(
     if not isinstance(class_path, str) or not isinstance(init_args, dict):
         msg = "Resolved component spec is not a valid class recipe"
         raise TypeError(msg)
-    parser = ArgumentParser(exit_on_error=False)
-    parser.add_subclass_arguments(base, "component", required=True)
+    target = _import_class(class_path)
     try:
+        # ``add_subclass_arguments`` expects an actual base class with
+        # selectable subclasses.  Feature descriptors are concrete dataclasses,
+        # so use the regular typed-class parser when the recipe names the
+        # expected class itself.
+        if target is base:
+            return parse_class_config(base, init_args)
+
+        parser = ArgumentParser(exit_on_error=False)
+        parser.add_subclass_arguments(base, "component", required=True)
         namespace = parser.parse_object(
             {"component": {"class_path": class_path, "init_args": init_args}},
             defaults=False,
         )
         return parser.instantiate(namespace).component
-    except ArgumentError as exc:
+    except (ArgumentError, ValueError) as exc:
         raise TypeError(str(exc)) from exc
 
 
