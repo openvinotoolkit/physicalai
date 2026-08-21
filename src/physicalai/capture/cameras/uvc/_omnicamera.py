@@ -145,7 +145,7 @@ class OmniCamera(Camera):
         """
         scored: list[tuple[int, omni_camera.CameraInfo]] = []
         for c in infos:
-            meta_values = {str(v) for v in (c.device_meta_json or {}).values() if v}
+            meta_values = {str(v) for v in (c.device_meta_json or {}).values() if v is not None and str(v)}
             score = (device_id == c.name) + (device_id in meta_values)
             if score > 0:
                 scored.append((score, c))
@@ -157,7 +157,7 @@ class OmniCamera(Camera):
 
     @staticmethod
     def _resolve_open_target(
-        infos: list[omni_camera.CameraInfo], device_id: int | str | dict
+        infos: list[omni_camera.CameraInfo], device_id: int | str | dict, *, resolve_strict: bool = False
     ) -> omni_camera.CameraInfo | int:
         """Resolve *device_id* to something safe to hand to ``omni_camera.Camera``.
 
@@ -167,6 +167,7 @@ class OmniCamera(Camera):
                 opaque identity string (matched against the reported name and
                 ``device_meta_json`` values), or a ``device_meta_json``
                 identity dict.
+            resolve_strict: If device id is a dict, whether to match strict or to find the best match.
 
         Returns:
             A bare index when *device_id* names a video index -- opening it
@@ -184,8 +185,6 @@ class OmniCamera(Camera):
         """
         if isinstance(device_id, dict):
             matches = omni_camera.resolve_camera_for_device_meta_json(device_id)
-            if len(matches) == 1:
-                return matches[0]
             if len(matches) > 1:
                 msg = (
                     f"Camera identity {device_id!r} is shared by more than one connected device "
@@ -193,6 +192,9 @@ class OmniCamera(Camera):
                     "Open the camera by video index (e.g. device=0 or device='/dev/video0') instead."
                 )
                 raise CaptureError(msg)
+            if len(matches) == 1 and (not resolve_strict or matches[0].device_meta_json == device_id):
+                return matches[0]
+
             msg = f"No camera found matching {device_id!r}"
             raise CaptureError(msg)
 
@@ -229,7 +231,7 @@ class OmniCamera(Camera):
                 "OmniCamera backend does not support device path strings on this platform. "
                 "Use an integer camera index or a matching camera identity instead."
             )
-            raise ValueError(msg)
+            raise CaptureError(msg)
 
         if not any(candidate.index == index for candidate in infos):
             msg = f"No camera found at index {index}"
@@ -279,9 +281,9 @@ class OmniCamera(Camera):
 
         # Try to find target in usable devices first
         try:
-            target = self._resolve_open_target(infos_usable, self._device_id_raw)
+            target = self._resolve_open_target(infos_usable, self._device_id_raw, resolve_strict=True)
         except CaptureError:
-            target = self._resolve_open_target(infos_all, self._device_id_raw)
+            target = self._resolve_open_target(infos_all, self._device_id_raw, resolve_strict=False)
 
         try:
             self._cam = omni_camera.Camera(target)
@@ -408,7 +410,7 @@ class OmniCamera(Camera):
 
         return [
             DeviceInfo(
-                device_id=str(info.index),
+                device_id=str((info.device_meta_json or {}).get("serial") or f"index:{info.index}"),
                 index=info.index,
                 name=info.name,
                 driver="uvc",

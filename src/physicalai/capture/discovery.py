@@ -22,7 +22,7 @@ class DeviceInfo(BaseModel):
     index: int = Field(description="Numeric device index when one exists for the backend.")
     name: str = Field(default="", description="Human-readable name (e.g. 'Logitech C920', 'D435').")
     driver: str = Field(default="", description="Backend that found the device (e.g. 'v4l2', 'realsense').")
-    hardware_payload: dict | None = Field(
+    hardware_payload: dict[str, Any] | None = Field(
         default=None,
         description="Backend-specific identifying fields (e.g. serial, USB bus path, sensor port). Shape and "
         "presence vary by backend and device; there is no guaranteed key, and no field of it is guaranteed "
