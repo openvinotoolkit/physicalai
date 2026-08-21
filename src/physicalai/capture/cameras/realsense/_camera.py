@@ -300,7 +300,7 @@ class RealSenseCamera(DepthMixin, Camera):
         return discover_realsense()
 
     @classmethod
-    def query_formats(cls, device_id: str) -> list[tuple[int, int, int]]:
+    def query_formats(cls, device_id: str | dict) -> list[tuple[int, int, int]]:
         """Query supported color stream formats for a RealSense device.
 
         Args:
@@ -312,10 +312,12 @@ class RealSenseCamera(DepthMixin, Camera):
         rs_any = cast("Any", rs)
         ctx = rs_any.context()
 
+        serial_number = device_id["serial"] if isinstance(device_id, dict) else device_id
+
         target_dev = None
         for dev in ctx.query_devices():
             serial = dev.get_info(rs_any.camera_info.serial_number)
-            if serial == str(device_id):
+            if serial == str(serial_number):
                 target_dev = dev
                 break
 
