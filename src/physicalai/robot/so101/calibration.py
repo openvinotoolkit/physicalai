@@ -72,7 +72,7 @@ class SO101Calibration:
         return {name: joint.to_dict() for name, joint in self.joints.items()}
 
     def to_config_value(self) -> dict[str, dict[str, int]]:
-        """Encode as a constructor-compatible dict for :func:`~physicalai.config.to_config`.
+        """Encode as a constructor-compatible dict for :func:`~physicalai.config.Config.from_instance`.
 
         Returns:
             The LeRobot calibration mapping produced by :meth:`to_dict`.

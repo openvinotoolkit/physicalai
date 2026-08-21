@@ -194,7 +194,7 @@ class SharedRobot:
     Opted into :func:`~physicalai.config.export_config` as a **construction
     recipe** only (name, nested ``robot`` Config, transport knobs).
     Connection / Zenoh session / publisher state is never part of
-    :func:`~physicalai.config.to_config`.
+    :func:`~physicalai.config.Config.from_instance`.
 
     Args:
         name: Required logical name — keys the Zenoh topics directly. Two

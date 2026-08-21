@@ -518,7 +518,7 @@ class TestRobotRuntimeConfig:
         from physicalai.runtime import RobotRuntime
 
         runtime = _make_full_runtime(inference_model)
-        # The bare to_config shape (top-level class_path) — no manual rewrite
+        # The bare Config recipe shape (top-level class_path) — no manual rewrite
         # to ``runtime:`` needed on either load path.
         cfg_path = tmp_path / "runtime_export.json"
         cfg_path.write_text(json.dumps(Config.from_instance(runtime).to_dict()))
