@@ -108,6 +108,7 @@ component_registry.register("hf_tokenizer", "physicalai.inference.preprocessors.
 component_registry.register("ov_tokenizer", "physicalai.inference.preprocessors.OVTokenizer")
 component_registry.register("pi05", "physicalai.inference.preprocessors.Pi05Preprocessor")
 component_registry.register("to_float_tensor", "physicalai.inference.preprocessors.ToFloatTensorPreprocessor")
+component_registry.register("vla_adapter", "physicalai.inference.preprocessors.VLAAdapterPreprocessor")
 
 # Postprocessors
 component_registry.register("denormalize", "physicalai.inference.postprocessors.StatsDenormalizer")
