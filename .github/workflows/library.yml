@@ -28,7 +28,7 @@ jobs:
           python-version: "3.12"
 
       - name: Run prek
-        uses: j178/prek-action@e98a699c41eb69ab013a45817a0406469a748f8d # v2
+        uses: j178/prek-action@4e14d07f9231acabce116ccfca13b13dd9755ece # v3.0.0
         with:
           prek-version: "0.4.0"
           extra-args: --all-files
@@ -43,7 +43,7 @@ jobs:
       - *set-up-python
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           version: "0.8.8"
 
