@@ -41,6 +41,13 @@ class TestUVCCameraConfig:
         assert wire["init_args"]["backend"] == "v4l2"
         assert wire["init_args"]["width"] == 640
 
+    def test_v4l2_backend_accepts_hardware_payload(self) -> None:
+        from physicalai.capture import UVCCamera
+
+        camera = UVCCamera(device={"index": 3, "bus": "usb-1"}, backend="v4l2")
+
+        assert camera._inner.device_id == "/dev/video3"  # noqa: SLF001
+
     def test_color_mode_enum_round_trips_as_string(self) -> None:
         from physicalai.capture import UVCCamera
 
