@@ -45,7 +45,7 @@ pai = "physicalai.cli.main:main"
 tests = ["pytest", "mypy"]
 notebooks = ["matplotlib", "matplotlib-inline", "ipykernel"]
 realsense = [
-    "pyrealsense2; sys_platform != 'darwin'",
+    "pyrealsense2>=2.58.4.10922; sys_platform != 'darwin'",
     "pyrealsense2-macosx; sys_platform == 'darwin'",
 ]
 basler = ["pypylon", "opencv-python-headless"]
