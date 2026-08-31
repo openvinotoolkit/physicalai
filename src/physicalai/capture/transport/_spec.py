@@ -26,6 +26,7 @@ from urllib.parse import urlsplit, urlunsplit
 from physicalai.config import (
     Config,
 )
+from physicalai.runtime.execution.async_execution import logger
 
 if TYPE_CHECKING:
     from physicalai.capture.camera import Camera
@@ -193,6 +194,15 @@ def derive_service_name(
     # the same service name for the same physical device.
     if isinstance(device_id, str) and device_id.startswith("/dev/"):
         device_id = Path(device_id).resolve().name
+    elif isinstance(device_id, dict):
+        device_id = device_id.get("index", device_id.get("uuid", device_id))
+    elif "serial_number" not in init_args:
+        logger.warning(
+            "It is advised to use descriptive argument for SharedCamera, "
+            "such as fingerprint dictionary or a serial number. "
+            "Opening the same camera with a different identifier can result in a race condition."
+        )
+
     return f"physicalai/camera/{class_name}/{device_id}/frame"
 
 
