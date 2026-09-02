@@ -25,7 +25,6 @@ from physicalai.runtime.execution.base import Execution, WorkerDiedError
 if TYPE_CHECKING:
     from physicalai.inference.callbacks.rtc_latency import RTCLatencyTracker
     from physicalai.inference.model import InferenceModel
-    from physicalai.inference.postprocessors.base import Postprocessor
     from physicalai.runtime._callback_bus import _CallbackBus
     from physicalai.runtime.execution.rtc_queue import RTCActionQueue
 
@@ -96,10 +95,6 @@ class RTCExecution(Execution):
         warmup_inferences: Number of initial inferences treated as warmup.
             The latency tracker is reset after these to discard
             compilation/kernel-build overhead (e.g. OpenVINO first-run).
-        postprocessors: Denormalization pipeline applied to raw actions.
-            These run in the background thread to produce the processed
-            track stored in the queue. If None, is automatically populated from
-            the model's postprocessors.
     """
 
     def __init__(  # noqa: D107
@@ -112,7 +107,6 @@ class RTCExecution(Execution):
         queue_threshold: int | None = None,
         latency_tracker: RTCLatencyTracker | None = None,
         warmup_inferences: int = 2,
-        postprocessors: list[Postprocessor] | None = None,
     ) -> None:
         self._chunk_size_param = chunk_size
         self._execution_horizon = execution_horizon
@@ -122,7 +116,6 @@ class RTCExecution(Execution):
         self._queue_threshold_param = queue_threshold
         self._latency_tracker = latency_tracker
         self._warmup_inferences = max(1, warmup_inferences)
-        self._postprocessors: list[Postprocessor] = postprocessors or []
 
         self._rtc_queue: RTCActionQueue | None = None
         self._model: InferenceModel | None = None
@@ -231,12 +224,6 @@ class RTCExecution(Execution):
                 self._max_action_dim = model.manifest.hardware.robots[0].action.shape[-1]
             else:
                 self._max_action_dim = 32
-
-        # 3. Automatically discover postprocessors from model if empty/not provided
-        if not self._postprocessors and hasattr(model, "postprocessors") and model.postprocessors:
-            logger.info("Moving postprocessors from InferenceModel to RTCExecution for async background execution")
-            self._postprocessors = model.postprocessors
-            model.postprocessors = []  # Clear from model so they aren't run twice
 
         # Fresh events rather than clearing the shared ones: a worker that
         # outlived stop() keeps its own set stop event, so it cannot be revived
@@ -518,7 +505,7 @@ class RTCExecution(Execution):
         raw_actions = outputs["action"]
         if raw_actions.ndim == 3:  # noqa: PLR2004
             raw_actions = raw_actions[0]
-        processed_actions = self._postprocess(raw_actions)
+        processed_actions = raw_actions
 
         with self._obs_lock:
             if incarnation != self._incarnation:
@@ -570,26 +557,15 @@ class RTCExecution(Execution):
         # prev_chunk_left_over from queue
         prev_chunk = self._rtc_queue.get_left_over()
         if prev_chunk is None:
-            prev_chunk_padded = np.zeros(
-                (1, self._chunk_size, self._max_action_dim),
-                dtype=np.float32,
-            )
+            prev_chunk_padded = prev_chunk
             # Suppress correction on the first step since there's no real previous trajectory
             max_guidance_weight = 0.0
             execution_horizon = 0
         else:
             remaining = prev_chunk.shape[0]
-            out_dim = prev_chunk.shape[-1]
 
-            # Pad action dim to model's max_action_dim if needed
-            if out_dim < self._max_action_dim:
-                prev_chunk = np.pad(
-                    prev_chunk,
-                    ((0, 0), (0, self._max_action_dim - out_dim)),
-                )
-
-            # Reshape to (1, remaining, max_action_dim) and pad time to chunk_size
-            prev_chunk_padded = prev_chunk.reshape(1, remaining, self._max_action_dim)
+            # Reshape to (1, remaining, action_dim) and pad time to chunk_size
+            prev_chunk_padded = prev_chunk.reshape(1, remaining, -1)
             pad_len = self._chunk_size - remaining
             if pad_len > 0:
                 prev_chunk_padded = np.pad(prev_chunk_padded, ((0, 0), (0, pad_len), (0, 0)))
@@ -607,19 +583,3 @@ class RTCExecution(Execution):
 
         return inputs
 
-    def _postprocess(self, actions: np.ndarray) -> np.ndarray:
-        """Apply postprocessors (denormalization) to raw actions.
-
-        Args:
-            actions: Shape ``(chunk_size, action_dim)``.
-
-        Returns:
-            Postprocessed actions, same shape.
-        """
-        if not self._postprocessors:
-            return actions.copy()
-
-        outputs: dict[str, Any] = {"action": actions}
-        for pp in self._postprocessors:
-            outputs = pp(outputs)
-        return outputs["action"]
