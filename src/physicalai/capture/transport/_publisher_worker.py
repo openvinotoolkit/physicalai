@@ -155,9 +155,13 @@ def build_camera(config: dict) -> Camera:
         # _factory_override is a private, test-only constructor kwarg (see build_camera's
         # docstring) delivered over a stdin pipe this same process's CameraPublisher.start()
         # writes, no production call site or external input sets it.
-        # nosemgrep: python.lang.security.audit.non-literal-import.non-literal-import
-        mod = importlib.import_module(module_path)
-        factory = getattr(mod, attr)
+        try:
+            # nosemgrep: python.lang.security.audit.non-literal-import.non-literal-import
+            mod = importlib.import_module(module_path)
+            factory = getattr(mod, attr)
+        except (ImportError, AttributeError) as exc:
+            msg = f"invalid _factory_override {factory_override!r}: {exc}"
+            raise ValueError(msg) from exc
         init_args = spec.camera.get("init_args", {})
         if not isinstance(init_args, dict):
             init_args = {}

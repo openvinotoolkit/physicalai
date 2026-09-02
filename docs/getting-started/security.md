@@ -13,7 +13,7 @@ sources, callbacks. Currently, nothing restricts which class a `class_path` may 
 Only load configs, exported policies, and manifests from sources you trust. See also the `class_path` note in
 [Config Schema Reference](../reference/config-schema.md#security).
 
-## Use only trusted reviewed policies
+## Use only trusted, reviewed policies
 
 An exported policy package (`manifest.json` plus artifacts) runs with the same privileges as the
 `physicalai` process.
@@ -24,7 +24,7 @@ loaded on every run.
 
 **Loading via `export_dir`:** `physicalai run` and direct `InferenceModel(export_dir=...)` construction both
 load whatever package is already in that local directory. Only place a reviewed, trusted export there.
-treat populating that directory (downloading, copying, extracting) as the point where you decide to trust
+Treat populating that directory (downloading, copying, extracting) as the point where you decide to trust
 its contents.
 
 ## Remote robot sharing has no built-in security controls
