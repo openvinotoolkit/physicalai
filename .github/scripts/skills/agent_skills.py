@@ -10,7 +10,7 @@ import argparse
 import os
 import platform
 import re
-import subprocess
+import subprocess  # nosec: B404
 import sys
 from pathlib import Path
 
@@ -88,7 +88,9 @@ def _create_windows_link(link: Path, abs_target: Path) -> None:
     try:
         link.symlink_to(abs_target, target_is_directory=True)
     except OSError:
-        subprocess.run(
+        # Local CI script, link/abs_target come from this repo's own
+        # skills/ directory listing, not external input
+        subprocess.run(  # nosec: B607, B603
             ["cmd", "/c", "mklink", "/J", str(link), str(abs_target)],
             check=True,
             capture_output=True,
