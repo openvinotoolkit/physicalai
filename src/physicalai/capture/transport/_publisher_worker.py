@@ -137,10 +137,6 @@ def build_camera(config: dict) -> Camera:
 
     Returns:
         Camera instance (not yet connected).
-
-    Raises:
-        ValueError: If ``_factory_override`` is set but not a valid ``'module:factory'`` path,
-            or if the ``camera`` entry fails publisher-envelope validation.
     """
     factory_override = config.get("_factory_override")
     if factory_override:
@@ -148,24 +144,13 @@ def build_camera(config: dict) -> Camera:
 
         # Validate / reject flat keys even on the factory-override path.
         spec = CameraPublisherConfig.from_json_dict(config)
-        module_path, sep, attr = factory_override.rpartition(":")
-        if not sep or not module_path or not attr:
-            msg = f"invalid _factory_override {factory_override!r}; expected 'module:factory'"
-            raise ValueError(msg)
-        # _factory_override is a private, test-only constructor kwarg (see build_camera's
-        # docstring) delivered over a stdin pipe this same process's CameraPublisher.start()
+        module_path, _, attr = factory_override.rpartition(":")
+        # _factory_override is a private, test-only constructor kwarg
+        # delivered over a stdin pipe this same process's CameraPublisher.start()
         # writes, no production call site or external input sets it.
-        try:
-            # nosemgrep: python.lang.security.audit.non-literal-import.non-literal-import
-            mod = importlib.import_module(module_path)
-            factory = getattr(mod, attr)
-            if not callable(factory):
-                raise ValueError(
-                    f"invalid _factory_override {factory_override!r}: {module_path}:{attr} is not callable"
-                )
-        except (ImportError, AttributeError) as exc:
-            msg = f"invalid _factory_override {factory_override!r}: {exc}"
-            raise ValueError(msg) from exc
+        # nosemgrep: python.lang.security.audit.non-literal-import.non-literal-import
+        mod = importlib.import_module(module_path)
+        factory = getattr(mod, attr)
         init_args = spec.camera.get("init_args", {})
         if not isinstance(init_args, dict):
             init_args = {}
