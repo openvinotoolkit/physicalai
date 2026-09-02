@@ -137,6 +137,10 @@ def build_camera(config: dict) -> Camera:
 
     Returns:
         Camera instance (not yet connected).
+
+    Raises:
+        ValueError: If ``_factory_override`` is set but not a valid ``'module:factory'`` path,
+            or if the ``camera`` entry fails publisher-envelope validation.
     """
     factory_override = config.get("_factory_override")
     if factory_override:
