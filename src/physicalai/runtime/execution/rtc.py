@@ -79,9 +79,6 @@ class RTCExecution(Execution):
             and more open-loop (re-plans less often); smaller = more
             reactive (re-plans more often, more model calls per second).
         fps: Robot control frequency in Hz.
-        max_action_dim: Model's internal action dimension (for noise/padding).
-            If None, is automatically inferred from the model's manifest or
-            defaulted to 32.
         max_guidance_weight: Strength of the RTC inpainting guidance
             (paper's β, default 5). Higher pulls each new chunk more
             tightly toward the previous chunk's tail (smoother seams)
@@ -102,7 +99,6 @@ class RTCExecution(Execution):
         chunk_size: int | None = None,
         execution_horizon: int = 15,
         fps: float = 30.0,
-        max_action_dim: int | None = None,
         max_guidance_weight: float = 5.0,
         queue_threshold: int | None = None,
         latency_tracker: RTCLatencyTracker | None = None,
@@ -111,7 +107,6 @@ class RTCExecution(Execution):
         self._chunk_size_param = chunk_size
         self._execution_horizon = execution_horizon
         self._fps = fps
-        self._max_action_dim_param = max_action_dim
         self._max_guidance_weight = max_guidance_weight
         self._queue_threshold_param = queue_threshold
         self._latency_tracker = latency_tracker
@@ -122,7 +117,6 @@ class RTCExecution(Execution):
 
         # Discovered/inferred state
         self._chunk_size: int = 50
-        self._max_action_dim: int = 32
         self._chunk_size_discovered: int = 0
 
         # Thread state
@@ -196,7 +190,7 @@ class RTCExecution(Execution):
         self._model = model
         self._rtc_queue = action_queue
 
-        # 1. Infer chunk_size
+        # Infer chunk_size
         if self._chunk_size_param is not None:
             self._chunk_size = self._chunk_size_param
         else:
@@ -207,23 +201,6 @@ class RTCExecution(Execution):
                 self._chunk_size = model.chunk_size
             else:
                 self._chunk_size = 50  # fallback default to Pi05 chunk size
-
-        # 2. Infer max_action_dim
-        if self._max_action_dim_param is not None:
-            self._max_action_dim = self._max_action_dim_param
-        else:
-            rtc_config = model.manifest.model_extra.get("rtc", {}) if hasattr(model, "manifest") else {}
-            if isinstance(rtc_config, dict) and "max_action_dim" in rtc_config:
-                self._max_action_dim = int(rtc_config["max_action_dim"])
-            elif (
-                hasattr(model, "manifest")
-                and model.manifest.hardware.robots
-                and model.manifest.hardware.robots[0].action is not None
-                and model.manifest.hardware.robots[0].action.shape
-            ):
-                self._max_action_dim = model.manifest.hardware.robots[0].action.shape[-1]
-            else:
-                self._max_action_dim = 32
 
         # Fresh events rather than clearing the shared ones: a worker that
         # outlived stop() keeps its own set stop event, so it cannot be revived
