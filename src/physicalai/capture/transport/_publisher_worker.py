@@ -159,6 +159,10 @@ def build_camera(config: dict) -> Camera:
             # nosemgrep: python.lang.security.audit.non-literal-import.non-literal-import
             mod = importlib.import_module(module_path)
             factory = getattr(mod, attr)
+            if not callable(factory):
+                raise ValueError(
+                    f"invalid _factory_override {factory_override!r}: {module_path}:{attr} is not callable"
+                )
         except (ImportError, AttributeError) as exc:
             msg = f"invalid _factory_override {factory_override!r}: {exc}"
             raise ValueError(msg) from exc
