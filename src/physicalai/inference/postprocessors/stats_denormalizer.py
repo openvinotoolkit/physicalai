@@ -71,7 +71,7 @@ class StatsDenormalizer(Postprocessor):
         features: list[str] | None = None,
         *,
         artifact: str | None = None,
-        stats: dict[str, dict[str, np.ndarray]] | None = None,
+        stats: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         """Initialize with stats file path and denormalization config.
 
@@ -85,7 +85,8 @@ class StatsDenormalizer(Postprocessor):
             artifact: Alias for *stats_path*, used when the path is
                 supplied via manifest ``artifact`` resolution.
             stats: Optional pre-loaded stats dict.  If provided, skips
-                lazy loading from file.
+                lazy loading from file.  Leaf values may be lists, scalars,
+                or numpy arrays; they are coerced to ``np.ndarray``.
 
         Raises:
             ValueError: If *mode* is not a recognized normalization mode

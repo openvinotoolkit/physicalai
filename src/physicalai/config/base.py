@@ -182,7 +182,13 @@ class Config:
 
         Args:
             data: Recipe envelope or dataclass field mapping.
-            strict: When reconstructing a typed dataclass, reject unknown keys.
+            strict: When reconstructing a typed dataclass, reject unknown
+                top-level keys. When ``False``, keys with no matching field on
+                ``cls`` are silently dropped instead of being forwarded to the
+                underlying parser (which would otherwise reject them
+                regardless of ``strict``). This only applies at the top
+                level: unknown keys nested inside a field's own value are not
+                filtered and are still rejected, matching prior behavior.
 
         Returns:
             A :class:`Config` recipe or dataclass instance.
@@ -198,12 +204,14 @@ class Config:
         if not dataclasses.is_dataclass(cls):
             msg = f"{cls.__name__} must be a dataclass to use Config"
             raise TypeError(msg)
+        field_names = {field.name for field in dataclasses.fields(cls)}
         if strict:
-            field_names = {field.name for field in dataclasses.fields(cls)}
             extras = set(data) - field_names
             if extras:
                 msg = f"Unexpected keys for {cls.__name__}: {sorted(extras)}"
                 raise TypeError(msg)
+        else:
+            data = {key: value for key, value in data.items() if key in field_names}
         return parse_class_config(cls, data)
 
     def instantiate(self, *, expected_type: type[_T] | None = None) -> _T | object:
