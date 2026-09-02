@@ -10,7 +10,7 @@ YAML/JSON configs passed via `--config` flag and an exported policy's `manifest.
 dynamically import and construct Python objects - robots, cameras, preprocessors, postprocessors, action
 sources, callbacks. Currently, nothing restricts which class a `class_path` may name.
 
-Only load configs, exported policies and manifest from sources you trust. See also the `class_path` note in
+Only load configs, exported policies, and manifests from sources you trust. See also the `class_path` note in
 [Config Schema Reference](../reference/config-schema.md#security).
 
 ## Use only trusted reviewed policies
@@ -23,7 +23,7 @@ reviewed and trust, rather than a mutable branch or tag, so the content you revi
 loaded on every run.
 
 **Loading via `export_dir`:** `physicalai run` and direct `InferenceModel(export_dir=...)` construction both
-load whatever package is already in that local directory. Only place a reviewed, trusted export there - 
+load whatever package is already in that local directory. Only place a reviewed, trusted export there.
 treat populating that directory (downloading, copying, extracting) as the point where you decide to trust
 its contents.
 
