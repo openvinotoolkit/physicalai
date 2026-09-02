@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Remove deprecated configuration compatibility shims. Use jsonargparse for
+  typed construction and `Config.from_instance()` / `Config.load()` for
+  portable configuration recipes.
+
 ## [0.1.1](https://github.com/openvinotoolkit/physicalai/compare/v0.1.0...v0.1.1) (2026-06-02)
 
 **Full Changelog**: [v0.1.0...v0.1.1](https://github.com/openvinotoolkit/physicalai/compare/v0.1.0...v0.1.1)

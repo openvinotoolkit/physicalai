@@ -55,7 +55,7 @@ class TestShareableClassPaths:
     def test_matches_export_config_when_importable(self, token: str) -> None:
         """Keeps the hand-written table honest when the extra is installed."""
         from physicalai.config._export import resolve_public_class_path
-        from physicalai.config.importing import import_dotted_path
+        from physicalai.config._importing import import_dotted_path
 
         class_path = _SHAREABLE_CLASS_PATHS[token]
         driver: object = None
