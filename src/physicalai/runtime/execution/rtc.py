@@ -582,4 +582,3 @@ class RTCExecution(Execution):
         inputs["execution_horizon"] = np.int64(execution_horizon)
 
         return inputs
-

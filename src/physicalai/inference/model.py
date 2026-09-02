@@ -142,7 +142,6 @@ class InferenceModel:
         compile_started = time.monotonic()
         logger.info("Compiling {} model on {}...", self.backend, self.device)
         self.adapter.load(model_path)
-        #self.adapter._policy.rtc_enabled = True
         logger.info("Model compiled in {:.1f}s", time.monotonic() - compile_started)
 
         self.runner: InferenceRunner = runner if runner is not None else get_runner(self.manifest)
