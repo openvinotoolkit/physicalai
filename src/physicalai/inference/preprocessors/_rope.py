@@ -54,6 +54,27 @@ def compute_mrope_position_ids(
         return _text_only_position_ids(input_ids, attention_mask, batch, seq_len)
 
     image_grid_thw = np.asarray(image_grid_thw)
+    if image_grid_thw.ndim == 2:  # noqa: PLR2004 - (num_images, 3)
+        if image_grid_thw.shape[1] != 3:  # noqa: PLR2004
+            msg = (
+                "Expected image_grid_thw shape (num_images, 3) for unbatched input, "
+                f"got {image_grid_thw.shape!r}."
+            )
+            raise ValueError(msg)
+    elif image_grid_thw.ndim == 3:  # noqa: PLR2004 - (B, num_images, 3)
+        if image_grid_thw.shape[0] != batch or image_grid_thw.shape[2] != 3:  # noqa: PLR2004
+            msg = (
+                "Expected image_grid_thw shape (B, num_images, 3) for batched input with "
+                f"B={batch}, got {image_grid_thw.shape!r}."
+            )
+            raise ValueError(msg)
+    else:
+        msg = (
+            "Expected image_grid_thw to have shape (num_images, 3) or (B, num_images, 3), "
+            f"got {image_grid_thw.shape!r}."
+        )
+        raise ValueError(msg)
+
     if attention_mask is None:
         attention_mask = np.ones_like(input_ids)
     attention_mask = np.asarray(attention_mask)
@@ -61,6 +82,12 @@ def compute_mrope_position_ids(
     position_ids = np.ones((3, batch, seq_len), dtype=np.int64)
     image_index = 0
     for i in range(batch):
+        if image_grid_thw.ndim == 3:  # noqa: PLR2004
+            sample_grid = image_grid_thw[i]
+            sample_image_index = 0
+        else:
+            sample_grid = image_grid_thw
+
         keep = attention_mask[i] == 1
         ids = input_ids[i][keep]
         vision_start_indices = np.nonzero(ids == vision_start_token_id)[0]
@@ -76,8 +103,26 @@ def compute_mrope_position_ids(
                 ed = input_tokens.index(image_token_id, st)
             else:
                 ed = len(input_tokens) + 1
-            grid_t, grid_h, grid_w = image_grid_thw[image_index]
-            image_index += 1
+
+            if image_grid_thw.ndim == 3:  # noqa: PLR2004
+                if sample_image_index >= sample_grid.shape[0]:
+                    msg = (
+                        "image_grid_thw has fewer rows than image blocks in the prompt for "
+                        f"sample {i}: needed at least {sample_image_index + 1}, got {sample_grid.shape[0]}."
+                    )
+                    raise ValueError(msg)
+                grid_t, grid_h, grid_w = sample_grid[sample_image_index]
+                sample_image_index += 1
+            else:
+                if image_index >= sample_grid.shape[0]:
+                    msg = (
+                        "image_grid_thw has fewer rows than image blocks in the prompt: "
+                        f"needed at least {image_index + 1}, got {sample_grid.shape[0]}."
+                    )
+                    raise ValueError(msg)
+                grid_t, grid_h, grid_w = sample_grid[image_index]
+                image_index += 1
+
             remain_images -= 1
 
             llm_grid_t = int(grid_t)

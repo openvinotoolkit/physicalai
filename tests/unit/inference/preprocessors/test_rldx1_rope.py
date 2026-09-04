@@ -120,3 +120,34 @@ def test_numpy_rope_batch() -> None:
     expected = _torch_get_rope_index(torch.tensor(ids_np), grid_np, torch.tensor(mask_np), MERGE).numpy()
 
     np.testing.assert_array_equal(got, expected)
+
+
+def test_numpy_rope_batch_with_batched_grid_thw() -> None:
+    """Batched image_grid_thw (B, N, 3) matches flattened-grid behavior."""
+    ids_a, mask_a, grid_a = _build_prompt(3, (4, 4), left_pad=2)
+    ids_b, mask_b, grid_b = _build_prompt(3, (4, 4), left_pad=0)
+    ids_np = np.array([ids_a, ids_b], dtype=np.int64)
+    mask_np = np.array([mask_a, mask_b], dtype=np.int64)
+
+    # Runtime rldx1 preprocessor emits batched grid_thw with shape (B, num_images, 3).
+    grid_batched = np.array([grid_a, grid_b], dtype=np.int64)
+    grid_flat = np.array(grid_a + grid_b, dtype=np.int64)
+
+    got_batched = compute_mrope_position_ids(
+        ids_np,
+        grid_batched,
+        mask_np,
+        image_token_id=IMAGE_TOKEN_ID,
+        vision_start_token_id=VISION_START_TOKEN_ID,
+        spatial_merge_size=MERGE,
+    )
+    got_flat = compute_mrope_position_ids(
+        ids_np,
+        grid_flat,
+        mask_np,
+        image_token_id=IMAGE_TOKEN_ID,
+        vision_start_token_id=VISION_START_TOKEN_ID,
+        spatial_merge_size=MERGE,
+    )
+
+    np.testing.assert_array_equal(got_batched, got_flat)

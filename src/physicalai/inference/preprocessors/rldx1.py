@@ -4,10 +4,10 @@
 """Preprocessor that builds Qwen3-VL VTC inputs for RLDX-1.
 
 Ports the frozen-geometry half of RLDX-1's Qwen3-VL image pipeline to numpy:
-patchify (mirrors ``Qwen2VLImageProcessor._preprocess``) and prompt
-templating (mirrors the placeholder-expansion loop in ``Qwen3VLProcessor``).
-Both are closed-form given a fixed export resolution/frame/view count, so
-neither needs the live HF processor at inference time.
+patchify (mirrors ``Qwen2VLImageProcessor._preprocess``) plus task
+normalization (lowercase + punctuation strip). Both are closed-form given a
+fixed export resolution/frame/view count, so neither needs the live HF
+processor at inference time.
 
 Tokenization (``task`` string -> ``input_ids``/``attention_mask``) is a
 separate downstream stage (``OVTokenizer``/``HFTokenizer``), same contract as
@@ -43,17 +43,6 @@ _RGB_CHANNELS = 3
 _IMAGE_MEAN = (0.5, 0.5, 0.5)
 _IMAGE_STD = (0.5, 0.5, 0.5)
 
-# Qwen3-VL special tokens (fixed vocabulary, not learned per-checkpoint).
-_IMAGE_TOKEN = "<|image_pad|>"
-_VISION_START = "<|vision_start|>"
-_VISION_END = "<|vision_end|>"
-# Verified against RLWRLD/RLDX-1-VLM's actual chat_template.jinja (single
-# user turn, no system message, no tools, add_vision_id=False,
-# add_generation_prompt=False -- matching Rldx1Preprocessor/
-# tokenize_vlm_batch's apply_chat_template call): text block then N vision
-# blocks, no separator, no trailing generation prompt.
-_PROMPT_TEMPLATE = "<|im_start|>user\n{task}{vision_blocks}<|im_end|>\n"
-
 # RLDX-1 model input keys (see Rldx1Model.forward / Rldx1Preprocessor upstream).
 PIXEL_VALUES = "pixel_values"
 IMAGE_GRID_THW = "image_grid_thw"
@@ -74,8 +63,7 @@ class Rldx1Preprocessor(Preprocessor):
 
     Assumes a fixed, export-time-frozen image resolution, a fixed number of
     camera views, and a fixed VTC frame count -- geometry that never varies
-    per call, so ``image_grid_thw`` and the placeholder-expanded prompt
-    template are precomputed once in ``__init__``.
+    per call, so ``image_grid_thw`` is precomputed once in ``__init__``.
 
     Does not assemble the VTC frame-history window itself: callers must
     supply frames already ordered frame-major / view-inner (``[t0v0, t0v1,
@@ -100,8 +88,7 @@ class Rldx1Preprocessor(Preprocessor):
         self,
         image_resolution: tuple[int, int],
         num_views: int = 1,
-        # TODO(Eugene): set num frames to 1 for now for VTC.
-        num_frames: int = 1,
+        num_frames: int = 4,
         max_state_dim: int = MAX_STATE_DIM,
         embodiment_id: int = 0,
         patch_size: int = _PATCH_SIZE,
@@ -136,18 +123,14 @@ class Rldx1Preprocessor(Preprocessor):
         self._grid_h = height // patch_size
         self._grid_w = width // patch_size
         self._num_images = num_views * num_frames
-        self._tokens_per_image = (self._grid_h * self._grid_w) // (merge_size**2)
 
         # grid_t is always 1: every VTC frame is encoded as an independent
         # still image (temporal duplication happens inside _patchify, not by
         # treating the window as a single multi-frame video clip).
         self._image_grid_thw_row = np.array([1, self._grid_h, self._grid_w], dtype=np.int64)
 
-        vision_block = _VISION_START + (_IMAGE_TOKEN * self._tokens_per_image) + _VISION_END
-        self._vision_blocks = vision_block * self._num_images
-
     def __call__(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-        """Build pixel_values/image_grid_thw and the placeholder-expanded prompt.
+        """Build pixel_values/image_grid_thw and normalized task text.
 
         Args:
             inputs: Dict with per-view image arrays under ``images.<view>``
@@ -160,8 +143,8 @@ class Rldx1Preprocessor(Preprocessor):
             grid_w, C * temporal_patch_size * patch_size**2)`` for the common
             single-sample inference path, or ``(B, num_images * grid_h * grid_w,
             C * temporal_patch_size * patch_size**2)`` for batched inputs,
-            ``image_grid_thw`` ``(B, num_images, 3)``, ``task`` (placeholder-
-            expanded prompt strings), and optionally ``state``.
+            ``image_grid_thw`` ``(B, num_images, 3)``, ``task`` (normalized
+            natural-language strings), and optionally ``state``.
         """
         inputs = dict(inputs)
         batch_frames = self._collect_frame_major_frames(inputs)
@@ -176,9 +159,7 @@ class Rldx1Preprocessor(Preprocessor):
             tasks = [""] * batch_size
         elif isinstance(tasks, str):
             tasks = [tasks]
-        inputs[TASK] = [
-            _PROMPT_TEMPLATE.format(task=_formalize_language(t), vision_blocks=self._vision_blocks) for t in tasks
-        ]
+        inputs[TASK] = [_formalize_language(t) for t in tasks]
 
         state = inputs.get(STATE)
         if state is not None:

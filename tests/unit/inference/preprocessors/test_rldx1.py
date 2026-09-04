@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from physicalai.inference.constants import TASK
 from physicalai.inference.preprocessors.rldx1 import IMAGE_GRID_THW, PIXEL_VALUES, Rldx1Preprocessor
 
 
@@ -55,3 +56,13 @@ def test_state_without_time_axis_is_coerced_and_padded() -> None:
 
     assert outputs["state"].shape == (1, 1, 64)
     np.testing.assert_array_equal(outputs["state"][0, 0, :8], state[0])
+
+
+def test_task_only_mode_emits_normalized_text_without_markers() -> None:
+    """Preprocessor emits normalized natural language for downstream tokenization."""
+    preprocessor = Rldx1Preprocessor(image_resolution=(32, 32), num_views=1, num_frames=1)
+    image = np.zeros((1, 1, 32, 32, 3), dtype=np.uint8)
+
+    outputs = preprocessor({"images": image, "task": "Put the mug on the plate."})
+
+    assert outputs[TASK] == ["put the mug on the plate"]
