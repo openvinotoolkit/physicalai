@@ -28,9 +28,14 @@ Camera instances are not thread-safe. Use one thread per camera instance or add 
 
 ## Device Identity
 
-`discover()` prefers a stable identifier over a video index, so a camera keeps
-the same `device_id` across reboot and replug. `id_stable=True` marks a
-`device_id` that is safe to persist in config.
+`discover()` reports each camera's `hardware_payload`: backend-specific
+identifying fields (a serial, a sensor port, a bus path, ...) with no
+guaranteed key and no guaranteed stability across reboot or replug — shape
+varies by backend and device. To reopen a specific camera, hand its
+`hardware_payload` (or another identity string, e.g. a serial) back to the
+backend as `device_id`; it resolves to the best-matching device and raises if
+more than one device matches equally well. Persist `hardware_payload` only if
+you know your device reports something durable (e.g. a real USB serial).
 
 ## SharedCamera
 

@@ -11,6 +11,11 @@ component is a ``RobotRuntime``.
 
 Trusted local configs only — never feed network-received YAML to
 :func:`~physicalai.config.instantiate`.
+
+.. deprecated::
+    Prefer :meth:`~physicalai.config.Config.save` and
+    :meth:`~physicalai.config.Config.load`. Emits :class:`DeprecationWarning`
+    at runtime.
 """
 
 from __future__ import annotations
@@ -20,14 +25,21 @@ from pathlib import Path
 
 import yaml
 
+from ._deprecate import deprecate
 from ._errors import ConfigError
 from ._export import to_config
 from ._normalize import normalize_config
 from .base import Config
 
+_REPLACEMENT = "Config.from_instance(...).save(path) and Config.load(path)"
+
 
 def to_yaml(component: object) -> str:
     """Serialize a component to a YAML ``class_path`` + ``init_args`` document.
+
+    .. deprecated::
+        Use :meth:`~physicalai.config.Config.save` or serialize
+        :meth:`~physicalai.config.Config.to_dict`.
 
     Args:
         component: A live ``@export_config`` instance, or an existing
@@ -36,6 +48,7 @@ def to_yaml(component: object) -> str:
     Returns:
         YAML text of the validated :class:`Config`.
     """
+    deprecate("physicalai.config.to_yaml", _REPLACEMENT)
     if type(component) is Config:
         config = component
     elif isinstance(component, Mapping):
@@ -48,11 +61,15 @@ def to_yaml(component: object) -> str:
 def save_yaml(component: object, path: str | Path) -> None:
     """Write :func:`to_yaml` output to *path* (parent directories must exist).
 
+    .. deprecated::
+        Use :meth:`~physicalai.config.Config.save`.
+
     Args:
         component: A live ``@export_config`` instance or a
             :class:`Config` mapping.
         path: Destination file path.
     """
+    deprecate("physicalai.config.save_yaml", _REPLACEMENT)
     Path(path).write_text(to_yaml(component), encoding="utf-8")
 
 
@@ -62,6 +79,9 @@ def load_yaml(path: str | Path) -> Config:
     The document is parsed with ``yaml.safe_load`` and only shape-checked to
     be a mapping — full component validation happens in
     :func:`~physicalai.config.instantiate`.
+
+    .. deprecated::
+        Use :meth:`~physicalai.config.Config.load`.
 
     Args:
         path: YAML file previously written by :func:`save_yaml` (or
@@ -73,6 +93,7 @@ def load_yaml(path: str | Path) -> Config:
     Raises:
         ConfigError: If the document is not a mapping.
     """
+    deprecate("physicalai.config.load_yaml", "Config.load(path)")
     loaded = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if loaded is None:
         loaded = {}

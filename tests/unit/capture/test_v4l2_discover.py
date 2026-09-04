@@ -120,8 +120,7 @@ def test_discover_single_capture_device() -> None:
     assert device.index == 0
     assert device.name == "Test Cam"
     assert device.driver == "v4l2"
-    assert device.hardware_id == "usb-0000:00:14.0-1"
-    assert device.id_stable is False
+    assert device.hardware_payload == {"bus": "usb-0000:00:14.0-1"}
     assert device.model == "Test Cam"
     assert device.metadata is not None
     assert "device_caps" in device.metadata
@@ -294,7 +293,7 @@ def test_discover_filters_metadata_node_via_device_caps() -> None:
 
 
 def test_discover_enriches_with_by_id_symlink() -> None:
-    """discover_v4l2() uses by-id symlink as hardware_id when available."""
+    """discover_v4l2() uses the by-id symlink as hardware_payload["path"] when available."""
     entry0 = _make_sysfs_entry("video0", "USB Cam")
 
     with mock.patch("physicalai.capture.cameras.uvc.v4l2._discover._SYSFS_V4L2") as mock_sysfs:
@@ -324,7 +323,7 @@ def test_discover_enriches_with_by_id_symlink() -> None:
                             result = discover_v4l2()
 
     assert len(result) == 1
-    assert result[0].hardware_id == "/dev/v4l/by-id/usb-TestCam_12345-video-index0"
-    assert result[0].id_stable is True
+    assert result[0].hardware_payload is not None
+    assert result[0].hardware_payload["bus"] == "usb-0000:00:14.0-1"
     assert result[0].metadata is not None
     assert result[0].metadata["by_id"] == "usb-TestCam_12345-video-index0"

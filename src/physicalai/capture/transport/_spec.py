@@ -25,9 +25,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 from physicalai.config import (
     Config,
-    normalize_config,
-    validate_envelope,
 )
+from physicalai.runtime.execution.async_execution import logger
 
 if TYPE_CHECKING:
     from physicalai.capture.camera import Camera
@@ -52,13 +51,23 @@ def validate_publisher_config(data: Mapping[str, Any]) -> Config:
     Returns:
         The validated ``camera`` Config mapping (see
         :func:`normalize_camera_config` for the JSON-serializability check).
+
+    Raises:
+        TypeError: If the camera entry is not a mapping.
+        ValueError: If required or unknown envelope keys are present.
     """
-    return validate_envelope(
-        data,
-        component_key="camera",
-        allowed_keys=_PUBLISHER_ENVELOPE_KEYS,
-        envelope_name="publisher",
-    )
+    unknown = sorted(set(data) - _PUBLISHER_ENVELOPE_KEYS)
+    if unknown:
+        msg = f"unknown publisher config keys {unknown}"
+        raise ValueError(msg)
+    if "camera" not in data:
+        msg = "publisher config missing required 'camera' Config"
+        raise ValueError(msg)
+    camera = data["camera"]
+    if not isinstance(camera, Mapping):
+        msg = f"camera must be a Config mapping, got {type(camera).__name__}"
+        raise TypeError(msg)
+    return normalize_camera_config(camera)
 
 
 def validate_reconfigure_request(request: Mapping[str, Any]) -> dict[str, int]:
@@ -116,12 +125,15 @@ def normalize_camera_config(camera: Config | Mapping[str, object]) -> Config:
 
     Returns:
         A validated config whose ``class_path`` is a dotted import path.
+
+    Raises:
+        ValueError: If the class path is not a nonempty dotted path.
     """
-    return normalize_config(
-        camera,
-        component_key="camera",
-        class_label="camera class_path",
-    )
+    recipe = camera if isinstance(camera, Config) else Config.from_dict(camera)
+    if "." not in recipe.class_path or not recipe.class_path.strip():
+        msg = f"camera class_path must be a nonempty dotted path, got {recipe.class_path!r}"
+        raise ValueError(msg)
+    return recipe
 
 
 def _url_token(url: str) -> str:
@@ -182,6 +194,15 @@ def derive_service_name(
     # the same service name for the same physical device.
     if isinstance(device_id, str) and device_id.startswith("/dev/"):
         device_id = Path(device_id).resolve().name
+    elif isinstance(device_id, dict):
+        device_id = device_id.get("index", device_id.get("uuid", device_id))
+    elif "serial_number" not in init_args:
+        logger.warning(
+            "It is advised to use descriptive argument for SharedCamera, "
+            "such as fingerprint dictionary or a serial number. "
+            "Opening the same camera with a different identifier can result in a race condition."
+        )
+
     return f"physicalai/camera/{class_name}/{device_id}/frame"
 
 
@@ -237,7 +258,7 @@ class CameraPublisherConfig:
     def build(self) -> Camera:
         """Instantiate the camera described by this spec.
 
-        Uses :func:`physicalai.config.instantiate` on the ``camera``
+        Uses :meth:`~physicalai.config.Config.instantiate` on the ``camera``
         Config, then verifies the :class:`~physicalai.capture.camera.Camera`
         protocol. Does not route through :func:`~physicalai.capture.create_camera`,
         so third-party class paths work without a registry entry.
@@ -250,7 +271,7 @@ class CameraPublisherConfig:
         """
         from physicalai.capture.camera import Camera  # noqa: PLC0415
 
-        driver = normalize_camera_config(self.camera).instantiate()
+        driver = normalize_camera_config(self.camera).instantiate(expected_type=Camera)
         if not isinstance(driver, Camera):
             msg = f"{self.camera['class_path']!r} does not satisfy the Camera protocol (got {type(driver).__name__})"
             raise TypeError(msg)

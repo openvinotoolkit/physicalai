@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from physicalai.config import ConfigError, instantiate, is_config_exportable, to_config
+from physicalai.config import Config, ConfigError
 
 # SO101 imports scservo_sdk at module load; keep unit tests hardware-free.
 # Use setdefault — not patch.dict(sys.modules) — because patch.dict restores by
@@ -25,12 +25,12 @@ sys.modules.setdefault("scservo_sdk", MagicMock())
 
 
 def _assert_construction_round_trip(value: object) -> dict[str, Any]:
-    assert is_config_exportable(value)
-    config = to_config(value)
+    assert Config.is_exportable(value)
+    config = Config.from_instance(value)
     wire: dict[str, Any] = json.loads(json.dumps(config.to_dict()))
-    restored = instantiate(wire)
+    restored = Config.from_dict(wire).instantiate()
     assert type(restored) is type(value)
-    assert to_config(restored) == wire
+    assert Config.from_instance(restored) == wire
     return wire
 
 
@@ -115,7 +115,7 @@ class TestActionQueueConfig:
         wire = _assert_construction_round_trip(queue)
         assert wire["class_path"] == "physicalai.runtime.ChunkedActionQueue"
         assert wire["init_args"] == {}
-        restored = instantiate(wire)
+        restored = Config.from_dict(wire).instantiate()
         assert isinstance(restored._smoother, ReplaceSmoother)  # type: ignore[attr-defined]
 
     def test_chunked_explicit_lerp_nested(self) -> None:
@@ -138,7 +138,7 @@ class TestActionQueueConfig:
 
         queue = ChunkedActionQueue(smoother=UndecoratedSmoother())
         with pytest.raises(ConfigError, match=r"init_args\.smoother"):
-            to_config(queue)
+            Config.from_instance(queue)
 
     def test_rtc_action_queue_round_trip(self) -> None:
         from physicalai.runtime import RTCActionQueue
@@ -190,14 +190,14 @@ class TestExecutionConfig:
 
         execution = RTCExecution(latency_tracker=MagicMock())
         with pytest.raises(ConfigError, match=r"init_args\.latency_tracker"):
-            to_config(execution)
+            Config.from_instance(execution)
 
     def test_rtc_live_postprocessors_fail(self) -> None:
         from physicalai.runtime import RTCExecution
 
         execution = RTCExecution(postprocessors=[MagicMock()])
         with pytest.raises(ConfigError, match=r"init_args\.postprocessors"):
-            to_config(execution)
+            Config.from_instance(execution)
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +219,7 @@ class TestPolicySourceConfig:
         assert wire["init_args"]["task"] == "pick cube"
         assert wire["init_args"]["model"]["class_path"] == "physicalai.inference.InferenceModel"
 
-        restored = instantiate(wire)
+        restored = Config.from_dict(wire).instantiate()
         assert isinstance(restored._execution, SyncExecution)  # type: ignore[attr-defined]
         assert isinstance(restored._action_queue, ChunkedActionQueue)  # type: ignore[attr-defined]
         assert isinstance(restored._action_queue._smoother, LerpSmoother)  # type: ignore[attr-defined]
@@ -298,7 +298,7 @@ class TestTeleopSourceConfig:
         leader = SO101(port="/dev/ttyUSB0", calibration=calibration, role="leader")
         source = TeleopSource(leader=leader, to_action=lambda obs: obs.joint_positions)
         with pytest.raises(ConfigError, match=r"init_args\.to_action"):
-            to_config(source)
+            Config.from_instance(source)
 
 
 # ---------------------------------------------------------------------------
@@ -328,12 +328,12 @@ class TestCallbackConfig:
         cb = JsonlCallback(path=path, record_chunks=True)
         restored = None
         try:
-            assert is_config_exportable(cb)
-            config = to_config(cb)
+            assert Config.is_exportable(cb)
+            config = Config.from_instance(cb)
             wire: dict[str, Any] = json.loads(json.dumps(config.to_dict()))
-            restored = instantiate(wire)
+            restored = Config.from_dict(wire).instantiate()
             assert type(restored) is type(cb)
-            assert to_config(restored) == wire
+            assert Config.from_instance(restored) == wire
             assert wire["class_path"] == "physicalai.runtime.JsonlCallback"
             assert wire["init_args"]["path"] == str(path)
             assert wire["init_args"]["record_chunks"] is True
@@ -372,7 +372,7 @@ class TestCallbackConfig:
             assert wire["class_path"] == "physicalai.runtime.AsyncCallback"
             assert wire["init_args"]["max_queue"] == 64
             assert wire["init_args"]["inner"]["class_path"] == "physicalai.runtime.ConsoleCallback"
-            restored = instantiate(wire)
+            restored = Config.from_dict(wire).instantiate()
             try:
                 assert isinstance(restored._inner, ConsoleCallback)  # type: ignore[attr-defined]
             finally:
@@ -390,7 +390,7 @@ class TestCallbackConfig:
         cb = AsyncCallback(UndecoratedTickCallback())
         try:
             with pytest.raises(ConfigError, match=r"init_args\.inner"):
-                to_config(cb)
+                Config.from_instance(cb)
         finally:
             cb.close()
 
@@ -456,7 +456,7 @@ class TestRobotRuntimeConfig:
         assert "_connected" not in wire["init_args"]
         from physicalai.runtime import RobotRuntime
 
-        restored = instantiate(wire)
+        restored = Config.from_dict(wire).instantiate()
         assert isinstance(restored, RobotRuntime)
         assert restored._connected is False  # noqa: SLF001
         assert restored._session_id == ""  # noqa: SLF001
@@ -473,7 +473,7 @@ class TestRobotRuntimeConfig:
         from physicalai.runtime import ConsoleCallback, PolicySource, RobotRuntime
 
         runtime = _make_full_runtime(inference_model)
-        wire = to_config(runtime)
+        wire = Config.from_instance(runtime)
         # CLI nests constructor args under ``runtime:`` (not the bare Config).
         # Prefer JSON for the ActionConfigFile payload — avoids PyYAML C-loader
         # interaction with ``yaml.safe_dump`` that can poison later YAML parses in
@@ -495,7 +495,7 @@ class TestRobotRuntimeConfig:
         assert isinstance(restored._bus._callbacks[0], ConsoleCallback)  # noqa: SLF001
         # jsonargparse may supply omitted ctor defaults; check public class_path shape
         # after a JSON boundary (strips StrEnum identity / applied defaults noise).
-        restored_wire = json.loads(json.dumps(to_config(restored).to_dict()))
+        restored_wire = json.loads(json.dumps(Config.from_instance(restored).to_dict()))
         assert restored_wire["class_path"] == "physicalai.runtime.RobotRuntime"
         assert restored_wire["init_args"]["fps"] == 30.0
         assert restored_wire["init_args"]["robot"]["class_path"] == "physicalai.robot.SO101"
@@ -521,7 +521,7 @@ class TestRobotRuntimeConfig:
         # The bare to_config shape (top-level class_path) — no manual rewrite
         # to ``runtime:`` needed on either load path.
         cfg_path = tmp_path / "runtime_export.json"
-        cfg_path.write_text(json.dumps(to_config(runtime).to_dict()))
+        cfg_path.write_text(json.dumps(Config.from_instance(runtime).to_dict()))
 
         parser = build_parser()
         ns = parser.parse_args(["--config", str(cfg_path)])
@@ -587,7 +587,7 @@ class TestRobotRuntimeConfig:
             fps=10.0,
         )
         with pytest.raises(ConfigError, match=r"init_args\.robot"):
-            to_config(runtime)
+            Config.from_instance(runtime)
 
     def test_undecorated_action_source_fails(self) -> None:
         from physicalai.runtime import RobotRuntime
@@ -604,7 +604,7 @@ class TestRobotRuntimeConfig:
             fps=10.0,
         )
         with pytest.raises(ConfigError, match=r"init_args\.action_source"):
-            to_config(runtime)
+            Config.from_instance(runtime)
 
     def test_undecorated_camera_fails(
         self, inference_model: Any, _patch_adapter: MagicMock
@@ -622,7 +622,7 @@ class TestRobotRuntimeConfig:
             cameras={"wrist": UndecoratedCamera()},  # type: ignore[dict-item]
         )
         with pytest.raises(ConfigError, match=r"init_args\.cameras\.wrist"):
-            to_config(runtime)
+            Config.from_instance(runtime)
 
     def test_undecorated_callback_fails(
         self, inference_model: Any, _patch_adapter: MagicMock
@@ -640,7 +640,7 @@ class TestRobotRuntimeConfig:
             callbacks=[UndecoratedCallback()],
         )
         with pytest.raises(ConfigError, match=r"init_args\.callbacks\[0\]"):
-            to_config(runtime)
+            Config.from_instance(runtime)
 
     def test_jsonargparse_sees_original_ctor_signature(self) -> None:
         import inspect
@@ -693,7 +693,7 @@ class TestRobotRuntimeConfig:
         assert wire["init_args"]["cameras"]["wrist"]["class_path"] == "physicalai.capture.SharedCamera"
         nested_cam = wire["init_args"]["cameras"]["wrist"]["init_args"]["camera"]
         assert nested_cam["class_path"] == "physicalai.capture.UVCCamera"
-        restored = instantiate(wire)
+        restored = Config.from_dict(wire).instantiate()
         assert isinstance(restored, RobotRuntime)
         assert isinstance(restored.robot, SharedRobot)
         assert isinstance(restored.cameras["wrist"], SharedCamera)

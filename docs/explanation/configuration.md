@@ -1,11 +1,12 @@
 # Configuration
 
-PhysicalAI uses constructor-shaped data so Python, YAML, the CLI, and Studio
-can describe the same runtime graph.
+Physical AI describes setups in a simple, repeatable way: **pick a Python class**
+and **pass the arguments its constructor needs**. The same description can live in
+Python, YAML, the CLI, or Studio.
 
-## Construction Recipes
+## Config recipes
 
-A `Config` names one class and the arguments needed to create it.
+A config recipe names the class and its constructor arguments:
 
 ```yaml
 class_path: physicalai.capture.UVCCamera
@@ -15,57 +16,58 @@ init_args:
   height: 480
 ```
 
-Classes opt in to exporting this recipe with `@export_config`.
-`Config.from_instance()`
-captures construction intent rather than mutable runtime state: supplied
-arguments are preserved, omitted defaults remain omitted, and connections or
-open handles are never exported.
+- `class_path` — import path to the class (for example a camera driver).
+- `init_args` — keyword arguments passed to `__init__`.
+
+Classes that should round-trip through YAML can opt in with `@export_config`.
+Then `Config.from_instance(live_object)` records how the object was created:
+which arguments you passed, without open devices, sockets, or other runtime state.
 
 ```text
-live opted-in component -> Config.from_instance() -> JSON/YAML -> config.instantiate() -> new component
+live object -> Config.from_instance() -> YAML/JSON -> config.instantiate() -> new object
 ```
 
-`Config.instantiate()` calls constructors only. The application remains responsible
-for lifecycle methods such as `connect()` and `run()`.
+`Config.instantiate()` only runs the constructor. Your app still calls methods like
+`connect()` or `run()` when needed.
 
-## Workflow Documents
+## Workflow files (`physicalai run`)
 
-A workflow document adds command-level structure around components. For
-example, `physicalai run` expects runtime constructor arguments under
-`runtime:` and optional run-method arguments under `run:`. A bare exported
-`RobotRuntime` Config is also accepted and reshaped by the loader.
+Run configs add structure around the same recipe. For example, `physicalai run`
+expects runtime settings under `runtime:` and optional run options under `run:`.
+You can also pass a bare exported `RobotRuntime` recipe; the loader reshapes it
+into that form.
 
-Nested components retain the same `class_path` + `init_args` form, so a robot,
-action source, model, camera map, and callbacks form one recursive recipe.
+Nested parts (robot, policy, cameras, callbacks) use the same
+`class_path` + `init_args` pattern, nested inside `init_args` where needed.
 
-## Manifests
+## Inference manifests
 
-An inference manifest describes an exported policy package: artifacts,
-features, processors, runners, and compatibility metadata. Its
-`ComponentSpec` supports registry aliases and artifact handling and remains
-separate from strict captured `Config` data.
+An exported policy folder includes a **manifest**: file paths, preprocessors,
+runners, and compatibility metadata. That format is aimed at loading a trained
+package. Robot and runtime YAML typically use `Config` recipes instead.
 
-Use workflow configuration for deployment intent. Use manifests for package
-metadata produced during export.
+Use workflow YAML when you describe **how to run** something. Use the manifest
+when you describe **what is inside an export**.
 
-## Generic instantiation (Training and plugins)
+## Training and typed settings
 
-Runtime also ships helpers used heavily by Physical AI Studio and
-`jsonargparse`-driven CLIs:
+When you already know the Python type (a trainer, dataclass, CLI model), build
+it with **jsonargparse**: define a parser for that type, load YAML or CLI values,
+then call `instantiate()`.
 
-| Entry point                                                                 | Use when                                            |
-| --------------------------------------------------------------------------- | --------------------------------------------------- |
-| [`instantiate_obj`](../how-to/config/instantiate-objects.md)                | Generic loaders; class chosen by config             |
-| [`FromConfig` / `@from_config`](../how-to/config/use-from-config.md)        | Class-level `from_yaml`, `from_dict`, `from_config` |
-| [`Config` dataclass subclasses](../how-to/config/instantiate-components.md) | Typed hyperparameter objects with save/load         |
+```python
+parser = ArgumentParser(exit_on_error=False)
+parser.add_class_arguments(Trainer, "trainer")
+parsed = parser.parse_object(document, defaults=False)
+trainer = parser.instantiate(parsed).trainer
+```
 
-Strict captured recipes use the package-level :func:`instantiate`; generic
-loaders use the package-level :func:`instantiate_obj`. Both are intentionally
-available from one public import surface. Generic loader helpers are
-implemented in `physicalai.config.loading`.
+`physicalai.config.Config` is the shared recipe format for portable YAML:
+`class_path` plus `init_args`. Pair it with `@export_config` when a live
+component should save to disk and be recreated later.
 
-## Trust
+## Safety
 
-Resolving `class_path` imports and executes local Python code. Only trusted
-application or user-authored configuration belongs at the instantiation
-boundary; peer metadata and transport control messages do not.
+Loading a config imports Python modules from `class_path`. Only use files you
+wrote or otherwise trust on that machine. Do not build objects from robot or
+camera metadata received over the network.

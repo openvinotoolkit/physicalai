@@ -486,7 +486,7 @@ class TestSharedCameraConstruction:
         from tests.unit.capture.fake import FakeCamera
 
         driver = FakeCamera(width=32, height=32, device_name="d1")
-        with pytest.raises(ConfigError, match="camera must be a Config mapping"):
+        with pytest.raises(ConfigError, match="config must be a mapping"):
             SharedCamera(camera=driver, service_name="physicalai/test/x/frame")  # type: ignore[arg-type]
 
     def test_subscriber_never_imports_the_vendor_driver(self) -> None:

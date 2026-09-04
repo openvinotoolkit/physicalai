@@ -11,6 +11,10 @@ and allowlists.
 Nothing here imports a ``class_path``. Envelopes are built in the subscriber
 process, which must stay free of the driver package — the import happens in
 the process that calls :func:`~physicalai.config.instantiate`.
+
+.. deprecated::
+    Prefer domain validators such as ``validate_owner_config`` and
+    ``validate_publisher_config``. Emits :class:`DeprecationWarning` at runtime.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from ._deprecate import deprecate
 from ._errors import ConfigError
 from ._normalize import validate_config
 from .base import Config
@@ -37,6 +42,9 @@ def validate_envelope(
     only *allowed_keys*. Unknown keys raise a clear schema error before any
     import or hardware access.
 
+    .. deprecated::
+        Use domain-owned envelope validators in robot/capture transport modules.
+
     Args:
         data: Full stdin envelope dict.
         component_key: Envelope key holding the nested Config
@@ -53,6 +61,10 @@ def validate_envelope(
         TypeError: If *data* or the component value is not a mapping.
         ValueError: If the component key is missing or unknown keys are present.
     """
+    deprecate(
+        "physicalai.config.validate_envelope",
+        "domain validators such as validate_owner_config or validate_publisher_config",
+    )
     if not isinstance(data, Mapping):
         msg = f"{envelope_name} config must be a mapping, got {type(data).__name__}"
         raise TypeError(msg)
@@ -93,6 +105,10 @@ def normalize_config(
     lives). Import errors surface later, in the process that calls
     :func:`~physicalai.config.instantiate`.
 
+    .. deprecated::
+        Use ``normalize_robot_config`` or ``normalize_camera_config`` in
+        transport modules.
+
     Args:
         config: Candidate ``class_path`` + ``init_args`` mapping.
         component_key: Path prefix for validation errors (``"robot"`` / ``"camera"``).
@@ -107,6 +123,10 @@ def normalize_config(
         ValueError: If ``class_path`` is not a dotted path or ``init_args`` is
             not JSON-serializable.
     """
+    deprecate(
+        "physicalai.config.normalize_config (transport envelope helper)",
+        "normalize_robot_config or normalize_camera_config in transport modules",
+    )
     if type(config) is Config:
         config = config.to_dict()
     if not isinstance(config, Mapping):

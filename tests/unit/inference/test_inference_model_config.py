@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from physicalai.config import ConfigError, instantiate, is_config_exportable, to_config
+from physicalai.config import Config, ConfigError
 
 
 def _make_export_dir(tmp_path: Path, *, backend: str = "openvino") -> Path:
@@ -42,12 +42,12 @@ def _make_export_dir(tmp_path: Path, *, backend: str = "openvino") -> Path:
 
 
 def _assert_construction_round_trip(model: object) -> dict[str, Any]:
-    assert is_config_exportable(model)
-    config = to_config(model)
+    assert Config.is_exportable(model)
+    config = Config.from_instance(model)
     wire: dict[str, Any] = json.loads(json.dumps(config.to_dict()))
-    restored = instantiate(wire)
+    restored = Config.from_dict(wire).instantiate()
     assert type(restored) is type(model)
-    assert to_config(restored) == wire
+    assert Config.from_instance(restored) == wire
     return wire
 
 
@@ -115,7 +115,7 @@ class TestInferenceModelConfig:
         from physicalai.inference import InferenceModel
 
         model = InferenceModel(export_dir=_make_export_dir(tmp_path), backend="openvino", device="cpu")
-        wire = to_config(model)
+        wire = Config.from_instance(model)
         for key in ("runner", "preprocessors", "postprocessors", "callbacks"):
             assert key not in wire["init_args"]
 
@@ -130,7 +130,7 @@ class TestInferenceModelConfig:
             runner=SinglePass(),
         )
         with pytest.raises(ConfigError, match=r"init_args\.runner"):
-            to_config(model)
+            Config.from_instance(model)
 
     def test_live_preprocessors_fail(self, tmp_path: Path, _patch_adapter: MagicMock) -> None:
         from physicalai.inference import InferenceModel
@@ -142,7 +142,7 @@ class TestInferenceModelConfig:
             preprocessors=[MagicMock()],
         )
         with pytest.raises(ConfigError, match=r"init_args\.preprocessors"):
-            to_config(model)
+            Config.from_instance(model)
 
     def test_live_postprocessors_fail(self, tmp_path: Path, _patch_adapter: MagicMock) -> None:
         from physicalai.inference import InferenceModel
@@ -154,7 +154,7 @@ class TestInferenceModelConfig:
             postprocessors=[MagicMock()],
         )
         with pytest.raises(ConfigError, match=r"init_args\.postprocessors"):
-            to_config(model)
+            Config.from_instance(model)
 
     def test_live_callbacks_fail(self, tmp_path: Path, _patch_adapter: MagicMock) -> None:
         from physicalai.inference import InferenceModel
@@ -166,7 +166,7 @@ class TestInferenceModelConfig:
             callbacks=[MagicMock()],
         )
         with pytest.raises(ConfigError, match=r"init_args\.callbacks"):
-            to_config(model)
+            Config.from_instance(model)
 
     def test_non_scalar_dict_adapter_kwarg_fails(self, tmp_path: Path, _patch_adapter: MagicMock) -> None:
         from physicalai.inference import InferenceModel
@@ -178,7 +178,7 @@ class TestInferenceModelConfig:
             config_blob={"a": 1},
         )
         with pytest.raises(ConfigError, match=r"init_args\.config_blob"):
-            to_config(model)
+            Config.from_instance(model)
 
     def test_non_scalar_list_adapter_kwarg_fails(self, tmp_path: Path, _patch_adapter: MagicMock) -> None:
         from physicalai.inference import InferenceModel
@@ -190,4 +190,4 @@ class TestInferenceModelConfig:
             tags=["x", "y"],
         )
         with pytest.raises(ConfigError, match=r"init_args\.tags"):
-            to_config(model)
+            Config.from_instance(model)

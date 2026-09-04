@@ -1,7 +1,13 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Serialization utilities for typed dataclass configs."""
+"""Serialization utilities for typed dataclass configs.
+
+.. deprecated::
+    Prefer :meth:`~physicalai.config.Config.to_dict` and
+    :meth:`~physicalai.config.Config.from_dict` (or jsonargparse). Emits
+    :class:`DeprecationWarning` at runtime.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +19,8 @@ from functools import reduce
 from itertools import starmap
 from pathlib import PurePath
 from typing import TYPE_CHECKING, TypeVar, Union, get_args, get_origin, get_type_hints
+
+from ._deprecate import deprecate
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -27,9 +35,16 @@ __all__ = ["dataclass_to_dict", "dict_to_dataclass"]
 def dataclass_to_dict(obj: object, *, recursive: bool = True) -> object:  # ruff: ignore[PLR0911]
     """Convert a dataclass or nested structure to plain Python data.
 
+    .. deprecated::
+        Use :meth:`~physicalai.config.Config.to_dict` for typed configs.
+
     Returns:
         Plain dicts, lists, and scalars suitable for ``torch.save(weights_only=True)``.
     """
+    deprecate(
+        "physicalai.config.serializable.dataclass_to_dict",
+        "Config.to_dict() for typed configs or jsonargparse parser.dump",
+    )
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         if not recursive:
             return {field.name: getattr(obj, field.name) for field in dataclasses.fields(obj)}
@@ -52,6 +67,10 @@ def dataclass_to_dict(obj: object, *, recursive: bool = True) -> object:  # ruff
 def dict_to_dataclass(cls: type[_T], data: Mapping[str, object], *, strict: bool = True) -> _T:
     """Reconstruct a dataclass from a mapping using its type hints.
 
+    .. deprecated::
+        Use :meth:`~physicalai.config.Config.from_dict` or
+        :func:`~physicalai.config.base.parse_class_config`.
+
     Args:
         cls: Dataclass type to construct.
         data: Field values (typically from YAML or a checkpoint).
@@ -63,6 +82,10 @@ def dict_to_dataclass(cls: type[_T], data: Mapping[str, object], *, strict: bool
     Raises:
         TypeError: If ``cls`` is not a dataclass or ``strict`` rejects extra keys.
     """
+    deprecate(
+        "physicalai.config.serializable.dict_to_dataclass",
+        "Config.from_dict() for Config subclasses or parse_class_config",
+    )
     if not dataclasses.is_dataclass(cls):
         msg = f"Expected dataclass, got {cls}"
         raise TypeError(msg)

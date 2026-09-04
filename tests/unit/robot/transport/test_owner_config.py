@@ -7,15 +7,17 @@ import json
 import pickle
 import subprocess
 import sys
+import math
 from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
 
-from physicalai.config import ConfigError, ConfigImportError
+from physicalai.config import Config, ConfigError, ConfigImportError
 from physicalai.robot.transport._owner import RobotOwner
 from physicalai.robot.transport._owner_config import (
     RobotOwnerConfig,
+    coerce_robot_config_input,
     normalize_robot_config,
     validate_owner_config,
 )
@@ -32,6 +34,16 @@ def _fake_robot(**init_args: object) -> dict[str, object]:
 
 
 class TestNormalizeRobotConfigClassPath:
+    def test_coerce_rejects_unknown_object_with_type_error(self) -> None:
+        with pytest.raises(TypeError, match="@export_config instance"):
+            coerce_robot_config_input(object())  # pyrefly: ignore[bad-argument-type]
+
+    def test_coerce_exportable_driver_to_config(self) -> None:
+        driver = FakeRobot(port="/dev/ttyUSB0")
+        recipe = coerce_robot_config_input(driver)
+        assert isinstance(recipe, Config)
+        assert recipe.class_path == FAKE_ROBOT_CLASS
+
     def test_string_path_stored_as_given_without_importing(self) -> None:
         # No scservo_sdk mock: a string path is trusted and never imported here,
         # so the owner envelope can be built where the driver is not installed.
@@ -107,7 +119,7 @@ class TestRobotOwnerConfig:
             RobotOwnerConfig(name="left-arm", robot=_fake_robot(), rate_hz=float("inf"))
 
     def test_non_serializable_init_args_raises(self) -> None:
-        with pytest.raises(ValueError, match="JSON-serializable"):
+        with pytest.raises(ConfigError, match="cannot encode"):
             RobotOwnerConfig(
                 name="left-arm",
                 robot={"class_path": FAKE_ROBOT_CLASS, "init_args": {"calibration": object()}},
@@ -273,6 +285,12 @@ class TestRobotOwnerConfig:
 
 
 class TestNormalizeRobotConfig:
+    def test_normalize_robot_config_rejects_non_finite_floats(self) -> None:
+        recipe = Config(FAKE_ROBOT_CLASS, {})
+        recipe.init_args["rate"] = math.nan
+        with pytest.raises(ValueError, match="JSON-serializable"):
+            normalize_robot_config(recipe)
+
     def test_normalize_robot_config_rejects_malformed(self) -> None:
         with pytest.raises(ConfigError):
             normalize_robot_config({"class_path": FAKE_ROBOT_CLASS, "extra": True})
