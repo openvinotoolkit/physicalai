@@ -415,7 +415,7 @@ class TestRTCExecutionObsSlot:
 
         model = _rtc_model(chunk_size=20, action_dim=3)
         queue = RTCActionQueue()
-        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        ex = RTCExecution(chunk_size=20, fps=30.0)
         idle_wait_observed = threading.Event()
         lock_was_available = False
 
@@ -448,7 +448,7 @@ class TestRTCExecutionObsSlot:
         model.return_value = {"action": np.random.randn(1, chunk_size, action_dim).astype(np.float32)}
 
         queue = RTCActionQueue()
-        ex = RTCExecution(chunk_size=chunk_size, max_action_dim=action_dim, fps=30.0)
+        ex = RTCExecution(chunk_size=chunk_size, fps=30.0)
         ex.start(model, queue)
         try:
             ex.warmup({"state": np.zeros(action_dim, dtype=np.float32)})
@@ -466,7 +466,7 @@ class TestRTCExecutionObsSlot:
 
         model = _rtc_model(chunk_size=20, action_dim=3)
         queue = RTCActionQueue()
-        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        ex = RTCExecution(chunk_size=20, fps=30.0)
         ex.start(model, queue)
         try:
             ex.warmup({"state": np.zeros(3, dtype=np.float32)})
@@ -498,7 +498,7 @@ class TestRTCExecutionObsSlot:
 
         model.side_effect = predict
         queue = RTCActionQueue()
-        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        ex = RTCExecution(chunk_size=20, fps=30.0)
         ex.start(model, queue)
         worker = ex._thread  # noqa: SLF001
         with ex._obs_lock:  # noqa: SLF001
@@ -532,7 +532,7 @@ class TestRTCExecutionObsSlot:
 
         model = _rtc_model(chunk_size=20, action_dim=3)
         queue = RTCActionQueue()
-        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        ex = RTCExecution(chunk_size=20, fps=30.0)
         ex.start(model, queue)
 
         ex._model_lock.acquire()  # noqa: SLF001
@@ -567,7 +567,7 @@ class TestRTCExecutionObsSlot:
 
         model = _rtc_model(chunk_size=20, action_dim=3)
         queue = RTCActionQueue()
-        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        ex = RTCExecution(chunk_size=20, fps=30.0)
         ex.start(model, queue)
         ex._model_lock.acquire()  # noqa: SLF001
         warmup_error: list[BaseException] = []
@@ -616,7 +616,7 @@ class TestRTCExecutionObsSlot:
 
         model.side_effect = predict
         queue = RTCActionQueue()
-        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        ex = RTCExecution(chunk_size=20, fps=30.0)
         ex.start(model, queue)
         warmup_error: list[BaseException] = []
 
@@ -660,7 +660,7 @@ class TestRTCExecutionObsSlot:
 
         model.side_effect = predict
         queue = RTCActionQueue()
-        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        ex = RTCExecution(chunk_size=20, fps=30.0)
         ex.start(model, queue)
         warmup_error: list[BaseException] = []
 
@@ -713,7 +713,7 @@ class TestRTCExecutionObsSlot:
 
         model.side_effect = predict
         queue = RTCActionQueue()
-        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        ex = RTCExecution(chunk_size=20, fps=30.0)
         ex.start(model, queue)
         warmup_error: list[BaseException] = []
 
@@ -798,7 +798,7 @@ class TestRestartAfterStop:
 
         model = _rtc_model()
         queue = RTCActionQueue()
-        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        ex = RTCExecution(chunk_size=20, fps=30.0)
         ex.start(model, queue)
         ex.stop()
 
@@ -848,7 +848,6 @@ class TestRestartAfterStop:
         queue = RTCActionQueue()
         ex = RTCExecution(
             chunk_size=20,
-            max_action_dim=3,
             fps=30.0,
             latency_tracker=tracker,
             warmup_inferences=1,
@@ -882,7 +881,7 @@ def _async_setup() -> tuple[Any, MagicMock, Any]:
 def _rtc_setup() -> tuple[Any, MagicMock, Any]:
     from physicalai.runtime import RTCActionQueue, RTCExecution
 
-    return RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0), _rtc_model(), RTCActionQueue()
+    return RTCExecution(chunk_size=20, fps=30.0), _rtc_model(), RTCActionQueue()
 
 
 class TestStopTimeoutStraggler:
