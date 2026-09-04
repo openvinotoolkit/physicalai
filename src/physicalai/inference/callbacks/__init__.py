@@ -17,7 +17,7 @@ from physicalai.inference.callbacks.throughput import ThroughputMonitor
 __all__ = [
     "Callback",
     "LatencyMonitor",
-    "Rldx1VtcWindowCallback",
     "RTCLatencyTracker",
+    "Rldx1VtcWindowCallback",
     "ThroughputMonitor",
 ]

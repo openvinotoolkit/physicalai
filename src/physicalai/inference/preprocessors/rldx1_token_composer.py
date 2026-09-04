@@ -20,9 +20,11 @@ from physicalai.inference.constants import TOKENIZED_PROMPT, TOKENIZED_PROMPT_MA
 
 from .base import Preprocessor
 
+_TOKEN_IDS_RANK = 2
+
 
 class Rldx1TokenComposer(Preprocessor):
-    """Compose RLDX-1 multimodal token IDs from a tokenizer contract.
+    r"""Compose RLDX-1 multimodal token IDs from a tokenizer contract.
 
     Args:
         artifact: Optional path to ``tokenizer_contract.json``.
@@ -46,8 +48,22 @@ class Rldx1TokenComposer(Preprocessor):
         num_images: int | None = None,
         max_token_len: int | None = None,
         padding_side: str = "left",
-        **_: Any,
+        **extra: object,
     ) -> None:
+        """Initialize from a contract artifact or explicit manifest parameters.
+
+        Args:
+            artifact: Optional path to ``tokenizer_contract.json``.
+            prefix_ids: Chat-prefix token IDs.
+            suffix_ids: Chat-suffix token IDs.
+            special_ids: Mapping containing vision marker IDs.
+            tokens_per_image: Number of image-pad tokens per image.
+            num_images: Number of image blocks per prompt.
+            max_token_len: Final fixed token length after padding/truncation.
+            padding_side: Padding direction; only ``"left"`` is supported.
+            extra: Ignored compatibility kwargs from manifest loading.
+        """
+        del extra
         super().__init__()
         self._artifact = Path(artifact) if artifact is not None else None
 
@@ -86,16 +102,28 @@ class Rldx1TokenComposer(Preprocessor):
 
     @staticmethod
     def _load_contract(path: Path) -> dict[str, Any]:
-        """Load and validate a tokenizer contract JSON artifact."""
+        """Load and validate a tokenizer contract JSON artifact.
+
+        Returns:
+            Validated tokenizer contract payload.
+        """
         payload = json.loads(path.read_text(encoding="utf-8"))
         return Rldx1TokenComposer._validate_contract(payload)
 
     @staticmethod
     def _validate_contract(payload: dict[str, Any]) -> dict[str, Any]:
-        """Validate a contract payload loaded from JSON or manifest params."""
+        """Validate a contract payload loaded from JSON or manifest params.
+
+        Returns:
+            Validated tokenizer contract payload.
+
+        Raises:
+            TypeError: If a contract field has the wrong runtime type.
+            ValueError: If required keys are missing or values are invalid.
+        """
         if not isinstance(payload, dict):
             msg = "Tokenizer contract must be a JSON object."
-            raise ValueError(msg)
+            raise TypeError(msg)
 
         required_keys = {
             "prefix_ids",
@@ -119,37 +147,42 @@ class Rldx1TokenComposer(Preprocessor):
             values = payload[key]
             if not isinstance(values, list) or not all(isinstance(v, int) for v in values):
                 msg = f"Tokenizer contract key {key!r} must be a list of integers."
-                raise ValueError(msg)
+                raise TypeError(msg)
 
         special = payload["special_ids"]
         if not isinstance(special, dict):
             msg = "Tokenizer contract key 'special_ids' must be an object."
-            raise ValueError(msg)
+            raise TypeError(msg)
         for name in ("vision_start", "vision_end", "image_pad"):
             if not isinstance(special.get(name), int):
                 msg = f"Tokenizer contract special_ids.{name} must be an integer."
-                raise ValueError(msg)
+                raise TypeError(msg)
 
         for key in ("tokens_per_image", "num_images", "max_token_len"):
             value = payload[key]
             if not isinstance(value, int) or value <= 0:
                 msg = f"Tokenizer contract key {key!r} must be a positive integer."
-                raise ValueError(msg)
+                raise TypeError(msg)
 
         return payload
 
     def __call__(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-        """Compose final token IDs and attention mask from task-only token IDs."""
+        """Compose final token IDs and attention mask from task-only token IDs.
+
+        Returns:
+            Updated preprocessor inputs with composed ``tokenized_prompt`` and
+            ``tokenized_prompt_mask`` arrays.
+
+        Raises:
+            ValueError: If token IDs or masks have unexpected shapes.
+        """
         ids = np.asarray(inputs[TOKENIZED_PROMPT], dtype=np.int64)
         mask = np.asarray(inputs[TOKENIZED_PROMPT_MASK]).astype(np.bool_)
-        if ids.ndim != 2:
+        if ids.ndim != _TOKEN_IDS_RANK:
             msg = f"Expected {TOKENIZED_PROMPT!r} to have shape (B, L), got {ids.shape!r}"
             raise ValueError(msg)
         if mask.shape != ids.shape:
-            msg = (
-                f"Expected {TOKENIZED_PROMPT_MASK!r} to have shape {ids.shape!r}, "
-                f"got {mask.shape!r}"
-            )
+            msg = f"Expected {TOKENIZED_PROMPT_MASK!r} to have shape {ids.shape!r}, got {mask.shape!r}"
             raise ValueError(msg)
 
         outputs = dict(inputs)

@@ -84,7 +84,7 @@ class Rldx1Preprocessor(Preprocessor):
         merge_size: Qwen3-VL spatial merge size.
     """
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         image_resolution: tuple[int, int],
         num_views: int = 1,
@@ -229,6 +229,10 @@ class Rldx1Preprocessor(Preprocessor):
 
         Returns:
             ``batch_size`` lists of ``(H, W, 3)`` uint8 frames.
+
+        Raises:
+            ValueError: If the input does not have a supported 4-D or 5-D
+                image layout.
         """
         arr = np.asarray(view_array)
         if arr.ndim == 4:  # noqa: PLR2004 - (B, C, H, W) or (B, H, W, C)
@@ -244,7 +248,7 @@ class Rldx1Preprocessor(Preprocessor):
             arr = np.transpose(arr, (0, 1, 3, 4, 2))  # -> (B, T, H, W, C)
         if arr.dtype != np.uint8:
             if np.issubdtype(arr.dtype, np.floating) and arr.size > 0 and np.nanmax(arr) <= 1.0:
-                arr = arr * 255.0
+                arr *= 255.0
             arr = np.clip(np.nan_to_num(arr, nan=0.0), 0, 255).astype(np.uint8)
         return [[arr[b, t] for t in range(arr.shape[1])] for b in range(arr.shape[0])]
 
@@ -293,7 +297,12 @@ class Rldx1Preprocessor(Preprocessor):
 
 
 def _pad_last_dim(array: np.ndarray, new_dim: int) -> np.ndarray:
-    """Zero-pad the trailing feature dimension up to ``new_dim``."""
+    """Zero-pad the trailing feature dimension up to ``new_dim``.
+
+    Returns:
+        Original array when no padding is needed, otherwise a new zero-padded
+        array with trailing dimension ``new_dim``.
+    """
     if array.shape[-1] >= new_dim:
         return array
     pad_width = [(0, 0)] * array.ndim

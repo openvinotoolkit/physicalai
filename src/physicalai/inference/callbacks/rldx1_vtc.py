@@ -126,8 +126,9 @@ class Rldx1VtcWindowCallback(Callback):
             return [(IMAGES, images_value)]
 
         if isinstance(images_value, dict):
-            for view_name in sorted(images_value):
-                entries.append((f"{IMAGES}.{view_name}", np.asarray(images_value[view_name])))
+            entries.extend(
+                (f"{IMAGES}.{view_name}", np.asarray(images_value[view_name])) for view_name in sorted(images_value)
+            )
             return entries
 
         image_keys = sorted(k for k in inputs if k.startswith(f"{IMAGES}.") and "is_pad" not in k)
@@ -146,10 +147,7 @@ class Rldx1VtcWindowCallback(Callback):
     @override
     def __repr__(self) -> str:
         """Return concise callback state for debugging."""
-        return (
-            f"Rldx1VtcWindowCallback(video_length={self._video_length}, "
-            f"video_stride={self._video_stride})"
-        )
+        return f"Rldx1VtcWindowCallback(video_length={self._video_length}, video_stride={self._video_stride})"
 
 
 def _as_batched_single_frame(value: np.ndarray) -> np.ndarray:
@@ -158,15 +156,18 @@ def _as_batched_single_frame(value: np.ndarray) -> np.ndarray:
     Accepts ``(C, H, W)``/``(H, W, C)`` or batched
     ``(B, C, H, W)``/``(B, H, W, C)``. Raises when a temporal axis is already
     present.
+
+    Returns:
+        A 4-D array shaped ``(B, C, H, W)`` or ``(B, H, W, C)``.
+
+    Raises:
+        ValueError: If the input shape is not a supported single-frame layout.
     """
     arr = np.asarray(value)
     if arr.ndim == 3:  # noqa: PLR2004
         arr = np.expand_dims(arr, axis=0)
     if arr.ndim != 4:  # noqa: PLR2004
-        msg = (
-            "Expected single-frame image input with shape (C,H,W)/(H,W,C) or "
-            f"(B,C,H,W)/(B,H,W,C), got {arr.shape}."
-        )
+        msg = f"Expected single-frame image input with shape (C,H,W)/(H,W,C) or (B,C,H,W)/(B,H,W,C), got {arr.shape}."
         raise ValueError(msg)
     return arr
 

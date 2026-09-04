@@ -117,7 +117,4 @@ class Rldx1RopePreprocessor(Preprocessor):
 
     def __repr__(self) -> str:
         """Return a developer-friendly representation."""
-        return (
-            f"{self.__class__.__name__}(image_token_id={self._image_token_id}, "
-            f"n_cog_tokens={self._n_cog_tokens})"
-        )
+        return f"{self.__class__.__name__}(image_token_id={self._image_token_id}, n_cog_tokens={self._n_cog_tokens})"

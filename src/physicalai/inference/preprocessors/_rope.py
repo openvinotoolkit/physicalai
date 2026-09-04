@@ -1,6 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 # Vendored from RLWRLD/RLDX-1 (Apache-2.0)
+# ruff: noqa: PLR0912, PLR0914, PLR0915
 
 """Numpy port of Qwen3-VL M-RoPE position-id computation (``get_rope_index``).
 
@@ -18,6 +19,9 @@ rows). Parity-tested against the torch implementation in
 from __future__ import annotations
 
 import numpy as np
+
+_UNBATCHED_GRID_RANK = 2
+_BATCHED_GRID_RANK = 3
 
 
 def compute_mrope_position_ids(
@@ -44,6 +48,10 @@ def compute_mrope_position_ids(
 
     Returns:
         ``position_ids`` of shape ``(3, B, L)`` (int64).
+
+    Raises:
+        ValueError: If ``image_grid_thw`` has an invalid shape or does not
+            contain enough rows for image blocks found in the prompt.
     """
     input_ids = np.asarray(input_ids)
     if input_ids.ndim == 1:
@@ -51,17 +59,14 @@ def compute_mrope_position_ids(
     batch, seq_len = input_ids.shape
 
     if image_grid_thw is None:
-        return _text_only_position_ids(input_ids, attention_mask, batch, seq_len)
+        return _text_only_position_ids(attention_mask, batch, seq_len)
 
     image_grid_thw = np.asarray(image_grid_thw)
-    if image_grid_thw.ndim == 2:  # noqa: PLR2004 - (num_images, 3)
+    if image_grid_thw.ndim == _UNBATCHED_GRID_RANK:  # (num_images, 3)
         if image_grid_thw.shape[1] != 3:  # noqa: PLR2004
-            msg = (
-                "Expected image_grid_thw shape (num_images, 3) for unbatched input, "
-                f"got {image_grid_thw.shape!r}."
-            )
+            msg = f"Expected image_grid_thw shape (num_images, 3) for unbatched input, got {image_grid_thw.shape!r}."
             raise ValueError(msg)
-    elif image_grid_thw.ndim == 3:  # noqa: PLR2004 - (B, num_images, 3)
+    elif image_grid_thw.ndim == _BATCHED_GRID_RANK:  # (B, num_images, 3)
         if image_grid_thw.shape[0] != batch or image_grid_thw.shape[2] != 3:  # noqa: PLR2004
             msg = (
                 "Expected image_grid_thw shape (B, num_images, 3) for batched input with "
@@ -82,11 +87,8 @@ def compute_mrope_position_ids(
     position_ids = np.ones((3, batch, seq_len), dtype=np.int64)
     image_index = 0
     for i in range(batch):
-        if image_grid_thw.ndim == 3:  # noqa: PLR2004
-            sample_grid = image_grid_thw[i]
-            sample_image_index = 0
-        else:
-            sample_grid = image_grid_thw
+        sample_image_index = 0
+        sample_grid = image_grid_thw[i] if image_grid_thw.ndim == _BATCHED_GRID_RANK else image_grid_thw
 
         keep = attention_mask[i] == 1
         ids = input_ids[i][keep]
@@ -104,7 +106,7 @@ def compute_mrope_position_ids(
             else:
                 ed = len(input_tokens) + 1
 
-            if image_grid_thw.ndim == 3:  # noqa: PLR2004
+            if image_grid_thw.ndim == _BATCHED_GRID_RANK:
                 if sample_image_index >= sample_grid.shape[0]:
                     msg = (
                         "image_grid_thw has fewer rows than image blocks in the prompt for "
@@ -151,12 +153,15 @@ def compute_mrope_position_ids(
 
 
 def _text_only_position_ids(
-    input_ids: np.ndarray,
     attention_mask: np.ndarray | None,
     batch: int,
     seq_len: int,
 ) -> np.ndarray:
-    """Position ids for the no-vision path (mirrors the torch ``else`` branch)."""
+    """Position ids for the no-vision path (mirrors the torch ``else`` branch).
+
+    Returns:
+        ``position_ids`` of shape ``(3, B, L)`` (int64).
+    """
     if attention_mask is not None:
         mask = np.asarray(attention_mask).astype(np.int64)
         pos = np.cumsum(mask, axis=-1) - 1
