@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from physicalai.inference.callbacks import Callback, LatencyMonitor, ThroughputMonitor
+from physicalai.inference.callbacks import Callback, LatencyMonitor, Rldx1VtcWindowCallback, ThroughputMonitor
 from physicalai.inference.model import InferenceModel
 
 
@@ -248,6 +248,47 @@ class TestThroughputMonitor:
         assert monitor.total_calls == 3
 
 
+class TestRldx1VtcWindowCallback:
+    def test_seeds_first_frame_window(self) -> None:
+        callback = Rldx1VtcWindowCallback(video_length=4, video_stride=2)
+        frame = np.arange(12, dtype=np.uint8).reshape(1, 3, 2, 2)
+
+        out = callback.on_predict_start({"images.main": frame})
+
+        assert out is not None
+        assert out["images.main"].shape == (1, 4, 3, 2, 2)
+        for idx in range(4):
+            np.testing.assert_array_equal(out["images.main"][:, idx], frame)
+
+    def test_applies_stride_sampled_history(self) -> None:
+        callback = Rldx1VtcWindowCallback(video_length=4, video_stride=2)
+        first = np.zeros((1, 3, 2, 2), dtype=np.uint8)
+        second = np.ones((1, 3, 2, 2), dtype=np.uint8)
+
+        _ = callback.on_predict_start({"images.main": first})
+        out = callback.on_predict_start({"images.main": second})
+
+        assert out is not None
+        window = out["images.main"]
+        np.testing.assert_array_equal(window[:, 0], first)
+        np.testing.assert_array_equal(window[:, 1], first)
+        np.testing.assert_array_equal(window[:, 2], first)
+        np.testing.assert_array_equal(window[:, 3], second)
+
+    def test_reset_clears_history(self) -> None:
+        callback = Rldx1VtcWindowCallback(video_length=4, video_stride=2)
+        old = np.zeros((1, 3, 2, 2), dtype=np.uint8)
+        new = np.full((1, 3, 2, 2), 9, dtype=np.uint8)
+
+        _ = callback.on_predict_start({"images.main": old})
+        callback.on_reset()
+        out = callback.on_predict_start({"images.main": new})
+
+        assert out is not None
+        for idx in range(4):
+            np.testing.assert_array_equal(out["images.main"][:, idx], new)
+
+
 class TestCallbackWiring:
     def test_on_load_fires_during_init(
         self,
@@ -424,3 +465,23 @@ class TestContextManager:
             model.reset()
 
         assert recorder.events == ["predict_start", "predict_end", "reset"]
+
+    def test_vtc_callback_resets_with_model_reset(
+        self,
+        mock_export_dir: Path,
+        mock_adapter: MagicMock,
+    ) -> None:
+        callback = Rldx1VtcWindowCallback(video_length=4, video_stride=2)
+        model = _make_model(mock_export_dir, mock_adapter, callbacks=[callback])
+
+        first = np.zeros((1, 3, 2, 2), dtype=np.uint8)
+        second = np.full((1, 3, 2, 2), 7, dtype=np.uint8)
+
+        model({"images.main": first})
+        model.reset()
+        model({"images.main": second})
+
+        call_inputs = mock_adapter.predict.call_args[0][0]
+        assert call_inputs["images.main"].shape == (1, 4, 3, 2, 2)
+        for idx in range(4):
+            np.testing.assert_array_equal(call_inputs["images.main"][:, idx], second)

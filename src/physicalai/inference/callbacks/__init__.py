@@ -10,6 +10,7 @@ without modifying model or runner code.
 
 from physicalai.inference.callbacks.base import Callback
 from physicalai.inference.callbacks.latency import LatencyMonitor
+from physicalai.inference.callbacks.rldx1_vtc import Rldx1VtcWindowCallback
 from physicalai.inference.callbacks.rtc_latency import RTCLatencyTracker
 from physicalai.inference.callbacks.throughput import ThroughputMonitor
 
@@ -17,5 +18,6 @@ __all__ = [
     "Callback",
     "LatencyMonitor",
     "RTCLatencyTracker",
+    "Rldx1VtcWindowCallback",
     "ThroughputMonitor",
 ]
