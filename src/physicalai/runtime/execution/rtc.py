@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from physicalai.config import export_config
+from physicalai.inference.constants import ACTION
 from physicalai.runtime.execution.base import Execution, WorkerDiedError
 
 if TYPE_CHECKING:
@@ -479,7 +480,7 @@ class RTCExecution(Execution):
             Processed actions, or ``None`` when the incarnation has changed.
         """
         assert self._rtc_queue is not None  # noqa: S101
-        raw_actions = outputs["action"]
+        raw_actions = outputs[ACTION]
         if raw_actions.ndim == 3:  # noqa: PLR2004
             raw_actions = raw_actions[0]
         processed_actions = raw_actions
