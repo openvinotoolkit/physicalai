@@ -40,6 +40,9 @@ class Rldx1VtcWindowCallback(Callback):
         """Initialize callback state."""
         self._video_length = int(video_length)
         self._video_stride = int(video_stride)
+        if self._video_length < 1 or self._video_stride < 1:
+            msg = "video_length and video_stride must be positive integers."
+            raise ValueError(msg)
         self._history: dict[str, deque[np.ndarray]] | None = None
 
     @override
