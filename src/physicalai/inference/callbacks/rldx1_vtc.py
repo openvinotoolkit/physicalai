@@ -37,9 +37,17 @@ class Rldx1VtcWindowCallback(Callback):
     """
 
     def __init__(self, video_length: int = 4, video_stride: int = 2) -> None:
-        """Initialize callback state."""
-        self._video_length = int(video_length)
-        self._video_stride = int(video_stride)
+        """Initialize callback state.
+
+        Raises:
+            ValueError: If video_length or video_stride cannot be converted to integers.
+        """
+        try:
+            self._video_length = int(video_length)
+            self._video_stride = int(video_stride)
+        except (TypeError, ValueError) as exc:
+            msg = "video_length and video_stride must be integer-like values."
+            raise ValueError(msg) from exc
         self._history: dict[str, deque[np.ndarray]] | None = None
 
     @override
