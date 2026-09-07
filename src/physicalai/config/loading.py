@@ -1,7 +1,14 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""General configuration instantiation helpers."""
+"""General configuration instantiation helpers.
+
+.. deprecated::
+    Delegates to jsonargparse and :func:`~physicalai.config.base.parse_class_config`.
+    Prefer jsonargparse ``ArgumentParser.add_class_arguments`` with
+    ``parser.instantiate``, or :meth:`~physicalai.config.Config.instantiate` for
+    portable recipes. Emits :class:`DeprecationWarning` at runtime.
+"""
 
 from __future__ import annotations
 
@@ -12,10 +19,11 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel
 
+from ._deprecate import deprecate
 from ._errors import ConfigError
 from ._instantiate import instantiate
 from ._types import _MAX_CONFIG_DEPTH
-from .base import Config
+from .base import Config, parse_class_config
 from .importing import import_dotted_path
 
 ConfigMapping = Mapping[str, object]
@@ -29,9 +37,17 @@ __all__ = [
     "instantiate_obj_from_pydantic",
 ]
 
+_REPLACEMENT = (
+    "jsonargparse.ArgumentParser.add_class_arguments with parser.instantiate(), "
+    "or Config.instantiate() for portable recipes"
+)
+
 
 def import_class(class_path: str) -> type:
     """Import and validate a class from a dotted path.
+
+    .. deprecated::
+        Use :func:`~physicalai.config.importing.import_dotted_path` instead.
 
     Returns:
         The imported class.
@@ -40,6 +56,7 @@ def import_class(class_path: str) -> type:
         ImportError: If the module or attribute cannot be imported.
         TypeError: If the path resolves to a non-class object.
     """
+    deprecate("physicalai.config.import_class", "physicalai.config.importing.import_dotted_path")
     try:
         value = import_dotted_path(class_path)
     except (ValueError, ImportError, AttributeError) as exc:
@@ -57,7 +74,7 @@ def _instantiate_recursive(value: object, *, depth: int = 0) -> object:
         raise ConfigError(msg)
     if isinstance(value, dict):
         if "class_path" in value:
-            return Config.from_dict(value).instantiate()
+            return instantiate(Config.from_dict(value))
         return {key: _instantiate_recursive(item, depth=depth + 1) for key, item in value.items()}
     if isinstance(value, list):
         return [_instantiate_recursive(item, depth=depth + 1) for item in value]
@@ -79,6 +96,9 @@ def instantiate_obj_from_dict(
     The reserved key ``args`` supplies positional constructor arguments (a
     sequence); it is removed from ``init_args`` before ``target_cls`` is called.
 
+    .. deprecated::
+        Use jsonargparse or :func:`~physicalai.config.base.parse_class_config` instead.
+
     Returns:
         The constructed object.
 
@@ -86,6 +106,7 @@ def instantiate_obj_from_dict(
         ValueError: If ``key`` is missing or no ``class_path``/``target_cls`` is available.
         TypeError: If a selected sub-config is not a mapping.
     """
+    deprecate("physicalai.config.loading.instantiate_obj_from_dict", _REPLACEMENT)
     selected: object = config
     if key is not None:
         if key not in config:
@@ -106,9 +127,16 @@ def instantiate_obj_from_dict(
             f"or pass target_cls explicitly. Got keys: {list(selected.keys())}"
         )
         raise ValueError(msg)
-    init_args = {name: _instantiate_recursive(value) for name, value in selected.items()}
+    init_args = dict(selected)
     args = init_args.pop("args", ())
-    return target_cls(*args, **init_args)
+    if args:
+        decoded = {name: _instantiate_recursive(value) for name, value in init_args.items()}
+        return target_cls(*args, **decoded)
+    try:
+        return parse_class_config(target_cls, init_args)
+    except Exception:  # noqa: BLE001
+        decoded = {name: _instantiate_recursive(value) for name, value in init_args.items()}
+        return target_cls(**decoded)
 
 
 def instantiate_obj_from_pydantic(
@@ -119,9 +147,13 @@ def instantiate_obj_from_pydantic(
 ) -> object:
     """Instantiate from a Pydantic model.
 
+    .. deprecated::
+        Use jsonargparse or :func:`~physicalai.config.base.parse_class_config` instead.
+
     Returns:
         The constructed object.
     """
+    deprecate("physicalai.config.loading.instantiate_obj_from_pydantic", _REPLACEMENT)
     return instantiate_obj_from_dict(config.model_dump(), key=key, target_cls=target_cls)
 
 
@@ -133,12 +165,16 @@ def instantiate_obj_from_dataclass(
 ) -> object:
     """Instantiate from a dataclass instance.
 
+    .. deprecated::
+        Use jsonargparse or :func:`~physicalai.config.base.parse_class_config` instead.
+
     Returns:
         The constructed object.
 
     Raises:
         TypeError: If ``config`` is not a dataclass instance.
     """
+    deprecate("physicalai.config.loading.instantiate_obj_from_dataclass", _REPLACEMENT)
     if not dataclasses.is_dataclass(config) or isinstance(config, type):
         msg = f"Expected dataclass instance, got {type(config)}"
         raise TypeError(msg)
@@ -153,12 +189,16 @@ def instantiate_obj_from_file(
 ) -> object:
     """Instantiate from a YAML or JSON file.
 
+    .. deprecated::
+        Use jsonargparse or :func:`~physicalai.config.base.parse_class_config` instead.
+
     Returns:
         The constructed object.
 
     Raises:
         TypeError: If the file root is not a mapping.
     """
+    deprecate("physicalai.config.loading.instantiate_obj_from_file", _REPLACEMENT)
     config = yaml.safe_load(Path(file_path).read_text(encoding="utf-8"))
     if config is None:
         config = {}
@@ -176,12 +216,16 @@ def instantiate_obj(
 ) -> object:
     """Instantiate from a recipe, mapping, model, dataclass, or file.
 
+    .. deprecated::
+        Use jsonargparse or :func:`~physicalai.config.base.parse_class_config` instead.
+
     Returns:
         The constructed object.
 
     Raises:
         TypeError: If ``config`` has an unsupported type.
     """
+    deprecate("physicalai.config.instantiate_obj", _REPLACEMENT)
     if type(config) is Config:
         return config.instantiate()
     if isinstance(config, (str, Path)):

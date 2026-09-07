@@ -29,17 +29,14 @@ import.
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from physicalai.config import (
-    Config,
-    is_config_exportable,
-    normalize_config,
-    validate_envelope,
-)
+from physicalai.config import Config
+from physicalai.config._types import ConfigExportable  # noqa: PLC2701
 
 if TYPE_CHECKING:
     from physicalai.robot.interface import Robot
@@ -72,13 +69,23 @@ def validate_owner_config(data: Mapping[str, Any]) -> Config:
     Returns:
         The validated ``robot`` Config mapping (see
         :func:`normalize_robot_config` for the JSON-serializability check).
+
+    Raises:
+        TypeError: If the robot entry is not a mapping.
+        ValueError: If required or unknown envelope keys are present.
     """
-    return validate_envelope(
-        data,
-        component_key="robot",
-        allowed_keys=_OWNER_ENVELOPE_KEYS,
-        envelope_name="owner",
-    )
+    unknown = sorted(set(data) - _OWNER_ENVELOPE_KEYS)
+    if unknown:
+        msg = f"unknown owner config keys {unknown}"
+        raise ValueError(msg)
+    if "robot" not in data:
+        msg = "owner config missing required 'robot' Config"
+        raise ValueError(msg)
+    robot = data["robot"]
+    if not isinstance(robot, Mapping):
+        msg = f"robot must be a Config mapping, got {type(robot).__name__}"
+        raise TypeError(msg)
+    return normalize_robot_config(robot)
 
 
 def normalize_robot_config(robot: Config | Mapping[str, object]) -> Config:
@@ -86,16 +93,25 @@ def normalize_robot_config(robot: Config | Mapping[str, object]) -> Config:
 
     Returns:
         A validated config whose ``class_path`` is a dotted import path.
+
+    Raises:
+        ValueError: If the path or recipe is not JSON portable.
     """
-    return normalize_config(
-        robot,
-        component_key="robot",
-        class_label="robot_class",
-        json_hint=" (e.g. paths as str, not objects)",
-    )
+    recipe = robot if isinstance(robot, Config) else Config.from_dict(robot)
+    if "." not in recipe.class_path or not recipe.class_path.strip():
+        msg = f"robot_class must be a nonempty dotted path, got {recipe.class_path!r}"
+        raise ValueError(msg)
+    try:
+        json.dumps(recipe.to_dict(), allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        msg = "robot config must be JSON-serializable (e.g. paths as str, not objects)"
+        raise ValueError(msg) from exc
+    return recipe
 
 
-def coerce_robot_config_input(robot: Config | Mapping[str, object] | object) -> Config | Mapping[str, object]:
+def coerce_robot_config_input(
+    robot: Config | Mapping[str, object] | ConfigExportable,
+) -> Config | Mapping[str, object]:
     """Accept a recipe, mapping, or live ``@export_config`` driver instance.
 
     Returns:
@@ -104,10 +120,12 @@ def coerce_robot_config_input(robot: Config | Mapping[str, object] | object) -> 
     Raises:
         TypeError: If ``robot`` is not a supported config shape.
     """
-    if type(robot) is Config or isinstance(robot, Mapping):
+    if type(robot) is Config:
         return robot
-    if is_config_exportable(robot):
-        return Config.from_instance(robot)
+    if isinstance(robot, Mapping):
+        return robot
+    if isinstance(robot, ConfigExportable):
+        return robot.as_config()
     msg = (
         "robot config must be physicalai.config.Config, a class_path mapping, "
         f"or an @export_config instance; got {type(robot).__name__}"
@@ -236,7 +254,7 @@ class RobotOwnerConfig:
         """Instantiate the robot driver described by this config.
 
         Owner stdin is a parent→child local handshake only — never pass
-        network metadata to this path. Uses :func:`physicalai.config.instantiate`
+        network metadata to this path. Uses :meth:`~physicalai.config.Config.instantiate`
         on the ``robot`` Config, then verifies the
         :class:`~physicalai.robot.Robot` protocol.
 
@@ -248,7 +266,7 @@ class RobotOwnerConfig:
         """
         from physicalai.robot.interface import Robot  # noqa: PLC0415
 
-        driver = normalize_robot_config(self.robot).instantiate()
+        driver = normalize_robot_config(self.robot).instantiate(expected_type=Robot)
         if not isinstance(driver, Robot):
             msg = f"{self.robot_class!r} does not satisfy the Robot protocol (got {type(driver).__name__})"
             raise TypeError(msg)

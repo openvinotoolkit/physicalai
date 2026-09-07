@@ -477,7 +477,7 @@ class TestMainDispatch:
             exit_code = main()
         assert exit_code == 0
         output = capsys.readouterr().out
-        assert "complete -o filenames -F _shtab_pai pai" in output
+        assert "complete -F _shtab_pai pai" in output
 
     def test_zsh_completion_script_is_safe_to_source(
         self,

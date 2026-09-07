@@ -1,7 +1,6 @@
 # Instantiate Components
 
-A `Config` is a construction recipe with one importable class and
-its supplied constructor arguments.
+A `Config` recipe points at one class and the arguments for its constructor.
 
 ```yaml
 class_path: physicalai.capture.UVCCamera
@@ -11,9 +10,10 @@ init_args:
   height: 480
 ```
 
-Use `Config.instantiate()` to construct trusted local configuration. It calls the
-constructor but does not call lifecycle methods such as `connect()`, `run()`,
-or `start()`.
+## Build from a recipe
+
+`Config.instantiate()` creates a new object from a trusted local recipe. It runs
+`__init__` only—you still call `connect()`, `run()`, or similar yourself.
 
 ```python
 from physicalai.config import Config
@@ -26,10 +26,10 @@ camera = config.instantiate()
 camera.connect()
 ```
 
-## Export a live component
+## Save how an object was created
 
-Classes opt in with `@export_config`. The decorator remembers only arguments
-the caller supplied, so omitted constructor defaults remain omitted.
+Add `@export_config` to a class so Physical AI can record the constructor
+arguments you actually passed (omitted defaults stay omitted).
 
 ```python
 from physicalai.capture import UVCCamera
@@ -39,24 +39,20 @@ camera = UVCCamera(device="/dev/video0", width=640, height=480)
 config = Config.from_instance(camera)
 ```
 
-Nested opted-in components use the same shape recursively. Configs contain
-JSON values only; paths become strings, tuples become lists during export,
-and non-finite floats are rejected.
+Nested components use the same recipe shape inside `init_args`. Values must be
+JSON-friendly: paths become strings, tuples become lists, and invalid floats are
+rejected.
 
 ```python
-from physicalai.config import save_yaml
-
-save_yaml(camera, "camera.yaml")
+Config.from_instance(camera).save("camera.yaml")
 ```
 
-## Trust boundary
+## Safety
 
-`class_path` selects Python code to import and execute. Pass only trusted
-application or user-authored configuration to `Config.instantiate()`. Do not
-instantiate robot metadata, camera metadata, shared-memory messages, or other
-peer-controlled payloads.
+`class_path` loads and runs Python code on your machine. Use your own config
+files or other sources you trust. Skip instantiation for metadata or messages
+that came from another process or the network.
 
-Inference manifest `ComponentSpec` is a separate compatibility schema with
-registry aliases and artifact handling. Use `physicalai.config` for captured
-construction recipes; use the manifest APIs when loading exported policy
-metadata.
+Inference **manifests** (policy exports) use a separate format with aliases and
+artifact paths. Use `Config` for runtime construction YAML; use manifest APIs
+when loading an exported policy package.

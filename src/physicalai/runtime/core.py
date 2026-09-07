@@ -60,22 +60,18 @@ def _unwrap_runtime_document(document: dict[str, Any], *, target: type) -> dict[
     if "class_path" not in document:
         return document
 
-    from physicalai.config import (  # noqa: PLC0415
-        ConfigError,
-        import_dotted_path,
-        validate_config,
-    )
+    from physicalai.config import Config, ConfigError  # noqa: PLC0415
 
-    config = validate_config(document)
-    resolved = import_dotted_path(config["class_path"])
-    if not (isinstance(resolved, type) and issubclass(resolved, target)):
+    config = Config.from_dict(document)
+    resolved = config.resolve_type()
+    if not issubclass(resolved, target):
         msg = (
-            f"config class_path {config['class_path']!r} does not resolve to "
+            f"config class_path {config.class_path!r} does not resolve to "
             f"{target.__module__}.{target.__qualname__} (or a subclass); "
             "expected a runtime config exported via Config.from_instance(runtime)"
         )
         raise ConfigError(msg)
-    return {"runtime": dict(config["init_args"])}
+    return {"runtime": dict(config.init_args)}
 
 
 class StopSignal(Protocol):
@@ -285,8 +281,8 @@ class RobotRuntime:
         Accepts two document shapes: the CLI document (constructor args under
         ``runtime:``, optional ``run:``) and a bare exported
         :class:`~physicalai.config.Config` as produced by
-        :func:`~physicalai.config.to_config` / :func:`~physicalai.config.save_yaml`
-        (top-level ``class_path`` resolving to this class).
+        :meth:`~physicalai.config.Config.from_instance` (top-level ``class_path``
+        resolving to this class).
         ``action_source:`` is always required and explicit — one schema, no
         flat/legacy shorthand.
 

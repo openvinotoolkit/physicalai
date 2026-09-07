@@ -243,7 +243,7 @@ class Rldx1Preprocessor(Preprocessor):
                 f"got shape {arr.shape}"
             )
             raise ValueError(msg)
-        channels_first = arr.shape[2] == _RGB_CHANNELS
+        channels_first = arr.shape[2] == _RGB_CHANNELS and arr.shape[-1] != _RGB_CHANNELS
         if channels_first:
             arr = np.transpose(arr, (0, 1, 3, 4, 2))  # -> (B, T, H, W, C)
         if arr.dtype != np.uint8:

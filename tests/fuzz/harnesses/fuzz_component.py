@@ -11,16 +11,18 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+from argparse import ArgumentError
 from pathlib import Path
 
 import atheris
 
 with atheris.instrument_imports():
     from pydantic import ValidationError
+    from physicalai.config import ConfigError
     from physicalai.inference.manifest import ComponentSpec
     from physicalai.inference.component_factory import instantiate_component, resolve_artifact
 
-# Depth limit value — mirrors _MAX_COMPONENT_DEPTH in component_factory
+# Depth limit value — mirrors _MAX_CONFIG_DEPTH in physicalai.config._types
 _MAX_DEPTH = 10
 
 # Registry short names safe to instantiate for flat-params injection tests
@@ -56,7 +58,7 @@ def _sub_resolve_artifact(fdp: atheris.FuzzedDataProvider, export_dir: str) -> N
 
 @atheris.instrument_func
 def _sub_depth_limit(fdp: atheris.FuzzedDataProvider) -> None:
-    """Assert that nesting beyond _MAX_DEPTH raises ValueError."""
+    """Assert that nesting beyond _MAX_DEPTH raises before unbounded recursion."""
     depth = fdp.ConsumeIntInRange(1, _MAX_DEPTH + 8)
 
     # Build a chain: each level wraps the previous via init_args
@@ -73,13 +75,14 @@ def _sub_depth_limit(fdp: atheris.FuzzedDataProvider) -> None:
     try:
         spec = ComponentSpec.model_validate(inner)
         instantiate_component(spec)
-    except ValueError as exc:
+    except (ValueError, ConfigError) as exc:
         if depth > _MAX_DEPTH:
-            assert "depth" in str(exc).lower() or "nesting" in str(exc).lower(), (
-                f"Expected depth-limit ValueError for depth={depth}, got: {exc}"
+            message = str(exc).lower()
+            assert "depth" in message or "nesting" in message, (
+                f"Expected depth-limit error for depth={depth}, got: {exc}"
             )
-    except (TypeError, AttributeError):
-        pass  # Constructor errors are fine; what matters is no crash before depth limit
+    except (TypeError, AttributeError, ArgumentError):
+        pass  # Constructor or parser errors are fine; what matters is no uncaught exit
 
 
 @atheris.instrument_func
@@ -95,7 +98,7 @@ def _sub_flat_params(fdp: atheris.FuzzedDataProvider) -> None:
     try:
         spec = ComponentSpec.model_validate(spec_dict)
         instantiate_component(spec)
-    except (TypeError, ValueError, AttributeError):
+    except (TypeError, ValueError, AttributeError, ArgumentError):
         pass
 
 

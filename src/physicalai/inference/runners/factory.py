@@ -41,7 +41,7 @@ def get_runner(source: Manifest | dict[str, Any]) -> InferenceRunner:
         if source.model.runner is not None:
             from physicalai.inference.component_factory import instantiate_component  # noqa: PLC0415
 
-            runner = instantiate_component(source.model.runner)
+            runner = instantiate_component(InferenceRunner, source.model.runner)
             if not isinstance(runner, InferenceRunner):
                 msg = f"Configured runner is not an InferenceRunner: {type(runner).__name__}"
                 raise TypeError(msg)
@@ -53,7 +53,7 @@ def get_runner(source: Manifest | dict[str, Any]) -> InferenceRunner:
         from physicalai.inference.component_factory import instantiate_component  # noqa: PLC0415
         from physicalai.inference.manifest import ComponentSpec  # noqa: PLC0415
 
-        runner = instantiate_component(ComponentSpec.model_validate(runner_spec))
+        runner = instantiate_component(InferenceRunner, ComponentSpec.model_validate(runner_spec))
         if not isinstance(runner, InferenceRunner):
             msg = f"Configured runner is not an InferenceRunner: {type(runner).__name__}"
             raise TypeError(msg)

@@ -47,10 +47,10 @@ def build_robot(args: argparse.Namespace) -> Robot:
     if getattr(args, "shared_robot", False):
         if not getattr(args, "robot_name", None):
             sys.exit("error: --robot-name is required with --shared-robot")
-        from physicalai.config import to_config
+        from physicalai.config import Config
         from physicalai.robot import SharedRobot
 
-        return SharedRobot.from_config(to_config(driver), name=args.robot_name)
+        return SharedRobot.from_config(Config.from_instance(driver), name=args.robot_name)
 
     return driver
 

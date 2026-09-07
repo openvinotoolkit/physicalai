@@ -24,12 +24,18 @@ from physicalai.config import (
     ConfigImportError,
     JsonValue,
     export_config,
-    import_dotted_path,
-    instantiate,
-    is_config_exportable,
-    normalize_config,
-    to_config,
 )
+from physicalai.config._types import ConfigExportable
+from physicalai.config.importing import import_dotted_path
+
+to_config = Config.from_instance
+is_config_exportable = Config.is_exportable
+
+
+def instantiate(value: object) -> object:
+    if type(value) is Config:
+        return value.instantiate()
+    return Config.from_dict(cast("Mapping[str, object]", value)).instantiate()
 
 # Matches physicalai.config._types._MAX_CONFIG_DEPTH
 _MAX_CONFIG_DEPTH = 10
@@ -61,6 +67,16 @@ class Point:
     def __init__(self, x: int, y: int = 0) -> None:
         self.x = x
         self.y = y
+
+
+_evil_instantiate_side_effect = False
+
+
+@export_config
+class EvilSideEffect:
+    def __init__(self) -> None:
+        global _evil_instantiate_side_effect
+        _evil_instantiate_side_effect = True
 
 
 @export_config
@@ -293,32 +309,6 @@ class TestImportDottedPath:
             import_dotted_path(path)
 
 
-class TestNormalizeConfig:
-    def test_rejects_nan(self) -> None:
-        with pytest.raises(ValueError, match="JSON-serializable"):
-            normalize_config(
-                {"class_path": f"{__name__}.Point", "init_args": {"x": math.nan}},
-                component_key="robot",
-                class_label="robot_class",
-            )
-
-    def test_rejects_infinity(self) -> None:
-        with pytest.raises(ValueError, match="JSON-serializable"):
-            normalize_config(
-                {"class_path": f"{__name__}.Point", "init_args": {"x": float("inf")}},
-                component_key="camera",
-                class_label="camera_class",
-            )
-
-    def test_rejects_non_serializable_object(self) -> None:
-        with pytest.raises(ValueError, match="JSON-serializable"):
-            normalize_config(
-                {"class_path": f"{__name__}.Point", "init_args": {"x": object()}},
-                component_key="robot",
-                class_label="robot_class",
-            )
-
-
 class TestNormalizeAndInstantiate:
     def test_primitives_round_trip(self) -> None:
         point = Point(1, y=2)
@@ -355,7 +345,15 @@ class TestNormalizeAndInstantiate:
     def test_enum_value(self) -> None:
         holder = EnumHolder(Color.RED)
         config = to_config(holder)
-        assert config["init_args"]["color"] == "red"
+        assert config["init_args"]["color"] == "RED"
+        assert not isinstance(config["init_args"]["color"], Color)
+        restored = cast("EnumHolder", config.instantiate(expected_type=EnumHolder))
+        assert restored.color is Color.RED
+
+    def test_enum_round_trip_without_expected_type(self) -> None:
+        holder = EnumHolder(Color.RED)
+        config = Config.from_instance(holder)
+        assert config.init_args["color"] == "RED"
         restored = cast("EnumHolder", instantiate(config))
         assert restored.color is Color.RED
 
@@ -521,7 +519,7 @@ class TestNormalizeAndInstantiate:
             instantiate(config)  # type: ignore[arg-type]
         import_path.assert_not_called()
 
-    @pytest.mark.parametrize("value", [math.nan, math.inf, (1, 2), Path("config.json"), Color.RED, object()])
+    @pytest.mark.parametrize("value", [math.nan, math.inf, object()])
     def test_non_json_value_rejected_before_any_import(self, value: object) -> None:
         config = {
             "class_path": "tests.unit.config.test_export_config.DomainHolder",
@@ -554,7 +552,7 @@ class TestNormalizeAndInstantiate:
         cast("dict[str, object]", config["init_args"])["child"] = config
         with (
             patch("physicalai.config._instantiate.import_dotted_path") as import_path,
-            pytest.raises(ConfigError, match="cyclic config"),
+            pytest.raises(ConfigError, match="cyclic"),
         ):
             instantiate(config)  # type: ignore[arg-type]
         import_path.assert_not_called()
@@ -566,6 +564,20 @@ class TestNormalizeAndInstantiate:
         )
         restored = cast("MappingHolder", instantiate(config))
         assert restored.data == {"nested": {"value": 1}}
+
+    def test_expected_type_rejects_incompatible_class_before_construct(self) -> None:
+        global _evil_instantiate_side_effect
+        _evil_instantiate_side_effect = False
+        recipe = Config(f"{__name__}.EvilSideEffect", {})
+        with pytest.raises(ConfigError, match="does not satisfy"):
+            recipe.instantiate(expected_type=Point)
+        assert _evil_instantiate_side_effect is False
+
+    def test_instantiate_helper_accepts_config_recipe(self) -> None:
+        recipe = Config.from_instance(Point(2, 3))
+        restored = cast("Point", instantiate(recipe))
+        assert restored.x == 2
+        assert restored.y == 3
 
 
 class TestExportConfig:
@@ -678,8 +690,11 @@ class TestExportConfig:
         with pytest.raises(ConfigError, match="to_config_value"):
             to_config(holder)
 
-    def test_export_config_does_not_inject_to_config(self) -> None:
+    def test_export_config_injects_as_config_api(self) -> None:
         point = Point(1, 2)
+        exportable = cast(ConfigExportable, point)
+        assert exportable.supports_config_export()
+        assert exportable.as_config() == Config.from_instance(point)
         assert not hasattr(point, "to_config")
 
     def test_export_config_does_not_break_protocol(self) -> None:

@@ -20,14 +20,14 @@ from physicalai.inference.component_factory import instantiate_component, resolv
 from physicalai.inference.constants import ACTION
 from physicalai.inference.data.features import InferenceFeature
 from physicalai.inference.manifest import ComponentSpec, Manifest
+from physicalai.inference.postprocessors.base import Postprocessor
+from physicalai.inference.preprocessors.base import Preprocessor
 from physicalai.inference.runners import get_runner
 from physicalai.inference.utils._hub import download_from_hub  # noqa: PLC2701
 
 if TYPE_CHECKING:
     from physicalai.inference.adapters.base import RuntimeAdapter
     from physicalai.inference.callbacks.base import Callback
-    from physicalai.inference.postprocessors.base import Postprocessor
-    from physicalai.inference.preprocessors.base import Preprocessor
     from physicalai.inference.runners.base import InferenceRunner
 
 
@@ -147,10 +147,14 @@ class InferenceModel:
         self.runner: InferenceRunner = runner if runner is not None else get_runner(self.manifest)
 
         self.preprocessors: list[Preprocessor] = (
-            preprocessors if preprocessors is not None else self._load_processors(self.manifest.model.preprocessors)
+            preprocessors
+            if preprocessors is not None
+            else self._load_processors(self.manifest.model.preprocessors, Preprocessor)
         )
         self.postprocessors: list[Postprocessor] = (
-            postprocessors if postprocessors is not None else self._load_processors(self.manifest.model.postprocessors)
+            postprocessors
+            if postprocessors is not None
+            else self._load_processors(self.manifest.model.postprocessors, Postprocessor)
         )
         logger.info(
             "Loaded {} preprocessors, {} postprocessors",
@@ -427,7 +431,7 @@ class InferenceModel:
             return Manifest.load(manifest_path)
         return Manifest()
 
-    def _load_processors(self, specs: list[ComponentSpec]) -> list[Any]:
+    def _load_processors(self, specs: list[ComponentSpec], base: type) -> list[Any]:
         """Instantiate preprocessors or postprocessors from component specs.
 
         Resolves relative ``artifact`` paths to absolute paths using
@@ -435,11 +439,12 @@ class InferenceModel:
 
         Args:
             specs: List of component specifications to instantiate.
+            base: Expected processor base class.
 
         Returns:
             List of instantiated processor objects.
         """
-        return [instantiate_component(resolve_artifact(spec, self.export_dir)) for spec in specs]
+        return [instantiate_component(base, resolve_artifact(spec, self.export_dir)) for spec in specs]
 
     def _load_features(self, specs: list[ComponentSpec]) -> list[InferenceFeature]:
         """Instantiate :class:`InferenceFeature` objects from manifest specs.
@@ -457,7 +462,7 @@ class InferenceModel:
         """
         features: list[InferenceFeature] = []
         for spec in specs:
-            component = instantiate_component(resolve_artifact(spec, self.export_dir))
+            component = instantiate_component(InferenceFeature, resolve_artifact(spec, self.export_dir))
             if not isinstance(component, InferenceFeature):
                 msg = f"Expected an InferenceFeature instance from spec, got {type(component).__name__}"
                 raise TypeError(msg)

@@ -43,7 +43,7 @@ import signal
 from pathlib import Path
 
 from physicalai.capture import select_cameras_interactive
-from physicalai.config import Config, save_yaml
+from physicalai.config import Config
 from physicalai.inference import InferenceModel
 from physicalai.runtime import (
     AsyncExecution,
@@ -198,7 +198,7 @@ def main() -> None:
     )
 
     if args.export_config:
-        save_yaml(Config.from_instance(runtime), args.export_config)
+        Config.from_instance(runtime).save(args.export_config)
         print(f"Saved runtime config to {args.export_config}")
         return
 

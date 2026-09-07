@@ -82,11 +82,33 @@ def _encode_domain_value(value: object) -> tuple[JsonValue] | None:
 def is_config_exportable(value: object) -> bool:
     """Return whether *value* can export a :class:`Config`.
 
+    Prefer ``supports_config_export()`` on decorated instances when available.
+    This helper accepts any object (including before that method exists on the
+    class).
+
     A value is exportable if and only if its most-derived class's effective
     ``__init__`` carries the ``@export_config`` marker.
     """
     init = type(value).__init__
     return _has_export_marker(init)
+
+
+def _supports_config_export(self: object) -> bool:
+    return is_config_exportable(self)
+
+
+def _as_config_method(self: object) -> Config:
+    from .base import Config  # noqa: PLC0415
+
+    return Config.from_instance(self)
+
+
+def _attach_export_config_api(cls: type) -> None:
+    """Add OOP export helpers for IDE-friendly access on decorated instances."""
+    if "supports_config_export" not in cls.__dict__:
+        cls.supports_config_export = _supports_config_export
+    if "as_config" not in cls.__dict__:
+        cls.as_config = _as_config_method
 
 
 def declared_config_args(cls: type) -> frozenset[str]:
@@ -224,9 +246,15 @@ def _export_instance(
 
 
 def to_config(value: object) -> Config:
-    """Return the canonical recipe for an ``@export_config`` instance."""
-    from .base import Config  # ruff: ignore[PLC0415]
+    """Return the canonical recipe for an ``@export_config`` instance.
 
+    .. deprecated::
+        Use :meth:`~physicalai.config.Config.from_instance` instead.
+    """
+    from ._deprecate import deprecate  # noqa: PLC0415
+    from .base import Config  # noqa: PLC0415
+
+    deprecate("physicalai.config.to_config", "Config.from_instance")
     return Config.from_instance(value)
 
 
@@ -305,38 +333,19 @@ def _validate_config_args(
     return frozenset(names)
 
 
-def _decorate_export_config(
+def _complete_export_config_decoration(cls: _T) -> _T:
+    _attach_export_config_api(cls)
+    return cls
+
+
+def _install_export_config_init(
     cls: _T,
+    original_init: Callable[..., object],
     *,
     class_path: str | None,
     scalar_var_kwargs: bool,
     config_args: Sequence[str] | None,
-) -> _T:
-    if not isinstance(cls, type):
-        msg = f"@export_config expects a class, got {type(cls).__name__}"
-        raise TypeError(msg)
-
-    if "__init__" not in cls.__dict__:
-        msg = (
-            f"@export_config on {cls.__qualname__}: decorate only classes that "
-            "define their own __init__; inherited decorated constructors remain "
-            "exportable without re-decorating"
-        )
-        raise TypeError(msg)
-
-    original_init = cls.__dict__["__init__"]
-    if original_init is object.__init__:
-        msg = f"@export_config on {cls.__qualname__}: class has no custom __init__"
-        raise TypeError(msg)
-
-    # Re-decorating the same class body is a no-op (keeps prior class_path if any).
-    if _has_export_marker(original_init):
-        return cls
-
-    if class_path is not None and (not isinstance(class_path, str) or not class_path):
-        msg = f"@export_config on {cls.__qualname__}: class_path must be a non-empty string"
-        raise TypeError(msg)
-
+) -> None:
     signature = inspect.signature(original_init)
     _validate_replayable_signature(cls, signature)
 
@@ -388,7 +397,48 @@ def _decorate_export_config(
     if declared:
         setattr(wrapped_init, _CONFIG_ARGS_ATTR, declared)
     cls.__init__ = wrapped_init  # type: ignore[method-assign]
-    return cls
+
+
+def _decorate_export_config(
+    cls: _T,
+    *,
+    class_path: str | None,
+    scalar_var_kwargs: bool,
+    config_args: Sequence[str] | None,
+) -> _T:
+    if not isinstance(cls, type):
+        msg = f"@export_config expects a class, got {type(cls).__name__}"
+        raise TypeError(msg)
+
+    if "__init__" not in cls.__dict__:
+        msg = (
+            f"@export_config on {cls.__qualname__}: decorate only classes that "
+            "define their own __init__; inherited decorated constructors remain "
+            "exportable without re-decorating"
+        )
+        raise TypeError(msg)
+
+    original_init = cls.__dict__["__init__"]
+    if original_init is object.__init__:
+        msg = f"@export_config on {cls.__qualname__}: class has no custom __init__"
+        raise TypeError(msg)
+
+    # Re-decorating the same class body is a no-op (keeps prior class_path if any).
+    if _has_export_marker(original_init):
+        return _complete_export_config_decoration(cls)
+
+    if class_path is not None and (not isinstance(class_path, str) or not class_path):
+        msg = f"@export_config on {cls.__qualname__}: class_path must be a non-empty string"
+        raise TypeError(msg)
+
+    _install_export_config_init(
+        cls,
+        original_init,
+        class_path=class_path,
+        scalar_var_kwargs=scalar_var_kwargs,
+        config_args=config_args,
+    )
+    return _complete_export_config_decoration(cls)
 
 
 @overload
@@ -446,12 +496,16 @@ def export_config(
     Inheritance:
 
     - Decorate every concrete class that **overrides** ``__init__``.
-    - An undecorated overriding ``__init__`` fails at :func:`to_config` (partial
+    - An undecorated overriding ``__init__`` fails export (partial
       base recipes are not emitted).
     - A subclass that inherits a decorated constructor unchanged remains valid
-      without re-decorating.
+      without re-decorating and inherits :meth:`supports_config_export` /
+      :meth:`as_config`.
     - Do not apply ``@export_config`` to a subclass that does not define its
       own ``__init__`` (that would double-wrap the inherited wrapper).
+
+    Decorated classes expose :meth:`supports_config_export` and
+    :meth:`as_config` on instances (no manual implementation required).
 
     Args:
         cls: Class to decorate when used as ``@export_config``. Must define

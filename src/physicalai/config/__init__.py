@@ -1,29 +1,27 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Captured configuration: export live components and instantiate configs.
+"""Build and save configuration for Physical AI components.
 
-Trusted local application and parent→child startup configs only. Never pass
-network metadata or untrusted peer payloads to :func:`instantiate`.
+Use :class:`Config` for portable YAML recipes (``class_path`` + ``init_args``)
+and :func:`instantiate` for trusted local recipes (robots, cameras, exported
+components).
 
-Two instantiation entry points:
+Legacy helpers in :mod:`physicalai.config.loading` and
+:mod:`physicalai.config.mixin` remain for compatibility and emit
+:class:`DeprecationWarning`; prefer jsonargparse for known types and
+:meth:`Config.from_instance` / :meth:`Config.save` for export.
 
-- :func:`instantiate` — strict captured ``class_path`` + ``init_args`` recipes
-  (transport, ``@export_config`` components).
-- :func:`instantiate_obj` — generic jsonargparse / Studio loaders; see
-  :mod:`physicalai.config.loading`.
+Opt-in export:
 
-Opt-in path:
+- ``@export_config`` — record constructor arguments for
+  :meth:`Config.from_instance` and add ``supports_config_export()`` /
+  ``as_config()`` on instances.
+- ``@export_config(..., scalar_var_kwargs=True)`` — only JSON-safe ``**kwargs``.
+- :meth:`~ConfigValue.to_config_value` — custom JSON fragments for domain types.
 
-- ``@export_config`` / ``@export_config(class_path=...)`` — remember
-  caller-supplied constructor args for :meth:`Config.from_instance`.
-- ``@export_config(..., scalar_var_kwargs=True)`` — seal flattened
-  ``**kwargs`` to JSON scalars (non-scalars fail during export).
-- Domain ctor args may implement :meth:`~ConfigValue.to_config_value` to
-  return a JSON-compatible fragment (re-normalized).
-
-Transport and other callers import public names from here (no private
-``physicalai.config._*`` imports).
+Import public names from this package; avoid private ``physicalai.config._*``
+modules.
 """
 
 from ._envelope import (

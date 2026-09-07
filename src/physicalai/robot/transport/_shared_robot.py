@@ -55,6 +55,7 @@ from ._session import open_session
 if TYPE_CHECKING:
     import numpy as np
 
+    from physicalai.config._types import ConfigExportable
     from physicalai.robot import RobotObservation
 
 
@@ -257,7 +258,7 @@ class SharedRobot:
     @classmethod
     def from_config(
         cls,
-        robot_config: Config | Mapping[str, Any] | object,
+        robot_config: Config | Mapping[str, Any] | ConfigExportable,
         *,
         name: str,
         allow_remote: bool = False,

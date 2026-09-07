@@ -114,7 +114,7 @@ class TestConstruction:
         assert robot._robot.init_args["port"] == "/dev/fake0"
 
     def test_constructor_rejects_non_config_object(self) -> None:
-        with pytest.raises(ConfigError, match="robot must be a Config mapping"):
+        with pytest.raises(ConfigError, match="config must be a mapping"):
             SharedRobot("left-arm", robot=object())  # type: ignore[arg-type]
 
     def test_satisfies_robot_protocol(self) -> None:

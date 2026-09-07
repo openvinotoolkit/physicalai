@@ -100,7 +100,9 @@ def _try_normalize_scalar(value: object, *, path: str) -> tuple[bool, JsonValue]
     Raises:
         ConfigError: If *value* is a non-finite float.
     """
-    if value is None or isinstance(value, (bool, str)):
+    if value is None or isinstance(value, bool):
+        return True, value
+    if isinstance(value, str) and not isinstance(value, Enum):
         return True, value
     if isinstance(value, int) and not isinstance(value, bool):
         return True, value
@@ -115,7 +117,7 @@ def _try_normalize_scalar(value: object, *, path: str) -> tuple[bool, JsonValue]
 
 
 def _normalize_enum(value: Enum, *, path: str) -> JsonValue:
-    enum_value = value.value
+    enum_value = value.name
     if isinstance(enum_value, (bool, str)) or (
         isinstance(enum_value, (int, float)) and not isinstance(enum_value, bool)
     ):
@@ -285,12 +287,12 @@ def normalize_value(  # ruff: ignore[PLR0911, PLR0912]
     if codec_seen is None:
         codec_seen = set()
 
+    if isinstance(value, Enum):
+        return _normalize_enum(value, path=path)
+
     handled, scalar = _try_normalize_scalar(value, path=path)
     if handled:
         return scalar
-
-    if isinstance(value, Enum):
-        return _normalize_enum(value, path=path)
 
     from .base import Config  # ruff: ignore[PLC0415]
 

@@ -248,7 +248,7 @@ class TestConfigSerialization:
             layers=(32, 64),
             weights=np.array([[1.0, 2.0]]),
         ).to_jsonargparse()
-        assert result["init_args"]["activation"] == "gelu"
+        assert result["init_args"]["activation"] == "GELU"
         assert result["init_args"]["layers"] == [32, 64]
         assert result["init_args"]["weights"] == [[1.0, 2.0]]
 

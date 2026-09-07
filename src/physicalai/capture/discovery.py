@@ -22,16 +22,15 @@ class DeviceInfo(BaseModel):
     index: int = Field(description="Numeric device index when one exists for the backend.")
     name: str = Field(default="", description="Human-readable name (e.g. 'Logitech C920', 'D435').")
     driver: str = Field(default="", description="Backend that found the device (e.g. 'v4l2', 'realsense').")
-    hardware_id: str | None = Field(
-        default=None, description="Stable cross-backend identifier such as a serial number or USB bus path."
+    hardware_payload: dict[str, Any] | None = Field(
+        default=None,
+        description="Backend-specific identifying fields (e.g. serial, USB bus path, sensor port). Shape and "
+        "presence vary by backend and device; there is no guaranteed key, and no field of it is guaranteed "
+        "stable across reboot/replug/port-change. Callers resolve a device by handing this back to the "
+        "backend, which finds the best match -- an unambiguous match is not guaranteed either.",
     )
     manufacturer: str | None = Field(default=None, description="Device manufacturer (e.g. 'Intel', 'Basler').")
     model: str | None = Field(default=None, description="Device model when available.")
-    id_stable: bool = Field(
-        default=False,
-        description="True when device_id (or hardware_id) survives reboot/replug/port-change. "
-        "Callers may persist device_id only when this is True.",
-    )
     metadata: dict[str, Any] | None = Field(default=None, description="Backend-specific extras.")
 
 

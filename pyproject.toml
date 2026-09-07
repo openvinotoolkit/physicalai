@@ -22,7 +22,7 @@ dependencies = [
     "loguru>=0.7",
     # target PyTurboJPEG 1.x for libjpeg-turbo 2.x compatibility
     "PyTurboJPEG<2; sys_platform == 'linux'",
-    "pynokhwa==0.1.2",
+    "pynokhwa==0.1.3",
     "pydantic>=2.5",
     "pyyaml>=6.0",
     "opencv-python-headless",
@@ -33,7 +33,7 @@ dependencies = [
     "onnxruntime",
     "openvino>=2026.3.0",
     "openvino_tokenizers>=2026.3.0.0",
-    "jsonargparse[signatures,shtab]>=4.36",
+    "jsonargparse[signatures,shtab]>=4.50,<5",
     "typing-extensions>=4.5",
 ]
 
@@ -45,7 +45,7 @@ pai = "physicalai.cli.main:main"
 tests = ["pytest", "mypy"]
 notebooks = ["matplotlib", "matplotlib-inline", "ipykernel"]
 realsense = [
-    "pyrealsense2; sys_platform != 'darwin'",
+    "pyrealsense2>=2.58.4.10922; sys_platform != 'darwin'",
     "pyrealsense2-macosx; sys_platform == 'darwin'",
 ]
 basler = ["pypylon", "opencv-python-headless"]
