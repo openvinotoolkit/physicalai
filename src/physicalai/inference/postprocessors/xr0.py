@@ -61,13 +61,18 @@ class XR0Postprocessor(Postprocessor):
         """Initialize the XR0 inference postprocessor.
 
         Raises:
-            ValueError: If ``action_mean`` and ``action_std`` shapes differ.
+            ValueError: If ``action_mean`` and ``action_std`` shapes differ, or
+                if ``action_mode`` is not a recognized mode.
         """
         super().__init__()
         self._mean = np.asarray(action_mean, dtype=np.float32)
         self._std = np.asarray(action_std, dtype=np.float32)
         if self._mean.shape != self._std.shape:
             msg = f"action_mean {self._mean.shape} and action_std {self._std.shape} must have the same shape"
+            raise ValueError(msg)
+        valid_modes = {"absolute", "delta"}
+        if action_mode not in valid_modes:
+            msg = f"Unknown action_mode {action_mode!r}. Expected one of {sorted(valid_modes)}"
             raise ValueError(msg)
         self._action_dim = int(action_dim) if action_dim is not None else None
         self._action_mode = str(action_mode)

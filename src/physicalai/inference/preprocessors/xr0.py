@@ -29,7 +29,7 @@ _QWEN3VL_PATCH_SIZE = 16
 _QWEN3VL_MERGE_SIZE = 2
 
 # Numerical epsilon added to the state std (matches the training convention).
-_ACTION_EPS = 1e-6
+_STATE_EPS = 1e-6
 
 _TEMPORAL_IMAGE_NDIM = 5
 _BATCHED_IMAGE_NDIM = 4
@@ -282,7 +282,12 @@ class XR0Preprocessor(Preprocessor):
         return out
 
     def _extract_images(self, inputs: dict[str, object]) -> list[np.ndarray]:
-        """Return the resized ``(H, W, C)`` uint8 views in ``camera_views`` (sorted-key) order.
+        """Return the resized ``(H, W, C)`` uint8 views in ``camera_views`` order.
+
+        Images are selected to match the declared ``camera_views`` order so that
+        ``pixel_values`` stays aligned with the per-view prompt sections (title +
+        pad count). When no observation key matches a view name (e.g. legacy
+        callers using arbitrary keys), fall back to sorted keys.
 
         Returns:
             The list of resized uint8 RGB images (one per available camera view).
@@ -299,7 +304,9 @@ class XR0Preprocessor(Preprocessor):
                 for key, value in inputs.items()
                 if isinstance(key, str) and key.startswith(f"{IMAGES}.") and "is_pad" not in key
             }
-        keys = sorted(image_items)[: len(self._camera_views)]
+        keys = [f"{IMAGES}.{view}" for view in self._camera_views if f"{IMAGES}.{view}" in image_items]
+        if not keys:
+            keys = sorted(image_items)[: len(self._camera_views)]
         if not keys:
             msg = "XR0 inference requires at least one image observation"
             raise ValueError(msg)
@@ -331,7 +338,7 @@ class XR0Preprocessor(Preprocessor):
             state = np.pad(state, ((0, 0), (0, self._max_state_dim - dim)))
         state = state[:, : self._max_state_dim]
         if self._normalize_state:
-            state = (state - self._state_mean) / (self._state_std + _ACTION_EPS)
+            state = (state - self._state_mean) / (self._state_std + _STATE_EPS)
         return state[:, None, :].astype(np.float32)  # (B, 1, max_state_dim)
 
     @staticmethod

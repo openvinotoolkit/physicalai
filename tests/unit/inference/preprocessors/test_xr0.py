@@ -175,13 +175,34 @@ class TestXR0PreprocessorExtractImages:
         assert len(images) == 1
 
     def test_truncated_to_camera_view_count(self, preprocessor) -> None:
-        # Three views provided but preprocessor declares two -> first two (sorted).
+        # Three views provided but preprocessor declares two -> only declared views.
         inputs = {
             IMAGES: {
                 "base": np.zeros((256, 256, 3), dtype=np.uint8),
                 "wrist_left": np.zeros((256, 256, 3), dtype=np.uint8),
                 "wrist_right": np.zeros((256, 256, 3), dtype=np.uint8),
             },
+        }
+        images = preprocessor._extract_images(inputs)
+        assert len(images) == 2
+
+    def test_selected_in_camera_views_order(self) -> None:
+        # camera_views is not alphabetical -> images must follow camera_views,
+        # not sorted keys, so pixel_values stay aligned with prompt sections.
+        prep = XR0Preprocessor(camera_views=("wrist_left", "base"), max_state_dim=32)
+        base = np.zeros((256, 256, 3), dtype=np.uint8)
+        wrist = np.full((256, 256, 3), 255, dtype=np.uint8)
+        inputs: dict[str, object] = {IMAGES: {"base": base, "wrist_left": wrist}}
+        images = prep._extract_images(inputs)
+        # First image is wrist_left (all 255), second is base (all 0).
+        assert images[0].max() == 255
+        assert images[1].max() == 0
+
+    def test_falls_back_to_sorted_keys_when_no_match(self, preprocessor) -> None:
+        # Keys do not match camera_views ("base"/"wrist_left") -> sorted fallback.
+        inputs = {
+            f"{IMAGES}.camA": np.zeros((256, 256, 3), dtype=np.uint8),
+            f"{IMAGES}.camB": np.zeros((256, 256, 3), dtype=np.uint8),
         }
         images = preprocessor._extract_images(inputs)
         assert len(images) == 2
