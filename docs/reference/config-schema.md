@@ -68,4 +68,5 @@ manifest unification is a separate design decision.
 
 `class_path` is executable local configuration. `instantiate()` is for
 trusted application and user-authored configs only, never metadata or control
-messages received from peers.
+messages received from peers. See [Security Model](../getting-started/security.md)
+for the full set of deployment-time trust assumptions.

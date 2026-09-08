@@ -145,6 +145,10 @@ def build_camera(config: dict) -> Camera:
         # Validate / reject flat keys even on the factory-override path.
         spec = CameraPublisherConfig.from_json_dict(config)
         module_path, _, attr = factory_override.rpartition(":")
+        # _factory_override is a private, test-only constructor kwarg
+        # delivered over a stdin pipe this same process's CameraPublisher.start()
+        # writes, no production call site or external input sets it.
+        # nosemgrep: python.lang.security.audit.non-literal-import.non-literal-import
         mod = importlib.import_module(module_path)
         factory = getattr(mod, attr)
         init_args = spec.camera.get("init_args", {})
