@@ -8,8 +8,8 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING
 
+import cv2
 import numpy as np
-from PIL import Image
 from typing_extensions import override
 
 from physicalai.inference.constants import IMAGES, STATE, TASK
@@ -107,20 +107,20 @@ def _render_chat_prompt(views: Sequence[str], pad_counts: Sequence[int], instruc
     return f"{_IM_START}user\n{user}{_IM_END}\n{_IM_START}assistant\n{_ASSISTANT_PRIMER}{_IM_END}\n"
 
 
-def _resize_image(image: Image.Image, factor: int, max_pixels: int) -> Image.Image:
-    """Resize a PIL image to patch-aligned dimensions within an area budget.
+def _resize_image(image: np.ndarray, factor: int, max_pixels: int) -> np.ndarray:
+    """Resize an ``(H, W, C)`` uint8 image to patch-aligned dims within an area budget.
 
     Both sides are rounded to multiples of ``factor`` and the area is kept within
     ``[factor**2, max_pixels]``, preserving aspect ratio for the VLM vision encoder.
 
     Returns:
-        The resized PIL image.
+        The resized ``(H, W, C)`` uint8 image.
 
     Raises:
         ValueError: If the image aspect ratio exceeds ``_MAX_ASPECT_RATIO``.
     """
     min_pixels = factor * factor
-    width, height = image.size
+    height, width = image.shape[:2]
     ratio = max(height, width) / min(height, width)
     if ratio > _MAX_ASPECT_RATIO:
         msg = f"absolute aspect ratio must be smaller than 200, got {ratio}"
@@ -138,11 +138,13 @@ def _resize_image(image: Image.Image, factor: int, max_pixels: int) -> Image.Ima
         new_height = max(factor, math.ceil(height * scale / factor) * factor)
         new_width = max(factor, math.ceil(width * scale / factor) * factor)
 
-    return image.resize((new_width, new_height))
+    # cv2.resize takes dsize as (width, height); INTER_CUBIC is the closest match to
+    # the reference PIL bicubic resample (exact parity is not required here).
+    return cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_CUBIC)
 
 
 def _build_pixel_grid(
-    images: Sequence[Image.Image],
+    images: Sequence[np.ndarray],
     image_mean: Sequence[float],
     image_std: Sequence[float],
     rescale_factor: float,
@@ -161,16 +163,16 @@ def _build_pixel_grid(
     return np.stack(grid).astype(np.float32)
 
 
-def _to_pil(array: object) -> Image.Image:
-    """Convert a NumPy image (``(H,W,C)`` / ``(C,H,W)`` / batched / temporal) to PIL.
+def _to_rgb_frame(array: object) -> np.ndarray:
+    """Normalize a NumPy image (``(H,W,C)`` / ``(C,H,W)`` / batched / temporal) to uint8 RGB.
 
-    Needed so the subsequent resize uses PIL's ``Image.resize`` - matching the
-    Qwen3-VL image processor exactly (the exported graph bakes image geometry from
-    those resized dimensions, so a different interpolation would break parity). Also
-    normalizes arbitrary incoming layouts/dtypes to a single canonical uint8 RGB frame.
+    Collapses arbitrary incoming layouts/dtypes to a single canonical ``(H, W, 3)``
+    uint8 RGB frame so the subsequent ``cv2.resize`` sees a consistent input. The
+    exported graph bakes image geometry from the resized dimensions, so only the
+    output size has to match the reference; the interpolation kernel does not.
 
     Returns:
-        The image as an RGB PIL ``Image``.
+        The canonical ``(H, W, 3)`` uint8 RGB frame.
     """
     arr = np.asarray(array)
     if arr.ndim == _TEMPORAL_IMAGE_NDIM:  # (B, T, C, H, W) -> last frame of first sample
@@ -183,7 +185,7 @@ def _to_pil(array: object) -> Image.Image:
         arr = (np.clip(arr, 0.0, 1.0) * 255.0).round().astype(np.uint8)
     if arr.shape[-1] == 1:
         arr = np.repeat(arr, 3, axis=-1)
-    return Image.fromarray(arr)
+    return np.ascontiguousarray(arr)
 
 
 class XR0Preprocessor(Preprocessor):
@@ -279,11 +281,11 @@ class XR0Preprocessor(Preprocessor):
         out[:dim] = arr[:dim]
         return out
 
-    def _extract_images(self, inputs: dict[str, object]) -> list[Image.Image]:
-        """Return the resized PIL views in ``camera_views`` (sorted-key) order.
+    def _extract_images(self, inputs: dict[str, object]) -> list[np.ndarray]:
+        """Return the resized ``(H, W, C)`` uint8 views in ``camera_views`` (sorted-key) order.
 
         Returns:
-            The list of resized PIL images (one per available camera view).
+            The list of resized uint8 RGB images (one per available camera view).
 
         Raises:
             ValueError: If the observation contains no image entry.
@@ -302,7 +304,7 @@ class XR0Preprocessor(Preprocessor):
             msg = "XR0 inference requires at least one image observation"
             raise ValueError(msg)
         return [
-            _resize_image(_to_pil(image_items[key]), factor=self._image_factor, max_pixels=self._image_max_pixels)
+            _resize_image(_to_rgb_frame(image_items[key]), factor=self._image_factor, max_pixels=self._image_max_pixels)
             for key in keys
         ]
 
@@ -373,8 +375,8 @@ class XR0Preprocessor(Preprocessor):
         pad_counts = [
             _image_pad_count(
                 1,
-                image.size[1] // self._patch_size,  # image.size == (width, height)
-                image.size[0] // self._patch_size,
+                image.shape[0] // self._patch_size,  # image.shape == (H, W, C)
+                image.shape[1] // self._patch_size,
                 self._merge_size,
             )
             for image in images

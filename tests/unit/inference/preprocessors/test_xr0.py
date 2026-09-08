@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from PIL import Image
 
 from physicalai.inference.constants import IMAGES, STATE, TASK
 from physicalai.inference.preprocessors import Preprocessor, XR0Preprocessor
@@ -143,20 +142,21 @@ class TestXR0PreprocessorState:
 
 
 class TestXR0PreprocessorExtractImages:
-    def test_nested_dict_returns_pil_per_view(self, preprocessor) -> None:
+    def test_nested_dict_returns_array_per_view(self, preprocessor) -> None:
         images = preprocessor._extract_images(_make_inputs())
         assert len(images) == 2
-        assert all(isinstance(image, Image.Image) for image in images)
+        assert all(isinstance(image, np.ndarray) for image in images)
+        assert all(image.dtype == np.uint8 and image.shape[-1] == 3 for image in images)
 
     def test_resized_to_patch_aligned(self, preprocessor) -> None:
         # 256 is a multiple of factor=32 and area 65536 < 90000 -> unchanged.
         images = preprocessor._extract_images(_make_inputs(h=256, w=256))
-        assert all(image.size == (256, 256) for image in images)
+        assert all(image.shape == (256, 256, 3) for image in images)
 
     def test_odd_size_rounded_to_factor(self, preprocessor) -> None:
         # 250 rounds to nearest multiple of factor=32 -> 256.
         images = preprocessor._extract_images(_make_inputs(h=250, w=250))
-        assert all(image.size == (256, 256) for image in images)
+        assert all(image.shape == (256, 256, 3) for image in images)
 
     def test_flattened_keys(self, preprocessor) -> None:
         inputs = {
@@ -193,14 +193,14 @@ class TestXR0PreprocessorExtractImages:
 
 class TestBuildPixelGrid:
     def test_shape_and_dtype(self) -> None:
-        images = [Image.fromarray(np.zeros((32, 48, 3), dtype=np.uint8)) for _ in range(2)]
+        images = [np.zeros((32, 48, 3), dtype=np.uint8) for _ in range(2)]
         grid = _build_pixel_grid(images, (0.5, 0.5, 0.5), (0.5, 0.5, 0.5), 1.0 / 255.0)
-        # (num_images, C, H, W) -- channels-first from PIL (H, W, C) input.
+        # (num_images, C, H, W) -- channels-first from (H, W, C) input.
         assert grid.shape == (2, 3, 32, 48)
         assert grid.dtype == np.float32
 
     def test_zero_pixels_normalized(self) -> None:
-        images = [Image.fromarray(np.zeros((16, 16, 3), dtype=np.uint8))]
+        images = [np.zeros((16, 16, 3), dtype=np.uint8)]
         grid = _build_pixel_grid(images, (0.5, 0.5, 0.5), (0.5, 0.5, 0.5), 1.0 / 255.0)
         # (0 * 1/255 - 0.5) / 0.5 == -1.0 for every channel.
         np.testing.assert_allclose(grid, -1.0, atol=1e-5)
@@ -209,7 +209,7 @@ class TestBuildPixelGrid:
         # Distinct per-channel value + stats verify the mean/std are applied per channel.
         arr = np.zeros((2, 2, 3), dtype=np.uint8)
         arr[..., 0], arr[..., 1], arr[..., 2] = 10, 20, 30
-        grid = _build_pixel_grid([Image.fromarray(arr)], (1.0, 2.0, 3.0), (2.0, 4.0, 6.0), 1.0)
+        grid = _build_pixel_grid([arr], (1.0, 2.0, 3.0), (2.0, 4.0, 6.0), 1.0)
         # (value * 1.0 - mean) / std per channel.
         np.testing.assert_allclose(grid[0, 0], (10 - 1.0) / 2.0, atol=1e-5)
         np.testing.assert_allclose(grid[0, 1], (20 - 2.0) / 4.0, atol=1e-5)
@@ -218,7 +218,7 @@ class TestBuildPixelGrid:
     def test_hwc_to_chw_transpose(self) -> None:
         # Unique value per pixel/channel so a wrong transpose would be detected.
         arr = np.arange(2 * 3 * 3, dtype=np.uint8).reshape(2, 3, 3)  # (H, W, C)
-        grid = _build_pixel_grid([Image.fromarray(arr)], (0.0, 0.0, 0.0), (1.0, 1.0, 1.0), 1.0)
+        grid = _build_pixel_grid([arr], (0.0, 0.0, 0.0), (1.0, 1.0, 1.0), 1.0)
         np.testing.assert_allclose(grid[0], np.transpose(arr.astype(np.float32), (2, 0, 1)))
 
 
