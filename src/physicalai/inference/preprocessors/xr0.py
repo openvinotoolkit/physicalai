@@ -1,27 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Torch-free NumPy preprocessor for the exported XR0 OpenVINO model.
-
-The exported XR0 OpenVINO graph is self-contained: the Qwen3-VL vision tower, the
-language model, the 3D MRoPE ``position_ids`` and the image-token scatter all run
-*inside* the graph. Its inputs are the tokenized prompt plus the raw pixels/state
-(``tokenized_prompt`` / ``tokenized_prompt_mask`` / ``pixel_values`` / ``state``)
-and its output is the still-normalized, ``max_state_dim``-wide action chunk.
-
-:class:`XR0Preprocessor` reconstructs the graph inputs from a raw observation dict
-without loading Torch or the full Qwen3-VL processor: it resizes the camera views
-into the Qwen3-VL ``pixel_values`` grid, pads/normalizes the ``state`` and renders
-the multi-view chat prompt as a plain ``task`` string. It does **not** tokenize --
-a sibling OpenVINO tokenizer (``tokenizer.xml``, exported next to the graph) turns
-``task`` into ``tokenized_prompt`` / ``tokenized_prompt_mask``. The image geometry
-and normalization constants are baked at export time into the manifest
-``init_args``; ``image_grid_thw`` is carried inside the graph as a baked constant.
-
-The Studio-side torch training preprocessor and export-baking reference live in
-``physicalai.policies.xr0`` (physicalai-train); this component is the deploy-only
-NumPy mirror registered under the ``"xr0"`` component type.
-"""
+"""NumPy preprocessor for the XR0 model."""
 
 from __future__ import annotations
 
@@ -64,7 +44,7 @@ _MULTI_VIEW_HEADER = "The following observations are captured from multiple view
 _TASK_TEMPLATE = "Generate robot actions for the task:\n{instruction} /no_cot"
 _ASSISTANT_PRIMER = "<cot></cot>"
 
-# View titles the model was trained with (Xiaomi reference server prompt), e.g.
+# View titles the model was trained with, e.g.
 # "wrist_left" -> "Left-Wrist" so the prompt reads "# Left-Wrist View".
 _VIEW_TITLES = {
     "base": "Base",
@@ -121,9 +101,7 @@ def _render_chat_prompt(views: Sequence[str], pad_counts: Sequence[int], instruc
 
     parts: list[str] = [_MULTI_VIEW_HEADER]
     for view, count in zip(views, pad_counts, strict=True):
-        parts.append(f"# {_view_title(view)} View\n")
-        parts.append(_VISION_START + _IMAGE_PAD * count + _VISION_END)
-        parts.append("\n")
+        parts.extend((f"# {_view_title(view)} View\n", _VISION_START + _IMAGE_PAD * count + _VISION_END, "\n"))
     parts.append(_TASK_TEMPLATE.format(instruction=instruction))
     user = "".join(parts)
     return f"{_IM_START}user\n{user}{_IM_END}\n{_IM_START}assistant\n{_ASSISTANT_PRIMER}{_IM_END}\n"
@@ -171,10 +149,6 @@ def _build_pixel_grid(
 ) -> np.ndarray:
     """Rescale + normalize already-resized images into a Qwen3-VL pixel grid.
 
-    Reproduces the Qwen3-VL image processor's rescale + normalize + channel-first
-    steps in pure NumPy and stacks the views into the ``(num_images, C, H, W)``
-    normalized grid the exported graph patchifies.
-
     Returns:
         The normalized image grid of shape ``(num_images, C, H, W)`` as float32.
     """
@@ -190,9 +164,10 @@ def _build_pixel_grid(
 def _to_pil(array: object) -> Image.Image:
     """Convert a NumPy image (``(H,W,C)`` / ``(C,H,W)`` / batched / temporal) to PIL.
 
-    Mirrors the training preprocessor's channels-first detection, ``[0, 1]`` float
-    rescaling and grayscale expansion so the resized geometry matches the baked
-    export exactly.
+    Needed so the subsequent resize uses PIL's ``Image.resize`` - matching the
+    Qwen3-VL image processor exactly (the exported graph bakes image geometry from
+    those resized dimensions, so a different interpolation would break parity). Also
+    normalizes arbitrary incoming layouts/dtypes to a single canonical uint8 RGB frame.
 
     Returns:
         The image as an RGB PIL ``Image``.
@@ -216,12 +191,7 @@ class XR0Preprocessor(Preprocessor):
 
     Lightweight, torch-free NumPy preprocessor: resizes the camera views into the
     Qwen3-VL ``pixel_values`` grid, pads/normalizes the ``state`` and renders the
-    multi-view chat prompt as a plain ``task`` string. It does **not** tokenize --
-    a sibling OpenVINO tokenizer (``tokenizer.xml``) turns ``task`` into
-    ``tokenized_prompt`` / ``tokenized_prompt_mask``. The image geometry and
-    normalization constants are baked at export time so no HuggingFace processor
-    is loaded at inference. ``image_grid_thw`` is carried inside the graph as a
-    baked constant.
+    multi-view chat prompt as a plain ``task`` string.
 
     Args:
         camera_views: Ordered view names embedded into the prompt (must match the

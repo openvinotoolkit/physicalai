@@ -1,20 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Torch-free NumPy postprocessor for the exported XR0 OpenVINO model.
-
-The exported XR0 graph outputs a still-normalized, ``max_action_dim``-wide action
-chunk. :class:`XR0Postprocessor` inverts the source action normalization
-(``action * (std + eps) + mean``) and slices the padded action back to its real
-dimension, mirroring the Studio-side training ``XR0Postprocessor``.  It is the
-deploy-only NumPy mirror registered under the ``"xr0_denormalize"`` component type.
-
-In ``action_mode="delta"`` the graph's denormalized output is a *delta* action
-(``action[t] - state``) and the graph additionally emits the current-frame
-``state`` as a second output; this postprocessor then re-adds the state
-(``delta + state`` on the overlapping leading channels) to reconstruct the
-absolute action, matching the pretrained flow head's delta prior.
-"""
+"""NumPy postprocessor for the exported XR0 model."""
 
 from __future__ import annotations
 
@@ -98,10 +85,6 @@ class XR0Postprocessor(Postprocessor):
             The outputs dict with the ``action`` denormalized (and sliced to the
             real action dimension when known). In delta mode the current-frame
             state is re-added to reconstruct the absolute action.
-
-        Raises:
-            ValueError: If ``action_mode == "delta"`` but no ``state`` output is
-                present to invert the delta prediction.
         """
         action = outputs.get(ACTION)
         if action is None:
@@ -117,7 +100,8 @@ class XR0Postprocessor(Postprocessor):
         result[ACTION] = action
         return result
 
-    def _add_current_state(self, action: np.ndarray, state: np.ndarray | None) -> np.ndarray:
+    @staticmethod
+    def _add_current_state(action: np.ndarray, state: np.ndarray | None) -> np.ndarray:
         """Re-add the current-frame state to a denormalized delta action.
 
         Mirrors the Studio-side ``XR0Postprocessor.forward`` delta inverse: the
@@ -140,5 +124,5 @@ class XR0Postprocessor(Postprocessor):
         # Insert a chunk axis so (..., overlap) broadcasts over the action chunk.
         current = np.expand_dims(current[..., :overlap], axis=-2)
         action = action.copy()
-        action[..., :overlap] = action[..., :overlap] + current
+        action[..., :overlap] += current
         return action
