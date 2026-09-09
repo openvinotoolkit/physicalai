@@ -27,6 +27,7 @@ _QWEN3VL_IMAGE_STD = (0.5, 0.5, 0.5)
 _QWEN3VL_RESCALE_FACTOR = 1.0 / 255.0
 _QWEN3VL_PATCH_SIZE = 16
 _QWEN3VL_MERGE_SIZE = 2
+_QWEN3VL_TEMPORAL_PATCH_SIZE = 2
 
 # Numerical epsilon added to the state std (matches the training convention).
 _STATE_EPS = 1e-6
@@ -163,6 +164,47 @@ def _build_pixel_grid(
     return np.stack(grid).astype(np.float32)
 
 
+def _patchify_pixel_grid(
+    grid: np.ndarray,
+    grid_thw: Sequence[Sequence[int]],
+    *,
+    temporal_patch_size: int,
+    patch_size: int,
+    merge_size: int,
+) -> np.ndarray:
+    """Patchify a normalized image grid exactly like the Qwen3-VL image processor.
+
+    Reproduces the transformers ``Qwen2VLImageProcessor`` patchify (temporal
+    duplication + 9-D reshape/transpose) so the exported graph receives the flat
+    ``pixel_values`` layout directly (patchify happens off-graph here).
+
+    Returns:
+        The flat ``pixel_values`` array of shape
+        ``(sum(grid_t * grid_h * grid_w), C * temporal_patch_size * patch_size ** 2)``
+        as float32.
+    """
+    flattened: list[np.ndarray] = []
+    for index, (grid_t, grid_h, grid_w) in enumerate(grid_thw):
+        image = grid[index]  # (C, H, W)
+        channel = image.shape[0]
+        feature = channel * temporal_patch_size * patch_size * patch_size
+        patches = np.tile(image[np.newaxis], (temporal_patch_size, 1, 1, 1))  # (tp, C, H, W)
+        patches = patches.reshape(
+            grid_t,
+            temporal_patch_size,
+            channel,
+            grid_h // merge_size,
+            merge_size,
+            patch_size,
+            grid_w // merge_size,
+            merge_size,
+            patch_size,
+        )
+        patches = patches.transpose(0, 3, 6, 4, 7, 2, 1, 5, 8)
+        flattened.append(patches.reshape(grid_t * grid_h * grid_w, feature))
+    return np.concatenate(flattened, axis=0).astype(np.float32)
+
+
 def _to_rgb_frame(array: object) -> np.ndarray:
     """Normalize a NumPy image (``(H,W,C)`` / ``(C,H,W)`` / batched / temporal) to uint8 RGB.
 
@@ -196,8 +238,6 @@ class XR0Preprocessor(Preprocessor):
     multi-view chat prompt as a plain ``task`` string.
 
     Args:
-        camera_views: Ordered view names embedded into the prompt (must match the
-            views used at export time so the baked image geometry stays valid).
         max_state_dim: State dimension after padding.
         image_factor: Patch-alignment factor for image resizing.
         image_max_pixels: Maximum image area for image resizing.
@@ -206,6 +246,8 @@ class XR0Preprocessor(Preprocessor):
         rescale_factor: Pixel rescale factor (``1/255`` for Qwen3-VL).
         patch_size: Vision patch size used to derive the ``<|image_pad|>`` count.
         merge_size: Spatial merge size used to derive the ``<|image_pad|>`` count.
+        temporal_patch_size: Number of frames grouped per temporal patch (the
+            off-graph patchify duplicates a still image to this many frames).
         normalize_state: Whether the exported model expects normalized state.
             Defaults to False (raw state), matching the training default.
         state_mean: Baked ``max_state_dim`` state mean (identity when disabled).
@@ -214,13 +256,11 @@ class XR0Preprocessor(Preprocessor):
     Examples:
         Constructed via manifest (type-based resolution)::
 
-            {"type": "xr0", "camera_views": ["base", "wrist_left"],
-             "max_state_dim": 32, "patch_size": 16, "merge_size": 2}
+            {"type": "xr0", "max_state_dim": 32, "patch_size": 16, "merge_size": 2}
     """
 
     def __init__(
         self,
-        camera_views: Sequence[str] = ("base", "wrist_left"),
         max_state_dim: int = 32,
         image_factor: int = 32,
         image_max_pixels: int = 90000,
@@ -229,6 +269,7 @@ class XR0Preprocessor(Preprocessor):
         rescale_factor: float = _QWEN3VL_RESCALE_FACTOR,
         patch_size: int = _QWEN3VL_PATCH_SIZE,
         merge_size: int = _QWEN3VL_MERGE_SIZE,
+        temporal_patch_size: int = _QWEN3VL_TEMPORAL_PATCH_SIZE,
         *,
         normalize_state: bool = False,
         state_mean: Sequence[float] | None = None,
@@ -237,19 +278,13 @@ class XR0Preprocessor(Preprocessor):
         """Initialize the XR0 inference preprocessor.
 
         Raises:
-            ValueError: If ``camera_views`` is empty or ``patch_size`` / ``merge_size``
-                is not positive.
+            ValueError: If ``patch_size`` / ``merge_size`` is not positive.
         """
         super().__init__()
-        camera_views = tuple(camera_views)
-        if not camera_views:
-            msg = "XR0Preprocessor requires at least one camera view"
-            raise ValueError(msg)
         if int(patch_size) <= 0 or int(merge_size) <= 0:
             msg = f"patch_size and merge_size must be positive, got {patch_size!r} / {merge_size!r}"
             raise ValueError(msg)
 
-        self._camera_views = camera_views
         self._max_state_dim = int(max_state_dim)
         self._image_factor = int(image_factor)
         self._image_max_pixels = int(image_max_pixels)
@@ -258,6 +293,7 @@ class XR0Preprocessor(Preprocessor):
         self._rescale_factor = float(rescale_factor)
         self._patch_size = int(patch_size)
         self._merge_size = int(merge_size)
+        self._temporal_patch_size = int(temporal_patch_size)
         self._normalize_state = bool(normalize_state)
 
         # State normalization is opt-in; padded dims use identity stats (mean 0,
@@ -281,16 +317,16 @@ class XR0Preprocessor(Preprocessor):
         out[:dim] = arr[:dim]
         return out
 
-    def _extract_images(self, inputs: dict[str, object]) -> list[np.ndarray]:
-        """Return the resized ``(H, W, C)`` uint8 views in ``camera_views`` order.
+    def _extract_images(self, inputs: dict[str, object]) -> tuple[list[str], list[np.ndarray]]:
+        """Return the ordered view names and resized ``(H, W, C)`` uint8 views.
 
-        Images are selected to match the declared ``camera_views`` order so that
-        ``pixel_values`` stays aligned with the per-view prompt sections (title +
-        pad count). When no observation key matches a view name (e.g. legacy
-        callers using arbitrary keys), fall back to sorted keys.
+        The view order is taken directly from the observation image keys
+        (``images.<view>``) in their natural insertion order, so ``pixel_values``
+        stays aligned with the per-view prompt sections (title + pad count).
 
         Returns:
-            The list of resized uint8 RGB images (one per available camera view).
+            A ``(views, images)`` tuple: the ordered view names and the resized
+            uint8 RGB images (one per available camera view).
 
         Raises:
             ValueError: If the observation contains no image entry.
@@ -304,16 +340,15 @@ class XR0Preprocessor(Preprocessor):
                 for key, value in inputs.items()
                 if isinstance(key, str) and key.startswith(f"{IMAGES}.") and "is_pad" not in key
             }
-        keys = [f"{IMAGES}.{view}" for view in self._camera_views if f"{IMAGES}.{view}" in image_items]
-        if not keys:
-            keys = sorted(image_items)[: len(self._camera_views)]
-        if not keys:
+        if not image_items:
             msg = "XR0 inference requires at least one image observation"
             raise ValueError(msg)
-        return [
-            _resize_image(_to_rgb_frame(image_items[key]), factor=self._image_factor, max_pixels=self._image_max_pixels)
-            for key in keys
+        views = [key.removeprefix(f"{IMAGES}.") for key in image_items]
+        images = [
+            _resize_image(_to_rgb_frame(value), factor=self._image_factor, max_pixels=self._image_max_pixels)
+            for value in image_items.values()
         ]
+        return views, images
 
     def _prepare_state(self, inputs: dict[str, object]) -> np.ndarray:
         """Pad the state into ``(B, 1, max_state_dim)`` (optionally normalized).
@@ -371,24 +406,26 @@ class XR0Preprocessor(Preprocessor):
         Returns:
             Dict with ``pixel_values`` / ``state`` (float32 NumPy) and ``task``
             (a single-element list holding the rendered chat prompt string).
-            ``pixel_values`` is the pre-patchify normalized image grid
-            ``(num_images, C, H, W)`` -- the exported graph bakes the Qwen3-VL
-            temporal-duplication + patchify reshape/transpose; the sibling
+            ``pixel_values`` is the flat patchified layout
+            ``(sum(t*h*w), C * temporal_patch_size * patch_size ** 2)`` the exported
+            graph consumes directly (patchify happens here, off-graph); the sibling
             OpenVINO tokenizer turns ``task`` into the graph's ``tokenized_prompt``
             / ``tokenized_prompt_mask`` inputs.
         """
-        images = self._extract_images(inputs)
-        pixel_values = _build_pixel_grid(images, self._image_mean, self._image_std, self._rescale_factor)
-        pad_counts = [
-            _image_pad_count(
-                1,
-                image.shape[0] // self._patch_size,  # image.shape == (H, W, C)
-                image.shape[1] // self._patch_size,
-                self._merge_size,
-            )
+        views, images = self._extract_images(inputs)
+        pixel_grid = _build_pixel_grid(images, self._image_mean, self._image_std, self._rescale_factor)
+        grid_thw = [
+            (1, image.shape[0] // self._patch_size, image.shape[1] // self._patch_size)  # image.shape == (H, W, C)
             for image in images
         ]
-        views = self._camera_views[: len(images)]
+        pixel_values = _patchify_pixel_grid(
+            pixel_grid,
+            grid_thw,
+            temporal_patch_size=self._temporal_patch_size,
+            patch_size=self._patch_size,
+            merge_size=self._merge_size,
+        )
+        pad_counts = [_image_pad_count(grid_t, grid_h, grid_w, self._merge_size) for grid_t, grid_h, grid_w in grid_thw]
         prompt = _render_chat_prompt(views, pad_counts, self._instruction(inputs))
         state = self._prepare_state(inputs)
         return {

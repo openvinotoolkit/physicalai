@@ -14,7 +14,6 @@ from physicalai.inference.preprocessors.xr0 import _build_pixel_grid, _render_ch
 @pytest.fixture()
 def preprocessor():
     return XR0Preprocessor(
-        camera_views=("base", "wrist_left"),
         max_state_dim=32,
         image_factor=32,
         image_max_pixels=90000,
@@ -42,10 +41,6 @@ class TestXR0PreprocessorInit:
     def test_is_preprocessor(self, preprocessor) -> None:
         assert isinstance(preprocessor, Preprocessor)
 
-    def test_empty_camera_views_raises(self) -> None:
-        with pytest.raises(ValueError, match="at least one camera view"):
-            XR0Preprocessor(camera_views=())
-
     def test_nonpositive_patch_size_raises(self) -> None:
         with pytest.raises(ValueError, match="must be positive"):
             XR0Preprocessor(patch_size=0)
@@ -58,8 +53,9 @@ class TestXR0PreprocessorOutput:
 
     def test_pixel_grid_shape_and_dtype(self, preprocessor) -> None:
         result = preprocessor(_make_inputs())
-        # (num_images, C, H, W) for the two camera views at 256x256.
-        assert result["pixel_values"].shape == (2, 3, 256, 256)
+        # Flat patchified pixel_values: 2 views at 256x256 -> grid_h=grid_w=16,
+        # 256 tokens/image, 2 images -> 512 rows; feature = C * tp * patch**2.
+        assert result["pixel_values"].shape == (512, 3 * 2 * 16 * 16)
         assert result["pixel_values"].dtype == np.float32
 
     def test_pixel_grid_normalized(self, preprocessor) -> None:
@@ -124,7 +120,6 @@ class TestXR0PreprocessorState:
 
     def test_normalized_state(self) -> None:
         prep = XR0Preprocessor(
-            camera_views=("base", "wrist_left"),
             max_state_dim=32,
             patch_size=16,
             merge_size=2,
@@ -143,19 +138,20 @@ class TestXR0PreprocessorState:
 
 class TestXR0PreprocessorExtractImages:
     def test_nested_dict_returns_array_per_view(self, preprocessor) -> None:
-        images = preprocessor._extract_images(_make_inputs())
+        views, images = preprocessor._extract_images(_make_inputs())
+        assert views == ["base", "wrist_left"]
         assert len(images) == 2
         assert all(isinstance(image, np.ndarray) for image in images)
         assert all(image.dtype == np.uint8 and image.shape[-1] == 3 for image in images)
 
     def test_resized_to_patch_aligned(self, preprocessor) -> None:
         # 256 is a multiple of factor=32 and area 65536 < 90000 -> unchanged.
-        images = preprocessor._extract_images(_make_inputs(h=256, w=256))
+        _, images = preprocessor._extract_images(_make_inputs(h=256, w=256))
         assert all(image.shape == (256, 256, 3) for image in images)
 
     def test_odd_size_rounded_to_factor(self, preprocessor) -> None:
         # 250 rounds to nearest multiple of factor=32 -> 256.
-        images = preprocessor._extract_images(_make_inputs(h=250, w=250))
+        _, images = preprocessor._extract_images(_make_inputs(h=250, w=250))
         assert all(image.shape == (256, 256, 3) for image in images)
 
     def test_flattened_keys(self, preprocessor) -> None:
@@ -163,7 +159,8 @@ class TestXR0PreprocessorExtractImages:
             f"{IMAGES}.base": np.zeros((256, 256, 3), dtype=np.uint8),
             f"{IMAGES}.wrist_left": np.zeros((256, 256, 3), dtype=np.uint8),
         }
-        images = preprocessor._extract_images(inputs)
+        views, images = preprocessor._extract_images(inputs)
+        assert views == ["base", "wrist_left"]
         assert len(images) == 2
 
     def test_flattened_keys_skip_is_pad(self, preprocessor) -> None:
@@ -171,11 +168,11 @@ class TestXR0PreprocessorExtractImages:
             f"{IMAGES}.base": np.zeros((256, 256, 3), dtype=np.uint8),
             f"{IMAGES}.base.is_pad": np.zeros((1,), dtype=bool),
         }
-        images = preprocessor._extract_images(inputs)
+        _, images = preprocessor._extract_images(inputs)
         assert len(images) == 1
 
-    def test_truncated_to_camera_view_count(self, preprocessor) -> None:
-        # Three views provided but preprocessor declares two -> only declared views.
+    def test_all_views_used(self, preprocessor) -> None:
+        # Every provided view is used, in the observation's insertion order.
         inputs = {
             IMAGES: {
                 "base": np.zeros((256, 256, 3), dtype=np.uint8),
@@ -183,28 +180,31 @@ class TestXR0PreprocessorExtractImages:
                 "wrist_right": np.zeros((256, 256, 3), dtype=np.uint8),
             },
         }
-        images = preprocessor._extract_images(inputs)
-        assert len(images) == 2
+        views, images = preprocessor._extract_images(inputs)
+        assert views == ["base", "wrist_left", "wrist_right"]
+        assert len(images) == 3
 
-    def test_selected_in_camera_views_order(self) -> None:
-        # camera_views is not alphabetical -> images must follow camera_views,
-        # not sorted keys, so pixel_values stay aligned with prompt sections.
-        prep = XR0Preprocessor(camera_views=("wrist_left", "base"), max_state_dim=32)
+    def test_selected_in_observation_order(self) -> None:
+        # Views follow the observation key insertion order, so pixel_values stay
+        # aligned with the prompt sections.
+        prep = XR0Preprocessor(max_state_dim=32)
         base = np.zeros((256, 256, 3), dtype=np.uint8)
         wrist = np.full((256, 256, 3), 255, dtype=np.uint8)
-        inputs: dict[str, object] = {IMAGES: {"base": base, "wrist_left": wrist}}
-        images = prep._extract_images(inputs)
+        inputs: dict[str, object] = {IMAGES: {"wrist_left": wrist, "base": base}}
+        views, images = prep._extract_images(inputs)
         # First image is wrist_left (all 255), second is base (all 0).
+        assert views == ["wrist_left", "base"]
         assert images[0].max() == 255
         assert images[1].max() == 0
 
-    def test_falls_back_to_sorted_keys_when_no_match(self, preprocessor) -> None:
-        # Keys do not match camera_views ("base"/"wrist_left") -> sorted fallback.
+    def test_arbitrary_keys_used_in_order(self, preprocessor) -> None:
+        # Non-reference view names are used as-is in insertion order.
         inputs = {
             f"{IMAGES}.camA": np.zeros((256, 256, 3), dtype=np.uint8),
             f"{IMAGES}.camB": np.zeros((256, 256, 3), dtype=np.uint8),
         }
-        images = preprocessor._extract_images(inputs)
+        views, images = preprocessor._extract_images(inputs)
+        assert views == ["camA", "camB"]
         assert len(images) == 2
 
     def test_no_images_raises(self, preprocessor) -> None:
@@ -281,7 +281,7 @@ class TestPrepareState:
     @pytest.fixture()
     def small_preprocessor(self):
         # Small max_state_dim keeps the reference tensors tiny.
-        return XR0Preprocessor(camera_views=("base",), max_state_dim=4, patch_size=16, merge_size=2)
+        return XR0Preprocessor(max_state_dim=4, patch_size=16, merge_size=2)
 
     @pytest.mark.parametrize(
         ("state", "expected"),
@@ -339,7 +339,6 @@ class TestPrepareState:
     )
     def test_prepare_state_normalized(self, state, expected) -> None:
         prep = XR0Preprocessor(
-            camera_views=("base",),
             max_state_dim=4,
             patch_size=16,
             merge_size=2,
@@ -372,8 +371,10 @@ class TestXR0PreprocessorCall:
         assert isinstance(result[TASK][0], str)
 
     def test_pixel_grid_matches_view_count(self, preprocessor) -> None:
+        # Flat patchified pixel_values: 2 views at 256x256 -> 256 tokens/image,
+        # 2 images -> 512 rows; feature = C * temporal_patch_size * patch**2.
         result = preprocessor(_make_inputs())
-        assert result["pixel_values"].shape == (2, 3, 256, 256)
+        assert result["pixel_values"].shape == (512, 3 * 2 * 16 * 16)
 
     def test_pad_counts_derive_from_resized_dims(self, preprocessor) -> None:
         # Non-square 128x256 stays patch-aligned (multiples of factor=32).
@@ -390,7 +391,8 @@ class TestXR0PreprocessorCall:
             TASK: "pick up the cup",
         }
         result = preprocessor(inputs)
-        assert result["pixel_values"].shape == (1, 3, 256, 256)
+        # Single 256x256 view -> 256 patch rows; feature = C * tp * patch**2.
+        assert result["pixel_values"].shape == (256, 3 * 2 * 16 * 16)
         prompt = result[TASK][0]
         assert "# Base View" in prompt
         assert "# Left-Wrist View" not in prompt
