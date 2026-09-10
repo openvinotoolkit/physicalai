@@ -31,6 +31,21 @@
       "release-type": "python",
       "package-name": "physicalai-studio-plugin",
       "changelog-path": "CHANGELOG.md"
+    },
+    "packages/physicalai-bimanual-so101-plugin": {
+      "release-type": "python",
+      "package-name": "physicalai-bimanual-so101-plugin",
+      "changelog-path": "CHANGELOG.md"
+    },
+    "packages/physicalai-rebot-b601-plugin": {
+      "release-type": "python",
+      "package-name": "physicalai-rebot-b601-plugin",
+      "changelog-path": "CHANGELOG.md"
+    },
+    "packages/physicalai-stararm-plugin": {
+      "release-type": "python",
+      "package-name": "physicalai-stararm-plugin",
+      "changelog-path": "CHANGELOG.md"
     }
   }
 }
