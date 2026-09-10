@@ -20,7 +20,13 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from physicalai.config import export_config
-from physicalai.inference.constants import ACTION
+from physicalai.inference.constants import (
+    ACTION,
+    PREV_CHUNK_LEFT_OVER,
+    RTC_EXECUTION_HORIZON,
+    RTC_INFERENCE_DELAY,
+    RTC_MAX_GUIDANCE_WEIGHT,
+)
 from physicalai.runtime.execution.base import Execution, WorkerDiedError
 
 if TYPE_CHECKING:
@@ -606,12 +612,13 @@ class RTCExecution(Execution):
             execution_horizon = self._execution_horizon
             delay = self._clamped_delay(execution_horizon)
 
-        inputs["prev_chunk_left_over"] = prev_chunk_padded
-        inputs["inference_delay"] = np.int64(delay)
-        inputs["max_guidance_weight"] = np.float32(max_guidance_weight)
-        inputs["execution_horizon"] = np.int64(execution_horizon)
+        updated_inputs: dict[str, np.ndarray | np.int64 | np.float32 | None] = dict(inputs)
+        updated_inputs[PREV_CHUNK_LEFT_OVER] = prev_chunk_padded
+        updated_inputs[RTC_INFERENCE_DELAY] = np.int64(delay)
+        updated_inputs[RTC_MAX_GUIDANCE_WEIGHT] = np.float32(max_guidance_weight)
+        updated_inputs[RTC_EXECUTION_HORIZON] = np.int64(execution_horizon)
 
-        return inputs
+        return updated_inputs
 
     def _clamped_delay(self, execution_horizon: int) -> int:
         """Measured inference delay, held inside the range the model accepts.
