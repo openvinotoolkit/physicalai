@@ -53,9 +53,7 @@ class BimanualWidowXAIObservation:
 
     @property
     def state(self) -> np.ndarray:
-        """State vector: positions (14) + velocities (14) = (28,)."""
-        if self.sensor_data and "velocities" in self.sensor_data:
-            return np.concatenate([self.joint_positions, self.sensor_data["velocities"]])
+        """State vector: joint positions (14)."""
         return self.joint_positions
 
 
