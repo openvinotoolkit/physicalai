@@ -1,0 +1,24 @@
+# Star Arm 102-HD leader read-joints runtime config.
+
+runtime:
+  robot:
+    class_path: physicalai_stararm_plugin.stararm102hd.StarArm102HDLeader
+    init_args:
+      port: /dev/ttyUSB0 # CHANGE_ME: HD leader serial port
+      baudrate: 1000000
+
+  action_source:
+    class_path: physicalai_stararm_plugin.motion.SineWaveSource
+    init_args:
+      amplitude: 0.0
+      frequency: 0.25
+
+  callbacks:
+    - class_path: physicalai_stararm_plugin.motion.JointLogger
+      init_args:
+        throttle_steps: 1
+
+  fps: 10
+
+run:
+  duration_s: 30

@@ -1,0 +1,19 @@
+# Star Arm 102-LD to 102-FL teleoperation runtime config.
+
+runtime:
+  robot:
+    class_path: physicalai_stararm_plugin.stararm102fl.StarArm102FLFollower
+    init_args:
+      port: /dev/ttyUSB1 # CHANGE_ME: FL follower serial port
+      baudrate: 1000000
+
+  action_source:
+    class_path: physicalai.runtime.TeleopSource
+    init_args:
+      leader:
+        class_path: physicalai_stararm_plugin.stararm102ld.StarArm102LDLeader
+        init_args:
+          port: /dev/ttyUSB0 # CHANGE_ME: LD leader serial port
+          baudrate: 1000000
+
+  fps: 30.0

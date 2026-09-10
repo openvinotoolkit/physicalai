@@ -1,0 +1,24 @@
+# Star Arm 102-FL follower sinusoidal motion runtime config.
+
+runtime:
+  robot:
+    class_path: physicalai_stararm_plugin.stararm102fl.StarArm102FLFollower
+    init_args:
+      port: /dev/ttyUSB1 # CHANGE_ME: FL follower serial port
+      baudrate: 1000000
+
+  action_source:
+    class_path: physicalai_stararm_plugin.motion.SineWaveSource
+    init_args:
+      amplitude: 8.0
+      frequency: 0.2
+
+  callbacks:
+    - class_path: physicalai_stararm_plugin.motion.JointLogger
+      init_args:
+        throttle_steps: 10
+
+  fps: 30
+
+run:
+  duration_s: 20

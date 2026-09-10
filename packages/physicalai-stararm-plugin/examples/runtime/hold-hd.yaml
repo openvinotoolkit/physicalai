@@ -1,0 +1,23 @@
+# Star Arm 102-HD hold-position runtime config.
+
+runtime:
+  robot:
+    class_path: physicalai_stararm_plugin.stararm102hd.StarArm102HDLeader
+    init_args:
+      port: /dev/ttyUSB0 # CHANGE_ME: HD leader serial port
+      baudrate: 1000000
+      control_mode: assist
+      command_interval_ms: 20
+
+  action_source:
+    class_path: physicalai_stararm_plugin.motion.HoldPoseSource
+
+  callbacks:
+    - class_path: physicalai_stararm_plugin.motion.JointLogger
+      init_args:
+        throttle_steps: 1
+
+  fps: 10
+
+run:
+  duration_s: 30

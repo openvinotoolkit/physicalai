@@ -1,0 +1,21 @@
+# Star Arm 102-FL follower read-joints runtime config.
+
+runtime:
+  robot:
+    class_path: physicalai_stararm_plugin.stararm102fl.StarArm102FLFollower
+    init_args:
+      port: /dev/ttyUSB1 # CHANGE_ME: FL follower serial port
+      baudrate: 1000000
+
+  action_source:
+    class_path: physicalai_stararm_plugin.motion.HoldPoseSource
+
+  callbacks:
+    - class_path: physicalai_stararm_plugin.motion.JointLogger
+      init_args:
+        throttle_steps: 1
+
+  fps: 10
+
+run:
+  duration_s: 30

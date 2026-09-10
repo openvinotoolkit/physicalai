@@ -1,0 +1,412 @@
+<?xml version="1.0" encoding="utf-8"?>
+<robot name="stararm102_fl_simulator">
+  <material name="white">
+    <color rgba="1 1 1 1"/>
+  </material>
+  <material name="motor_green">
+    <color rgba="0.000 0.784 0.325 1"/>
+  </material>
+  <material name="shell">
+    <color rgba="0.720 0.760 0.730 1"/>
+  </material>
+  <material name="motor">
+    <color rgba="0.000 0.784 0.325 1"/>
+  </material>
+  <link name="base_link">
+    <inertial>
+      <origin xyz="-0.00507886641574018 -3.42055196168034E-05 0.0170541570471663" rpy="0 0 0"/>
+      <mass value="0.155441639095221"/>
+      <inertia ixx="0.000211774147683076" ixy="-1.12835975463621E-08" ixz="-1.66282304179735E-06" iyy="0.000108041554696676" iyz="3.2421968022911E-08" izz="0.000295757258206271"/>
+    </inertial>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/base_link.STL"/>
+      </geometry>
+    </collision>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/base_link.STL"/>
+      </geometry>
+      <material name="white"/>
+    </visual>
+  </link>
+  <link name="link1">
+    <inertial>
+      <origin xyz="-0.000860795817551681 3.48041004087085E-05 0.0388877617080775" rpy="0 0 0"/>
+      <mass value="0.0365919096309897"/>
+      <inertia ixx="1.06390422111377E-05" ixy="1.47026736408431E-13" ixz="3.78567348260604E-07" iyy="6.84495444026531E-06" iyz="-3.37080406447148E-09" izz="1.2039407998213E-05"/>
+    </inertial>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/link1.STL"/>
+      </geometry>
+    </collision>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link1__0.STL"/>
+      </geometry>
+      <material name="motor"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link1__1.STL"/>
+      </geometry>
+      <material name="shell"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link1__2.STL"/>
+      </geometry>
+      <material name="shell"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link1__3.STL"/>
+      </geometry>
+      <material name="shell"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link1__4.STL"/>
+      </geometry>
+      <material name="shell"/>
+    </visual>
+  </link>
+  <joint name="joint1" type="revolute">
+    <origin xyz="0 -0.004138 0.02785" rpy="0 0 0"/>
+    <parent link="base_link"/>
+    <child link="link1"/>
+    <axis xyz="0 0 -1"/>
+    <limit effort="100" velocity="1" lower="-2.27" upper="2.27"/>
+  </joint>
+  <link name="link2">
+    <inertial>
+      <origin xyz="0.065445114144764 4.80766137382835E-05 1.86081119329107E-05" rpy="0 0 0"/>
+      <mass value="0.0677741447743621"/>
+      <inertia ixx="2.49505701233235E-05" ixy="-1.4323495575068E-06" ixz="-2.88763068172859E-09" iyy="7.27062347454161E-05" iyz="5.01460295474944E-11" izz="5.48857485408553E-05"/>
+    </inertial>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/link2.STL"/>
+      </geometry>
+    </collision>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link2__0.STL"/>
+      </geometry>
+      <material name="shell"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link2__1.STL"/>
+      </geometry>
+      <material name="motor"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link2__2.STL"/>
+      </geometry>
+      <material name="shell"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link2__3.STL"/>
+      </geometry>
+      <material name="shell"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link2__4.STL"/>
+      </geometry>
+      <material name="shell"/>
+    </visual>
+  </link>
+  <joint name="joint2" type="revolute">
+    <origin xyz="0.0001 0 0.061025" rpy="-1.5708 0 3.1416"/>
+    <parent link="link1"/>
+    <child link="link2"/>
+    <axis xyz="0 0 -1"/>
+    <limit effort="100" velocity="1" lower="0" upper="3.14"/>
+  </joint>
+  <link name="link3">
+    <inertial>
+      <origin xyz="0.0139670047463857 -0.0548362979855048 -0.0260232297832349" rpy="0 0 0"/>
+      <mass value="0.062483417986533"/>
+      <inertia ixx="6.07869930598935E-05" ixy="6.07457290650578E-06" ixz="1.72220333532639E-10" iyy="2.4119750081723E-05" iyz="-1.05927086495088E-08" izz="4.79411867478519E-05"/>
+    </inertial>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/link3.STL"/>
+      </geometry>
+    </collision>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link3__0.STL"/>
+      </geometry>
+      <material name="shell"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link3__1.STL"/>
+      </geometry>
+      <material name="motor"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link3__2.STL"/>
+      </geometry>
+      <material name="shell"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link3__3.STL"/>
+      </geometry>
+      <material name="shell"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link3__4.STL"/>
+      </geometry>
+      <material name="shell"/>
+    </visual>
+  </link>
+  <joint name="joint3" type="revolute">
+    <origin xyz="0.12162 -0.0021 0" rpy="0 0 -1.5708"/>
+    <parent link="link2"/>
+    <child link="link3"/>
+    <axis xyz="0 0 -1"/>
+    <limit effort="100" velocity="1" lower="-3.14" upper="0"/>
+  </joint>
+  <link name="link4">
+    <inertial>
+      <origin xyz="0.0233852853653051 -0.00064950134956597 -4.72632631462466E-06" rpy="0 0 0"/>
+      <mass value="0.0290020616470162"/>
+      <inertia ixx="1.1313445878846E-05" ixy="2.04495765263871E-08" ixz="3.96927019964726E-09" iyy="1.29471641752426E-05" iyz="1.58418299959233E-09" izz="5.57726165351631E-06"/>
+    </inertial>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/link4.STL"/>
+      </geometry>
+    </collision>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/link4.STL"/>
+      </geometry>
+      <material name="shell"/>
+    </visual>
+  </link>
+  <joint name="joint4" type="revolute">
+    <origin xyz="0.024219 -0.10865 0" rpy="0 0 -1.5708"/>
+    <parent link="link3"/>
+    <child link="link4"/>
+    <axis xyz="0 0 -1"/>
+    <limit effort="100" velocity="1" lower="-1.57" upper="2.2"/>
+  </joint>
+  <link name="link5">
+    <inertial>
+      <origin xyz="0.0239721333681056 1.60405714164091E-06 0.0123439857182104" rpy="0 0 0"/>
+      <mass value="0.04381347428302"/>
+      <inertia ixx="8.71603004200794E-06" ixy="6.14891079200239E-10" ixz="2.11746739586546E-07" iyy="1.364277032058E-05" iyz="1.11466543450896E-10" izz="1.22790054604825E-05"/>
+    </inertial>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/link5.STL"/>
+      </geometry>
+    </collision>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link5__0.STL"/>
+      </geometry>
+      <material name="shell"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link5__1.STL"/>
+      </geometry>
+      <material name="motor"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link5__2.STL"/>
+      </geometry>
+      <material name="motor"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link5__3.STL"/>
+      </geometry>
+      <material name="motor"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link5__4.STL"/>
+      </geometry>
+      <material name="motor"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link5__5.STL"/>
+      </geometry>
+      <material name="motor"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link5__6.STL"/>
+      </geometry>
+      <material name="motor"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link5__7.STL"/>
+      </geometry>
+      <material name="motor"/>
+    </visual>
+  </link>
+  <joint name="joint5" type="revolute">
+    <origin xyz="0.035 0.00122 0" rpy="-1.5708 0 0"/>
+    <parent link="link4"/>
+    <child link="link5"/>
+    <axis xyz="0 0 -1"/>
+    <limit effort="100" velocity="1" lower="-1.2" upper="1.2"/>
+  </joint>
+  <link name="link6">
+    <inertial>
+      <origin xyz="0.00415459393144704 6.90476927523165E-05 -0.0776167187492962" rpy="0 0 0"/>
+      <mass value="0.0277279215984807"/>
+      <inertia ixx="6.06312512308252E-06" ixy="3.91296868794582E-08" ixz="-1.01016013762684E-06" iyy="6.31326639496487E-06" iyz="9.82075534976282E-09" izz="7.98591452298848E-06"/>
+    </inertial>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/link6.STL"/>
+      </geometry>
+    </collision>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link6__0.STL"/>
+      </geometry>
+      <material name="motor"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link6__1.STL"/>
+      </geometry>
+      <material name="shell"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link6__2.STL"/>
+      </geometry>
+      <material name="shell"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link6__3.STL"/>
+      </geometry>
+      <material name="shell"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/shells/link6__4.STL"/>
+      </geometry>
+      <material name="shell"/>
+    </visual>
+  </link>
+  <joint name="joint6" type="revolute">
+    <origin xyz="0.15168 0 0.002625" rpy="-1.5708 0 -1.5708"/>
+    <parent link="link5"/>
+    <child link="link6"/>
+    <axis xyz="0 0 -1"/>
+    <limit effort="100" velocity="1" lower="-3.14" upper="3.14"/>
+  </joint>
+  <link name="link7_left">
+    <inertial>
+      <origin xyz="0.0281158042585857 0.00012184612342972 0.000226777556244492" rpy="0 0 0"/>
+      <mass value="0.0209012827567763"/>
+      <inertia ixx="6.35411360036268E-06" ixy="-2.90503922182143E-07" ixz="6.32393072078588E-08" iyy="1.42917487489547E-05" iyz="1.63150501633264E-10" izz="9.06820649030484E-06"/>
+    </inertial>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/link7_left.STL"/>
+      </geometry>
+    </collision>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/link7_left.STL"/>
+      </geometry>
+      <material name="white"/>
+    </visual>
+  </link>
+  <joint name="joint7_left" type="revolute">
+    <origin xyz="0.012325 0.0004 -0.07313" rpy="1.5708 -1.5708 0"/>
+    <parent link="link6"/>
+    <child link="link7_left"/>
+    <axis xyz="0 0 -1"/>
+    <limit effort="5" velocity="3.14" lower="0" upper="1.57"/>
+  </joint>
+  <link name="link7_right">
+    <inertial>
+      <origin xyz="0.029631 -9.0637E-05 -0.0004" rpy="0 0 0"/>
+      <mass value="0.019895"/>
+      <inertia ixx="5.549E-06" ixy="3.0636E-07" ixz="1.641E-12" iyy="1.2591E-05" iyz="-4.8393E-13" izz="8.1517E-06"/>
+    </inertial>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/link7_right.STL"/>
+      </geometry>
+    </collision>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://stararm102/meshes/fl/link7_right.STL"/>
+      </geometry>
+      <material name="white"/>
+    </visual>
+  </link>
+  <joint name="joint7_right" type="revolute">
+    <origin xyz="-0.009675 0.0004 -0.07313" rpy="1.5708 -1.5708 0"/>
+    <parent link="link6"/>
+    <child link="link7_right"/>
+    <axis xyz="0 0 -1"/>
+    <limit effort="5" velocity="3.14" lower="-1.57" upper="0"/>
+  </joint>
+</robot>
