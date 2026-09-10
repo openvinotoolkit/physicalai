@@ -1,0 +1,38 @@
+# LeRobot teleoperation runtime config.
+#
+# Teleoperates a LeRobot follower with its matching leader teleoperator via
+# the built-in TeleopSource. Run from the repo root with:
+#
+#   uv run physicalai run --config packages/physicalai-lerobot-plugin/examples/runtime/teleop.yaml
+#
+# Stop with Ctrl+C. Edit the ports and config types for your hardware.
+#
+# The example uses the bundled so101_follower / so101_leader pair. Any
+# follower/leader type listed in the README works — set `config_type` to the
+# LeRobot RobotConfig name and `config_kwargs` to its fields.
+
+runtime:
+  robot:
+    class_path: physicalai_lerobot_plugin.lerobot_adapter.LeRobotAdapter
+    init_args:
+      config_type: so101_follower # CHANGE_ME: LeRobot follower config type
+      config_kwargs:
+        port: /dev/ttyACM0 # CHANGE_ME: follower serial port
+        disable_torque_on_disconnect: true
+        use_degrees: true
+        id: so101-main
+      role: follower
+
+  action_source:
+    class_path: physicalai.runtime.TeleopSource
+    init_args:
+      leader:
+        class_path: physicalai_lerobot_plugin.lerobot_adapter.LeRobotAdapter
+        init_args:
+          config_type: so101_leader # CHANGE_ME: LeRobot leader config type
+          config_kwargs:
+            port: /dev/ttyUSB0 # CHANGE_ME: leader serial port
+            id: so101-leader
+          role: leader
+
+  fps: 30.0

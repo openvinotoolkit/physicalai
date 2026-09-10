@@ -3,5 +3,6 @@
   "packages/physicalai-studio-plugin": "0.2.0",
   "packages/physicalai-bimanual-so101-plugin": "0.4.0",
   "packages/physicalai-rebot-b601-plugin": "0.6.0",
+  "packages/physicalai-lerobot-plugin": "0.2.3",
   "packages/physicalai-stararm-plugin": "0.2.0"
 }

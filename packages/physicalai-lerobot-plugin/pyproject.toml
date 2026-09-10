@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling<1.30", "hatch-vcs"]  # cap <1.30: hatchling>=1.30 emits Metadata 2.5, rejected by PyPI/twine (pypi/warehouse#19083)
+build-backend = "hatchling.build"
+
+[project]
+name = "physicalai-lerobot-plugin"
+dynamic = ["version"]
+description = "LeRobot robot adapter plugin for PhysicalAI (wraps lerobot.Robot into PhysicalAI's Robot protocol)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+dependencies = [
+    "physicalai>=0.1.1",
+    "physicalai-studio-plugin>=0.1.0",
+    "lerobot>=0.6.0",
+    "numpy>=1.24",
+    "loguru>=0.7",
+    "pydantic>=2.0",
+    "pyserial>=3.5",
+]
+
+[project.optional-dependencies]
+tests = ["pytest"]
+
+[project.urls]
+Homepage = "https://github.com/openvinotoolkit/physicalai"
+Repository = "https://github.com/openvinotoolkit/physicalai"
+Issues = "https://github.com/openvinotoolkit/physicalai/issues"
+
+[project.entry-points."physicalai.studio.catalog_plugins"]
+lerobot = "physicalai_lerobot_plugin.studio_catalog:register_physicalai_studio_plugin"
+
+[tool.hatch.version]
+source = "vcs"
+tag-pattern = '^physicalai-lerobot-plugin-v(?P<version>\d+(?:\.\d+)*)$'
+raw-options = { search_parent_directories = true, git_describe_command = "git describe --dirty --tags --long --match physicalai-lerobot-plugin-v*" }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/physicalai_lerobot_plugin"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"urdf" = "urdf"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/physicalai_lerobot_plugin/**",
+    "urdf/**",
+    "README.md",
+    "pyproject.toml",
+    "LICENSE",
+]
+exclude = [
+    "examples/**",
+]
