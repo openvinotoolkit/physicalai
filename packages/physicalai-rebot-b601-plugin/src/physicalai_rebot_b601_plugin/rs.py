@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
 """RobStride motor driver for the reBot B601 robot arm.
 
 Uses the ``motorbridge`` SDK to communicate with RobStride RS-series motors
@@ -30,6 +33,7 @@ from physicalai_rebot_b601_plugin.constants import (
 
 if TYPE_CHECKING:
     from motorbridge import Motor
+
     from physicalai.capture.frame import Frame
     from physicalai.robot.interface import RobotObservation
 

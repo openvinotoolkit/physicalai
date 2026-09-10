@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
 """Motor and joint constants for Star Arm 102 variants."""
 
 from __future__ import annotations

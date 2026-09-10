@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
 """Bimanual SO-101 hardware constants (dual STS3215 arms, left + right)."""
 
 from __future__ import annotations

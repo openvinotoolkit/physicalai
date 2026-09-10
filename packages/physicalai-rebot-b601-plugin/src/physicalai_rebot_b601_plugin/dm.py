@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
 """Damiao motor driver for the reBot B601 robot arm.
 
 Uses the ``motorbridge`` SDK to communicate with Damiao DM-series motors over
@@ -16,8 +19,8 @@ from typing import TYPE_CHECKING, ClassVar, Literal
 import numpy as np
 from loguru import logger
 from motorbridge import Controller, Mode
-from physicalai.config import export_config
 
+from physicalai.config import export_config
 from physicalai_rebot_b601_plugin.constants import (
     REBOT_B601_DM_JOINT_DIRECTIONS,
     REBOT_B601_DM_JOINT_LIMITS_DEG,
@@ -59,6 +62,7 @@ def _validate_per_joint_gains(gains: dict[str, float], name: str) -> None:
 
 if TYPE_CHECKING:
     from motorbridge import Motor, MotorState
+
     from physicalai.capture.frame import Frame
     from physicalai.robot.interface import RobotObservation
 

@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
 """Bimanual SO-101 robot arm driver.
 
 Wraps two :class:`physicalai.robot.so101.SO101` instances (left + right) behind the
@@ -11,9 +14,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
+
 from physicalai.config import export_config
 from physicalai.robot import Robot
-
 from physicalai_bimanual_so101_plugin.constants import (
     BIMANUAL_SO101_JOINT_ORDER,
     NUM_BIMANUAL_JOINTS,

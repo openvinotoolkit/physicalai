@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
 """Motor and joint constants for reBot B601 robot arms.
 
 Defines joint orders, motor IDs, model numbers, joint limits, direction

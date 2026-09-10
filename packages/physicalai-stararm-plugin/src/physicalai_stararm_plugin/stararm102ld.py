@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
 """Star Arm 102-LD leader driver."""
 
 from __future__ import annotations
@@ -5,7 +8,6 @@ from __future__ import annotations
 from typing import ClassVar
 
 from physicalai.config import export_config
-
 from physicalai_stararm_plugin.stararm102hd import StarArm102HDLeader
 
 

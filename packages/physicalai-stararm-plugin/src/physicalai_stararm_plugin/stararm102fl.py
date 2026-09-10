@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
 """Star Arm 102-FL follower driver."""
 
 from __future__ import annotations
@@ -9,8 +12,8 @@ from typing import TYPE_CHECKING, ClassVar, Protocol
 
 import numpy as np
 from loguru import logger
-from physicalai.config import export_config
 
+from physicalai.config import export_config
 from physicalai_stararm_plugin.constants import (
     STAR_ARM_102_JOINT_IDS,
     STAR_ARM_102_JOINT_ORDER,

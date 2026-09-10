@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
 """Motion and observation helpers for running examples via ``physicalai run``.
 
 Implements the :class:`physicalai.runtime.ActionSource` protocol (plus a
@@ -16,6 +19,7 @@ import time
 from typing import TYPE_CHECKING
 
 import numpy as np
+
 from physicalai.config import export_config
 
 if TYPE_CHECKING:

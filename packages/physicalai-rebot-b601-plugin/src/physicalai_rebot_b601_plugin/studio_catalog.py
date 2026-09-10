@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
 """Studio catalog plugin for Physical AI Studio.
 
 Exposes :func:`register_physicalai_studio_plugin` as the entry-point callable

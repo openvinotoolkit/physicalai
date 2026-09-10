@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
 """Studio catalog plugin for bimanual SO-101 robots."""
 
 from __future__ import annotations
@@ -5,7 +8,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from physicalai.robot.so101 import SO101, SO101Calibration, SO101JointCalibration
 from physicalai_studio_plugin import (
     CatalogRobotFactory,
     PayloadContainer,
@@ -22,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from serial.tools import list_ports
 
 import physicalai_bimanual_so101_plugin
+from physicalai.robot.so101 import SO101, SO101Calibration, SO101JointCalibration
 from physicalai_bimanual_so101_plugin import BimanualSO101, get_urdf_path
 
 if TYPE_CHECKING:
