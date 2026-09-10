@@ -1,0 +1,26 @@
+# reBot B601-RS sinusoidal motion runtime config (move_joints).
+#
+# Drives every joint through a sine wave as an actuation smoke test. Run from
+# the repo root with:
+#
+#   uv run physicalai run --config packages/physicalai-rebot-b601-plugin/examples/runtime/move-joints-rs.yaml
+#
+# Use with the arm suspended or in a safe configuration — the arm will move!
+
+runtime:
+  robot:
+    class_path: physicalai_rebot_b601_plugin.rs.ReBotB601RS
+    init_args:
+      port: can0 # CHANGE_ME: SocketCAN channel
+      can_adapter: socketcan
+
+  action_source:
+    class_path: physicalai_rebot_b601_plugin.motion.SineWaveSource
+    init_args:
+      amplitude: 10 # degrees
+      frequency: 0.25 # Hz
+
+  fps: 20
+
+run:
+  duration_s: 10

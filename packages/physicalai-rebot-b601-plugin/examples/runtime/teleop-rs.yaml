@@ -1,0 +1,26 @@
+# reBot B601-RS teleoperation runtime config.
+#
+# Relays a StarArm102HDLeader (Star Arm 102-HD, FashionStar UART) to a
+# B601-RS follower (RobStride, SocketCAN). Run from the repo root with:
+#
+#   uv run physicalai run --config packages/physicalai-rebot-b601-plugin/examples/runtime/teleop-rs.yaml
+#
+# Stop with Ctrl+C. Edit the ports for your hardware.
+
+runtime:
+  robot:
+    class_path: physicalai_rebot_b601_plugin.rs.ReBotB601RS
+    init_args:
+      port: can0 # CHANGE_ME: SocketCAN channel
+      can_adapter: socketcan
+
+  action_source:
+    class_path: physicalai.runtime.TeleopSource
+    init_args:
+      leader:
+        class_path: physicalai_stararm_plugin.stararm102hd.StarArm102HDLeader
+        init_args:
+          port: /dev/ttyUSB0 # CHANGE_ME: leader arm serial port
+          baudrate: 1000000
+
+  fps: 30.0

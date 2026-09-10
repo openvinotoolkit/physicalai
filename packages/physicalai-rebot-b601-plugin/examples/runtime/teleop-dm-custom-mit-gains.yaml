@@ -1,0 +1,56 @@
+# reBot B601-DM teleoperation with manually tuned MIT gains.
+#
+# Relays a StarArm102HDLeader (Star Arm 102-HD, FashionStar UART) to a
+# B601-DM follower (Damiao CAN). Run from the repo root with:
+#
+#   uv run physicalai run --config packages/physicalai-rebot-b601-plugin/examples/runtime/teleop-dm-custom-mit-gains.yaml
+#
+# MIT control can cause rapid motion. Begin with the arm clear of obstacles,
+# use conservative gains, and tune one joint at a time. The standard DM
+# examples retain the safe POS_VEL / FORCE_POS defaults.
+
+runtime:
+  robot:
+    class_path: physicalai_rebot_b601_plugin.dm.ReBotB601DM
+    init_args:
+      port: /dev/ttyACM0 # CHANGE_ME: follower serial port (or CAN channel)
+      can_adapter: damiao # damiao | socketcan
+      control_mode: mit
+      gripper_control_mode: mit
+      # Each mapping must specify every joint. kp is stiffness: increasing it
+      # makes the joint track position more firmly and quickly, while decreasing
+      # it makes the joint softer and slower. Excessive kp can cause overshoot,
+      # shaking, or high torque.
+      mit_kp:
+        shoulder_pan: 25.0
+        shoulder_lift: 75.0
+        elbow_flex: 75.0
+        wrist_flex: 25.0
+        wrist_yaw: 25.0
+        wrist_roll: 25.0
+        gripper: 6.0
+      # kd is damping: increasing it reduces overshoot and oscillation, but too
+      # much makes motion sluggish. Decreasing it makes motion more responsive
+      # but can make a high-kp joint oscillate. Tune kp first, then increase kd
+      # only enough to settle the motion.
+      mit_kd:
+        shoulder_pan: 1.5
+        shoulder_lift: 5.0
+        elbow_flex: 5.0
+        wrist_flex: 2.5
+        wrist_yaw: 2.0
+        wrist_roll: 2.0
+        gripper: 0.025
+      # Optional additional protection against a large leader-side jump.
+      max_relative_target: 5.0
+
+  action_source:
+    class_path: physicalai.runtime.TeleopSource
+    init_args:
+      leader:
+        class_path: physicalai_stararm_plugin.stararm102hd.StarArm102HDLeader
+        init_args:
+          port: /dev/ttyUSB0 # CHANGE_ME: leader arm serial port
+          baudrate: 1000000
+
+  fps: 30.0

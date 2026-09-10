@@ -1,0 +1,26 @@
+# reBot B601-RS read-joints runtime config.
+#
+# Reads and logs joint positions while holding the current pose. Run from the
+# repo root with:
+#
+#   uv run physicalai run --config packages/physicalai-rebot-b601-plugin/examples/runtime/read-joints-rs.yaml
+
+runtime:
+  robot:
+    class_path: physicalai_rebot_b601_plugin.rs.ReBotB601RS
+    init_args:
+      port: can0 # CHANGE_ME: SocketCAN channel
+      can_adapter: socketcan
+
+  action_source:
+    class_path: physicalai_rebot_b601_plugin.motion.HoldPoseSource
+
+  callbacks:
+    - class_path: physicalai_rebot_b601_plugin.motion.JointLogger
+      init_args:
+        throttle_steps: 1
+
+  fps: 10
+
+run:
+  duration_s: 30
