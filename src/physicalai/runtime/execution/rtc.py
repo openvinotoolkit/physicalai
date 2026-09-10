@@ -37,6 +37,9 @@ _ERROR_RETRY_DELAY_S: float = 0.5
 _MAX_CONSECUTIVE_ERRORS: int = 10
 _JOIN_TIMEOUT_S: float = 5.0
 _STRAGGLER_GRACE_S: float = 2.0
+# RTC inpainting needs at least as many guided actions as fresh ones, so the
+# execution horizon may cover at most half of a chunk.
+_MAX_HORIZON_DIVISOR: int = 2
 
 
 @dataclass
@@ -93,6 +96,10 @@ class RTCExecution(Execution):
         warmup_inferences: Number of initial inferences treated as warmup.
             The latency tracker is reset after these to discard
             compilation/kernel-build overhead (e.g. OpenVINO first-run).
+
+    Raises:
+        ValueError: If a tuning value is outside its allowed range. Values that
+            depend on the resolved chunk size are checked in :meth:`start`.
     """
 
     def __init__(  # noqa: D107
@@ -141,6 +148,48 @@ class RTCExecution(Execution):
         self._bus: _CallbackBus | None = None
         self._session_id: str = ""
 
+        self._validate_tuning()
+
+    def _validate_tuning(self) -> None:
+        """Check the model-independent RTC tuning values.
+
+        Raises:
+            ValueError: If a tuning value is outside its allowed range.
+        """
+        if self._execution_horizon <= 0:
+            msg = f"RTC execution_horizon must be positive, got {self._execution_horizon}."
+            raise ValueError(msg)
+        if self._max_guidance_weight < 0:
+            msg = f"RTC max_guidance_weight must be non-negative, got {self._max_guidance_weight}."
+            raise ValueError(msg)
+        if self._fps <= 0:
+            msg = f"RTC fps must be positive, got {self._fps}."
+            raise ValueError(msg)
+        if self._chunk_size_param is not None and self._chunk_size_param <= 0:
+            msg = f"RTC chunk_size must be positive, got {self._chunk_size_param}."
+            raise ValueError(msg)
+        if self._queue_threshold_param is not None and self._queue_threshold_param < 0:
+            msg = f"RTC queue_threshold must be non-negative, got {self._queue_threshold_param}."
+            raise ValueError(msg)
+
+    def _validate_chunk_size(self) -> None:
+        """Check the resolved chunk size against the execution horizon.
+
+        Raises:
+            ValueError: If the chunk size is not positive, or does not leave
+                room for both the execution horizon and the guided remainder.
+        """
+        if self._chunk_size <= 0:
+            msg = f"RTC chunk_size must be positive, got {self._chunk_size}."
+            raise ValueError(msg)
+        max_horizon = self._chunk_size // _MAX_HORIZON_DIVISOR
+        if self._execution_horizon > max_horizon:
+            msg = (
+                "RTC execution_horizon is restricted to at most half the chunk size: "
+                f"{self._execution_horizon} > {max_horizon} (chunk_size={self._chunk_size})."
+            )
+            raise ValueError(msg)
+
     @property
     def chunk_size(self) -> int:
         """Discovered chunk size (from warmup or config)."""
@@ -176,6 +225,8 @@ class RTCExecution(Execution):
             RuntimeError: If the previous worker is still inside the model after
                 a short grace period. Running anyway would put two threads
                 through one ``InferenceModel``, which is not synchronised.
+            ValueError: If the resolved chunk size does not admit the configured
+                execution horizon.
         """  # noqa: DOC502 — raised by the delegated _await_previous_worker(), but callers see it here.
         # Wake direct warmup callers before waiting on or refusing an active
         # worker. Otherwise they can remain blocked until the 120 s timeout.
@@ -202,6 +253,8 @@ class RTCExecution(Execution):
                 self._chunk_size = model.chunk_size
             else:
                 self._chunk_size = 50  # fallback default to Pi05 chunk size
+
+        self._validate_chunk_size()
 
         # Fresh events rather than clearing the shared ones: a worker that
         # outlived stop() keeps its own set stop event, so it cannot be revived
@@ -539,6 +592,7 @@ class RTCExecution(Execution):
             # Suppress correction on the first step since there's no real previous trajectory
             max_guidance_weight = 0.0
             execution_horizon = 0
+            delay = 0
         else:
             remaining = prev_chunk.shape[0]
 
@@ -550,9 +604,7 @@ class RTCExecution(Execution):
 
             max_guidance_weight = self._max_guidance_weight
             execution_horizon = self._execution_horizon
-
-        # Compute delay from latency tracker
-        delay = self._latency_tracker.compute_delay(self._fps) if self._latency_tracker is not None else 0
+            delay = self._clamped_delay(execution_horizon)
 
         inputs["prev_chunk_left_over"] = prev_chunk_padded
         inputs["inference_delay"] = np.int64(delay)
@@ -560,3 +612,27 @@ class RTCExecution(Execution):
         inputs["execution_horizon"] = np.int64(execution_horizon)
 
         return inputs
+
+    def _clamped_delay(self, execution_horizon: int) -> int:
+        """Measured inference delay, held inside the range the model accepts.
+
+        Clamps rather than raises: the delay tracks live latency, so a slow tick
+        must degrade the guidance rather than kill the inference thread.
+
+        Returns:
+            Delay in actions, within ``[0, execution_horizon]``.
+        """
+        if self._latency_tracker is None:
+            return 0
+        delay = self._latency_tracker.compute_delay(self._fps)
+        clamped = min(max(delay, 0), execution_horizon)
+        if clamped != delay:
+            logger.warning(
+                "RTC inference_delay %d is outside [0, %d] — clamping to %d. "
+                "Inference is slower than the execution horizon covers; "
+                "raise execution_horizon or lower fps.",
+                delay,
+                execution_horizon,
+                clamped,
+            )
+        return clamped
