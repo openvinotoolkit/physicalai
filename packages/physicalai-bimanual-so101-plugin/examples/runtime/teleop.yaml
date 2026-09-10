@@ -1,0 +1,55 @@
+# Bimanual SO-101 teleoperation runtime config.
+#
+# Teleoperates a bimanual SO-101 (two arms) with a leader BimanualSO101 via
+# the built-in TeleopSource. Run from the repo root with:
+#
+#   uv run physicalai run --config packages/physicalai-bimanual-so101-plugin/examples/runtime/teleop.yaml
+#
+# Stop with Ctrl+C. Edit the ports for your hardware.
+#
+# Uses the bundled SO-101 calibration examples (both arms share the same
+# follower/leader arm type):
+#
+#   examples/calibration/follower.json  # left + right followers
+#   examples/calibration/leader.json    # left + right leaders
+#
+# For raw-ticks bringup (no calibration), replace the calibration paths with
+# `allow_uncalibrated: true` on every arm.
+
+runtime:
+  robot:
+    class_path: physicalai_bimanual_so101_plugin.BimanualSO101
+    init_args:
+      left:
+        class_path: physicalai.robot.SO101
+        init_args:
+          port: /dev/ttyACM0 # CHANGE_ME: left follower serial port
+          role: follower
+          calibration: packages/physicalai-bimanual-so101-plugin/examples/calibration/follower.json
+      right:
+        class_path: physicalai.robot.SO101
+        init_args:
+          port: /dev/ttyACM1 # CHANGE_ME: right follower serial port
+          role: follower
+          calibration: packages/physicalai-bimanual-so101-plugin/examples/calibration/follower.json
+
+  action_source:
+    class_path: physicalai.runtime.TeleopSource
+    init_args:
+      leader:
+        class_path: physicalai_bimanual_so101_plugin.BimanualSO101
+        init_args:
+          left:
+            class_path: physicalai.robot.SO101
+            init_args:
+              port: /dev/ttyUSB0 # CHANGE_ME: left leader serial port
+              role: leader
+              calibration: packages/physicalai-bimanual-so101-plugin/examples/calibration/leader.json
+          right:
+            class_path: physicalai.robot.SO101
+            init_args:
+              port: /dev/ttyUSB1 # CHANGE_ME: right leader serial port
+              role: leader
+              calibration: packages/physicalai-bimanual-so101-plugin/examples/calibration/leader.json
+
+  fps: 30.0

@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling<1.30", "hatch-vcs"]  # cap <1.30: hatchling>=1.30 emits Metadata 2.5, rejected by PyPI/twine (pypi/warehouse#19083)
+build-backend = "hatchling.build"
+
+[project]
+name = "physicalai-bimanual-so101-plugin"
+dynamic = ["version"]
+description = "Bimanual SO-101 robot arm plugin for PhysicalAI (twin 6-DOF STS3215 arms)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+dependencies = [
+    "physicalai>=0.1.1",
+    "physicalai-studio-plugin>=0.1.0",
+    "numpy>=1.24",
+    "pydantic>=2.0",
+    "feetech-servo-sdk>=1.0",
+    "pyserial>=3.5",
+]
+
+[project.optional-dependencies]
+tests = ["pytest", "pytest-anyio"]
+
+[project.urls]
+Homepage = "https://github.com/openvinotoolkit/physicalai"
+Repository = "https://github.com/openvinotoolkit/physicalai"
+Issues = "https://github.com/openvinotoolkit/physicalai/issues"
+
+[project.entry-points."physicalai.studio.catalog_plugins"]
+bimanual-so101 = "physicalai_bimanual_so101_plugin.studio_catalog:register_physicalai_studio_plugin"
+
+[tool.hatch.version]
+source = "vcs"
+tag-pattern = '^physicalai-bimanual-so101-plugin-v(?P<version>\d+(?:\.\d+)*)$'
+raw-options = { search_parent_directories = true, git_describe_command = "git describe --dirty --tags --long --match physicalai-bimanual-so101-plugin-v*" }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/physicalai_bimanual_so101_plugin"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"urdf" = "urdf"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/physicalai_bimanual_so101_plugin/**",
+    "urdf/**",
+    "README.md",
+    "pyproject.toml",
+]
+exclude = [
+    "examples/**",
+]
+
+[tool.hatch.build.targets.sdist.force-include]
+"../../LICENSE" = "LICENSE"
