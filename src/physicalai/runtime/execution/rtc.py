@@ -26,6 +26,7 @@ from physicalai.inference.constants import (
     RTC_EXECUTION_HORIZON,
     RTC_INFERENCE_DELAY,
     RTC_MAX_GUIDANCE_WEIGHT,
+    STATE,
 )
 from physicalai.runtime.execution.base import Execution, WorkerDiedError
 
@@ -594,10 +595,13 @@ class RTCExecution(Execution):
         # prev_chunk_left_over from queue
         prev_chunk = self._rtc_queue.get_left_over()
         if prev_chunk is None:
-            prev_chunk_padded = prev_chunk
+            prev_chunk_padded = np.zeros(
+                (1, self._chunk_size, inputs[STATE].shape[-1]),
+                dtype=np.float32,
+            )
             # Suppress correction on the first step since there's no real previous trajectory
-            max_guidance_weight = 0.0
-            execution_horizon = 0
+            max_guidance_weight = 1e-8
+            execution_horizon = 1
             delay = 0
         else:
             remaining = prev_chunk.shape[0]
@@ -612,7 +616,7 @@ class RTCExecution(Execution):
             execution_horizon = self._execution_horizon
             delay = self._clamped_delay(execution_horizon)
 
-        updated_inputs: dict[str, np.ndarray | np.int64 | np.float32 | None] = dict(inputs)
+        updated_inputs: dict[str, np.ndarray | np.int64 | np.float32] = dict(inputs)
         updated_inputs[PREV_CHUNK_LEFT_OVER] = prev_chunk_padded
         updated_inputs[RTC_INFERENCE_DELAY] = np.int64(delay)
         updated_inputs[RTC_MAX_GUIDANCE_WEIGHT] = np.float32(max_guidance_weight)
