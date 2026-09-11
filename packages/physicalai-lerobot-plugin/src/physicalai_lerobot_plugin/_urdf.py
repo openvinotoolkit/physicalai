@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
 """URDF path utility for bundled robot description packages."""
 
 from __future__ import annotations

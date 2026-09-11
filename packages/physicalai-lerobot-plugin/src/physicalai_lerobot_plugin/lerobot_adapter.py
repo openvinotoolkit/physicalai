@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
 """Adapter that wraps a lerobot.robots.robot.Robot into PhysicalAI's Robot protocol.
 
 Joint order, observation keys, and action keys are auto-detected from the
@@ -16,8 +19,8 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 import numpy as np
 from loguru import logger
-from physicalai.config import export_config
 
+from physicalai.config import export_config
 from physicalai_lerobot_plugin.constants import VALID_ROLES
 
 if TYPE_CHECKING:
@@ -29,7 +32,7 @@ class _LeRobotLike(Protocol):
     observation_features: dict[str, Any]
     is_connected: bool
 
-    def connect(self, calibrate: bool = True) -> None: ...
+    def connect(self, calibrate: bool = True) -> None: ...  # noqa: FBT001, FBT002
     def disconnect(self) -> None: ...
     def get_observation(self) -> dict[str, Any]: ...
     def send_action(self, action: dict[str, Any]) -> None: ...
@@ -218,7 +221,11 @@ class LeRobotAdapter:
         }
 
     def __setstate__(self, state: dict[str, object]) -> None:
-        """Restore state and reset runtime-only members after unpickling."""
+        """Restore state and reset runtime-only members after unpickling.
+
+        Raises:
+            TypeError: If serialized state values have unexpected types.
+        """
         config_type = state.get("_config_type")
         config_kwargs = state.get("_config_kwargs")
         role = state.get("_role")
@@ -335,7 +342,11 @@ class LeRobotAdapter:
             raise ConnectionError(msg) from e
 
     def _connect_robot(self) -> None:
-        """Build (if needed), connect, and observe the LeRobot robot."""
+        """Build (if needed), connect, and observe the LeRobot robot.
+
+        Raises:
+            RuntimeError: If robot construction did not initialize the robot instance.
+        """
         self._ensure_robot()
         logger.info("Connecting LeRobot robot config type={!r}", self._config_type)
         robot = self._robot
@@ -380,6 +391,9 @@ class LeRobotAdapter:
 
         Returns:
             LeRobotAdapterObservation with joint positions and sensor data.
+
+        Raises:
+            ConnectionError: If no robot instance is connected.
         """
         robot = self._robot
         if robot is None:
@@ -424,6 +438,7 @@ class LeRobotAdapter:
         Raises:
             RuntimeError: If called in leader role or before ``connect()``.
             ValueError: If action has incorrect shape.
+            ConnectionError: If no robot instance is connected.
         """
         _ = goal_time
         if self._role == "leader":
@@ -510,7 +525,11 @@ class LeRobotTeleoperatorAdapter:
         }
 
     def __setstate__(self, state: dict[str, object]) -> None:
-        """Restore state and reset runtime-only members after unpickling."""
+        """Restore state and reset runtime-only members after unpickling.
+
+        Raises:
+            TypeError: If serialized state values have unexpected types.
+        """
         config_type = state.get("_config_type")
         config_kwargs = state.get("_config_kwargs")
         role = state.get("_role")
@@ -617,7 +636,11 @@ class LeRobotTeleoperatorAdapter:
             raise ConnectionError(msg) from e
 
     def _connect_teleoperator(self) -> None:
-        """Build (if needed), connect, and read the initial teleoperator action."""
+        """Build (if needed), connect, and read the initial teleoperator action.
+
+        Raises:
+            RuntimeError: If teleoperator construction did not initialize the device instance.
+        """
         self._ensure_teleoperator()
         logger.info("Connecting LeRobot teleoperator config type={!r}", self._config_type)
         teleop = self._teleoperator
@@ -669,6 +692,9 @@ class LeRobotTeleoperatorAdapter:
 
         Returns:
             LeRobotAdapterObservation with joint positions and sensor data.
+
+        Raises:
+            ConnectionError: If no teleoperator instance is connected.
         """
         teleop = self._teleoperator
         if teleop is None:
@@ -714,6 +740,7 @@ class LeRobotTeleoperatorAdapter:
         Raises:
             RuntimeError: If called in leader role or before ``connect()``.
             ValueError: If action has incorrect shape.
+            ConnectionError: If no teleoperator instance is connected.
         """
         _ = goal_time
         if self._role == "leader":

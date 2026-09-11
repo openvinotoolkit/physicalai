@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
 # ruff: noqa: PLC0415
 
 """Studio catalog plugin for LeRobot adapters.
@@ -22,9 +25,9 @@ from physicalai_studio_plugin import (
     CatalogRobotFactory,
     PayloadContainer,
     PortScanner,
-    RobotFieldUiOptions,
     RobotAdapterOptions,
     RobotCatalogDefinition,
+    RobotFieldUiOptions,
     RobotProbe,
     SerialPortInfo,
     robot_field_ui,
@@ -196,7 +199,7 @@ def _to_payload_annotation(annotation: object) -> object:  # noqa: PLR0911
     if origin in {Union, types.UnionType}:
         result: Any = converted_args[0]
         for arg in converted_args[1:]:
-            result = result | cast(Any, arg)
+            result |= cast("Any", arg)
         return result
 
     if origin is Literal:
@@ -283,7 +286,7 @@ def _coerce_to_annotation(  # noqa: C901, PLR0911, PLR0912
     return value
 
 
-def _materialize_dataclass(config_cls: type[Any], payload_data: dict[str, object]) -> Any:
+def _materialize_dataclass(config_cls: type[object], payload_data: dict[str, object]) -> object:
     kwargs: dict[str, object] = {}
     for f in dataclasses.fields(config_cls):
         if f.name not in payload_data:
@@ -292,14 +295,14 @@ def _materialize_dataclass(config_cls: type[Any], payload_data: dict[str, object
     return config_cls(**kwargs)
 
 
-def _config_to_kwargs(config: Any) -> dict[str, object]:
+def _config_to_kwargs(config: object) -> dict[str, object]:
     if not dataclasses.is_dataclass(config):
         msg = f"Expected dataclass instance, got {type(config)!r}"
         raise TypeError(msg)
     return {field.name: getattr(config, field.name) for field in dataclasses.fields(config)}
 
 
-async def _resolve_ports_in_dataclass(config: Any, factory: CatalogRobotFactory, path: str = "") -> None:
+async def _resolve_ports_in_dataclass(config: object, factory: CatalogRobotFactory, path: str = "") -> None:
     if not dataclasses.is_dataclass(config):
         msg = f"Expected dataclass instance, got {type(config)!r}"
         raise TypeError(msg)
