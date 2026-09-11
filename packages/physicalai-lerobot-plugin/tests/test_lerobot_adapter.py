@@ -44,6 +44,26 @@ def test_teleoperator_config_lookup_imports_registered_types() -> None:
     assert _teleoperator_config_class("so101_leader") is not None
 
 
+def test_dynamic_import_guard_allows_only_lerobot_prefixes() -> None:
+    from physicalai_lerobot_plugin.lerobot_adapter import _is_allowed_dynamic_import
+
+    assert _is_allowed_dynamic_import("lerobot.robots.so_follower")
+    assert _is_allowed_dynamic_import("lerobot.teleoperators.so_leader")
+    assert _is_allowed_dynamic_import("lerobot_robot_example")
+    assert _is_allowed_dynamic_import("lerobot_teleoperator_example")
+
+    assert not _is_allowed_dynamic_import("os")
+    assert not _is_allowed_dynamic_import("subprocess")
+    assert not _is_allowed_dynamic_import("lerobotx.robots.fake")
+
+
+def test_config_import_rejects_untrusted_package_root() -> None:
+    from physicalai_lerobot_plugin.lerobot_adapter import _import_config_modules
+
+    with pytest.raises(ValueError, match="Unsupported package root"):
+        _import_config_modules("subprocess")
+
+
 def _make_adapter(
     mock_robot: MagicMock,
     role: Literal["follower", "leader"] = "follower",

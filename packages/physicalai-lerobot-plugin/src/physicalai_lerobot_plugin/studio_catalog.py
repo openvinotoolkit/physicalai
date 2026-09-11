@@ -13,7 +13,6 @@ creating a typed Pydantic payload model for each from the lerobot
 from __future__ import annotations
 
 import dataclasses
-import importlib
 import importlib.machinery
 import sys
 import types
@@ -89,12 +88,9 @@ def _ensure_lerobot_configs_imported() -> None:
 
     import lerobot.robots
 
-    for _importer, modname, is_pkg in pkgutil.walk_packages(
-        lerobot.robots.__path__,
-        prefix="lerobot.robots.",
-    ):
-        if "config" in modname and not is_pkg:
-            importlib.import_module(modname)
+    for _importer, modname, is_pkg in pkgutil.walk_packages(lerobot.robots.__path__, prefix="lerobot.robots."):
+        if "config" in modname and not is_pkg and _is_allowed_dynamic_import(modname):
+            importlib.import_module(modname)  # nosemgrep: python.lang.security.audit.non-literal-import
     _LEROBOT_CONFIGS_IMPORTED = True
 
 
@@ -129,6 +125,16 @@ _ADVANCED_CONFIGURATION_NAME_MARKERS: frozenset[str] = frozenset({
     "offset",
     "can_adapter",
 })
+_ALLOWED_DYNAMIC_IMPORT_PREFIXES: tuple[str, ...] = (
+    "lerobot.",
+    "lerobot_robot_",
+    "lerobot_teleoperator_",
+)
+
+
+def _is_allowed_dynamic_import(module_name: str) -> bool:
+    """Return whether a module name is trusted for dynamic importing."""
+    return any(module_name.startswith(prefix) for prefix in _ALLOWED_DYNAMIC_IMPORT_PREFIXES)
 
 
 def _is_dataclass_type(annotation: object) -> TypeGuard[type[Any]]:
@@ -146,7 +152,15 @@ def _payload_types_namespace(config_cls: type[Any], visited: set[type[Any]] | No
         return {}
     visited.add(config_cls)
 
-    namespace = vars(importlib.import_module(config_cls.__module__)).copy()
+    module_name = config_cls.__module__
+    if not _is_allowed_dynamic_import(module_name):
+        return {}
+
+    module = sys.modules.get(module_name)
+    if module is None:
+        return {}
+
+    namespace = vars(module).copy()
     for field in dataclasses.fields(config_cls):
         namespace.update(_annotation_types_namespace(field.type, visited))
     return namespace
@@ -449,8 +463,8 @@ def _ensure_lerobot_teleoperators_imported() -> None:
         lerobot.teleoperators.__path__,
         prefix="lerobot.teleoperators.",
     ):
-        if "config" in modname and not is_pkg:
-            importlib.import_module(modname)
+        if "config" in modname and not is_pkg and _is_allowed_dynamic_import(modname):
+            importlib.import_module(modname)  # nosemgrep: python.lang.security.audit.non-literal-import
     _LEROBOT_TELEOPERATORS_IMPORTED = True
 
 

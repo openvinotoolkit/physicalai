@@ -75,6 +75,15 @@ _DIM_THRESHOLD_IMAGE: int = 2
 _POSITION_KEY_SUFFIX: str = ".pos"
 _POSITION_KEY_LONG_SUFFIX: str = "_position"
 _POSITION_KEY_FALLBACK_SUFFIX: str = "pos"
+_ALLOWED_CONFIG_PACKAGE_ROOTS: frozenset[str] = frozenset({
+    "lerobot.robots",
+    "lerobot.teleoperators",
+})
+_ALLOWED_DYNAMIC_IMPORT_PREFIXES: tuple[str, ...] = (
+    "lerobot.",
+    "lerobot_robot_",
+    "lerobot_teleoperator_",
+)
 
 
 def _strip_position_suffix(key: str) -> str:
@@ -119,6 +128,11 @@ def _collect_device_ports(value: object) -> list[str]:
     return ports
 
 
+def _is_allowed_dynamic_import(module_name: str) -> bool:
+    """Return whether a module name is trusted for dynamic importing."""
+    return any(module_name.startswith(prefix) for prefix in _ALLOWED_DYNAMIC_IMPORT_PREFIXES)
+
+
 def _device_ids(config_type: str, config_kwargs: dict[str, Any]) -> tuple[str, ...]:
     """Return stable serial-device identities without touching hardware."""
     ports = sorted(set(_collect_device_ports(config_kwargs)))
@@ -126,11 +140,23 @@ def _device_ids(config_type: str, config_kwargs: dict[str, Any]) -> tuple[str, .
 
 
 def _import_config_modules(package_name: str) -> None:
-    """Import LeRobot config modules so their registered types are available after spawn."""
-    package = importlib.import_module(package_name)
+    """Import LeRobot config modules so their registered types are available after spawn.
+
+    Raises:
+        ValueError: If a non-whitelisted package root is requested.
+    """
+    if package_name not in _ALLOWED_CONFIG_PACKAGE_ROOTS:
+        msg = f"Unsupported package root for config imports: {package_name!r}"
+        raise ValueError(msg)
+
+    if package_name == "lerobot.robots":
+        package = importlib.import_module("lerobot.robots")
+    else:
+        package = importlib.import_module("lerobot.teleoperators")
+
     for _importer, module_name, is_package in pkgutil.walk_packages(package.__path__, prefix=f"{package_name}."):
-        if "config" in module_name and not is_package:
-            importlib.import_module(module_name)
+        if "config" in module_name and not is_package and _is_allowed_dynamic_import(module_name):
+            importlib.import_module(module_name)  # nosemgrep: python.lang.security.audit.non-literal-import
 
 
 def _register_third_party_plugins() -> None:

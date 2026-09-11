@@ -104,6 +104,33 @@ def test_uses_lerobot_native_third_party_plugin_discovery(monkeypatch: pytest.Mo
     assert discovered == [True]
 
 
+def test_dynamic_import_guard_allows_only_trusted_prefixes() -> None:
+    from physicalai_lerobot_plugin.studio_catalog import _is_allowed_dynamic_import
+
+    assert _is_allowed_dynamic_import("lerobot.robots.so_follower")
+    assert _is_allowed_dynamic_import("lerobot.teleoperators.so_leader")
+    assert _is_allowed_dynamic_import("lerobot_robot_example")
+    assert _is_allowed_dynamic_import("lerobot_teleoperator_example")
+
+    assert not _is_allowed_dynamic_import("os")
+    assert not _is_allowed_dynamic_import("subprocess")
+    assert not _is_allowed_dynamic_import("numpy")
+
+
+def test_payload_types_namespace_rejects_untrusted_module() -> None:
+    import dataclasses
+
+    from physicalai_lerobot_plugin.studio_catalog import _payload_types_namespace
+
+    @dataclasses.dataclass
+    class _FakeConfig:
+        port: str = ""
+
+    _FakeConfig.__module__ = "subprocess"
+
+    assert _payload_types_namespace(_FakeConfig) == {}
+
+
 def test_register_plugin_skips_invalid_schema_and_registers_later_definitions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
