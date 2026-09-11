@@ -473,11 +473,15 @@ class TestRTCExecutionValidation:
         ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0, latency_tracker=tracker)
         ex._rtc_queue = RTCActionQueue()  # noqa: SLF001
 
-        inputs = ex._inject_rtc_inputs({})  # noqa: SLF001
+        inputs = ex._inject_rtc_inputs({"state": np.zeros((1, 3), dtype=np.float32)})  # noqa: SLF001
 
         assert int(inputs["inference_delay"]) == 0
-        assert int(inputs["execution_horizon"]) == 0
-        assert float(inputs["max_guidance_weight"]) == 0.0
+        # The first chunk has no real predecessor, so guidance is suppressed with
+        # the smallest values the model still accepts rather than exact zeros.
+        assert int(inputs["execution_horizon"]) == 1
+        assert float(inputs["max_guidance_weight"]) == pytest.approx(0.0, abs=1e-6)
+        assert inputs["prev_chunk_left_over"].shape == (1, ex.chunk_size, 3)
+        assert not inputs["prev_chunk_left_over"].any()
 
 
 class TestRTCExecutionObsSlot:
