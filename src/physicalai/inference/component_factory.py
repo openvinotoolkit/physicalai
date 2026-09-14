@@ -119,6 +119,12 @@ component_registry.register("to_float_tensor", "physicalai.inference.preprocesso
 component_registry.register("denormalize", "physicalai.inference.postprocessors.StatsDenormalizer")
 component_registry.register("action_chunk_trimmer", "physicalai.inference.postprocessors.ActionChunkTrimmer")
 
+# Callbacks
+component_registry.register("latency_monitor", "physicalai.inference.callbacks.LatencyMonitor")
+component_registry.register("rtc_latency", "physicalai.inference.callbacks.RTCLatencyTracker")
+component_registry.register("rldx1_vtc", "physicalai.inference.callbacks.Rldx1VtcWindowCallback")
+component_registry.register("throughput_monitor", "physicalai.inference.callbacks.ThroughputMonitor")
+
 
 def resolve_artifact(spec: ComponentSpec, export_dir: Path) -> ComponentSpec:
     """Resolve relative ``artifact`` paths to absolute paths.
