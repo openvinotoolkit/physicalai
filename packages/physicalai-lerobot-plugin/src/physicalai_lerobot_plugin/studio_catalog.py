@@ -92,7 +92,9 @@ def _ensure_lerobot_configs_imported() -> None:
 
     for _importer, modname, is_pkg in pkgutil.walk_packages(lerobot.robots.__path__, prefix="lerobot.robots."):
         if "config" in modname and not is_pkg and _is_allowed_dynamic_import(modname):
-            importlib.import_module(modname)  # nosemgrep: python.lang.security.audit.non-literal-import
+            # Modules are enumerated below the allowlisted lerobot.robots package.
+            # nosemgrep: python.lang.security.audit.non-literal-import.non-literal-import
+            importlib.import_module(modname)
     _LEROBOT_CONFIGS_IMPORTED = True
 
 
@@ -464,7 +466,9 @@ def _ensure_lerobot_teleoperators_imported() -> None:
         prefix="lerobot.teleoperators.",
     ):
         if "config" in modname and not is_pkg and _is_allowed_dynamic_import(modname):
-            importlib.import_module(modname)  # nosemgrep: python.lang.security.audit.non-literal-import
+            # Modules are enumerated below the allowlisted lerobot.teleoperators package.
+            # nosemgrep: python.lang.security.audit.non-literal-import.non-literal-import
+            importlib.import_module(modname)
     _LEROBOT_TELEOPERATORS_IMPORTED = True
 
 

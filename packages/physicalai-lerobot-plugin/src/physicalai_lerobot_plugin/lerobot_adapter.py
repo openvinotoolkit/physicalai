@@ -154,7 +154,9 @@ def _import_config_modules(package_name: str) -> None:
 
     for _importer, module_name, is_package in pkgutil.walk_packages(package.__path__, prefix=f"{package_name}."):
         if "config" in module_name and not is_package and _is_allowed_dynamic_import(module_name):
-            importlib.import_module(module_name)  # nosemgrep: python.lang.security.audit.non-literal-import
+            # The exact package root and discovered module prefix are allowlisted.
+            # nosemgrep: python.lang.security.audit.non-literal-import.non-literal-import
+            importlib.import_module(module_name)
 
 
 def _register_third_party_plugins() -> None:
