@@ -408,6 +408,82 @@ class TestAsyncExecution:
             ex.stop()
 
 
+class TestRTCExecutionValidation:
+    """RTC control values must be rejected before they reach the model.
+
+    The policy validates the same relations, but only once inference is already
+    running on hardware. Catching them at construction and ``start()`` keeps a
+    bad config from failing mid-episode.
+    """
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"execution_horizon": 0}, "execution_horizon must be positive"),
+            ({"execution_horizon": -1}, "execution_horizon must be positive"),
+            ({"max_guidance_weight": -0.1}, "max_guidance_weight must be non-negative"),
+            ({"fps": 0.0}, "fps must be positive"),
+            ({"chunk_size": 0}, "chunk_size must be positive"),
+            ({"queue_threshold": -1}, "queue_threshold must be non-negative"),
+        ],
+    )
+    def test_invalid_tuning_rejected_at_construction(self, kwargs: dict[str, Any], match: str) -> None:
+        from physicalai.runtime import RTCExecution
+
+        with pytest.raises(ValueError, match=match):
+            RTCExecution(**kwargs)
+
+    def test_horizon_beyond_half_the_chunk_rejected_at_start(self) -> None:
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+
+        ex = RTCExecution(chunk_size=20, execution_horizon=11, fps=30.0)
+
+        with pytest.raises(ValueError, match="at most half the chunk size"):
+            ex.start(_rtc_model(chunk_size=20), RTCActionQueue())
+
+    def test_horizon_validated_against_chunk_size_inferred_from_model(self) -> None:
+        """``chunk_size=None`` takes the model's value, which must be checked too."""
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+
+        ex = RTCExecution(execution_horizon=15, fps=30.0)
+
+        with pytest.raises(ValueError, match="at most half the chunk size"):
+            ex.start(_rtc_model(chunk_size=20), RTCActionQueue())
+
+    def test_delay_clamped_to_execution_horizon(self) -> None:
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+
+        tracker = MagicMock()
+        tracker.compute_delay.return_value = 99
+        queue = RTCActionQueue()
+        queue.push_chunk(np.zeros((20, 3), dtype=np.float32))
+        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0, latency_tracker=tracker)
+        ex._rtc_queue = queue  # noqa: SLF001
+
+        inputs = ex._inject_rtc_inputs({})  # noqa: SLF001
+
+        assert int(inputs["inference_delay"]) == 5
+
+    def test_delay_zero_when_no_previous_chunk(self) -> None:
+        """With guidance suppressed there is no horizon to spend on delay."""
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+
+        tracker = MagicMock()
+        tracker.compute_delay.return_value = 99
+        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0, latency_tracker=tracker)
+        ex._rtc_queue = RTCActionQueue()  # noqa: SLF001
+
+        inputs = ex._inject_rtc_inputs({"state": np.zeros((1, 3), dtype=np.float32)})  # noqa: SLF001
+
+        assert int(inputs["inference_delay"]) == 0
+        # The first chunk has no real predecessor, so guidance is suppressed with
+        # the smallest values the model still accepts rather than exact zeros.
+        assert int(inputs["execution_horizon"]) == 1
+        assert float(inputs["max_guidance_weight"]) == pytest.approx(0.0, abs=1e-6)
+        assert inputs["prev_chunk_left_over"].shape == (1, ex.chunk_size, 3)
+        assert not inputs["prev_chunk_left_over"].any()
+
+
 class TestRTCExecutionObsSlot:
     def test_worker_releases_obs_lock_before_idle_wait(self) -> None:
         from physicalai.runtime import RTCActionQueue, RTCExecution
@@ -415,7 +491,7 @@ class TestRTCExecutionObsSlot:
 
         model = _rtc_model(chunk_size=20, action_dim=3)
         queue = RTCActionQueue()
-        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0)
         idle_wait_observed = threading.Event()
         lock_was_available = False
 
@@ -448,7 +524,7 @@ class TestRTCExecutionObsSlot:
         model.return_value = {"action": np.random.randn(1, chunk_size, action_dim).astype(np.float32)}
 
         queue = RTCActionQueue()
-        ex = RTCExecution(chunk_size=chunk_size, max_action_dim=action_dim, fps=30.0)
+        ex = RTCExecution(chunk_size=chunk_size, execution_horizon=5, fps=30.0)
         ex.start(model, queue)
         try:
             ex.warmup({"state": np.zeros(action_dim, dtype=np.float32)})
@@ -466,7 +542,7 @@ class TestRTCExecutionObsSlot:
 
         model = _rtc_model(chunk_size=20, action_dim=3)
         queue = RTCActionQueue()
-        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0)
         ex.start(model, queue)
         try:
             ex.warmup({"state": np.zeros(3, dtype=np.float32)})
@@ -498,7 +574,7 @@ class TestRTCExecutionObsSlot:
 
         model.side_effect = predict
         queue = RTCActionQueue()
-        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0)
         ex.start(model, queue)
         worker = ex._thread  # noqa: SLF001
         with ex._obs_lock:  # noqa: SLF001
@@ -532,7 +608,7 @@ class TestRTCExecutionObsSlot:
 
         model = _rtc_model(chunk_size=20, action_dim=3)
         queue = RTCActionQueue()
-        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0)
         ex.start(model, queue)
 
         ex._model_lock.acquire()  # noqa: SLF001
@@ -567,7 +643,7 @@ class TestRTCExecutionObsSlot:
 
         model = _rtc_model(chunk_size=20, action_dim=3)
         queue = RTCActionQueue()
-        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0)
         ex.start(model, queue)
         ex._model_lock.acquire()  # noqa: SLF001
         warmup_error: list[BaseException] = []
@@ -616,7 +692,7 @@ class TestRTCExecutionObsSlot:
 
         model.side_effect = predict
         queue = RTCActionQueue()
-        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0)
         ex.start(model, queue)
         warmup_error: list[BaseException] = []
 
@@ -660,7 +736,7 @@ class TestRTCExecutionObsSlot:
 
         model.side_effect = predict
         queue = RTCActionQueue()
-        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0)
         ex.start(model, queue)
         warmup_error: list[BaseException] = []
 
@@ -713,7 +789,7 @@ class TestRTCExecutionObsSlot:
 
         model.side_effect = predict
         queue = RTCActionQueue()
-        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0)
         ex.start(model, queue)
         warmup_error: list[BaseException] = []
 
@@ -798,7 +874,7 @@ class TestRestartAfterStop:
 
         model = _rtc_model()
         queue = RTCActionQueue()
-        ex = RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0)
+        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0)
         ex.start(model, queue)
         ex.stop()
 
@@ -848,7 +924,7 @@ class TestRestartAfterStop:
         queue = RTCActionQueue()
         ex = RTCExecution(
             chunk_size=20,
-            max_action_dim=3,
+            execution_horizon=5,
             fps=30.0,
             latency_tracker=tracker,
             warmup_inferences=1,
@@ -882,7 +958,7 @@ def _async_setup() -> tuple[Any, MagicMock, Any]:
 def _rtc_setup() -> tuple[Any, MagicMock, Any]:
     from physicalai.runtime import RTCActionQueue, RTCExecution
 
-    return RTCExecution(chunk_size=20, max_action_dim=3, fps=30.0), _rtc_model(), RTCActionQueue()
+    return RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0), _rtc_model(), RTCActionQueue()
 
 
 class TestStopTimeoutStraggler:

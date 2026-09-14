@@ -20,12 +20,19 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from physicalai.config import export_config
+from physicalai.inference.constants import (
+    ACTION,
+    PREV_CHUNK_LEFT_OVER,
+    RTC_EXECUTION_HORIZON,
+    RTC_INFERENCE_DELAY,
+    RTC_MAX_GUIDANCE_WEIGHT,
+    STATE,
+)
 from physicalai.runtime.execution.base import Execution, WorkerDiedError
 
 if TYPE_CHECKING:
     from physicalai.inference.callbacks.rtc_latency import RTCLatencyTracker
     from physicalai.inference.model import InferenceModel
-    from physicalai.inference.postprocessors.base import Postprocessor
     from physicalai.runtime._callback_bus import _CallbackBus
     from physicalai.runtime.execution.rtc_queue import RTCActionQueue
 
@@ -37,6 +44,9 @@ _ERROR_RETRY_DELAY_S: float = 0.5
 _MAX_CONSECUTIVE_ERRORS: int = 10
 _JOIN_TIMEOUT_S: float = 5.0
 _STRAGGLER_GRACE_S: float = 2.0
+# RTC inpainting needs at least as many guided actions as fresh ones, so the
+# execution horizon may cover at most half of a chunk.
+_MAX_HORIZON_DIVISOR: int = 2
 
 
 @dataclass
@@ -80,9 +90,6 @@ class RTCExecution(Execution):
             and more open-loop (re-plans less often); smaller = more
             reactive (re-plans more often, more model calls per second).
         fps: Robot control frequency in Hz.
-        max_action_dim: Model's internal action dimension (for noise/padding).
-            If None, is automatically inferred from the model's manifest or
-            defaulted to 32.
         max_guidance_weight: Strength of the RTC inpainting guidance
             (paper's β, default 5). Higher pulls each new chunk more
             tightly toward the previous chunk's tail (smoother seams)
@@ -96,10 +103,10 @@ class RTCExecution(Execution):
         warmup_inferences: Number of initial inferences treated as warmup.
             The latency tracker is reset after these to discard
             compilation/kernel-build overhead (e.g. OpenVINO first-run).
-        postprocessors: Denormalization pipeline applied to raw actions.
-            These run in the background thread to produce the processed
-            track stored in the queue. If None, is automatically populated from
-            the model's postprocessors.
+
+    Raises:
+        ValueError: If a tuning value is outside its allowed range. Values that
+            depend on the resolved chunk size are checked in :meth:`start`.
     """
 
     def __init__(  # noqa: D107
@@ -107,29 +114,24 @@ class RTCExecution(Execution):
         chunk_size: int | None = None,
         execution_horizon: int = 15,
         fps: float = 30.0,
-        max_action_dim: int | None = None,
         max_guidance_weight: float = 5.0,
         queue_threshold: int | None = None,
         latency_tracker: RTCLatencyTracker | None = None,
         warmup_inferences: int = 2,
-        postprocessors: list[Postprocessor] | None = None,
     ) -> None:
         self._chunk_size_param = chunk_size
         self._execution_horizon = execution_horizon
         self._fps = fps
-        self._max_action_dim_param = max_action_dim
         self._max_guidance_weight = max_guidance_weight
         self._queue_threshold_param = queue_threshold
         self._latency_tracker = latency_tracker
         self._warmup_inferences = max(1, warmup_inferences)
-        self._postprocessors: list[Postprocessor] = postprocessors or []
 
         self._rtc_queue: RTCActionQueue | None = None
         self._model: InferenceModel | None = None
 
         # Discovered/inferred state
         self._chunk_size: int = 50
-        self._max_action_dim: int = 32
         self._chunk_size_discovered: int = 0
 
         # Thread state
@@ -152,6 +154,48 @@ class RTCExecution(Execution):
         self._lifetime_inferences: int = 0
         self._bus: _CallbackBus | None = None
         self._session_id: str = ""
+
+        self._validate_tuning()
+
+    def _validate_tuning(self) -> None:
+        """Check the model-independent RTC tuning values.
+
+        Raises:
+            ValueError: If a tuning value is outside its allowed range.
+        """
+        if self._execution_horizon <= 0:
+            msg = f"RTC execution_horizon must be positive, got {self._execution_horizon}."
+            raise ValueError(msg)
+        if self._max_guidance_weight < 0:
+            msg = f"RTC max_guidance_weight must be non-negative, got {self._max_guidance_weight}."
+            raise ValueError(msg)
+        if self._fps <= 0:
+            msg = f"RTC fps must be positive, got {self._fps}."
+            raise ValueError(msg)
+        if self._chunk_size_param is not None and self._chunk_size_param <= 0:
+            msg = f"RTC chunk_size must be positive, got {self._chunk_size_param}."
+            raise ValueError(msg)
+        if self._queue_threshold_param is not None and self._queue_threshold_param < 0:
+            msg = f"RTC queue_threshold must be non-negative, got {self._queue_threshold_param}."
+            raise ValueError(msg)
+
+    def _validate_chunk_size(self) -> None:
+        """Check the resolved chunk size against the execution horizon.
+
+        Raises:
+            ValueError: If the chunk size is not positive, or does not leave
+                room for both the execution horizon and the guided remainder.
+        """
+        if self._chunk_size <= 0:
+            msg = f"RTC chunk_size must be positive, got {self._chunk_size}."
+            raise ValueError(msg)
+        max_horizon = self._chunk_size // _MAX_HORIZON_DIVISOR
+        if self._execution_horizon > max_horizon:
+            msg = (
+                "RTC execution_horizon is restricted to at most half the chunk size: "
+                f"{self._execution_horizon} > {max_horizon} (chunk_size={self._chunk_size})."
+            )
+            raise ValueError(msg)
 
     @property
     def chunk_size(self) -> int:
@@ -188,6 +232,8 @@ class RTCExecution(Execution):
             RuntimeError: If the previous worker is still inside the model after
                 a short grace period. Running anyway would put two threads
                 through one ``InferenceModel``, which is not synchronised.
+            ValueError: If the resolved chunk size does not admit the configured
+                execution horizon.
         """  # noqa: DOC502 — raised by the delegated _await_previous_worker(), but callers see it here.
         # Wake direct warmup callers before waiting on or refusing an active
         # worker. Otherwise they can remain blocked until the 120 s timeout.
@@ -203,7 +249,7 @@ class RTCExecution(Execution):
         self._model = model
         self._rtc_queue = action_queue
 
-        # 1. Infer chunk_size
+        # Infer chunk_size
         if self._chunk_size_param is not None:
             self._chunk_size = self._chunk_size_param
         else:
@@ -215,28 +261,7 @@ class RTCExecution(Execution):
             else:
                 self._chunk_size = 50  # fallback default to Pi05 chunk size
 
-        # 2. Infer max_action_dim
-        if self._max_action_dim_param is not None:
-            self._max_action_dim = self._max_action_dim_param
-        else:
-            rtc_config = model.manifest.model_extra.get("rtc", {}) if hasattr(model, "manifest") else {}
-            if isinstance(rtc_config, dict) and "max_action_dim" in rtc_config:
-                self._max_action_dim = int(rtc_config["max_action_dim"])
-            elif (
-                hasattr(model, "manifest")
-                and model.manifest.hardware.robots
-                and model.manifest.hardware.robots[0].action is not None
-                and model.manifest.hardware.robots[0].action.shape
-            ):
-                self._max_action_dim = model.manifest.hardware.robots[0].action.shape[-1]
-            else:
-                self._max_action_dim = 32
-
-        # 3. Automatically discover postprocessors from model if empty/not provided
-        if not self._postprocessors and hasattr(model, "postprocessors") and model.postprocessors:
-            logger.info("Moving postprocessors from InferenceModel to RTCExecution for async background execution")
-            self._postprocessors = model.postprocessors
-            model.postprocessors = []  # Clear from model so they aren't run twice
+        self._validate_chunk_size()
 
         # Fresh events rather than clearing the shared ones: a worker that
         # outlived stop() keeps its own set stop event, so it cannot be revived
@@ -515,10 +540,10 @@ class RTCExecution(Execution):
             Processed actions, or ``None`` when the incarnation has changed.
         """
         assert self._rtc_queue is not None  # noqa: S101
-        raw_actions = outputs["action"]
+        raw_actions = outputs[ACTION]
         if raw_actions.ndim == 3:  # noqa: PLR2004
             raw_actions = raw_actions[0]
-        processed_actions = self._postprocess(raw_actions)
+        processed_actions = raw_actions
 
         with self._obs_lock:
             if incarnation != self._incarnation:
@@ -571,55 +596,54 @@ class RTCExecution(Execution):
         prev_chunk = self._rtc_queue.get_left_over()
         if prev_chunk is None:
             prev_chunk_padded = np.zeros(
-                (1, self._chunk_size, self._max_action_dim),
+                (1, self._chunk_size, inputs[STATE].shape[-1]),
                 dtype=np.float32,
             )
             # Suppress correction on the first step since there's no real previous trajectory
-            max_guidance_weight = 0.0
-            execution_horizon = 0
+            max_guidance_weight = 1e-8
+            execution_horizon = 1
+            delay = 0
         else:
             remaining = prev_chunk.shape[0]
-            out_dim = prev_chunk.shape[-1]
 
-            # Pad action dim to model's max_action_dim if needed
-            if out_dim < self._max_action_dim:
-                prev_chunk = np.pad(
-                    prev_chunk,
-                    ((0, 0), (0, self._max_action_dim - out_dim)),
-                )
-
-            # Reshape to (1, remaining, max_action_dim) and pad time to chunk_size
-            prev_chunk_padded = prev_chunk.reshape(1, remaining, self._max_action_dim)
+            # Reshape to (1, remaining, action_dim) and pad time to chunk_size
+            prev_chunk_padded = prev_chunk.reshape(1, remaining, -1)
             pad_len = self._chunk_size - remaining
             if pad_len > 0:
                 prev_chunk_padded = np.pad(prev_chunk_padded, ((0, 0), (0, pad_len), (0, 0)))
 
             max_guidance_weight = self._max_guidance_weight
             execution_horizon = self._execution_horizon
+            delay = self._clamped_delay(execution_horizon)
 
-        # Compute delay from latency tracker
-        delay = self._latency_tracker.compute_delay(self._fps) if self._latency_tracker is not None else 0
+        updated_inputs: dict[str, np.ndarray | np.int64 | np.float32] = dict(inputs)
+        updated_inputs[PREV_CHUNK_LEFT_OVER] = prev_chunk_padded
+        updated_inputs[RTC_INFERENCE_DELAY] = np.int64(delay)
+        updated_inputs[RTC_MAX_GUIDANCE_WEIGHT] = np.float32(max_guidance_weight)
+        updated_inputs[RTC_EXECUTION_HORIZON] = np.int64(execution_horizon)
 
-        inputs["prev_chunk_left_over"] = prev_chunk_padded
-        inputs["inference_delay"] = np.int64(delay)
-        inputs["max_guidance_weight"] = np.float32(max_guidance_weight)
-        inputs["execution_horizon"] = np.int64(execution_horizon)
+        return updated_inputs
 
-        return inputs
+    def _clamped_delay(self, execution_horizon: int) -> int:
+        """Measured inference delay, held inside the range the model accepts.
 
-    def _postprocess(self, actions: np.ndarray) -> np.ndarray:
-        """Apply postprocessors (denormalization) to raw actions.
-
-        Args:
-            actions: Shape ``(chunk_size, action_dim)``.
+        Clamps rather than raises: the delay tracks live latency, so a slow tick
+        must degrade the guidance rather than kill the inference thread.
 
         Returns:
-            Postprocessed actions, same shape.
+            Delay in actions, within ``[0, execution_horizon]``.
         """
-        if not self._postprocessors:
-            return actions.copy()
-
-        outputs: dict[str, Any] = {"action": actions}
-        for pp in self._postprocessors:
-            outputs = pp(outputs)
-        return outputs["action"]
+        if self._latency_tracker is None:
+            return 0
+        delay = self._latency_tracker.compute_delay(self._fps)
+        clamped = min(max(delay, 0), execution_horizon)
+        if clamped != delay:
+            logger.warning(
+                "RTC inference_delay %d is outside [0, %d] — clamping to %d. "
+                "Inference is slower than the execution horizon covers; "
+                "raise execution_horizon or lower fps.",
+                delay,
+                execution_horizon,
+                clamped,
+            )
+        return clamped

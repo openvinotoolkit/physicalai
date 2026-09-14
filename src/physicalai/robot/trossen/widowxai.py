@@ -72,9 +72,7 @@ class WidowXAIObservation:
 
     @property
     def state(self) -> np.ndarray:
-        """State vector: positions (7) + velocities (7) = (14,)."""
-        if self.sensor_data and "velocities" in self.sensor_data:
-            return np.concatenate([self.joint_positions, self.sensor_data["velocities"]])
+        """State vector: joint positions (7)."""
         return self.joint_positions
 
 

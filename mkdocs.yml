@@ -24,6 +24,7 @@ nav:
       - Installation: getting-started/installation.md
       - Quickstart: getting-started/quickstart.md
       - Run a Policy: getting-started/run-a-policy.md
+      - Security Model: getting-started/security.md
   - How-To:
       - Overview: how-to/README.md
       - Runtime:

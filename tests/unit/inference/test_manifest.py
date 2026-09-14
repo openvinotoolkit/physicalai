@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 from pydantic import ValidationError
 
@@ -31,6 +32,7 @@ from physicalai.inference.manifest import (
     TensorSpec,
     _policy_name_from_class_path,
 )
+from physicalai.inference.preprocessors import StatsNormalizer
 from physicalai.inference.runners import SinglePass
 
 
@@ -237,6 +239,32 @@ class TestInstantiateComponent:
         spec = ComponentSpec.model_validate({"type": "single_pass", "": ""})
         with pytest.raises(TypeError, match='Empty nested key'):
             instantiate_component(spec)
+
+    def test_instantiate_normalize_with_inline_list_stats(self) -> None:
+        """Exports inline stats as JSON lists (plus feature metadata); these
+        must reach StatsNormalizer, which coerces them to numpy arrays."""
+        from physicalai.inference.preprocessors import StatsNormalizer
+        from physicalai.inference.preprocessors.base import Preprocessor
+
+        spec = ComponentSpec.model_validate({
+            "type": "normalize",
+            "mode": "quantiles",
+            "stats": {
+                "state": {
+                    "q01": [-1.0, -2.0, -3.0],
+                    "q99": [1.0, 2.0, 3.0],
+                    "type": "STATE",
+                    "name": "state",
+                    "shape": [3],
+                },
+            },
+        })
+
+        normalizer = instantiate_component(Preprocessor, spec)
+
+        assert isinstance(normalizer, StatsNormalizer)
+        out = normalizer({"state": np.zeros(3, dtype=np.float32)})
+        np.testing.assert_allclose(out["state"], [0.0, 0.0, 0.0])
 
 
 class TestModelSpec:

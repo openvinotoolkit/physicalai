@@ -160,6 +160,37 @@ def test_typed_dataclass_strict_rejects_extra_keys() -> None:
         )
 
 
+def test_typed_dataclass_non_strict_drops_unknown_top_level_keys() -> None:
+    """strict=False should silently drop unknown top-level keys instead of raising.
+
+    Regression test: passing strict=False previously still forwarded the
+    full mapping to the underlying parser, which rejected unknown keys
+    regardless of strict.
+    """
+    restored = TypedConfig.from_dict(
+        {"nested": {"value": 1}, "mode": "FAST", "shape": [1, 1], "epochs": 1, "extra_field": "ignored"},
+        strict=False,
+    )
+    assert restored.nested.value == 1
+    assert restored.mode is Mode.FAST
+    assert restored.shape == (1, 1)
+
+
+def test_typed_dataclass_non_strict_still_rejects_nested_unknown_keys() -> None:
+    """strict=False only filters unknown keys at the top level, not nested ones.
+
+    This matches the pre-existing (pre-regression) behavior: nested unknown
+    keys were never tolerated by strict=False, only top-level ones. The
+    underlying parser raises its own error type (not necessarily TypeError)
+    for nested rejections, so we only assert that *some* exception is raised.
+    """
+    with pytest.raises(Exception, match="extra_nested_field"):
+        TypedConfig.from_dict(
+            {"nested": {"value": 1, "extra_nested_field": "rejected"}, "mode": "FAST", "shape": [1, 1]},
+            strict=False,
+        )
+
+
 def test_typed_dataclass_path_round_trip() -> None:
     cfg = PathConfig(Path("/tmp/data"))
     restored = PathConfig.from_dict(cfg.to_dict())

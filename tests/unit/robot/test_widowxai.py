@@ -216,9 +216,10 @@ class TestWidowXAIObservation:
     """Tests for get_observation()."""
 
     def test_get_observation_follower(self, mock_trossen_arm: MagicMock) -> None:
-        """Follower observation has positions, timestamp, velocities and efforts."""
+        """Follower state contains positions while velocities remain auxiliary data."""
         driver = mock_trossen_arm.TrossenArmDriver.return_value
         driver.get_all_positions.return_value = [1.0, 0.5, -0.5, 1.5, -1.0, 0.3, 0.02]
+        driver.get_all_velocities.return_value = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
         robot = _create_robot(mock_trossen_arm, role="follower")
         obs = robot.get_observation()  # type: ignore[union-attr]
 
@@ -229,6 +230,9 @@ class TestWidowXAIObservation:
         assert obs.sensor_data is not None
         assert "velocities" in obs.sensor_data
         assert "efforts" in obs.sensor_data
+        assert obs.sensor_data["velocities"].shape == (7,)
+        assert obs.state.shape == (7,)
+        np.testing.assert_array_equal(obs.state, obs.joint_positions)
         assert obs.joint_positions[0] == pytest.approx(57.2958, abs=0.01)
         assert obs.joint_positions[5] == pytest.approx(17.1887, abs=0.01)
         assert obs.joint_positions[6] == pytest.approx(0.02, abs=1e-6)

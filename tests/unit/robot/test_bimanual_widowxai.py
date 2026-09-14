@@ -166,12 +166,16 @@ class TestBimanualWidowXAIConnectivity:
 class TestBimanualWidowXAIObservation:
     def test_follower_observation_shape(self, mock_trossen_arm: MagicMock) -> None:
         robot = _make_bimanual(mock_trossen_arm, role="follower")
+        robot._left._driver.get_all_velocities.return_value = [0.1] * 7  # type: ignore[attr-defined]
+        robot._right._driver.get_all_velocities.return_value = [0.2] * 7  # type: ignore[attr-defined]
         obs = robot.get_observation()
 
         assert obs.joint_positions.shape == (14,)
         assert obs.sensor_data is not None
         assert obs.sensor_data["velocities"].shape == (14,)
         assert obs.sensor_data["efforts"].shape == (14,)
+        assert obs.state.shape == (14,)
+        np.testing.assert_array_equal(obs.state, obs.joint_positions)
 
     def test_leader_observation_no_efforts(self, mock_trossen_arm: MagicMock) -> None:
         robot = _make_bimanual(mock_trossen_arm, role="leader")

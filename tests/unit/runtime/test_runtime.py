@@ -655,6 +655,21 @@ class TestPolicySourceModelInput:
         assert IMAGES not in model_input
         assert not any(key.startswith(f"{IMAGES}.") for key in model_input)
 
+    def test_state_uses_position_only_observation_contract(self) -> None:
+        """Auxiliary velocities must not expand the policy's batched state input."""
+        robot_obs = FakeRobotObservation(
+            joint_positions=np.arange(7, dtype=np.float32),
+            timestamp=0.0,
+            sensor_data={"velocities": np.arange(10, 17, dtype=np.float32)},
+            images=None,
+        )
+        policy_source = self._policy_source()
+
+        model_input = policy_source.to_model_input(robot_obs, {})
+
+        assert model_input[STATE].shape == (1, 7)
+        np.testing.assert_array_equal(model_input[STATE][0], robot_obs.joint_positions)
+
     def test_task_included_when_set(self) -> None:
         """The task string is forwarded when configured on the action source."""
         robot_obs = FakeRobotObservation(

@@ -9,11 +9,9 @@ on:
   push:
     branches:
       - main
-      - releases/**
   pull_request:
     branches:
       - main
-      - releases/**
 
 permissions: {}
 
@@ -34,8 +32,8 @@ jobs:
         uses: open-edge-platform/geti-ci/actions/zizmor@cffbec1b3b7c155efa789cd2ea67a2a765a4369f # zizmor/v0.1.4
         with:
           scan-scope: ${{ github.event_name == 'pull_request' && 'changed' || 'all' }}
-          severity-level: ${{ github.event_name == 'pull_request' && 'MEDIUM' || 'LOW' }}
-          confidence-level: ${{ github.event_name == 'pull_request' && 'MEDIUM' || 'LOW' }}
+          severity-level: "LOW"
+          confidence-level: "LOW"
           fail-on-findings: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
 
   bandit-scan:
@@ -50,8 +48,8 @@ jobs:
         uses: open-edge-platform/geti-ci/actions/bandit@134a7e6b1658ea9eb97b7f52f724ed88a2878ea7 # bandit/v0.1.2
         with:
           scan-scope: ${{ github.event_name == 'pull_request' && 'changed' || 'all' }}
-          severity-level: ${{ github.event_name == 'pull_request' && 'MEDIUM' || 'LOW' }}
-          confidence-level: ${{ github.event_name == 'pull_request' && 'MEDIUM' || 'LOW' }}
+          severity-level: "LOW"
+          confidence-level: "LOW"
           config_file: ".github/bandit_config.yml"
           fail-on-findings: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
 
@@ -71,5 +69,5 @@ jobs:
         uses: open-edge-platform/geti-ci/actions/semgrep@940b10164d8c2a6a6e4d786fe1c0aeab74bd629d
         with:
           scan-scope: ${{ github.event_name == 'pull_request' && 'changed' || 'all' }}
-          severity: ${{ github.event_name == 'pull_request' && 'HIGH' || 'LOW' }}
+          severity: "LOW"
           fail-on-findings: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}

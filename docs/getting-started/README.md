@@ -7,6 +7,7 @@ This section contains short tutorials for the first successful PhysicalAI workfl
 1. [Installation](installation.md)
 2. [Quickstart](quickstart.md)
 3. [Run a Policy](run-a-policy.md)
+4. [Security Model](security.md)
 
 ## Minimal Path
 

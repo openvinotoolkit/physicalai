@@ -192,13 +192,6 @@ class TestExecutionConfig:
         with pytest.raises(ConfigError, match=r"init_args\.latency_tracker"):
             Config.from_instance(execution)
 
-    def test_rtc_live_postprocessors_fail(self) -> None:
-        from physicalai.runtime import RTCExecution
-
-        execution = RTCExecution(postprocessors=[MagicMock()])
-        with pytest.raises(ConfigError, match=r"init_args\.postprocessors"):
-            Config.from_instance(execution)
-
 
 # ---------------------------------------------------------------------------
 # PolicySource
