@@ -35,6 +35,8 @@ from physicalai_studio_plugin import (
 from pydantic import BaseModel, ConfigDict, Field, create_model
 from serial.tools import list_ports
 
+from physicalai_lerobot_plugin.constants import trust_unverified_plugins
+
 if TYPE_CHECKING:
     from collections.abc import Callable
     from typing import Protocol
@@ -104,7 +106,7 @@ def _ensure_lerobot_third_party_plugins_imported() -> None:
     preventing other installed extensions from loading.
     """
     global _LEROBOT_THIRD_PARTY_PLUGINS_IMPORTED  # noqa: PLW0603
-    if _LEROBOT_THIRD_PARTY_PLUGINS_IMPORTED:
+    if _LEROBOT_THIRD_PARTY_PLUGINS_IMPORTED or not trust_unverified_plugins():
         return
 
     from lerobot.utils.import_utils import register_third_party_plugins
@@ -125,16 +127,14 @@ _ADVANCED_CONFIGURATION_NAME_MARKERS: frozenset[str] = frozenset({
     "offset",
     "can_adapter",
 })
-_ALLOWED_DYNAMIC_IMPORT_PREFIXES: tuple[str, ...] = (
-    "lerobot.",
-    "lerobot_robot_",
-    "lerobot_teleoperator_",
-)
 
 
 def _is_allowed_dynamic_import(module_name: str) -> bool:
     """Return whether a module name is trusted for dynamic importing."""
-    return any(module_name.startswith(prefix) for prefix in _ALLOWED_DYNAMIC_IMPORT_PREFIXES)
+    return module_name.startswith("lerobot.") or (
+        trust_unverified_plugins()
+        and module_name.startswith(("lerobot_robot_", "lerobot_teleoperator_"))
+    )
 
 
 def _is_dataclass_type(annotation: object) -> TypeGuard[type[Any]]:

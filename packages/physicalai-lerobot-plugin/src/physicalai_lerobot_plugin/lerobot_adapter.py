@@ -21,7 +21,7 @@ import numpy as np
 from loguru import logger
 
 from physicalai.config import export_config
-from physicalai_lerobot_plugin.constants import VALID_ROLES
+from physicalai_lerobot_plugin.constants import VALID_ROLES, trust_unverified_plugins
 
 if TYPE_CHECKING:
     from physicalai.capture.frame import Frame
@@ -79,11 +79,6 @@ _ALLOWED_CONFIG_PACKAGE_ROOTS: frozenset[str] = frozenset({
     "lerobot.robots",
     "lerobot.teleoperators",
 })
-_ALLOWED_DYNAMIC_IMPORT_PREFIXES: tuple[str, ...] = (
-    "lerobot.",
-    "lerobot_robot_",
-    "lerobot_teleoperator_",
-)
 
 
 def _strip_position_suffix(key: str) -> str:
@@ -130,7 +125,10 @@ def _collect_device_ports(value: object) -> list[str]:
 
 def _is_allowed_dynamic_import(module_name: str) -> bool:
     """Return whether a module name is trusted for dynamic importing."""
-    return any(module_name.startswith(prefix) for prefix in _ALLOWED_DYNAMIC_IMPORT_PREFIXES)
+    return module_name.startswith("lerobot.") or (
+        trust_unverified_plugins()
+        and module_name.startswith(("lerobot_robot_", "lerobot_teleoperator_"))
+    )
 
 
 def _device_ids(config_type: str, config_kwargs: dict[str, Any]) -> tuple[str, ...]:
@@ -160,6 +158,8 @@ def _import_config_modules(package_name: str) -> None:
 
 
 def _register_third_party_plugins() -> None:
+    if not trust_unverified_plugins():
+        return
     from lerobot.utils.import_utils import register_third_party_plugins  # noqa: PLC0415
 
     register_third_party_plugins()
