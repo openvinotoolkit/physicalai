@@ -72,8 +72,10 @@ jobs:
             ]')" >> "$GITHUB_OUTPUT"
 
       - name: Debug released_packages
+        env:
+          RELEASED_MATRIX: ${{ steps.release-outputs.outputs.released_matrix }}
         run: |
-          echo "released_packages: ${{ steps.release-outputs.outputs.released_matrix }}"
+          echo "released_packages: $RELEASED_MATRIX"
 
   build:
     name: Build ${{ matrix.package.name }}
