@@ -20,11 +20,12 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 import numpy as np
 from loguru import logger
 
+from physicalai.capture.frame import Frame
 from physicalai.config import export_config
+from physicalai.robot.device_ids import device_id_from_serial_port
 from physicalai_lerobot_plugin.constants import VALID_ROLES, trust_unverified_plugins
 
 if TYPE_CHECKING:
-    from physicalai.capture.frame import Frame
     from physicalai.robot.interface import RobotObservation
 
 
@@ -131,10 +132,10 @@ def _is_allowed_dynamic_import(module_name: str) -> bool:
     )
 
 
-def _device_ids(config_type: str, config_kwargs: dict[str, Any]) -> tuple[str, ...]:
+def _device_ids(config_kwargs: dict[str, Any]) -> tuple[str, ...]:
     """Return stable serial-device identities without touching hardware."""
     ports = sorted(set(_collect_device_ports(config_kwargs)))
-    return tuple(f"lerobot:{config_type}:{port}" for port in ports)
+    return tuple(device_id_from_serial_port(port) for port in ports)
 
 
 def _import_config_modules(package_name: str) -> None:
@@ -234,6 +235,7 @@ class LeRobotAdapter:
         self._obs_position_keys: list[str] | None = None
         self._act_position_keys: list[str] | None = None
         self._num_joints: int | None = None
+        self._image_sequences: dict[str, int] = {}
 
         if _robot is not None:
             features: Any = cast("_LeRobotLike", _robot).observation_features
@@ -274,6 +276,7 @@ class LeRobotAdapter:
         self._obs_position_keys = None
         self._act_position_keys = None
         self._num_joints = None
+        self._image_sequences = {}
 
     @staticmethod
     def _physicalai_normalize_captured_init_args(init_args: dict[str, object]) -> None:
@@ -350,7 +353,7 @@ class LeRobotAdapter:
     @property
     def device_ids(self) -> tuple[str, ...]:
         """Stable identities of serial devices exclusively owned by this robot."""
-        return _device_ids(self._config_type, self._config_kwargs)
+        return _device_ids(self._config_kwargs)
 
     def connect(self) -> None:
         """Open the connection and discover joint order.
@@ -366,6 +369,7 @@ class LeRobotAdapter:
         try:
             self._connect_robot()
         except Exception as e:
+            self.disconnect()
             msg = f"Failed to connect LeRobot {self._robot}: {e}"
             raise ConnectionError(msg) from e
 
@@ -443,7 +447,9 @@ class LeRobotAdapter:
             if key in obs_key_set or key in act_key_set:
                 continue
             if isinstance(value, np.ndarray) and value.ndim >= _DIM_THRESHOLD_IMAGE:
-                images[key] = cast("Frame", value)
+                sequence = self._image_sequences.get(key, 0)
+                self._image_sequences[key] = sequence + 1
+                images[key] = Frame(data=cast("Any", value), timestamp=time.monotonic(), sequence=sequence)
             elif isinstance(value, np.ndarray):
                 sensor_data[key] = value
             elif isinstance(value, (int, float)):
@@ -484,7 +490,7 @@ class LeRobotAdapter:
             action_dict[key] = float(action[i])
 
         robot = self._robot
-        if robot is None:
+        if robot is None or not robot.is_connected:
             msg = "Robot is not connected. Call connect() first."
             raise ConnectionError(msg)
         robot.send_action(action_dict)
@@ -538,6 +544,7 @@ class LeRobotTeleoperatorAdapter:
         self._joint_order: list[str] | None = None
         self._action_position_keys: list[str] | None = None
         self._num_joints: int | None = None
+        self._image_sequences: dict[str, int] = {}
 
         if _teleoperator is not None:
             features: Any = cast("_TeleoperatorLike", _teleoperator).action_features
@@ -577,6 +584,7 @@ class LeRobotTeleoperatorAdapter:
         self._joint_order = None
         self._action_position_keys = None
         self._num_joints = None
+        self._image_sequences = {}
 
     @staticmethod
     def _physicalai_normalize_captured_init_args(init_args: dict[str, object]) -> None:
@@ -607,9 +615,10 @@ class LeRobotTeleoperatorAdapter:
         if self._joint_order is not None:
             return
         pos_keys = sorted(k for k in action if k.endswith(_POSITION_KEY_SUFFIX))
-        self._joint_order = [k[: -len(_POSITION_KEY_SUFFIX)] for k in pos_keys]
+        action_keys = pos_keys or sorted(action)
+        self._joint_order = [_strip_position_suffix(k) for k in action_keys]
         self._num_joints = len(self._joint_order)
-        self._action_position_keys = list(pos_keys)
+        self._action_position_keys = action_keys
 
     def _require_joint_order(self) -> None:
         if self._joint_order is None:
@@ -644,7 +653,7 @@ class LeRobotTeleoperatorAdapter:
     @property
     def device_ids(self) -> tuple[str, ...]:
         """Stable identities of serial devices exclusively owned by this teleoperator."""
-        return _device_ids(self._config_type, self._config_kwargs)
+        return _device_ids(self._config_kwargs)
 
     def connect(self) -> None:
         """Open the connection and discover joint order.
@@ -660,6 +669,7 @@ class LeRobotTeleoperatorAdapter:
         try:
             self._connect_teleoperator()
         except Exception as e:
+            self.disconnect()
             msg = f"Failed to connect LeRobot teleoperator {self._teleoperator}: {e}"
             raise ConnectionError(msg) from e
 
@@ -742,7 +752,9 @@ class LeRobotTeleoperatorAdapter:
             if key in key_set:
                 continue
             if isinstance(value, np.ndarray) and value.ndim >= _DIM_THRESHOLD_IMAGE:
-                images[key] = cast("Frame", value)
+                sequence = self._image_sequences.get(key, 0)
+                self._image_sequences[key] = sequence + 1
+                images[key] = Frame(data=cast("Any", value), timestamp=time.monotonic(), sequence=sequence)
             elif isinstance(value, np.ndarray):
                 sensor_data[key] = value
             elif isinstance(value, (int, float)):
@@ -786,7 +798,7 @@ class LeRobotTeleoperatorAdapter:
             feedback_dict[key] = float(action[i])
 
         teleop = self._teleoperator
-        if teleop is None:
+        if teleop is None or not teleop.is_connected:
             msg = "Teleoperator is not connected. Call connect() first."
             raise ConnectionError(msg)
         teleop.send_feedback(feedback_dict)

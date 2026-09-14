@@ -99,7 +99,7 @@ def _ensure_lerobot_configs_imported() -> None:
 
 
 def _ensure_lerobot_third_party_plugins_imported() -> None:
-    """Load installed third-party extensions through LeRobot's native discovery.
+    """Load explicitly trusted third-party extensions through LeRobot discovery.
 
     LeRobot scans installed distributions whose import names begin with
     ``lerobot_robot_`` or ``lerobot_teleoperator_`` and imports their package
@@ -604,12 +604,13 @@ class LeRobotProbe(RobotProbe[BaseModel]):
         """Check whether the configured robot endpoint is online.
 
         Returns:
-            bool: ``True`` when any configured port is present.
+            bool: ``True`` when any configured serial port is present. Endpoints
+            without serial ports cannot be probed and are treated as online.
         """
         _ = self
         configured_ports = set(_iter_port_values(payload))
         if not configured_ports:
-            return False
+            return True
 
         if manager is not None:
             discovered_ports = {p.connection_string for p in manager.robots}
@@ -647,40 +648,40 @@ def _definitions() -> list[RobotCatalogDefinition]:
     for type_str, config_cls in RobotConfig.get_known_choices().items():
         if type_str in _ROBOTS_TO_SKIP:
             continue
-
-        display_name = f"LeRobot {type_str}"
-        payload_cls = _make_payload_model(config_cls)
-
-        follower_builder = _make_builder(type_str, config_cls, payload_cls, "follower")
-        defs.append(
-            RobotCatalogDefinition(
-                type=f"LeRobot_{type_str}_Follower",
-                display_name=f"{display_name} Follower",
-                role="follower",
-                robot_builder=follower_builder,
-                robot_payload=payload_cls,
-                asset=None,
-                adapter_options=RobotAdapterOptions(include_velocities=False, external_effort_gain=None),
-                probe=_LEROBOT_PROBE,
-            ),
-        )
+        try:
+            payload_cls = _make_payload_model(config_cls)
+            defs.append(
+                RobotCatalogDefinition(
+                    type=f"LeRobot_{type_str}_Follower",
+                    display_name=f"LeRobot {type_str} Follower",
+                    role="follower",
+                    robot_builder=_make_builder(type_str, config_cls, payload_cls, "follower"),
+                    robot_payload=payload_cls,
+                    asset=None,
+                    adapter_options=RobotAdapterOptions(include_velocities=False, external_effort_gain=None),
+                    probe=_LEROBOT_PROBE,
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Skipping LeRobot follower type '{}' because its schema is incompatible", type_str)
 
     for type_str, config_cls in TeleoperatorConfig.get_known_choices().items():
-        display_name = f"LeRobot {type_str}"
-        payload_cls = _make_payload_model(config_cls)
-        leader_builder = _make_teleop_builder(type_str, config_cls, payload_cls, "leader")
-        defs.append(
-            RobotCatalogDefinition(
-                type=f"LeRobot_{type_str}_Leader",
-                display_name=f"{display_name} Leader",
-                role="leader",
-                robot_builder=leader_builder,
-                robot_payload=payload_cls,
-                asset=None,
-                adapter_options=RobotAdapterOptions(include_velocities=False, external_effort_gain=None),
-                probe=_LEROBOT_PROBE,
-            ),
-        )
+        try:
+            payload_cls = _make_payload_model(config_cls)
+            defs.append(
+                RobotCatalogDefinition(
+                    type=f"LeRobot_{type_str}_Leader",
+                    display_name=f"LeRobot {type_str} Leader",
+                    role="leader",
+                    robot_builder=_make_teleop_builder(type_str, config_cls, payload_cls, "leader"),
+                    robot_payload=payload_cls,
+                    asset=None,
+                    adapter_options=RobotAdapterOptions(include_velocities=False, external_effort_gain=None),
+                    probe=_LEROBOT_PROBE,
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Skipping LeRobot leader type '{}' because its schema is incompatible", type_str)
     return defs
 
 

@@ -16,4 +16,4 @@ if TYPE_CHECKING:
 def get_urdf_path() -> Path:
     traversal = ir.files("physicalai_lerobot_plugin")
     with ir.as_file(traversal) as p:
-        return p.parent.parent.joinpath("urdf")
+        return p.parent.joinpath("urdf") if p.parent.joinpath("urdf").exists() else p.parent.parent.joinpath("urdf")

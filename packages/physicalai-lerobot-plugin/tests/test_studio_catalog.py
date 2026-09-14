@@ -89,7 +89,7 @@ def test_skip_list_excludes_test_only_robots() -> None:
         assert skipped not in types
 
 
-def test_uses_lerobot_native_third_party_plugin_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unverified_plugins_are_not_discovered_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     from lerobot.utils import import_utils
 
     import physicalai_lerobot_plugin.studio_catalog as catalog
@@ -97,6 +97,22 @@ def test_uses_lerobot_native_third_party_plugin_discovery(monkeypatch: pytest.Mo
     discovered: list[bool] = []
     monkeypatch.setattr(import_utils, "register_third_party_plugins", lambda: discovered.append(True))
     monkeypatch.setattr(catalog, "_LEROBOT_THIRD_PARTY_PLUGINS_IMPORTED", False)
+    monkeypatch.delenv("TRUST_UNVERIFIED_PLUGIN", raising=False)
+
+    catalog._ensure_lerobot_third_party_plugins_imported()  # noqa: SLF001
+
+    assert discovered == []
+
+
+def test_trusted_unverified_plugins_are_discovered_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lerobot.utils import import_utils
+
+    import physicalai_lerobot_plugin.studio_catalog as catalog
+
+    discovered: list[bool] = []
+    monkeypatch.setattr(import_utils, "register_third_party_plugins", lambda: discovered.append(True))
+    monkeypatch.setattr(catalog, "_LEROBOT_THIRD_PARTY_PLUGINS_IMPORTED", False)
+    monkeypatch.setenv("TRUST_UNVERIFIED_PLUGIN", "1")
 
     catalog._ensure_lerobot_third_party_plugins_imported()  # noqa: SLF001
     catalog._ensure_lerobot_third_party_plugins_imported()  # noqa: SLF001
@@ -109,12 +125,28 @@ def test_dynamic_import_guard_allows_only_trusted_prefixes() -> None:
 
     assert _is_allowed_dynamic_import("lerobot.robots.so_follower")
     assert _is_allowed_dynamic_import("lerobot.teleoperators.so_leader")
-    assert _is_allowed_dynamic_import("lerobot_robot_example")
-    assert _is_allowed_dynamic_import("lerobot_teleoperator_example")
-
     assert not _is_allowed_dynamic_import("os")
     assert not _is_allowed_dynamic_import("subprocess")
     assert not _is_allowed_dynamic_import("numpy")
+
+
+def test_dynamic_import_guard_allows_third_party_prefixes_only_when_trusted(monkeypatch: pytest.MonkeyPatch) -> None:
+    from physicalai_lerobot_plugin.studio_catalog import _is_allowed_dynamic_import
+
+    monkeypatch.setenv("TRUST_UNVERIFIED_PLUGIN", "true")
+
+    assert _is_allowed_dynamic_import("lerobot_robot_example")
+    assert _is_allowed_dynamic_import("lerobot_teleoperator_example")
+
+
+@pytest.mark.anyio
+async def test_probe_accepts_non_serial_endpoints() -> None:
+    from physicalai_lerobot_plugin.studio_catalog import LeRobotProbe
+
+    class _NetworkPayload(BaseModel):
+        host: str = "robot.local"
+
+    assert await LeRobotProbe().is_online(_NetworkPayload())
 
 
 def test_payload_types_namespace_rejects_untrusted_module() -> None:

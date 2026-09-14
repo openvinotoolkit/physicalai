@@ -1,6 +1,6 @@
 # PhysicalAI LeRobot Plugin
 
-Bridges [LeRobot](https://github.com/huggingface/lerobot) robot and teleoperator configs into [PhysicalAI](https://github.com/openvinotoolkit/physicalai), the Python library and runtime for robot control, transport, and CLI workflows. It registers with [Physical AI Studio](https://github.com/open-edge-platform/physical-ai-studio), the application that discovers catalog plugins and provides robot setup, teleoperation, and workflow experiences. Part of the [physicalai-plugins](https://github.com/MarkRedeman/physicalai-plugins) monorepo.
+Bridges [LeRobot](https://github.com/huggingface/lerobot) robot and teleoperator configs into [PhysicalAI](https://github.com/openvinotoolkit/physicalai), the Python library and runtime for robot control, transport, and CLI workflows. It registers with [Physical AI Studio](https://github.com/open-edge-platform/physical-ai-studio), the application that discovers catalog plugins and provides robot setup, teleoperation, and workflow experiences.
 
 [![PyPI version](https://img.shields.io/pypi/v/physicalai-lerobot-plugin.svg)](https://pypi.org/project/physicalai-lerobot-plugin/)
 [![Python versions](https://img.shields.io/pypi/pyversions/physicalai-lerobot-plugin.svg)](https://pypi.org/project/physicalai-lerobot-plugin/)
@@ -16,14 +16,6 @@ Studio catalog entry:
 
 - follower type: `LeRobot_<follower_type>_Follower`
 - leader type: `LeRobot_<teleoperator_type>_Leader`
-
-## Screenshots
-
-_Placeholder images — replace them with real screenshots._
-
-![LeRobot entries in the PhysicalAI Studio robot catalog](https://raw.githubusercontent.com/MarkRedeman/physicalai-plugins/main/screenshots/studio-catalog.png)
-
-![A LeRobot robot in the PhysicalAI Studio catalog](https://raw.githubusercontent.com/MarkRedeman/physicalai-plugins/main/packages/physicalai-lerobot-plugin/screenshots/studio.png)
 
 ## Installation
 
@@ -48,9 +40,10 @@ and `config_kwargs` to any of the bundled follower/leader types below. Press
 ## Third-party LeRobot extensions
 
 Install this package first, then install a LeRobot extension into the same
-Python environment. On Studio startup, the catalog invokes LeRobot's native
-third-party discovery and imports installed extension packages with names that
-start with `lerobot_robot_` or `lerobot_teleoperator_`.
+Python environment. Extensions are unverified and are not imported by default.
+To trust all installed LeRobot extensions, set `TRUST_UNVERIFIED_PLUGIN=1`
+before starting the CLI or Studio. This executes package code from extensions
+with names that start with `lerobot_robot_` or `lerobot_teleoperator_`.
 
 For example, after installing a compatible LeSlider package, its registered
 follower and leader types appear automatically in the Studio catalog. An
@@ -164,4 +157,4 @@ uv sync
 uv run pytest
 ```
 
-See [`docs/creating-a-studio-plugin.md`](../../docs/creating-a-studio-plugin.md) for the full plugin development guide.
+See the repository's [contribution guide](../../CONTRIBUTING.md) for development information.

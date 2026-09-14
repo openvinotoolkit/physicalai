@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-tests = ["pytest"]
+tests = ["pytest", "pytest-anyio"]
 
 [project.urls]
 Homepage = "https://github.com/openvinotoolkit/physicalai"
@@ -47,8 +47,10 @@ include = [
     "urdf/**",
     "README.md",
     "pyproject.toml",
-    "LICENSE",
 ]
 exclude = [
     "examples/**",
 ]
+
+[tool.hatch.build.targets.sdist.force-include]
+"../../LICENSE" = "LICENSE"

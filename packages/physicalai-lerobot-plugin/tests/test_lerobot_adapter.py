@@ -44,17 +44,20 @@ def test_teleoperator_config_lookup_imports_registered_types() -> None:
     assert _teleoperator_config_class("so101_leader") is not None
 
 
-def test_dynamic_import_guard_allows_only_lerobot_prefixes() -> None:
+def test_dynamic_import_guard_allows_only_trusted_prefixes(monkeypatch: pytest.MonkeyPatch) -> None:
     from physicalai_lerobot_plugin.lerobot_adapter import _is_allowed_dynamic_import
 
     assert _is_allowed_dynamic_import("lerobot.robots.so_follower")
     assert _is_allowed_dynamic_import("lerobot.teleoperators.so_leader")
-    assert _is_allowed_dynamic_import("lerobot_robot_example")
-    assert _is_allowed_dynamic_import("lerobot_teleoperator_example")
 
     assert not _is_allowed_dynamic_import("os")
     assert not _is_allowed_dynamic_import("subprocess")
     assert not _is_allowed_dynamic_import("lerobotx.robots.fake")
+
+    monkeypatch.setenv("TRUST_UNVERIFIED_PLUGIN", "yes")
+
+    assert _is_allowed_dynamic_import("lerobot_robot_example")
+    assert _is_allowed_dynamic_import("lerobot_teleoperator_example")
 
 
 def test_config_import_rejects_untrusted_package_root() -> None:
@@ -140,7 +143,7 @@ class TestLeRobotAdapterConstruction:
 
         adapter = LeRobotAdapter(_MOCK_CONFIG_TYPE, {"port": "/dev/ttyACM0"}, _robot=mock_lerobot_robot)
 
-        assert adapter.device_ids == ("lerobot:mock_robot:/dev/ttyACM0",)
+        assert adapter.device_ids == ("serial:ttyACM0",)
 
     def test_device_ids_collect_nested_ports(self, mock_lerobot_robot: MagicMock) -> None:
         from physicalai_lerobot_plugin.lerobot_adapter import LeRobotAdapter
@@ -152,8 +155,8 @@ class TestLeRobotAdapterConstruction:
         adapter = LeRobotAdapter(_MOCK_CONFIG_TYPE, config_kwargs, _robot=mock_lerobot_robot)
 
         assert adapter.device_ids == (
-            "lerobot:mock_robot:/dev/ttyACM0",
-            "lerobot:mock_robot:/dev/ttyACM1",
+            "serial:ttyACM0",
+            "serial:ttyACM1",
         )
 
 
@@ -249,6 +252,17 @@ class TestLeRobotAdapterAutoDetection:
             _ = adapter.NUM_JOINTS
 
 
+def test_teleoperator_uses_non_position_action_keys() -> None:
+    from physicalai_lerobot_plugin.lerobot_adapter import LeRobotTeleoperatorAdapter
+
+    teleoperator = MagicMock()
+    teleoperator.action_features = {"delta_x": {}, "delta_y": {}}
+    adapter = LeRobotTeleoperatorAdapter(_MOCK_CONFIG_TYPE, {}, _teleoperator=teleoperator)
+
+    assert adapter.joint_names == ["delta_x", "delta_y"]
+    assert adapter.NUM_JOINTS == 2
+
+
 class TestLeRobotAdapterObservation:
     def test_observation_has_correct_structure(self, mock_lerobot_robot: MagicMock) -> None:
 
@@ -259,6 +273,20 @@ class TestLeRobotAdapterObservation:
         assert obs.state is obs.joint_positions
         assert isinstance(obs.joint_positions, np.ndarray)
         assert obs.joint_positions.dtype == np.float32
+
+    def test_observation_wraps_images_in_frames(self, mock_lerobot_robot: MagicMock) -> None:
+        image = np.zeros((2, 2, 3), dtype=np.uint8)
+        mock_lerobot_robot.get_observation.return_value = {"joint.pos": 1.0, "camera": image}
+        mock_lerobot_robot.get_observation.side_effect = None
+        adapter = _make_adapter(mock_lerobot_robot)
+
+        observation = adapter.get_observation()
+
+        assert observation.images is not None
+        frame = observation.images["camera"]
+        assert frame.data is image
+        assert frame.sequence == 0
+        assert frame.timestamp > 0
 
 
 class TestLeRobotAdapterAction:
@@ -298,3 +326,11 @@ class TestLeRobotAdapterAction:
 
         with pytest.raises(RuntimeError, match="not yet discovered"):
             adapter.send_action(action)
+
+    def test_send_action_raises_after_disconnect(self, mock_lerobot_robot: MagicMock) -> None:
+        adapter = _make_adapter(mock_lerobot_robot)
+        adapter.connect()
+        adapter.disconnect()
+
+        with pytest.raises(ConnectionError, match="not connected"):
+            adapter.send_action(np.zeros(6, dtype=np.float32))

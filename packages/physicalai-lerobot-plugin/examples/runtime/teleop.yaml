@@ -27,7 +27,7 @@ runtime:
     class_path: physicalai.runtime.TeleopSource
     init_args:
       leader:
-        class_path: physicalai_lerobot_plugin.lerobot_adapter.LeRobotAdapter
+        class_path: physicalai_lerobot_plugin.lerobot_adapter.LeRobotTeleoperatorAdapter
         init_args:
           config_type: so101_leader # CHANGE_ME: LeRobot leader config type
           config_kwargs:
