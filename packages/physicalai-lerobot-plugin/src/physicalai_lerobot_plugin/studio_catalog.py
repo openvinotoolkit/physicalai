@@ -134,8 +134,7 @@ _ADVANCED_CONFIGURATION_NAME_MARKERS: frozenset[str] = frozenset({
 def _is_allowed_dynamic_import(module_name: str) -> bool:
     """Return whether a module name is trusted for dynamic importing."""
     return module_name.startswith("lerobot.") or (
-        trust_unverified_plugins()
-        and module_name.startswith(("lerobot_robot_", "lerobot_teleoperator_"))
+        trust_unverified_plugins() and module_name.startswith(("lerobot_robot_", "lerobot_teleoperator_"))
     )
 
 
