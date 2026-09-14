@@ -495,10 +495,13 @@ class TestContextManager:
         manifest_path = mock_export_dir / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
         manifest["model"]["callbacks"] = [
-            {"class_path": "physicalai.inference.callbacks.Rldx1VtcWindowCallback", "init_args": {
-                "video_length": 2,
-                "video_stride": 1,
-            }},
+            {
+                "class_path": "physicalai.inference.callbacks.Rldx1VtcWindowCallback",
+                "init_args": {
+                    "video_length": 2,
+                    "video_stride": 1,
+                },
+            },
         ]
         manifest_path.write_text(json.dumps(manifest))
 
@@ -512,6 +515,33 @@ class TestContextManager:
         call_inputs = mock_adapter.predict.call_args[0][0]
         np.testing.assert_array_equal(call_inputs["images.main"][:, 0], second)
         np.testing.assert_array_equal(call_inputs["images.main"][:, 1], second)
+
+    def test_manifest_rejects_unknown_callback_with_actionable_error(
+        self,
+        mock_export_dir: Path,
+        mock_adapter: MagicMock,
+    ) -> None:
+        manifest_path = mock_export_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["model"]["callbacks"] = [{"type": "unknown_callback"}]
+        manifest_path.write_text(json.dumps(manifest))
+
+        with pytest.raises(TypeError, match="Invalid manifest callback at index 0"):
+            _make_model(mock_export_dir, mock_adapter)
+
+    def test_explicit_empty_callbacks_override_manifest(
+        self,
+        mock_export_dir: Path,
+        mock_adapter: MagicMock,
+    ) -> None:
+        manifest_path = mock_export_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["model"]["callbacks"] = [{"type": "latency_monitor"}]
+        manifest_path.write_text(json.dumps(manifest))
+
+        model = _make_model(mock_export_dir, mock_adapter, callbacks=[])
+
+        assert model.callbacks == []
 
     def test_manifest_rejects_incompatible_callback(
         self,

@@ -11,13 +11,14 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from physicalai.inference.data.features import InferenceFeature, InferenceFeatureDtype, InferenceFeatureType
+from physicalai.inference.callbacks import Rldx1VtcWindowCallback
 from physicalai.inference.component_factory import (
     ComponentRegistry,
     component_registry,
     instantiate_component,
     resolve_artifact,
 )
+from physicalai.inference.data.features import InferenceFeature, InferenceFeatureDtype, InferenceFeatureType
 from physicalai.inference.manifest import (
     CameraSpec,
     ComponentSpec,
@@ -32,7 +33,6 @@ from physicalai.inference.manifest import (
     TensorSpec,
     _policy_name_from_class_path,
 )
-from physicalai.inference.callbacks import Rldx1VtcWindowCallback
 from physicalai.inference.preprocessors import StatsNormalizer
 from physicalai.inference.runners import SinglePass
 
