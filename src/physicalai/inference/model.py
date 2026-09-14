@@ -9,7 +9,7 @@ import re
 import time
 from collections import deque
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Self, cast
 
 import numpy as np
 from loguru import logger
@@ -163,9 +163,7 @@ class InferenceModel:
         self.output_features: list[InferenceFeature] = self._load_features(self.manifest.model.output_features)
 
         self.callbacks: list[Callback] = (
-            callbacks
-            if callbacks is not None
-            else self._load_components(self.manifest.model.callbacks, Callback, "callback")
+            callbacks if callbacks is not None else self._load_callbacks(self.manifest.model.callbacks)
         )
 
         logger.info(
@@ -452,38 +450,30 @@ class InferenceModel:
         Returns:
             List of instantiated processor objects.
         """
-        return self._load_components(specs, base, "processor")
+        return [instantiate_component(base, resolve_artifact(spec, self.export_dir)) for spec in specs]
 
-    def _load_components(self, specs: list[ComponentSpec], base: type, kind: str) -> list[Any]:
-        """Instantiate and validate ordered manifest components.
+    def _load_callbacks(self, specs: list[ComponentSpec]) -> list[Callback]:
+        """Instantiate callbacks declared in a manifest in declaration order.
 
         Args:
-            specs: Component specifications in declaration order.
-            base: Required base class for each component.
-            kind: Human-readable component category for errors.
+            specs: Callback component specifications.
 
         Returns:
-            Instantiated components in declaration order.
+            Instantiated callbacks in declaration order.
 
         Raises:
-            TypeError: If a specification cannot be instantiated or resolves
-                to an incompatible object.
+            TypeError: If a callback specification cannot be resolved or
+                instantiated.
         """
-        components: list[Any] = []
+        callbacks: list[Callback] = []
         for index, spec in enumerate(specs):
             try:
-                component = instantiate_component(base, resolve_artifact(spec, self.export_dir))
+                callback = cast(Callback, instantiate_component(Callback, resolve_artifact(spec, self.export_dir)))
             except (ImportError, TypeError, ValueError) as exc:
-                msg = f"Invalid manifest {kind} at index {index}: {exc}"
+                msg = f"Invalid manifest callback at index {index}: {exc}"
                 raise TypeError(msg) from exc
-            if not isinstance(component, base):
-                msg = (
-                    f"Invalid manifest {kind} at index {index}: expected "
-                    f"{base.__name__}, got {type(component).__name__}"
-                )
-                raise TypeError(msg)
-            components.append(component)
-        return components
+            callbacks.append(callback)
+        return callbacks
 
     def _load_features(self, specs: list[ComponentSpec]) -> list[InferenceFeature]:
         """Instantiate :class:`InferenceFeature` objects from manifest specs.
