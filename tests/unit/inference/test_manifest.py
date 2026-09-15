@@ -11,13 +11,14 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from physicalai.inference.data.features import InferenceFeature, InferenceFeatureDtype, InferenceFeatureType
+from physicalai.inference.callbacks import Rldx1VtcWindowCallback
 from physicalai.inference.component_factory import (
     ComponentRegistry,
     component_registry,
     instantiate_component,
     resolve_artifact,
 )
+from physicalai.inference.data.features import InferenceFeature, InferenceFeatureDtype, InferenceFeatureType
 from physicalai.inference.manifest import (
     CameraSpec,
     ComponentSpec,
@@ -275,6 +276,7 @@ class TestModelSpec:
         assert spec.artifacts == {}
         assert spec.preprocessors == []
         assert spec.postprocessors == []
+        assert spec.callbacks == []
 
     def test_from_dict_full(self) -> None:
         spec = ModelSpec.model_validate({
@@ -287,6 +289,9 @@ class TestModelSpec:
             "postprocessors": [
                 {"class_path": "myapp.transforms.Clamp", "init_args": {"low": -1.0, "high": 1.0}},
             ],
+            "callbacks": [
+                {"type": "rldx1_vtc", "video_length": 3, "video_stride": 2},
+            ],
         })
         assert spec.n_obs_steps == 2
         assert spec.runner is not None
@@ -294,6 +299,9 @@ class TestModelSpec:
         assert spec.artifacts == {"model": "model.onnx"}
         assert len(spec.preprocessors) == 1
         assert len(spec.postprocessors) == 1
+        assert len(spec.callbacks) == 1
+        assert spec.callbacks[0].type == "rldx1_vtc"
+        assert spec.callbacks[0].flat_params == {"video_length": 3, "video_stride": 2}
 
 
 class TestHardwareSpec:
@@ -389,6 +397,7 @@ class TestManifestFromDict:
         assert manifest.model.artifacts == {}
         assert manifest.model.preprocessors == []
         assert manifest.model.postprocessors == []
+        assert manifest.model.callbacks == []
         assert manifest.hardware.robots == []
         assert manifest.hardware.cameras == []
 
@@ -424,6 +433,19 @@ class TestManifestFromDict:
         assert len(manifest.model.postprocessors) == 1
         assert manifest.model.postprocessors[0].class_path == "myapp.transforms.Clamp"
         assert manifest.model.postprocessors[0].init_args == {"low": -1.0, "high": 1.0}
+
+    def test_callback_instantiation_from_registered_name(self) -> None:
+        spec = ComponentSpec.model_validate({
+            "type": "rldx1_vtc",
+            "video_length": 3,
+            "video_stride": 2,
+        })
+
+        callback = instantiate_component(spec)
+
+        assert isinstance(callback, Rldx1VtcWindowCallback)
+        assert callback._video_length == 3
+        assert callback._video_stride == 2
 
     def test_runner_instantiation_from_manifest(self, full_manifest_data: dict[str, Any]) -> None:
         manifest = Manifest.model_validate(full_manifest_data)
