@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-rebot-b601-plugin-v0.6.0...physicalai-rebot-b601-plugin-v0.7.0) (2026-09-15)
+
+
+### ✨ Features
+
+* add first party robot plugins ([#263](https://github.com/openvinotoolkit/physicalai/issues/263)) ([41e3ecf](https://github.com/openvinotoolkit/physicalai/commit/41e3ecf5e8d7a1c91d14234fceb0d040e2c7e07b))
+
 ## [0.5.0](https://github.com/MarkRedeman/physicalai-plugins/compare/physicalai-rebot-b601-plugin-v0.4.3...physicalai-rebot-b601-plugin-v0.5.0) (2026-09-04)
 
 

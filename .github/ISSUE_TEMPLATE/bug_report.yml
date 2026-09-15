@@ -1,54 +1,64 @@
 name: Bug report
-description: Report a reproducible defect in Physical AI.
-title: "fix: "
-labels:
-  - bug
+description: Report an unexpected behavior in Physical AI.
+type: Bug
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for taking the time to report a bug.
+        Please complete the sections that are relevant. You can leave optional sections blank.
 
-        Please include enough detail for a maintainer to reproduce the issue.
   - type: textarea
     id: summary
     attributes:
       label: Summary
-      description: What happened, and what did you expect to happen instead?
-      placeholder: A short description of the bug and expected behavior.
+      description: Briefly describe what happened and what you expected.
+      placeholder: Describe the unexpected behavior and expected result.
     validations:
       required: true
+
   - type: textarea
-    id: steps
+    id: details
     attributes:
-      label: Steps to reproduce
-      description: Provide a minimal, deterministic reproduction.
-      placeholder: |
-        1. Install ...
-        2. Run ...
-        3. Observe ...
+      label: Reproduction details
+      description: Include steps, configuration, or other details that help reproduce the issue.
+      value: |
+        ## Steps to reproduce
+        1.
+        2.
+        3.
+
+        ## Additional context
     validations:
-      required: true
-  - type: textarea
-    id: logs
-    attributes:
-      label: Logs and traceback
-      description: Paste the relevant console output, stack trace, or screenshots.
-      render: shell
+      required: false
+
   - type: textarea
     id: environment
     attributes:
       label: Environment
-      description: List the relevant environment details.
-      placeholder: |
+      description: Include only the details relevant to this issue.
+      value: |
+        - Studio or Runtime version/commit:
         - OS:
         - Python:
-        - physicalai version or commit:
-        - Hardware / camera / robot setup:
+        - Robot/camera:
+        - Hardware accelerator:
+        - Policy/export backend:
     validations:
-      required: true
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or traceback
+      description: Remove secrets and personal information before posting logs.
+      render: shell
+    validations:
+      required: false
+
   - type: textarea
     id: context
     attributes:
-      label: Additional context
-      description: Add anything else that may help diagnose the issue.
+      label: Links, screenshots, or other context
+      description: Add any relevant links or attachments here.
+    validations:
+      required: false
