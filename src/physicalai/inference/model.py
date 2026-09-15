@@ -468,7 +468,7 @@ class InferenceModel:
         callbacks: list[Callback] = []
         for index, spec in enumerate(specs):
             try:
-                callback = cast(Callback, instantiate_component(Callback, resolve_artifact(spec, self.export_dir)))
+                callback = cast("Callback", instantiate_component(Callback, resolve_artifact(spec, self.export_dir)))
             except (ImportError, TypeError, ValueError) as exc:
                 msg = f"Invalid manifest callback at index {index}: {exc}"
                 raise TypeError(msg) from exc
