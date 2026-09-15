@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-lerobot-plugin-v0.3.1...physicalai-lerobot-plugin-v0.4.0) (2026-09-15)
+
+
+### ✨ Features
+
+* add `physicalai-lerobot-plugin` ([#265](https://github.com/openvinotoolkit/physicalai/issues/265)) ([4ec496b](https://github.com/openvinotoolkit/physicalai/commit/4ec496b6067c101b8ac50beca65a25a89b6c4a9a))
+
 ## [0.3.0](https://github.com/MarkRedeman/physicalai-plugins/compare/physicalai-lerobot-plugin-v0.2.3...physicalai-lerobot-plugin-v0.3.0) (2026-09-04)
 
 
