@@ -66,3 +66,38 @@ def test_task_only_mode_emits_normalized_text_without_markers() -> None:
     outputs = preprocessor({"images": image, "task": "Put the mug on the plate."})
 
     assert outputs[TASK] == ["put the mug on the plate"]
+
+
+def test_runtime_resizes_raw_frames_to_export_resolution() -> None:
+    """Older manifests still succeed when runtime receives raw camera resolution."""
+    preprocessor = Rldx1Preprocessor(image_resolution=(192, 288), num_views=2, num_frames=4)
+    images = {
+        "arm": np.zeros((1, 4, 480, 640, 3), dtype=np.uint8),
+        "overhead": np.zeros((1, 4, 480, 640, 3), dtype=np.uint8),
+    }
+
+    outputs = preprocessor({"images": images, "task": "Pick up block"})
+
+    # 192x288 with patch_size=16 gives grid_h=12, grid_w=18.
+    assert outputs[PIXEL_VALUES].shape == (8 * 12 * 18, 1536)
+    np.testing.assert_array_equal(outputs[IMAGE_GRID_THW], np.array([[[1, 12, 18]] * 8], dtype=np.int64))
+
+
+def test_runtime_stage3_params_resize_shape_matches_export_geometry() -> None:
+    """Area-budget resizing path matches Stage-3-style manifest parameters."""
+    preprocessor = Rldx1Preprocessor(
+        image_resolution=(192, 288),
+        num_views=2,
+        num_frames=4,
+        image_max_area=65536,
+        image_resize_m=32,
+    )
+    images = {
+        "arm": np.zeros((1, 4, 480, 640, 3), dtype=np.uint8),
+        "overhead": np.zeros((1, 4, 480, 640, 3), dtype=np.uint8),
+    }
+
+    outputs = preprocessor({"images": images, "task": "Pick up block"})
+
+    assert outputs[PIXEL_VALUES].shape == (8 * 12 * 18, 1536)
+    np.testing.assert_array_equal(outputs[IMAGE_GRID_THW], np.array([[[1, 12, 18]] * 8], dtype=np.int64))

@@ -20,8 +20,10 @@ the image/video token ids), so the preprocessor does not need to supply it.
 
 from __future__ import annotations
 
+import math
 import re
 
+import cv2
 import numpy as np
 
 from physicalai.inference.constants import IMAGES, STATE, TASK
@@ -79,6 +81,10 @@ class Rldx1Preprocessor(Preprocessor):
         max_state_dim: Padded state dimension. Shorter states are zero-padded
             on the trailing feature axis after coercion to ``(B, 1, D)``.
         embodiment_id: Per-embodiment projector slot in the MSAT action head.
+        image_max_area: Optional Stage-3 area budget from Studio export.
+            When set, runtime applies area-budget resizing before cropping.
+        image_min_area: Optional Stage-3 minimum area floor from Studio export.
+        image_resize_m: Optional Stage-3 alignment multiple from Studio export.
         patch_size: Qwen3-VL vision tower patch size.
         temporal_patch_size: Qwen3-VL temporal patch size.
         merge_size: Qwen3-VL spatial merge size.
@@ -91,6 +97,9 @@ class Rldx1Preprocessor(Preprocessor):
         num_frames: int = 4,
         max_state_dim: int = MAX_STATE_DIM,
         embodiment_id: int = 0,
+        image_max_area: int | None = None,
+        image_min_area: int | None = None,
+        image_resize_m: int | None = None,
         patch_size: int = _PATCH_SIZE,
         temporal_patch_size: int = _TEMPORAL_PATCH_SIZE,
         merge_size: int = _SPATIAL_MERGE_SIZE,
@@ -116,6 +125,12 @@ class Rldx1Preprocessor(Preprocessor):
         self._num_frames = num_frames
         self._max_state_dim = max_state_dim
         self._embodiment_id = embodiment_id
+        # Optional Stage-3 geometry knobs from Studio export. When omitted
+        # (older manifests), fall back to an aspect-preserving fit+center-crop
+        # directly to the frozen export resolution.
+        self._image_max_area = image_max_area
+        self._image_min_area = image_min_area
+        self._image_resize_m = int(image_resize_m or align)
         self._patch_size = patch_size
         self._temporal_patch_size = temporal_patch_size
         self._merge_size = merge_size
@@ -203,9 +218,81 @@ class Rldx1Preprocessor(Preprocessor):
                     )
                     raise ValueError(msg)
             batch_frames.append(
-                [per_view[view_idx][t] for t in range(self._num_frames) for view_idx in range(len(view_arrays))],
+                [
+                    self._resize_frame(per_view[view_idx][t])
+                    for t in range(self._num_frames)
+                    for view_idx in range(len(view_arrays))
+                ],
             )
         return batch_frames
+
+    def _resize_frame(self, frame: np.ndarray) -> np.ndarray:
+        """Resize/crop one ``(H, W, C)`` frame to frozen export resolution.
+
+        Uses Stage-3-style area-budget resizing when ``image_max_area`` or
+        ``image_min_area`` is provided by the manifest; otherwise uses an
+        aspect-preserving fit+center-crop fallback for compatibility with
+        older exports that only carry ``image_resolution``.
+        """
+        target_h, target_w = self._image_resolution
+        current_h, current_w = int(frame.shape[0]), int(frame.shape[1])
+        if (current_h, current_w) == (target_h, target_w):
+            return frame
+
+        resized_h, resized_w = self._compute_resize_shape(current_h, current_w)
+        if (resized_h, resized_w) != (current_h, current_w):
+            frame = cv2.resize(frame, (resized_w, resized_h), interpolation=cv2.INTER_LINEAR)
+
+        frame = self._center_crop_or_pad(frame, target_h=target_h, target_w=target_w)
+        if frame.shape[0] != target_h or frame.shape[1] != target_w:
+            frame = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+        return np.ascontiguousarray(frame)
+
+    def _compute_resize_shape(self, height: int, width: int) -> tuple[int, int]:
+        """Compute intermediate resize shape before center crop to target size."""
+        if self._image_max_area is not None or self._image_min_area is not None:
+            area = height * width
+            scale = 1.0
+            if self._image_min_area is not None and area < self._image_min_area:
+                scale = math.sqrt(self._image_min_area / area)
+            elif self._image_max_area is not None and area > self._image_max_area:
+                scale = math.sqrt(self._image_max_area / area)
+
+            resized_h = max(1, int(round(height * scale)))
+            resized_w = max(1, int(round(width * scale)))
+            m = self._image_resize_m
+            if m > 1:
+                resized_h = max(1, (resized_h // m) * m)
+                resized_w = max(1, (resized_w // m) * m)
+            return resized_h, resized_w
+
+        target_h, target_w = self._image_resolution
+        # Backward-compatible fallback for older manifests: preserve aspect
+        # ratio while ensuring both axes cover the final center-crop target.
+        scale = max(target_h / height, target_w / width)
+        return max(1, int(round(height * scale))), max(1, int(round(width * scale)))
+
+    @staticmethod
+    def _center_crop_or_pad(frame: np.ndarray, *, target_h: int, target_w: int) -> np.ndarray:
+        """Center-crop or symmetric-pad a frame to the requested spatial size."""
+        height, width = frame.shape[0], frame.shape[1]
+
+        if height < target_h:
+            pad_h = target_h - height
+            pad_top = pad_h // 2
+            pad_bottom = pad_h - pad_top
+            frame = np.pad(frame, ((pad_top, pad_bottom), (0, 0), (0, 0)), mode="constant")
+            height = frame.shape[0]
+        if width < target_w:
+            pad_w = target_w - width
+            pad_left = pad_w // 2
+            pad_right = pad_w - pad_left
+            frame = np.pad(frame, ((0, 0), (pad_left, pad_right), (0, 0)), mode="constant")
+            width = frame.shape[1]
+
+        start_h = max(0, (height - target_h) // 2)
+        start_w = max(0, (width - target_w) // 2)
+        return frame[start_h : start_h + target_h, start_w : start_w + target_w]
 
     @staticmethod
     def _collect_view_arrays(inputs: dict[str, np.ndarray]) -> list[np.ndarray]:
