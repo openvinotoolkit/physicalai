@@ -168,6 +168,23 @@ class TestStatsNormalizerQuantiles:
         result_max = normalizer({"observation.state": np.array([1.9, 3.8])})
         np.testing.assert_allclose(result_max["observation.state"], np.array([1.0, 1.0]))
 
+    def test_masked_dimensions_only(self) -> None:
+        normalizer = StatsNormalizer(
+            mode="quantiles",
+            stats={
+                "state": {
+                    "q01": [0.0, 0.0, 0.0],
+                    "q99": [2.0, 2.0, 2.0],
+                    "mask": [True, False, True],
+                },
+            },
+        )
+        inputs = {"state": np.array([[0.5, 4.0, -0.5]], dtype=np.float32)}
+
+        result = normalizer(inputs)
+
+        np.testing.assert_allclose(result["state"], [[-0.5, 4.0, -1.5]])
+
 
 class TestStatsNormalizerIdentity:
     def test_identity_mode_passthrough(self, stats_dir: Path) -> None:
