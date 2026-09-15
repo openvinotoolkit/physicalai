@@ -148,7 +148,7 @@ class Config:
         Raises:
             ConfigImportError: If the path does not resolve to a class.
         """
-        from .importing import import_dotted_path  # noqa: PLC0415
+        from ._importing import import_dotted_path  # noqa: PLC0415
 
         resolved = import_dotted_path(self.class_path)
         if not isinstance(resolved, type):

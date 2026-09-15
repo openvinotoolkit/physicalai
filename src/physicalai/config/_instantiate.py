@@ -15,12 +15,12 @@ from typing import TypeVar, Union, cast, get_args, get_origin, get_type_hints
 
 from ._errors import ConfigError, ConfigImportError
 from ._export import declared_config_args
+from ._importing import import_dotted_path
 from ._normalize import validate_config
 from ._path import format_path
 from ._typed_wire import enum_from_wire
 from ._types import _MAX_CONFIG_DEPTH, JsonValue
 from .base import Config, parse_class_config
-from .importing import import_dotted_path
 
 _T = TypeVar("_T")
 
