@@ -10,10 +10,12 @@ from physicalai.inference.postprocessors.action_chunk_trimmer import ActionChunk
 from physicalai.inference.postprocessors.action_normalizer import ActionNormalizer
 from physicalai.inference.postprocessors.base import Postprocessor
 from physicalai.inference.postprocessors.stats_denormalizer import StatsDenormalizer
+from physicalai.inference.postprocessors.xr0 import XR0Postprocessor
 
 __all__ = [
     "ActionChunkTrimmer",
     "ActionNormalizer",
     "Postprocessor",
     "StatsDenormalizer",
+    "XR0Postprocessor",
 ]
