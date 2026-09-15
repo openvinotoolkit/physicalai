@@ -74,6 +74,18 @@ def _build_prompt(task_len: int, grid_hw: tuple[int, int], *, left_pad: int = 0)
     return ids, mask, grid
 
 
+def _left_pad_batch(ids_rows: list[list[int]], mask_rows: list[list[int]]) -> tuple[np.ndarray, np.ndarray]:
+    """Left-pad rows to a common length and return int64 arrays."""
+    max_len = max(len(row) for row in ids_rows)
+    padded_ids: list[list[int]] = []
+    padded_masks: list[list[int]] = []
+    for ids, mask in zip(ids_rows, mask_rows, strict=True):
+        pad = max_len - len(ids)
+        padded_ids.append(([0] * pad) + ids)
+        padded_masks.append(([0] * pad) + mask)
+    return np.array(padded_ids, dtype=np.int64), np.array(padded_masks, dtype=np.int64)
+
+
 @pytest.mark.parametrize("left_pad", [0, 3, 7])
 @pytest.mark.parametrize(("task_len", "grid_hw"), [(2, (4, 4)), (5, (6, 4)), (0, (4, 6))])
 def test_numpy_rope_matches_torch(left_pad: int, task_len: int, grid_hw: tuple[int, int]) -> None:
@@ -105,8 +117,7 @@ def test_numpy_rope_batch() -> None:
     """Batched prompts of equal length match the torch reference row-wise."""
     ids_a, mask_a, grid_a = _build_prompt(3, (4, 4), left_pad=2)
     ids_b, mask_b, _ = _build_prompt(3, (4, 4), left_pad=0)
-    ids_np = np.array([ids_a, ids_b], dtype=np.int64)
-    mask_np = np.array([mask_a, mask_b], dtype=np.int64)
+    ids_np, mask_np = _left_pad_batch([ids_a, ids_b], [mask_a, mask_b])
     grid_np = np.array(grid_a + grid_a, dtype=np.int64)  # one image per row
 
     got = compute_mrope_position_ids(
@@ -126,8 +137,7 @@ def test_numpy_rope_batch_with_batched_grid_thw() -> None:
     """Batched image_grid_thw (B, N, 3) matches flattened-grid behavior."""
     ids_a, mask_a, grid_a = _build_prompt(3, (4, 4), left_pad=2)
     ids_b, mask_b, grid_b = _build_prompt(3, (4, 4), left_pad=0)
-    ids_np = np.array([ids_a, ids_b], dtype=np.int64)
-    mask_np = np.array([mask_a, mask_b], dtype=np.int64)
+    ids_np, mask_np = _left_pad_batch([ids_a, ids_b], [mask_a, mask_b])
 
     # Runtime rldx1 preprocessor emits batched grid_thw with shape (B, num_images, 3).
     grid_batched = np.array([grid_a, grid_b], dtype=np.int64)

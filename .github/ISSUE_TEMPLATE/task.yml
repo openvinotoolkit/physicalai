@@ -1,0 +1,24 @@
+name: Task
+description: Describe a concrete piece of work.
+type: Task
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: What needs to be done?
+      description: State the concrete outcome of this task.
+      placeholder: Describe the work and why it is needed.
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: Completion details
+      description: Add acceptance criteria, dependencies, or implementation notes.
+      value: |
+        ## Done when
+
+        ## Dependencies or implementation notes
+    validations:
+      required: false
