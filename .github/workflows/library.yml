@@ -92,7 +92,16 @@ jobs:
           version: "0.8.8"
 
       - name: Install dependencies
-        run: uv sync --frozen --all-packages --extra tests --extra robots --extra transport
+        run: |
+          uv sync --frozen --all-packages --extra tests --extra robots --extra transport
+          # The LeRobot plugin is intentionally excluded from the default UV
+          # workspace in pyproject.toml so regular `uv sync` does not pull in
+          # heavy torch/CUDA dependencies. This test job still runs
+          # `packages/*/tests`, so we install LeRobot + the plugin explicitly.
+          # `--no-deps` keeps the workspace's editable studio plugin instead of
+          # replacing it with an older published SDK.
+          uv pip install --python .venv/bin/python lerobot pytest-anyio
+          uv pip install --python .venv/bin/python --no-deps -e packages/physicalai-lerobot-plugin
 
       - name: Run python unit tests
         run: uv run pytest --import-mode=importlib tests/unit packages/*/tests

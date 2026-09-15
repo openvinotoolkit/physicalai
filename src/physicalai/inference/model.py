@@ -9,13 +9,14 @@ import re
 import time
 from collections import deque
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Self, cast
 
 import numpy as np
 from loguru import logger
 
 from physicalai.config import export_config
 from physicalai.inference.adapters import adapter_registry, get_adapter
+from physicalai.inference.callbacks.base import Callback
 from physicalai.inference.component_factory import instantiate_component, resolve_artifact
 from physicalai.inference.constants import ACTION
 from physicalai.inference.data.features import InferenceFeature
@@ -27,7 +28,6 @@ from physicalai.inference.utils._hub import download_from_hub  # noqa: PLC2701
 
 if TYPE_CHECKING:
     from physicalai.inference.adapters.base import RuntimeAdapter
-    from physicalai.inference.callbacks.base import Callback
     from physicalai.inference.runners.base import InferenceRunner
 
 
@@ -95,7 +95,10 @@ class InferenceModel:
             postprocessors: Pipeline stages applied to runner output.  If
                 ``None``, loaded from manifest (empty if not declared).
             callbacks: Lifecycle callbacks for instrumentation (timing,
-                logging, safety checks, etc.).  Defaults to no callbacks.
+                logging, safety checks, etc.).  If ``None``, callbacks declared
+                under ``model.callbacks`` are loaded from the manifest.  An
+                explicitly supplied list, including an empty list, takes
+                precedence over manifest callbacks.
             **adapter_kwargs: Backend-specific configuration options
 
         Raises:
@@ -156,16 +159,19 @@ class InferenceModel:
             if postprocessors is not None
             else self._load_processors(self.manifest.model.postprocessors, Postprocessor)
         )
-        logger.info(
-            "Loaded {} preprocessors, {} postprocessors",
-            len(self.preprocessors),
-            len(self.postprocessors),
-        )
-
         self.input_features: list[InferenceFeature] = self._load_features(self.manifest.model.input_features)
         self.output_features: list[InferenceFeature] = self._load_features(self.manifest.model.output_features)
 
-        self.callbacks: list[Callback] = callbacks if callbacks is not None else []
+        self.callbacks: list[Callback] = (
+            callbacks if callbacks is not None else self._load_callbacks(self.manifest.model.callbacks)
+        )
+
+        logger.info(
+            "Loaded {} preprocessors, {} postprocessors, {} callbacks",
+            len(self.preprocessors),
+            len(self.postprocessors),
+            len(self.callbacks),
+        )
 
         for callback in self.callbacks:
             callback.on_load(self)
@@ -445,6 +451,29 @@ class InferenceModel:
             List of instantiated processor objects.
         """
         return [instantiate_component(base, resolve_artifact(spec, self.export_dir)) for spec in specs]
+
+    def _load_callbacks(self, specs: list[ComponentSpec]) -> list[Callback]:
+        """Instantiate callbacks declared in a manifest in declaration order.
+
+        Args:
+            specs: Callback component specifications.
+
+        Returns:
+            Instantiated callbacks in declaration order.
+
+        Raises:
+            TypeError: If a callback specification cannot be resolved or
+                instantiated.
+        """
+        callbacks: list[Callback] = []
+        for index, spec in enumerate(specs):
+            try:
+                callback = cast("Callback", instantiate_component(Callback, resolve_artifact(spec, self.export_dir)))
+            except (ImportError, TypeError, ValueError) as exc:
+                msg = f"Invalid manifest callback at index {index}: {exc}"
+                raise TypeError(msg) from exc
+            callbacks.append(callback)
+        return callbacks
 
     def _load_features(self, specs: list[ComponentSpec]) -> list[InferenceFeature]:
         """Instantiate :class:`InferenceFeature` objects from manifest specs.

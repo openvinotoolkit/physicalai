@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Any
@@ -465,6 +466,114 @@ class TestContextManager:
             model.reset()
 
         assert recorder.events == ["predict_start", "predict_end", "reset"]
+
+    def test_manifest_loads_vtc_callback_and_creates_temporal_window(
+        self,
+        mock_export_dir: Path,
+        mock_adapter: MagicMock,
+    ) -> None:
+        manifest_path = mock_export_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["model"]["callbacks"] = [
+            {"type": "rldx1_vtc", "video_length": 3, "video_stride": 1},
+        ]
+        manifest_path.write_text(json.dumps(manifest))
+
+        model = _make_model(mock_export_dir, mock_adapter)
+        assert isinstance(model.callbacks[0], Rldx1VtcWindowCallback)
+
+        frame = np.zeros((1, 3, 2, 2), dtype=np.uint8)
+        model({"images.main": frame})
+        call_inputs = mock_adapter.predict.call_args[0][0]
+        assert call_inputs["images.main"].shape == (1, 3, 3, 2, 2)
+
+    def test_manifest_callback_constructor_args_and_reset(
+        self,
+        mock_export_dir: Path,
+        mock_adapter: MagicMock,
+    ) -> None:
+        manifest_path = mock_export_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["model"]["callbacks"] = [
+            {
+                "class_path": "physicalai.inference.callbacks.Rldx1VtcWindowCallback",
+                "init_args": {
+                    "video_length": 2,
+                    "video_stride": 1,
+                },
+            },
+        ]
+        manifest_path.write_text(json.dumps(manifest))
+
+        model = _make_model(mock_export_dir, mock_adapter)
+        first = np.zeros((1, 3, 2, 2), dtype=np.uint8)
+        second = np.full((1, 3, 2, 2), 7, dtype=np.uint8)
+        model({"images.main": first})
+        model.reset()
+        model({"images.main": second})
+
+        call_inputs = mock_adapter.predict.call_args[0][0]
+        np.testing.assert_array_equal(call_inputs["images.main"][:, 0], second)
+        np.testing.assert_array_equal(call_inputs["images.main"][:, 1], second)
+
+    def test_manifest_rejects_unknown_callback_with_actionable_error(
+        self,
+        mock_export_dir: Path,
+        mock_adapter: MagicMock,
+    ) -> None:
+        manifest_path = mock_export_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["model"]["callbacks"] = [{"type": "unknown_callback"}]
+        manifest_path.write_text(json.dumps(manifest))
+
+        with pytest.raises(TypeError, match="Invalid manifest callback at index 0"):
+            _make_model(mock_export_dir, mock_adapter)
+
+    def test_explicit_empty_callbacks_override_manifest(
+        self,
+        mock_export_dir: Path,
+        mock_adapter: MagicMock,
+    ) -> None:
+        manifest_path = mock_export_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["model"]["callbacks"] = [{"type": "latency_monitor"}]
+        manifest_path.write_text(json.dumps(manifest))
+
+        model = _make_model(mock_export_dir, mock_adapter, callbacks=[])
+
+        assert model.callbacks == []
+
+    def test_manifest_rejects_incompatible_callback(
+        self,
+        mock_export_dir: Path,
+        mock_adapter: MagicMock,
+    ) -> None:
+        manifest_path = mock_export_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["model"]["callbacks"] = [{"type": "single_pass"}]
+        manifest_path.write_text(json.dumps(manifest))
+
+        with pytest.raises(TypeError, match="Invalid manifest callback"):
+            _make_model(mock_export_dir, mock_adapter)
+
+    def test_manifest_callbacks_preserve_declaration_order(
+        self,
+        mock_export_dir: Path,
+        mock_adapter: MagicMock,
+    ) -> None:
+        manifest_path = mock_export_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["model"]["callbacks"] = [
+            {"type": "latency_monitor"},
+            {"type": "throughput_monitor"},
+        ]
+        manifest_path.write_text(json.dumps(manifest))
+
+        model = _make_model(mock_export_dir, mock_adapter)
+        assert [type(callback).__name__ for callback in model.callbacks] == [
+            "LatencyMonitor",
+            "ThroughputMonitor",
+        ]
 
     def test_vtc_callback_resets_with_model_reset(
         self,

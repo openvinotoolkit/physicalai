@@ -42,6 +42,11 @@
       "package-name": "physicalai-rebot-b601-plugin",
       "changelog-path": "CHANGELOG.md"
     },
+    "packages/physicalai-lerobot-plugin": {
+      "release-type": "python",
+      "package-name": "physicalai-lerobot-plugin",
+      "changelog-path": "CHANGELOG.md"
+    },
     "packages/physicalai-stararm-plugin": {
       "release-type": "python",
       "package-name": "physicalai-stararm-plugin",
