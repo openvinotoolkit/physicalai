@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from physicalai.inference.constants import TOKENIZED_PROMPT, TOKENIZED_PROMPT_MASK
-from physicalai.inference.preprocessors.rldx1_token_composer import Rldx1TokenComposer
+from physicalai.inference.preprocessors.rldx1.token_composer import Rldx1TokenComposer
 
 
 def _write_contract(tmp_path, **overrides):

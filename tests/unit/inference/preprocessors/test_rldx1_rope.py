@@ -13,7 +13,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from physicalai.inference.preprocessors._rope import compute_mrope_position_ids
+from physicalai.inference.preprocessors.rldx1.rope import compute_mrope_position_ids
 
 torch = pytest.importorskip("torch")
 
