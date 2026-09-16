@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from inference.preprocessors.base import Preprocessor
 from physicalai.inference.constants import TOKENIZED_PROMPT, TOKENIZED_PROMPT_MASK
+from physicalai.inference.preprocessors.base import Preprocessor
 
 INPUT_IDS = "input_ids"
 POSITION_IDS = "position_ids"
