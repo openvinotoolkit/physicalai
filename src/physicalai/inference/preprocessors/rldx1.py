@@ -269,8 +269,9 @@ class Rldx1Preprocessor(Preprocessor):
             resized_w = max(1, round(width * scale))
             m = self._image_resize_m
             if m > 1:
-                resized_h = max(1, (resized_h // m) * m)
-                resized_w = max(1, (resized_w // m) * m)
+                round_fn = math.ceil if self._image_min_area is not None and area < self._image_min_area else math.floor
+                resized_h = max(1, round_fn(resized_h / m) * m)
+                resized_w = max(1, round_fn(resized_w / m) * m)
             return resized_h, resized_w
 
         target_h, target_w = self._image_resolution
