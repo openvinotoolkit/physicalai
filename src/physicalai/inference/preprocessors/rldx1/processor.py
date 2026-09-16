@@ -26,9 +26,8 @@ import re
 import cv2
 import numpy as np
 
+from inference.preprocessors.base import Preprocessor
 from physicalai.inference.constants import IMAGES, STATE, TASK
-
-from ..base import Preprocessor
 
 # RLDX-1-VLM (Qwen3-VL) vision tiler constants. These must match the values
 # actually baked into the exported checkpoint's tokenizer/processor config

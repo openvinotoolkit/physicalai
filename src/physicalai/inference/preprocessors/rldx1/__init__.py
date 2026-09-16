@@ -3,7 +3,12 @@
 
 """RLDX-1 inference preprocessors and utilities."""
 
-from physicalai.inference.preprocessors.rldx1.processor import IMAGE_GRID_THW, MAX_STATE_DIM, PIXEL_VALUES, Rldx1Preprocessor
+from physicalai.inference.preprocessors.rldx1.processor import (
+    IMAGE_GRID_THW,
+    MAX_STATE_DIM,
+    PIXEL_VALUES,
+    Rldx1Preprocessor,
+)
 from physicalai.inference.preprocessors.rldx1.rope import Rldx1RopePreprocessor, compute_mrope_position_ids
 from physicalai.inference.preprocessors.rldx1.token_composer import Rldx1TokenComposer
 

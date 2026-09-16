@@ -16,9 +16,8 @@ from typing import Any
 
 import numpy as np
 
+from inference.preprocessors.base import Preprocessor
 from physicalai.inference.constants import TOKENIZED_PROMPT, TOKENIZED_PROMPT_MASK
-
-from ..base import Preprocessor
 
 _TOKEN_IDS_RANK = 2
 
