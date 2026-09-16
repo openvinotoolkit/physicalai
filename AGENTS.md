@@ -39,4 +39,4 @@ Physical AI Runtime is the deployment-side repo for the Physical AI workflow: lo
 - Use Conventional Commits for PR titles and commits.
 - Sign commits when committing changes.
 - Follow `docs/development/coding-standards.md` for repo-wide coding standards.
-- Follow `docs/development/security.md` before changing `src/physicalai/`.
+- Follow `docs/development/security.md` before changing runtime or plugin source code.
