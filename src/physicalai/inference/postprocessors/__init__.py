@@ -9,11 +9,15 @@ Postprocessors transform inference outputs after the runner returns.
 from physicalai.inference.postprocessors.action_chunk_trimmer import ActionChunkTrimmer
 from physicalai.inference.postprocessors.action_normalizer import ActionNormalizer
 from physicalai.inference.postprocessors.base import Postprocessor
+from physicalai.inference.postprocessors.joint_frame import JointFramePostprocessor
+from physicalai.inference.postprocessors.molmoact2 import MolmoAct2Postprocessor
 from physicalai.inference.postprocessors.stats_denormalizer import StatsDenormalizer
 
 __all__ = [
     "ActionChunkTrimmer",
     "ActionNormalizer",
+    "JointFramePostprocessor",
+    "MolmoAct2Postprocessor",
     "Postprocessor",
     "StatsDenormalizer",
 ]

@@ -232,6 +232,23 @@ class TestStatsDenormalizerQuantiles:
         expected = (np.array([1.9, 3.8, 5.7]) + np.array([0.1, 0.2, 0.3])) / 2.0
         np.testing.assert_allclose(result["action"], expected)
 
+    def test_masked_dimensions_only(self) -> None:
+        denormalizer = StatsDenormalizer(
+            mode="quantiles",
+            stats={
+                "action": {
+                    "q01": [0.0, 0.0, 0.0],
+                    "q99": [2.0, 2.0, 2.0],
+                    "mask": [True, False, True],
+                },
+            },
+        )
+        outputs = {"action": np.array([[0.0, 0.5, 1.0]], dtype=np.float32)}
+
+        result = denormalizer(outputs)
+
+        np.testing.assert_allclose(result["action"], [[1.0, 0.5, 2.0]])
+
 
 class TestStatsDenormalizerLazyLoading:
     def test_stats_not_loaded_at_init(self, stats_dir: Path) -> None:

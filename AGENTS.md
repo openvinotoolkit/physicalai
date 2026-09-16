@@ -11,6 +11,7 @@ Physical AI Runtime is the deployment-side repo for the Physical AI workflow: lo
 - `src/physicalai/robot/`: robot protocol and hardware integrations.
 - `src/physicalai/cli/`: `physicalai` / `pai` host CLI (`run` and entry-point subcommands from other packages).
 - `src/physicalai/benchmark/`: inference performance tooling.
+- `packages/`: first-party plugin packages (robot/camera adapters and integrations), each with its own `pyproject.toml`, `src/`, and `tests/` — e.g. `physicalai-lerobot-plugin`, `physicalai-bimanual-so101-plugin`, `physicalai-rebot-b601-plugin`, `physicalai-stararm-plugin`, `physicalai-studio-plugin`.
 - `skills/inference/`, `skills/capture/`, `skills/runtime/`, `skills/config/`: agent skills (canonical). Adapter symlinks under `.claude/skills/` and `.agents/skills/` are committed so clones work out of the box. See `skills/README.md`.
 - `docs/`: user and contributor documentation (MkDocs).
 
@@ -38,4 +39,4 @@ Physical AI Runtime is the deployment-side repo for the Physical AI workflow: lo
 - Use Conventional Commits for PR titles and commits.
 - Sign commits when committing changes.
 - Follow `docs/development/coding-standards.md` for repo-wide coding standards.
-- Follow `docs/development/security.md` before changing `src/physicalai/`.
+- Follow `docs/development/security.md` before changing runtime or plugin source code.
