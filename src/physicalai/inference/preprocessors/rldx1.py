@@ -97,12 +97,13 @@ class Rldx1Preprocessor(Preprocessor):
         num_frames: int = 4,
         max_state_dim: int = MAX_STATE_DIM,
         embodiment_id: int = 0,
-        image_max_area: int | None = None,
-        image_min_area: int | None = None,
-        image_resize_m: int | None = None,
         patch_size: int = _PATCH_SIZE,
         temporal_patch_size: int = _TEMPORAL_PATCH_SIZE,
         merge_size: int = _SPATIAL_MERGE_SIZE,
+        *,
+        image_max_area: int | None = None,
+        image_min_area: int | None = None,
+        image_resize_m: int | None = None
     ) -> None:
         """Precompute the frozen patch grid, image_grid_thw, and prompt template.
 
