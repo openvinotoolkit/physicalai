@@ -103,7 +103,7 @@ class Rldx1Preprocessor(Preprocessor):
         *,
         image_max_area: int | None = None,
         image_min_area: int | None = None,
-        image_resize_m: int | None = None
+        image_resize_m: int | None = None,
     ) -> None:
         """Precompute the frozen patch grid, image_grid_thw, and prompt template.
 
