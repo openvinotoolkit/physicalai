@@ -233,6 +233,9 @@ class Rldx1Preprocessor(Preprocessor):
         ``image_min_area`` is provided by the manifest; otherwise uses an
         aspect-preserving fit+center-crop fallback for compatibility with
         older exports that only carry ``image_resolution``.
+
+        Returns:
+            Resized ``(target_h, target_w, C)`` contiguous frame.
         """
         target_h, target_w = self._image_resolution
         current_h, current_w = int(frame.shape[0]), int(frame.shape[1])
@@ -249,7 +252,11 @@ class Rldx1Preprocessor(Preprocessor):
         return np.ascontiguousarray(frame)
 
     def _compute_resize_shape(self, height: int, width: int) -> tuple[int, int]:
-        """Compute intermediate resize shape before center crop to target size."""
+        """Compute intermediate resize shape before center crop to target size.
+
+        Returns:
+            Intermediate ``(height, width)`` used before center cropping.
+        """
         if self._image_max_area is not None or self._image_min_area is not None:
             area = height * width
             scale = 1.0
@@ -258,8 +265,8 @@ class Rldx1Preprocessor(Preprocessor):
             elif self._image_max_area is not None and area > self._image_max_area:
                 scale = math.sqrt(self._image_max_area / area)
 
-            resized_h = max(1, int(round(height * scale)))
-            resized_w = max(1, int(round(width * scale)))
+            resized_h = max(1, round(height * scale))
+            resized_w = max(1, round(width * scale))
             m = self._image_resize_m
             if m > 1:
                 resized_h = max(1, (resized_h // m) * m)
@@ -270,11 +277,15 @@ class Rldx1Preprocessor(Preprocessor):
         # Backward-compatible fallback for older manifests: preserve aspect
         # ratio while ensuring both axes cover the final center-crop target.
         scale = max(target_h / height, target_w / width)
-        return max(1, int(round(height * scale))), max(1, int(round(width * scale)))
+        return max(1, round(height * scale)), max(1, round(width * scale))
 
     @staticmethod
     def _center_crop_or_pad(frame: np.ndarray, *, target_h: int, target_w: int) -> np.ndarray:
-        """Center-crop or symmetric-pad a frame to the requested spatial size."""
+        """Center-crop or symmetric-pad a frame to the requested spatial size.
+
+        Returns:
+            Frame with spatial shape ``(target_h, target_w, C)``.
+        """
         height, width = frame.shape[0], frame.shape[1]
 
         if height < target_h:
