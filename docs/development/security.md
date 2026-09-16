@@ -1,6 +1,6 @@
 # Runtime Security Rules
 
-These rules apply when writing, editing, or reviewing code under `src/physicalai/`.
+These rules apply when writing, editing, or reviewing runtime or plugin source code (see [`AGENTS.md`](../../AGENTS.md) for repository layout).
 
 1. No `# nosec` / `# nosemgrep` without a justification comment explaining why the suppression is safe.
 
