@@ -52,8 +52,8 @@ class XR0Postprocessor(Postprocessor):
 
     def __init__(
         self,
-        action_mean: Sequence[float],
-        action_std: Sequence[float],
+        action_mean: Sequence[float] | Sequence[Sequence[float]],
+        action_std: Sequence[float] | Sequence[Sequence[float]],
         action_dim: int | None = None,
         action_mode: str = "absolute",
         action_eps: float = _ACTION_EPS,
