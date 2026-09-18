@@ -33,13 +33,17 @@ def test_one_input(data: bytes) -> None:
     # aspect-ratio edge cases (very tall, very wide, square).
     target_h = fdp.ConsumeIntInRange(1, 256)
     target_w = fdp.ConsumeIntInRange(1, 256)
+    channels_first = fdp.ConsumeBool()
 
     try:
-        preprocessor = ResizeSmolVLA(image_resolution=(target_h, target_w))
+        preprocessor = ResizeSmolVLA(
+            image_resolution=(target_h, target_w),
+            image_layout="BCHW" if channels_first else "BHWC",
+        )
     except (ValueError, OverflowError):
         return
 
-    img = make_image_array(fdp, max_spatial=64)
+    img = make_image_array(fdp, max_spatial=64, channels_first=channels_first)
 
     # Three input presentation styles (matching ResizeSmolVLA.__call__ dispatch)
     presentation = fdp.ConsumeIntInRange(0, 2)

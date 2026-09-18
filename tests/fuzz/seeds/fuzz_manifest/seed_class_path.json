@@ -19,7 +19,7 @@
       },
       {
         "class_path": "physicalai.inference.preprocessors.ResizeSmolVLA",
-        "init_args": { "image_resolution": [512, 512] }
+        "init_args": { "image_resolution": [512, 512], "image_layout": "BCHW" }
       },
       {
         "class_path": "physicalai.inference.preprocessors.HFTokenizer",

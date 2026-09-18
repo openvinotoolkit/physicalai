@@ -64,12 +64,14 @@ def make_2d_same_cols(
     return np.frombuffer(raw[:n_bytes], dtype=np.float32).copy().reshape((rows, cols))
 
 
-def make_image_array(fdp, *, max_spatial: int = 128) -> np.ndarray:
+def make_image_array(fdp, *, max_spatial: int = 128, channels_first: bool | None = None) -> np.ndarray:
     """Return a plausible image array — channels-first (B,C,H,W) or channels-last (B,H,W,C).
 
     Dtype is uint8 or float32; chosen randomly from fuzz data.
+    Pass ``channels_first`` when the caller needs to declare the input layout.
     """
-    channels_first = fdp.ConsumeBool()
+    if channels_first is None:
+        channels_first = fdp.ConsumeBool()
     B = fdp.ConsumeIntInRange(0, 4)
     C = fdp.ConsumeIntInRange(1, 4)
     H = fdp.ConsumeIntInRange(0, max_spatial)

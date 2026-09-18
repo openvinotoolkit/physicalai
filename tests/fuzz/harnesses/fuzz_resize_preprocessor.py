@@ -31,17 +31,19 @@ def test_one_input(data: bytes) -> None:
     target_w = fdp.ConsumeIntInRange(1, 512)
     mode = fdp.PickValueInList(["stretch", "letterbox"])
     pad_value = float(fdp.ConsumeFloat())
+    channels_first = fdp.ConsumeBool()
 
     try:
         preprocessor = ResizePreprocessor(
             image_resolution=(target_h, target_w),
+            image_layout="BCHW" if channels_first else "BHWC",
             mode=mode,
             pad_value=pad_value,
         )
     except (ValueError, OverflowError):
         return
 
-    img = make_image_array(fdp, max_spatial=64)
+    img = make_image_array(fdp, max_spatial=64, channels_first=channels_first)
 
     # Three input presentation styles (flat array, nested dict, dotted key)
     presentation = fdp.ConsumeIntInRange(0, 2)

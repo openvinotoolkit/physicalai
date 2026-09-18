@@ -21,6 +21,7 @@
       },
       {
         "type": "resize",
+        "image_layout": "BCHW",
         "image_resolution": [224, 224],
         "mode": "letterbox"
       }
