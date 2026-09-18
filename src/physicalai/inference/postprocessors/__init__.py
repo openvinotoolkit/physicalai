@@ -12,6 +12,7 @@ from physicalai.inference.postprocessors.base import Postprocessor
 from physicalai.inference.postprocessors.joint_frame import JointFramePostprocessor
 from physicalai.inference.postprocessors.molmoact2 import MolmoAct2Postprocessor
 from physicalai.inference.postprocessors.stats_denormalizer import StatsDenormalizer
+from physicalai.inference.postprocessors.xr0 import XR0Postprocessor
 
 __all__ = [
     "ActionChunkTrimmer",
@@ -20,4 +21,5 @@ __all__ = [
     "MolmoAct2Postprocessor",
     "Postprocessor",
     "StatsDenormalizer",
+    "XR0Postprocessor",
 ]

@@ -11,6 +11,7 @@ IMAGES = "images"
 ACTION = "action"
 TASK = "task"
 STATE = "state"
+STATE_PASSTHROUGH = "state_passthrough"
 
 TOKENIZED_PROMPT = "tokenized_prompt"
 TOKENIZED_PROMPT_MASK = "tokenized_prompt_mask"
@@ -31,6 +32,7 @@ __all__ = [
     "RTC_INFERENCE_DELAY",
     "RTC_MAX_GUIDANCE_WEIGHT",
     "STATE",
+    "STATE_PASSTHROUGH",
     "TASK",
     "TOKENIZED_PROMPT",
     "TOKENIZED_PROMPT_MASK",

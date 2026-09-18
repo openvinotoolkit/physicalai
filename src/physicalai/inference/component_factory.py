@@ -112,6 +112,7 @@ component_registry.register("molmoact2", "physicalai.inference.preprocessors.Mol
 component_registry.register("molmoact2_inputs", "physicalai.inference.preprocessors.MolmoAct2ModelInputs")
 component_registry.register("ov_tokenizer", "physicalai.inference.preprocessors.OVTokenizer")
 component_registry.register("pi05", "physicalai.inference.preprocessors.Pi05Preprocessor")
+component_registry.register("xr0", "physicalai.inference.preprocessors.XR0Preprocessor")
 component_registry.register("rldx1", "physicalai.inference.preprocessors.Rldx1Preprocessor")
 component_registry.register("rldx1_token_composer", "physicalai.inference.preprocessors.Rldx1TokenComposer")
 component_registry.register("rldx1_rope", "physicalai.inference.preprocessors.Rldx1RopePreprocessor")
@@ -121,6 +122,7 @@ component_registry.register("joint_frame_preprocess", "physicalai.inference.prep
 
 # Postprocessors
 component_registry.register("denormalize", "physicalai.inference.postprocessors.StatsDenormalizer")
+component_registry.register("xr0_denormalize", "physicalai.inference.postprocessors.XR0Postprocessor")
 component_registry.register("action_chunk_trimmer", "physicalai.inference.postprocessors.ActionChunkTrimmer")
 component_registry.register("molmoact2_postprocess", "physicalai.inference.postprocessors.MolmoAct2Postprocessor")
 component_registry.register("joint_frame_postprocess", "physicalai.inference.postprocessors.JointFramePostprocessor")

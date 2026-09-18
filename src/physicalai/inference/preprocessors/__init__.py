@@ -20,6 +20,7 @@ from physicalai.inference.preprocessors.rldx1 import Rldx1Preprocessor, Rldx1Rop
 from physicalai.inference.preprocessors.smolvla import ResizeSmolVLA
 from physicalai.inference.preprocessors.stats_normalizer import StatsNormalizer
 from physicalai.inference.preprocessors.to_tensor import ToFloatTensorPreprocessor
+from physicalai.inference.preprocessors.xr0 import XR0Preprocessor
 
 __all__ = [
     "HFTokenizer",
@@ -39,4 +40,5 @@ __all__ = [
     "Rldx1TokenComposer",
     "StatsNormalizer",
     "ToFloatTensorPreprocessor",
+    "XR0Preprocessor",
 ]
