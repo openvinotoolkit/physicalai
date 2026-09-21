@@ -148,7 +148,7 @@ class Config:
         Raises:
             ConfigImportError: If the path does not resolve to a class.
         """
-        from .importing import import_dotted_path  # noqa: PLC0415
+        from ._importing import import_dotted_path  # noqa: PLC0415
 
         resolved = import_dotted_path(self.class_path)
         if not isinstance(resolved, type):
@@ -245,6 +245,18 @@ class Config:
             "class_path": f"{type(self).__module__}.{type(self).__qualname__}",
             "init_args": cast("dict[str, JsonValue]", _plain_value(self)),
         }
+
+    def to_yaml(self) -> str:
+        """Convert this config to its YAML serialization form.
+
+        Direct recipes use the ``class_path``/``init_args`` recipe envelope;
+        typed dataclass configs use their jsonargparse envelope.
+
+        Returns:
+            A YAML string suitable for :meth:`Config.load`.
+        """
+        data = self.to_dict() if type(self) is Config else self.to_jsonargparse()
+        return yaml.safe_dump(data, sort_keys=False, default_flow_style=False)
 
     def save(
         self,
