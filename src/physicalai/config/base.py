@@ -238,6 +238,18 @@ class Config:
             "init_args": cast("dict[str, JsonValue]", _plain_value(self)),
         }
 
+    def to_yaml(self) -> str:
+        """Convert this config to its YAML serialization form.
+
+        Direct recipes use the ``class_path``/``init_args`` recipe envelope;
+        typed dataclass configs use their jsonargparse envelope.
+
+        Returns:
+            A YAML string suitable for :meth:`Config.load`.
+        """
+        data = self.to_dict() if type(self) is Config else self.to_jsonargparse()
+        return yaml.safe_dump(data, sort_keys=False, default_flow_style=False)
+
     def save(
         self,
         path: str | Path,
