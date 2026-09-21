@@ -28,6 +28,7 @@ from ._export import (
     is_config_exportable,
     resolve_public_class_path,
 )
+from ._importing import import_dotted_path
 from ._instantiate import instantiate as _strict_instantiate
 from ._normalize import validate_config
 from ._types import ConfigValue, JsonScalar, JsonValue
@@ -43,6 +44,7 @@ __all__ = [
     "JsonScalar",
     "JsonValue",
     "export_config",
+    "import_dotted_path",
     "instantiate",
     "is_config_exportable",
     "resolve_public_class_path",
