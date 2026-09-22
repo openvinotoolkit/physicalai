@@ -43,4 +43,4 @@ Property:
 ## Design notes
 
 - Use `@runtime_checkable` protocol checks in tests: `isinstance(instance, Robot)`.
-- External cameras are configured on `PolicyRuntime`, not inside the robot driver, unless the hardware truly provides embedded frames via `images`.
+- External cameras are configured on `RobotRuntime` (`cameras=`), not inside the robot driver, unless the hardware truly provides embedded frames via `images`.

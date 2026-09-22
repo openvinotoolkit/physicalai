@@ -17,7 +17,7 @@ Expected rubric per scenario:
 
 Expected behavior:
 
-- Nested `class_path` / `init_args` for `PolicyRuntime`, `SO101`, `InferenceModel`, `UVCCamera`, `SyncExecution`.
+- Nested `class_path` / `init_args` for `SO101`, `PolicySource`, `InferenceModel`, `UVCCamera`, `SyncExecution`, under a top-level `runtime:` key; `model` and `execution` sit under `action_source.init_args`.
 - Command includes `--config` and duration override pattern from `src/physicalai/cli/run.py` docs.
 
 ### Scenario 2: Execution mode choice
@@ -26,12 +26,13 @@ Expected behavior:
 
 Expected behavior:
 
-- Points to `docs/how-to/runtime/use-execution-modes.md` and RTC/sync modules under `src/physicalai/runtime/`.
+- Points to `docs/how-to/runtime/use-execution-modes.md` and `src/physicalai/runtime/execution/` (`sync.py`, `async_execution.py`, `rtc.py`).
+- Distinguishes `AsyncExecution(request_threshold=...)` from `RTCExecution(fps=...)` + `RTCActionQueue`; does not put `fps` on `AsyncExecution`.
 - Does not reimplement timing inside `InferenceModel.select_action`.
 
 ### Scenario 3: Runtime test with fakes
 
-> "Add a unit test that PolicyRuntime steps one tick with a fake robot and fake model."
+> "Add a unit test that RobotRuntime steps one tick with a fake robot and a `PolicySource` over a fake model."
 
 Expected behavior:
 
