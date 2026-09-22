@@ -56,11 +56,12 @@ Stopping is not the same as shutting down. It ends the control loop, but the rob
 
 > **Preview:** `RemoteExecution` is a planned API.
 
-| Mode               | Where inference runs | Use                              |
-| ------------------ | -------------------- | -------------------------------- |
-| `SyncExecution()`  | runtime thread       | simple deployments and debugging |
-| `AsyncExecution()` | worker thread        | avoid blocking the control loop  |
-| `RemoteExecution`  | remote server        | planned API                      |
+| Mode               | Where inference runs | Use                                |
+| ------------------ | -------------------- | ---------------------------------- |
+| `SyncExecution()`  | runtime thread       | simple deployments and debugging   |
+| `AsyncExecution()` | worker thread        | avoid blocking the control loop    |
+| `RTCExecution()`   | worker thread        | real-time chunking for RTC exports |
+| `RemoteExecution`  | remote server        | planned API                        |
 
 ## Product Workflows
 

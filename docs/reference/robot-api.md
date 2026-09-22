@@ -12,6 +12,9 @@ class Robot(Protocol):
 
     @property
     def joint_names(self) -> list[str]: ...
+
+    @property
+    def device_ids(self) -> tuple[str, ...]: ...
 ```
 
 ## `RobotObservation`
@@ -30,3 +33,4 @@ class RobotObservation(Protocol):
 - The action passed to `send_action()` must match `joint_names`.
 - `disconnect()` must leave the hardware in a safe stationary state.
 - `connect()` should be idempotent or fail with a clear error.
+- `device_ids` is available after construction, before `connect()`, and is derived from constructor parameters with no hardware I/O. Return one scheme-qualified id per exclusively owned device, for example `("serial:ttyUSB0",)`. Return `()` when the robot owns no exclusive device.

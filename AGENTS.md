@@ -7,7 +7,7 @@ Physical AI Runtime is the deployment-side repo for the Physical AI workflow: lo
 - `src/physicalai/config/`: unified `Config` construction recipes — `Config.from_instance()` / `instantiate()`, `@export_config`, typed dataclass configs, YAML. Shared with Studio (runtime owns `physicalai.config`).
 - `src/physicalai/inference/`: `InferenceModel`, manifests, adapters, preprocessors/postprocessors, runners.
 - `src/physicalai/capture/`: unified camera API, discovery, transport.
-- `src/physicalai/runtime/`: `PolicyRuntime`, execution modes, action queues, callbacks.
+- `src/physicalai/runtime/`: `RobotRuntime`, action sources, execution modes, action queues, callbacks.
 - `src/physicalai/robot/`: robot protocol and hardware integrations.
 - `src/physicalai/cli/`: `physicalai` / `pai` host CLI (`run` and entry-point subcommands from other packages).
 - `src/physicalai/benchmark/`: inference performance tooling.

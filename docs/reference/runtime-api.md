@@ -79,7 +79,7 @@ The action-source implementations shipped today are listed below.
 ```python
 PolicySource(
     model: InferenceModel,
-    execution: Execution,
+    execution: Execution | None = None,
     action_queue: ActionQueue | None = None,
     *,
     task: str | None = None,
@@ -94,6 +94,8 @@ TeleopSource(
     to_action: Callable[[RobotObservation], np.ndarray] | None = None,
 )
 ```
+
+Omitted `execution` defaults to `SyncExecution`. Omitted `action_queue` defaults to a `ChunkedActionQueue`.
 
 `reset()` starts a fresh policy episode without stopping the execution worker. It discards queued, pending, and in-flight actions, clears the last action, and resets model state by default. If inference is already running, reset waits for that model call to finish before resetting model state, while rejecting its stale result. Model or execution reset errors propagate to the caller. Pass `reset_model=False` only when model state should continue across the episode boundary. Custom execution strategies must implement `Execution.reset()` before they can support this operation.
 
@@ -114,10 +116,13 @@ class Execution:
 
 The execution implementations shipped today are listed below.
 
-| Class            | Purpose                               |
-| ---------------- | ------------------------------------- |
-| `SyncExecution`  | runs inference in the runtime thread  |
-| `AsyncExecution` | runs inference in a background thread |
+| Class            | Purpose                                        |
+| ---------------- | ---------------------------------------------- |
+| `SyncExecution`  | runs inference in the runtime thread           |
+| `AsyncExecution` | runs inference in a background thread          |
+| `RTCExecution`   | runs real-time chunking in a background thread |
+
+`RTCExecution` requires an `RTCActionQueue`. Its `fps` argument is the robot control rate used to convert measured inference latency into an action delay.
 
 > **Preview:** `RemoteExecution` is a planned API and is not part of the current package release.
 
