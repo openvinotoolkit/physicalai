@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
 """Layout utilities for batched image arrays."""
 
 from physicalai.inference.preprocessors.enums import ImageLayout
