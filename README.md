@@ -158,6 +158,8 @@ uvc_devices = UVCCamera.discover()
 
 Robots implement a Protocol-based interface. Any class with `connect()`, `disconnect()`, `get_observation()`, `send_action()`, and `joint_names` works — no inheritance required.
 
+For simulation, the [MuJoCo SO-101 plugin](packages/physicalai-mujoco-so101-plugin/README.md) provides single-arm and bimanual robots, a browser viewer, camera streams, and Studio catalog integration.
+
 ```python
 from physicalai.robot import SO101
 

@@ -1,0 +1,11 @@
+<mujoco model="mini">
+  <compiler angle="radian" meshdir="../../so101/assets" autolimits="true"/>
+  <option timestep="0.002" solver="CG" iterations="50" tolerance="1e-8" integrator="implicitfast"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="0 0 0.01" pos="0 0 0"/>
+    <flexcomp type="mesh" file="garment_PL_019.obj" pos="0 0 0.45"
+              radius="0.0025" mass="0.3" name="garment" dim="2">
+      <edge damping="1"/>
+    </flexcomp>
+  </worldbody>
+</mujoco>
