@@ -1,21 +1,6 @@
-# Copyright (C) 2026 Intel Corporation
-# SPDX-License-Identifier: Apache-2.0
+"""Layout utilities for batched image arrays."""
 
-"""Explicit layouts for batched image arrays."""
-
-from enum import StrEnum
-
-
-class ImageLayout(StrEnum):
-    """Axis order of a batched image array.
-
-    Attributes:
-        BCHW: Batch, channels, height, width (channels-first).
-        BHWC: Batch, height, width, channels (channels-last).
-    """
-
-    BCHW = "BCHW"
-    BHWC = "BHWC"
+from physicalai.inference.preprocessors.enums import ImageLayout
 
 
 def infer_image_layout(shape: tuple[int, ...]) -> ImageLayout:
