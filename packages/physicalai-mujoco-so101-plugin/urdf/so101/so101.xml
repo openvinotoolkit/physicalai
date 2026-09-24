@@ -145,7 +145,7 @@
         </body>
       </body>
     </body>
-    <camera name="overview" mode="fixed" pos="0.25 0 0.80" xyaxes="0 -1 0 1 0 0" fovy="48"/>
+    <camera name="overview" mode="fixed" pos="0.25 0 0.80" xyaxes="0 -1 0 1 0 0" fovy="58"/>
   </worldbody>
   <asset>
     <texture type="skybox" builtin="gradient" rgb1="0.53 0.81 0.98" rgb2="0.20 0.35 0.55" width="512" height="3072"/>
