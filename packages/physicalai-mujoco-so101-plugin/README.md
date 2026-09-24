@@ -5,11 +5,11 @@ Run single-arm or bimanual SO-101 simulations through [PhysicalAI Runtime](https
 ## Features
 
 - Run a virtual SO-101 as a PhysicalAI transport owner
-- Viser browser viewer with Reset Scene and confirmed Shutdown controls
+- Viser browser viewer with a Simulation tab (scene switching, reset, arm homing, seeded resets, episode auto-reset, object dragging, camera previews, confirmed shutdown) and a Camera tab to follow an object, the target, or a gripper
 - Camera streams over HTTP (MJPEG) and optional v4l2loopback
-- REST control server (scenes, reset, shutdown)
+- REST control server with the same controls as the viewer
 - Built-in task scenes
-- Automatic cube respawn after a five-second success dwell in `single_pick_place`
+- Automatic cube respawn after a configurable success dwell (five seconds by default) in `single_pick_place`
 
 ## What this is for
 
@@ -42,7 +42,20 @@ Then open PhysicalAI Studio and connect to the robot type `MuJoCo SO-101 Followe
 
 Add HTTP camera records in Studio for `http://127.0.0.1:8080/cameras/wrist/mjpeg` and `http://127.0.0.1:8080/cameras/overview/mjpeg`. The plugin registers follower robots; choose an available leader separately when configuring teleoperation.
 
-The viewer's **Reset Scene** button respawns the scene's objects while keeping the target fixed. In `single_pick_place`, the cube respawns automatically after remaining still over the target for five seconds of simulation time. The **Shutdown** button asks for confirmation before stopping the owner.
+### Browser viewer controls
+
+The viewer opens on its **Simulation** tab, which controls the simulation. The **Camera** tab controls whether the view follows a body. The **Visualization** and **Groups** tabs come from mjviser and control what is drawn.
+
+- **Scene**: pick another scene that fits the running robot (single-arm or bimanual). **Reset Scene** respawns the scene's objects while keeping the target fixed. **Home Arm** puts the arm joints and their position targets at the scene's home pose. An active policy or teleop session will drive the arm away again on its next action.
+- **Randomization**: tick **Fixed seed** to reseed before every reset and scene switch, so object layouts repeat. Untick it to go back to random layouts.
+- **Episode** (`single_pick_place` only): the cube respawns after it rests on the target for the success dwell. Turn **Auto-reset** off or change the dwell here. The panel shows the countdown and the number of completed episodes.
+- **Objects**: tick **Drag objects** to show a handle on each free object. While you drag, the object stays at the handle's pose. When you let go, it falls from there with zero velocity. The target stays fixed.
+- **Cameras**: tick **Show previews** to see low-rate thumbnails of the rendered cameras. Previews start off because every open viewer receives them.
+- **Shutdown** asks for confirmation before stopping the owner.
+
+On the **Camera** tab, **Follow** chooses a body for the view to stay on: a free object, the target, or a gripper. Orbiting and zooming keep the view on it. Panning away stops following, and **Follow** goes back to **None**. **None**, the default, is a free camera that nothing moves. While you drag the followed object, the view holds still, then glides back onto it when you let go. **FOV** and **Reset View** apply to every open viewer. The follow choice is shared too. Following moves the viewer cameras; the rendered scene itself never shifts.
+
+Switching scenes rebuilds the whole viewer for the new model. The follow, drag and preview settings carry over to the new scene; following an object the new scene lacks falls back to **None**. Changes made over HTTP show up in the panel within about half a second. Camera settings are viewer-only and have no HTTP endpoint.
 
 ### Bimanual simulation
 
@@ -121,39 +134,60 @@ Each camera is also available as a single JPEG snapshot at
 
 ### REST control API
 
-The HTTP server exposes control endpoints for resetting and switching scenes:
+The HTTP server exposes the same controls as the viewer's Simulation tab:
 
 ```bash
-# List available scenes and the current one
+# List available scenes, the ones this robot can switch to, and the current one
 curl http://127.0.0.1:8080/scenes
 
 # Switch to another scene
 curl -X POST http://127.0.0.1:8080/scenes/pick_place
 
-# Reset/randomize the current scene
+# Reset/randomize the current scene, or move the arm to its home pose
 curl -X POST http://127.0.0.1:8080/reset
+curl -X POST http://127.0.0.1:8080/home
+
+# Make resets repeatable, then random again
+curl -X POST http://127.0.0.1:8080/seed -H 'content-type: application/json' -d '{"seed": 42}'
+curl -X POST http://127.0.0.1:8080/seed -H 'content-type: application/json' -d '{"seed": null}'
+
+# Pause episode auto-reset and change its success dwell
+curl -X POST http://127.0.0.1:8080/episode/auto-reset -H 'content-type: application/json' \
+  -d '{"enabled": false, "dwell_s": 3.0}'
+
+# Read and move free objects (world frame, metres; wxyz is optional)
+curl http://127.0.0.1:8080/objects
+curl -X POST 'http://127.0.0.1:8080/objects/block1:joint/pose' -H 'content-type: application/json' \
+  -d '{"position": [0.25, 0.0, 0.05], "wxyz": [1, 0, 0, 0]}'
 
 # Stop the simulation owner
 curl -X POST http://127.0.0.1:8080/shutdown
 ```
 
-| Endpoint                    | Method | Description                                   |
-| --------------------------- | ------ | --------------------------------------------- |
-| `/`                         | GET    | Service info, endpoint index                  |
-| `/health`                   | GET    | Sim status: connected, current scene, cameras |
-| `/cameras`                  | GET    | Camera list with stream/snapshot URLs         |
-| `/cameras/{name}/mjpeg`     | GET    | MJPEG stream (`multipart/x-mixed-replace`)    |
-| `/cameras/{name}/frame.jpg` | GET    | Latest frame as a JPEG snapshot               |
-| `/scenes`                   | GET    | Current scene and available scene IDs         |
-| `/scenes/{scene_id}`        | POST   | Switch to another registered scene            |
-| `/reset`                    | POST   | Reset/randomize the current scene             |
-| `/shutdown`                 | POST   | Gracefully stop the simulation owner          |
+| Endpoint                    | Method | Description                                                                      |
+| --------------------------- | ------ | -------------------------------------------------------------------------------- |
+| `/`                         | GET    | Service info, endpoint index                                                     |
+| `/health`                   | GET    | Sim status: connected, scene, compatible scenes, seed, episode, objects, cameras |
+| `/cameras`                  | GET    | Camera list with stream/snapshot URLs                                            |
+| `/cameras/{name}/mjpeg`     | GET    | MJPEG stream (`multipart/x-mixed-replace`)                                       |
+| `/cameras/{name}/frame.jpg` | GET    | Latest frame as a JPEG snapshot                                                  |
+| `/scenes`                   | GET    | Current scene, available scene IDs, and IDs compatible with this robot           |
+| `/scenes/{scene_id}`        | POST   | Switch to a compatible scene (`409` for another arm count)                       |
+| `/reset`                    | POST   | Reset/randomize the current scene                                                |
+| `/home`                     | POST   | Move the arm joints and targets to the scene's home pose                         |
+| `/seed`                     | POST   | `{"seed": <0..4294967295> or null}`: fix or clear the reset seed                 |
+| `/episode/auto-reset`       | POST   | `{"enabled": bool, "dwell_s": 0.5..120}` (either field); `409` if unsupported    |
+| `/objects`                  | GET    | Free-object joint names and world poses                                          |
+| `/objects/{joint}/pose`     | POST   | `{"position": [x, y, z], "wxyz": [w, x, y, z]}`: teleport a free object          |
+| `/shutdown`                 | POST   | Gracefully stop the simulation owner                                             |
+
+Control requests are queued and applied on the next control cycle. Invalid bodies return `422`. Object coordinates must be finite and within ±2 m.
 
 With HTTP enabled, `Ctrl+C` in the start command requests owner shutdown through HTTP. If the HTTP endpoint is unavailable, the launcher sends SIGTERM to the original owner only after confirming its registered name and PID still match. It then disconnects the CLI subscriber. With HTTP disabled, the same verified signal path stops a local owner; detached owners also exit after their configured idle timeout once all subscribers leave. Use the named `stop` command to stop an owner directly.
 
 The `start` command also returns when its local owner exits through `stop`, HTTP, or the viewer's Shutdown control. Launcher cleanup checks the endpoint's owner name and the original owner's PID before forwarding an operator-requested shutdown. An invocation that attaches without a local owner record detaches instead of waiting indefinitely.
 
-HTTP control has no authentication and binds to loopback by default. Use explicit non-loopback bindings only on a trusted robot-cell network. The Viser viewer also exposes Reset and Shutdown controls; it binds to loopback by default. Use `--viser-host 0.0.0.0` only when remote access is needed on a trusted network.
+HTTP control has no authentication and binds to loopback by default. Use explicit non-loopback bindings only on a trusted robot-cell network. The Viser viewer exposes the same controls, including moving objects and Shutdown, to anyone who can open it; it binds to loopback by default. Use `--viser-host 0.0.0.0` only when remote access is needed on a trusted network.
 
 ## Cameras and v4l2loopback (opt-in)
 
@@ -259,17 +293,17 @@ uv run --no-sync physicalai-mujoco-so101 start --scene pick_place
 
 ### Switching scenes at runtime
 
-`POST /scenes/{scene_id}` switches a running simulation to another registered scene. The switch happens on the next control cycle:
+Pick a scene in the viewer's **Scene** dropdown or send `POST /scenes/{scene_id}`. The switch happens on the next control cycle:
 
 - Loads the new scene XML
-- Updates the existing viewer with the new environment
+- Rebuilds the viewer for the new environment
 - Respawns the scene's free-object joints clear of their target, using the new spawn parameters (target bodies stay fixed)
 
-A scene that does not declare the joints the running robot drives is rejected and the current scene is kept, so a single-arm simulation will not accept `garment_fold` and a bimanual one will not accept the single-arm scenes.
+Only scenes with the running robot's arm count are offered: a single-arm simulation cannot switch to `garment_fold`, and a bimanual one cannot switch to the single-arm scenes. Over HTTP such a request returns `409` and the current scene is kept. A scene whose model lacks the joints the robot drives is also rejected.
 
-The native MuJoCo viewer also binds **`n`** (next scene) to cycle through the compatible scenes. That viewer is only used on Linux/Windows when the browser viewer fails to start; with the default viser viewer (and always on macOS) use the HTTP endpoint instead.
+The native MuJoCo viewer also binds **`n`** (next scene) to cycle through the compatible scenes. That viewer is only used on Linux/Windows when the browser viewer fails to start.
 
-`--model` selects the initial model instead of resolving a registered scene. Runtime scene-switch requests can still explicitly replace it with a compatible registered scene; switching back to the custom model is not available unless it is registered as a scene.
+`--model` selects the initial model instead of resolving a registered scene. The viewer's Scene dropdown shows it as **Custom model**, and **Home Arm** uses the model's default joint positions. Runtime scene-switch requests can still explicitly replace it with a compatible registered scene; switching back to the custom model is not available unless it is registered as a scene.
 
 ## Development
 

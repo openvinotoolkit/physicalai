@@ -62,6 +62,27 @@ class EpisodeAutoReset:
         self._rng = rng if rng is not None else np.random.default_rng()
         self._runtime: _Runtime | None = None
         self._last_countdown_s: float | None = None
+        self._active = True
+
+    @property
+    def active(self) -> bool:
+        """Whether success detection and cube respawn run each tick."""
+        return self._active
+
+    def set_active(self, active: bool) -> None:  # noqa: FBT001
+        """Pause or resume auto-reset; pausing cancels a running countdown."""
+        self._active = active
+        if not active:
+            self.notify_manual_reset()
+
+    @property
+    def dwell_s(self) -> float:
+        """Seconds the cube must rest on the plate before respawning."""
+        return self._config.success_dwell_s
+
+    def set_dwell(self, dwell_s: float) -> None:
+        """Change the success dwell; a running countdown uses the new value."""
+        self._config.success_dwell_s = float(dwell_s)
 
     @classmethod
     def maybe_create(
@@ -77,6 +98,7 @@ class EpisodeAutoReset:
         target_min_sep: float,
         rng: np.random.Generator,
         success_dwell_s: float = 5.0,
+        active: bool = True,
     ) -> EpisodeAutoReset | None:
         """Return an auto-reset helper when the scene has one cube and a target plate."""
         import mujoco  # noqa: PLC0415
@@ -113,6 +135,7 @@ class EpisodeAutoReset:
             target_min_sep=target_min_sep,
         )
         helper = cls(config, rng=rng)
+        helper._active = active
         helper._runtime = _Runtime(
             cube_body_id=int(cube_body_id),
             target_body_id=int(target_body_id),
@@ -140,6 +163,7 @@ class EpisodeAutoReset:
 
         return {
             "enabled": True,
+            "active": self._active,
             "phase": runtime.phase,
             "episode_count": runtime.episode_count,
             "success_dwell_s": self._config.success_dwell_s,
@@ -161,7 +185,7 @@ class EpisodeAutoReset:
         import mujoco  # noqa: PLC0415
 
         runtime = self._runtime
-        if runtime is None:
+        if runtime is None or not self._active:
             return
 
         now = float(data.time)

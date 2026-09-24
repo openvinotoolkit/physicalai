@@ -109,3 +109,36 @@ class TestEpisodeAutoReset:
         helper.notify_manual_reset()
         assert helper.status()["phase"] == "idle"
         assert helper.status()["countdown_s"] is None
+
+    def test_status_reports_active(self) -> None:
+        helper = _make_helper()
+        assert helper.status()["active"] is True
+        helper.set_active(False)  # noqa: FBT003
+        assert helper.status()["active"] is False
+
+    def test_inactive_helper_cancels_and_skips_detection(self) -> None:
+        helper = _make_helper(dwell_s=1.0)
+        model, data = _fake_model_data(cube_xy=(0.22, -0.30), target_xy=(0.22, -0.30))
+        data.time = 0.0
+        helper.update(model, data)
+        helper.set_active(False)  # noqa: FBT003
+        assert helper.status()["phase"] == "idle"
+
+        data.time = 10.0
+        helper.update(model, data)
+        assert helper.status()["phase"] == "idle"
+        assert helper.status()["episode_count"] == 0
+        np.testing.assert_allclose(data.qpos[:2], [0.22, -0.30])
+
+    def test_dwell_change_applies_to_a_running_countdown(self) -> None:
+        helper = _make_helper(dwell_s=5.0)
+        model, data = _fake_model_data(cube_xy=(0.22, -0.30), target_xy=(0.22, -0.30))
+        data.time = 0.0
+        helper.update(model, data)
+        helper.set_dwell(1.0)
+        assert helper.dwell_s == 1.0
+
+        data.time = 1.0
+        with patch("mujoco.mj_forward"):
+            helper.update(model, data)
+        assert helper.status()["episode_count"] == 1

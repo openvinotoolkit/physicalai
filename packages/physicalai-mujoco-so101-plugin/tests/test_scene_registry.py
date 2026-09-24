@@ -9,6 +9,7 @@ from physicalai_mujoco_so101_plugin.scene_registry import (
     get_reset_fn,
     get_scene,
     list_scenes,
+    list_scenes_for_arms,
 )
 
 
@@ -113,6 +114,24 @@ class TestSceneSpawnConfig:
     def test_every_freejoint_scene_declares_its_free_joints(self) -> None:
         for scene_id in ("pick_lift", "single_pick_place", "pick_place"):
             assert get_scene(scene_id).free_joints
+
+
+class TestArmCompatibility:
+    def test_only_garment_fold_is_bimanual(self) -> None:
+        assert {scene_id for scene_id, scene in list_scenes().items() if scene.num_arms == 2} == {"garment_fold"}
+
+    def test_scenes_by_arm_count_partition_the_registry(self) -> None:
+        single, bimanual = list_scenes_for_arms(1), list_scenes_for_arms(2)
+        assert "garment_fold" in bimanual
+        assert "garment_fold" not in single
+        assert set(single) | set(bimanual) == set(list_scenes())
+        assert list_scenes_for_arms(3) == {}
+
+    def test_garment_fold_home_matches_its_reset_pose(self) -> None:
+        home = dict(get_scene("garment_fold").home_qpos)
+        assert home["left_shoulder_pan"] == pytest.approx(-1.1)
+        assert home["right_shoulder_pan"] == pytest.approx(1.1)
+        assert get_scene("single_pick_place").home_qpos == ()
 
 
 class TestGarmentFoldReset:

@@ -15,9 +15,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from physicalai_mujoco_so101_plugin.http_server import (
+    MAX_SEED,
     FrameBuffer,
+    HomeCommand,
     HttpServer,
     ResetCommand,
+    SetAutoResetCommand,
+    SetObjectPoseCommand,
+    SetSeedCommand,
     ShutdownCommand,
     SwitchSceneCommand,
     _mjpeg_stream,
@@ -39,7 +44,11 @@ def app_context(frame: np.ndarray) -> dict:
     status = {
         "connected": True,
         "scene": "single_pick_place",
-        "scenes": ["pick_lift", "single_pick_place"],
+        "scenes": ["garment_fold", "pick_lift", "single_pick_place"],
+        "compatible_scenes": ["pick_lift", "single_pick_place"],
+        "seed": None,
+        "episode": {"enabled": True, "active": True, "phase": "idle"},
+        "objects": [{"joint": "block1:joint", "position": [0.2, 0.0, 0.02], "wxyz": [1.0, 0.0, 0.0, 0.0]}],
         "cameras": [
             {
                 "name": "overview",
@@ -57,7 +66,7 @@ def app_context(frame: np.ndarray) -> dict:
         commands=commands,
         get_status=lambda: status,
     )
-    return {"app": app, "buffers": buffers, "commands": commands}
+    return {"app": app, "buffers": buffers, "commands": commands, "status": status}
 
 
 @pytest.fixture
@@ -157,7 +166,8 @@ class TestAppEndpoints:
         assert response.status_code == 200
         assert response.json() == {
             "current": "single_pick_place",
-            "available": ["pick_lift", "single_pick_place"],
+            "available": ["garment_fold", "pick_lift", "single_pick_place"],
+            "compatible": ["pick_lift", "single_pick_place"],
         }
 
     def test_switch_scene_enqueues_command(self, client: TestClient, app_context: dict) -> None:
@@ -170,11 +180,94 @@ class TestAppEndpoints:
     def test_switch_scene_unknown(self, client: TestClient) -> None:
         assert client.post("/scenes/nope").status_code == 404
 
+    def test_switch_to_incompatible_scene_is_a_conflict(self, client: TestClient, app_context: dict) -> None:
+        assert client.post("/scenes/garment_fold").status_code == 409
+        assert app_context["commands"].empty()
+
     def test_reset_enqueues_command(self, client: TestClient, app_context: dict) -> None:
         response = client.post("/reset")
         assert response.status_code == 200
         assert response.json() == {"status": "queued"}
         assert app_context["commands"].get_nowait() == ResetCommand()
+
+    def test_home_enqueues_command(self, client: TestClient, app_context: dict) -> None:
+        assert client.post("/home").json() == {"status": "queued"}
+        assert app_context["commands"].get_nowait() == HomeCommand()
+
+    @pytest.mark.parametrize("seed", [0, 42, MAX_SEED, None])
+    def test_seed_enqueues_command(self, client: TestClient, app_context: dict, seed: int | None) -> None:
+        response = client.post("/seed", json={"seed": seed})
+        assert response.status_code == 200
+        assert app_context["commands"].get_nowait() == SetSeedCommand(seed=seed)
+
+    @pytest.mark.parametrize("body", [{"seed": -1}, {"seed": MAX_SEED + 1}, {"seed": 1.5}, {}])
+    def test_seed_rejects_invalid_values(self, client: TestClient, app_context: dict, body: dict) -> None:
+        assert client.post("/seed", json=body).status_code == 422
+        assert app_context["commands"].empty()
+
+    def test_auto_reset_enqueues_command(self, client: TestClient, app_context: dict) -> None:
+        response = client.post("/episode/auto-reset", json={"enabled": False, "dwell_s": 3.0})
+        assert response.status_code == 200
+        assert app_context["commands"].get_nowait() == SetAutoResetCommand(enabled=False, dwell_s=3.0)
+
+    @pytest.mark.parametrize("body", [{}, {"dwell_s": 0.1}, {"dwell_s": 1000.0}])
+    def test_auto_reset_rejects_invalid_bodies(self, client: TestClient, app_context: dict, body: dict) -> None:
+        assert client.post("/episode/auto-reset", json=body).status_code == 422
+        assert app_context["commands"].empty()
+
+    def test_auto_reset_conflicts_without_support(self, app_context: dict) -> None:
+        app_context["status"]["episode"] = {"enabled": False}
+        client = TestClient(app_context["app"])
+        assert client.post("/episode/auto-reset", json={"enabled": True}).status_code == 409
+        assert app_context["commands"].empty()
+
+    def test_objects_lists_free_objects(self, client: TestClient) -> None:
+        assert client.get("/objects").json() == [
+            {"joint": "block1:joint", "position": [0.2, 0.0, 0.02], "wxyz": [1.0, 0.0, 0.0, 0.0]},
+        ]
+
+    def test_object_pose_enqueues_command(self, client: TestClient, app_context: dict) -> None:
+        response = client.post("/objects/block1:joint/pose", json={"position": [0.25, 0.0, 0.05]})
+        assert response.status_code == 200
+        assert app_context["commands"].get_nowait() == SetObjectPoseCommand(
+            joint="block1:joint",
+            position=(0.25, 0.0, 0.05),
+            wxyz=None,
+        )
+
+    def test_object_pose_accepts_an_encoded_joint_name(self, client: TestClient, app_context: dict) -> None:
+        body = {"position": [0.25, 0.0, 0.05], "wxyz": [0.0, 0.0, 0.0, 1.0]}
+        assert client.post("/objects/block1%3Ajoint/pose", json=body).status_code == 200
+        assert app_context["commands"].get_nowait().wxyz == (0.0, 0.0, 0.0, 1.0)
+
+    def test_object_pose_unknown_joint(self, client: TestClient, app_context: dict) -> None:
+        assert client.post("/objects/nope/pose", json={"position": [0.0, 0.0, 0.1]}).status_code == 404
+        assert app_context["commands"].empty()
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"position": [0.0, 0.0]},
+            {"position": [0.0, 0.0, 5.0]},
+            {"position": [0.0, 0.0, 0.1], "wxyz": [0.0, 0.0, 0.0, 0.0]},
+            {"position": [0.0, 0.0, 0.1], "wxyz": [1.0, 0.0, 0.0]},
+        ],
+    )
+    def test_object_pose_rejects_invalid_poses(self, client: TestClient, app_context: dict, body: dict) -> None:
+        assert client.post("/objects/block1:joint/pose", json=body).status_code == 422
+        assert app_context["commands"].empty()
+
+    def test_object_pose_rejects_non_finite_values(self, client: TestClient, app_context: dict) -> None:
+        response = client.post(
+            "/objects/block1:joint/pose",
+            content=b'{"position": [NaN, 0.0, 0.1]}',
+            headers={"content-type": "application/json"},
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"] == [
+            {"loc": ["body", "position", 0], "msg": "Input should be a finite number", "type": "finite_number"},
+        ]
+        assert app_context["commands"].empty()
 
     def test_shutdown_enqueues_command(self, client: TestClient, app_context: dict) -> None:
         response = client.post("/shutdown")

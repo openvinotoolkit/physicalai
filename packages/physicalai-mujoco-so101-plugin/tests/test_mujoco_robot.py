@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import queue
 import sys
 import threading
 import types
@@ -12,7 +13,15 @@ import pytest
 from physicalai.config import Config
 
 from physicalai_mujoco_so101_plugin.constants import BIMANUAL_SO101_JOINT_ORDER, SO101_JOINT_ORDER
-from physicalai_mujoco_so101_plugin.http_server import ResetCommand, ShutdownCommand, SwitchSceneCommand
+from physicalai_mujoco_so101_plugin.http_server import (
+    HomeCommand,
+    ResetCommand,
+    SetAutoResetCommand,
+    SetObjectPoseCommand,
+    SetSeedCommand,
+    ShutdownCommand,
+    SwitchSceneCommand,
+)
 from physicalai_mujoco_so101_plugin.mujoco_robot import BiMuJoCoSO101, MuJoCoSO101, MuJoCoSO101Observation
 
 
@@ -41,6 +50,8 @@ def mock_mujoco() -> MagicMock:
         mock_model.actuator_trntype = np.full(6, mujoco.mjtTrn.mjTRN_JOINT, dtype=np.int32)
         mock_model.actuator_trnid = np.column_stack((np.arange(6), np.zeros(6, dtype=np.int32)))
         mock_model.opt.timestep = 0.005
+        mock_model.stat.center = np.zeros(3)
+        mock_model.stat.extent = 1.0
         mock_model.jnt_qposadr = [0, 1, 2, 3, 4, 5]
         mock_model.jnt_dofadr = [0, 1, 2, 3, 4, 5]
         mock_from_xml.return_value = mock_model
@@ -79,6 +90,8 @@ def mock_mujoco_bimanual() -> MagicMock:
         mock_model.actuator_trntype = np.full(12, mujoco.mjtTrn.mjTRN_JOINT, dtype=np.int32)
         mock_model.actuator_trnid = np.column_stack((np.arange(12), np.zeros(12, dtype=np.int32)))
         mock_model.opt.timestep = 0.005
+        mock_model.stat.center = np.zeros(3)
+        mock_model.stat.extent = 1.0
         mock_model.jnt_qposadr = list(range(12))
         mock_model.jnt_dofadr = list(range(12))
         mock_from_xml.return_value = mock_model
@@ -651,65 +664,228 @@ class TestLaunchViserViewer:
         assert robot._viser_server is None  # noqa: SLF001
 
 
-class TestViserControlGui:
+class TestBuildViserGui:
     @staticmethod
-    def _build(mock_mujoco: MagicMock) -> tuple[MuJoCoSO101, MagicMock, MagicMock]:
+    def _server() -> MagicMock:
+        return MagicMock()
+
+    def test_rebuild_clears_the_previous_gui_and_scene(self, mock_mujoco: MagicMock) -> None:
         _ = mock_mujoco
         robot = MuJoCoSO101(model_path="/fake/model.xml")
         robot.connect()
-        reset_button, shutdown_button = MagicMock(), MagicMock()
-        server = MagicMock()
-        server.gui.add_button.side_effect = [reset_button, shutdown_button]
-        viser_module = MagicMock()
+        server = self._server()
+        robot._viser_server = server  # noqa: SLF001
 
-        robot._add_viser_control_gui(server, viser_module)  # noqa: SLF001
+        with patch("mjviser.ViserMujocoScene", return_value=MagicMock()):
+            robot._build_viser_gui()  # noqa: SLF001
+            robot._build_viser_gui()  # noqa: SLF001
+            robot._build_viser_gui()  # noqa: SLF001
 
-        return robot, reset_button, shutdown_button
+        assert server.gui.reset.call_count == 3
+        assert server.scene.reset.call_count == 3
+        # The panel's one camera hook, registered when it was created.
+        assert server.on_client_connect.call_count == 1
 
-    def test_reset_button_enqueues_reset_command(self, mock_mujoco: MagicMock) -> None:
-        robot, reset_button, _ = self._build(mock_mujoco)
-        on_reset = reset_button.on_click.call_args.args[0]
+    def test_mjviser_body_tracking_and_camera_gui_are_replaced(self, mock_mujoco: MagicMock) -> None:
+        _ = mock_mujoco
+        robot = MuJoCoSO101(model_path="/fake/model.xml")
+        robot.connect()
+        robot._viser_server = self._server()  # noqa: SLF001
+        scene = MagicMock()
 
-        on_reset(MagicMock())
+        with patch("mjviser.ViserMujocoScene", return_value=scene):
+            robot._build_viser_gui()  # noqa: SLF001
+
+        assert scene.camera_tracking_enabled is False
+        scene.create_scene_gui.assert_not_called()
+        scene.set_refresh_handler.assert_called_once()
+
+    def test_tab_order(self, mock_mujoco: MagicMock) -> None:
+        _ = mock_mujoco
+        robot = MuJoCoSO101(model_path="/fake/model.xml")
+        robot.connect()
+        server = self._server()
+        robot._viser_server = server  # noqa: SLF001
+
+        with patch("mjviser.ViserMujocoScene", return_value=MagicMock()):
+            robot._build_viser_gui()  # noqa: SLF001
+
+        tabs = server.gui.add_tab_group.return_value
+        labels = [call.args[0] for call in tabs.add_tab.call_args_list]
+        assert labels == ["Simulation", "Camera", "Visualization", "Groups"]
+        assert robot._viser_panel is not None  # noqa: SLF001
+
+    def test_panel_survives_rebuilds_and_close_drops_it(self, mock_mujoco: MagicMock) -> None:
+        _ = mock_mujoco
+        robot = MuJoCoSO101(model_path="/fake/model.xml")
+        robot.connect()
+        robot._viser_server = self._server()  # noqa: SLF001
+
+        with patch("mjviser.ViserMujocoScene", return_value=MagicMock()):
+            robot._build_viser_gui()  # noqa: SLF001
+            panel = robot._viser_panel  # noqa: SLF001
+            robot._recreate_viser_scene()  # noqa: SLF001
+
+        assert robot._viser_panel is panel  # noqa: SLF001
+        robot._close_viewer()  # noqa: SLF001
+        assert robot._viser_panel is None  # noqa: SLF001
+
+    def test_panel_submits_to_the_current_command_queue(self, mock_mujoco: MagicMock) -> None:
+        _ = mock_mujoco
+        robot = MuJoCoSO101(model_path="/fake/model.xml")
+        robot.connect()
+        robot._viser_server = self._server()  # noqa: SLF001
+        with patch("mjviser.ViserMujocoScene", return_value=MagicMock()):
+            robot._build_viser_gui()  # noqa: SLF001
+
+        robot._commands = queue.Queue()  # noqa: SLF001
+        robot._viser_panel._submit(ResetCommand())  # noqa: SLF001
 
         assert isinstance(robot._commands.get_nowait(), ResetCommand)  # noqa: SLF001
 
-    def test_shutdown_confirm_enqueues_shutdown_command_and_closes_modal(self, mock_mujoco: MagicMock) -> None:
-        robot, _, shutdown_button = self._build(mock_mujoco)
-        on_shutdown_click = shutdown_button.on_click.call_args.args[0]
+    def test_panel_refresh_failure_does_not_stop_the_loop(self, mock_mujoco: MagicMock) -> None:
+        _ = mock_mujoco
+        robot = MuJoCoSO101(model_path="/fake/model.xml")
+        robot.connect()
+        robot._viser_scene = MagicMock()  # noqa: SLF001
+        robot._viser_panel = MagicMock()  # noqa: SLF001
+        robot._viser_panel.refresh.side_effect = RuntimeError("boom")  # noqa: SLF001
 
-        client = MagicMock()
-        confirm_button, cancel_button = MagicMock(), MagicMock()
-        client.gui.add_button.side_effect = [confirm_button, cancel_button]
+        robot.get_observation()
+        robot.get_observation()
 
-        on_shutdown_click(MagicMock(client=client))
-        on_confirm = confirm_button.on_click.call_args.args[0]
-        on_confirm(MagicMock())
+        assert robot._viser_panel_failed is True  # noqa: SLF001
 
-        assert isinstance(robot._commands.get_nowait(), ShutdownCommand)  # noqa: SLF001
-        client.gui.add_modal.return_value.__exit__.assert_called_once()
 
-    def test_shutdown_cancel_closes_modal_without_enqueueing(self, mock_mujoco: MagicMock) -> None:
-        robot, _, shutdown_button = self._build(mock_mujoco)
-        on_shutdown_click = shutdown_button.on_click.call_args.args[0]
+class TestOperatorCommands:
+    def test_home_command(self, mock_mujoco: MagicMock) -> None:
+        _ = mock_mujoco
+        robot = MuJoCoSO101(model_path="/fake/model.xml")
+        robot.connect()
+        robot._commands.put(HomeCommand())  # noqa: SLF001
 
-        client = MagicMock()
-        confirm_button, cancel_button = MagicMock(), MagicMock()
-        client.gui.add_button.side_effect = [confirm_button, cancel_button]
+        with patch.object(robot, "_go_home") as go_home:
+            robot.get_observation()
 
-        on_shutdown_click(MagicMock(client=client))
-        on_cancel = cancel_button.on_click.call_args.args[0]
-        on_cancel(MagicMock())
+        go_home.assert_called_once()
 
-        assert robot._commands.empty()  # noqa: SLF001
+    def test_a_failing_command_does_not_escape(self, mock_mujoco: MagicMock) -> None:
+        _ = mock_mujoco
+        robot = MuJoCoSO101(model_path="/fake/model.xml")
+        robot.connect()
+        robot._commands.put(HomeCommand())  # noqa: SLF001
+        robot._commands.put(ResetCommand())  # noqa: SLF001
 
-    def test_shutdown_click_without_client_is_a_noop(self, mock_mujoco: MagicMock) -> None:
-        robot, _, shutdown_button = self._build(mock_mujoco)
-        on_shutdown_click = shutdown_button.on_click.call_args.args[0]
+        with (
+            patch.object(robot, "_go_home", side_effect=IndexError("bad model")),
+            patch.object(robot, "_run_scene_reset") as scene_reset,
+        ):
+            obs = robot.get_observation()
 
-        on_shutdown_click(MagicMock(client=None))
+        scene_reset.assert_called_once()
+        assert obs.joint_positions.shape == (6,)
 
-        assert robot._commands.empty()  # noqa: SLF001
+    def test_fixed_seed_makes_resets_repeat(self, mock_mujoco: MagicMock) -> None:
+        _ = mock_mujoco
+        robot = MuJoCoSO101(model_path="/fake/model.xml")
+        robot.connect()
+        draws: list[float] = []
+        robot._scene_on_reset = lambda _m, _d, rng: draws.append(float(rng.random()))  # noqa: SLF001
+
+        robot._commands.put(SetSeedCommand(seed=123))  # noqa: SLF001
+        robot._commands.put(ResetCommand())  # noqa: SLF001
+        robot._commands.put(ResetCommand())  # noqa: SLF001
+        robot.get_observation()
+        robot._commands.put(SetSeedCommand(seed=None))  # noqa: SLF001
+        robot._commands.put(ResetCommand())  # noqa: SLF001
+        robot.get_observation()
+
+        assert draws[0] == draws[1]
+        assert draws[2] != draws[1]
+        assert robot._http_status()["seed"] is None  # noqa: SLF001
+
+    def test_reseeding_keeps_the_generator_shared_with_auto_reset(self, mock_mujoco: MagicMock) -> None:
+        _ = mock_mujoco
+        robot = MuJoCoSO101(model_path="/fake/model.xml")
+        rng = robot._rng  # noqa: SLF001
+        robot._set_seed(5)  # noqa: SLF001
+        assert robot._rng is rng  # noqa: SLF001
+
+    def test_auto_reset_settings_apply_and_persist(self, mock_mujoco: MagicMock) -> None:
+        _ = mock_mujoco
+        robot = MuJoCoSO101(model_path="/fake/model.xml")
+        robot.connect()
+        helper = MagicMock()
+        robot._episode_auto_reset = helper  # noqa: SLF001
+
+        robot._commands.put(SetAutoResetCommand(enabled=False))  # noqa: SLF001
+        robot._commands.put(SetAutoResetCommand(dwell_s=2.0))  # noqa: SLF001
+        robot.get_observation()
+
+        helper.set_active.assert_called_with(False)  # noqa: FBT003
+        helper.set_dwell.assert_called_with(2.0)
+        with patch(
+            "physicalai_mujoco_so101_plugin.episode_auto_reset.EpisodeAutoReset.maybe_create",
+            return_value=None,
+        ) as maybe_create:
+            robot._init_episode_auto_reset()  # noqa: SLF001
+        assert maybe_create.call_args.kwargs["active"] is False
+        assert maybe_create.call_args.kwargs["success_dwell_s"] == 2.0
+
+    def test_auto_reset_command_without_a_helper_is_survivable(self, mock_mujoco: MagicMock) -> None:
+        _ = mock_mujoco
+        robot = MuJoCoSO101(model_path="/fake/model.xml")
+        robot.connect()
+        robot._episode_auto_reset = None  # noqa: SLF001
+        robot._commands.put(SetAutoResetCommand(enabled=False))  # noqa: SLF001
+
+        robot.get_observation()
+
+        assert robot._auto_reset_active is False  # noqa: SLF001
+
+    def test_unknown_object_pose_is_ignored(self, mock_mujoco: MagicMock) -> None:
+        _ = mock_mujoco
+        robot = MuJoCoSO101(model_path="/fake/model.xml")
+        robot.connect()
+        robot._commands.put(SetObjectPoseCommand(joint="nope", position=(0.0, 0.0, 0.1)))  # noqa: SLF001
+
+        robot.get_observation()
+
+        assert robot._held_objects == {}  # noqa: SLF001
+
+    def test_http_status_reports_compatible_scenes_seed_and_objects(self) -> None:
+        robot = MuJoCoSO101(model_path="/fake/model.xml")
+        status = robot._http_status()  # noqa: SLF001
+        assert "garment_fold" in status["scenes"]
+        assert "garment_fold" not in status["compatible_scenes"]
+        assert status["seed"] is None
+        assert status["objects"] == []
+
+        assert BiMuJoCoSO101(model_path="/fake/model.xml")._http_status()["compatible_scenes"] == ["garment_fold"]  # noqa: SLF001
+
+
+class TestSceneCompatibility:
+    def test_switch_rejects_a_different_arm_count_before_loading(self, mock_mujoco: MagicMock) -> None:
+        _ = mock_mujoco
+        robot = MuJoCoSO101(model_path="/fake/model.xml")
+        robot.connect()
+
+        with patch("mujoco.MjModel.from_xml_path") as load:
+            assert robot._switch_to_scene("garment_fold") is False  # noqa: SLF001
+
+        load.assert_not_called()
+
+    def test_scene_key_cycles_only_compatible_scenes(self, mock_mujoco_bimanual: MagicMock) -> None:
+        _ = mock_mujoco_bimanual
+        robot = BiMuJoCoSO101(model_path="/fake/model.xml")
+        robot.connect()
+        robot._current_scene_id = "garment_fold"  # noqa: SLF001
+        robot._pending_scene_switch = True  # noqa: SLF001
+
+        with patch.object(robot, "_switch_to_scene") as switch:
+            robot._check_pending_scene_switch()  # noqa: SLF001
+
+        switch.assert_not_called()
 
 
 class TestSceneXmlWatch:

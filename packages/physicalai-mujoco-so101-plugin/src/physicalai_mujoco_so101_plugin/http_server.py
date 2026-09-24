@@ -8,26 +8,30 @@ The simulation thread renders camera frames into per-camera
 reads the latest frame per client and encodes it as JPEG. Streams wait
 for new frames on the event loop (:meth:`FrameBuffer.async_waiter`), so a
 client costs a task rather than a pooled thread. Control requests (reset,
-scene switch, shutdown) are enqueued onto a command queue that the
-simulation thread drains, so MuJoCo *stepping* only ever happens on the
-simulation thread; the status callback passed to :func:`build_app` runs on
-the HTTP thread and is responsible for its own locking.
+scene switch, home, seed, auto-reset, object pose, shutdown) are enqueued
+onto a command queue that the simulation thread drains, so MuJoCo
+*stepping* only ever happens on the simulation thread; the status callback
+passed to :func:`build_app` runs on the HTTP thread and is responsible for
+its own locking.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import threading
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import cv2
 import uvicorn
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import Response, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from loguru import logger
+from pydantic import BaseModel, Field, FiniteFloat, model_validator
 
 if TYPE_CHECKING:
     import queue
@@ -39,6 +43,14 @@ _MJPEG_BOUNDARY = "mujoco-frame"
 _FRAME_WAIT_TIMEOUT_S = 1.0
 _SERVER_START_TIMEOUT_S = 5.0
 _SERVER_STOP_TIMEOUT_S = 5.0
+
+MAX_SEED = 2**32 - 1
+"""Largest accepted reset seed (fits a JavaScript number exactly)."""
+MIN_DWELL_S = 0.5
+MAX_DWELL_S = 120.0
+MAX_OBJECT_COORD_M = 2.0
+"""Bound on each world coordinate accepted for an object pose."""
+_MIN_QUAT_NORM = 1e-6
 
 
 @dataclass(frozen=True)
@@ -58,7 +70,87 @@ class ShutdownCommand:
     """Request a graceful owner shutdown."""
 
 
-SimCommand = ResetCommand | SwitchSceneCommand | ShutdownCommand
+@dataclass(frozen=True)
+class HomeCommand:
+    """Move the arm joints to the current scene's home pose."""
+
+
+@dataclass(frozen=True)
+class SetSeedCommand:
+    """Fix the reset seed, or return to unseeded resets with ``None``."""
+
+    seed: int | None
+
+
+@dataclass(frozen=True)
+class SetAutoResetCommand:
+    """Enable/disable episode auto-reset and/or change its success dwell."""
+
+    enabled: bool | None = None
+    dwell_s: float | None = None
+
+
+@dataclass(frozen=True)
+class SetObjectPoseCommand:
+    """Teleport a free object to a world pose and zero its velocity.
+
+    With ``hold`` the pose is re-applied after every physics step until a
+    later command for the same joint arrives with ``hold=False`` (used while
+    a viewer drags the object).
+    """
+
+    joint: str
+    position: tuple[float, float, float]
+    wxyz: tuple[float, float, float, float] | None = None
+    hold: bool = False
+
+
+SimCommand = (
+    ResetCommand
+    | SwitchSceneCommand
+    | ShutdownCommand
+    | HomeCommand
+    | SetSeedCommand
+    | SetAutoResetCommand
+    | SetObjectPoseCommand
+)
+
+
+class SeedRequest(BaseModel):
+    """Body for ``POST /seed``."""
+
+    seed: Annotated[int, Field(ge=0, le=MAX_SEED)] | None
+
+
+class AutoResetRequest(BaseModel):
+    """Body for ``POST /episode/auto-reset``."""
+
+    enabled: bool | None = None
+    dwell_s: Annotated[float, Field(ge=MIN_DWELL_S, le=MAX_DWELL_S)] | None = None
+
+    @model_validator(mode="after")
+    def _require_a_field(self) -> AutoResetRequest:
+        if self.enabled is None and self.dwell_s is None:
+            msg = "Provide 'enabled' and/or 'dwell_s'"
+            raise ValueError(msg)
+        return self
+
+
+_Coord = Annotated[FiniteFloat, Field(ge=-MAX_OBJECT_COORD_M, le=MAX_OBJECT_COORD_M)]
+
+
+class ObjectPoseRequest(BaseModel):
+    """Body for ``POST /objects/{joint}/pose`` (world frame, metres)."""
+
+    position: tuple[_Coord, _Coord, _Coord]
+    wxyz: tuple[FiniteFloat, FiniteFloat, FiniteFloat, FiniteFloat] | None = None
+
+    @model_validator(mode="after")
+    def _require_a_rotation(self) -> ObjectPoseRequest:
+        if self.wxyz is not None and math.hypot(*self.wxyz) < _MIN_QUAT_NORM:
+            msg = "'wxyz' must be a non-zero quaternion"
+            raise ValueError(msg)
+        return self
 
 
 @dataclass(frozen=True)
@@ -216,13 +308,21 @@ def build_app(
         commands: Queue drained by the sim thread; control endpoints only
             enqueue, never touch MuJoCo state directly.
         get_status: Returns the live status dict: ``connected``, ``scene``,
-            ``scenes`` (available ids), and ``cameras`` (per-camera config).
+            ``scenes`` (available ids), ``compatible_scenes`` (ids this
+            robot can switch to), ``seed``, ``episode``, ``objects``
+            (free-object poses), and ``cameras`` (per-camera config).
         jpeg_quality: JPEG quality for streams and snapshots.
 
     Returns:
         The configured FastAPI application.
     """
     app = FastAPI(title=f"{service_name} camera server")
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:  # noqa: RUF029
+        # Leave out the echoed input: a rejected NaN/Infinity cannot be JSON-encoded.
+        detail = [{"loc": list(error["loc"]), "msg": error["msg"], "type": error["type"]} for error in exc.errors()]
+        return JSONResponse(status_code=422, content={"detail": detail})
 
     @app.get("/")
     def root() -> dict[str, Any]:
@@ -237,6 +337,11 @@ def build_app(
                 "scenes": "/scenes",
                 "switch_scene": "POST /scenes/{scene_id}",
                 "reset": "POST /reset",
+                "home": "POST /home",
+                "seed": "POST /seed",
+                "auto_reset": "POST /episode/auto-reset",
+                "objects": "/objects",
+                "object_pose": "POST /objects/{joint}/pose",
                 "shutdown": "POST /shutdown",
             },
             "cameras": [camera["name"] for camera in status["cameras"]],
@@ -247,6 +352,24 @@ def build_app(
     def health() -> dict[str, Any]:
         return get_status()
 
+    _add_camera_routes(app, buffers=buffers, get_status=get_status, jpeg_quality=jpeg_quality)
+    _add_scene_routes(app, commands=commands, get_status=get_status)
+    _add_sim_control_routes(app, commands=commands, get_status=get_status)
+    return app
+
+
+def _compatible_scenes(status: Mapping[str, Any]) -> list[str]:
+    compatible = status.get("compatible_scenes")
+    return list(compatible) if compatible is not None else list(status["scenes"])
+
+
+def _add_camera_routes(
+    app: FastAPI,
+    *,
+    buffers: Mapping[str, FrameBuffer],
+    get_status: Callable[[], dict[str, Any]],
+    jpeg_quality: int,
+) -> None:
     @app.get("/cameras")
     def cameras() -> list[dict[str, Any]]:
         status = get_status()
@@ -280,16 +403,25 @@ def build_app(
             raise HTTPException(status_code=503, detail=f"No frame rendered yet for {name!r}")
         return Response(content=encode_jpeg(sample.frame, jpeg_quality), media_type="image/jpeg")
 
+
+def _add_scene_routes(
+    app: FastAPI,
+    *,
+    commands: queue.Queue[SimCommand],
+    get_status: Callable[[], dict[str, Any]],
+) -> None:
     @app.get("/scenes")
     def scenes() -> dict[str, Any]:
         status = get_status()
-        return {"current": status["scene"], "available": status["scenes"]}
+        return {"current": status["scene"], "available": status["scenes"], "compatible": _compatible_scenes(status)}
 
     @app.post("/scenes/{scene_id}")
     def switch_scene(scene_id: str) -> dict[str, Any]:
         status = get_status()
         if scene_id not in status["scenes"]:
             raise HTTPException(status_code=404, detail=f"Unknown scene {scene_id!r}")
+        if scene_id not in _compatible_scenes(status):
+            raise HTTPException(status_code=409, detail=f"Scene {scene_id!r} does not fit this robot's arm count")
         commands.put(SwitchSceneCommand(scene_id=scene_id))
         return {"status": "queued", "scene": scene_id}
 
@@ -303,7 +435,41 @@ def build_app(
         commands.put(ShutdownCommand())
         return {"status": "shutting_down"}
 
-    return app
+
+def _add_sim_control_routes(
+    app: FastAPI,
+    *,
+    commands: queue.Queue[SimCommand],
+    get_status: Callable[[], dict[str, Any]],
+) -> None:
+    @app.post("/home")
+    def home() -> dict[str, Any]:
+        commands.put(HomeCommand())
+        return {"status": "queued"}
+
+    @app.post("/seed")
+    def seed(request: SeedRequest) -> dict[str, Any]:
+        commands.put(SetSeedCommand(seed=request.seed))
+        return {"status": "queued", "seed": request.seed}
+
+    @app.post("/episode/auto-reset")
+    def auto_reset(request: AutoResetRequest) -> dict[str, Any]:
+        if not get_status().get("episode", {}).get("enabled", False):
+            raise HTTPException(status_code=409, detail="The current scene has no episode auto-reset")
+        commands.put(SetAutoResetCommand(enabled=request.enabled, dwell_s=request.dwell_s))
+        return {"status": "queued", "enabled": request.enabled, "dwell_s": request.dwell_s}
+
+    @app.get("/objects")
+    def objects() -> list[dict[str, Any]]:
+        return list(get_status().get("objects", []))
+
+    @app.post("/objects/{joint}/pose")
+    def object_pose(joint: str, request: ObjectPoseRequest) -> dict[str, Any]:
+        known = {obj["joint"] for obj in get_status().get("objects", [])}
+        if joint not in known:
+            raise HTTPException(status_code=404, detail=f"Unknown free object joint {joint!r}")
+        commands.put(SetObjectPoseCommand(joint=joint, position=request.position, wxyz=request.wxyz))
+        return {"status": "queued", "joint": joint}
 
 
 class HttpServer:

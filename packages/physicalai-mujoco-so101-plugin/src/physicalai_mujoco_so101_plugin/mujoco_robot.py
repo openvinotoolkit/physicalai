@@ -33,10 +33,12 @@ if TYPE_CHECKING:
     from physicalai.capture.frame import Frame
     from physicalai.robot.interface import RobotObservation
     from physicalai_mujoco_so101_plugin.http_server import FrameBuffer, HttpServer, SimCommand
+    from physicalai_mujoco_so101_plugin.viser_controls import ObjectPose, PanelState, SimControlPanel
 
 # Scene XML is polled for live camera edits; walking the include graph is far
 # too expensive to do on every control cycle.
 _SCENE_XML_POLL_INTERVAL_S = 1.0
+_DEFAULT_SUCCESS_DWELL_S = 5.0
 
 
 def _signal_owner_shutdown() -> None:
@@ -93,6 +95,7 @@ class MuJoCoSO101:
 
     JOINT_ORDER: ClassVar[tuple[str, ...]] = SO101_JOINT_ORDER
     NUM_JOINTS: ClassVar[int] = NUM_JOINTS
+    NUM_ARMS: ClassVar[int] = 1
     DEFAULT_BLOCK_FREEJOINTS: ClassVar[tuple[str, ...]] = ("block1:joint", "block2:joint", "block3:joint")
     DEFAULT_TARGET_BODY_NAME: ClassVar[str] = "target"
     DEFAULT_SPAWN_CENTER: ClassVar[tuple[float, float]] = (0.22, 0.0)
@@ -155,8 +158,25 @@ class MuJoCoSO101:
         # Guards state the HTTP thread reads (``_http_status``) while the sim
         # thread rebuilds it during a scene switch or disconnect.
         self._state_lock = threading.RLock()
+        self._init_control_state()
 
         self._apply_scene_params(scene_config)
+
+    def _init_control_state(self) -> None:
+        """Initialize operator-control state that is not part of the construction recipe."""
+        self._seed: int | None = None
+        self._auto_reset_active = True
+        self._auto_reset_dwell_s = _DEFAULT_SUCCESS_DWELL_S
+        self._free_joint_addrs: dict[str, tuple[int, int]] = {}
+        # Poses re-applied after every step while a viewer drags an object.
+        self._held_objects: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        # Latest free-object poses, published by the sim thread under the lock.
+        self._object_poses: dict[str, ObjectPose] = {}
+        self._viser_panel: SimControlPanel | None = None
+        # Bodies the viewer can follow (name -> id) and each free joint's body name.
+        self._follow_body_ids: dict[str, int] = {}
+        self._free_joint_bodies: dict[str, str] = {}
+        self._viser_panel_failed = False
 
     def _apply_scene_params(self, scene_config: dict | None) -> None:
         """Adopt a scene's object and spawn parameters, or this class's defaults."""
@@ -217,6 +237,7 @@ class MuJoCoSO101:
         # pyrefly: ignore [missing-attribute]
         mujoco.mj_forward(model, data)
         if self._scene_on_reset is not None:
+            self._reseed_if_fixed()
             self._scene_on_reset(model, data, self._rng)
         self._model = model
         self._data = data
@@ -225,6 +246,7 @@ class MuJoCoSO101:
         self._init_block_joint_addrs()
         self._init_episode_auto_reset()
         self._reset_scene_xml_watch()
+        self._publish_object_poses()
         logger.info(
             "MuJoCo SO101 connected ({} joints, timestep={})",
             self.NUM_JOINTS,
@@ -252,6 +274,11 @@ class MuJoCoSO101:
             self._camera_last_frame_ts.clear()
             self._frame_buffers.clear()
             self._block_joint_addrs.clear()
+            self._free_joint_addrs.clear()
+            self._follow_body_ids = {}
+            self._free_joint_bodies = {}
+            self._held_objects.clear()
+            self._object_poses = {}
             self._target_body_id = None
             self._episode_auto_reset = None
             self._last_sim_time = None
@@ -283,8 +310,12 @@ class MuJoCoSO101:
         if self._episode_auto_reset is not None:
             self._episode_auto_reset.update(self._model, self._data)
 
+        self._apply_held_objects()
+        self._publish_object_poses()
+
         if self._viser_scene is not None:
             self._sync_viser()
+            self._refresh_viser_panel()
         elif self._native_viewer is not None:
             if self._native_viewer_is_running():
                 self._native_viewer_sync()
@@ -341,6 +372,7 @@ class MuJoCoSO101:
         import mujoco  # noqa: PLC0415
 
         self._block_joint_addrs.clear()
+        self._free_joint_addrs.clear()
         for joint_name in self._free_joints:
             # pyrefly: ignore [missing-attribute]
             jid = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
@@ -351,10 +383,36 @@ class MuJoCoSO101:
             # pyrefly: ignore [missing-attribute]
             dof_addr = int(self._model.jnt_dofadr[jid])
             self._block_joint_addrs.append((qpos_addr, dof_addr))
+            if int(self._model.jnt_type[jid]) == int(mujoco.mjtJoint.mjJNT_FREE):
+                self._free_joint_addrs[joint_name] = (qpos_addr, dof_addr)
 
         # pyrefly: ignore [missing-attribute]
         target_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_BODY, self._target_body_name)
         self._target_body_id = int(target_id) if target_id >= 0 else None
+        self._init_follow_bodies()
+
+    def _init_follow_bodies(self) -> None:
+        """Collect the bodies the viewer can follow: free objects, the target, and the grippers."""
+        import mujoco  # noqa: PLC0415
+
+        model = self._model
+        follow: dict[str, int] = {}
+        joint_bodies: dict[str, str] = {}
+        for joint_name in self._free_joint_addrs:
+            joint_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name))
+            body_id = int(model.jnt_bodyid[joint_id])
+            body_name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body_id) or f"body_{body_id}"
+            follow[body_name] = body_id
+            joint_bodies[joint_name] = body_name
+        candidates = [self._target_body_name] if self._target_body_name else []
+        candidates += [f"{prefix}gripper" for prefix in ("", "left_", "right_")]
+        for body_name in candidates:
+            body_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name))
+            if body_id > 0 and body_name not in follow:
+                follow[body_name] = body_id
+        with self._state_lock:
+            self._follow_body_ids = follow
+            self._free_joint_bodies = joint_bodies
 
     def _init_episode_auto_reset(self) -> None:
         from physicalai_mujoco_so101_plugin.episode_auto_reset import EpisodeAutoReset  # noqa: PLC0415
@@ -373,7 +431,8 @@ class MuJoCoSO101:
             spawn_angle_half_deg=self._spawn_angle_half_deg,
             target_min_sep=self._target_min_sep,
             rng=self._rng,
-            success_dwell_s=5.0,
+            success_dwell_s=self._auto_reset_dwell_s,
+            active=self._auto_reset_active,
         )
         with self._state_lock:
             self._episode_auto_reset = episode_auto_reset
@@ -643,6 +702,16 @@ class MuJoCoSO101:
         from physicalai_mujoco_so101_plugin.scene_registry import get_reset_fn, get_scene  # noqa: PLC0415
 
         scene = get_scene(scene_id)
+        if scene.num_arms != self.NUM_ARMS:
+            logger.error(
+                "Scene '{}' has {} arm(s) but {} drives {}; keeping scene '{}'",
+                scene_id,
+                scene.num_arms,
+                type(self).__name__,
+                self.NUM_ARMS,
+                self._current_scene_id,
+            )
+            return False
         xml_path = scene.scene_xml_path
         if not xml_path.exists():
             logger.error("Scene XML not found: {}", xml_path)
@@ -672,6 +741,7 @@ class MuJoCoSO101:
         # reset must leave the running model and its renderers usable.
         on_reset = get_reset_fn(scene_id)
         if on_reset is not None:
+            self._reseed_if_fixed()
             on_reset(new_model, new_data, self._rng)
 
         with self._state_lock:
@@ -685,8 +755,8 @@ class MuJoCoSO101:
             self._model = new_model
             self._data = new_data
             self._ctrl_indices = ctrl_indices
+            self._held_objects.clear()
 
-            self._recreate_viser_scene()
             self._native_viewer_set_model_data(new_model, new_data)
 
             self._free_joints = scene.free_joints
@@ -707,6 +777,9 @@ class MuJoCoSO101:
 
             self._current_scene_id = scene_id
             self._scene_on_reset = on_reset
+            self._publish_object_poses()
+            # Rebuild last: the viewer panel renders the new scene's state.
+            self._recreate_viser_scene()
 
         logger.info(
             "Switched to scene '{}' ({} bodies, {} geoms, {} joints)",
@@ -725,6 +798,7 @@ class MuJoCoSO101:
                     stop()
             self._viser_server = None
             self._viser_scene = None
+            self._viser_panel = None
         if self._native_viewer is not None:
             with contextlib.suppress(Exception):
                 self._native_viewer.close()
@@ -739,9 +813,9 @@ class MuJoCoSO101:
         if self._viser_port <= 0:
             return False
         try:
+            import mjviser  # noqa: F401, PLC0415
             import rich  # noqa: PLC0415
             import viser  # noqa: PLC0415
-            from mjviser import ViserMujocoScene  # noqa: PLC0415
         except ImportError as exc:
             logger.warning("mjviser/viser unavailable, web viewer disabled: {}", exc)
             return False
@@ -754,59 +828,79 @@ class MuJoCoSO101:
         server = None
         try:
             server = viser.ViserServer(host=self._viser_host, port=self._viser_port, verbose=False)
-            scene = ViserMujocoScene(server, self._model, num_envs=1)
-            scene.create_visualization_gui()
-            self._add_viser_control_gui(server, viser)
+            self._viser_server = server
+            self._build_viser_gui()
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to start viser viewer on port {}: {}", self._viser_port, exc)
             if server is not None:
                 with contextlib.suppress(Exception):
                     server.stop()
+            self._viser_server = None
+            self._viser_scene = None
+            self._viser_panel = None
             return False
-        else:
-            self._viser_server = server
-            self._viser_scene = scene
-            logger.info("3D viewer: http://{}:{}", self._viser_host, self._viser_port)
-            return True
+        logger.info("3D viewer: http://{}:{}", self._viser_host, self._viser_port)
+        return True
 
-    def _add_viser_control_gui(self, server: object, viser_module: object) -> None:
-        """Add Reset/Shutdown controls, independent of the per-scene GUI tabs.
+    def _build_viser_gui(self) -> None:
+        """Build the viewer's scene and GUI for the current model from scratch.
 
-        Placed outside the tab group created by ``create_visualization_gui``
-        so a scene hot-swap (which rebuilds that tab group from scratch) does
-        not duplicate these controls.
+        Scene switches call this too, so it first clears every GUI element and
+        scene node of the previous model (mjviser only ever adds them).
+
+        mjviser's own camera GUI and body tracking are not used: tracking
+        follows the model's first moving body (an arbitrary object) by
+        shifting the rendered world, and each build registers another
+        client-connect hook. The panel's Camera tab moves the viewer cameras
+        instead, and the world stays in place.
+
+        Raises:
+            RuntimeError: If no Viser server is running.
         """
-        from physicalai_mujoco_so101_plugin.http_server import ResetCommand, ShutdownCommand  # noqa: PLC0415
+        import viser  # noqa: PLC0415
+        from mjviser import ViserMujocoScene  # noqa: PLC0415
 
-        reset_button = server.gui.add_button("Reset Scene", icon=viser_module.Icon.REFRESH)
+        from physicalai_mujoco_so101_plugin.viser_controls import SimControlPanel  # noqa: PLC0415
 
-        @reset_button.on_click
-        def _on_reset(_: object) -> None:
-            self._commands.put(ResetCommand())
+        server = self._viser_server
+        if server is None:
+            msg = "viser server is not running"
+            raise RuntimeError(msg)
+        if self._viser_panel is None:
+            self._viser_panel = SimControlPanel(server, viser, self._submit_command)
 
-        shutdown_button = server.gui.add_button("Shutdown", icon=viser_module.Icon.POWER, color="red")
+        self._viser_scene = None
+        server.gui.reset()
+        server.scene.reset()
 
-        @shutdown_button.on_click
-        def _on_shutdown_click(event: object) -> None:
-            client = event.client
-            if client is None:
-                return
-            with client.gui.add_modal("Confirm shutdown") as modal:
-                client.gui.add_markdown("Stop the simulation owner? This disconnects all viewers.")
-                confirm_button = client.gui.add_button("Shutdown", color="red")
-                cancel_button = client.gui.add_button("Cancel")
+        scene = ViserMujocoScene(server, self._model, num_envs=1)
+        scene.camera_tracking_enabled = False
+        scene.set_refresh_handler(self._on_viser_visualization_change)
+        state = self._panel_state()
+        tabs = server.gui.add_tab_group()
+        with tabs.add_tab("Simulation", icon=viser.Icon.ROBOT):
+            self._viser_panel.build(state)
+        with tabs.add_tab("Camera", icon=viser.Icon.VIDEO):
+            self._viser_panel.build_camera_tab(state)
+        with tabs.add_tab("Visualization", icon=viser.Icon.EYE):
+            scene.create_overlay_gui()
+        with tabs.add_tab("Groups", icon=viser.Icon.LAYERS_INTERSECT):
+            scene.create_groups_gui()
+        self._viser_panel.build_scene_nodes(state)
 
-                @confirm_button.on_click
-                def _on_confirm(_: object) -> None:
-                    self._commands.put(ShutdownCommand())
-                    modal.close()
+        self._viser_scene = scene
+        self._viser_panel_failed = False
 
-                @cancel_button.on_click
-                def _on_cancel(_: object) -> None:
-                    modal.close()
+    def _on_viser_visualization_change(self) -> None:
+        """Let a Visualization/Groups tab change show up on the next sim tick.
+
+        mjviser's default refresh re-renders from the Viser thread while the
+        sim thread may be stepping the same data; the sim loop re-renders at
+        the control rate anyway.
+        """
 
     def _recreate_viser_scene(self) -> None:
-        """Rebuild the viser scene after a model hot-swap.
+        """Rebuild the viewer after a model hot-swap.
 
         ``self._model``/``self._data`` are already the new scene's by the time
         this runs, so on failure the old ``_viser_scene`` (built against the
@@ -818,14 +912,57 @@ class MuJoCoSO101:
             return
         self._viser_scene = None
         try:
-            from mjviser import ViserMujocoScene  # noqa: PLC0415
-
-            scene = ViserMujocoScene(self._viser_server, self._model, num_envs=1)
-            scene.create_visualization_gui()
+            self._build_viser_gui()
         except Exception as exc:  # noqa: BLE001
+            self._viser_scene = None
             logger.warning("Failed to recreate viser scene: {}", exc)
+
+    def _panel_state(self) -> PanelState:
+        """Snapshot the state rendered by the viewer's Simulation panel.
+
+        Returns:
+            The current scene, compatible scenes, seed, episode status, object
+            poses and camera frame buffers.
+        """
+        from physicalai_mujoco_so101_plugin.scene_registry import list_scenes_for_arms  # noqa: PLC0415
+        from physicalai_mujoco_so101_plugin.viser_controls import PanelState  # noqa: PLC0415
+
+        with self._state_lock:
+            auto_reset = self._episode_auto_reset
+            return PanelState(
+                scene_id=self._current_scene_id,
+                scene_options=tuple(
+                    (scene_id, scene.display_name) for scene_id, scene in list_scenes_for_arms(self.NUM_ARMS).items()
+                ),
+                seed=self._seed,
+                episode=self._episode_status(auto_reset),
+                objects=dict(self._object_poses),
+                # Configured names, not just live buffers: the viewer is built
+                # before connect() starts the camera renderers.
+                cameras={config.name: self._frame_buffers.get(config.name) for config in self._cameras},
+                follow_targets=self._follow_targets(),
+                object_bodies=dict(self._free_joint_bodies),
+                view_center=self._view_center(),
+                view_extent=float(self._model.stat.extent) if self._model is not None else 1.0,
+            )
+
+    @staticmethod
+    def _episode_status(auto_reset: object | None) -> dict[str, object]:
+        return auto_reset.status() if auto_reset is not None else {"enabled": False}
+
+    def _refresh_viser_panel(self) -> None:
+        """Mirror sim state into the viewer panel without letting it stop the loop."""
+        panel = self._viser_panel
+        if panel is None:
             return
-        self._viser_scene = scene
+        try:
+            panel.refresh(self._panel_state(), time.monotonic())
+        except Exception as exc:  # noqa: BLE001
+            if not self._viser_panel_failed:
+                self._viser_panel_failed = True
+                logger.warning("viser panel refresh failed, its readouts will be stale: {}", exc)
+        else:
+            self._viser_panel_failed = False
 
     def _sync_viser(self) -> None:
         """Push the current sim state into the viser scene.
@@ -843,6 +980,20 @@ class MuJoCoSO101:
         else:
             self._viser_sync_failed = False
 
+    def _view_center(self) -> tuple[float, float, float]:
+        """Return the model centre, where a free viewer camera looks by default."""
+        if self._model is None:
+            return (0.0, 0.0, 0.0)
+        x, y, z = (float(v) for v in self._model.stat.center)
+        return (x, y, z)
+
+    def _follow_targets(self) -> dict[str, tuple[float, float, float]]:
+        """Return the current world position of each body the viewer can follow."""
+        data = self._data
+        if data is None:
+            return {}
+        return {name: tuple(float(v) for v in data.xpos[body_id]) for name, body_id in self._follow_body_ids.items()}  # type: ignore[misc]
+
     def _sync_viser_fixed_bodies(self) -> None:
         """Push current ``data.xpos`` into mjviser's fixed-geometry handles.
 
@@ -852,8 +1003,8 @@ class MuJoCoSO101:
         ``mj_forward``, but mjviser only places fixed meshes at create time,
         so it needs this explicit resync to reflect the change.
 
-        Handles live under ``/fixed_bodies``, whose frame already carries
-        mjviser's camera-tracking offset, so store world ``xpos`` as-is.
+        Handles live under ``/fixed_bodies``, which stays at the world origin,
+        so store world ``xpos`` as-is.
         """
         scene = self._viser_scene
         data = self._data
@@ -928,10 +1079,10 @@ class MuJoCoSO101:
             return
         self._pending_scene_switch = False
 
-        from physicalai_mujoco_so101_plugin.scene_registry import list_scenes  # noqa: PLC0415
+        from physicalai_mujoco_so101_plugin.scene_registry import list_scenes_for_arms  # noqa: PLC0415
 
         try:
-            scene_ids = list(list_scenes().keys())
+            scene_ids = list(list_scenes_for_arms(self.NUM_ARMS))
             if not scene_ids:
                 logger.warning("No scenes available for switching")
                 return
@@ -970,6 +1121,8 @@ class MuJoCoSO101:
         logged warning rather than take the owner down.
         """
         try:
+            self._held_objects.clear()
+            self._reseed_if_fixed()
             if self._scene_on_reset is not None:
                 self._scene_on_reset(self._model, self._data, self._rng)
             else:
@@ -979,6 +1132,140 @@ class MuJoCoSO101:
             return
         if self._episode_auto_reset is not None:
             self._episode_auto_reset.notify_manual_reset()
+
+    def _reseed_if_fixed(self) -> None:
+        """Restart the shared RNG from the fixed seed so the next reset repeats.
+
+        The generator is reseeded in place because the episode auto-reset
+        helper holds a reference to it.
+        """
+        if self._seed is not None:
+            self._rng.bit_generator.state = np.random.PCG64(self._seed).state
+
+    def _set_seed(self, seed: int | None) -> None:
+        self._seed = seed
+        self._reseed_if_fixed()
+        logger.info("Reset seed {}", "cleared" if seed is None else f"fixed to {seed}")
+
+    def _set_auto_reset(self, *, enabled: bool | None, dwell_s: float | None) -> None:
+        if enabled is not None:
+            self._auto_reset_active = enabled
+        if dwell_s is not None:
+            self._auto_reset_dwell_s = float(dwell_s)
+        helper = self._episode_auto_reset
+        if helper is None:
+            logger.warning("Scene '{}' has no episode auto-reset", self._current_scene_id)
+            return
+        with self._state_lock:
+            helper.set_active(self._auto_reset_active)
+            helper.set_dwell(self._auto_reset_dwell_s)
+        logger.info(
+            "Episode auto-reset {} (dwell {:.1f}s)",
+            "enabled" if self._auto_reset_active else "disabled",
+            self._auto_reset_dwell_s,
+        )
+
+    def _home_targets(self) -> dict[str, float]:
+        """Return the current scene's home joint positions (radians)."""
+        if self._current_scene_id is None:
+            return {}
+        from physicalai_mujoco_so101_plugin.scene_registry import get_scene  # noqa: PLC0415
+
+        try:
+            return dict(get_scene(self._current_scene_id).home_qpos)
+        except KeyError:
+            return {}
+
+    def _go_home(self) -> None:
+        """Place the arm joints at the scene's home pose and target it.
+
+        Joints without a scene-specific home value use the model default
+        (``qpos0``). Positions and actuator targets are clipped to the
+        joint and control ranges; the next ``send_action`` overrides them.
+        """
+        import mujoco  # noqa: PLC0415
+
+        model, data = self._model, self._data
+        home = self._home_targets()
+        for index, name in enumerate(self.JOINT_ORDER):
+            joint_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name))
+            qpos_addr = int(model.jnt_qposadr[joint_id])
+            dof_addr = int(model.jnt_dofadr[joint_id])
+            value = float(home.get(name, model.qpos0[qpos_addr]))
+            if bool(model.jnt_limited[joint_id]):
+                low, high = (float(v) for v in model.jnt_range[joint_id])
+                value = min(max(value, low), high)
+            data.qpos[qpos_addr] = value
+            data.qvel[dof_addr] = 0.0
+
+            actuator_id = self._ctrl_indices[index]
+            target = value
+            if bool(model.actuator_ctrllimited[actuator_id]):
+                low, high = (float(v) for v in model.actuator_ctrlrange[actuator_id])
+                target = min(max(target, low), high)
+            data.ctrl[actuator_id] = target
+        mujoco.mj_forward(model, data)
+        logger.info("Arm moved to the home pose")
+
+    def _write_object_pose(self, joint: str, position: np.ndarray, wxyz: np.ndarray) -> None:
+        qpos_addr, dof_addr = self._free_joint_addrs[joint]
+        self._data.qpos[qpos_addr : qpos_addr + 3] = position
+        self._data.qpos[qpos_addr + 3 : qpos_addr + 7] = wxyz
+        self._data.qvel[dof_addr : dof_addr + 6] = 0.0
+
+    def _set_object_pose(
+        self,
+        joint: str,
+        position: tuple[float, float, float],
+        wxyz: tuple[float, float, float, float] | None,
+        *,
+        hold: bool,
+    ) -> None:
+        """Teleport a free object, optionally holding it there every step."""
+        import mujoco  # noqa: PLC0415
+
+        if joint not in self._free_joint_addrs:
+            logger.warning("Unknown free object joint {!r}", joint)
+            return
+        qpos_addr, _ = self._free_joint_addrs[joint]
+        pos = np.asarray(position, dtype=np.float64)
+        quat = np.asarray(
+            wxyz if wxyz is not None else self._data.qpos[qpos_addr + 3 : qpos_addr + 7], dtype=np.float64
+        )
+        norm = float(np.linalg.norm(quat))
+        if pos.shape != (3,) or quat.shape != (4,) or not np.isfinite(pos).all() or not np.isfinite(norm) or norm == 0:
+            logger.warning("Ignoring invalid pose for {!r}", joint)
+            return
+        quat /= norm
+        self._write_object_pose(joint, pos, quat)
+        if hold:
+            self._held_objects[joint] = (pos, quat)
+        else:
+            self._held_objects.pop(joint, None)
+        mujoco.mj_forward(self._model, self._data)
+
+    def _apply_held_objects(self) -> None:
+        """Pin objects a viewer is dragging back to the dragged pose."""
+        if not self._held_objects:
+            return
+        import mujoco  # noqa: PLC0415
+
+        for joint, (position, wxyz) in self._held_objects.items():
+            self._write_object_pose(joint, position, wxyz)
+        mujoco.mj_forward(self._model, self._data)
+
+    def _publish_object_poses(self) -> None:
+        """Snapshot free-object poses for the HTTP and viewer threads."""
+        from physicalai_mujoco_so101_plugin.viser_controls import ObjectPose  # noqa: PLC0415
+
+        poses: dict[str, ObjectPose] = {}
+        if self._data is not None:
+            qpos = self._data.qpos
+            for joint, (qpos_addr, _) in self._free_joint_addrs.items():
+                values = [float(v) for v in qpos[qpos_addr : qpos_addr + 7]]
+                poses[joint] = ObjectPose(position=tuple(values[:3]), wxyz=tuple(values[3:]))  # type: ignore[arg-type]
+        with self._state_lock:
+            self._object_poses = poses
 
     def _sample_target_and_blocks(self, count: int) -> list[tuple[float, float]]:
         """Sample *count* block positions clear of the target and of each other.
@@ -1102,9 +1389,10 @@ class MuJoCoSO101:
         Returns:
             A JSON-friendly snapshot of connection, scene and camera state.
         """
-        from physicalai_mujoco_so101_plugin.scene_registry import list_scenes  # noqa: PLC0415
+        from physicalai_mujoco_so101_plugin.scene_registry import list_scenes, list_scenes_for_arms  # noqa: PLC0415
 
         scenes = sorted(list_scenes())
+        compatible = sorted(list_scenes_for_arms(self.NUM_ARMS))
         with self._state_lock:
             auto_reset = self._episode_auto_reset
             rendering = set(self._camera_renderers)
@@ -1112,7 +1400,13 @@ class MuJoCoSO101:
                 "connected": self._model is not None,
                 "scene": self._current_scene_id,
                 "scenes": scenes,
-                "episode": auto_reset.status() if auto_reset is not None else {"enabled": False},
+                "compatible_scenes": compatible,
+                "seed": self._seed,
+                "episode": self._episode_status(auto_reset),
+                "objects": [
+                    {"joint": joint, "position": list(pose.position), "wxyz": list(pose.wxyz)}
+                    for joint, pose in self._object_poses.items()
+                ],
                 "cameras": [
                     {
                         "name": config.name,
@@ -1126,34 +1420,58 @@ class MuJoCoSO101:
                 ],
             }
 
+    def _submit_command(self, command: SimCommand) -> None:
+        """Queue a command for the sim thread.
+
+        Resolves the queue on every call: ``disconnect()`` replaces it, and a
+        callback bound to the old queue would silently drop commands.
+        """
+        self._commands.put(command)
+
     def _drain_commands(self) -> None:
         while True:
             try:
                 command = self._commands.get_nowait()
             except queue.Empty:
                 return
-            self._handle_command(command)
+            try:
+                self._handle_command(command)
+            except Exception as exc:  # noqa: BLE001
+                # Operator commands are best-effort; a bad one must not stop the loop.
+                logger.warning("Command {} failed: {}", type(command).__name__, exc)
 
     def _handle_command(self, command: SimCommand) -> None:
         from physicalai_mujoco_so101_plugin.http_server import (  # noqa: PLC0415
+            HomeCommand,
             ResetCommand,
+            SetAutoResetCommand,
+            SetObjectPoseCommand,
+            SetSeedCommand,
             ShutdownCommand,
             SwitchSceneCommand,
         )
 
         if isinstance(command, ResetCommand):
-            logger.info("Scene reset requested via HTTP")
+            logger.info("Scene reset requested")
             self._run_scene_reset()
         elif isinstance(command, SwitchSceneCommand):
-            logger.info("Scene switch requested via HTTP: {}", command.scene_id)
+            logger.info("Scene switch requested: {}", command.scene_id)
             try:
                 self._switch_to_scene(command.scene_id)
             except Exception as exc:  # noqa: BLE001
                 # An unknown id, or a scene XML MuJoCo refuses to compile, is a
                 # bad request — not a reason to drop the simulation.
                 logger.warning("Scene switch failed: {}", exc)
+        elif isinstance(command, HomeCommand):
+            self._go_home()
+        elif isinstance(command, SetSeedCommand):
+            self._set_seed(command.seed)
+        elif isinstance(command, SetAutoResetCommand):
+            self._set_auto_reset(enabled=command.enabled, dwell_s=command.dwell_s)
+        elif isinstance(command, SetObjectPoseCommand):
+            self._set_object_pose(command.joint, command.position, command.wxyz, hold=command.hold)
         elif isinstance(command, ShutdownCommand):
-            logger.info("Shutdown requested via HTTP")
+            logger.info("Shutdown requested")
             _signal_owner_shutdown()
 
     def get_observation(self) -> RobotObservation:
@@ -1310,6 +1628,7 @@ class MuJoCoSO101:
         self._scene_xml_next_check = 0.0
         self._viser_sync_failed = False
         self._state_lock = threading.RLock()
+        self._init_control_state()
 
 
 class BiMuJoCoSO101(MuJoCoSO101):
@@ -1322,3 +1641,4 @@ class BiMuJoCoSO101(MuJoCoSO101):
 
     JOINT_ORDER: ClassVar[tuple[str, ...]] = BIMANUAL_SO101_JOINT_ORDER
     NUM_JOINTS: ClassVar[int] = BIMANUAL_NUM_JOINTS
+    NUM_ARMS: ClassVar[int] = 2

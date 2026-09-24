@@ -44,11 +44,27 @@ class SceneConfig:
     spawn_angle_half_deg: float = 50.0
     block_min_sep: float = 0.09
     target_min_sep: float = 0.11
+    num_arms: int = 1
+    """Number of SO-101 arms the scene model provides."""
+    home_qpos: tuple[tuple[str, float], ...] = ()
+    """Home joint positions in radians; unlisted arm joints use the model default."""
 
     @property
     def scene_xml_path(self) -> Path:
         """Absolute path to this scene's XML model."""
         return get_urdf_path() / self.scene_xml_relpath
+
+
+_GARMENT_FOLD_HOME: tuple[tuple[str, float], ...] = (
+    ("left_shoulder_pan", -1.1),
+    ("left_shoulder_lift", 0.3),
+    ("left_elbow_flex", 0.8),
+    ("left_wrist_flex", 0.3),
+    ("right_shoulder_pan", 1.1),
+    ("right_shoulder_lift", 0.3),
+    ("right_elbow_flex", 0.8),
+    ("right_wrist_flex", 0.3),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -85,18 +101,7 @@ def _freejoint_spawn_reset(scene_id: str) -> ResetFn:
 def _garment_fold_reset(model: object, data: object, rng: np.random.Generator) -> None:  # noqa: ARG001
     import mujoco  # noqa: PLC0415
 
-    home = {
-        "left_shoulder_pan": -1.1,
-        "left_shoulder_lift": 0.3,
-        "left_elbow_flex": 0.8,
-        "left_wrist_flex": 0.3,
-        "right_shoulder_pan": 1.1,
-        "right_shoulder_lift": 0.3,
-        "right_elbow_flex": 0.8,
-        "right_wrist_flex": 0.3,
-    }
-
-    for joint_name, val in home.items():
+    for joint_name, val in _GARMENT_FOLD_HOME:
         # pyrefly: ignore [missing-attribute]
         jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
         if jid < 0:
@@ -248,6 +253,8 @@ _SCENES: dict[str, SceneConfig] = {
         display_name="Garment Fold",
         description="Fold a flexible garment lying flat on a table",
         scene_xml_relpath="scenes/garment_fold/scene.xml",
+        num_arms=2,
+        home_qpos=_GARMENT_FOLD_HOME,
     ),
 }
 
@@ -275,6 +282,11 @@ def get_scene(scene_id: str) -> SceneConfig:
 def list_scenes() -> dict[str, SceneConfig]:
     """Return all scene configurations by ID."""
     return dict(_SCENES)
+
+
+def list_scenes_for_arms(num_arms: int) -> dict[str, SceneConfig]:
+    """Return the scenes whose model provides exactly `num_arms` SO-101 arms."""
+    return {scene_id: scene for scene_id, scene in _SCENES.items() if scene.num_arms == num_arms}
 
 
 def get_reset_fn(scene_id: str) -> ResetFn | None:
