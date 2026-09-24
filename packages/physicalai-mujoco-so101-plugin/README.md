@@ -28,8 +28,6 @@ uv sync --package physicalai-mujoco-so101-plugin --extra tests
 uv run --package physicalai-mujoco-so101-plugin physicalai-mujoco-so101 start
 ```
 
-In an existing Studio environment, install the plugin with `uv pip install physicalai-mujoco-so101-plugin` and restart Studio to discover its catalog entries.
-
 By default this starts:
 
 - A MuJoCo SO-101 owner named `mujoco-so101-follow`
@@ -38,9 +36,7 @@ By default this starts:
 - Control rate `50 Hz`
 - Substeps `10`
 
-Then open PhysicalAI Studio and connect to the robot type `MuJoCo SO-101 Follower` with name `mujoco-so101-follow`.
-
-Add HTTP camera records in Studio for `http://127.0.0.1:8080/cameras/wrist/mjpeg` and `http://127.0.0.1:8080/cameras/overview/mjpeg`. The plugin registers follower robots; choose an available leader separately when configuring teleoperation.
+To drive the simulation from Physical AI Studio, see [Use with Physical AI Studio](#use-with-physical-ai-studio).
 
 ### Browser viewer controls
 
@@ -95,6 +91,84 @@ curl http://127.0.0.1:8080/health
 
 MJPEG stream URLs are `http://127.0.0.1:8080/cameras/<name>/mjpeg` (e.g. open
 `http://127.0.0.1:8080/cameras/overview/mjpeg` in a browser, or play it in VLC).
+
+## Use with Physical AI Studio
+
+Studio sees the simulation as an ordinary follower robot plus IP cameras, so teleoperation, dataset recording and policy inference work the same way they do with a real SO-101. The simulation runs as its own process; Studio attaches to it by name over the local Physical AI transport.
+
+### 1. Install the plugin into Studio
+
+The plugin is not on Studio's curated **Plugins** page, so install it into Studio's backend environment. From the Studio repository:
+
+```bash
+cd application/backend
+uv add physicalai-mujoco-so101-plugin
+uv sync
+```
+
+The PyPI release may lag behind this repository. To use the version in this checkout, including the viewer controls described above, install it as an editable path instead:
+
+```bash
+cd application/backend
+uv add --editable /path/to/physicalai/packages/physicalai-mujoco-so101-plugin
+uv sync
+```
+
+Restart Studio. The robot picker then offers **MuJoCo SO-101 Follower** and **MuJoCo SO-101 Bimanual Follower**. See Studio's robot plugin guide for Docker and other install options.
+
+### 2. Start the simulation
+
+Start the simulation before you add or open the robot in Studio. Studio checks that the robot is online by connecting to it:
+
+```bash
+uv run --package physicalai-mujoco-so101-plugin physicalai-mujoco-so101 start
+```
+
+Keep this terminal open. Open the viewer at `http://127.0.0.1:9090` to watch the scene and use the **Simulation** tab.
+
+Studio and the simulation must run on the same machine. The transport only accepts local connections unless both sides allow remote ones (`--allow-remote` here, and the remote-connection option in the robot's advanced settings in Studio). A Studio instance running in Docker does not share the host's localhost.
+
+### 3. Add the robot and cameras
+
+In your Studio project:
+
+1. Open **Robots** and select **Add robot**. Choose **MuJoCo SO-101 Follower** and keep the name `mujoco-so101-follow`. The name must match `--name` if you changed it.
+2. Add a leader for teleoperation. The simulation provides only the follower. Use a real **SO101 Leader** arm connected over USB.
+3. Add an **IP Camera** for each simulated camera, with these stream URLs:
+
+   - `http://127.0.0.1:8080/cameras/wrist/mjpeg`
+   - `http://127.0.0.1:8080/cameras/overview/mjpeg`
+
+   The cameras render 640×480 at 30 fps. Set the camera's frame rate to 30; Studio's default is 25.
+
+4. Open **Environments** and create an environment with the MuJoCo follower, the leader, and both cameras.
+
+For the bimanual simulation, start it with `--bimanual`, choose **MuJoCo SO-101 Bimanual Follower** with the name `mujoco-so101-bimanual`, and add the `left_wrist`, `right_wrist` and `overview` cameras from its HTTP port. Its leader is a bimanual SO-101 leader, for example from the Bimanual SO-101 plugin.
+
+### 4. Teleoperate and record datasets
+
+Record from the dataset page as with a real robot (**Add episode**, **Start episode**, then **Accept** or **Discard**). Use the viewer in place of resetting a physical scene:
+
+- **Reset Scene** before each episode respawns the objects. The target stays fixed.
+- **Home Arm** puts the simulated arm at its home pose. The next teleop action moves it again, so use it while the leader is still or before starting teleoperation.
+- In `single_pick_place`, auto-reset respawns the cube five seconds after it rests on the target, which can happen in the middle of a recording. Turn **Auto-reset** off in the **Episode** section if you prefer to reset by hand.
+- Tick **Fixed seed** to get the same object layouts in the same order, for example to compare runs.
+
+The same controls are available over HTTP (see [REST control API](#rest-control-api)) if you want to script resets between episodes.
+
+### 5. Run a trained policy
+
+On the **Models** page, select **Run model** for a policy trained on the simulation dataset. Studio loads the environment the dataset was recorded with, so keep the simulation running with the same owner name and camera ports. Use **Reset Scene** or **Fixed seed** in the viewer between runs.
+
+To run the policy outside Studio, download its runtime configuration and run it with the Physical AI CLI. The plugin must be installed in that environment too; from this repository:
+
+```bash
+uv run --package physicalai-mujoco-so101-plugin physicalai run --config runtime.yaml
+```
+
+### 6. Stop
+
+Press `Ctrl+C` in the `start` terminal, use the viewer's **Shutdown** button, or run the [`stop` command](#stop-an-owner). Stop any teleoperation or inference session in Studio first; otherwise Studio reports the robot as disconnected.
 
 ## CLI options
 
@@ -262,16 +336,16 @@ These warnings are typically non-fatal on Wayland and can be ignored if simulati
 - Confirm the sim is running and the port is free: `curl http://127.0.0.1:8080/health`
 - `--no-http` or `--http-port 0` disables the server; `--no-cameras` disables all camera rendering
 
-## Using with Studio teleop and inference playback
+### Studio shows the MuJoCo robot as offline
 
-Typical workflow:
+- Start the simulation first, then reload the robot in Studio.
+- Check that the robot name in Studio matches the owner name printed by `start` (default `mujoco-so101-follow`).
+- Run Studio and the simulation on the same machine, or enable remote connections on both sides.
 
-1. Start simulation owner: `physicalai-mujoco-so101 start`
-2. Connect from PhysicalAI Studio (`MuJoCo SO-101 Follower`)
-3. Teleoperate in Studio and observe state/cameras
-4. Run policy inference and play action outputs into the same simulated robot
+### Studio shows no camera image
 
-Because this uses PhysicalAI transport + Studio catalog integration, you can iterate on control and inference loops in simulation before moving to hardware.
+- Open the stream URL in a browser; if it does not load, the HTTP server is not running or uses another port.
+- Use an **IP Camera** with the full `/cameras/<name>/mjpeg` URL, not the server root.
 
 ## Scenes
 
