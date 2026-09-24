@@ -82,7 +82,8 @@ class TestStopOwnerOverHttp:
             patch.object(cli, "_owner_pid", return_value=1234),
             patch("physicalai_mujoco_so101_plugin.__main__.http.client.HTTPConnection") as factory,
         ):
-            _stop_owner_over_http("127.0.0.1", 8080, "my-sim", 1234)
+            stopped = cli._stop_owner_over_http("127.0.0.1", 8080, "my-sim", 1234)  # noqa: SLF001
+        assert stopped is True
         connection = factory.return_value
         factory.assert_called_once_with("127.0.0.1", 8080, timeout=5)
         connection.request.assert_called_once_with("POST", "/shutdown")
@@ -95,7 +96,8 @@ class TestStopOwnerOverHttp:
             "physicalai_mujoco_so101_plugin.__main__.http.client.HTTPConnection",
             return_value=connection,
         ):
-            _stop_owner_over_http("127.0.0.1", 8080, "my-sim", 1234)
+            stopped = cli._request_http_shutdown("127.0.0.1", 8080)  # noqa: SLF001
+        assert stopped is False
 
     def test_connection_error_is_silent(self) -> None:
         connection = MagicMock()
@@ -104,7 +106,8 @@ class TestStopOwnerOverHttp:
             "physicalai_mujoco_so101_plugin.__main__.http.client.HTTPConnection",
             return_value=connection,
         ):
-            _stop_owner_over_http("127.0.0.1", 8080, "my-sim", 1234)
+            stopped = cli._request_http_shutdown("127.0.0.1", 8080)  # noqa: SLF001
+        assert stopped is False
 
     @pytest.mark.parametrize("name,pid", [("other-sim", 1234), ("my-sim", 5678), ("my-sim", None)])
     def test_skips_wrong_endpoint_or_replaced_owner(self, name, pid) -> None:
@@ -115,6 +118,24 @@ class TestStopOwnerOverHttp:
         ):
             _stop_owner_over_http("127.0.0.1", 8080, "my-sim", 1234)
         post.assert_not_called()
+
+
+class TestStopOwnerBySignal:
+    def test_signals_original_owner_after_rechecking_its_identity(self) -> None:
+        with (
+            patch.object(cli, "_owner_pid", return_value=1234),
+            patch.object(cli, "_terminate", return_value=True) as terminate,
+        ):
+            assert cli._stop_owner_by_signal("my-sim", 1234) is True  # noqa: SLF001
+
+        terminate.assert_called_once_with(1234, "owner 'my-sim'")
+
+    @pytest.mark.parametrize("current_pid", [None, 5678])
+    def test_does_not_signal_if_owner_changed_or_exited(self, current_pid: int | None) -> None:
+        with patch.object(cli, "_owner_pid", return_value=current_pid), patch("os.kill") as kill:
+            assert cli._stop_owner_by_signal("my-sim", 1234) is False  # noqa: SLF001
+
+        kill.assert_not_called()
 
 
 class TestLauncherLifecycle:
@@ -154,15 +175,73 @@ class TestLauncherLifecycle:
             patch.object(cli.SharedRobot, "from_config") as factory,
             patch.object(cli, "_owner_pid", return_value=1234),
             patch.object(cli, "_wait_for_owner_shutdown", side_effect=wait),
-            patch.object(cli, "_stop_owner_over_http") as stop,
+            patch.object(cli, "_stop_owner_over_http", return_value=True) as stop,
+            patch.object(cli, "_stop_owner_by_signal") as signal_stop,
             patch.object(cli.signal, "signal"),
         ):
             cli._start(args)
         factory.return_value.disconnect.assert_called_once()
         if operator_signal and http_enabled:
             stop.assert_called_once_with("127.0.0.1", 8080, "my-sim", 1234)
+            signal_stop.assert_not_called()
+        elif operator_signal:
+            stop.assert_not_called()
+            signal_stop.assert_called_once_with("my-sim", 1234)
         else:
             stop.assert_not_called()
+            signal_stop.assert_not_called()
+
+    def test_start_falls_back_to_signal_when_http_shutdown_fails(self) -> None:
+        args = cli._build_parser().parse_args(["start", "--name", "my-sim", "--no-cameras", "--no-gui"])
+
+        def wait(shutdown, name, pid) -> None:
+            assert (name, pid) == ("my-sim", 1234)
+            shutdown.set()
+
+        with (
+            patch.object(cli.SharedRobot, "from_config") as factory,
+            patch.object(cli, "_owner_pid", return_value=1234),
+            patch.object(cli, "_wait_for_owner_shutdown", side_effect=wait),
+            patch.object(cli, "_stop_owner_over_http", return_value=False) as http_stop,
+            patch.object(cli, "_stop_owner_by_signal", return_value=True) as signal_stop,
+            patch.object(cli.signal, "signal"),
+        ):
+            cli._start(args)
+
+        http_stop.assert_called_once_with("127.0.0.1", 8080, "my-sim", 1234)
+        signal_stop.assert_called_once_with("my-sim", 1234)
+        factory.return_value.disconnect.assert_called_once()
+
+    def test_start_uses_signal_fallback_when_http_is_disabled(self) -> None:
+        args = cli._build_parser().parse_args(
+            ["start", "--name", "my-sim", "--no-cameras", "--no-gui", "--no-http"],
+        )
+
+        def wait(shutdown, name, pid) -> None:
+            assert (name, pid) == ("my-sim", 1234)
+            shutdown.set()
+
+        with (
+            patch.object(cli.SharedRobot, "from_config") as factory,
+            patch.object(cli, "_owner_pid", return_value=1234),
+            patch.object(cli, "_wait_for_owner_shutdown", side_effect=wait),
+            patch.object(cli, "_stop_owner_over_http") as http_stop,
+            patch.object(cli, "_stop_owner_by_signal", return_value=True) as signal_stop,
+            patch.object(cli.signal, "signal"),
+        ):
+            cli._start(args)
+
+        http_stop.assert_not_called()
+        signal_stop.assert_called_once_with("my-sim", 1234)
+        factory.return_value.disconnect.assert_called_once()
+
+    def test_viser_host_defaults_to_loopback_and_can_be_overridden(self) -> None:
+        parser = cli._build_parser()
+        default_args = parser.parse_args(["start"])
+        remote_args = parser.parse_args(["start", "--viser-host", "0.0.0.0"])
+
+        assert default_args.viser_host == "127.0.0.1"
+        assert remote_args.viser_host == "0.0.0.0"
 
     def test_keyboard_interrupt_requests_identity_checked_shutdown(self) -> None:
         args = cli._build_parser().parse_args(["start", "--name", "my-sim", "--no-cameras", "--no-gui"])

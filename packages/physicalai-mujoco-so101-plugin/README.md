@@ -93,10 +93,11 @@ Common options:
 
 - `--name <robot-name>`: transport name (must match Studio payload)
 - `--bimanual`: run two arms with the `garment_fold` scene by default
-- `--model <path>`: custom XML/URDF path (bypasses scene resolution)
+- `--model <path>`: custom XML/URDF path to load initially (bypasses default scene resolution)
 - `--scene <name>`: scene name (`single_pick_place`, `pick_lift`, `pick_place`, or `yahtzee`, default `single_pick_place`)
 - `--no-gui`: disable all viewers
 - `--viser-port <port>`: browser viewer port (default `9090`)
+- `--viser-host <host>`: browser viewer bind host (default `127.0.0.1`; use `0.0.0.0` to expose it remotely)
 - `--no-cameras`: disable camera rendering entirely (HTTP streams and v4l2loopback)
 - `--http-host <host>`: host for the camera/control HTTP server (default `127.0.0.1`)
 - `--http-port <port>`: port for the camera/control HTTP server (default `8080`)
@@ -148,11 +149,11 @@ curl -X POST http://127.0.0.1:8080/shutdown
 | `/reset`                    | POST   | Reset/randomize the current scene             |
 | `/shutdown`                 | POST   | Gracefully stop the simulation owner          |
 
-With HTTP enabled, `Ctrl+C` in the start command requests owner shutdown through HTTP and disconnects the CLI subscriber. With HTTP disabled, the detached owner exits after its configured idle timeout once all subscribers leave. Use the named `stop` command to stop an owner directly.
+With HTTP enabled, `Ctrl+C` in the start command requests owner shutdown through HTTP. If the HTTP endpoint is unavailable, the launcher sends SIGTERM to the original owner only after confirming its registered name and PID still match. It then disconnects the CLI subscriber. With HTTP disabled, the same verified signal path stops a local owner; detached owners also exit after their configured idle timeout once all subscribers leave. Use the named `stop` command to stop an owner directly.
 
 The `start` command also returns when its local owner exits through `stop`, HTTP, or the viewer's Shutdown control. Launcher cleanup checks the endpoint's owner name and the original owner's PID before forwarding an operator-requested shutdown. An invocation that attaches without a local owner record detaches instead of waiting indefinitely.
 
-HTTP control has no authentication and binds to loopback by default. Use explicit non-loopback bindings only on a trusted robot-cell network. The viewer also exposes controls: restrict its port to trusted clients when accessing it remotely.
+HTTP control has no authentication and binds to loopback by default. Use explicit non-loopback bindings only on a trusted robot-cell network. The Viser viewer also exposes Reset and Shutdown controls; it binds to loopback by default. Use `--viser-host 0.0.0.0` only when remote access is needed on a trusted network.
 
 ## Cameras and v4l2loopback (opt-in)
 
@@ -268,7 +269,7 @@ A scene that does not declare the joints the running robot drives is rejected an
 
 The native MuJoCo viewer also binds **`n`** (next scene) to cycle through the compatible scenes. That viewer is only used on Linux/Windows when the browser viewer fails to start; with the default viser viewer (and always on macOS) use the HTTP endpoint instead.
 
-`--model` bypasses scene resolution entirely; only the exported scene XML path is loaded, and scene switching is unavailable.
+`--model` selects the initial model instead of resolving a registered scene. Runtime scene-switch requests can still explicitly replace it with a compatible registered scene; switching back to the custom model is not available unless it is registered as a scene.
 
 ## Development
 

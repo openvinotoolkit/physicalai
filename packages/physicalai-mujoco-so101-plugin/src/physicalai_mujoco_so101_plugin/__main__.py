@@ -112,6 +112,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Port for the browser-based 3D viewer (default: 9090)",
     )
     start.add_argument(
+        "--viser-host",
+        type=str,
+        default="127.0.0.1",
+        help="Host for the browser-based 3D viewer (default: 127.0.0.1; use 0.0.0.0 to expose it remotely)",
+    )
+    start.add_argument(
         "--no-cameras",
         action="store_true",
         default=False,
@@ -224,7 +230,7 @@ def _resolve_owner_name(args: argparse.Namespace) -> str:
     return DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME if args.bimanual else DEFAULT_MUJOCO_OWNER_NAME
 
 
-def _start(args: argparse.Namespace) -> None:  # noqa: C901, PLR0912, PLR0915
+def _start(args: argparse.Namespace) -> None:  # noqa: C901, PLR0912, PLR0914, PLR0915
     model_path, scene_config = _resolve_model_and_scene(args.model, args.scene, bimanual=args.bimanual)
     owner_name = _resolve_owner_name(args)
 
@@ -285,6 +291,7 @@ def _start(args: argparse.Namespace) -> None:  # noqa: C901, PLR0912, PLR0915
         "owner_name": owner_name,
         "http_host": args.http_host,
         "http_port": args.http_port if http_enabled else 0,
+        "viser_host": args.viser_host,
         "viser_port": args.viser_port if not args.no_gui else 0,
     }
     if scene_config is not None:
@@ -323,7 +330,7 @@ def _start(args: argparse.Namespace) -> None:  # noqa: C901, PLR0912, PLR0915
             logger.info("MJPEG: {} -> {}/cameras/{}/mjpeg", name, base_url, name)
             logger.info("Snapshot: {} -> {}/cameras/{}/frame.jpg", name, base_url, name)
     if not args.no_gui and args.viser_port > 0:
-        logger.info("3D viewer: http://127.0.0.1:{}", args.viser_port)
+        logger.info("3D viewer: http://{}:{}", args.viser_host, args.viser_port)
 
     shutdown = threading.Event()
 
@@ -343,8 +350,10 @@ def _start(args: argparse.Namespace) -> None:  # noqa: C901, PLR0912, PLR0915
         try:
             # An external stop (HTTP, viewer, or CLI) needs only subscriber
             # cleanup. Never forward shutdown to a replacement owner.
-            if shutdown.is_set() and http_enabled and owner_pid is not None:
-                _stop_owner_over_http(args.http_host, args.http_port, owner_name, owner_pid)
+            if shutdown.is_set() and owner_pid is not None:
+                stopped = http_enabled and _stop_owner_over_http(args.http_host, args.http_port, owner_name, owner_pid)
+                if not stopped:
+                    _stop_owner_by_signal(owner_name, owner_pid)
         finally:
             robot.disconnect()
         logger.info("MuJoCo SO-101 stopped")
@@ -401,15 +410,32 @@ def _http_owner_name(host: str, port: int) -> str | None:
     return service if isinstance(service, str) else None
 
 
-def _stop_owner_over_http(host: str, port: int, name: str, pid: int) -> None:
-    """Request shutdown only while the original local owner serves this endpoint."""
+def _stop_owner_over_http(host: str, port: int, name: str, pid: int) -> bool:
+    """Request shutdown only while the original local owner serves this endpoint.
+
+    Returns:
+        Whether the HTTP shutdown request was delivered to the verified owner.
+    """
     if _http_owner_name(host, port) != name or _owner_pid(name) != pid:
         logger.debug("HTTP shutdown skipped: endpoint or owner changed for '{}'", name)
-        return
+        return False
     if _request_http_shutdown(host, port):
         logger.info("Owner shutdown requested via HTTP")
-    else:
-        logger.debug("HTTP shutdown endpoint unavailable; owner will self-manage")
+        return True
+    logger.debug("HTTP shutdown endpoint unavailable for '{}'; falling back to SIGTERM", name)
+    return False
+
+
+def _stop_owner_by_signal(name: str, pid: int) -> bool:
+    """Stop the original local owner when its HTTP shutdown endpoint is unavailable.
+
+    Returns:
+        Whether SIGTERM was delivered to the still-registered owner process.
+    """
+    if _owner_pid(name) != pid:
+        logger.debug("Signal shutdown skipped: owner '{}' changed or exited", name)
+        return False
+    return _terminate(pid, f"owner '{name}'")
 
 
 def _owner_pid(name: str) -> int | None:

@@ -7,9 +7,11 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import mujoco
 import pytest
 from physicalai.config import Config
 
+from physicalai_mujoco_so101_plugin.constants import BIMANUAL_SO101_JOINT_ORDER, SO101_JOINT_ORDER
 from physicalai_mujoco_so101_plugin.http_server import ResetCommand, ShutdownCommand, SwitchSceneCommand
 from physicalai_mujoco_so101_plugin.mujoco_robot import BiMuJoCoSO101, MuJoCoSO101, MuJoCoSO101Observation
 
@@ -26,13 +28,18 @@ def mock_mujoco() -> MagicMock:
         patch("mujoco.MjData") as mock_data_cls,
         patch("mujoco.mj_forward"),
         patch("mujoco.mj_step"),
-        patch("mujoco.mj_name2id", return_value=0),
-        patch("mujoco.mjtObj", create=True),
+        patch("mujoco.mj_name2id") as mock_name2id,
     ):
+        joint_ids = {name: index for index, name in enumerate(SO101_JOINT_ORDER)}
+        mock_name2id.side_effect = lambda _model, obj, name: (
+            joint_ids.get(name, -1) if obj == mujoco.mjtObj.mjOBJ_JOINT else 0
+        )
         mock_model = MagicMock()
         mock_model.nq = 6
         mock_model.nv = 6
         mock_model.nu = 6
+        mock_model.actuator_trntype = np.full(6, mujoco.mjtTrn.mjTRN_JOINT, dtype=np.int32)
+        mock_model.actuator_trnid = np.column_stack((np.arange(6), np.zeros(6, dtype=np.int32)))
         mock_model.opt.timestep = 0.005
         mock_model.jnt_qposadr = [0, 1, 2, 3, 4, 5]
         mock_model.jnt_dofadr = [0, 1, 2, 3, 4, 5]
@@ -59,13 +66,18 @@ def mock_mujoco_bimanual() -> MagicMock:
         patch("mujoco.MjData") as mock_data_cls,
         patch("mujoco.mj_forward"),
         patch("mujoco.mj_step"),
-        patch("mujoco.mj_name2id", return_value=0),
-        patch("mujoco.mjtObj", create=True),
+        patch("mujoco.mj_name2id") as mock_name2id,
     ):
+        joint_ids = {name: index for index, name in enumerate(BIMANUAL_SO101_JOINT_ORDER)}
+        mock_name2id.side_effect = lambda _model, obj, name: (
+            joint_ids.get(name, -1) if obj == mujoco.mjtObj.mjOBJ_JOINT else 0
+        )
         mock_model = MagicMock()
         mock_model.nq = 12
         mock_model.nv = 12
         mock_model.nu = 12
+        mock_model.actuator_trntype = np.full(12, mujoco.mjtTrn.mjTRN_JOINT, dtype=np.int32)
+        mock_model.actuator_trnid = np.column_stack((np.arange(12), np.zeros(12, dtype=np.int32)))
         mock_model.opt.timestep = 0.005
         mock_model.jnt_qposadr = list(range(12))
         mock_model.jnt_dofadr = list(range(12))
@@ -105,6 +117,7 @@ class TestMuJoCoSO101Construction:
         assert robot._substeps == 1  # noqa: SLF001
         assert robot._model is None  # noqa: SLF001
         assert robot._data is None  # noqa: SLF001
+        assert robot._viser_host == "127.0.0.1"  # noqa: SLF001
 
     def test_custom_substeps(self) -> None:
         robot = MuJoCoSO101(model_path="/fake/model.xml", substeps=5)
@@ -145,6 +158,44 @@ class TestMuJoCoSO101Connect:
         robot.connect()
         robot.connect()
         assert robot.is_connected()
+
+    def test_connect_maps_actuators_by_joint_name(self, mock_mujoco: MagicMock) -> None:
+        mock_mujoco.actuator_trnid[:, 0] = np.arange(6)[::-1]
+        robot = MuJoCoSO101(model_path="/fake/model.xml")
+
+        robot.connect()
+
+        assert robot._ctrl_indices == tuple(reversed(range(6)))  # noqa: SLF001
+        action = np.arange(6, dtype=np.float32)
+        robot.send_action(action)
+        np.testing.assert_allclose(robot._data.ctrl[::-1], np.radians(action))  # noqa: SLF001
+
+    @pytest.mark.parametrize(
+        "actuator_trntype,actuator_trnid",
+        [
+            (
+                np.full(6, mujoco.mjtTrn.mjTRN_JOINT),
+                np.column_stack(([0, 1, 2, 3, 4, 1000], np.zeros(6))),
+            ),
+            (np.full(6, mujoco.mjtTrn.mjTRN_JOINT), np.column_stack(([0, 0, 2, 3, 4, 5], np.zeros(6)))),
+            (np.full(6, mujoco.mjtTrn.mjTRN_SITE), np.column_stack((np.arange(6), np.zeros(6)))),
+        ],
+    )
+    def test_connect_rejects_missing_or_ambiguous_joint_actuator_mapping(
+        self,
+        mock_mujoco: MagicMock,
+        actuator_trntype: np.ndarray,
+        actuator_trnid: np.ndarray,
+    ) -> None:
+        mock_mujoco.nu = len(actuator_trntype)
+        mock_mujoco.actuator_trntype = actuator_trntype
+        mock_mujoco.actuator_trnid = actuator_trnid
+        robot = MuJoCoSO101(model_path="/fake/model.xml")
+
+        with pytest.raises(ValueError, match="joints/actuators"):
+            robot.connect()
+
+        assert not robot.is_connected()
 
     def test_disconnect(self, mock_mujoco: MagicMock) -> None:
         _ = mock_mujoco
@@ -232,6 +283,7 @@ class TestMuJoCoSO101Pickling:
             "_owner_name": "",
             "_http_host": "127.0.0.1",
             "_http_port": 0,
+            "_viser_host": "127.0.0.1",
             "_viser_port": 9090,
         }
 
@@ -269,11 +321,13 @@ class TestMuJoCoSO101Pickling:
             "_cameras": [],
             "_http_host": "0.0.0.0",  # noqa: S104
             "_http_port": 9000,
+            "_viser_host": "0.0.0.0",  # noqa: S104
         }
         robot = MuJoCoSO101.__new__(MuJoCoSO101)
         robot.__setstate__(state)
         assert robot._http_host == "0.0.0.0"  # noqa: SLF001, S104
         assert robot._http_port == 9000  # noqa: SLF001
+        assert robot._viser_host == "0.0.0.0"  # noqa: SLF001, S104
 
 
 class TestBiMuJoCoSO101:
@@ -557,13 +611,27 @@ class TestLaunchViserViewer:
         original_file = console.file
         try:
             with (
-                patch("viser.ViserServer", return_value=MagicMock()),
+                patch("viser.ViserServer", return_value=MagicMock()) as server_factory,
                 patch("mjviser.ViserMujocoScene", return_value=MagicMock()),
             ):
                 assert robot._launch_viser_viewer() is True  # noqa: SLF001
+            server_factory.assert_called_once_with(host="127.0.0.1", port=9090, verbose=False)
             assert console.file is sys.stderr
         finally:
             console.file = original_file
+
+    def test_configured_viser_host_is_used(self, mock_mujoco: MagicMock) -> None:
+        _ = mock_mujoco
+        robot = MuJoCoSO101(model_path="/fake/model.xml", viser_host="0.0.0.0")  # noqa: S104
+        robot.connect()
+
+        with (
+            patch("viser.ViserServer", return_value=MagicMock()) as server_factory,
+            patch("mjviser.ViserMujocoScene", return_value=MagicMock()),
+        ):
+            assert robot._launch_viser_viewer() is True  # noqa: SLF001
+
+        server_factory.assert_called_once_with(host="0.0.0.0", port=9090, verbose=False)  # noqa: S104
 
     def test_stops_partially_created_server_on_scene_failure(self, mock_mujoco: MagicMock) -> None:
         """A server created before the scene build fails must not leak the port/thread."""

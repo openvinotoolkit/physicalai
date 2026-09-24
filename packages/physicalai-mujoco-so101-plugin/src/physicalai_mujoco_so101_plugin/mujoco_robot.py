@@ -115,6 +115,7 @@ class MuJoCoSO101:
         owner_name: str = "",
         http_host: str = "127.0.0.1",
         http_port: int = 0,
+        viser_host: str = "127.0.0.1",
         viser_port: int = 9090,
     ) -> None:
         """Initialize a disconnected simulation robot."""
@@ -137,6 +138,8 @@ class MuJoCoSO101:
         self._http_host = http_host
         self._http_port = http_port
         self._http_server: HttpServer | None = None
+        self._viser_host = viser_host
+        self._ctrl_indices: tuple[int, ...] = ()
         self._block_joint_addrs: list[tuple[int, int]] = []
         self._target_body_id: int | None = None
         self._last_sim_time: float | None = None
@@ -205,7 +208,8 @@ class MuJoCoSO101:
         logger.info("Loading MuJoCo model from {}", self._model_path)
         # pyrefly: ignore [missing-attribute]
         model = mujoco.MjModel.from_xml_path(self._model_path)
-        if not self._model_is_drivable(model):
+        ctrl_indices = self._actuator_indices_for_joint_order(model)
+        if ctrl_indices is None:
             msg = f"Model {self._model_path!r} does not provide the joints/actuators for {type(self).__name__}"
             raise ValueError(msg)
         # pyrefly: ignore [missing-attribute]
@@ -216,6 +220,7 @@ class MuJoCoSO101:
             self._scene_on_reset(model, data, self._rng)
         self._model = model
         self._data = data
+        self._ctrl_indices = ctrl_indices
         self._last_sim_time = float(self._data.time)
         self._init_block_joint_addrs()
         self._init_episode_auto_reset()
@@ -250,6 +255,7 @@ class MuJoCoSO101:
             self._target_body_id = None
             self._episode_auto_reset = None
             self._last_sim_time = None
+            self._ctrl_indices = ()
 
             self._close_viewer()
             self._model = None
@@ -593,18 +599,37 @@ class MuJoCoSO101:
         # pyrefly: ignore [missing-attribute]
         mujoco.mj_forward(self._model, self._data)
 
-    def _model_is_drivable(self, model: object) -> bool:
-        """Return whether *model* exposes every joint and actuator this robot drives.
+    def _actuator_indices_for_joint_order(self, model: object) -> tuple[int, ...] | None:
+        """Resolve each public joint name to its direct MuJoCo actuator.
 
         Returns:
-            ``True`` when the model declares all of ``JOINT_ORDER`` and at least
-            ``NUM_JOINTS`` actuators.
+            Control indexes in ``JOINT_ORDER``, or ``None`` if the model is
+            missing a joint or does not have exactly one direct joint actuator
+            for every public joint.
         """
         import mujoco  # noqa: PLC0415
 
-        if int(model.nu) < self.NUM_JOINTS:
-            return False
-        return all(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name) >= 0 for name in self.JOINT_ORDER)
+        actuator_indices: list[int] = []
+        joint_ids: set[int] = set()
+        for name in self.JOINT_ORDER:
+            joint_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name))
+            if joint_id < 0 or joint_id in joint_ids:
+                return None
+            joint_ids.add(joint_id)
+
+            matches = [
+                actuator_id
+                for actuator_id in range(int(model.nu))
+                if int(model.actuator_trntype[actuator_id]) == mujoco.mjtTrn.mjTRN_JOINT
+                and int(model.actuator_trnid[actuator_id, 0]) == joint_id
+            ]
+            if len(matches) != 1:
+                return None
+            actuator_indices.append(matches[0])
+
+        if len(set(actuator_indices)) != self.NUM_JOINTS:
+            return None
+        return tuple(actuator_indices)
 
     def _switch_to_scene(self, scene_id: str) -> bool:
         """Hot-swap the simulation to another registered scene.
@@ -632,7 +657,8 @@ class MuJoCoSO101:
 
         # A scene built for a different arm count would leave get_observation and
         # send_action indexing joints/actuators the model does not have.
-        if not self._model_is_drivable(new_model):
+        ctrl_indices = self._actuator_indices_for_joint_order(new_model)
+        if ctrl_indices is None:
             logger.error(
                 "Scene '{}' does not provide the {} joints {} drives; keeping scene '{}'",
                 scene_id,
@@ -658,6 +684,7 @@ class MuJoCoSO101:
             self._model_path = str(xml_path)
             self._model = new_model
             self._data = new_data
+            self._ctrl_indices = ctrl_indices
 
             self._recreate_viser_scene()
             self._native_viewer_set_model_data(new_model, new_data)
@@ -726,7 +753,7 @@ class MuJoCoSO101:
 
         server = None
         try:
-            server = viser.ViserServer(port=self._viser_port, verbose=False)
+            server = viser.ViserServer(host=self._viser_host, port=self._viser_port, verbose=False)
             scene = ViserMujocoScene(server, self._model, num_envs=1)
             scene.create_visualization_gui()
             self._add_viser_control_gui(server, viser)
@@ -739,7 +766,7 @@ class MuJoCoSO101:
         else:
             self._viser_server = server
             self._viser_scene = scene
-            logger.info("3D viewer: http://127.0.0.1:{}", self._viser_port)
+            logger.info("3D viewer: http://{}:{}", self._viser_host, self._viser_port)
             return True
 
     def _add_viser_control_gui(self, server: object, viser_module: object) -> None:
@@ -1173,7 +1200,7 @@ class MuJoCoSO101:
 
         for i in range(self.NUM_JOINTS):
             # pyrefly: ignore [missing-attribute]
-            self._data.ctrl[i] = float(np.radians(action[i]))
+            self._data.ctrl[self._ctrl_indices[i]] = float(np.radians(action[i]))
 
     def render_camera(self, camera_name: str, width: int, height: int) -> np.ndarray:
         """Render an RGB image from a named camera.
@@ -1230,6 +1257,7 @@ class MuJoCoSO101:
             "_owner_name": self._owner_name,
             "_http_host": self._http_host,
             "_http_port": self._http_port,
+            "_viser_host": self._viser_host,
             "_viser_port": self._viser_port,
         }
 
@@ -1269,12 +1297,14 @@ class MuJoCoSO101:
         self._http_host = state.get("_http_host", "127.0.0.1")
         self._http_port = state.get("_http_port", 0)
         self._http_server = None
+        self._viser_host = state.get("_viser_host", "127.0.0.1")
         self._block_joint_addrs = []
         self._target_body_id = None
         self._episode_auto_reset = None
         self._last_sim_time = None
         self._rng = np.random.default_rng()
         self._pending_scene_switch = False
+        self._ctrl_indices = ()
         self._scene_xml_paths = None
         self._scene_xml_mtimes = {}
         self._scene_xml_next_check = 0.0
