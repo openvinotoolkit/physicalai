@@ -106,7 +106,7 @@ uv add physicalai-mujoco-so101-plugin
 uv sync
 ```
 
-The PyPI release may lag behind this repository. To use the version in this checkout, including the viewer controls described above, install it as an editable path instead:
+The PyPI release may lag behind this repository. To use the version in this checkout, including the viewer controls described above, run `git lfs pull` in this repository (the robot meshes are stored in Git LFS), then install it as an editable path instead:
 
 ```bash
 cd application/backend
@@ -118,10 +118,11 @@ Restart Studio. The robot picker then offers **MuJoCo SO-101 Follower** and **Mu
 
 ### 2. Start the simulation
 
-Start the simulation before you add or open the robot in Studio. Studio checks that the robot is online by connecting to it:
+Start the simulation before you add or open the robot in Studio. Studio checks that the robot is online by connecting to it. Run it from Studio's backend environment, so the simulation and Studio use the same `physicalai` version:
 
 ```bash
-uv run --package physicalai-mujoco-so101-plugin physicalai-mujoco-so101 start
+cd application/backend
+uv run physicalai-mujoco-so101 start
 ```
 
 Keep this terminal open. Open the viewer at `http://127.0.0.1:9090` to watch the scene and use the **Simulation** tab.
@@ -130,18 +131,24 @@ Studio and the simulation must run on the same machine. The transport only accep
 
 ### 3. Add the robot and cameras
 
-In your Studio project:
+Studio hides the **IP Camera** type behind a feature flag that is off by default. Enable it once in the browser: open Studio, run the following in the developer console, then reload the page.
 
-1. Open **Robots** and select **Add robot**. Choose **MuJoCo SO-101 Follower** and keep the name `mujoco-so101-follow`. The name must match `--name` if you changed it.
+```js
+setFeatureFlag("ipcam", true);
+```
+
+Then, in your Studio project:
+
+1. Open **Robots** and select **Configure new robot**. Choose **MuJoCo SO-101 Follower** and keep the name `mujoco-so101-follow`. The name must match `--name` if you changed it.
 2. Add a leader for teleoperation. The simulation provides only the follower. Use a real **SO101 Leader** arm connected over USB.
-3. Add an **IP Camera** for each simulated camera, with these stream URLs:
+3. Open **Cameras**, select **Configure new camera**, and add an **IP Camera** for each simulated camera, with these stream URLs:
 
    - `http://127.0.0.1:8080/cameras/wrist/mjpeg`
    - `http://127.0.0.1:8080/cameras/overview/mjpeg`
 
-   The cameras render 640×480 at 30 fps. Set the camera's frame rate to 30; Studio's default is 25.
+   The cameras render 640×480 at 30 fps, which matches the IP Camera defaults.
 
-4. Open **Environments** and create an environment with the MuJoCo follower, the leader, and both cameras.
+4. Open **Environments**, select **Configure new environment**, and add the MuJoCo follower, the leader, and both cameras.
 
 For the bimanual simulation, start it with `--bimanual`, choose **MuJoCo SO-101 Bimanual Follower** with the name `mujoco-so101-bimanual`, and add the `left_wrist`, `right_wrist` and `overview` cameras from its HTTP port. Its leader is a bimanual SO-101 leader, for example from the Bimanual SO-101 plugin.
 
@@ -346,6 +353,7 @@ These warnings are typically non-fatal on Wayland and can be ignored if simulati
 
 - Open the stream URL in a browser; if it does not load, the HTTP server is not running or uses another port.
 - Use an **IP Camera** with the full `/cameras/<name>/mjpeg` URL, not the server root.
+- If **IP Camera** is missing from the camera types, enable its feature flag (see [Add the robot and cameras](#3-add-the-robot-and-cameras)).
 
 ## Scenes
 
