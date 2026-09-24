@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
 """Launch a MuJoCo SO-101 simulation as a zenoh robot owner.
 
 Usage:

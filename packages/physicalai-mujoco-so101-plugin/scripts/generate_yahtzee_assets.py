@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
 """Generate the Yahtzee scene texture assets."""  # noqa: INP001
 
 from __future__ import annotations
