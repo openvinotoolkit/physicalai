@@ -14,6 +14,7 @@ discoverable and controllable from PhysicalAI Studio.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import shlex
@@ -366,16 +367,17 @@ def _wait_for_owner_shutdown(shutdown: threading.Event, name: str, pid: int | No
 
 
 def _request_http_shutdown(host: str, port: int) -> bool:
-    import urllib.error  # noqa: PLC0415
-    import urllib.request  # noqa: PLC0415
-
-    # host/port are local CLI args, scheme hardcoded to http
-    request = urllib.request.Request(f"http://{host}:{port}/shutdown", method="POST")
+    connection: http.client.HTTPConnection | None = None
     try:
-        with urllib.request.urlopen(request, timeout=5):  # nosec B310  # noqa: S310
-            return True
-    except (OSError, urllib.error.URLError):
+        connection = http.client.HTTPConnection(host, port, timeout=5)
+        connection.request("POST", "/shutdown")
+        connection.getresponse().read()
+    except (OSError, http.client.HTTPException):
         return False
+    finally:
+        if connection is not None:
+            connection.close()
+    return True
 
 
 def _http_owner_name(host: str, port: int) -> str | None:
@@ -385,15 +387,16 @@ def _http_owner_name(host: str, port: int) -> str | None:
         The ``service`` field from its root endpoint, or ``None`` when
         unreachable or the response is not from this CLI's HTTP server.
     """
-    import urllib.error  # noqa: PLC0415
-    import urllib.request  # noqa: PLC0415
-
-    request = urllib.request.Request(f"http://{host}:{port}/")  # host/port are local CLI args
+    connection: http.client.HTTPConnection | None = None
     try:
-        with urllib.request.urlopen(request, timeout=5) as response:  # nosec B310  # noqa: S310
-            payload = json.loads(response.read())
-    except (OSError, urllib.error.URLError, ValueError):
+        connection = http.client.HTTPConnection(host, port, timeout=5)
+        connection.request("GET", "/")
+        payload = json.loads(connection.getresponse().read())
+    except (OSError, http.client.HTTPException, ValueError):
         return None
+    finally:
+        if connection is not None:
+            connection.close()
     service = payload.get("service") if isinstance(payload, dict) else None
     return service if isinstance(service, str) else None
 
@@ -468,10 +471,14 @@ def _pid_command_line(pid: int) -> str | None:
     Returns:
         The process's command line, or ``None`` when it can't be read.
     """
-    import subprocess  # noqa: PLC0415, S404
+    # The subprocess is limited to local process inspection; it never executes
+    # a user-provided command or shell script.
+    import subprocess  # noqa: PLC0415, S404  # nosec B404
 
     try:
-        result = subprocess.run(  # noqa: S603
+        # The command is fixed and only reads this local process's command
+        # line; it never executes a user-provided command or shell script.
+        result = subprocess.run(  # nosec B603, B607  # noqa: S603
             ["ps", "-o", "args=", "-p", str(pid)],  # noqa: S607
             check=False,
             capture_output=True,
@@ -524,10 +531,14 @@ def _matching_pids(pattern: str) -> list[int]:
     Returns:
         Matching PIDs, with this process and its parent removed.
     """
-    import subprocess  # noqa: PLC0415, S404
+    # The subprocess is limited to local process inspection; it never executes
+    # a user-provided command or shell script.
+    import subprocess  # noqa: PLC0415, S404  # nosec B404
 
     try:
-        result = subprocess.run(  # noqa: S603
+        # The command is fixed and only lists local processes; the pattern is
+        # an internal CLI constant, not a shell expression or executable.
+        result = subprocess.run(  # nosec B603, B607  # noqa: S603
             ["pgrep", "-f", pattern],  # noqa: S607
             check=False,
             capture_output=True,

@@ -7,7 +7,6 @@ import subprocess
 import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-from urllib.error import URLError
 
 import pytest
 
@@ -29,16 +28,25 @@ class TestHttpOwnerName:
 
     def test_returns_service_field(self) -> None:
         response = self._response(b'{"service": "mujoco-so101-bimanual"}')
-        with patch("urllib.request.urlopen", return_value=response):
+        connection = MagicMock()
+        connection.getresponse.return_value = response
+        with patch("physicalai_mujoco_so101_plugin.__main__.http.client.HTTPConnection", return_value=connection):
             assert cli._http_owner_name("127.0.0.1", 8080) == "mujoco-so101-bimanual"  # noqa: SLF001
+        connection.request.assert_called_once_with("GET", "/")
+        connection.close.assert_called_once_with()
 
     def test_unreachable_returns_none(self) -> None:
-        with patch("urllib.request.urlopen", side_effect=URLError("refused")):
+        with patch(
+            "physicalai_mujoco_so101_plugin.__main__.http.client.HTTPConnection",
+            side_effect=OSError("refused"),
+        ):
             assert cli._http_owner_name("127.0.0.1", 8080) is None  # noqa: SLF001
 
     def test_non_json_response_returns_none(self) -> None:
         response = self._response(b"not json")
-        with patch("urllib.request.urlopen", return_value=response):
+        connection = MagicMock()
+        connection.getresponse.return_value = response
+        with patch("physicalai_mujoco_so101_plugin.__main__.http.client.HTTPConnection", return_value=connection):
             assert cli._http_owner_name("127.0.0.1", 8080) is None  # noqa: SLF001
 
 
@@ -72,20 +80,30 @@ class TestStopOwnerOverHttp:
         with (
             patch.object(cli, "_http_owner_name", return_value="my-sim"),
             patch.object(cli, "_owner_pid", return_value=1234),
-            patch("urllib.request.urlopen") as urlopen,
+            patch("physicalai_mujoco_so101_plugin.__main__.http.client.HTTPConnection") as factory,
         ):
             _stop_owner_over_http("127.0.0.1", 8080, "my-sim", 1234)
-        request = urlopen.call_args.args[0]
-        assert request.full_url == "http://127.0.0.1:8080/shutdown"
-        assert request.get_method() == "POST"
-        assert urlopen.call_args.kwargs["timeout"] == 5
+        connection = factory.return_value
+        factory.assert_called_once_with("127.0.0.1", 8080, timeout=5)
+        connection.request.assert_called_once_with("POST", "/shutdown")
+        connection.close.assert_called_once_with()
 
     def test_unreachable_is_silent(self) -> None:
-        with patch("urllib.request.urlopen", side_effect=URLError("refused")):
+        connection = MagicMock()
+        connection.request.side_effect = OSError("refused")
+        with patch(
+            "physicalai_mujoco_so101_plugin.__main__.http.client.HTTPConnection",
+            return_value=connection,
+        ):
             _stop_owner_over_http("127.0.0.1", 8080, "my-sim", 1234)
 
     def test_connection_error_is_silent(self) -> None:
-        with patch("urllib.request.urlopen", side_effect=ConnectionError("refused")):
+        connection = MagicMock()
+        connection.request.side_effect = ConnectionError("refused")
+        with patch(
+            "physicalai_mujoco_so101_plugin.__main__.http.client.HTTPConnection",
+            return_value=connection,
+        ):
             _stop_owner_over_http("127.0.0.1", 8080, "my-sim", 1234)
 
     @pytest.mark.parametrize("name,pid", [("other-sim", 1234), ("my-sim", 5678), ("my-sim", None)])
