@@ -9,6 +9,7 @@ import pytest
 
 from physicalai.config import Config, instantiate
 from physicalai.robot import Robot
+from physicalai_mujoco_so101_plugin._urdf import get_urdf_path
 from physicalai_mujoco_so101_plugin.http_server import (
     HomeCommand,
     SetAutoResetCommand,
@@ -243,4 +244,69 @@ def test_viewer_follow_targets_track_bodies_and_the_world_stays_put() -> None:
         scene.update_from_mjdata.assert_called_once_with(robot._data)
     finally:
         robot._viser_scene = None
+        robot.disconnect()
+
+
+def _wrist_camera_pose_in_gripper(model_path: str, camera: str, gripper: str) -> tuple[np.ndarray, np.ndarray]:
+    model = mujoco.MjModel.from_xml_path(model_path)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    gripper_rot = data.xmat[model.body(gripper).id].reshape(3, 3)
+    cam = model.camera(camera).id
+    position = gripper_rot.T @ (data.cam_xpos[cam] - data.xpos[model.body(gripper).id])
+    rotation = gripper_rot.T @ data.cam_xmat[cam].reshape(3, 3)
+    return position, rotation
+
+
+@pytest.mark.parametrize(
+    ("model_path", "camera", "gripper"),
+    [
+        (str(get_scene("single_pick_place").scene_xml_path), "wrist", "gripper"),
+        (str(get_scene("garment_fold").scene_xml_path), "left_wrist", "left_gripper"),
+        (str(get_scene("garment_fold").scene_xml_path), "right_wrist", "right_gripper"),
+    ],
+)
+def test_wrist_cameras_match_the_reference_model(model_path: str, camera: str, gripper: str) -> None:
+    """The arm is defined in three XML files; their wrist cameras must stay identical."""
+    reference = str(get_urdf_path() / "so101/so101.xml")
+    ref_position, ref_rotation = _wrist_camera_pose_in_gripper(reference, "wrist", "gripper")
+    position, rotation = _wrist_camera_pose_in_gripper(model_path, camera, gripper)
+
+    np.testing.assert_allclose(position, ref_position, atol=1e-6)
+    np.testing.assert_allclose(rotation, ref_rotation, atol=1e-6)
+    # The camera housing geoms are on the gripper's +y side.
+    assert position[1] > 0
+
+
+@pytest.mark.parametrize(
+    ("scene_id", "camera", "tip_site"),
+    [
+        ("single_pick_place", "wrist", "gripperframe"),
+        ("garment_fold", "left_wrist", "left_gripperframe"),
+        ("garment_fold", "right_wrist", "right_gripperframe"),
+    ],
+)
+def test_wrist_cameras_see_the_jaws_in_the_lower_half(scene_id: str, camera: str, tip_site: str) -> None:
+    """Frames are streamed as MuJoCo renders them, so camera-frame -y is the bottom of the image."""
+    model = mujoco.MjModel.from_xml_path(str(get_scene(scene_id).scene_xml_path))
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    cam = model.camera(camera).id
+    tip = data.cam_xmat[cam].reshape(3, 3).T @ (data.site_xpos[model.site(tip_site).id] - data.cam_xpos[cam])
+    assert tip[2] < 0  # in front of the camera (MuJoCo cameras look along -z)
+    assert tip[1] < 0  # below the image centre
+
+
+@pytest.mark.parametrize("scene_id", list(list_scenes()))
+def test_scene_xml_camera_reload_keeps_the_compiled_poses(scene_id: str) -> None:
+    """Live XML camera edits are re-applied by hand; unchanged XML must give the compiled poses."""
+    robot = make_robot(scene_id)
+    robot.connect()
+    try:
+        model, data = robot._model, robot._data
+        compiled = data.cam_xmat.copy()
+        robot._update_camera_from_xml()
+        mujoco.mj_forward(model, data)
+        np.testing.assert_allclose(data.cam_xmat, compiled, atol=1e-6)
+    finally:
         robot.disconnect()

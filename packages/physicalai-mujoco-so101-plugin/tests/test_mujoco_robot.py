@@ -975,3 +975,25 @@ class TestHttpServerIntegration:
             assert robot._http_server is None  # noqa: SLF001
         finally:
             robot.disconnect()
+
+
+class TestCameraFrames:
+    @staticmethod
+    def _stream_one_frame(mock_mujoco: MagicMock, rendered: np.ndarray, *, mirror: bool) -> np.ndarray:
+        _ = mock_mujoco
+        robot = MuJoCoSO101(model_path="/fake/model.xml", cameras=[{"name": "wrist", "mirror_horizontal": mirror}])
+        renderer = MagicMock()
+        renderer.render.return_value = rendered
+        with patch("mujoco.Renderer", return_value=renderer):
+            robot.connect()
+        robot._render_cameras()  # noqa: SLF001
+        return robot._frame_buffers["wrist"].snapshot().frame  # noqa: SLF001
+
+    def test_frames_are_streamed_as_rendered(self, mock_mujoco: MagicMock) -> None:
+        """mujoco.Renderer already returns upright images; flipping again turns them upside down."""
+        rendered = np.arange(4 * 6 * 3, dtype=np.uint8).reshape(4, 6, 3)
+        np.testing.assert_array_equal(self._stream_one_frame(mock_mujoco, rendered, mirror=False), rendered)
+
+    def test_mirror_flips_left_to_right_only(self, mock_mujoco: MagicMock) -> None:
+        rendered = np.arange(4 * 6 * 3, dtype=np.uint8).reshape(4, 6, 3)
+        np.testing.assert_array_equal(self._stream_one_frame(mock_mujoco, rendered, mirror=True), rendered[:, ::-1])

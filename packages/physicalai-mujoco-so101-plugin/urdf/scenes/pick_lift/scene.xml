@@ -22,6 +22,6 @@
       <geom name="target_disc" type="cylinder" size="0.05 0.001" rgba="0.2 1.0 0.2 0.35" contype="0" conaffinity="0"/>
     </body>
     <include file="../../so101/so101_robot_bodies.xml"/>
-    <camera name="overview" mode="fixed" pos="0.25 0 0.80" xyaxes="0 -1 0 1 0 0" fovy="58"/>
+    <camera name="overview" mode="fixed" pos="0.25 0 0.80" xyaxes="0 1 0 -1 0 0" fovy="58"/>
   </worldbody>
 </mujoco>

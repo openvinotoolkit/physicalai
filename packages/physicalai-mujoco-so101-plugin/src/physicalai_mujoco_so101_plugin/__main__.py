@@ -260,7 +260,6 @@ def _start(args: argparse.Namespace) -> None:  # noqa: C901, PLR0912, PLR0914, P
                 "width": 640,
                 "height": 480,
                 "fps": 30,
-                "mirror_horizontal": True,
             },
             {
                 "name": "overview",
@@ -268,7 +267,6 @@ def _start(args: argparse.Namespace) -> None:  # noqa: C901, PLR0912, PLR0914, P
                 "width": 640,
                 "height": 480,
                 "fps": 30,
-                "mirror_horizontal": True,
             },
         ]
         if args.bimanual:
@@ -279,7 +277,6 @@ def _start(args: argparse.Namespace) -> None:  # noqa: C901, PLR0912, PLR0914, P
                     "width": 640,
                     "height": 480,
                     "fps": 30,
-                    "mirror_horizontal": True,
                 },
             )
 

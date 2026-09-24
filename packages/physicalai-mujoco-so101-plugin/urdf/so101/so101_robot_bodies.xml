@@ -61,7 +61,8 @@
               <geom name="fixed_jaw_box7" class="collision_gripper" type="box" size="0.001 0.01 0.008" pos="-0.0143 0 -0.053"/>
               <site group="3" name="gripperframe" pos="0.012 -0.000218121 -0.0981274" quat="0 0 1 0"/>
               <body name="camera_mount">
-                <body name="camera_mount_wrist" pos="0 -0.055 -0.045" euler="0.57 0 0">
+                <!-- Same pose as the wrist cameras in so101.xml and so101_dual_robot_bodies.xml: on the camera-housing side (+y). -->
+                <body name="camera_mount_wrist" pos="0 0.055 -0.045" euler="-0.57 0 0">
                   <camera name="wrist" mode="fixed" fovy="75"/>
                 </body>
                 <geom name="camera_box1" class="collision_gripper" type="box" size="0.015 0.015 0.003" pos="-0.0025 0.03 -0.03"/>

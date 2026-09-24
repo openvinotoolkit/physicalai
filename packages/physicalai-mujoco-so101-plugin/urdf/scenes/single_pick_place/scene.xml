@@ -16,7 +16,7 @@
     <include file="../../so101/so101_robot_bodies.xml"/>
     <body name="overview_camera_rig" pos="-0.10 0.1 0.80" euler="-1.5707963267948966 -1.5707963267948966 0">
       <body name="overview_camera_tilt" euler="1.00 0 0">
-        <camera name="overview" mode="fixed" fovy="58"/>
+        <camera name="overview" mode="fixed" euler="0 0 3.141592653589793" fovy="58"/>
       </body>
     </body>
   </worldbody>

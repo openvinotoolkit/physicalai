@@ -397,6 +397,44 @@ uv run pytest --import-mode=importlib packages/physicalai-mujoco-so101-plugin/te
 uv build --package physicalai-mujoco-so101-plugin
 ```
 
+### Changing the simulation and viewer
+
+- **Only the simulation thread touches MuJoCo state.** Viewer and HTTP callbacks only enqueue a `SimCommand` (`http_server.py`), which `MuJoCoSO101._handle_command` applies on the next control cycle. HTTP and viewer readouts go through snapshots (`_http_status`, `_panel_state`) taken under `_state_lock`. To add a control, add a command, handle it in `_handle_command`, then add its HTTP route and its input in `viser_controls.py`.
+- **Viewer inputs ignore server-side events.** Setting a Viser input's `value` from the server fires its `on_update` callbacks with `client=None`. Panel callbacks skip those events, so syncing the panel from sim state never sends a command back.
+- **mjviser is used partly through its internals.** The plugin builds the viewer tabs itself, and does not use mjviser's `create_scene_gui` or `create_visualization_gui`. mjviser's camera tracking follows an arbitrary body by shifting the world, and each call registers another client-connect hook. The plugin also sets `camera_tracking_enabled`, installs a refresh handler, and moves the fixed-body handles itself. mjviser is pinned to `<0.1`; after upgrading it, check a scene switch and camera follow in a browser, because the unit tests mock viser.
+- **Scene switches rebuild the viewer.** `_build_viser_gui` clears every GUI element and scene node, then builds them again for the new model. Viewer preferences that should survive a switch live on `SimControlPanel`, not on the per-build handles.
+- **The robot is defined in three files.** `so101/so101.xml` (used by `examples/run_mujoco_owner.py`), `so101/so101_robot_bodies.xml` (included by the single-arm scenes), and `so101_dual/so101_dual_robot_bodies.xml` (included by the bimanual scenes) each define the arm and its wrist camera. Apply arm or camera changes to all three.
+- **Camera images are streamed as MuJoCo renders them.** `mujoco.Renderer` already returns upright images, so set a camera's orientation in the scene XML rather than flipping frames in code. In a MuJoCo camera frame, `-z` is the viewing direction and `+y` is the top of the image. `mirror_horizontal` exists for setups that need a mirrored feed; the `start` command does not use it.
+
+### Compatibility with Studio
+
+Studio pins `physicalai` to a release (`v0.2.0` at the time of writing), and the plugin runs against that version when it is installed into Studio. Run the tests against it before changing how the plugin uses Runtime APIs:
+
+```bash
+git fetch origin tag v0.2.0
+git worktree add /tmp/physicalai-v0.2.0 v0.2.0
+uv venv -p 3.12 /tmp/physicalai-v0.2.0-venv
+VIRTUAL_ENV=/tmp/physicalai-v0.2.0-venv uv pip install --no-sources "/tmp/physicalai-v0.2.0[transport]" \
+  -e packages/physicalai-mujoco-so101-plugin pytest pytest-asyncio httpx
+/tmp/physicalai-v0.2.0-venv/bin/python -m pytest --import-mode=importlib packages/physicalai-mujoco-so101-plugin/tests
+git worktree remove /tmp/physicalai-v0.2.0
+```
+
+`--no-sources` keeps `uv` from replacing the pinned release with this checkout.
+
+### Checks before a pull request
+
+- Run the repository hooks on the files you changed (`prek run --files <files>`). `prek run --all-files` also reformats unrelated files elsewhere in the repository.
+- The ruff hook runs with `--unsafe-fixes` and can rewrite code, for example by collapsing a lambda into a bound method. Run the tests again after the hooks.
+- Run the security scans used by CI:
+
+  ```bash
+  uvx bandit -c .github/bandit_config.yml -r packages/physicalai-mujoco-so101-plugin/src
+  SEMGREP_RULES="p/default p/cwe-top-25 p/trailofbits p/owasp-top-ten" uvx semgrep scan --metrics=off <changed files>
+  ```
+
+  Semgrep reports two existing `urlopen` findings in `tests/test_http_server.py`; CI only fails on new findings.
+
 The package was imported from [physicalai-plugins PR #36](https://github.com/MarkRedeman/physicalai-plugins/pull/36) at `53bf606ef0f340a2a1821fc42a1ab6f44c33edf7`. See `NOTICE` for provenance and `CHANGELOG.md` for earlier releases. Release publishing uses this repository's shared workflows; the existing PyPI project needs a trusted publisher for `openvinotoolkit/physicalai` before its first release here.
 
 ## Current status and future improvements

@@ -78,7 +78,8 @@ class CameraConfig:
 
     When ``device`` is ``None`` the camera is served only over HTTP
     (MJPEG/snapshot). Setting ``device`` to a v4l2loopback node also
-    publishes frames there via pyfakewebcam.
+    publishes frames there via pyfakewebcam. Frames are streamed as MuJoCo
+    renders them; ``mirror_horizontal`` flips them left to right.
     """
 
     name: str
@@ -623,10 +624,14 @@ class MuJoCoSO101:
             elif xyaxes_str:
                 vals = [float(x) for x in xyaxes_str.split()]
                 if len(vals) == 6:  # noqa: PLR2004
-                    mat = np.empty(9, dtype=np.float64)
-                    mat[:3] = vals[:3]
-                    mat[3:6] = vals[3:]
-                    mat[6:] = np.cross(vals[:3], vals[3:])
+                    # As the MJCF compiler does: normalize x, make y orthogonal
+                    # to it, and use the axes as the rotation matrix's columns.
+                    x_axis = np.asarray(vals[:3], dtype=np.float64)
+                    x_axis /= np.linalg.norm(x_axis)
+                    y_axis = np.asarray(vals[3:], dtype=np.float64)
+                    y_axis -= (y_axis @ x_axis) * x_axis
+                    y_axis /= np.linalg.norm(y_axis)
+                    mat = np.column_stack((x_axis, y_axis, np.cross(x_axis, y_axis))).ravel()
                     quat = np.zeros(4, dtype=np.float64)
                     # pyrefly: ignore [missing-attribute]
                     mujoco.mju_mat2Quat(quat, mat)
@@ -1326,8 +1331,10 @@ class MuJoCoSO101:
             try:
                 # pyrefly: ignore [missing-attribute]
                 renderer.update_scene(self._data, camera=config.name)
+                # mujoco.Renderer already returns the image upright (it flips the
+                # OpenGL read-back itself), so the frame is used as rendered.
                 # pyrefly: ignore [missing-attribute]
-                frame = renderer.render()[:, :, :3][::-1, :, :]
+                frame = renderer.render()[:, :, :3]
             except (RuntimeError, ValueError) as exc:
                 logger.debug("Camera render error for '{}': {}", config.name, exc)
                 continue
