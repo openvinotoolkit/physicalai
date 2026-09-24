@@ -348,7 +348,7 @@ class TestRunDispatcher:
 
         assert exit_code == 0
         inst.assert_called_once_with(cfg)
-        fake.run.assert_called_once_with(duration_s=7)
+        fake.run.assert_called_once_with(duration_s=7, return_to_initial_state=False)
         fake.__enter__.assert_called_once()
         fake.__exit__.assert_called_once()
 
@@ -361,7 +361,7 @@ class TestRunDispatcher:
             inst.return_value = MagicMock(runtime=fake)
             run_module.run(parser, cfg)
 
-        fake.run.assert_called_once_with(duration_s=None)
+        fake.run.assert_called_once_with(duration_s=None, return_to_initial_state=False)
 
     def test_never_forwards_stop_event_to_run(self) -> None:
         """The dispatcher splats ``cfg.run``, so a leaked key would reach run()."""

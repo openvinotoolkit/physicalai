@@ -30,6 +30,7 @@ options:
   -h, --help                    Show this help message and exit.
   --config CONFIG               YAML/JSON runtime config file.
   --run.duration_s SECONDS      Stop after the given duration in seconds.
+  --run.return_to_initial_state Move the robot back to its starting pose on shutdown.
   --verbose                     Enable debug logging during startup and runtime.
 
 Runtime constructor arguments are available under --runtime.* when executing
