@@ -13,7 +13,8 @@ import numpy as np
 from physicalai.inference.constants import IMAGES
 
 from .base import Preprocessor
-from .image_layout import ImageLayout, infer_image_layout
+from .enums import ImageLayout
+from .utils.layout_utils import infer_image_layout
 
 
 class ResizeMode(StrEnum):
