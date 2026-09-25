@@ -15,7 +15,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, Literal, get_args
 
 import numpy as np
 from loguru import logger
@@ -39,6 +39,59 @@ if TYPE_CHECKING:
 # too expensive to do on every control cycle.
 _SCENE_XML_POLL_INTERVAL_S = 1.0
 _DEFAULT_SUCCESS_DWELL_S = 5.0
+
+JointUnit = Literal["normalized", "degrees"]
+"""Units of ``get_observation`` joint positions and ``send_action`` targets."""
+
+
+def _is_gripper(joint_name: str) -> bool:
+    return joint_name == "gripper" or joint_name.endswith("_gripper")
+
+
+def _normalized_span(joint_names: tuple[str, ...]) -> tuple[np.ndarray, np.ndarray]:
+    """Lower bound and width of each joint's normalized range, as the SO101 driver uses them.
+
+    Returns:
+        ``(lower, width)``: body joints span ``[-100, 100]``, grippers ``[0, 100]``.
+    """
+    gripper = np.array([_is_gripper(name) for name in joint_names])
+    return np.where(gripper, 0.0, -100.0), np.where(gripper, 100.0, 200.0)
+
+
+def radians_to_normalized(
+    radians: np.ndarray,
+    joint_limits: np.ndarray,
+    joint_names: tuple[str, ...],
+) -> np.ndarray:
+    """Map joint angles to the SO101 driver's calibrated normalized units.
+
+    The real driver maps each joint's calibrated tick range linearly onto
+    ``[-100, 100]`` (grippers onto ``[0, 100]``) and clamps. The simulation
+    uses the model's joint range as the calibrated range.
+
+    Returns:
+        Normalized positions, clamped to each joint's normalized range.
+    """
+    low, high = joint_limits[:, 0], joint_limits[:, 1]
+    lower, width = _normalized_span(joint_names)
+    fraction = np.clip((radians - low) / (high - low), 0.0, 1.0)
+    return lower + fraction * width
+
+
+def normalized_to_radians(
+    normalized: np.ndarray,
+    joint_limits: np.ndarray,
+    joint_names: tuple[str, ...],
+) -> np.ndarray:
+    """Map SO101 normalized units back to joint angles within the model's joint range.
+
+    Returns:
+        Joint angles in radians, clamped to each joint's range.
+    """
+    low, high = joint_limits[:, 0], joint_limits[:, 1]
+    lower, width = _normalized_span(joint_names)
+    fraction = np.clip((normalized - lower) / width, 0.0, 1.0)
+    return low + fraction * (high - low)
 
 
 def _signal_owner_shutdown() -> None:
@@ -121,8 +174,18 @@ class MuJoCoSO101:
         http_port: int = 0,
         viser_host: str = "127.0.0.1",
         viser_port: int = 9090,
+        unit: JointUnit = "normalized",
     ) -> None:
-        """Initialize a disconnected simulation robot."""
+        """Initialize a disconnected simulation robot.
+
+        ``unit`` selects the units of observed joint positions and action
+        targets. ``"normalized"`` matches the calibrated SO101 driver: body
+        joints in ``[-100, 100]`` and grippers in ``[0, 100]`` across each
+        joint's range in the MuJoCo model, which stands in for a calibrated
+        range. ``"degrees"`` uses joint angles. An unsupported ``unit`` raises
+        ``ValueError``.
+        """
+        self._set_joint_unit(unit)
         self._model_path = model_path
         self._substeps = substeps
         self._enable_viewer = enable_viewer
@@ -144,6 +207,8 @@ class MuJoCoSO101:
         self._http_server: HttpServer | None = None
         self._viser_host = viser_host
         self._ctrl_indices: tuple[int, ...] = ()
+        # (NUM_JOINTS, 2) joint ranges in radians, in JOINT_ORDER.
+        self._joint_limits: np.ndarray | None = None
         self._block_joint_addrs: list[tuple[int, int]] = []
         self._target_body_id: int | None = None
         self._last_sim_time: float | None = None
@@ -162,6 +227,17 @@ class MuJoCoSO101:
         self._init_control_state()
 
         self._apply_scene_params(scene_config)
+
+    def _set_joint_unit(self, unit: JointUnit) -> None:
+        """Validate and adopt the joint unit.
+
+        Raises:
+            ValueError: If ``unit`` is not supported.
+        """
+        if unit not in get_args(JointUnit):
+            msg = f"Unsupported unit {unit!r}; expected one of {get_args(JointUnit)}"
+            raise ValueError(msg)
+        self._unit: JointUnit = unit
 
     def _init_control_state(self) -> None:
         """Initialize operator-control state that is not part of the construction recipe."""
@@ -230,7 +306,8 @@ class MuJoCoSO101:
         # pyrefly: ignore [missing-attribute]
         model = mujoco.MjModel.from_xml_path(self._model_path)
         ctrl_indices = self._actuator_indices_for_joint_order(model)
-        if ctrl_indices is None:
+        joint_limits = self._joint_limits_for_joint_order(model)
+        if ctrl_indices is None or joint_limits is None:
             msg = f"Model {self._model_path!r} does not provide the joints/actuators for {type(self).__name__}"
             raise ValueError(msg)
         # pyrefly: ignore [missing-attribute]
@@ -243,6 +320,7 @@ class MuJoCoSO101:
         self._model = model
         self._data = data
         self._ctrl_indices = ctrl_indices
+        self._joint_limits = joint_limits
         self._last_sim_time = float(self._data.time)
         self._init_block_joint_addrs()
         self._init_episode_auto_reset()
@@ -284,6 +362,7 @@ class MuJoCoSO101:
             self._episode_auto_reset = None
             self._last_sim_time = None
             self._ctrl_indices = ()
+            self._joint_limits = None
 
             self._close_viewer()
             self._model = None
@@ -732,7 +811,8 @@ class MuJoCoSO101:
         # A scene built for a different arm count would leave get_observation and
         # send_action indexing joints/actuators the model does not have.
         ctrl_indices = self._actuator_indices_for_joint_order(new_model)
-        if ctrl_indices is None:
+        joint_limits = self._joint_limits_for_joint_order(new_model)
+        if ctrl_indices is None or joint_limits is None:
             logger.error(
                 "Scene '{}' does not provide the {} joints {} drives; keeping scene '{}'",
                 scene_id,
@@ -760,6 +840,7 @@ class MuJoCoSO101:
             self._model = new_model
             self._data = new_data
             self._ctrl_indices = ctrl_indices
+            self._joint_limits = joint_limits
             self._held_objects.clear()
 
             self._native_viewer_set_model_data(new_model, new_data)
@@ -1498,9 +1579,16 @@ class MuJoCoSO101:
         velocities = np.empty(self.NUM_JOINTS, dtype=np.float64)
 
         for i, name in enumerate(self.JOINT_ORDER):
-            pos, vel = self._read_joint_state(name)
-            positions[i] = np.degrees(pos)
-            velocities[i] = np.degrees(vel)
+            positions[i], velocities[i] = self._read_joint_state(name)
+
+        if self._unit == "normalized":
+            limits = self._require_joint_limits()
+            _, width = _normalized_span(self.JOINT_ORDER)
+            velocities *= width / (limits[:, 1] - limits[:, 0])
+            positions = radians_to_normalized(positions, limits, self.JOINT_ORDER)
+        else:
+            positions = np.degrees(positions)
+            velocities = np.degrees(velocities)
 
         return MuJoCoSO101Observation(
             joint_positions=positions.astype(np.float32),
@@ -1509,7 +1597,10 @@ class MuJoCoSO101:
         )
 
     def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None:  # noqa: ARG002
-        """Apply joint-angle targets to the simulation actuators.
+        """Apply joint targets, in this robot's ``unit``, to the simulation actuators.
+
+        Normalized targets are clamped to the normalized range, as on the
+        SO101 driver.
 
         Raises:
             ConnectionError: If the robot is not connected.
@@ -1523,9 +1614,45 @@ class MuJoCoSO101:
             msg = f"Expected action shape ({self.NUM_JOINTS},), got {action.shape}"
             raise ValueError(msg)
 
+        if self._unit == "normalized":
+            targets = normalized_to_radians(
+                np.asarray(action, dtype=np.float64),
+                self._require_joint_limits(),
+                self.JOINT_ORDER,
+            )
+        else:
+            targets = np.radians(np.asarray(action, dtype=np.float64))
         for i in range(self.NUM_JOINTS):
             # pyrefly: ignore [missing-attribute]
-            self._data.ctrl[self._ctrl_indices[i]] = float(np.radians(action[i]))
+            self._data.ctrl[self._ctrl_indices[i]] = float(targets[i])
+
+    def _require_joint_limits(self) -> np.ndarray:
+        if self._joint_limits is None:
+            msg = "Robot is not connected. Call connect() first."
+            raise ConnectionError(msg)
+        return self._joint_limits
+
+    def _joint_limits_for_joint_order(self, model: object) -> np.ndarray | None:
+        """Read each public joint's range, the simulated counterpart of a calibrated range.
+
+        Returns:
+            ``(NUM_JOINTS, 2)`` lower/upper limits in radians, or ``None`` if a
+            joint is missing or has no range.
+        """
+        import mujoco  # noqa: PLC0415
+
+        limits = np.empty((self.NUM_JOINTS, 2), dtype=np.float64)
+        for i, name in enumerate(self.JOINT_ORDER):
+            joint_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name))
+            if joint_id < 0:
+                return None
+            # pyrefly: ignore [missing-attribute]
+            low, high = (float(value) for value in model.jnt_range[joint_id])
+            if not high > low:
+                logger.error("Joint {!r} has no range; normalized units need one", name)
+                return None
+            limits[i] = (low, high)
+        return limits
 
     def render_camera(self, camera_name: str, width: int, height: int) -> np.ndarray:
         """Render an RGB image from a named camera.
@@ -1584,12 +1711,14 @@ class MuJoCoSO101:
             "_http_port": self._http_port,
             "_viser_host": self._viser_host,
             "_viser_port": self._viser_port,
+            "_unit": self._unit,
         }
 
     def __setstate__(self, state: dict) -> None:
         """Restore serializable construction state."""
         self._model_path = state["_model_path"]
         self._substeps = state["_substeps"]
+        self._set_joint_unit(state.get("_unit", "normalized"))
         self._enable_viewer = state.get("_enable_viewer", False)
         self._cameras = [CameraConfig(**cam) for cam in state.get("_cameras", [])]
         self._free_joints = state.get("_free_joints", self.DEFAULT_BLOCK_FREEJOINTS)
@@ -1630,6 +1759,7 @@ class MuJoCoSO101:
         self._rng = np.random.default_rng()
         self._pending_scene_switch = False
         self._ctrl_indices = ()
+        self._joint_limits = None
         self._scene_xml_paths = None
         self._scene_xml_mtimes = {}
         self._scene_xml_next_check = 0.0

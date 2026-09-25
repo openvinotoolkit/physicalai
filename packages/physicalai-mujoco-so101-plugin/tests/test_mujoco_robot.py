@@ -12,7 +12,7 @@ import mujoco
 import pytest
 from physicalai.config import Config
 
-from physicalai_mujoco_so101_plugin.constants import BIMANUAL_SO101_JOINT_ORDER, SO101_JOINT_ORDER
+from physicalai_mujoco_so101_plugin.constants import BIMANUAL_SO101_JOINT_ORDER, JOINT_LIMITS_DEG, SO101_JOINT_ORDER
 from physicalai_mujoco_so101_plugin.http_server import (
     HomeCommand,
     ResetCommand,
@@ -22,7 +22,16 @@ from physicalai_mujoco_so101_plugin.http_server import (
     ShutdownCommand,
     SwitchSceneCommand,
 )
-from physicalai_mujoco_so101_plugin.mujoco_robot import BiMuJoCoSO101, MuJoCoSO101, MuJoCoSO101Observation
+from physicalai_mujoco_so101_plugin.mujoco_robot import (
+    BiMuJoCoSO101,
+    MuJoCoSO101,
+    MuJoCoSO101Observation,
+    normalized_to_radians,
+    radians_to_normalized,
+)
+
+# The SO-101 model's joint ranges (radians), in SO101_JOINT_ORDER.
+SO101_JOINT_RANGES = np.radians([JOINT_LIMITS_DEG[name] for name in SO101_JOINT_ORDER])
 
 
 @pytest.fixture
@@ -54,6 +63,7 @@ def mock_mujoco() -> MagicMock:
         mock_model.stat.extent = 1.0
         mock_model.jnt_qposadr = [0, 1, 2, 3, 4, 5]
         mock_model.jnt_dofadr = [0, 1, 2, 3, 4, 5]
+        mock_model.jnt_range = SO101_JOINT_RANGES.copy()
         mock_from_xml.return_value = mock_model
 
         mock_data = MagicMock()
@@ -94,6 +104,7 @@ def mock_mujoco_bimanual() -> MagicMock:
         mock_model.stat.extent = 1.0
         mock_model.jnt_qposadr = list(range(12))
         mock_model.jnt_dofadr = list(range(12))
+        mock_model.jnt_range = np.tile(SO101_JOINT_RANGES, (2, 1))
         mock_from_xml.return_value = mock_model
 
         mock_data = MagicMock()
@@ -181,7 +192,8 @@ class TestMuJoCoSO101Connect:
         assert robot._ctrl_indices == tuple(reversed(range(6)))  # noqa: SLF001
         action = np.arange(6, dtype=np.float32)
         robot.send_action(action)
-        np.testing.assert_allclose(robot._data.ctrl[::-1], np.radians(action))  # noqa: SLF001
+        expected = normalized_to_radians(action, SO101_JOINT_RANGES, SO101_JOINT_ORDER)
+        np.testing.assert_allclose(robot._data.ctrl[::-1], expected)  # noqa: SLF001
 
     @pytest.mark.parametrize(
         "actuator_trntype,actuator_trnid",
@@ -232,7 +244,7 @@ class TestMuJoCoSO101Connect:
 
 
 class TestMuJoCoSO101ObservationReadBack:
-    def test_get_observation_returns_degrees(self, mock_mujoco: MagicMock) -> None:
+    def test_get_observation_shapes(self, mock_mujoco: MagicMock) -> None:
         _ = mock_mujoco
         robot = MuJoCoSO101(model_path="/fake/model.xml")
         robot.connect()
@@ -298,6 +310,7 @@ class TestMuJoCoSO101Pickling:
             "_http_port": 0,
             "_viser_host": "127.0.0.1",
             "_viser_port": 9090,
+            "_unit": "normalized",
         }
 
     def test_getstate_after_connect(self, mock_mujoco: MagicMock) -> None:
@@ -997,3 +1010,86 @@ class TestCameraFrames:
     def test_mirror_flips_left_to_right_only(self, mock_mujoco: MagicMock) -> None:
         rendered = np.arange(4 * 6 * 3, dtype=np.uint8).reshape(4, 6, 3)
         np.testing.assert_array_equal(self._stream_one_frame(mock_mujoco, rendered, mirror=True), rendered[:, ::-1])
+
+
+def _driver_normalized(fraction: float, *, gripper: bool) -> float:
+    """What the SO101 driver reports for a joint at ``fraction`` of its calibrated range."""
+    return fraction * 100.0 if gripper else fraction * 200.0 - 100.0
+
+
+class TestJointUnits:
+    @pytest.mark.parametrize("fraction", [0.0, 0.25, 0.5, 0.9, 1.0])
+    def test_normalized_matches_the_so101_driver_mapping(self, fraction: float) -> None:
+        low, high = SO101_JOINT_RANGES[:, 0], SO101_JOINT_RANGES[:, 1]
+        radians = low + fraction * (high - low)
+
+        normalized = radians_to_normalized(radians, SO101_JOINT_RANGES, SO101_JOINT_ORDER)
+
+        expected = [_driver_normalized(fraction, gripper=name == "gripper") for name in SO101_JOINT_ORDER]
+        np.testing.assert_allclose(normalized, expected, atol=1e-9)
+        np.testing.assert_allclose(
+            normalized_to_radians(normalized, SO101_JOINT_RANGES, SO101_JOINT_ORDER), radians, atol=1e-12
+        )
+
+    def test_bimanual_grippers_use_the_gripper_range(self) -> None:
+        limits = np.tile(SO101_JOINT_RANGES, (2, 1))
+        normalized = radians_to_normalized(limits[:, 0], limits, BIMANUAL_SO101_JOINT_ORDER)
+        grippers = [i for i, name in enumerate(BIMANUAL_SO101_JOINT_ORDER) if name.endswith("gripper")]
+
+        assert grippers == [5, 11]
+        np.testing.assert_allclose(normalized[grippers], 0.0)
+        np.testing.assert_allclose(np.delete(normalized, grippers), -100.0)
+
+    def test_values_outside_the_range_are_clamped(self) -> None:
+        radians = SO101_JOINT_RANGES[:, 1] + 0.2
+        np.testing.assert_allclose(radians_to_normalized(radians, SO101_JOINT_RANGES, SO101_JOINT_ORDER), 100.0)
+
+        targets = normalized_to_radians(np.full(6, -150.0), SO101_JOINT_RANGES, SO101_JOINT_ORDER)
+        np.testing.assert_allclose(targets, SO101_JOINT_RANGES[:, 0])
+
+    def test_observation_and_action_use_normalized_units(self, mock_mujoco: MagicMock) -> None:
+        _ = mock_mujoco
+        robot = MuJoCoSO101(model_path="/fake/model.xml")
+        robot.connect()
+        qpos, qvel = robot._data.qpos.copy(), robot._data.qvel.copy()  # noqa: SLF001
+
+        obs = robot.get_observation()
+
+        np.testing.assert_allclose(
+            obs.joint_positions, radians_to_normalized(qpos, SO101_JOINT_RANGES, SO101_JOINT_ORDER), rtol=1e-6
+        )
+        span = SO101_JOINT_RANGES[:, 1] - SO101_JOINT_RANGES[:, 0]
+        units = np.array([100.0 if name == "gripper" else 200.0 for name in SO101_JOINT_ORDER])
+        np.testing.assert_allclose(obs.sensor_data["velocities"], qvel * units / span, rtol=1e-6)
+
+        robot.send_action(obs.joint_positions)
+        np.testing.assert_allclose(robot._data.ctrl, qpos, atol=1e-5)  # noqa: SLF001
+
+    def test_degrees_unit_keeps_joint_angles(self, mock_mujoco: MagicMock) -> None:
+        _ = mock_mujoco
+        robot = MuJoCoSO101(model_path="/fake/model.xml", unit="degrees")
+        robot.connect()
+
+        obs = robot.get_observation()
+        np.testing.assert_allclose(obs.joint_positions, np.degrees(robot._data.qpos), rtol=1e-6)  # noqa: SLF001
+
+        action = np.array([10.0, 20.0, -5.0, 0.0, 15.0, 30.0])
+        robot.send_action(action)
+        np.testing.assert_allclose(robot._data.ctrl, np.radians(action))  # noqa: SLF001
+
+    def test_non_default_unit_is_part_of_the_recipe(self) -> None:
+        robot = MuJoCoSO101(model_path="/fake/model.xml", unit="degrees")
+
+        assert Config.from_instance(robot)["init_args"]["unit"] == "degrees"
+
+    def test_rejects_an_unknown_unit(self) -> None:
+        with pytest.raises(ValueError, match="Unsupported unit"):
+            MuJoCoSO101(model_path="/fake/model.xml", unit="ticks")  # type: ignore[arg-type]
+
+    def test_connect_rejects_a_joint_without_a_range(self, mock_mujoco: MagicMock) -> None:
+        mock_mujoco.jnt_range[1] = (0.0, 0.0)
+        robot = MuJoCoSO101(model_path="/fake/model.xml")
+
+        with pytest.raises(ValueError, match="joints/actuators"):
+            robot.connect()
+

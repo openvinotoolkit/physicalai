@@ -73,6 +73,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="MuJoCo simulation steps per control cycle (default: 10, real-time at 50 Hz with dt=0.002)",
     )
     start.add_argument(
+        "--unit",
+        choices=["normalized", "degrees"],
+        default="normalized",
+        help=(
+            "Joint units for observations and actions (default: normalized, like the calibrated SO101 driver: "
+            "body joints -100..100 and gripper 0..100 across each joint's range)"
+        ),
+    )
+    start.add_argument(
         "--bimanual",
         action="store_true",
         default=False,
@@ -283,6 +292,7 @@ def _start(args: argparse.Namespace) -> None:  # noqa: C901, PLR0912, PLR0914, P
     robot_kwargs = {
         "model_path": model_path,
         "substeps": args.substeps,
+        "unit": args.unit,
         "enable_viewer": not args.no_gui,
         "cameras": cameras,
         "owner_name": owner_name,

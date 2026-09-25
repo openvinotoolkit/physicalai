@@ -310,3 +310,35 @@ def test_scene_xml_camera_reload_keeps_the_compiled_poses(scene_id: str) -> None
         np.testing.assert_allclose(data.cam_xmat, compiled, atol=1e-6)
     finally:
         robot.disconnect()
+
+
+def _urdf_joint_limits(urdf_name: str) -> dict[str, tuple[float, float]]:
+    from defusedxml import ElementTree
+
+    root = ElementTree.parse(get_urdf_path() / urdf_name).getroot()
+    return {
+        joint.get("name"): (float(limit.get("lower")), float(limit.get("upper")))
+        for joint in root.iter("joint")
+        if (limit := joint.find("limit")) is not None
+    }
+
+
+@pytest.mark.parametrize(
+    ("model_path", "urdf_name"),
+    [
+        *[
+            (str(get_scene(scene_id).scene_xml_path), "so101/so101_new_calib.urdf")
+            for scene_id in list_scenes_for_arms(1)
+        ],
+        *[(str(get_scene(scene_id).scene_xml_path), "so101/so101_dual.urdf") for scene_id in list_scenes_for_arms(2)],
+        (str(get_urdf_path() / "so101/so101.xml"), "so101/so101_new_calib.urdf"),
+    ],
+)
+def test_joint_and_control_ranges_match_the_urdf(model_path: str, urdf_name: str) -> None:
+    """The URDF is the source of truth; normalized units span these ranges."""
+    model = mujoco.MjModel.from_xml_path(model_path)
+    limits = _urdf_joint_limits(urdf_name)
+
+    for name, (lower, upper) in limits.items():
+        np.testing.assert_allclose(model.jnt_range[model.joint(name).id], (lower, upper), atol=1e-5, err_msg=name)
+        np.testing.assert_allclose(model.actuator(name).ctrlrange, (lower, upper), atol=1e-4, err_msg=name)

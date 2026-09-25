@@ -199,9 +199,24 @@ Common options:
 - `--v4l2`: also publish cameras to v4l2loopback devices (requires `modprobe v4l2loopback`)
 - `--rate-hz <float>`: owner loop frequency
 - `--substeps <int>`: MuJoCo steps per control cycle
+- `--unit <normalized|degrees>`: joint units for observations and actions (default `normalized`, see [Joint units](#joint-units))
 - `--idle-timeout <seconds>`: seconds with zero subscribers before self-exit
   (default `10` without HTTP, disabled when HTTP is enabled so stream viewers keep the sim alive)
 - `--allow-remote`: allow non-loopback zenoh connections
+
+## Joint units
+
+The simulation reports and accepts joint values in the same units as the real SO-101 (`physicalai.robot.SO101`):
+
+- Body joints go from `-100` to `100`, and the gripper from `0` to `100`.
+- On a real robot, calibration sets these ranges: `-100` and `100` are the two ends you moved each joint to while calibrating, and `0` is halfway between them.
+- The simulation has no calibration, so it uses the joint limits from the robot's URDF (`urdf/so101/so101_new_calib.urdf`) instead: `-100` and `100` are each joint's limits, and `0` is halfway between them. The MuJoCo models use the same limits.
+
+This lets a real leader arm drive the simulation, and makes simulated datasets use the same values as real ones.
+
+The match is not exact. If a joint was moved further one way than the other during calibration, its `0` is not at the joint's straight position, so the same value points the real joint and the simulated joint in slightly different directions. A real arm's calibrated range also differs from the URDF limits by a few degrees because of assembly tolerances, which adds to the difference towards the ends of a joint's range.
+
+Use `--unit degrees` (or `unit="degrees"` on `MuJoCoSO101`) to get joint angles in degrees instead.
 
 ## Cameras over HTTP (default)
 
