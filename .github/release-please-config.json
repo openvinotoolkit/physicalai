@@ -55,8 +55,7 @@
     "packages/physicalai-mujoco-so101-plugin": {
       "release-type": "python",
       "package-name": "physicalai-mujoco-so101-plugin",
-      "changelog-path": "CHANGELOG.md",
-      "release-as": "0.4.0"
+      "changelog-path": "CHANGELOG.md"
     }
   }
 }

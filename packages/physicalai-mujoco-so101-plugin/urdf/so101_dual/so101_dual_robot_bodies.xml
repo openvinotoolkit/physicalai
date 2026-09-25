@@ -55,9 +55,9 @@
               <geom name="left_fixed_jaw_box7" class="collision_gripper" type="box" size="0.001 0.01 0.008" pos="-0.0143 0 -0.053" />
               <site group="3" name="left_gripperframe" pos="0.012 -0.000218121 -0.0981274" quat="0 0 1 0" />
               <body name="left_camera_mount">
-                <camera name="left_wrist" mode="fixed" pos="0 0.055 -0.045" euler="-0.57 0 0" fovy="75" />
-                <geom name="left_camera_box1" class="collision_gripper" type="box" size="0.015 0.015 0.003" pos="-0.0025 0.03 -0.03" />
-                <geom name="left_camera_box2" class="collision_gripper" type="box" size="0.021 0.021 0.003" pos="-0.001 0.06 -0.04" euler="-0.55 0 0" />
+                <camera name="left_wrist" mode="fixed" pos="0 -0.055 -0.045" euler="0.57 0 3.141592653589793" fovy="75" />
+                <geom name="left_camera_box1" class="collision_gripper" type="box" size="0.015 0.015 0.003" pos="0.0025 -0.03 -0.03" />
+                <geom name="left_camera_box2" class="collision_gripper" type="box" size="0.021 0.021 0.003" pos="0.001 -0.06 -0.04" euler="0.55 0 0" />
               </body>
               <body name="left_moving_jaw_so101_v1" pos="0.0202 0.0188 -0.0234" quat="0.707107 0.707107 -1.85362e-08 1.85362e-08">
                 <joint axis="0 0 1" name="left_gripper" type="hinge" range="-0.17453297762778586 1.7453291995659765" class="sts3215" />
@@ -130,9 +130,9 @@
               <geom name="right_fixed_jaw_box7" class="collision_gripper" type="box" size="0.001 0.01 0.008" pos="-0.0143 0 -0.053" />
               <site group="3" name="right_gripperframe" pos="0.012 -0.000218121 -0.0981274" quat="0 0 1 0" />
               <body name="right_camera_mount">
-                <camera name="right_wrist" mode="fixed" pos="0 0.055 -0.045" euler="-0.57 0 0" fovy="75" />
-                <geom name="right_camera_box1" class="collision_gripper" type="box" size="0.015 0.015 0.003" pos="-0.0025 0.03 -0.03" />
-                <geom name="right_camera_box2" class="collision_gripper" type="box" size="0.021 0.021 0.003" pos="-0.001 0.06 -0.04" euler="-0.55 0 0" />
+                <camera name="right_wrist" mode="fixed" pos="0 -0.055 -0.045" euler="0.57 0 3.141592653589793" fovy="75" />
+                <geom name="right_camera_box1" class="collision_gripper" type="box" size="0.015 0.015 0.003" pos="0.0025 -0.03 -0.03" />
+                <geom name="right_camera_box2" class="collision_gripper" type="box" size="0.021 0.021 0.003" pos="0.001 -0.06 -0.04" euler="0.55 0 0" />
               </body>
               <body name="right_moving_jaw_so101_v1" pos="0.0202 0.0188 -0.0234" quat="0.707107 0.707107 -1.85362e-08 1.85362e-08">
                 <joint axis="0 0 1" name="right_gripper" type="hinge" range="-0.17453297762778586 1.7453291995659765" class="sts3215" />

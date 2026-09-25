@@ -274,8 +274,8 @@ def test_wrist_cameras_match_the_reference_model(model_path: str, camera: str, g
 
     np.testing.assert_allclose(position, ref_position, atol=1e-6)
     np.testing.assert_allclose(rotation, ref_rotation, atol=1e-6)
-    # The camera housing geoms are on the gripper's +y side.
-    assert position[1] > 0
+    # As on the physical SO-101, the wrist camera is on the gripper's -y side.
+    assert position[1] < 0
 
 
 @pytest.mark.parametrize(
