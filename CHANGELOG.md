@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.3.0](https://github.com/openvinotoolkit/physicalai/compare/v0.2.0...v0.3.0) (2026-09-25)
+
+
+### ✨ Features
+
+* **inference:** support per-joint scales in joint frame processors ([#293](https://github.com/openvinotoolkit/physicalai/issues/293)) ([0ad4548](https://github.com/openvinotoolkit/physicalai/commit/0ad4548e1455a9b6a79aa870ae2529f411739433))
+
+
+### 🐛 Bug Fixes
+
+* **inference:** support explicit image layouts with backward compatibility ([#285](https://github.com/openvinotoolkit/physicalai/issues/285)) ([92f2462](https://github.com/openvinotoolkit/physicalai/commit/92f246255ee64004613ecb8471950f273819d2b7))
+
+
+### ♻️ Code Refactoring
+
+* organize layout utils ([#291](https://github.com/openvinotoolkit/physicalai/issues/291)) ([9ada068](https://github.com/openvinotoolkit/physicalai/commit/9ada0689501b575f2de56016b7cd5c364a225ef6))
+
+
+### 📚 Documentation
+
+* update stale references ([#289](https://github.com/openvinotoolkit/physicalai/issues/289)) ([fab1c2f](https://github.com/openvinotoolkit/physicalai/commit/fab1c2f20ab98f31feb47c992fe9ffdda87ade7a))
+
 ## [0.2.0](https://github.com/openvinotoolkit/physicalai/compare/v0.1.1...v0.2.0) (2026-09-21)
 
 
