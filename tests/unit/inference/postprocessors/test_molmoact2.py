@@ -33,6 +33,23 @@ class TestMolmoAct2Postprocessor:
         np.testing.assert_allclose(result[ACTION], [[[2.0, 1.5, 0.0]]])
         assert "actions" not in result
 
+    def test_denormalizes_before_scaled_joint_transform(self) -> None:
+        processor = MolmoAct2Postprocessor(
+            action_key="actions",
+            action_stats={"q01": [0.0, 0.0], "q99": [2.0, 180.0], "mask": [True, True]},
+        )
+        joint_transform = JointFramePostprocessor(
+            feature=ACTION,
+            signs=[1.0, -1.0],
+            offsets=[0.0, 90.0],
+            scales=[2.0, 0.5],
+        )
+
+        # Checkpoint degrees [1, 180] -> runtime units [1 / 2, -(180 - 90) / 0.5] = [0.5, -180].
+        result = joint_transform(processor({"actions": np.array([[[0.0, 1.0]]], dtype=np.float32)}))
+
+        np.testing.assert_allclose(result[ACTION], [[[0.5, -180.0]]])
+
     def test_identity_without_stats(self) -> None:
         processor = MolmoAct2Postprocessor(action_key=ACTION)
         result = processor({ACTION: np.array([[-0.5, 0.5]], dtype=np.float32)})
