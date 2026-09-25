@@ -44,8 +44,8 @@ def app_context(frame: np.ndarray) -> dict:
     status = {
         "connected": True,
         "scene": "single_pick_place",
-        "scenes": ["garment_fold", "pick_lift", "single_pick_place"],
-        "compatible_scenes": ["pick_lift", "single_pick_place"],
+        "scenes": ["garment_fold", "single_pick_place", "yahtzee"],
+        "compatible_scenes": ["single_pick_place", "yahtzee"],
         "seed": None,
         "episode": {"enabled": True, "active": True, "phase": "idle"},
         "objects": [{"joint": "block1:joint", "position": [0.2, 0.0, 0.02], "wxyz": [1.0, 0.0, 0.0, 0.0]}],
@@ -166,16 +166,16 @@ class TestAppEndpoints:
         assert response.status_code == 200
         assert response.json() == {
             "current": "single_pick_place",
-            "available": ["garment_fold", "pick_lift", "single_pick_place"],
-            "compatible": ["pick_lift", "single_pick_place"],
+            "available": ["garment_fold", "single_pick_place", "yahtzee"],
+            "compatible": ["single_pick_place", "yahtzee"],
         }
 
     def test_switch_scene_enqueues_command(self, client: TestClient, app_context: dict) -> None:
-        response = client.post("/scenes/pick_lift")
+        response = client.post("/scenes/yahtzee")
         assert response.status_code == 200
-        assert response.json() == {"status": "queued", "scene": "pick_lift"}
+        assert response.json() == {"status": "queued", "scene": "yahtzee"}
         command = app_context["commands"].get_nowait()
-        assert command == SwitchSceneCommand(scene_id="pick_lift")
+        assert command == SwitchSceneCommand(scene_id="yahtzee")
 
     def test_switch_scene_unknown(self, client: TestClient) -> None:
         assert client.post("/scenes/nope").status_code == 404

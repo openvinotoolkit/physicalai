@@ -194,18 +194,6 @@ def _yahtzee_reset(model: object, data: object, rng: np.random.Generator) -> Non
 # ---------------------------------------------------------------------------
 
 _SCENES: dict[str, SceneConfig] = {
-    "pick_lift": SceneConfig(
-        scene_id="pick_lift",
-        display_name="Pick & Lift",
-        description="Three colored cubes and a target disc on a tabletop",
-        scene_xml_relpath="scenes/pick_lift/scene.xml",
-        free_joints=("block1:joint", "block2:joint", "block3:joint"),
-        target_bodies=("target",),
-        spawn_center=(0.24, 0.0),
-        spawn_min_r=0.08,
-        spawn_max_r=0.34,
-        spawn_angle_half_deg=125.0,
-    ),
     "single_pick_place": SceneConfig(
         scene_id="single_pick_place",
         display_name="Single Pick & Place",
@@ -219,20 +207,6 @@ _SCENES: dict[str, SceneConfig] = {
         spawn_max_r=0.14,
         spawn_angle_half_deg=50.0,
         target_min_sep=0.11,
-    ),
-    "pick_place": SceneConfig(
-        scene_id="pick_place",
-        display_name="Pick & Place",
-        description="Two objects (cube + cylinder) and a target zone",
-        scene_xml_relpath="scenes/pick_place/scene.xml",
-        free_joints=("obj1:joint", "obj2:joint"),
-        target_bodies=("target_zone",),
-        spawn_center=(0.26, 0.0),
-        spawn_min_r=0.06,
-        spawn_max_r=0.30,
-        spawn_angle_half_deg=135.0,
-        block_min_sep=0.10,
-        target_min_sep=0.08,
     ),
     "yahtzee": SceneConfig(
         scene_id="yahtzee",
@@ -259,9 +233,7 @@ _SCENES: dict[str, SceneConfig] = {
 }
 
 _RESET_FUNCTIONS: dict[str, ResetFn] = {
-    "pick_lift": _freejoint_spawn_reset("pick_lift"),
     "single_pick_place": _freejoint_spawn_reset("single_pick_place"),
-    "pick_place": _freejoint_spawn_reset("pick_place"),
     "yahtzee": _yahtzee_reset,
     "garment_fold": _garment_fold_reset,
 }

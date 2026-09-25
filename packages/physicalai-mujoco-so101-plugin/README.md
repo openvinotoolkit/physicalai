@@ -188,7 +188,7 @@ Common options:
 - `--name <robot-name>`: transport name (must match Studio payload)
 - `--bimanual`: run two arms with the `garment_fold` scene by default
 - `--model <path>`: custom XML/URDF path to load initially (bypasses default scene resolution)
-- `--scene <name>`: scene name (`single_pick_place`, `pick_lift`, `pick_place`, or `yahtzee`, default `single_pick_place`)
+- `--scene <name>`: scene name (`single_pick_place` or `yahtzee`; with `--bimanual`, `garment_fold`). Default `single_pick_place`
 - `--no-gui`: disable all viewers
 - `--viser-port <port>`: browser viewer port (default `9090`)
 - `--viser-host <host>`: browser viewer bind host (default `127.0.0.1`; use `0.0.0.0` to expose it remotely)
@@ -222,7 +222,7 @@ The HTTP server exposes the same controls as the viewer's Simulation tab:
 curl http://127.0.0.1:8080/scenes
 
 # Switch to another scene
-curl -X POST http://127.0.0.1:8080/scenes/pick_place
+curl -X POST http://127.0.0.1:8080/scenes/yahtzee
 
 # Reset/randomize the current scene, or move the arm to its home pose
 curl -X POST http://127.0.0.1:8080/reset
@@ -359,18 +359,16 @@ These warnings are typically non-fatal on Wayland and can be ignored if simulati
 
 The plugin ships with built-in scenes that provide different environments for the robot:
 
-| Scene ID                      | Description                             | Free objects    | Target      |
-| ----------------------------- | --------------------------------------- | --------------- | ----------- |
-| `single_pick_place` (default) | One block and a target disc             | 1 cube          | target disc |
-| `pick_lift`                   | Three colored cubes and a target disc   | 3 cubes         | target disc |
-| `pick_place`                  | A cube, a cylinder, and a target zone   | cube + cylinder | target zone |
-| `yahtzee`                     | Six dice and a cup                      | 6 dice          | cup         |
-| `garment_fold`                | Bimanual SO-101 with a flexible garment | garment         | none        |
+| Scene ID                      | Description                             | Free objects | Target      |
+| ----------------------------- | --------------------------------------- | ------------ | ----------- |
+| `single_pick_place` (default) | One block and a target disc             | 1 cube       | target disc |
+| `yahtzee`                     | Six dice and a cup                      | 6 dice       | cup         |
+| `garment_fold`                | Bimanual SO-101 with a flexible garment | garment      | none        |
 
 Start with a specific scene:
 
 ```bash
-uv run --no-sync physicalai-mujoco-so101 start --scene pick_place
+uv run --no-sync physicalai-mujoco-so101 start --scene yahtzee
 ```
 
 ### Switching scenes at runtime

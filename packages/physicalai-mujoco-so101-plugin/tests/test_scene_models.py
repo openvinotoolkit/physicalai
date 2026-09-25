@@ -48,7 +48,7 @@ def test_scene_connect_reset_and_reconnect(scene_id: str) -> None:
 
 
 def test_switch_initializes_cube_and_keeps_target_fixed() -> None:
-    robot = make_robot("pick_lift")
+    robot = make_robot("yahtzee")
     robot.connect()
     try:
         scene = get_scene("single_pick_place")
@@ -80,7 +80,7 @@ def test_failed_switch_reset_preserves_live_scene(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr("physicalai_mujoco_so101_plugin.scene_registry.get_reset_fn", lambda _: fail)
     try:
         with pytest.raises(ValueError, match="reset failed"):
-            robot._switch_to_scene("pick_lift")
+            robot._switch_to_scene("yahtzee")
         assert robot._model is model
         assert robot._current_scene_id == "single_pick_place"
         assert np.isfinite(robot.get_observation().joint_positions).all()
@@ -156,11 +156,11 @@ def test_object_pose_holds_while_dragged_and_falls_when_released() -> None:
 
 
 def test_http_status_lists_every_free_object() -> None:
-    robot = make_robot("pick_lift")
+    robot = make_robot("yahtzee")
     robot.connect()
     try:
         joints = [obj["joint"] for obj in robot._http_status()["objects"]]
-        assert joints == list(get_scene("pick_lift").free_joints)
+        assert joints == list(get_scene("yahtzee").free_joints)
     finally:
         robot.disconnect()
 
@@ -173,8 +173,8 @@ def test_fixed_seed_repeats_scene_switch_layouts() -> None:
         robot._drain_commands()
         layouts = []
         for _ in range(2):
-            assert robot._switch_to_scene("pick_lift")
-            layouts.append(np.concatenate([robot._data.joint(j).qpos[:3] for j in get_scene("pick_lift").free_joints]))
+            assert robot._switch_to_scene("yahtzee")
+            layouts.append(np.concatenate([robot._data.joint(j).qpos[:3] for j in get_scene("yahtzee").free_joints]))
         np.testing.assert_allclose(layouts[0], layouts[1])
     finally:
         robot.disconnect()
@@ -186,7 +186,7 @@ def test_auto_reset_settings_survive_scene_switches() -> None:
     try:
         robot._commands.put(SetAutoResetCommand(enabled=False, dwell_s=2.5))
         robot._drain_commands()
-        assert robot._switch_to_scene("pick_lift")
+        assert robot._switch_to_scene("yahtzee")
         assert robot._http_status()["episode"] == {"enabled": False}
         assert robot._switch_to_scene("single_pick_place")
 
@@ -209,7 +209,6 @@ def test_compatible_scene_lists_match_real_models() -> None:
     ("scene_id", "expected"),
     [
         ("single_pick_place", ("block1", "target", "gripper")),
-        ("pick_place", ("obj1", "obj2", "target_zone", "gripper")),
         ("yahtzee", ("die1", "die2", "die3", "die4", "die5", "die6", "gripper")),
         ("garment_fold", ("left_gripper", "right_gripper")),
     ],
@@ -226,17 +225,18 @@ def test_viewer_follow_targets(scene_id: str, expected: tuple[str, ...]) -> None
 
 
 def test_viewer_follow_targets_track_bodies_and_the_world_stays_put() -> None:
-    robot = make_robot("pick_lift")
+    robot = make_robot("yahtzee")
     robot.connect()
     try:
         state = robot._panel_state()
-        assert tuple(state.follow_targets) == ("block1", "block2", "block3", "target", "gripper")
-        assert state.object_bodies == {"block1:joint": "block1", "block2:joint": "block2", "block3:joint": "block3"}
+        dice = tuple(f"die{i}" for i in range(1, 7))
+        assert tuple(state.follow_targets) == (*dice, "gripper")
+        assert state.object_bodies == {f"{die}:joint": die for die in dice}
         np.testing.assert_allclose(state.view_center, robot._model.stat.center)
 
         pose = ObjectPose(position=(0.3, 0.1, 0.1), wxyz=(1.0, 0.0, 0.0, 0.0))
-        robot._set_object_pose("block2:joint", pose.position, pose.wxyz, hold=False)
-        np.testing.assert_allclose(robot._panel_state().follow_targets["block2"], pose.position)
+        robot._set_object_pose("die2:joint", pose.position, pose.wxyz, hold=False)
+        np.testing.assert_allclose(robot._panel_state().follow_targets["die2"], pose.position)
 
         scene = MagicMock()
         robot._viser_scene = scene

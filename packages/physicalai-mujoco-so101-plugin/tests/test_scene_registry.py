@@ -5,11 +5,27 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+from physicalai_mujoco_so101_plugin import scene_registry
 from physicalai_mujoco_so101_plugin.scene_registry import (
+    SceneConfig,
     get_reset_fn,
     get_scene,
     list_scenes,
     list_scenes_for_arms,
+)
+
+# A registry entry used only to exercise the multi-object spawn reset.
+_MULTI_BLOCK_SCENE = SceneConfig(
+    scene_id="multi_block_test",
+    display_name="Multi-block test",
+    description="Three blocks and a target disc",
+    scene_xml_relpath="unused.xml",
+    free_joints=("block1:joint", "block2:joint", "block3:joint"),
+    target_bodies=("target",),
+    spawn_center=(0.24, 0.0),
+    spawn_min_r=0.08,
+    spawn_max_r=0.34,
+    spawn_angle_half_deg=125.0,
 )
 
 
@@ -41,11 +57,14 @@ def _mock_mujoco_for(name_to_id: dict[str, int]) -> MagicMock:
 
 class TestFreejointSpawnReset:
     def test_places_every_free_joint_clear_of_the_target(self) -> None:
-        scene = get_scene("pick_lift")
+        scene = _MULTI_BLOCK_SCENE
         joint_ids = {joint: i + 1 for i, joint in enumerate(scene.free_joints)}
         mock_mujoco = _mock_mujoco_for({"target": 0, **joint_ids})
 
-        with patch.dict("sys.modules", {"mujoco": mock_mujoco}):
+        with (
+            patch.dict("sys.modules", {"mujoco": mock_mujoco}),
+            patch.dict(scene_registry._SCENES, {scene.scene_id: scene}),  # noqa: SLF001
+        ):
             model = MagicMock()
             model.jnt_qposadr = [0, 0, 7, 14]
             model.jnt_dofadr = [0, 0, 6, 12]
@@ -54,8 +73,7 @@ class TestFreejointSpawnReset:
             data.qvel = np.ones(18)
             data.xpos = np.array([[0.30, 0.0, 0.01]])
 
-            fn = get_reset_fn("pick_lift")
-            assert fn is not None
+            fn = scene_registry._freejoint_spawn_reset(scene.scene_id)  # noqa: SLF001
             fn(model, data, np.random.default_rng(0))
 
             placed = [data.qpos[adr : adr + 3] for adr in (0, 7, 14)]
@@ -105,14 +123,14 @@ class TestFreejointSpawnReset:
 
 
 class TestSceneSpawnConfig:
-    def test_pick_lift_carries_its_own_spawn_arc(self) -> None:
-        scene = get_scene("pick_lift")
-        assert scene.spawn_center == (0.24, 0.0)
-        assert (scene.spawn_min_r, scene.spawn_max_r) == (0.08, 0.34)
-        assert scene.spawn_angle_half_deg == 125.0
+    def test_single_pick_place_carries_its_own_spawn_arc(self) -> None:
+        scene = get_scene("single_pick_place")
+        assert scene.spawn_center == (0.22, 0.0)
+        assert (scene.spawn_min_r, scene.spawn_max_r) == (0.05, 0.14)
+        assert scene.spawn_angle_half_deg == 50.0
 
     def test_every_freejoint_scene_declares_its_free_joints(self) -> None:
-        for scene_id in ("pick_lift", "single_pick_place", "pick_place"):
+        for scene_id in ("single_pick_place", "yahtzee"):
             assert get_scene(scene_id).free_joints
 
 

@@ -456,12 +456,12 @@ class TestHttpCommands:
         _ = mock_mujoco
         robot = MuJoCoSO101(model_path="/fake/model.xml")
         robot.connect()
-        robot._commands.put(SwitchSceneCommand(scene_id="pick_lift"))  # noqa: SLF001
+        robot._commands.put(SwitchSceneCommand(scene_id="yahtzee"))  # noqa: SLF001
 
         with patch.object(robot, "_switch_to_scene") as switch:
             robot.get_observation()
 
-        switch.assert_called_once_with("pick_lift")
+        switch.assert_called_once_with("yahtzee")
 
     def test_unknown_switch_scene_command_is_handled(self, mock_mujoco: MagicMock) -> None:
         _ = mock_mujoco
@@ -540,8 +540,8 @@ class TestSceneSwitching:
         robot.connect()
 
         with patch("physicalai_mujoco_so101_plugin.scene_registry.get_reset_fn", return_value=MagicMock()):
-            assert robot._switch_to_scene("pick_lift") is True  # noqa: SLF001
-        assert robot._current_scene_id == "pick_lift"  # noqa: SLF001
+            assert robot._switch_to_scene("yahtzee") is True  # noqa: SLF001
+        assert robot._current_scene_id == "yahtzee"  # noqa: SLF001
 
     def test_scene_without_this_robots_joints_is_rejected(self, mock_mujoco: MagicMock) -> None:
         _ = mock_mujoco

@@ -160,7 +160,7 @@ def make_client(look_at: tuple[float, float, float] = (0.0, 0.0, 0.0)) -> Simple
 def make_state(**overrides: Any) -> PanelState:  # noqa: ANN401
     values: dict[str, Any] = {
         "scene_id": "single_pick_place",
-        "scene_options": (("pick_lift", "Pick & Lift"), ("single_pick_place", "Single Pick & Place")),
+        "scene_options": (("single_pick_place", "Single Pick & Place"), ("yahtzee", "Yahtzee")),
         "seed": None,
         "episode": {
             "enabled": True,
@@ -201,13 +201,13 @@ class TestSceneControls:
     def test_dropdown_lists_compatible_scenes_and_selects_the_current_one(self) -> None:
         _, server, _ = build_panel()
         dropdown = server.gui.handles["Scene"]
-        assert dropdown.options == ("Pick & Lift", "Single Pick & Place")
+        assert dropdown.options == ("Single Pick & Place", "Yahtzee")
         assert dropdown.value == "Single Pick & Place"
 
     def test_selecting_another_scene_enqueues_a_switch(self) -> None:
         _, server, commands = build_panel()
-        server.gui.handles["Scene"].fire("Pick & Lift")
-        assert commands == [SwitchSceneCommand(scene_id="pick_lift")]
+        server.gui.handles["Scene"].fire("Yahtzee")
+        assert commands == [SwitchSceneCommand(scene_id="yahtzee")]
 
     def test_reselecting_the_current_scene_does_nothing(self) -> None:
         _, server, commands = build_panel()
@@ -216,7 +216,7 @@ class TestSceneControls:
 
     def test_server_side_value_sync_is_not_echoed(self) -> None:
         _, server, commands = build_panel()
-        server.gui.handles["Scene"].fire("Pick & Lift", client=None)
+        server.gui.handles["Scene"].fire("Yahtzee", client=None)
         assert commands == []
 
     def test_custom_model_is_listed_but_not_switchable(self) -> None:
@@ -308,9 +308,9 @@ class TestRefresh:
     def test_mirrors_scene_seed_and_episode_settings(self) -> None:
         panel, server, commands = build_panel()
         episode = {"enabled": True, "active": True, "phase": "idle", "episode_count": 0, "success_dwell_s": 8.0}
-        panel.refresh(make_state(scene_id="pick_lift", seed=5, episode=episode), now=1.0)
+        panel.refresh(make_state(scene_id="yahtzee", seed=5, episode=episode), now=1.0)
 
-        assert server.gui.handles["Scene"].value == "Pick & Lift"
+        assert server.gui.handles["Scene"].value == "Yahtzee"
         assert server.gui.handles["Fixed seed"].value is True
         assert server.gui.handles["Seed"].value == 5
         assert server.gui.handles["Seed"].disabled is False
