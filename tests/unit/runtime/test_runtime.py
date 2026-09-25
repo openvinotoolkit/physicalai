@@ -21,6 +21,7 @@ import pytest
 
 from physicalai.runtime import AsyncCallback, AsyncExecution, ChunkedActionQueue as ActionQueue, ChunkedActionQueue, Execution, JsonlCallback, LifecycleEvent, PolicySource, RobotRuntime, StopSignal, SyncExecution, WorkerDiedError
 from physicalai.runtime._callback_bus import _CallbackBus
+from physicalai.runtime.core import _GOAL_TIME_TICKS, _RETURN_DURATION_S
 from physicalai.robot.interface import RobotObservation
 from physicalai.inference.model import InferenceModel
 from physicalai.inference.constants import IMAGES, STATE, TASK
@@ -1357,3 +1358,62 @@ class TestRuntimeCallbackReuse:
         finally:
             release.set()
             run_thread.join(timeout=5.0)
+
+
+def _make_drifting_robot(start: np.ndarray) -> MagicMock:
+    """Robot whose pose moves one unit further from *start* on every read."""
+    robot = MagicMock()
+    reads = iter(range(1000))
+    robot.get_observation.side_effect = lambda: FakeRobotObservation(
+        joint_positions=start + float(next(reads)),
+        timestamp=time.monotonic(),
+        sensor_data=None,
+        images=None,
+    )
+    return robot
+
+
+class TestReturnToInitialState:
+    """``run(return_to_initial_state=...)`` — the optional shutdown homing move."""
+
+    # The homing move paces on goal time, not tick time, so it sends far fewer
+    # commands than ``_RETURN_DURATION_S * fps``.
+    _RETURN_STEPS = max(int(_RETURN_DURATION_S * 10.0 / _GOAL_TIME_TICKS), 1)  # fps=10.0, the _stop_runtime default
+
+    def test_disabled_by_default(self) -> None:
+        start = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+        runtime, robot = _stop_runtime(robot=_make_drifting_robot(start))
+
+        with _frozen_time():
+            steps = runtime.run(duration_s=0.3)
+
+        assert robot.send_action.call_count == steps
+
+    def test_interpolates_back_to_the_starting_pose(self) -> None:
+        start = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+        runtime, robot = _stop_runtime(robot=_make_drifting_robot(start))
+
+        with _frozen_time():
+            steps = runtime.run(duration_s=0.3, return_to_initial_state=True)
+
+        assert robot.send_action.call_count == steps + self._RETURN_STEPS
+        final_action = robot.send_action.call_args_list[-1].args[0]
+        np.testing.assert_allclose(final_action, start, rtol=1e-6)
+
+    def test_failure_does_not_break_shutdown(self) -> None:
+        start = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+        robot = _make_drifting_robot(start)
+        runtime, _robot = _stop_runtime(robot=robot)
+
+        def fail_after_loop(action: np.ndarray, *, goal_time: float = 0.1) -> None:
+            if robot.send_action.call_count > 3:
+                msg = "servo offline"
+                raise ConnectionError(msg)
+
+        robot.send_action.side_effect = fail_after_loop
+
+        with _frozen_time():
+            steps = runtime.run(duration_s=0.3, return_to_initial_state=True)
+
+        assert steps == 3
+        assert runtime.last_run_reason == "duration_elapsed"
