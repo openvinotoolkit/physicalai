@@ -37,7 +37,7 @@ _MAX_OBS_RETRIES = 3
 _MAX_SEND_RETRIES = 2
 _RETRY_BACKOFF_S = 0.001
 _GOAL_TIME_TICKS = 3
-_RETURN_DURATION_S = 3.0
+_RETURN_DURATION_S = 2.5
 
 RunReason = Literal["stop_requested", "duration_elapsed", "interrupted", "error"]
 """Why a :meth:`RobotRuntime.run` call ended."""
