@@ -1375,7 +1375,7 @@ def _make_drifting_robot(start: np.ndarray) -> MagicMock:
 class TestReturnToInitialState:
     """``run(return_to_initial_state=...)`` — the optional shutdown homing move."""
 
-    _RETURN_STEPS = 30  # _RETURN_DURATION_S (3.0) * fps (10.0)
+    _RETURN_STEPS = 25  # _RETURN_DURATION_S (2.5) * fps (10.0)
 
     def test_disabled_by_default(self) -> None:
         start = np.array([0.1, 0.2, 0.3], dtype=np.float32)
