@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
 dependencies = [
-    "physicalai[transport]>=0.2.0,<0.3.0",
+    "physicalai[transport]>=0.2.0,<1.0",
     "physicalai-studio-plugin>=0.2.0",
     "numpy>=1.24",
     "mujoco>=3.6.0",

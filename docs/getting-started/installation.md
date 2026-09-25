@@ -15,6 +15,17 @@ pip install "physicalai[robots]"
 pip install "physicalai[capture]"  # all camera backends + IPC transport
 ```
 
+First-party plugins from this repository are separate packages. Install one through its `plugin-` extra:
+
+```bash
+pip install "physicalai[plugin-mujoco-so101]"    # simulated SO-101 (MuJoCo)
+pip install "physicalai[plugin-bimanual-so101]"  # bimanual SO-101
+pip install "physicalai[plugin-rebot-b601]"      # Seeed reBot B601
+pip install "physicalai[plugin-stararm]"         # Fashion Star Arm 102
+```
+
+The plugins require Python 3.12 or newer; on Python 3.11 these extras install nothing. Each extra installs the matching `physicalai-*-plugin` package, so `pip install physicalai-mujoco-so101-plugin` is equivalent. The LeRobot plugin has no extra because it pulls in Torch; install `physicalai-lerobot-plugin` directly.
+
 For local development, install the repository environment and run the test suite.
 
 ```bash
