@@ -14,10 +14,10 @@ import numpy as np
 OUT = Path(__file__).resolve().parent.parent / "urdf" / "scenes" / "yahtzee" / "assets"
 OUT.mkdir(parents=True, exist_ok=True)
 
-# Wood texture from OpenGameArt.org: Tiny Texture Pack 2, wood_01-512x512.png
-# by Screaming Brain Studios, CC0 license.
-# Re-download from:
-#   https://opengameart.org/sites/default/files/oga-textures/134697/wood_01-512x512.png
+# The floor texture assets/wood_19.png is Wood_19-512x512.png, unmodified, from
+# "Tiny Texture Pack 2" by Screaming Brain Studios (CC0 1.0), not generated here:
+#   https://opengameart.org/content/tiny-texture-pack-2
+#   https://opengameart.org/sites/default/files/sbs_-_tiny_texture_pack_2_-_512x512.zip
 
 
 # ---------------------------------------------------------------------------

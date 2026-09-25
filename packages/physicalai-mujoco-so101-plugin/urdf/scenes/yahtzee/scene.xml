@@ -3,7 +3,7 @@
   <compiler angle="radian" meshdir="../../so101/assets" autolimits="true"/>
   <include file="../../so101/so101_robot_config.xml"/>
   <asset>
-    <texture type="2d" name="wood_floor_tex" file="../../scenes/yahtzee/assets/wood4.png"/>
+    <texture type="2d" name="wood_floor_tex" file="../../scenes/yahtzee/assets/wood_19.png"/>
     <material name="wood_floor" texture="wood_floor_tex" texrepeat="4 4" texuniform="true" reflectance="0.1"/>
     <texture type="2d" name="die_atlas_tex" file="../../scenes/yahtzee/assets/die_atlas.png"/>
     <material name="die_visual" texture="die_atlas_tex"/>

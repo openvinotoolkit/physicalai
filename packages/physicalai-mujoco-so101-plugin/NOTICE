@@ -5,3 +5,7 @@ packages/physicalai-mujoco-so101-plugin, at commit
 53bf606ef0f340a2a1821fc42a1ab6f44c33edf7 (PR #36).
 The source repository distributes this package under Apache-2.0.
 The original release history is preserved in CHANGELOG.md.
+
+urdf/scenes/yahtzee/assets/wood_19.png is Wood_19-512x512.png from
+"Tiny Texture Pack 2" by Screaming Brain Studios, released under CC0 1.0:
+https://opengameart.org/content/tiny-texture-pack-2
