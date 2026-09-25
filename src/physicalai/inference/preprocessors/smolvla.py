@@ -11,7 +11,8 @@ import numpy as np
 from physicalai.inference.constants import IMAGE_MASKS, IMAGES
 
 from .base import Preprocessor
-from .image_layout import ImageLayout, infer_image_layout
+from .enums import ImageLayout
+from .utils.layout_utils import infer_image_layout
 
 # Dummy camera slots assume RGB, matching the SigLIP vision tower.
 _RGB_CHANNELS = 3
