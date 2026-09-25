@@ -670,8 +670,7 @@ class RobotRuntime:
             return
 
         target = self._initial_state.joint_positions
-        goal_time = 1.0 / self._fps
-        steps = max(int(_RETURN_DURATION_S * self._fps), 1)
+        steps = max(int(_RETURN_DURATION_S * self._fps / _GOAL_TIME_TICKS), 1)
         logger.info("Returning robot to initial position over %.1fs", _RETURN_DURATION_S)
         try:
             current = self._robot.get_observation().joint_positions
@@ -679,7 +678,7 @@ class RobotRuntime:
                 loop_start = time.perf_counter()
                 t = i / steps
                 self._robot.send_action(current * (1.0 - t) + target * t, goal_time=self._goal_time)
-                self._tick_sleep(loop_start, goal_time)
+                self._tick_sleep(loop_start, self._goal_time)
         except Exception:
             logger.warning("Could not return robot to initial position", exc_info=True)
 
