@@ -20,10 +20,17 @@ if TYPE_CHECKING:
 class JointFramePreprocessor(Preprocessor):
     """Map one observation feature from robot to checkpoint joint coordinates."""
 
-    def __init__(self, *, feature: str, signs: Sequence[float], offsets: Sequence[float]) -> None:
+    def __init__(
+        self,
+        *,
+        feature: str,
+        signs: Sequence[float],
+        offsets: Sequence[float],
+        scales: Sequence[float] | None = None,
+    ) -> None:
         """Configure the feature and calibration frame."""
         self._feature = feature
-        self._transform = JointFrameTransform(signs=signs, offsets=offsets)
+        self._transform = JointFrameTransform(signs=signs, offsets=offsets, scales=scales)
 
     @override
     def __call__(self, inputs: dict[str, Any]) -> dict[str, Any]:

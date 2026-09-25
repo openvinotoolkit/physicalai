@@ -120,6 +120,29 @@ class TestMolmoAct2Preprocessor:
 
         assert "<state_128><state_255>" in result[TASK][0]
 
+    def test_applies_checkpoint_normalization_after_scaled_joint_transform(self) -> None:
+        # Runtime units -> checkpoint degrees: [0.5, -180] -> [2 * 0.5, -0.5 * -180 + 90] = [1, 180].
+        joint_transform = JointFramePreprocessor(
+            feature=STATE,
+            signs=[1.0, -1.0],
+            offsets=[0.0, 90.0],
+            scales=[2.0, 0.5],
+        )
+        processor = MolmoAct2Preprocessor(
+            image_keys=[],
+            image_size=(28, 28),
+            state_stats={"q01": [0.0, 0.0], "q99": [2.0, 180.0], "mask": [True, True]},
+        )
+        inputs = {
+            STATE: np.array([[0.5, -180.0]], dtype=np.float32),
+            TASK: "move",
+            IMAGES: np.zeros((1, 3, 28, 28), dtype=np.uint8),
+        }
+
+        result = processor(joint_transform(inputs))
+
+        assert "<state_128><state_255>" in result[TASK][0]
+
     def test_supports_mean_std_normalization(self) -> None:
         processor = MolmoAct2Preprocessor(
             image_keys=[],
