@@ -36,3 +36,7 @@ The package version is **not hardcoded** - it is derived from git tags at build 
 ## Testing a Release (TestPyPI)
 
 To validate a build before an official release, trigger the `publish-testpypi.yml` workflow manually from the Actions tab. It runs the same build and smoke-test steps, then publishes to [TestPyPI](https://test.pypi.org/p/physicalai).
+
+## MuJoCo plugin migration
+
+`physicalai-mujoco-so101-plugin` continues the existing PyPI package, last released as `0.3.1` from `MarkRedeman/physicalai-plugins`. Before publishing from this repository, configure its PyPI and TestPyPI trusted publishers for this repository's publishing workflows and environments. The first release here is configured as `0.4.0`; remove its `release-as` override after that release. The package's hatch-vcs fallback supports builds before this repository has its first MuJoCo component tag.

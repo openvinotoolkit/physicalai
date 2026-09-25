@@ -1,0 +1,67 @@
+<?xml version="1.0"?>
+<mujoco model="yahtzee">
+  <compiler angle="radian" meshdir="../../so101/assets" autolimits="true"/>
+  <include file="../../so101/so101_robot_config.xml"/>
+  <asset>
+    <texture type="2d" name="wood_floor_tex" file="../../scenes/yahtzee/assets/wood_19.png"/>
+    <material name="wood_floor" texture="wood_floor_tex" texrepeat="4 4" texuniform="true" reflectance="0.1"/>
+    <texture type="2d" name="die_atlas_tex" file="../../scenes/yahtzee/assets/die_atlas.png"/>
+    <material name="die_visual" texture="die_atlas_tex"/>
+    <mesh name="die_cube" file="../../scenes/yahtzee/assets/die_cube.obj"/>
+    <texture type="2d" name="cup_black_tex" builtin="checker" width="128" height="128" rgb1="0.006 0.006 0.009" rgb2="0.035 0.035 0.045"/>
+    <material name="cup_exterior" texture="cup_black_tex" texrepeat="3 3" reflectance="0.12" specular="0.55" shininess="0.7"/>
+    <material name="cup_interior" rgba="0.04 0.32 0.12 1" specular="0.25" shininess="0.35"/>
+  </asset>
+  <worldbody>
+    <light pos="1 1 3.5" dir="-0.227 -0.268 -0.936" directional="false" cutoff="25" exponent="1" diffuse="0.5 0.5 0.5"/>
+    <light pos="0 0 3.5" dir="0 0 -1" directional="true" diffuse="0.6 0.6 0.6" castshadow="true"/>
+    <geom name="floor" type="plane" size="0 0 0.01" pos="0 0 0" material="wood_floor" condim="3" friction="0.3 0.005 0.0001" margin="0.002" solref="0.02 1"/>
+    <body name="die1" pos="0.36 0.06 0.02">
+      <joint type="free" name="die1:joint"/>
+      <geom type="box" size="0.0095 0.0095 0.0095" rgba="0 0 0 0" mass="0.008" condim="3" friction="0.4 0.005 0.0001"/>
+      <geom type="mesh" mesh="die_cube" material="die_visual" group="2" contype="0" conaffinity="0" mass="0"/>
+    </body>
+    <body name="die2" pos="0.26 -0.08 0.02">
+      <joint type="free" name="die2:joint"/>
+      <geom type="box" size="0.0095 0.0095 0.0095" rgba="0 0 0 0" mass="0.008" condim="3" friction="0.4 0.005 0.0001"/>
+      <geom type="mesh" mesh="die_cube" material="die_visual" group="2" contype="0" conaffinity="0" mass="0"/>
+    </body>
+    <body name="die3" pos="0.38 -0.10 0.02">
+      <joint type="free" name="die3:joint"/>
+      <geom type="box" size="0.0095 0.0095 0.0095" rgba="0 0 0 0" mass="0.008" condim="3" friction="0.4 0.005 0.0001"/>
+      <geom type="mesh" mesh="die_cube" material="die_visual" group="2" contype="0" conaffinity="0" mass="0"/>
+    </body>
+    <body name="die4" pos="0.22 0.12 0.02">
+      <joint type="free" name="die4:joint"/>
+      <geom type="box" size="0.0095 0.0095 0.0095" rgba="0 0 0 0" mass="0.008" condim="3" friction="0.4 0.005 0.0001"/>
+      <geom type="mesh" mesh="die_cube" material="die_visual" group="2" contype="0" conaffinity="0" mass="0"/>
+    </body>
+    <body name="die5" pos="0.30 0.14 0.02">
+      <joint type="free" name="die5:joint"/>
+      <geom type="box" size="0.0095 0.0095 0.0095" rgba="0 0 0 0" mass="0.008" condim="3" friction="0.4 0.005 0.0001"/>
+      <geom type="mesh" mesh="die_cube" material="die_visual" group="2" contype="0" conaffinity="0" mass="0"/>
+    </body>
+    <body name="die6" pos="0.30 -0.14 0.02">
+      <joint type="free" name="die6:joint"/>
+      <geom type="box" size="0.0095 0.0095 0.0095" rgba="0 0 0 0" mass="0.008" condim="3" friction="0.4 0.005 0.0001"/>
+      <geom type="mesh" mesh="die_cube" material="die_visual" group="2" contype="0" conaffinity="0" mass="0"/>
+    </body>
+    <body name="cup" pos="0.20 0.2 0">
+      <joint type="free" name="cup:joint"/>
+      <geom name="cup_bottom" type="cylinder" size="0.037 0.0025" pos="0 0 0.0025" material="cup_exterior" mass="0.116" condim="3" friction="0.7 0.005 0.0001"/>
+      <geom name="cup_bottom_liner" type="cylinder" size="0.032 0.0002" pos="0 0 0.0052" material="cup_interior" mass="0" contype="0" conaffinity="0"/>
+      <replicate count="12" euler="0 0 0.523599">
+        <body name="cup_wall" pos="0.0395 0 0.050" euler="0 0.110657 0">
+          <geom type="box" size="0.0025 0.013 0.045" material="cup_exterior" mass="0.017" condim="3" friction="0.7 0.005 0.0001"/>
+          <geom type="box" size="0.0002 0.0128 0.0445" pos="-0.0027 0 0" material="cup_interior" mass="0" contype="0" conaffinity="0"/>
+        </body>
+      </replicate>
+    </body>
+    <include file="../../so101/so101_robot_bodies.xml"/>
+    <body name="overview_camera_rig" pos="-0.10 0 0.80" euler="-1.5707963267948966 -1.5707963267948966 0">
+      <body name="overview_camera_tilt" euler="1.00 0 0">
+        <camera name="overview" mode="fixed" euler="0 0 3.141592653589793" fovy="58"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

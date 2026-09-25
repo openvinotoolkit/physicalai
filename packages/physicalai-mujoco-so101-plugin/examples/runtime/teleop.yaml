@@ -1,0 +1,28 @@
+# MuJoCo SO-101 teleoperation runtime config.
+#
+# Relays a running MuJoCo SO-101 simulation (served over Zenoh) back to
+# itself — a self-teleop smoke test. First start the owner, e.g.:
+#
+#   uv run python packages/physicalai-mujoco-so101-plugin/examples/run_mujoco_owner.py
+#
+# then, from the repo root:
+#
+#   uv run physicalai run --config packages/physicalai-mujoco-so101-plugin/examples/runtime/teleop.yaml
+#
+# Stop with Ctrl+C.
+
+runtime:
+  robot:
+    class_path: physicalai.robot.SharedRobot
+    init_args:
+      name: mujoco-so101-follow
+
+  action_source:
+    class_path: physicalai.runtime.TeleopSource
+    init_args:
+      leader:
+        class_path: physicalai.robot.SharedRobot
+        init_args:
+          name: mujoco-so101-follow
+
+  fps: 30.0
