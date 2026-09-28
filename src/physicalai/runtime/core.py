@@ -37,7 +37,7 @@ _MAX_OBS_RETRIES = 3
 _MAX_SEND_RETRIES = 2
 _RETRY_BACKOFF_S = 0.001
 _GOAL_TIME_TICKS = 3
-_RETURN_DURATION_S = 3.0
+_RETURN_DURATION_S = 2.5
 _RETURN_MAX_TRACKING_ERROR = 0.15
 
 RunReason = Literal["stop_requested", "duration_elapsed", "interrupted", "error"]
@@ -676,7 +676,8 @@ class RobotRuntime:
             return
 
         target = self._initial_state.joint_positions
-        steps = max(int(_RETURN_DURATION_S * self._fps / _GOAL_TIME_TICKS), 1)
+        steps = max(int(_RETURN_DURATION_S * self._fps), 1)
+        goal_time = _RETURN_DURATION_S / steps
         try:
             current = self._robot.get_observation().joint_positions
             travel = float(np.max(np.abs(target - current)))
@@ -685,8 +686,8 @@ class RobotRuntime:
                 loop_start = time.perf_counter()
                 t = i / steps
                 command = current * (1.0 - t) + target * t
-                self._robot.send_action(command, goal_time=self._goal_time)
-                self._tick_sleep(loop_start, self._goal_time)
+                self._robot.send_action(command, goal_time=goal_time)
+                self._tick_sleep(loop_start, goal_time)
 
                 measured = self._robot.get_observation().joint_positions
                 error = np.abs(measured - command) / travel
