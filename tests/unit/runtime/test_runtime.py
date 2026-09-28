@@ -1360,12 +1360,22 @@ class TestRuntimeCallbackReuse:
             run_thread.join(timeout=5.0)
 
 
-def _make_drifting_robot(start: np.ndarray) -> MagicMock:
-    """Robot whose pose moves one unit further from *start* on every read."""
+def _make_following_robot(start: np.ndarray, *, stuck_after: int | None = None) -> MagicMock:
+    """Robot that reaches every command instantly, starting at *start*.
+
+    With *stuck_after*, it ignores every command after that many sends, as if blocked.
+    """
     robot = MagicMock()
-    reads = iter(range(1000))
+    robot.joint_names = ["j0", "j1", "j2"]
+    pose = {"q": start.copy()}
+
+    def send_action(action: np.ndarray, *, goal_time: float = 0.1) -> None:
+        if stuck_after is None or robot.send_action.call_count <= stuck_after:
+            pose["q"] = np.asarray(action, dtype=np.float32).copy()
+
+    robot.send_action.side_effect = send_action
     robot.get_observation.side_effect = lambda: FakeRobotObservation(
-        joint_positions=start + float(next(reads)),
+        joint_positions=pose["q"].copy(),
         timestamp=time.monotonic(),
         sensor_data=None,
         images=None,
@@ -1382,7 +1392,7 @@ class TestReturnToInitialState:
 
     def test_disabled_by_default(self) -> None:
         start = np.array([0.1, 0.2, 0.3], dtype=np.float32)
-        runtime, robot = _stop_runtime(robot=_make_drifting_robot(start))
+        runtime, robot = _stop_runtime(robot=_make_following_robot(start))
 
         with _frozen_time():
             steps = runtime.run(duration_s=0.3)
@@ -1391,7 +1401,7 @@ class TestReturnToInitialState:
 
     def test_interpolates_back_to_the_starting_pose(self) -> None:
         start = np.array([0.1, 0.2, 0.3], dtype=np.float32)
-        runtime, robot = _stop_runtime(robot=_make_drifting_robot(start))
+        runtime, robot = _stop_runtime(robot=_make_following_robot(start))
 
         with _frozen_time():
             steps = runtime.run(duration_s=0.3, return_to_initial_state=True)
@@ -1400,15 +1410,34 @@ class TestReturnToInitialState:
         final_action = robot.send_action.call_args_list[-1].args[0]
         np.testing.assert_allclose(final_action, start, rtol=1e-6)
 
+    def test_aborts_and_holds_pose_when_robot_stops_following(self) -> None:
+        start = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+        loop_steps = 3
+        blocked_after = loop_steps + 2
+        robot = _make_following_robot(start, stuck_after=blocked_after)
+        runtime, _robot = _stop_runtime(robot=robot)
+
+        with _frozen_time():
+            steps = runtime.run(duration_s=0.3, return_to_initial_state=True)
+
+        assert steps == loop_steps
+        assert robot.send_action.call_count < steps + self._RETURN_STEPS
+        blocked_pose = robot.send_action.call_args_list[blocked_after - 1].args[0]
+        hold_command = robot.send_action.call_args_list[-1].args[0]
+        np.testing.assert_allclose(hold_command, blocked_pose, rtol=1e-6)
+        assert runtime.last_run_reason == "duration_elapsed"
+
     def test_failure_does_not_break_shutdown(self) -> None:
         start = np.array([0.1, 0.2, 0.3], dtype=np.float32)
-        robot = _make_drifting_robot(start)
+        robot = _make_following_robot(start)
         runtime, _robot = _stop_runtime(robot=robot)
+        follow = robot.send_action.side_effect
 
         def fail_after_loop(action: np.ndarray, *, goal_time: float = 0.1) -> None:
             if robot.send_action.call_count > 3:
                 msg = "servo offline"
                 raise ConnectionError(msg)
+            follow(action, goal_time=goal_time)
 
         robot.send_action.side_effect = fail_after_loop
 
@@ -1416,4 +1445,5 @@ class TestReturnToInitialState:
             steps = runtime.run(duration_s=0.3, return_to_initial_state=True)
 
         assert steps == 3
+        assert robot.send_action.call_count == 4
         assert runtime.last_run_reason == "duration_elapsed"

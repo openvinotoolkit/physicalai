@@ -13,6 +13,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, Self
 
+import numpy as np
+
 from physicalai.capture.errors import CaptureError
 from physicalai.config import export_config
 from physicalai.runtime._callback_bus import _CallbackBus  # noqa: PLC2701
@@ -22,8 +24,6 @@ from physicalai.runtime.execution.base import WorkerDiedError
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
     from typing import Any
-
-    import numpy as np
 
     from physicalai.capture.camera import Camera
     from physicalai.capture.frame import Frame
@@ -37,7 +37,8 @@ _MAX_OBS_RETRIES = 3
 _MAX_SEND_RETRIES = 2
 _RETRY_BACKOFF_S = 0.001
 _GOAL_TIME_TICKS = 3
-_RETURN_DURATION_S = 2.5
+_RETURN_DURATION_S = 3.0
+_RETURN_MAX_TRACKING_ERROR = 0.15
 
 RunReason = Literal["stop_requested", "duration_elapsed", "interrupted", "error"]
 """Why a :meth:`RobotRuntime.run` call ended."""
@@ -662,6 +663,11 @@ class RobotRuntime:
     def _return_to_initial_state(self) -> None:
         """Interpolate the robot back to the pose captured at the start of the run.
 
+        After every step the measured pose is checked against the command. If any
+        joint lags by more than ``_RETURN_MAX_TRACKING_ERROR`` of the largest joint
+        travel (e.g. a self-collision), the move aborts and the robot is told to
+        hold its measured pose so the servos stop pushing.
+
         Best-effort: any failure leaves the robot at an arbitrary pose and only
         logs, so shutdown always completes.
         """
@@ -671,14 +677,31 @@ class RobotRuntime:
 
         target = self._initial_state.joint_positions
         steps = max(int(_RETURN_DURATION_S * self._fps / _GOAL_TIME_TICKS), 1)
-        logger.info("Returning robot to initial position over %.1fs", _RETURN_DURATION_S)
         try:
             current = self._robot.get_observation().joint_positions
+            travel = float(np.max(np.abs(target - current)))
+            logger.info("Returning robot to initial position over %.1fs", _RETURN_DURATION_S)
             for i in range(1, steps + 1):
                 loop_start = time.perf_counter()
                 t = i / steps
-                self._robot.send_action(current * (1.0 - t) + target * t, goal_time=self._goal_time)
+                command = current * (1.0 - t) + target * t
+                self._robot.send_action(command, goal_time=self._goal_time)
                 self._tick_sleep(loop_start, self._goal_time)
+
+                measured = self._robot.get_observation().joint_positions
+                error = np.abs(measured - command) / travel
+                worst = int(np.argmax(error))
+                if error[worst] > _RETURN_MAX_TRACKING_ERROR:
+                    logger.warning(
+                        "Aborting return to initial position at step %d/%d: joint '%s' is off by %.0f%% "
+                        "of the move (possible collision); holding current pose",
+                        i,
+                        steps,
+                        self._robot.joint_names[worst],
+                        error[worst] * 100,
+                    )
+                    self._robot.send_action(measured, goal_time=self._goal_time)
+                    return
         except Exception:
             logger.warning("Could not return robot to initial position", exc_info=True)
 
