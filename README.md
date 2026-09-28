@@ -52,6 +52,15 @@ pip install physicalai[so101]       # SO-101 robot arm
 pip install physicalai[trossen]     # Trossen WidowX robots
 ```
 
+With first-party plugins (Python 3.12+):
+
+```bash
+pip install "physicalai[plugin-mujoco-so101]"    # simulated SO-101 (MuJoCo)
+pip install "physicalai[plugin-bimanual-so101]"  # bimanual SO-101
+pip install "physicalai[plugin-rebot-b601]"      # Seeed reBot B601
+pip install "physicalai[plugin-stararm]"         # Fashion Star Arm 102
+```
+
 ---
 
 ## Camera API
@@ -157,6 +166,8 @@ uvc_devices = UVCCamera.discover()
 ## Robot API
 
 Robots implement a Protocol-based interface. Any class with `connect()`, `disconnect()`, `get_observation()`, `send_action()`, and `joint_names` works — no inheritance required.
+
+For simulation, the [MuJoCo SO-101 plugin](packages/physicalai-mujoco-so101-plugin/README.md) provides single-arm and bimanual robots, a browser viewer, camera streams, and Studio catalog integration.
 
 ```python
 from physicalai.robot import SO101
