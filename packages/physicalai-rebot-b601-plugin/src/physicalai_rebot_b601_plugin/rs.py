@@ -6,6 +6,11 @@
 Uses the ``motorbridge`` SDK to communicate with RobStride RS-series motors
 over SocketCAN. All joints run in MIT mode; the gripper uses impedance
 control with velocity-limited torque output.
+
+Observations and actions share one joint frame: ``send_action`` multiplies
+each target by ``REBOT_B601_RS_JOINT_DIRECTIONS`` to reach the motor frame, and
+``get_observation`` divides measured motor positions by the same factors. Echoing
+an observation back as an action therefore holds the arm in place.
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal
 import numpy as np
 from loguru import logger
 
+from physicalai.config import export_config
 from physicalai_rebot_b601_plugin.constants import (
     REBOT_B601_RS_JOINT_DIRECTIONS,
     REBOT_B601_RS_JOINT_LIMITS_DEG,
@@ -41,6 +47,34 @@ from motorbridge import Controller, Mode
 
 ReBotRSCanAdapter = Literal["socketcan", "robstride"]
 ReBotRole = Literal["follower"]
+RSMITGain = float | dict[str, float]
+
+
+def _validate_mit_gain(gain: RSMITGain | None, name: str) -> None:
+    """Validate an MIT gain override for the six position joints.
+
+    Args:
+        gain: ``None`` (use defaults), a scalar applied to every position joint, or a
+            mapping from position-joint name to gain. Joints omitted from the mapping
+            keep their default gain.
+        name: Parameter name used in error messages.
+
+    Raises:
+        ValueError: If the gain names an unknown joint or any value is negative or not finite.
+    """
+    if gain is None:
+        return
+    values = gain if isinstance(gain, dict) else {"*": gain}
+    if isinstance(gain, dict):
+        unknown = set(gain) - set(REBOT_B601_RS_MIT_KP)
+        if unknown:
+            msg = f"{name} may only contain position joints {sorted(REBOT_B601_RS_MIT_KP)}; got {sorted(unknown)}"
+            raise ValueError(msg)
+    for joint, value in values.items():
+        if not math.isfinite(value) or value < 0.0:
+            label = name if joint == "*" else f"{name}[{joint!r}]"
+            msg = f"{label} must be a non-negative finite value, got {value!r}"
+            raise ValueError(msg)
 
 
 @dataclass
@@ -65,6 +99,7 @@ class ReBotB601RSObservation:
         return self.joint_positions
 
 
+@export_config
 class ReBotB601RS:
     """RobStride motor driver for the reBot B601 robot arm.
 
@@ -83,6 +118,8 @@ class ReBotB601RS:
         can_adapter: ReBotRSCanAdapter = "socketcan",
         role: ReBotRole = "follower",
         disable_torque_on_disconnect: bool = True,
+        mit_kp: RSMITGain | None = None,
+        mit_kd: RSMITGain | None = None,
         gripper_mit_kp: float = 12.0,
         gripper_mit_kd: float = 0.05,
         gripper_mit_torque_limit: float = 10.0,
@@ -94,6 +131,11 @@ class ReBotB601RS:
             can_adapter: ``"socketcan"`` for native SocketCAN; ``"robstride"`` raises.
             role: Currently only ``"follower"`` is supported.
             disable_torque_on_disconnect: Whether to disable all motors on disconnect.
+            mit_kp: MIT stiffness for the six position joints: a single value for all of
+                them, or a per-joint mapping overriding :data:`REBOT_B601_RS_MIT_KP`.
+                Lower stiffness holds more quietly but sags more under load.
+            mit_kd: MIT damping for the six position joints, in the same form as ``mit_kp``,
+                overriding :data:`REBOT_B601_RS_MIT_KD`.
             gripper_mit_kp: MIT stiffness gain for gripper impedance control.
             gripper_mit_kd: MIT damping gain for gripper impedance control.
             gripper_mit_torque_limit: Maximum torque (N·m) for gripper impedance.
@@ -110,11 +152,15 @@ class ReBotB601RS:
         if gripper_mit_kp < 0.0 or gripper_mit_kd < 0.0 or gripper_mit_torque_limit < 0.0:
             msg = "gripper MIT gains and torque limit must be non-negative."
             raise ValueError(msg)
+        _validate_mit_gain(mit_kp, "mit_kp")
+        _validate_mit_gain(mit_kd, "mit_kd")
 
         self._port = port
         self._can_adapter = can_adapter
         self._role = role
         self._disable_torque_on_disconnect = disable_torque_on_disconnect
+        self._mit_kp = mit_kp
+        self._mit_kd = mit_kd
         self._gripper_mit_kp = gripper_mit_kp
         self._gripper_mit_kd = gripper_mit_kd
         self._gripper_mit_torque_limit = gripper_mit_torque_limit
@@ -127,6 +173,11 @@ class ReBotB601RS:
     def joint_names(self) -> list[str]:
         """Ordered list of joint names matching the expected action/observation layout."""
         return self.JOINT_ORDER
+
+    @property
+    def device_ids(self) -> tuple[str, ...]:
+        """Configured CAN transport identity without opening it."""
+        return (f"rebot-rs:{self._can_adapter}:{self._port}",)
 
     @property
     def port(self) -> str:
@@ -244,6 +295,10 @@ class ReBotB601RS:
     def get_observation(self) -> RobotObservation:
         """Read joint positions, velocities, torques, and temperatures from all motors.
 
+        Positions and velocities are reported in the action frame (motor value divided by
+        :data:`REBOT_B601_RS_JOINT_DIRECTIONS`), so passing ``joint_positions`` to
+        :meth:`send_action` holds the current pose. Torques remain in the motor frame.
+
         Returns:
             A ``ReBotB601RSObservation`` with joint positions in degrees and
             sensor data arrays for velocities, torques, temperatures, and status codes.
@@ -272,8 +327,9 @@ class ReBotB601RS:
             if state is None:
                 msg = f"No feedback received for motor '{name}'"
                 raise ConnectionError(msg)
-            positions[i] = math.degrees(float(state.pos))
-            velocities[i] = math.degrees(float(state.vel))
+            direction = REBOT_B601_RS_JOINT_DIRECTIONS[name]
+            positions[i] = math.degrees(float(state.pos)) / direction
+            velocities[i] = math.degrees(float(state.vel)) / direction
             torques[i] = float(state.torq)
             mos_temperatures[i] = float(state.t_mos)
             rotor_temperatures[i] = float(state.t_rotor)
@@ -324,7 +380,25 @@ class ReBotB601RS:
                 tau = self._gripper_output_torque(target_rad)
                 motor.send_mit(0.0, 0.0, 0.0, 1.5, tau)
             else:
-                motor.send_mit(target_rad, 0.0, REBOT_B601_RS_MIT_KP[name], REBOT_B601_RS_MIT_KD[name], 0.0)
+                motor.send_mit(target_rad, 0.0, self._mit_gain(name, "kp"), self._mit_gain(name, "kd"), 0.0)
+
+    def _mit_gain(self, name: str, which: Literal["kp", "kd"]) -> float:
+        """Resolve a position joint's MIT gain from the configured override or defaults.
+
+        Args:
+            name: Position-joint name.
+            which: ``"kp"`` for stiffness or ``"kd"`` for damping.
+
+        Returns:
+            The gain to send for this joint.
+        """
+        override = self._mit_kp if which == "kp" else self._mit_kd
+        defaults = REBOT_B601_RS_MIT_KP if which == "kp" else REBOT_B601_RS_MIT_KD
+        if override is None:
+            return defaults[name]
+        if isinstance(override, dict):
+            return override.get(name, defaults[name])
+        return override
 
     @staticmethod
     def _map_and_clip_action(name: str, action_deg: float) -> float:

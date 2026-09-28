@@ -10,6 +10,9 @@ from unittest.mock import MagicMock, call, patch
 
 import numpy as np
 import pytest
+from physicalai.config import Config
+
+from physicalai_rebot_b601_plugin.constants import REBOT_B601_RS_JOINT_DIRECTIONS, REBOT_B601_RS_JOINT_ORDER
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -106,6 +109,28 @@ class TestReBotB601RSConstruction:
         with pytest.raises(ValueError, match="gripper MIT"):
             ReBotB601RS(gripper_mit_kp=-1.0)
 
+    def test_exports_recipe_and_device_identity(self, mock_motorbridge: MagicMock) -> None:
+        robot = _create_robot(mock_motorbridge, port="can1", mit_kp={"shoulder_lift": 40.0})
+
+        assert robot.device_ids == ("rebot-rs:socketcan:can1",)
+        assert Config.from_instance(robot)["init_args"] == {
+            "port": "can1",
+            "mit_kp": {"shoulder_lift": 40.0},
+        }
+
+    @pytest.mark.parametrize("gain_name", ["mit_kp", "mit_kd"])
+    @pytest.mark.parametrize("gain", [-1.0, math.inf, math.nan])
+    def test_invalid_mit_scalar_gain_raises(self, mock_motorbridge: MagicMock, gain_name: str, gain: float) -> None:
+        with pytest.raises(ValueError, match=gain_name):
+            _create_robot(mock_motorbridge, **{gain_name: gain})
+
+    @pytest.mark.parametrize("gain_name", ["mit_kp", "mit_kd"])
+    def test_invalid_mit_gain_dict_raises(self, mock_motorbridge: MagicMock, gain_name: str) -> None:
+        with pytest.raises(ValueError, match=gain_name):
+            _create_robot(mock_motorbridge, **{gain_name: {"gripper": 1.0}})
+        with pytest.raises(ValueError, match=gain_name):
+            _create_robot(mock_motorbridge, **{gain_name: {"shoulder_pan": -1.0}})
+
 
 class TestReBotB601RSLifecycle:
     def test_connect_socketcan_registers_and_configures_motors(self, mock_motorbridge: MagicMock) -> None:
@@ -177,7 +202,15 @@ class TestReBotB601RSObservation:
         robot.connect()
         obs = robot.get_observation()
 
-        np.testing.assert_allclose(obs.joint_positions, np.array([10, 20, 30, 40, 50, 60, 70], dtype=np.float32))
+        # Motor states report idx * 10 degrees; observations are in the action frame (raw / direction).
+        expected = np.array(
+            [
+                (idx + 1) * 10.0 / REBOT_B601_RS_JOINT_DIRECTIONS[name]
+                for idx, name in enumerate(REBOT_B601_RS_JOINT_ORDER)
+            ],
+            dtype=np.float32,
+        )
+        np.testing.assert_allclose(obs.joint_positions, expected, rtol=1e-5)
         assert obs.joint_positions.dtype == np.float32
         assert isinstance(obs.timestamp, float)
         assert obs.sensor_data is not None
@@ -254,3 +287,55 @@ class TestReBotB601RSAction:
 
         robot.enable_torque()
         controller.enable_all.assert_called()
+
+    def test_echoing_observation_holds_current_pose(self, mock_motorbridge: MagicMock) -> None:
+        """Sending the observation back as the action must hold every joint in place."""
+        robot = _create_robot(mock_motorbridge)
+        robot.connect()
+        controller = mock_motorbridge.Controller.return_value
+        motors = list(controller.mock_motors)
+        raw_deg = [20.0, 30.0, 40.0, 10.0, -20.0, 15.0, 60.0]
+        for motor, degrees in zip(motors, raw_deg, strict=True):
+            motor.get_state.return_value = _MotorState(pos=math.radians(degrees), vel=0.0)
+
+        robot.send_action(robot.get_observation().joint_positions)
+
+        for motor, degrees in zip(motors[:6], raw_deg[:6], strict=True):
+            target = motor.send_mit.call_args.args[0]
+            assert target == pytest.approx(math.radians(degrees), abs=1e-5)
+        gripper_tau = motors[6].send_mit.call_args.args[4]
+        assert gripper_tau == pytest.approx(0.0, abs=1e-5)
+
+    def test_send_action_custom_mit_gains(self, mock_motorbridge: MagicMock) -> None:
+        robot = _create_robot(
+            mock_motorbridge,
+            mit_kp=40.0,
+            mit_kd={
+                "shoulder_pan": 1.0,
+                "shoulder_lift": 2.0,
+                "elbow_flex": 3.0,
+                "wrist_flex": 4.0,
+                "wrist_yaw": 5.0,
+                "wrist_roll": 6.0,
+            },
+        )
+        robot.connect()
+        controller = mock_motorbridge.Controller.return_value
+        motors = list(controller.mock_motors)
+
+        robot.send_action(np.zeros(7, dtype=np.float32))
+
+        for index, motor in enumerate(motors[:6]):
+            _target, _vel, kp, kd, _tau = motor.send_mit.call_args.args
+            assert (kp, kd) == (40.0, float(index + 1))
+
+    def test_partial_mit_gain_dict_uses_defaults_for_other_joints(self, mock_motorbridge: MagicMock) -> None:
+        robot = _create_robot(mock_motorbridge, mit_kp={"shoulder_lift": 40.0, "elbow_flex": 45.0})
+        robot.connect()
+        controller = mock_motorbridge.Controller.return_value
+        motors = list(controller.mock_motors)
+
+        robot.send_action(np.zeros(7, dtype=np.float32))
+
+        kps = [motor.send_mit.call_args.args[2] for motor in motors[:6]]
+        assert kps == [50.0, 40.0, 45.0, 50.0, 50.0, 50.0]
