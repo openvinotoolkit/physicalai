@@ -130,7 +130,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-cameras",
         action="store_true",
         default=False,
-        help="Disable camera rendering entirely (HTTP streams and v4l2loopback)",
+        help="Disable camera rendering (HTTP streams and viewer previews)",
     )
     start.add_argument(
         "--http-host",
@@ -149,30 +149,6 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Disable the camera/control HTTP server",
-    )
-    start.add_argument(
-        "--v4l2",
-        action="store_true",
-        default=False,
-        help="Also publish cameras to v4l2loopback devices (requires modprobe v4l2loopback)",
-    )
-    start.add_argument(
-        "--wrist-video-id",
-        type=int,
-        default=60,
-        help="v4l2loopback video ID for the wrist camera (only with --v4l2, default: 60)",
-    )
-    start.add_argument(
-        "--right-wrist-video-id",
-        type=int,
-        default=61,
-        help="v4l2loopback video ID for the right wrist camera (bimanual, only with --v4l2, default: 61)",
-    )
-    start.add_argument(
-        "--overview-video-id",
-        type=int,
-        default=62,
-        help="v4l2loopback video ID for the overview camera (only with --v4l2, default: 62)",
     )
 
     stop = sub.add_parser("stop", help="Stop a running MuJoCo simulation owner")
@@ -239,7 +215,7 @@ def _resolve_owner_name(args: argparse.Namespace) -> str:
     return DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME if args.bimanual else DEFAULT_MUJOCO_OWNER_NAME
 
 
-def _start(args: argparse.Namespace) -> None:  # noqa: C901, PLR0912, PLR0914, PLR0915
+def _start(args: argparse.Namespace) -> None:  # noqa: PLR0912, PLR0915
     model_path, scene_config = _resolve_model_and_scene(args.model, args.scene, bimanual=args.bimanual)
     owner_name = _resolve_owner_name(args)
 
@@ -247,32 +223,16 @@ def _start(args: argparse.Namespace) -> None:  # noqa: C901, PLR0912, PLR0914, P
 
     cameras: list[dict[str, object]] = []
     if not args.no_cameras:
-        if args.v4l2:
-            video_ids = [args.wrist_video_id, args.overview_video_id]
-            if args.bimanual:
-                video_ids.append(args.right_wrist_video_id)
-            if any(v < 0 for v in video_ids):
-                msg = "Video IDs must be non-negative integers"
-                raise ValueError(msg)
-            if len(set(video_ids)) != len(video_ids):
-                msg = "Wrist and overview video IDs must be different"
-                raise ValueError(msg)
-
-        def _device(video_id: int) -> str | None:
-            return f"/dev/video{video_id}" if args.v4l2 else None
-
         left_wrist_name = "left_wrist" if args.bimanual else "wrist"
         cameras = [
             {
                 "name": left_wrist_name,
-                "device": _device(args.wrist_video_id),
                 "width": 640,
                 "height": 480,
                 "fps": 30,
             },
             {
                 "name": "overview",
-                "device": _device(args.overview_video_id),
                 "width": 640,
                 "height": 480,
                 "fps": 30,
@@ -282,7 +242,6 @@ def _start(args: argparse.Namespace) -> None:  # noqa: C901, PLR0912, PLR0914, P
             cameras.append(
                 {
                     "name": "right_wrist",
-                    "device": _device(args.right_wrist_video_id),
                     "width": 640,
                     "height": 480,
                     "fps": 30,

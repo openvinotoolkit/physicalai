@@ -129,14 +129,12 @@ class MuJoCoSO101Observation:
 class CameraConfig:
     """Output configuration for a virtual camera.
 
-    When ``device`` is ``None`` the camera is served only over HTTP
-    (MJPEG/snapshot). Setting ``device`` to a v4l2loopback node also
-    publishes frames there via pyfakewebcam. Frames are streamed as MuJoCo
-    renders them; ``mirror_horizontal`` flips them left to right.
+    The camera is served over HTTP (MJPEG stream and JPEG snapshot). Frames
+    are streamed as MuJoCo renders them; ``mirror_horizontal`` flips them
+    left to right.
     """
 
     name: str
-    device: str | None = None
     width: int = 640
     height: int = 480
     fps: int = 30
@@ -196,7 +194,6 @@ class MuJoCoSO101:
         self._viser_scene: object | None = None
         self._native_viewer: object | None = None
         self._viser_port = viser_port
-        self._camera_devices: dict[str, object] = {}
         self._camera_renderers: dict[str, object] = {}
         self._camera_last_frame_ts: dict[str, float] = {}
         self._frame_buffers: dict[str, FrameBuffer] = {}
@@ -289,8 +286,8 @@ class MuJoCoSO101:
 
     @property
     def device_ids(self) -> tuple[str, ...]:
-        """Exclusively owned v4l2 sinks; in-memory simulations own no hardware."""
-        return tuple(sorted({f"v4l2:{Path(cam.device).resolve()}" for cam in self._cameras if cam.device}))
+        """Exclusively owned hardware; a simulation owns none."""
+        return ()
 
     def connect(self) -> None:
         """Load the model and initialize simulation resources.
@@ -349,7 +346,6 @@ class MuJoCoSO101:
                 with contextlib.suppress(Exception):
                     renderer.close()
             self._camera_renderers.clear()
-            self._camera_devices.clear()
             self._camera_last_frame_ts.clear()
             self._frame_buffers.clear()
             self._block_joint_addrs.clear()
@@ -425,28 +421,13 @@ class MuJoCoSO101:
 
                 self._frame_buffers[config.name] = FrameBuffer(config.name)
             self._camera_last_frame_ts[config.name] = 0.0
-
-            if config.device:
-                self._init_v4l2_device(config)
             logger.info(
-                "Camera started: {} ({}x{}@{} fps, v4l2={})",
+                "Camera started: {} ({}x{}@{} fps)",
                 config.name,
                 config.width,
                 config.height,
                 config.fps,
-                config.device or "off",
             )
-
-    def _init_v4l2_device(self, config: CameraConfig) -> None:
-        try:
-            import pyfakewebcam  # noqa: PLC0415
-        except ImportError as exc:
-            logger.warning("pyfakewebcam unavailable, camera '{}' v4l2 output disabled: {}", config.name, exc)
-            return
-        try:
-            self._camera_devices[config.name] = pyfakewebcam.FakeWebcam(config.device, config.width, config.height)
-        except OSError as exc:
-            logger.warning("Camera '{}' v4l2 device '{}' unavailable: {}", config.name, config.device, exc)
 
     def _init_block_joint_addrs(self) -> None:
         import mujoco  # noqa: PLC0415
@@ -834,7 +815,6 @@ class MuJoCoSO101:
                 with contextlib.suppress(Exception):
                     renderer.close()
             self._camera_renderers.clear()
-            self._camera_devices.clear()
 
             self._model_path = str(xml_path)
             self._model = new_model
@@ -1428,15 +1408,6 @@ class MuJoCoSO101:
             if buffer is not None:
                 buffer.put(frame)
 
-            cam = self._camera_devices.get(config.name)
-            if cam is not None:
-                try:
-                    # pyrefly: ignore [missing-attribute]
-                    cam.schedule_frame(frame)
-                except RuntimeError as exc:
-                    logger.debug("Camera publish error for '{}': {}", config.name, exc)
-                    continue
-
             self._camera_last_frame_ts[config.name] = now
 
     def _start_http_server(self) -> None:
@@ -1501,7 +1472,6 @@ class MuJoCoSO101:
                         "width": config.width,
                         "height": config.height,
                         "fps": config.fps,
-                        "device": config.device,
                         "rendering": config.name in rendering,
                     }
                     for config in self._cameras
@@ -1743,7 +1713,6 @@ class MuJoCoSO101:
         self._native_viewer = None
         self._viser_port = state.get("_viser_port", 9090)
         self._owner_name = state.get("_owner_name", "")
-        self._camera_devices = {}
         self._camera_renderers = {}
         self._camera_last_frame_ts = {}
         self._frame_buffers = {}

@@ -55,7 +55,6 @@ def app_context(frame: np.ndarray) -> dict:
                 "width": 64,
                 "height": 48,
                 "fps": 30,
-                "device": None,
                 "rendering": True,
             },
         ],

@@ -6,7 +6,7 @@ Run single-arm or bimanual SO-101 simulations through [PhysicalAI Runtime](https
 
 - Run a virtual SO-101 as a PhysicalAI transport owner
 - Viser browser viewer with a Simulation tab (scene switching, reset, arm homing, seeded resets, episode auto-reset, object dragging, camera previews, confirmed shutdown) and a Camera tab to follow an object, the target, or a gripper
-- Camera streams over HTTP (MJPEG) and optional v4l2loopback
+- Camera streams over HTTP (MJPEG), used in Studio as IP cameras
 - REST control server with the same controls as the viewer
 - Built-in task scenes
 - Automatic cube respawn after a configurable success dwell (five seconds by default) in `single_pick_place`
@@ -24,9 +24,17 @@ Requires Python 3.12 or newer. From the Runtime repository root:
 
 ```bash
 git lfs pull
-uv sync --package physicalai-mujoco-so101-plugin --extra tests
+uv sync --package physicalai-mujoco-so101-plugin
 uv run --package physicalai-mujoco-so101-plugin physicalai-mujoco-so101 start
 ```
+
+On a headless or remote Linux machine (no desktop session, for example over SSH), MuJoCo cannot create an OpenGL context for the cameras and `start` fails with `an OpenGL platform library has not been loaded into this process`. Render with EGL instead:
+
+```bash
+MUJOCO_GL=egl uv run --package physicalai-mujoco-so101-plugin physicalai-mujoco-so101 start
+```
+
+Use `MUJOCO_GL=osmesa` on a machine without a GPU driver (slower, needs OSMesa installed). The same applies to the `start` command in the Studio setup below.
 
 By default this starts:
 
@@ -61,13 +69,13 @@ Start the garment scene alongside a single-arm owner using separate server ports
 uv run --package physicalai-mujoco-so101-plugin physicalai-mujoco-so101 start --bimanual --http-port 8081 --viser-port 9091
 ```
 
-Connect Studio's `MuJoCo SO-101 Bimanual Follower` to `mujoco-so101-bimanual`. Its camera names are `left_wrist`, `right_wrist`, and `overview`, served on the selected HTTP port.
+Connect Studio's `MuJoCo SO-101 Bimanual Follower` to `mujoco-so101-bimanual-follow`. Its camera names are `left_wrist`, `right_wrist`, and `overview`, served on the selected HTTP port.
 
 ### Stop an owner
 
 ```bash
 uv run --package physicalai-mujoco-so101-plugin physicalai-mujoco-so101 stop --name mujoco-so101-follow
-uv run --package physicalai-mujoco-so101-plugin physicalai-mujoco-so101 stop --name mujoco-so101-bimanual --http-port 8081
+uv run --package physicalai-mujoco-so101-plugin physicalai-mujoco-so101 stop --name mujoco-so101-bimanual-follow --http-port 8081
 ```
 
 The stop command selects a local owner by name. Its HTTP fallback checks that the server reports the requested name.
@@ -125,6 +133,12 @@ cd application/backend
 uv run physicalai-mujoco-so101 start
 ```
 
+The simulation registers under the name `mujoco-so101-follow` (`mujoco-so101-bimanual-follow` with `--bimanual`). These are also the default robot names that Studio fills in for the MuJoCo followers, so you can keep both unchanged. To run under another name, pass `--name` and enter the same name when you add the robot in Studio:
+
+```bash
+uv run physicalai-mujoco-so101 start --name my-sim
+```
+
 Keep this terminal open. Open the viewer at `http://127.0.0.1:9090` to watch the scene and use the **Simulation** tab.
 
 Studio and the simulation must run on the same machine. The transport only accepts local connections unless both sides allow remote ones (`--allow-remote` here, and the remote-connection option in the robot's advanced settings in Studio). A Studio instance running in Docker does not share the host's localhost.
@@ -150,7 +164,7 @@ Then, in your Studio project:
 
 4. Open **Environments**, select **Configure new environment**, and add the MuJoCo follower, the leader, and both cameras.
 
-For the bimanual simulation, start it with `--bimanual`, choose **MuJoCo SO-101 Bimanual Follower** with the name `mujoco-so101-bimanual`, and add the `left_wrist`, `right_wrist` and `overview` cameras from its HTTP port. Its leader is a bimanual SO-101 leader, for example from the Bimanual SO-101 plugin.
+For the bimanual simulation, start it with `--bimanual`, choose **MuJoCo SO-101 Bimanual Follower** with the name `mujoco-so101-bimanual-follow`, and add the `left_wrist`, `right_wrist` and `overview` cameras from its HTTP port. Its leader is a bimanual SO-101 leader, for example from the Bimanual SO-101 plugin.
 
 ### 4. Teleoperate and record datasets
 
@@ -192,11 +206,10 @@ Common options:
 - `--no-gui`: disable all viewers
 - `--viser-port <port>`: browser viewer port (default `9090`)
 - `--viser-host <host>`: browser viewer bind host (default `127.0.0.1`; use `0.0.0.0` to expose it remotely)
-- `--no-cameras`: disable camera rendering entirely (HTTP streams and v4l2loopback)
+- `--no-cameras`: disable camera rendering (HTTP streams and viewer previews)
 - `--http-host <host>`: host for the camera/control HTTP server (default `127.0.0.1`)
 - `--http-port <port>`: port for the camera/control HTTP server (default `8080`)
 - `--no-http`: disable the camera/control HTTP server
-- `--v4l2`: also publish cameras to v4l2loopback devices (requires `modprobe v4l2loopback`)
 - `--rate-hz <float>`: owner loop frequency
 - `--substeps <int>`: MuJoCo steps per control cycle
 - `--unit <normalized|degrees>`: joint units for observations and actions (default `normalized`, see [Joint units](#joint-units))
@@ -218,7 +231,7 @@ The match is not exact. If a joint was moved further one way than the other duri
 
 Use `--unit degrees` (or `unit="degrees"` on `MuJoCoSO101`) to get joint angles in degrees instead.
 
-## Cameras over HTTP (default)
+## Cameras over HTTP
 
 The plugin renders two camera feeds and serves them over HTTP:
 
@@ -285,69 +298,17 @@ The `start` command also returns when its local owner exits through `stop`, HTTP
 
 HTTP control has no authentication and binds to loopback by default. Use explicit non-loopback bindings only on a trusted robot-cell network. The Viser viewer exposes the same controls, including moving objects and Shutdown, to anyone who can open it; it binds to loopback by default. Use `--viser-host 0.0.0.0` only when remote access is needed on a trusted network.
 
-## Cameras and v4l2loopback (opt-in)
-
-For workflows that need a webcam-visible device, pass `--v4l2` to publish the
-same camera feeds to v4l2loopback devices:
-
-- `wrist` -> `/dev/video<wrist-video-id>` (default `/dev/video60`)
-- `overview` -> `/dev/video<overview-video-id>` (default `/dev/video62`)
-
-Example with custom IDs:
-
-```bash
-uv run --no-sync physicalai-mujoco-so101 start --v4l2 --wrist-video-id 70 --overview-video-id 71
-```
-
-### One-time setup (Linux)
-
-Install and load v4l2loopback:
-
-```bash
-sudo modprobe v4l2loopback exclusive_caps=1 video_nr=60,62
-```
-
-If you use custom camera IDs, use matching `video_nr` values. Example:
-
-```bash
-sudo modprobe v4l2loopback exclusive_caps=1 video_nr=70,71
-```
-
-If the module is already loaded with different params, unload and reload:
-
-```bash
-sudo rmmod v4l2loopback
-sudo modprobe v4l2loopback exclusive_caps=1 video_nr=60,62
-```
-
-### Verify devices
-
-```bash
-ls /dev/video60 /dev/video62
-```
-
-For custom IDs, verify those device nodes instead.
-
-Optional sanity checks:
-
-```bash
-v4l2-ctl --all -d /dev/video60
-v4l2-ctl --all -d /dev/video62
-```
-
 ## Troubleshooting
+
+### `start` fails with `an OpenGL platform library has not been loaded into this process`
+
+MuJoCo could not create an OpenGL context, usually because there is no desktop session (headless machine, SSH, container). Set `MUJOCO_GL=egl` before `start`, or `MUJOCO_GL=osmesa` without a GPU driver. See [Quick start](#quick-start).
 
 ### HTTP server unavailable or port already in use
 
 - The camera/control server binds to `--http-host`/`--http-port` (default `127.0.0.1:8080`).
 - If the port is taken the simulation continues without HTTP and logs a warning — pass a different `--http-port`.
 - When running multiple simulations, give each a distinct `--http-port`.
-
-### `Camera '<name>' unavailable` or invalid argument on `/dev/video*` (with `--v4l2`)
-
-- Ensure v4l2loopback is loaded with `exclusive_caps=1`
-- Ensure the configured video devices exist (default `/dev/video60`, `/dev/video62`)
-- Check permissions on device nodes
 
 ### Viewer opens but has Wayland warnings (`libdecor`, window position)
 

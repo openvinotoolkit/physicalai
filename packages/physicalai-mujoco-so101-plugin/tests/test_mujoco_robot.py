@@ -510,7 +510,7 @@ class TestHttpCommands:
     def test_http_status_shape(self) -> None:
         robot = MuJoCoSO101(
             model_path="/fake/model.xml",
-            cameras=[{"name": "overview", "device": None}],
+            cameras=[{"name": "overview"}],
         )
         status = robot._http_status()  # noqa: SLF001
         assert status["connected"] is False
@@ -522,7 +522,6 @@ class TestHttpCommands:
                 "width": 640,
                 "height": 480,
                 "fps": 30,
-                "device": None,
                 "rendering": False,
             },
         ]

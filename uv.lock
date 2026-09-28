@@ -2145,7 +2145,6 @@ dependencies = [
     { name = "physicalai", extra = ["transport"] },
     { name = "physicalai-studio-plugin" },
     { name = "pydantic" },
-    { name = "pyfakewebcam", marker = "sys_platform == 'linux'" },
     { name = "uvicorn" },
 ]
 
@@ -2169,7 +2168,6 @@ requires-dist = [
     { name = "physicalai", extras = ["transport"], editable = "." },
     { name = "physicalai-studio-plugin", editable = "packages/physicalai-studio-plugin" },
     { name = "pydantic", specifier = ">=2.0" },
-    { name = "pyfakewebcam", marker = "sys_platform == 'linux'", specifier = ">=0.1.0" },
     { name = "pytest", marker = "extra == 'tests'" },
     { name = "pytest-asyncio", marker = "extra == 'tests'" },
     { name = "uvicorn", specifier = ">=0.30" },
@@ -2560,15 +2558,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/13/01d40f9d07ce8a779fd6e0bd8ad4fba91309500dd67b869e2e219d261a6d/pydantic_core-2.46.5-graalpy312-graalpy250_312_native-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:347ec774390c87326a2e4929d58d3f7e8763a104d5d35f4cd595a4c952366433", size = 1967479, upload-time = "2026-08-28T10:01:05.004Z" },
     { url = "https://files.pythonhosted.org/packages/fa/04/c81d4841331c2178b6fb09ae225425e110ed72d990c9fe556c4ec03d1013/pydantic_core-2.46.5-graalpy312-graalpy250_312_native-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:8e24d8f05fa2d28513d94e877e9c75ad66175376209b3977f916e240e623193c", size = 2111034, upload-time = "2026-08-28T10:01:07.345Z" },
 ]
-
-[[package]]
-name = "pyfakewebcam"
-version = "0.1.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numpy" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/ce/8b/0bb1984cf716d7b4825a1480f77e71441d39ffebb158ccce5e95ce17eec9/pyfakewebcam-0.1.0.tar.gz", hash = "sha256:2ad8ceada6605d8ba6ba76e087edf20bfce22d544fc410013067d7ce347d5694", size = 12688, upload-time = "2018-02-09T20:12:18.244Z" }
 
 [[package]]
 name = "pygments"

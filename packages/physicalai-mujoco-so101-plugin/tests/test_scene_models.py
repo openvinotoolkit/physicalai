@@ -95,15 +95,9 @@ def test_incompatible_initial_model_leaves_robot_disconnected() -> None:
     assert not robot.is_connected()
 
 
-def test_only_v4l2_outputs_claim_devices(tmp_path) -> None:
-    sink = tmp_path / "video60"
-    alias = tmp_path / "camera"
-    alias.symlink_to(sink)
-    robot = MuJoCoSO101(
-        model_path="scene.xml",
-        cameras=[{"name": "wrist", "device": str(alias)}, {"name": "overview"}],
-    )
-    assert robot.device_ids == (f"v4l2:{sink}",)
+def test_simulation_claims_no_devices() -> None:
+    robot = MuJoCoSO101(model_path="scene.xml", cameras=[{"name": "wrist"}, {"name": "overview"}])
+    assert robot.device_ids == ()
     assert make_robot("single_pick_place").device_ids == make_robot("garment_fold").device_ids == ()
 
 
