@@ -167,7 +167,17 @@ uvc_devices = UVCCamera.discover()
 
 Robots implement a Protocol-based interface. Any class with `connect()`, `disconnect()`, `get_observation()`, `send_action()`, and `joint_names` works — no inheritance required.
 
-For simulation, the [MuJoCo SO-101 plugin](packages/physicalai-mujoco-so101-plugin/README.md) provides single-arm and bimanual robots, a browser viewer, camera streams, and Studio catalog integration.
+More robots ship as first-party plugins (see [Installation](#installation) for the extras). Each plugin README covers setup and usage:
+
+| Plugin                                                                 | Robots                                                                             |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| [MuJoCo SO-101](packages/physicalai-mujoco-so101-plugin/README.md)     | Simulated single-arm and bimanual SO-101, with a browser viewer and camera streams |
+| [Bimanual SO-101](packages/physicalai-bimanual-so101-plugin/README.md) | Two SO-101 arms as one robot (follower and leader)                                 |
+| [reBot B601](packages/physicalai-rebot-b601-plugin/README.md)          | Seeed reBot B601-DM / B601-RS followers                                            |
+| [Star Arm](packages/physicalai-stararm-plugin/README.md)               | Fashion Star Arm 102 leaders and follower                                          |
+| [LeRobot](packages/physicalai-lerobot-plugin/README.md)                | Robots and teleoperators from LeRobot configs                                      |
+
+To add your own robot to Physical AI Studio, see the [Studio plugin](packages/physicalai-studio-plugin/README.md).
 
 ```python
 from physicalai.robot import SO101
