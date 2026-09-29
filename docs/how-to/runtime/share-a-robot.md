@@ -86,6 +86,10 @@ Notes:
 - Actions are **absolute joint targets**, delivered latest-wins and
   fire-and-forget. When no action is pending, the owner holds the last
   commanded position.
+- `set_torque(enabled=...)` is a synchronous owner request and reports
+  whether the driver applied it; it raises when the driver has no torque
+  control. SO-101 leaders start with torque off and accept position actions
+  only after torque is explicitly enabled.
 
 ## Attach to a known owner
 
@@ -207,9 +211,10 @@ wire contract.
 
 ## Security: trusted network required
 
-In `allow_remote=True` mode, this transport applies any action received on
-its Zenoh `/action` key **without authentication and encryption** — any peer that can
-reach the owner's Zenoh session can move the physical robot. It is designed
+In `allow_remote=True` mode, this transport accepts actions on its Zenoh
+`/action` key and torque-control requests on `/torque` **without
+authentication or encryption** — any peer that can reach the owner's Zenoh
+session can move the physical robot or change its torque state. It is designed
 for a **trusted robot-cell network** (isolated LAN/VLAN) in that mode.
 Isolating the network — via VLAN/firewall segmentation or Zenoh's own
 ACL/TLS features — is the deployer's responsibility. `allow_remote=False`

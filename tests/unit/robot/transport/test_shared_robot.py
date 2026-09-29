@@ -21,11 +21,12 @@ from physicalai.robot.errors import (
 from physicalai.robot.transport import SharedRobot, discover_robots
 from physicalai.robot.transport._codec import ROBOT_TRANSPORT_PROTOCOL_VERSION
 
-from .conftest import FAKE_ROBOT_CLASS, requires_zenoh
+from .conftest import FAKE_ROBOT_CLASS, TORQUE_FAKE_ROBOT_CLASS, requires_zenoh
 from .fake import FakeRobot
 
 if TYPE_CHECKING:
     from collections.abc import Generator
+    from pathlib import Path
 
 _NUM_JOINTS = 6
 _STATE_DIM = 12  # fake ships positions + velocities
@@ -130,6 +131,8 @@ class TestConstruction:
         with pytest.raises(RobotNotConnectedError):
             robot.send_action(np.zeros(_NUM_JOINTS, dtype=np.float32))
         with pytest.raises(RobotNotConnectedError):
+            robot.set_torque(enabled=True)
+        with pytest.raises(RobotNotConnectedError):
             _ = robot.joint_names
 
     def test_device_ids_always_empty(self) -> None:
@@ -178,6 +181,61 @@ class TestConstruction:
 
 @requires_zenoh
 class TestSharedRobotLifecycle:
+    def test_torque_request_reaches_owner_and_waits_for_result(self, unique_id: str, tmp_path: Path) -> None:
+        marker = tmp_path / "torque-state"
+        name = unique_id.replace("/", "-")
+        robot = SharedRobot(
+            name,
+            robot={
+                "class_path": TORQUE_FAKE_ROBOT_CLASS,
+                "init_args": {"device_ids": [f"fake:{name}"], "torque_marker": str(marker)},
+            },
+            idle_timeout=None,
+        )
+        robot.connect()
+        try:
+            robot.set_torque(enabled=True)
+            assert marker.read_text(encoding="utf-8") == "True"
+            robot.set_torque(enabled=False)
+            assert marker.read_text(encoding="utf-8") == "False"
+        finally:
+            owner = robot._owner
+            robot.disconnect()
+            if owner is not None:
+                owner.stop()
+
+    def test_torque_request_fails_clearly_when_driver_does_not_support_it(self, unique_id: str) -> None:
+        robot = _shared_robot(unique_id.replace("/", "-"), idle_timeout=None)
+        robot.connect()
+        try:
+            with pytest.raises(RobotTransportError, match="does not support torque control"):
+                robot.set_torque(enabled=True)
+        finally:
+            owner = robot._owner
+            robot.disconnect()
+            if owner is not None:
+                owner.stop()
+
+    def test_torque_request_propagates_driver_write_failure(self, unique_id: str) -> None:
+        name = unique_id.replace("/", "-")
+        robot = SharedRobot(
+            name,
+            robot={
+                "class_path": TORQUE_FAKE_ROBOT_CLASS,
+                "init_args": {"device_ids": [f"fake:{name}"], "fail_torque": True},
+            },
+            idle_timeout=None,
+        )
+        robot.connect()
+        try:
+            with pytest.raises(RobotTransportError, match="fake torque write failure"):
+                robot.set_torque(enabled=True)
+        finally:
+            owner = robot._owner
+            robot.disconnect()
+            if owner is not None:
+                owner.stop()
+
     def test_observe_and_act(self, module_owner: SharedRobot) -> None:
         robot = module_owner
         assert robot.is_connected()
@@ -262,7 +320,9 @@ class TestSharedRobotLifecycle:
             if owner is not None:
                 owner.stop()
 
-    def test_class_mismatch_warns_but_attaches(self, module_owner: SharedRobot, caplog: pytest.LogCaptureFixture) -> None:
+    def test_class_mismatch_warns_but_attaches(
+        self, module_owner: SharedRobot, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """robot_class mismatch on an existing owner is diagnostic, not fatal."""
         import logging
 
@@ -284,7 +344,9 @@ class TestSharedRobotLifecycle:
         finally:
             impostor.disconnect()
 
-    def test_protocol_mismatch_rejected_before_action_publisher(self, module_owner: SharedRobot, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_protocol_mismatch_rejected_before_action_publisher(
+        self, module_owner: SharedRobot, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         import physicalai.robot.transport._shared_robot as shared_robot_module
 
         monkeypatch.setattr(shared_robot_module, "ROBOT_TRANSPORT_PROTOCOL_VERSION", 999)
