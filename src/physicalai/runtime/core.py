@@ -20,6 +20,7 @@ from physicalai.config import export_config
 from physicalai.runtime._callback_bus import _CallbackBus  # noqa: PLC2701
 from physicalai.runtime.events import LifecycleEvent, TickEvent
 from physicalai.runtime.execution.base import WorkerDiedError
+from physicalai.runtime.interpolation import LinearInterpolator
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
     from physicalai.capture.frame import Frame
     from physicalai.robot.interface import Robot, RobotObservation
     from physicalai.runtime.action_sources.base import ActionSource
+    from physicalai.runtime.interpolation import ActionInterpolator
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +126,12 @@ class RuntimeCallback(Protocol):
 
 @export_config(class_path="physicalai.runtime.RobotRuntime")
 class RobotRuntime:
-    """Generic robot runtime loop with a required, pluggable action source."""
+    """Generic robot runtime loop with a required, pluggable action source.
+
+    ``fps`` is the rate at which ``action_source`` is queried. An
+    ``interpolator`` with ``multiplier`` N sends N commands per action-source
+    action, so the robot is commanded at ``fps * N``.
+    """
 
     def __init__(  # noqa: D107
         self,
@@ -133,6 +140,7 @@ class RobotRuntime:
         fps: float,
         cameras: Mapping[str, Camera] | None = None,
         callbacks: Sequence[Any] = (),
+        interpolator: ActionInterpolator | None = None,
     ) -> None:
         if fps <= 0:
             msg = f"fps must be positive, got {fps}"
@@ -140,9 +148,11 @@ class RobotRuntime:
         self._robot = robot
         self._action_source = action_source
         self._fps = fps
+        self._interpolator = interpolator if interpolator is not None else LinearInterpolator()
+        control_fps = fps * self._interpolator.multiplier
         self._cameras: Mapping[str, Camera] = cameras or {}
         self._bus = _CallbackBus(callbacks)
-        self._goal_time = (1.0 / fps) * _GOAL_TIME_TICKS
+        self._goal_time = _GOAL_TIME_TICKS / control_fps
         self._connected = False
         self._closed = False
         self._lifecycle_lock = threading.Lock()
@@ -150,7 +160,7 @@ class RobotRuntime:
         self._last_robot_obs: RobotObservation | None = None
         self._last_camera_frames: dict[str, Frame] = {}
         self._consecutive_error_ticks: int = 0
-        self._max_consecutive_error_ticks: int = int(3 * fps)
+        self._max_consecutive_error_ticks: int = int(3 * control_fps)
         self._stale_obs_ticks: int = 0
         self._transient_errors: int = 0
         self._session_id: str = ""
@@ -161,6 +171,8 @@ class RobotRuntime:
         self._stop = threading.Event()
         self._last_run_reason: RunReason | None = None
         self._initial_state: RobotObservation | None = None
+        self._cycle_start = 0.0
+        self._next_substep = 0
 
     @property
     def robot(self) -> Robot:
@@ -352,16 +364,18 @@ class RobotRuntime:
                 logs and shutdown still completes.
 
         Returns:
-            Number of steps completed this run.
-            A step is one iteration of the loop at ``fps``: read an observation,
-            get one action from ``action_source``, and send it to the robot.
+            Number of control ticks completed this run. A tick reads an
+            observation and sends one command to the robot. Every
+            ``interpolator.multiplier`` ticks form one cycle at ``fps`` whose
+            first tick gets a new action from ``action_source``.
 
         Raises:
             RuntimeError: If called before ``connect()``.
             WorkerDiedError: If the action source's execution worker dies.
         """  # noqa: DOC502
-        goal_time = 1.0 / self._fps
+        cycle_period = 1.0 / self._fps
         step = 0
+        cycles = 0
         # Every normal exit overwrites this, so only a propagating exception
         # leaves "error" in place — the shutdown event then reports the truth
         # instead of inheriting whichever normal reason happened to be set.
@@ -381,6 +395,7 @@ class RobotRuntime:
                         event="start",
                         metadata={
                             "fps": self._fps,
+                            "interpolation_multiplier": self._interpolator.multiplier,
                             "duration_s": duration_s,
                             "cameras": list(self._cameras.keys()),
                             "joint_names": self._robot.joint_names,
@@ -402,33 +417,13 @@ class RobotRuntime:
                             )
                         )
                         break
-                    if duration_s is not None and step * goal_time >= duration_s:
+                    new_cycle = self._interpolator.needs_new_action()
+                    if new_cycle and duration_s is not None and cycles * cycle_period >= duration_s:
                         reason = "duration_elapsed"
                         break
 
-                    loop_start = time.perf_counter()
-                    robot_state, camera_frames = self._read_observation()
-
-                    action = self._action_source.update(robot_state, camera_frames, step)
-                    action = self._bus.invoke_on_action_ready(action=action, step=step)
-
-                    self._resilient_send(action)
-                    self._bus.invoke_on_action_sent(action=action, step=step)
-
-                    elapsed, sleep_time = self._tick_sleep(loop_start, goal_time)
-                    self._bus.emit_tick(
-                        TickEvent(
-                            session_id=self._session_id,
-                            step=step,
-                            timestamp=time.time(),
-                            robot_state=robot_state,
-                            camera_frames=camera_frames,
-                            action_sent=action,
-                            loop_duration_s=elapsed,
-                            sleep_time_s=max(sleep_time, 0.0),
-                            stale_obs=self._last_tick_stale,
-                        )
-                    )
+                    self._tick(step, new_cycle=new_cycle)
+                    cycles += int(new_cycle)
                     step += 1
 
             except KeyboardInterrupt:
@@ -441,6 +436,52 @@ class RobotRuntime:
                 self._shutdown(step, reason=reason, return_to_initial_state=return_to_initial_state)
 
         return step
+
+    def _tick(self, step: int, *, new_cycle: bool) -> None:
+        """Read, send one command and pace one control tick.
+
+        A new cycle queries the action source; every other tick sends the next
+        interpolated command without reading cameras.
+        """
+        cycle_period = 1.0 / self._fps
+        tick_period = cycle_period / self._interpolator.multiplier
+        loop_start = time.perf_counter()
+        robot_state, camera_frames = self._read_observation(read_cameras=new_cycle)
+
+        if new_cycle:
+            self._cycle_start = loop_start
+            self._next_substep = 0
+            self._interpolator.add(self._action_source.update(robot_state, camera_frames, step))
+
+        # Pick the substep by elapsed time so a slow tick skips overdue commands instead of lagging.
+        substep = max(self._next_substep, int((time.perf_counter() - self._cycle_start) / tick_period))
+        self._next_substep = substep + 1
+        action = self._interpolator.get(substep)
+        action = self._bus.invoke_on_action_ready(action=action, step=step)
+
+        self._resilient_send(action)
+        self._bus.invoke_on_action_sent(action=action, step=step)
+
+        # Deadlines hang off the cycle start so a slow tick borrows time from the rest of its cycle.
+        if self._interpolator.needs_new_action():
+            deadline = self._cycle_start + cycle_period
+        else:
+            deadline = self._cycle_start + self._next_substep * tick_period
+        elapsed, sleep_time = self._tick_sleep(loop_start, deadline)
+        self._bus.emit_tick(
+            TickEvent(
+                session_id=self._session_id,
+                step=step,
+                timestamp=time.time(),
+                robot_state=robot_state,
+                camera_frames=camera_frames,
+                action_sent=action,
+                loop_duration_s=elapsed,
+                sleep_time_s=max(sleep_time, 0.0),
+                stale_obs=self._last_tick_stale,
+                source_updated=new_cycle,
+            )
+        )
 
     @contextmanager
     def _active_run(self) -> Iterator[None]:
@@ -485,11 +526,15 @@ class RobotRuntime:
         self._last_tick_stale = False
         self._last_run_reason = None
         self._initial_state = None
+        self._interpolator.reset()
+        self._cycle_start = 0.0
+        self._next_substep = 0
 
     @staticmethod
-    def _tick_sleep(loop_start: float, goal_time: float) -> tuple[float, float]:
-        elapsed = time.perf_counter() - loop_start
-        sleep_time = goal_time - elapsed
+    def _tick_sleep(loop_start: float, deadline: float) -> tuple[float, float]:
+        now = time.perf_counter()
+        elapsed = now - loop_start
+        sleep_time = deadline - now
         if sleep_time > 0:
             time.sleep(sleep_time)
         return elapsed, sleep_time
@@ -571,7 +616,7 @@ class RobotRuntime:
                 camera_frames[name] = stale_frame
         return camera_frames
 
-    def _read_observation(self) -> tuple[RobotObservation, dict[str, Frame]]:
+    def _read_observation(self, *, read_cameras: bool = True) -> tuple[RobotObservation, dict[str, Frame]]:
         """Read robot state + camera frames once for this tick (retry + stale fallback).
 
         The single read for this tick — the same values are passed to the
@@ -579,12 +624,15 @@ class RobotRuntime:
         Staleness is stashed on the instance (``_last_tick_stale``) for the
         caller to attach to the tick's ``TickEvent``.
 
+        Args:
+            read_cameras: Read cameras too; interpolated ticks skip them.
+
         Returns:
             Tuple ``(robot_state, camera_frames)``.
         """
         robot_state, stale = self._read_robot_resilient()
         self._last_tick_stale = stale
-        camera_frames = self._read_cameras_resilient()
+        camera_frames = self._read_cameras_resilient() if read_cameras else {}
         return robot_state, camera_frames
 
     def _resilient_send(self, action: np.ndarray) -> None:
@@ -687,7 +735,7 @@ class RobotRuntime:
                 t = i / steps
                 command = current * (1.0 - t) + target * t
                 self._robot.send_action(command, goal_time=goal_time)
-                self._tick_sleep(loop_start, goal_time)
+                self._tick_sleep(loop_start, loop_start + goal_time)
 
                 measured = self._robot.get_observation().joint_positions
                 error = np.abs(measured - command) / travel

@@ -42,6 +42,8 @@ while running:
 
 The exact observation structure and merging strategy may change as the API stabilizes. Everything left of `action_source.update()` — deciding whether to run inference, pulling from the queue, holding the last action — is internal to the action source; `RobotRuntime` itself only ever sees one action per tick.
 
+An optional `interpolator` splits each action into several robot commands. The runtime then queries the action source once per cycle at `fps` and sends the interpolated commands on the ticks in between, so the robot moves more smoothly without extra inference. See [Action Interpolation](../reference/runtime-api.md#action-interpolation).
+
 ## Stopping
 
 A stop takes effect between ticks, never inside one. The tick already underway finishes and sends its action, so the robot is never left halfway through a command. That means a stop is not instant: it lands once the current tick is done, and a tick that happens to be waiting on inference or a slow robot read takes as long as it takes.

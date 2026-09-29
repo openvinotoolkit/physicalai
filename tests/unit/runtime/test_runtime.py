@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from physicalai.runtime import AsyncCallback, AsyncExecution, ChunkedActionQueue as ActionQueue, ChunkedActionQueue, Execution, JsonlCallback, LifecycleEvent, PolicySource, RobotRuntime, StopSignal, SyncExecution, WorkerDiedError
+from physicalai.runtime import AsyncCallback, AsyncExecution, ChunkedActionQueue as ActionQueue, ChunkedActionQueue, Execution, JsonlCallback, LifecycleEvent, LinearInterpolator, PolicySource, RobotRuntime, StopSignal, SyncExecution, WorkerDiedError
 from physicalai.runtime._callback_bus import _CallbackBus
 from physicalai.runtime.core import _RETURN_DURATION_S
 from physicalai.robot.interface import RobotObservation
@@ -553,6 +553,21 @@ class TestFromConfig:
         runtime = RobotRuntime.from_config(cfg_path)
 
         assert runtime._connected is False  # noqa: SLF001
+
+    def test_loads_interpolator(self, tmp_path: Path) -> None:
+        cfg_path = tmp_path / "runtime.yaml"
+        cfg_path.write_text(
+            _minimal_yaml()
+            + "  interpolator:\n"
+            "    class_path: physicalai.runtime.LinearInterpolator\n"
+            "    init_args:\n"
+            "      multiplier: 3\n"
+        )
+
+        runtime = RobotRuntime.from_config(cfg_path)
+
+        assert isinstance(runtime._interpolator, LinearInterpolator)  # noqa: SLF001
+        assert runtime._interpolator.multiplier == 3  # noqa: SLF001
 
 
 def _make_frame(value: int = 0) -> Frame:
