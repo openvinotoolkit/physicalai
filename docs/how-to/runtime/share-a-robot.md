@@ -91,6 +91,34 @@ Notes:
   control. SO-101 leaders start with torque off and accept position actions
   only after torque is explicitly enabled.
 
+## Smoke-test SO-101 leader torque control
+
+Use a clear workspace, keep the emergency stop reachable, and provide the
+leader's calibrated normalized-position JSON. Start with the no-movement check:
+
+```bash
+uv sync --extra transport --extra so101 --extra tests
+uv run --no-sync pytest tests/unit/robot/test_so101.py tests/unit/robot/transport/test_owner_worker.py tests/unit/robot/transport/test_owner_handshake.py tests/unit/robot/transport/test_shared_robot.py -q
+uv run --no-sync python examples/runtime/shared_robot_torque_smoke.py \\
+  --port /dev/serial/by-id/<leader> \\
+  --calibration ~/.cache/physicalai/robots/<leader-calibration>.json \\
+  --name pr307-leader-test
+```
+
+The script asks before enabling torque, publishes the leader's current pose,
+then explicitly disables torque. To test a small physical movement, pass one
+joint and a delta of at most one normalized unit, for example
+`--joint shoulder_pan --delta 1`. It asks for a second confirmation and waits
+for the measured pose to reach the target. Omit `--joint` to avoid commanded
+movement.
+
+`SharedRobot.send_action()` is fire-and-forget. The no-movement check confirms
+the torque request/reply and action publication, not that the owner applied the
+action. The optional small movement checks the observed pose. Unit tests verify
+that the SO-101 driver rejects leader actions while torque is off. If torque-off
+is not acknowledged, stop and inspect the arm before continuing; do not assume
+the software state matches the hardware.
+
 ## Attach to a known owner
 
 For manually-launched or remote owners, attach by name only — no
