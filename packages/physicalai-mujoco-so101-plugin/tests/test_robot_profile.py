@@ -52,13 +52,34 @@ def test_robot_spec_keeps_the_public_names_and_units() -> None:
     np.testing.assert_array_equal(model.actuator_forcerange, np.tile([-3.35, 3.35], (6, 1)))
 
 
-def test_robot_spec_drops_menagerie_collision_meshes() -> None:
-    """Grasp contacts come from the same primitives as before; no mesh geom collides."""
+def test_robot_spec_collides_through_the_earlier_primitives_only() -> None:
+    """Grasp contacts come from the same 26 primitives as before; visual geoms never collide."""
     model = SO101_PROFILE.load_spec().compile()
+    collidable = [g for g in range(model.ngeom) if model.geom_contype[g] or model.geom_conaffinity[g]]
+
+    assert len(collidable) == 26
     for geom in range(model.ngeom):
-        if model.geom_type[geom] == mujoco.mjtGeom.mjGEOM_MESH:
-            assert model.geom_contype[geom] == 0, model.geom(geom).name
-            assert model.geom_conaffinity[geom] == 0, model.geom(geom).name
+        if geom in collidable:
+            assert model.geom_type[geom] != mujoco.mjtGeom.mjGEOM_MESH, model.geom(geom).name
+            assert model.geom_group[geom] == 3, model.geom(geom).name
+        else:
+            assert model.geom_group[geom] == 2, model.geom(geom).name
+
+
+def test_bundled_stl_meshes_are_not_git_lfs_pointers() -> None:
+    """A checkout or build without ``git lfs pull`` must fail here, not ship pointer files."""
+    meshes = sorted(get_urdf_path().rglob("*.stl"))
+    assert meshes
+    for mesh in meshes:
+        head = mesh.read_bytes()[:64]
+        assert not head.startswith(b"version https://git-lfs"), mesh
+        assert mesh.stat().st_size > 1024, mesh
+
+
+@pytest.mark.parametrize("scene_id", list(list_scenes()))
+def test_composed_scenes_have_no_keyframes(scene_id: str) -> None:
+    """Keyframes store raw qpos; the arm's position in qpos depends on where it is attached."""
+    assert get_scene(scene_id).load_model().nkey == 0
 
 
 @pytest.mark.parametrize("scene_id", list(list_scenes()))
@@ -112,6 +133,15 @@ def test_bimanual_scene_prefixes_every_arm_name() -> None:
     np.testing.assert_allclose(data.xquat[model.body("left_base").id], [1.0, 0.0, 0.0, 0.0])
     np.testing.assert_allclose(data.xpos[model.body("right_base").id], [0.23, -0.25, 0.40])
     np.testing.assert_allclose(data.xquat[model.body("right_base").id], [0.0, 0.0, 0.0, 1.0])
+
+
+def test_bimanual_arms_get_their_own_default_classes() -> None:
+    spec = compose_scene_spec(get_scene("garment_fold").scene_xml_path)
+    for prefix in ("left_", "right_"):
+        for name in ("so101", "sts3215", "visual", "collision", "collision_gripper"):
+            assert spec.find_default(f"{prefix}{name}") is not None, f"{prefix}{name}"
+        assert spec.joint(f"{prefix}wrist_roll").classname.name == f"{prefix}sts3215"
+        assert spec.geom(f"{prefix}fixed_jaw_box1").classname.name == f"{prefix}collision_gripper"
 
 
 @pytest.mark.parametrize(

@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
+from loguru import logger
 
 from physicalai_mujoco_so101_plugin._urdf import get_urdf_path
 from physicalai_mujoco_so101_plugin.constants import SO101_JOINT_ORDER
@@ -159,12 +160,24 @@ def robot_mount_prefixes(spec: mujoco.MjSpec) -> tuple[str, ...]:
 
 
 def attach_robot(scene: mujoco.MjSpec, profile: RobotProfile, prefix: str) -> None:
-    """Attach a fresh copy of the profile's robot at the scene frame ``{prefix}robot_mount``."""
+    """Attach a fresh copy of the profile's robot at the scene frame ``{prefix}robot_mount``.
+
+    The scene is the single source of physics options (``<option>``): MuJoCo keeps the parent's
+    values on attach and warns about every field the robot MJCF sets differently. The robot's
+    options are replaced by the scene's before attaching; the overridden values are logged at
+    debug level instead.
+    """
     robot = profile.load_spec()
-    # Attaching keeps the scene's physics options; copying them first avoids per-field conflict warnings.
+    overridden = []
     for field in dir(scene.option):
-        if not field.startswith("_"):
-            setattr(robot.option, field, getattr(scene.option, field))
+        if field.startswith("_"):
+            continue
+        scene_value = getattr(scene.option, field)
+        if not np.array_equal(np.asarray(getattr(robot.option, field)), np.asarray(scene_value)):
+            overridden.append(f"{field}={getattr(robot.option, field)}")
+        setattr(robot.option, field, scene_value)
+    if overridden:
+        logger.debug("{} options overridden by the scene: {}", profile.name, ", ".join(overridden))
     scene.attach(robot, frame=scene.frame(f"{prefix}{ROBOT_MOUNT_FRAME}"), prefix=prefix)
 
 
