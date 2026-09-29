@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import logging
+import platform
 from typing import TYPE_CHECKING, Any
 
 from physicalai.inference.adapters.base import RuntimeAdapter
@@ -15,6 +17,41 @@ if TYPE_CHECKING:
 
     import numpy as np
     import openvino
+
+logger = logging.getLogger(__name__)
+
+_ARM_MACHINES = frozenset({"arm64", "aarch64"})
+_PRECISION_HINT = "INFERENCE_PRECISION_HINT"
+_logged_arm_f32 = False
+
+
+def _compile_config(device: str, config: dict[str, Any]) -> dict[str, Any]:
+    """Return the compile config with platform-specific safe defaults applied.
+
+    OpenVINO's f16 inference precision on CPU makes results depend on
+    previous calls to the same compiled model (outputs drift from the second
+    call on). f16 is the default on ARM CPUs, so default to f32 there. x86
+    already defaults to f32 (bf16 with AMX). Only the exact ``"CPU"`` device
+    is affected; an explicit ``INFERENCE_PRECISION_HINT`` from the caller
+    always wins.
+
+    TODO: remove once the OpenVINO f16 drift is fixed upstream.
+
+    Args:
+        device: OpenVINO device name.
+        config: Caller-provided compile options.
+
+    Returns:
+        A new config dict; ``config`` is not modified.
+    """
+    global _logged_arm_f32  # noqa: PLW0603
+    resolved = dict(config)
+    if device.upper() == "CPU" and platform.machine().lower() in _ARM_MACHINES and _PRECISION_HINT not in resolved:
+        resolved[_PRECISION_HINT] = "f32"
+        if not _logged_arm_f32:
+            logger.info("Using f32 inference precision on ARM CPU (set %s to override)", _PRECISION_HINT)
+            _logged_arm_f32 = True
+    return resolved
 
 
 @adapter_registry.register("openvino", extensions=(".xml",))
@@ -67,7 +104,11 @@ class OpenVINOAdapter(RuntimeAdapter):
         core = ov.Core()
         model = core.read_model(model=str(model_path))
         try:
-            self.compiled_model = core.compile_model(model=model, device_name=self.device, config=self.config)
+            self.compiled_model = core.compile_model(
+                model=model,
+                device_name=self.device,
+                config=_compile_config(self.device, self.config),
+            )
         except RuntimeError as e:
             err = str(e)
             is_gpu = "GPU" in self.device.upper()

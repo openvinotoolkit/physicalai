@@ -100,6 +100,55 @@ class TestOpenVINOAdapter:
             with pytest.raises(ImportError, match="OpenVINO is not installed"):
                 adapter.load(model_path)
 
+    @pytest.mark.parametrize(
+        ("machine", "device", "kwargs", "expected"),
+        [
+            pytest.param("arm64", "CPU", {}, {"INFERENCE_PRECISION_HINT": "f32"}, id="macos-arm-cpu"),
+            pytest.param("aarch64", "cpu", {}, {"INFERENCE_PRECISION_HINT": "f32"}, id="linux-arm-cpu"),
+            pytest.param(
+                "arm64",
+                "CPU",
+                {"INFERENCE_PRECISION_HINT": "f16"},
+                {"INFERENCE_PRECISION_HINT": "f16"},
+                id="caller-hint-wins",
+            ),
+            pytest.param(
+                "arm64",
+                "CPU",
+                {"PERFORMANCE_HINT": "LATENCY"},
+                {"PERFORMANCE_HINT": "LATENCY", "INFERENCE_PRECISION_HINT": "f32"},
+                id="other-options-kept",
+            ),
+            pytest.param("arm64", "AUTO", {}, {}, id="arm-auto-untouched"),
+            pytest.param("arm64", "GPU", {}, {}, id="arm-gpu-untouched"),
+            pytest.param("x86_64", "CPU", {}, {}, id="x86-cpu-untouched"),
+            pytest.param("AMD64", "CPU", {}, {}, id="windows-x86-cpu-untouched"),
+        ],
+    )
+    def test_compile_config_precision_default(
+        self,
+        tmp_path: Path,
+        machine: str,
+        device: str,
+        kwargs: dict[str, str],
+        expected: dict[str, str],
+    ) -> None:
+        """ARM CPU defaults to f32 precision; everything else is passed through unchanged."""
+        model_path = tmp_path / "model.xml"
+        model_path.touch()
+        mock_ov = MagicMock()
+
+        with (
+            patch.dict("sys.modules", {"openvino": mock_ov}),
+            patch("physicalai.inference.adapters.openvino.platform.machine", return_value=machine),
+        ):
+            adapter = OpenVINOAdapter(device=device, **kwargs)
+            adapter.load(model_path)
+
+        compile_model = mock_ov.Core.return_value.compile_model
+        assert compile_model.call_args.kwargs["config"] == expected
+        assert adapter.config == kwargs  # caller's config is not mutated
+
 
 class TestONNXAdapter:
     """Test ONNX Runtime inference adapter."""
