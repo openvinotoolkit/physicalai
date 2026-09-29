@@ -53,7 +53,7 @@ def test_switch_initializes_cube_and_keeps_target_fixed() -> None:
     robot.connect()
     try:
         scene = get_scene("single_pick_place")
-        defaults = mujoco.MjModel.from_xml_path(str(scene.scene_xml_path))
+        defaults = scene.load_model()
         data = mujoco.MjData(defaults)
         mujoco.mj_forward(defaults, data)
         target = defaults.body("target").id
@@ -195,7 +195,7 @@ def test_auto_reset_settings_survive_scene_switches() -> None:
 def test_compatible_scene_lists_match_real_models() -> None:
     for scene_id, scene in list_scenes().items():
         robot_cls = BiMuJoCoSO101 if scene.num_arms == 2 else MuJoCoSO101
-        model = mujoco.MjModel.from_xml_path(str(scene.scene_xml_path))
+        model = scene.load_model()
         assert robot_cls(model_path="unused")._actuator_indices_for_joint_order(model) is not None, scene_id
         assert scene_id in list_scenes_for_arms(scene.num_arms)
 
@@ -242,8 +242,7 @@ def test_viewer_follow_targets_track_bodies_and_the_world_stays_put() -> None:
         robot.disconnect()
 
 
-def _wrist_camera_pose_in_gripper(model_path: str, camera: str, gripper: str) -> tuple[np.ndarray, np.ndarray]:
-    model = mujoco.MjModel.from_xml_path(model_path)
+def _wrist_camera_pose_in_gripper(model: mujoco.MjModel, camera: str, gripper: str) -> tuple[np.ndarray, np.ndarray]:
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
     gripper_rot = data.xmat[model.body(gripper).id].reshape(3, 3)
@@ -254,21 +253,25 @@ def _wrist_camera_pose_in_gripper(model_path: str, camera: str, gripper: str) ->
 
 
 @pytest.mark.parametrize(
-    ("model_path", "camera", "gripper"),
+    ("scene_id", "camera", "gripper"),
     [
-        (str(get_scene("single_pick_place").scene_xml_path), "wrist", "gripper"),
-        (str(get_scene("garment_fold").scene_xml_path), "left_wrist", "left_gripper"),
-        (str(get_scene("garment_fold").scene_xml_path), "right_wrist", "right_gripper"),
+        *[(scene_id, "wrist", "gripper") for scene_id in list_scenes_for_arms(1)],
+        ("garment_fold", "left_wrist", "left_gripper"),
+        ("garment_fold", "right_wrist", "right_gripper"),
     ],
 )
-def test_wrist_cameras_match_the_reference_model(model_path: str, camera: str, gripper: str) -> None:
-    """The arm is defined in three XML files; their wrist cameras must stay identical."""
-    reference = str(get_urdf_path() / "so101/so101.xml")
-    ref_position, ref_rotation = _wrist_camera_pose_in_gripper(reference, "wrist", "gripper")
-    position, rotation = _wrist_camera_pose_in_gripper(model_path, camera, gripper)
+def test_wrist_cameras_keep_their_pose_on_the_gripper(scene_id: str, camera: str, gripper: str) -> None:
+    """Every arm's wrist camera keeps the pose and field of view that trained policies saw."""
+    model = get_scene(scene_id).load_model()
+    position, rotation = _wrist_camera_pose_in_gripper(model, camera, gripper)
+    expected_rotation = np.zeros(9)
+    quat = np.zeros(4)
+    mujoco.mju_euler2Quat(quat, np.array([0.57, 0.0, np.pi]), "xyz")
+    mujoco.mju_quat2Mat(expected_rotation, quat)
 
-    np.testing.assert_allclose(position, ref_position, atol=1e-6)
-    np.testing.assert_allclose(rotation, ref_rotation, atol=1e-6)
+    np.testing.assert_allclose(position, [0.0, -0.055, -0.045], atol=1e-6)
+    np.testing.assert_allclose(rotation, expected_rotation.reshape(3, 3), atol=1e-6)
+    assert model.cam_fovy[model.camera(camera).id] == pytest.approx(75.0)
     # As on the physical SO-101, the wrist camera is on the gripper's -y side.
     assert position[1] < 0
 
@@ -283,7 +286,7 @@ def test_wrist_cameras_match_the_reference_model(model_path: str, camera: str, g
 )
 def test_wrist_cameras_see_the_jaws_in_the_lower_half(scene_id: str, camera: str, tip_site: str) -> None:
     """Frames are streamed as MuJoCo renders them, so camera-frame -y is the bottom of the image."""
-    model = mujoco.MjModel.from_xml_path(str(get_scene(scene_id).scene_xml_path))
+    model = get_scene(scene_id).load_model()
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
     cam = model.camera(camera).id
@@ -319,19 +322,15 @@ def _urdf_joint_limits(urdf_name: str) -> dict[str, tuple[float, float]]:
 
 
 @pytest.mark.parametrize(
-    ("model_path", "urdf_name"),
+    ("scene_id", "urdf_name"),
     [
-        *[
-            (str(get_scene(scene_id).scene_xml_path), "so101/so101_new_calib.urdf")
-            for scene_id in list_scenes_for_arms(1)
-        ],
-        *[(str(get_scene(scene_id).scene_xml_path), "so101/so101_dual.urdf") for scene_id in list_scenes_for_arms(2)],
-        (str(get_urdf_path() / "so101/so101.xml"), "so101/so101_new_calib.urdf"),
+        *[(scene_id, "so101/so101_new_calib.urdf") for scene_id in list_scenes_for_arms(1)],
+        *[(scene_id, "so101/so101_dual.urdf") for scene_id in list_scenes_for_arms(2)],
     ],
 )
-def test_joint_and_control_ranges_match_the_urdf(model_path: str, urdf_name: str) -> None:
+def test_joint_and_control_ranges_match_the_urdf(scene_id: str, urdf_name: str) -> None:
     """The URDF is the source of truth; normalized units span these ranges."""
-    model = mujoco.MjModel.from_xml_path(model_path)
+    model = get_scene(scene_id).load_model()
     limits = _urdf_joint_limits(urdf_name)
 
     for name, (lower, upper) in limits.items():

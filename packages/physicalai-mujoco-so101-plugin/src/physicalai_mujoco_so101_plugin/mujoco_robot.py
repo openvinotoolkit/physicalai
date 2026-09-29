@@ -30,6 +30,7 @@ from physicalai_mujoco_so101_plugin.constants import (
     SO101_JOINT_ORDER,
 )
 from physicalai_mujoco_so101_plugin.conveyor_automation import ConveyorAutomation
+from physicalai_mujoco_so101_plugin.robot_profile import load_scene_model
 from physicalai_mujoco_so101_plugin.spawn import sample_object_positions, write_freejoint_qpos
 from physicalai_mujoco_so101_plugin.studio_recorder import DEFAULT_STUDIO_URL
 
@@ -315,8 +316,7 @@ class MuJoCoSO101:
         import mujoco  # noqa: PLC0415
 
         logger.info("Loading MuJoCo model from {}", self._model_path)
-        # pyrefly: ignore [missing-attribute]
-        model = mujoco.MjModel.from_xml_path(self._model_path)
+        model = load_scene_model(self._model_path)
         ctrl_indices = self._actuator_indices_for_joint_order(model)
         joint_limits = self._joint_limits_for_joint_order(model)
         if ctrl_indices is None or joint_limits is None:
@@ -891,8 +891,7 @@ class MuJoCoSO101:
             logger.error("Scene XML not found: {}", xml_path)
             return False
 
-        # pyrefly: ignore [missing-attribute]
-        new_model = mujoco.MjModel.from_xml_path(str(xml_path))
+        new_model = load_scene_model(xml_path)
         # pyrefly: ignore [missing-attribute]
         new_data = mujoco.MjData(new_model)
         # pyrefly: ignore [missing-attribute]

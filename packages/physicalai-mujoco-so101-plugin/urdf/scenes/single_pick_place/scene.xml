@@ -1,7 +1,8 @@
 <?xml version="1.0"?>
 <mujoco model="single_pick_place">
-  <compiler angle="radian" meshdir="../../so101/assets" autolimits="true"/>
-  <include file="../../so101/so101_robot_config.xml"/>
+  <compiler angle="radian" autolimits="true"/>
+  <option integrator="implicitfast" timestep="0.002" cone="elliptic" iterations="10" ls_iterations="20" impratio="10"/>
+  <include file="../scene_common.xml"/>
   <worldbody>
     <light pos="1 1 3.5" dir="-0.227 -0.268 -0.936" directional="false" cutoff="25" exponent="1" diffuse="0.5 0.5 0.5"/>
     <light pos="0 0 3.5" dir="0 0 -1" directional="true" diffuse="0.5 0.5 0.5" castshadow="false"/>
@@ -13,7 +14,7 @@
     <body name="target" pos="0.22 -0.30 0.001">
       <geom name="target_disc" type="cylinder" size="0.05 0.001" rgba="0.2 1.0 0.2 0.35" contype="0" conaffinity="0"/>
     </body>
-    <include file="../../so101/so101_robot_bodies.xml"/>
+    <frame name="robot_mount"/>
     <body name="overview_camera_rig" pos="-0.10 0.1 0.80" euler="-1.5707963267948966 -1.5707963267948966 0">
       <body name="overview_camera_tilt" euler="1.00 0 0">
         <camera name="overview" mode="fixed" euler="0 0 3.141592653589793" fovy="58"/>
