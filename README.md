@@ -167,7 +167,7 @@ uvc_devices = UVCCamera.discover()
 
 Robots implement a Protocol-based interface. Any class with `connect()`, `disconnect()`, `get_observation()`, `send_action()`, and `joint_names` works — no inheritance required.
 
-More robots ship as first-party plugins. Each plugin README covers setup and usage. All except LeRobot have a `plugin-*` extra (see [Installation](#installation)). LeRobot pulls in PyTorch and can downgrade shared dependencies such as OpenCV, so install it separately with `pip install physicalai-lerobot-plugin`.
+More robots ship as first-party plugins. Each plugin README covers setup and usage. Install them with the `plugin-*` extras (see [Installation](#installation)); the LeRobot plugin is installed manually with `pip install physicalai-lerobot-plugin`.
 
 | Plugin                                                                 | Robots                                                                             |
 | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
