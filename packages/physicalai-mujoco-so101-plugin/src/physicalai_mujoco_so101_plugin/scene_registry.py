@@ -17,6 +17,7 @@ from loguru import logger
 
 from physicalai_mujoco_so101_plugin._urdf import get_urdf_path
 from physicalai_mujoco_so101_plugin.conveyor import park_items, pool_item_names
+from physicalai_mujoco_so101_plugin.robot_profile import load_scene_model
 from physicalai_mujoco_so101_plugin.spawn import (
     place_freejoint,
     read_body_xy,
@@ -25,6 +26,8 @@ from physicalai_mujoco_so101_plugin.spawn import (
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    import mujoco
 
 ResetFn = Callable[[object, object, np.random.Generator], None]
 
@@ -46,7 +49,7 @@ class SceneConfig:
     block_min_sep: float = 0.09
     target_min_sep: float = 0.11
     num_arms: int = 1
-    """Number of SO-101 arms the scene model provides."""
+    """Number of SO-101 arms the scene attaches: one per ``{prefix}robot_mount`` frame."""
     home_qpos: tuple[tuple[str, float], ...] = ()
     """Home joint positions in radians; unlisted arm joints use the model default."""
 
@@ -54,6 +57,14 @@ class SceneConfig:
     def scene_xml_path(self) -> Path:
         """Absolute path to this scene's XML model."""
         return get_urdf_path() / self.scene_xml_relpath
+
+    def load_model(self) -> mujoco.MjModel:
+        """Compile this scene with its SO-101 arms attached at the scene's mount frames.
+
+        Returns:
+            The compiled model.
+        """
+        return load_scene_model(self.scene_xml_path)
 
 
 _GARMENT_FOLD_HOME: tuple[tuple[str, float], ...] = (

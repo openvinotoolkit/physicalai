@@ -15,8 +15,9 @@
   scripts/generate_conveyor_assets.py.
 -->
 <mujoco model="conveyor_sort">
-  <compiler angle="radian" meshdir="../../so101/assets" texturedir="assets" autolimits="true"/>
-  <include file="../../so101/so101_robot_config.xml"/>
+  <compiler angle="radian" assetdir="assets" autolimits="true"/>
+  <option integrator="implicitfast" timestep="0.002" cone="elliptic" iterations="10" ls_iterations="20" impratio="10"/>
+  <include file="../scene_common.xml"/>
 
   <default>
     <!-- Visual-only meshes. Textured surfaces are always UV-mapped meshes with 2D textures:
@@ -39,20 +40,20 @@
   </default>
 
   <asset>
-    <mesh name="conveyor_frame" file="../../scenes/conveyor_sort/assets/conveyor_frame.obj" inertia="shell"/>
-    <mesh name="conveyor_frame_dark" file="../../scenes/conveyor_sort/assets/conveyor_frame_dark.obj" inertia="shell"/>
-    <mesh name="conveyor_rollers" file="../../scenes/conveyor_sort/assets/conveyor_rollers.obj" inertia="shell"/>
-    <mesh name="conveyor_motor" file="../../scenes/conveyor_sort/assets/conveyor_motor.obj" inertia="shell"/>
-    <mesh name="conveyor_hood" file="../../scenes/conveyor_sort/assets/conveyor_hood.obj" inertia="shell"/>
-    <mesh name="conveyor_hood_dark" file="../../scenes/conveyor_sort/assets/conveyor_hood_dark.obj" inertia="shell"/>
-    <mesh name="bin" file="../../scenes/conveyor_sort/assets/bin.obj" inertia="shell"/>
-    <mesh name="catch_tray" file="../../scenes/conveyor_sort/assets/bin.obj" inertia="shell" scale="1.2 1.4 0.6"/>
-    <mesh name="supply_crate" file="../../scenes/conveyor_sort/assets/bin.obj" inertia="shell" scale="1.9 2.9 1.4"/>
-    <mesh name="skin_cube" file="../../scenes/conveyor_sort/assets/skin_cube.obj"/>
-    <mesh name="skin_cylinder" file="../../scenes/conveyor_sort/assets/skin_cylinder.obj"/>
-    <mesh name="skin_hex" file="../../scenes/conveyor_sort/assets/skin_hex.obj"/>
-    <mesh name="belt_surface" file="../../scenes/conveyor_sort/assets/belt_surface.obj"/>
-    <mesh name="bin_label" file="../../scenes/conveyor_sort/assets/bin_label.obj"/>
+    <mesh name="conveyor_frame" file="conveyor_frame.obj" inertia="shell"/>
+    <mesh name="conveyor_frame_dark" file="conveyor_frame_dark.obj" inertia="shell"/>
+    <mesh name="conveyor_rollers" file="conveyor_rollers.obj" inertia="shell"/>
+    <mesh name="conveyor_motor" file="conveyor_motor.obj" inertia="shell"/>
+    <mesh name="conveyor_hood" file="conveyor_hood.obj" inertia="shell"/>
+    <mesh name="conveyor_hood_dark" file="conveyor_hood_dark.obj" inertia="shell"/>
+    <mesh name="bin" file="bin.obj" inertia="shell"/>
+    <mesh name="catch_tray" file="bin.obj" inertia="shell" scale="1.2 1.4 0.6"/>
+    <mesh name="supply_crate" file="bin.obj" inertia="shell" scale="1.9 2.9 1.4"/>
+    <mesh name="skin_cube" file="skin_cube.obj"/>
+    <mesh name="skin_cylinder" file="skin_cylinder.obj"/>
+    <mesh name="skin_hex" file="skin_hex.obj"/>
+    <mesh name="belt_surface" file="belt_surface.obj"/>
+    <mesh name="bin_label" file="bin_label.obj"/>
     <!-- Hexagonal prism, circumradius 16 mm (28 mm across flats), 30 mm tall. -->
     <mesh name="hex_prism" vertex="
        0.016 0 -0.015   0.008 0.013856 -0.015   -0.008 0.013856 -0.015
@@ -218,7 +219,7 @@
       <geom class="conveyor_collision" type="box" pos="0 -0.142 0.032" size="0.095 0.003 0.032"/>
     </body>
     <include file="conveyor_items.xml"/>
-    <include file="../../so101/so101_robot_bodies.xml"/>
+    <frame name="robot_mount"/>
     <body name="overview_camera_rig" pos="-0.10 0.1 0.80" euler="-1.5707963267948966 -1.5707963267948966 0">
       <body name="overview_camera_tilt" euler="1.00 0 0">
         <camera name="overview" mode="fixed" euler="0 0 3.141592653589793" fovy="58"/>

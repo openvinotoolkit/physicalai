@@ -44,10 +44,6 @@ CONVEYOR_SEEDS = range(8)
 CONVEYOR_EPISODES = 2
 
 
-def _load_model(scene: SceneConfig) -> mujoco.MjModel:
-    return mujoco.MjModel.from_xml_path(str(scene.scene_xml_path))
-
-
 def _arm_prefixes(scene: SceneConfig) -> tuple[str, ...]:
     return ("left_", "right_") if scene.num_arms == 2 else ("",)  # noqa: PLR2004
 
@@ -58,7 +54,7 @@ def _round(values: object) -> object:
 
 def _bench_scene(scene: SceneConfig, out_dir: Path) -> dict[str, object]:  # noqa: PLR0914
     started = time.perf_counter()
-    model = _load_model(scene)
+    model = scene.load_model()
     load_s = time.perf_counter() - started
     data = mujoco.MjData(model)
     joint_order = BIMANUAL_SO101_JOINT_ORDER if scene.num_arms == 2 else SO101_JOINT_ORDER  # noqa: PLR2004
