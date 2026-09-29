@@ -5,9 +5,10 @@
 
 from __future__ import annotations
 
-import logging
 import platform
 from typing import TYPE_CHECKING, Any
+
+from loguru import logger
 
 from physicalai.inference.adapters.base import RuntimeAdapter
 from physicalai.inference.adapters.registry import adapter_registry
@@ -17,8 +18,6 @@ if TYPE_CHECKING:
 
     import numpy as np
     import openvino
-
-logger = logging.getLogger(__name__)
 
 _ARM_MACHINES = frozenset({"arm64", "aarch64"})
 _PRECISION_HINT = "INFERENCE_PRECISION_HINT"
@@ -49,7 +48,7 @@ def _compile_config(device: str, config: dict[str, Any]) -> dict[str, Any]:
     if device.upper() == "CPU" and platform.machine().lower() in _ARM_MACHINES and _PRECISION_HINT not in resolved:
         resolved[_PRECISION_HINT] = "f32"
         if not _logged_arm_f32:
-            logger.info("Using f32 inference precision on ARM CPU (set %s to override)", _PRECISION_HINT)
+            logger.info("Using f32 inference precision on ARM CPU (set {} to override)", _PRECISION_HINT)
             _logged_arm_f32 = True
     return resolved
 

@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import numpy as np
 import pytest
+from loguru import logger
 
 from physicalai.inference.adapters import (
     ONNXAdapter,
@@ -148,6 +149,24 @@ class TestOpenVINOAdapter:
         compile_model = mock_ov.Core.return_value.compile_model
         assert compile_model.call_args.kwargs["config"] == expected
         assert adapter.config == kwargs  # caller's config is not mutated
+
+    def test_arm_f32_default_logged_once(self, tmp_path: Path) -> None:
+        """The ARM f32 default is logged once per process, not on every load."""
+        model_path = tmp_path / "model.xml"
+        model_path.touch()
+        messages: list[str] = []
+        handler_id = logger.add(lambda m: messages.append(m.record["message"]), level="INFO")
+        try:
+            with (
+                patch.dict("sys.modules", {"openvino": MagicMock()}),
+                patch("physicalai.inference.adapters.openvino.platform.machine", return_value="arm64"),
+                patch("physicalai.inference.adapters.openvino._logged_arm_f32", new=False),
+            ):
+                for _ in range(2):
+                    OpenVINOAdapter(device="CPU").load(model_path)
+        finally:
+            logger.remove(handler_id)
+        assert sum("f32 inference precision on ARM CPU" in m for m in messages) == 1
 
 
 class TestONNXAdapter:
