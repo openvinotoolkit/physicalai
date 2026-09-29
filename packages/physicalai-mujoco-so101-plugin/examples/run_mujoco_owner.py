@@ -16,6 +16,7 @@ import argparse
 import signal
 import sys
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 from loguru import logger
@@ -41,18 +42,19 @@ def main() -> None:
     args = parser.parse_args()
 
     model_path = args.model
+    scene_config = None
     if model_path is None:
-        from physicalai_mujoco_so101_plugin._urdf import get_urdf_path
+        from physicalai_mujoco_so101_plugin.scene_registry import get_scene
 
-        urdf_root = get_urdf_path()
-        model_path = str(urdf_root / "so101" / "so101.xml")
+        scene = get_scene("single_pick_place")
+        model_path = str(scene.scene_xml_path)
+        scene_config = asdict(scene)
         if not Path(model_path).exists():
-            logger.error("Bundled model not found at {}", model_path)
+            logger.error("Bundled scene not found at {}", model_path)
             sys.exit(1)
 
-    robot_kwargs = {"model_path": model_path, "substeps": args.substeps}
     robot = SharedRobot.from_config(
-        Config.from_instance(MuJoCoSO101(**robot_kwargs)),
+        Config.from_instance(MuJoCoSO101(model_path=model_path, substeps=args.substeps, scene_config=scene_config)),
         name=args.name,
         allow_remote=args.allow_remote,
         rate_hz=args.rate_hz,

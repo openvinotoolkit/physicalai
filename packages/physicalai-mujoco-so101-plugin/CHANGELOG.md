@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+* **mujoco:** The SO-101 arm is now MuJoCo Menagerie's `robotstudio_so101` (commit `c96a32d`), vendored in `urdf/robots/so101/`. Scenes hold no robot: `SceneConfig.load_model()` attaches the arm at each scene's `robot_mount` frame. Joint and camera names, normalized units, camera views and physics are unchanged. `urdf/so101/so101.xml`, `so101_robot_bodies.xml`, `so101_robot_config.xml` and `urdf/so101_dual/` are removed; `mujoco.MjModel.from_xml_path` on a scene file now gives a model without the arm.
+
 ## [0.3.1](https://github.com/MarkRedeman/physicalai-plugins/compare/physicalai-mujoco-so101-plugin-v0.3.0...physicalai-mujoco-so101-plugin-v0.3.1) (2026-09-09)
 
 
