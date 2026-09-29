@@ -21,7 +21,7 @@ import pytest
 
 from physicalai.runtime import AsyncCallback, AsyncExecution, ChunkedActionQueue as ActionQueue, ChunkedActionQueue, Execution, JsonlCallback, LifecycleEvent, PolicySource, RobotRuntime, StopSignal, SyncExecution, WorkerDiedError
 from physicalai.runtime._callback_bus import _CallbackBus
-from physicalai.runtime.core import _GOAL_TIME_TICKS, _RETURN_DURATION_S
+from physicalai.runtime.core import _RETURN_DURATION_S
 from physicalai.robot.interface import RobotObservation
 from physicalai.inference.model import InferenceModel
 from physicalai.inference.constants import IMAGES, STATE, TASK
@@ -1386,9 +1386,7 @@ def _make_following_robot(start: np.ndarray, *, stuck_after: int | None = None) 
 class TestReturnToInitialState:
     """``run(return_to_initial_state=...)`` — the optional shutdown homing move."""
 
-    # The homing move paces on goal time, not tick time, so it sends far fewer
-    # commands than ``_RETURN_DURATION_S * fps``.
-    _RETURN_STEPS = max(int(_RETURN_DURATION_S * 10.0 / _GOAL_TIME_TICKS), 1)  # fps=10.0, the _stop_runtime default
+    _RETURN_STEPS = max(int(_RETURN_DURATION_S * 10.0), 1)  # fps=10.0, the _stop_runtime default
 
     def test_disabled_by_default(self) -> None:
         start = np.array([0.1, 0.2, 0.3], dtype=np.float32)
