@@ -158,13 +158,37 @@ class TestConstruction:
         assert robot._resolve_metadata(timeout=1.0) == metadata
         assert calls == 2
 
-    def test_malformed_metadata_rejected(self) -> None:
+    @pytest.mark.parametrize(
+        "metadata_update",
+        [
+            {"joint_names": []},
+            {"joint_names": ["a", "a"]},
+            {"num_joints": 1},
+            {"state_dim": 0},
+            {"state_dim": -1},
+            {"state_dim": 2.5},
+        ],
+    )
+    def test_malformed_metadata_rejected(self, metadata_update: dict[str, object]) -> None:
         robot = SharedRobot.attach("left-arm")
+        metadata: dict[str, object] = {
+            "protocol_version": ROBOT_TRANSPORT_PROTOCOL_VERSION,
+            "joint_names": ["a", "b"],
+            "num_joints": 2,
+            "state_dim": 2,
+        }
+        metadata.update(metadata_update)
+
         with pytest.raises(RobotTransportError, match="malformed"):
+            robot._validate_metadata(metadata)
+
+    def test_metadata_protocol_mismatch_rejected(self) -> None:
+        robot = SharedRobot.attach("left-arm")
+        with pytest.raises(RobotProtocolMismatch):
             robot._validate_metadata(
                 {
-                    "protocol_version": ROBOT_TRANSPORT_PROTOCOL_VERSION,
-                    "joint_names": ["a", "a"],
+                    "protocol_version": ROBOT_TRANSPORT_PROTOCOL_VERSION + 1,
+                    "joint_names": ["a", "b"],
                     "num_joints": 2,
                     "state_dim": 2,
                 },

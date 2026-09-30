@@ -37,6 +37,7 @@ def instantiate(value: object) -> object:
         return value.instantiate()
     return Config.from_dict(cast("Mapping[str, object]", value)).instantiate()
 
+
 # Matches physicalai.config._types._MAX_CONFIG_DEPTH
 _MAX_CONFIG_DEPTH = 10
 
@@ -555,6 +556,24 @@ class TestNormalizeAndInstantiate:
             pytest.raises(ConfigError, match="cyclic"),
         ):
             instantiate(config)  # type: ignore[arg-type]
+        import_path.assert_not_called()
+
+    def test_too_deep_config_rejected_before_any_import(self) -> None:
+        config: dict[str, object] = {
+            "class_path": "tests.unit.config.test_export_config.Nest",
+            "init_args": {"child": None},
+        }
+        for _ in range(_MAX_CONFIG_DEPTH + 1):
+            config = {
+                "class_path": "tests.unit.config.test_export_config.Nest",
+                "init_args": {"child": config},
+            }
+
+        with (
+            patch("physicalai.config._instantiate.import_dotted_path") as import_path,
+            pytest.raises(ConfigError, match="nesting depth"),
+        ):
+            instantiate(config)
         import_path.assert_not_called()
 
     def test_plain_nested_mapping_remains_valid(self) -> None:
