@@ -78,6 +78,8 @@ def test_one_input(data: bytes) -> None:
 
     arr = _make_compatible_array(fdp, stat_dim)
     other_key = "passthrough_feature"
+    if feature_name == other_key:
+        other_key = "passthrough_feature.other"
     other_arr = make_float_array(fdp, max_ndim=2, max_dim=16)
 
     inputs = {feature_name: arr, other_key: other_arr}

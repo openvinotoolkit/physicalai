@@ -19,7 +19,7 @@ import socket
 
 KEY_PREFIX = "physicalai/robot"
 
-_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 """One safe Zenoh key segment: no ``/``, no wildcards (``*``/``**``/``$*``)."""
 
 METADATA_WILDCARD = f"{KEY_PREFIX}/*/metadata"
@@ -43,7 +43,7 @@ def validate_name(name: str) -> str:
         ValueError: If *name* is empty or contains anything other than
             ASCII letters, digits, ``_``, or ``-``.
     """
-    if not name or not _NAME_RE.match(name):
+    if not name or not _NAME_RE.fullmatch(name):
         msg = f"invalid robot name {name!r}: must be a non-empty string of letters, digits, '_', or '-'"
         raise ValueError(msg)
     return name

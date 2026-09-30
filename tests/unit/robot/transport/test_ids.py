@@ -36,7 +36,7 @@ class TestValidateName:
         with pytest.raises(ValueError, match="invalid robot name"):
             validate_name("left*")
 
-    @pytest.mark.parametrize("name", ["robot 1", "robot.one", "robot\narm", "robót", "机器人"])
+    @pytest.mark.parametrize("name", ["robot 1", "robot.one", "robot\narm", "robot\n", "robót", "机器人"])
     def test_non_ascii_or_non_segment_character_raises(self, name: str) -> None:
         with pytest.raises(ValueError, match="invalid robot name"):
             validate_name(name)
