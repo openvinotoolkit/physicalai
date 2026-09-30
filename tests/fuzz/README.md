@@ -11,21 +11,21 @@ The GitHub Actions workflow `.github/workflows/fuzz.yml` runs all harnesses in p
 
 Each row maps a harness file to the component it covers, its input space, and the oracle invariants it checks. Oracle numbers refer to the [Key invariants for fuzzing oracles](#key-invariants-for-fuzzing-oracles) section below.
 
-| Harness                                                                  | Entry Point                                                                  | Input Space                                                                                                                                   | Oracles       |
-| ------------------------------------------------------------------------ | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
-| [`fuzz_manifest.py`](harnesses/fuzz_manifest.py)                         | `Manifest.load(path)`                                                        | Arbitrary JSON bytes (valid and malformed); extreme values in `shape`, `n_obs_steps`, unknown keys                                            | I-3           |
-| [`fuzz_component.py`](harnesses/fuzz_component.py)                       | `instantiate_component(spec)`, `resolve_artifact(spec, export_dir)`          | Crafted `artifact` paths (`../`, absolute); bounded nested `init_args`; arbitrary `flat_params` keys for registered safe types                 | I-1, I-5      |
-| [`fuzz_import_dotted_path.py`](harnesses/fuzz_import_dotted_path.py)     | `import_dotted_path(path)`                                                   | Arbitrary dotted strings (relative imports, no-dot strings, known-safe module roots + fuzz suffix)                                            | I-6           |
-| [`fuzz_policy_name.py`](harnesses/fuzz_policy_name.py)                   | `_is_safe_policy_name(name)`, `InferenceModel(export_dir, policy_name=name)` | Arbitrary Unicode strings; strings that pass and fail the safety regex                                                                        | I-2           |
-| [`fuzz_detect_backend.py`](harnesses/fuzz_detect_backend.py)             | `InferenceModel._detect_backend()`                                           | Export directories populated with arbitrary filename extensions and combinations                                                              | I-6           |
-| [`fuzz_prepare_inputs.py`](harnesses/fuzz_prepare_inputs.py)             | `InferenceModel._prepare_inputs(inputs)`                                     | Flat dicts, nested dicts, mixed flat+nested collisions, arbitrary key names                                                                   | I-7           |
-| [`fuzz_stats_normalizer.py`](harnesses/fuzz_stats_normalizer.py)         | `StatsNormalizer.__call__(inputs)`                                           | Arbitrary shaped float32 arrays; extreme stat values (inf, nan, zero std, inverted quantiles); all four modes                                 | I-8, I-9      |
-| [`fuzz_resize_preprocessor.py`](harnesses/fuzz_resize_preprocessor.py)   | `ResizePreprocessor.__call__(inputs)`                                        | Channels-first and channels-last images; uint8 and float32; zero spatial dims; extreme target resolutions; stretch and letterbox modes        | I-10, I-11    |
-| [`fuzz_resize_smolvla.py`](harnesses/fuzz_resize_smolvla.py)             | `ResizeSmolVLA.__call__(inputs)`                                             | Same image layouts as above; arbitrary target resolution                                                                                      | I-10, I-12    |
-| [`fuzz_action_normalizer.py`](harnesses/fuzz_action_normalizer.py)       | `ActionNormalizer.__call__(outputs)`                                         | Output dicts with arbitrary key names and array shapes; missing `action` key                                                                  | I-13          |
-| [`fuzz_action_chunk_trimmer.py`](harnesses/fuzz_action_chunk_trimmer.py) | `ActionChunkTrimmer.__call__(outputs)`                                       | Action arrays with arbitrary first and second dimensions; extreme `n_action_steps`                                                            | I-14          |
-| [`fuzz_lerp_smoother.py`](harnesses/fuzz_lerp_smoother.py)               | `LerpSmoother.merge(remaining, incoming)`                                    | 2D float arrays with arbitrary row counts, zero rows, NaN/Inf values, mismatched dims                                                         | I-15, I-16    |
-| [`fuzz_action_queue.py`](harnesses/fuzz_action_queue.py)                 | `ChunkedActionQueue.push_chunk(chunk, offset)` + `pop()`                     | Deterministic sequences of arbitrary chunks, extreme offsets, pushes, and pops                                                                | I-17          |
+| Harness                                                                  | Entry Point                                                                  | Input Space                                                                                                                            | Oracles    |
+| ------------------------------------------------------------------------ | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| [`fuzz_manifest.py`](harnesses/fuzz_manifest.py)                         | `Manifest.load(path)`                                                        | Arbitrary JSON bytes (valid and malformed); extreme values in `shape`, `n_obs_steps`, unknown keys                                     | I-3        |
+| [`fuzz_component.py`](harnesses/fuzz_component.py)                       | `instantiate_component(spec)`, `resolve_artifact(spec, export_dir)`          | Crafted `artifact` paths (`../`, absolute); bounded nested `init_args`; arbitrary `flat_params` keys for registered safe types         | I-1, I-5   |
+| [`fuzz_import_dotted_path.py`](harnesses/fuzz_import_dotted_path.py)     | `import_dotted_path(path)`                                                   | Arbitrary dotted strings (relative imports, no-dot strings, known-safe module roots + fuzz suffix)                                     | I-6        |
+| [`fuzz_policy_name.py`](harnesses/fuzz_policy_name.py)                   | `_is_safe_policy_name(name)`, `InferenceModel(export_dir, policy_name=name)` | Arbitrary Unicode strings; strings that pass and fail the safety regex                                                                 | I-2        |
+| [`fuzz_detect_backend.py`](harnesses/fuzz_detect_backend.py)             | `InferenceModel._detect_backend()`                                           | Export directories populated with arbitrary filename extensions and combinations                                                       | I-6        |
+| [`fuzz_prepare_inputs.py`](harnesses/fuzz_prepare_inputs.py)             | `InferenceModel._prepare_inputs(inputs)`                                     | Flat dicts, nested dicts, mixed flat+nested collisions, arbitrary key names                                                            | I-7        |
+| [`fuzz_stats_normalizer.py`](harnesses/fuzz_stats_normalizer.py)         | `StatsNormalizer.__call__(inputs)`                                           | Arbitrary shaped float32 arrays; extreme stat values (inf, nan, zero std, inverted quantiles); all four modes                          | I-8, I-9   |
+| [`fuzz_resize_preprocessor.py`](harnesses/fuzz_resize_preprocessor.py)   | `ResizePreprocessor.__call__(inputs)`                                        | Channels-first and channels-last images; uint8 and float32; zero spatial dims; extreme target resolutions; stretch and letterbox modes | I-10, I-11 |
+| [`fuzz_resize_smolvla.py`](harnesses/fuzz_resize_smolvla.py)             | `ResizeSmolVLA.__call__(inputs)`                                             | Same image layouts as above; arbitrary target resolution                                                                               | I-10, I-12 |
+| [`fuzz_action_normalizer.py`](harnesses/fuzz_action_normalizer.py)       | `ActionNormalizer.__call__(outputs)`                                         | Output dicts with arbitrary key names and array shapes; missing `action` key                                                           | I-13       |
+| [`fuzz_action_chunk_trimmer.py`](harnesses/fuzz_action_chunk_trimmer.py) | `ActionChunkTrimmer.__call__(outputs)`                                       | Action arrays with arbitrary first and second dimensions; extreme `n_action_steps`                                                     | I-14       |
+| [`fuzz_lerp_smoother.py`](harnesses/fuzz_lerp_smoother.py)               | `LerpSmoother.merge(remaining, incoming)`                                    | 2D float arrays with arbitrary row counts, zero rows, NaN/Inf values, mismatched dims                                                  | I-15, I-16 |
+| [`fuzz_action_queue.py`](harnesses/fuzz_action_queue.py)                 | `ChunkedActionQueue.push_chunk(chunk, offset)` + `pop()`                     | Deterministic sequences of arbitrary chunks, extreme offsets, pushes, and pops                                                         | I-17       |
 
 ## Key invariants for fuzzing oracles
 
@@ -119,82 +119,83 @@ seven days.
 Use this process to turn temporary corpus files into permanent regression seeds:
 
 1. Record the successful workflow-run URL, commit SHA, and harness name. Download that harness's artifact with
-	the GitHub Actions UI or:
+   the GitHub Actions UI or:
 
-	```bash
-	gh run download <run-id> -n corpus-<harness>-<run-id> -D downloaded-corpus
-	```
+   ```bash
+   gh run download <run-id> -n corpus-<harness>-<run-id> -D downloaded-corpus
+   ```
 
 2. Treat every downloaded file as untrusted parser input. Do not execute it, use it as configuration, or copy
-	the complete artifact into the repository.
+   the complete artifact into the repository.
 3. In a supported Linux environment, install the same Atheris version as the workflow and minimize the corpus
-	into a new directory. Keep the downloaded directory unchanged for comparison:
+   into a new directory. Keep the downloaded directory unchanged for comparison:
 
-	```bash
-	uv pip install "atheris==3.1.0"
-	mkdir minimized-corpus
-	uv run python tests/fuzz/harnesses/fuzz_<harness>.py \
-	  -merge=1 minimized-corpus downloaded-corpus
-	```
+   ```bash
+   uv pip install "atheris==3.1.0"
+   mkdir minimized-corpus
+   uv run python tests/fuzz/harnesses/fuzz_<harness>.py \
+     -merge=1 minimized-corpus downloaded-corpus
+   ```
 
 4. Replay the minimized corpus without mutation. Unexpected exceptions, hangs, or crashes require triage; do
-	not promote those inputs as ordinary seeds:
+   not promote those inputs as ordinary seeds:
 
-	```bash
-	uv run python tests/fuzz/harnesses/fuzz_<harness>.py minimized-corpus -runs=0
-	```
+   ```bash
+   uv run python tests/fuzz/harnesses/fuzz_<harness>.py minimized-corpus -runs=0
+   ```
 
 5. Determine what each candidate reaches. A successful replay only proves that the input did not crash. For
-	each input considered for promotion, identify and record:
+   each input considered for promotion, identify and record:
 
-	- the harness sub-target selected by `FuzzedDataProvider`;
-	- the production function reached, not only a harness helper or re-export;
-	- the README invariant (`I-1` through `I-17`) exercised;
-	- the meaningful state reached, such as a valid parser record, depth boundary, non-finite statistic, queue
-	  offset, or validation error;
-	- the expected result or documented exception type;
-	- why the input is not redundant with an existing seed or focused unit test.
+   - the harness sub-target selected by `FuzzedDataProvider`;
+   - the production function reached, not only a harness helper or re-export;
+   - the README invariant (`I-1` through `I-17`) exercised;
+   - the meaningful state reached, such as a valid parser record, depth boundary, non-finite statistic, queue
+     offset, or validation error;
+   - the expected result or documented exception type;
+   - why the input is not redundant with an existing seed or focused unit test.
 
-	Repository examples:
+   Repository examples:
 
-	- `fuzz_manifest`: distinguish the raw-JSON and structured-dictionary paths. Record whether the input reaches
-	  valid manifest fields, `class_path`/`init_args`, processor lists, hardware shapes, or a specific Pydantic
-	  rejection.
-	- `fuzz_component`: distinguish artifact containment, `_MAX_CONFIG_DEPTH`, and registered flat-parameter
-	  handling. Do not retain a seed merely to reproduce the fixed Hugging Face symlink compatibility case;
-	  that behavior belongs to its unit test.
-	- `fuzz_import_dotted_path`: distinguish arbitrary dotted paths, known-safe module roots, and the no-dot
-	  rejection path. Confirm that the harness reaches the same `physicalai.config.importing.import_dotted_path`
-	  implementation used by component construction.
-	- `fuzz_stats_normalizer`: record the selected normalization mode, compatible array shape, finite versus
-	  non-finite statistics, passthrough-key behavior, and whether the expected result is normalization or the
-	  documented pre-arithmetic `ValueError`.
-	- `fuzz_action_queue`: record the smoother, push/pop sequence, offset boundary, and counter transition. The
-	  deterministic harness does not prove thread safety; concurrent behavior remains a pytest responsibility.
-	- `fuzz_policy_name`: record the Unicode or ASCII grammar boundary and whether predicate and constructor
-	  behavior agree. Numeric-leading names are valid under the current grammar.
+   - `fuzz_manifest`: distinguish the raw-JSON and structured-dictionary paths. Record whether the input reaches
+     valid manifest fields, `class_path`/`init_args`, processor lists, hardware shapes, or a specific Pydantic
+     rejection.
+   - `fuzz_component`: distinguish artifact containment, `_MAX_CONFIG_DEPTH`, and registered flat-parameter
+     handling. Do not retain a seed merely to reproduce the fixed Hugging Face symlink compatibility case;
+     that behavior belongs to its unit test.
+   - `fuzz_import_dotted_path`: distinguish arbitrary dotted paths, known-safe module roots, and the no-dot
+     rejection path. Confirm that the harness reaches the same `physicalai.config.importing.import_dotted_path`
+     implementation used by component construction.
+   - `fuzz_stats_normalizer`: record the selected normalization mode, compatible array shape, finite versus
+     non-finite statistics, passthrough-key behavior, and whether the expected result is normalization or the
+     documented pre-arithmetic `ValueError`.
+   - `fuzz_action_queue`: record the smoother, push/pop sequence, offset boundary, and counter transition. The
+     deterministic harness does not prove thread safety; concurrent behavior remains a pytest responsibility.
+   - `fuzz_policy_name`: record the Unicode or ASCII grammar boundary and whether predicate and constructor
+     behavior agree. Numeric-leading names are valid under the current grammar.
 
-	Use temporary instrumentation, a focused spy, or a small test rather than decoding bytes by assumption. For
-	a multi-target harness, temporarily wrap `_sub_*` functions and assert which wrapper is called. To confirm
-	deeper behavior, wrap the production entry point and inspect its arguments or expected exception. Remove
-	debug-only instrumentation before committing; keep a focused test when it documents a durable property. Do
-	not infer purpose from a filename or guessed `FuzzedDataProvider` byte layout.
+   Use temporary instrumentation, a focused spy, or a small test rather than decoding bytes by assumption. For
+   a multi-target harness, temporarily wrap `_sub_*` functions and assert which wrapper is called. To confirm
+   deeper behavior, wrap the production entry point and inspect its arguments or expected exception. Remove
+   debug-only instrumentation before committing; keep a focused test when it documents a durable property. Do
+   not infer purpose from a filename or guessed `FuzzedDataProvider` byte layout.
+
 6. Select only 2-8 nonredundant inputs that reach distinct useful behavior. Prefer inputs that unlock a parser
-	state, array shape, validation boundary, or error path that is difficult to reach from random bytes.
+   state, array shape, validation boundary, or error path that is difficult to reach from random bytes.
 7. Copy only those selected files into `tests/fuzz/seeds/fuzz_<harness>/`. Give them stable descriptive names
-	and document each purpose in `tests/fuzz/seeds/README.md`.
+   and document each purpose in `tests/fuzz/seeds/README.md`.
 8. If this is the harness's first checked-in seed directory, add it to the `_HARNESS_SEEDS` allowlist in
-	`tests/fuzz/test_seed_replay.py` and set its `seed_dir` in `.github/workflows/fuzz.yml`.
+   `tests/fuzz/test_seed_replay.py` and set its `seed_dir` in `.github/workflows/fuzz.yml`.
 9. Run deterministic seed replay and a short harness smoke test:
 
-	```bash
-	uv run pytest tests/fuzz/test_seed_replay.py -v
-	uv run python tests/fuzz/harnesses/fuzz_<harness>.py \
-	  tests/fuzz/seeds/fuzz_<harness> -runs=100
-	```
+   ```bash
+   uv run pytest tests/fuzz/test_seed_replay.py -v
+   uv run python tests/fuzz/harnesses/fuzz_<harness>.py \
+     tests/fuzz/seeds/fuzz_<harness> -runs=100
+   ```
 
 10. Submit the selected seeds, purpose documentation, allowlist/matrix changes, and source workflow-run URL in
-	 one PR. Reviewers must be able to explain why each seed is retained.
+    one PR. Reviewers must be able to explain why each seed is retained.
 
 After merge, seed replay checks these inputs before fuzzing, and the workflow copies them into the harness's
 starting corpus. Corpus persistence and automatic reuse across runs remain deferred work.

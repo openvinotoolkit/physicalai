@@ -10,12 +10,12 @@ minimize it against the rest of that target's corpus.
 
 ## `fuzz_manifest`
 
-| Seed | Purpose |
-| --- | --- |
-| `seed_minimal.json` | Minimal policy-package format and version fields |
-| `seed_full.json` | Full type-based manifest with policy, artifacts, processors, robot, camera, and metadata fields |
-| `seed_class_path.json` | Explicit `class_path` and nested `init_args` component representation |
-| `seed_nested_components.json` | Nested component configuration below the supported depth limit |
+| Seed                          | Purpose                                                                                         |
+| ----------------------------- | ----------------------------------------------------------------------------------------------- |
+| `seed_minimal.json`           | Minimal policy-package format and version fields                                                |
+| `seed_full.json`              | Full type-based manifest with policy, artifacts, processors, robot, camera, and metadata fields |
+| `seed_class_path.json`        | Explicit `class_path` and nested `init_args` component representation                           |
+| `seed_nested_components.json` | Nested component configuration below the supported depth limit                                  |
 
 These files bootstrap mutation toward meaningful manifest structures. Their successful replay proves only that
 the current harness accepts them as non-crashing inputs; it does not by itself establish which selector path or
