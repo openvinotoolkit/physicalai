@@ -126,11 +126,24 @@ class RuntimeCallback(Protocol):
 
 @export_config(class_path="physicalai.runtime.RobotRuntime")
 class RobotRuntime:
-    """Generic robot runtime loop with a required, pluggable action source.
+    """Control loop that reads a robot, asks an action source what to do, and sends it.
 
-    ``fps`` is the rate at which ``action_source`` is queried. An
-    ``interpolator`` with ``multiplier`` N sends N commands per action-source
-    action, so the robot is commanded at ``fps * N``.
+    Each cycle, the runtime reads the robot and cameras, gets one action from
+    ``action_source``, and sends it to the robot. Cycles run at ``fps``.
+
+    With an ``interpolator`` of ``multiplier`` N, each cycle is split into N
+    ticks: the first tick queries ``action_source``, and every tick sends one
+    command interpolated towards that action. The robot is then commanded at
+    ``fps * N`` while the action source still runs at ``fps``.
+
+    Args:
+        robot: Robot to read observations from and send commands to.
+        action_source: Decides the action for each cycle (policy, teleop, ...).
+        fps: Cycle rate in Hz, i.e. how often ``action_source`` is queried.
+        cameras: Cameras read once per cycle, keyed by name.
+        callbacks: Telemetry and action-transform hooks invoked every tick.
+        interpolator: Splits each action into several robot commands.
+            ``None`` sends one command per cycle.
     """
 
     def __init__(  # noqa: D107
