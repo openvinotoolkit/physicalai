@@ -3,6 +3,11 @@
 
 """Robot profiles and scene composition: scenes hold no robot, arms are attached at mount frames.
 
+Robot models come from MuJoCo Menagerie through the ``mujoco-menagerie`` package, which downloads a
+model on first use into a per-user cache (``MENAGERIE_CACHE_DIR`` overrides it). The pinned package
+version fixes every model file. Offline machines can run ``mujoco-menagerie prefetch <model>``
+beforehand, or point ``MENAGERIE_ROOT`` at a Menagerie checkout.
+
 A scene XML marks each arm's base pose with a ``<frame name="{prefix}robot_mount">``. Loading the
 scene attaches the profile's MJCF at every mount frame with that prefix, so a ``left_robot_mount``
 frame yields ``left_shoulder_pan``, ``left_gripper``, ``left_wrist``, and so on. XML files without
@@ -20,7 +25,6 @@ from typing import TYPE_CHECKING
 import numpy as np
 from loguru import logger
 
-from physicalai_mujoco_so101_plugin._urdf import get_urdf_path
 from physicalai_mujoco_so101_plugin.constants import SO101_JOINT_ORDER
 
 if TYPE_CHECKING:
@@ -38,8 +42,10 @@ class RobotProfile:
     """How to load one robot model and adapt it to the plugin's public contract."""
 
     name: str
-    mjcf_relpath: str
-    """Robot MJCF, relative to the bundled ``urdf`` directory."""
+    menagerie_model: str
+    """MuJoCo Menagerie model name, for example ``robotstudio_so101``."""
+    menagerie_entry: str
+    """Entry point of that model holding the robot alone, for example ``so101``."""
     joint_order: tuple[str, ...]
     """Public joint (and position actuator) names, unprefixed, in observation/action order."""
     joint_ranges: tuple[tuple[str, float, float], ...]
@@ -50,20 +56,28 @@ class RobotProfile:
     customize: Callable[[mujoco.MjSpec], None] | None = None
     """Further edits applied to the freshly loaded robot spec, before it is attached."""
 
-    @property
-    def mjcf_path(self) -> Path:
-        """Absolute path to the robot's MJCF."""
-        return get_urdf_path() / self.mjcf_relpath
-
     def load_spec(self) -> mujoco.MjSpec:
-        """Load the robot MJCF and apply the profile's ranges, force limits, and customization.
+        """Load the robot from MuJoCo Menagerie and apply the profile's ranges, force limits, and customization.
+
+        The first call on a machine downloads the model into the Menagerie cache.
 
         Returns:
             A new robot spec, ready to attach.
-        """
-        import mujoco  # noqa: PLC0415
 
-        spec = mujoco.MjSpec.from_file(str(self.mjcf_path))
+        Raises:
+            RuntimeError: If the model is not cached and cannot be downloaded.
+        """
+        import mujoco_menagerie  # noqa: PLC0415
+
+        try:
+            spec = mujoco_menagerie.get(self.menagerie_model).spec(self.menagerie_entry)
+        except mujoco_menagerie.DownloadError as exc:
+            msg = (
+                f"Could not download the MuJoCo Menagerie model {self.menagerie_model!r}. "
+                f"Connect to the internet once, run `mujoco-menagerie prefetch {self.menagerie_model}`, "
+                "or set MENAGERIE_ROOT to a mujoco_menagerie checkout."
+            )
+            raise RuntimeError(msg) from exc
         for joint_name, lower, upper in self.joint_ranges:
             spec.joint(joint_name).range = [lower, upper]
         for joint_name in self.joint_order:
@@ -133,10 +147,11 @@ def _customize_so101(spec: mujoco.MjSpec) -> None:
 
 SO101_PROFILE = RobotProfile(
     name="so101",
-    mjcf_relpath="robots/so101/so101.xml",
+    menagerie_model="robotstudio_so101",
+    menagerie_entry="so101",
     joint_order=SO101_JOINT_ORDER,
-    # The calibrated ranges of urdf/so101/so101_new_calib.urdf. Menagerie rounds them and caps
-    # wrist_roll at +2.74385 rad; the plugin's actuators and normalized units reach 2.84121 rad.
+    # The calibrated ranges of urdf/so101/so101_new_calib.urdf, unrounded. Normalized units span
+    # these ranges, so they are pinned here rather than taken from whichever Menagerie version is installed.
     joint_ranges=(
         ("shoulder_pan", -1.9198621771937616, 1.9198621771937634),
         ("shoulder_lift", -1.7453292519943224, 1.7453292519943366),

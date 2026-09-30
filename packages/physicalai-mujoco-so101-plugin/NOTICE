@@ -9,10 +9,3 @@ The original release history is preserved in CHANGELOG.md.
 urdf/scenes/yahtzee/assets/wood_19.png is Wood_19-512x512.png from
 "Tiny Texture Pack 2" by Screaming Brain Studios, released under CC0 1.0:
 https://opengameart.org/content/tiny-texture-pack-2
-
-urdf/robots/so101/ is robotstudio_so101 from MuJoCo Menagerie
-(https://github.com/google-deepmind/mujoco_menagerie) at commit
-c96a32d28fb5da84da38c1da4d749e7a13212855, released under Apache-2.0
-(urdf/robots/so101/LICENSE). It is derived from The Robot Studio's SO-101
-model (https://github.com/TheRobotStudio/SO-ARM100). urdf/robots/so101/README.md
-lists the adjustments the plugin applies when it loads the model.

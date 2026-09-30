@@ -7,6 +7,7 @@ import warnings
 from pathlib import Path
 
 import mujoco
+import mujoco_menagerie
 import numpy as np
 import pytest
 
@@ -34,10 +35,10 @@ EARLIER_SO101_JOINT_RANGES = np.array([
 ])
 
 
-def test_profile_points_at_the_vendored_menagerie_model() -> None:
-    assert SO101_PROFILE.mjcf_path == get_urdf_path() / "robots/so101/so101.xml"
-    assert SO101_PROFILE.mjcf_path.is_file()
-    assert (SO101_PROFILE.mjcf_path.parent / "LICENSE").is_file()
+def test_profile_names_the_menagerie_so101() -> None:
+    robot = mujoco_menagerie.get(SO101_PROFILE.menagerie_model)
+    assert SO101_PROFILE.menagerie_entry in robot.entry_names
+    assert robot.license == "Apache-2.0"
     assert SO101_PROFILE.joint_order == SO101_JOINT_ORDER
     assert tuple(name for name, _, _ in SO101_PROFILE.joint_ranges) == SO101_JOINT_ORDER
 
@@ -67,7 +68,7 @@ def test_robot_spec_collides_through_the_earlier_primitives_only() -> None:
 
 
 def test_bundled_stl_meshes_are_not_git_lfs_pointers() -> None:
-    """A checkout or build without ``git lfs pull`` must fail here, not ship pointer files."""
+    """The URDF meshes for Studio's 3D view: a checkout or build without ``git lfs pull`` must fail here."""
     meshes = sorted(get_urdf_path().rglob("*.stl"))
     assert meshes
     for mesh in meshes:
@@ -179,3 +180,12 @@ def test_mount_frame_prefix_names_the_attached_arm(tmp_path: Path) -> None:
     model = compose_scene_spec(path).compile()
     assert tuple(model.actuator(i).name for i in range(model.nu)) == tuple(f"demo_{n}" for n in SO101_JOINT_ORDER)
     assert model.camera("demo_wrist").id >= 0
+
+
+def test_missing_download_explains_how_to_get_the_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(*_args: object) -> None:
+        raise mujoco_menagerie.DownloadError("offline")
+
+    monkeypatch.setattr(mujoco_menagerie.Robot, "spec", fail)
+    with pytest.raises(RuntimeError, match="mujoco-menagerie prefetch robotstudio_so101"):
+        SO101_PROFILE.load_spec()
