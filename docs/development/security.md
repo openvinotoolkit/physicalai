@@ -65,14 +65,14 @@ security model explicitly accepts unless a change crosses that boundary or makes
 10. Prefer `.safetensors` over `.ckpt`/`.pt` for processor stats and weights when adding new artifact types.
 
 11. jsonargparse `parser.instantiate()` in runtime config loading can import and construct arbitrary
-   `class_path` targets from trusted operator YAML. Document supported targets and validate constructor
-   arguments that can affect files, processes, networks, credentials, or hardware. Do not report dynamic
-   construction alone as a defect within this trusted boundary; report untrusted data entering the boundary
-   or a constructor that violates another numbered rule.
+    `class_path` targets from trusted operator YAML. Document supported targets and validate constructor
+    arguments that can affect files, processes, networks, credentials, or hardware. Do not report dynamic
+    construction alone as a defect within this trusted boundary; report untrusted data entering the boundary
+    or a constructor that violates another numbered rule.
 
 12. Network transports must remain local-only by default. The documented, explicitly enabled remote mode and
-   its deployment assumptions are accepted behavior, not a finding by themselves. Flag changes that widen
-   default exposure, alter peer-identity assumptions, add peer-selected code or path semantics, or weaken
-   payload validation. Preserve fixed payload-size limits before deserialization. If a change alters the
-   trust boundary, update the user security model in the same change. Deserialization of untrusted transport
-   data must comply with rule 6.
+    its deployment assumptions are accepted behavior, not a finding by themselves. Flag changes that widen
+    default exposure, alter peer-identity assumptions, add peer-selected code or path semantics, or weaken
+    payload validation. Preserve fixed payload-size limits before deserialization. If a change alters the
+    trust boundary, update the user security model in the same change. Deserialization of untrusted transport
+    data must comply with rule 6.
