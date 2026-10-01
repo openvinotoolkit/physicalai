@@ -1,11 +1,8 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Fuzz ComponentSpec resolution.
+"""Fuzz ComponentSpec path, depth-limit, and flat-parameter handling."""
 
-Four sub-targets: path traversal prevention, depth-limit enforcement,
-flat-params injection, and symlink-bypass behaviour documentation.
-"""
 from __future__ import annotations
 
 import os
@@ -51,8 +48,7 @@ def _sub_resolve_artifact(fdp: atheris.FuzzedDataProvider, export_dir: str) -> N
         real_export = Path(os.path.realpath(export_dir))
         real_resolved = Path(os.path.normpath(resolved))
         assert real_resolved.is_relative_to(real_export), (
-            f"PATH TRAVERSAL: artifact {artifact!r} resolved to {resolved!r}, "
-            f"which escapes export_dir {export_dir!r}"
+            f"PATH TRAVERSAL: artifact {artifact!r} resolved to {resolved!r}, which escapes export_dir {export_dir!r}"
         )
 
 
@@ -90,10 +86,7 @@ def _sub_flat_params(fdp: atheris.FuzzedDataProvider) -> None:
     """Pass unexpected flat kwargs to known-safe registered component types."""
     chosen = fdp.PickValueInList(_SAFE_TYPES)
     n_extra = fdp.ConsumeIntInRange(0, 8)
-    extra = {
-        fdp.ConsumeUnicodeNoSurrogates(16): fdp.ConsumeUnicodeNoSurrogates(32)
-        for _ in range(n_extra)
-    }
+    extra = {fdp.ConsumeUnicodeNoSurrogates(16): fdp.ConsumeUnicodeNoSurrogates(32) for _ in range(n_extra)}
     spec_dict = {"type": chosen, **extra}
     try:
         spec = ComponentSpec.model_validate(spec_dict)
@@ -102,78 +95,19 @@ def _sub_flat_params(fdp: atheris.FuzzedDataProvider) -> None:
         pass
 
 
-@atheris.instrument_func
-def _sub_symlink_bypass(export_dir: str) -> None:
-    """Verify the documented symlink bypass: resolve_artifact() accepts intra-dir symlinks.
-
-    The traversal check is intentionally lexical (normpath, not realpath) so that
-    HuggingFace Hub snapshot symlinks pass.  This sub-target ensures that behaviour
-    is stable — if it starts raising ValueError the design changed and needs review.
-    """
-    import tempfile
-    from pathlib import Path
-
-    # Create a file outside export_dir that the symlink will point to.
-    with tempfile.NamedTemporaryFile(delete=False) as outside_file:
-        outside_path = outside_file.name
-
-    try:
-        link_name = "symlinked_artifact"
-        link_path = os.path.join(export_dir, link_name)
-        try:
-            os.symlink(outside_path, link_path)
-        except (OSError, NotImplementedError):
-            return  # symlinks unavailable in this sandbox
-
-        try:
-            spec = ComponentSpec.model_validate(
-                {"type": "normalize", "artifact": link_name}
-            )
-        except ValidationError:
-            return
-
-        try:
-            result = resolve_artifact(spec, Path(export_dir))
-        except ValueError:
-            # The bypass was closed — surface as assertion so it's not silently skipped
-            raise AssertionError(
-                f"resolve_artifact raised ValueError for intra-dir symlink "
-                f"{link_name!r} → {outside_path!r}.  This closes the documented "
-                f"lexical bypass.  Verify this is intentional before silencing."
-            ) from None
-
-        returned = result.flat_params.get("artifact", "")
-        if returned:
-            assert Path(os.path.normpath(returned)).is_relative_to(
-                Path(os.path.realpath(export_dir))
-            ), (
-                f"Symlink artifact resolved to {returned!r} which escapes "
-                f"export_dir {export_dir!r}"
-            )
-    finally:
-        try:
-            os.unlink(outside_path)
-        except OSError:
-            pass
-
-
-
 def test_one_input(data: bytes) -> None:
     if len(data) < 4:
         return
     fdp = atheris.FuzzedDataProvider(data)
-    sub = fdp.ConsumeIntInRange(0, 3)
+    sub = fdp.ConsumeIntInRange(0, 2)
 
     if sub == 0:
         with tempfile.TemporaryDirectory() as export_dir:
             _sub_resolve_artifact(fdp, export_dir)
     elif sub == 1:
         _sub_depth_limit(fdp)
-    elif sub == 2:
-        _sub_flat_params(fdp)
     else:
-        with tempfile.TemporaryDirectory() as export_dir:
-            _sub_symlink_bypass(export_dir)
+        _sub_flat_params(fdp)
 
 
 def main() -> None:

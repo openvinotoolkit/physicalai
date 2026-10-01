@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import numpy as np
 import pytest
 
@@ -115,3 +117,14 @@ class TestMetadataRoundtrip:
 
         with pytest.raises(TypeError, match="Expected a dict"):
             decode_metadata(msgpack.packb([1, 2, 3]))
+
+    def test_oversized_payload_rejected_before_unpacking(self) -> None:
+        oversized = b"\x00" * (1024 * 1024 + 1)
+
+        with (
+            patch("msgpack.unpackb") as unpackb,
+            pytest.raises(ValueError, match="exceeds the .* limit"),
+        ):
+            decode_metadata(oversized)
+
+        unpackb.assert_not_called()

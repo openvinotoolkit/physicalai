@@ -95,7 +95,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: "0.8.8"
 
@@ -105,6 +105,11 @@ jobs:
       # TODO: move atheris into pyproject.toml
       - name: Install atheris
         run: uv pip install "atheris==3.1.0"
+
+      # Fail fast if a committed regression seed no longer imports or replays deterministically.
+      - name: Replay checked-in seeds
+        if: matrix.harness == 'manifest'
+        run: uv run pytest tests/fuzz/test_seed_replay.py -v
 
       - name: Seed corpus
         run: |
@@ -158,6 +163,35 @@ jobs:
             echo "crashes_found=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Summarize fuzz metrics
+        if: ${{ always() && github.event_name == 'schedule' }}
+        env:
+          FUZZ_DURATION: >-
+            ${{
+              github.event_name == 'pull_request' && '30' ||
+              github.event.inputs.duration_s || '1800'
+            }}
+          HARNESS: ${{ matrix.harness }}
+        run: |
+          log="fuzz_output_${HARNESS}.txt"
+          progress="$(grep -E 'cov: [0-9]+.*ft: [0-9]+.*corp:' "$log" | tail -n 1 || true)"
+          average_execs="$(grep 'stat::average_exec_per_sec:' "$log" | tail -n 1 | awk '{print $2}' || true)"
+          atheris_version="$(uv run python -c 'from importlib.metadata import version; print(version("atheris"))')"
+          {
+            echo "### Fuzz baseline: ${HARNESS}"
+            echo
+            echo "- Revision: \`${GITHUB_SHA}\`"
+            echo "- Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "- Runner image: \`${ImageOS:-unknown} ${ImageVersion:-unknown}\`"
+            echo "- Python: \`$(uv run python --version 2>&1)\`"
+            echo "- Atheris: \`${atheris_version}\`"
+            echo "- Duration: \`${FUZZ_DURATION}s\`"
+            echo "- Average executions/second: \`${average_execs:-unavailable}\`"
+            echo "- Final libFuzzer progress: \`${progress:-unavailable}\`"
+            echo
+            echo "The libFuzzer \`cov\` and \`ft\` fields are mutation-guidance signals, not source coverage."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # ── Artifact uploads ──────────────────────────────────────────────────
       # Clean run       → zero artifacts.
       # libFuzzer crash → crash artifact (reproducing inputs + log).
@@ -191,6 +225,19 @@ jobs:
           name: log-${{ matrix.harness }}-${{ github.run_id }}
           path: fuzz_output_${{ matrix.harness }}.txt
           if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload trusted corpus for seed review
+        if: >-
+          ${{
+            (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+            steps.run_fuzzer.conclusion == 'success'
+          }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: corpus-${{ matrix.harness }}-${{ github.run_id }}
+          path: tests/fuzz/corpus/${{ matrix.harness }}/
+          if-no-files-found: error
           retention-days: 7
 
       # ── Fail the job ──────────────────────────────────────────────────────
