@@ -257,6 +257,60 @@ class TestLauncherLifecycle:
         factory.return_value.disconnect.assert_called_once()
 
 
+class TestRobotModelFetch:
+    def test_start_fetches_the_robot_before_the_owner_starts(self) -> None:
+        args = cli._build_parser().parse_args(["start", "--name", "my-sim", "--no-cameras", "--no-gui"])
+        calls: list[str] = []
+
+        def wait(shutdown, _name, _pid) -> None:
+            shutdown.set()
+
+        with (
+            patch.object(cli.SO101_PROFILE.__class__, "fetch", lambda _self: calls.append("fetch")),
+            patch.object(cli.SharedRobot, "from_config", side_effect=lambda *_a, **_k: calls.append("owner") or MagicMock()),
+            patch.object(cli, "_owner_pid", return_value=None),
+            patch.object(cli, "_wait_for_owner_shutdown", side_effect=wait),
+            patch.object(cli.signal, "signal"),
+        ):
+            cli._start(args)
+        assert calls == ["fetch", "owner"]
+
+    def test_start_exits_without_an_owner_when_the_fetch_fails(self) -> None:
+        args = cli._build_parser().parse_args(["start", "--no-cameras", "--no-gui"])
+        with (
+            patch.object(cli.SO101_PROFILE.__class__, "fetch", side_effect=RuntimeError("offline")),
+            patch.object(cli.SharedRobot, "from_config") as factory,
+            pytest.raises(SystemExit) as exit_info,
+        ):
+            cli._start(args)
+        assert exit_info.value.code == 1
+        factory.assert_not_called()
+
+    def test_custom_model_without_mounts_skips_the_fetch(self, tmp_path) -> None:
+        path = tmp_path / "custom.xml"
+        path.write_text("<mujoco><worldbody/></mujoco>")
+        with patch.object(cli.SO101_PROFILE.__class__, "fetch") as fetch:
+            cli._fetch_robot_models(str(path))  # noqa: SLF001
+        fetch.assert_not_called()
+
+    def test_prefetch_fetches_every_profile(self) -> None:
+        with (
+            patch.object(cli.sys, "argv", ["physicalai-mujoco-so101", "prefetch"]),
+            patch.object(cli.SO101_PROFILE.__class__, "fetch", autospec=True) as fetch,
+        ):
+            cli.main()
+        assert [call.args[0] for call in fetch.call_args_list] == list(cli.PROFILES)
+
+    def test_prefetch_exits_on_failure(self) -> None:
+        with (
+            patch.object(cli.sys, "argv", ["physicalai-mujoco-so101", "prefetch"]),
+            patch.object(cli.SO101_PROFILE.__class__, "fetch", side_effect=RuntimeError("offline")),
+            pytest.raises(SystemExit) as exit_info,
+        ):
+            cli.main()
+        assert exit_info.value.code == 1
+
+
 class TestResolveOwnerName:
     def test_single_arm_default(self) -> None:
         args = argparse.Namespace(name=None, bimanual=False)

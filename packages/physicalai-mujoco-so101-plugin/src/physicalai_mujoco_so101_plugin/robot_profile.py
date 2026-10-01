@@ -5,8 +5,10 @@
 
 Robot models come from MuJoCo Menagerie through the ``mujoco-menagerie`` package, which downloads a
 model on first use into a per-user cache (``MENAGERIE_CACHE_DIR`` overrides it). The pinned package
-version fixes every model file. Offline machines can run ``mujoco-menagerie prefetch <model>``
-beforehand, or point ``MENAGERIE_ROOT`` at a Menagerie checkout.
+version fixes every model file. ``physicalai-mujoco-so101 start`` fetches the scene's robot before it
+starts the simulation owner, so the download never runs against the owner's startup timeout.
+Offline machines can run ``physicalai-mujoco-so101 prefetch`` beforehand, or point ``MENAGERIE_ROOT``
+at a Menagerie checkout.
 
 A scene XML marks each arm's base pose with a ``<frame name="{prefix}robot_mount">``. Loading the
 scene attaches the profile's MJCF at every mount frame with that prefix, so a ``left_robot_mount``
@@ -56,28 +58,53 @@ class RobotProfile:
     customize: Callable[[mujoco.MjSpec], None] | None = None
     """Further edits applied to the freshly loaded robot spec, before it is attached."""
 
-    def load_spec(self) -> mujoco.MjSpec:
-        """Load the robot from MuJoCo Menagerie and apply the profile's ranges, force limits, and customization.
+    def fetch(self) -> Path:
+        """Put the robot's Menagerie model in the cache, downloading it if it is not there yet.
 
-        The first call on a machine downloads the model into the Menagerie cache.
+        The download shows a progress bar when stderr is a terminal.
 
         Returns:
-            A new robot spec, ready to attach.
+            The model directory.
 
         Raises:
-            RuntimeError: If the model is not cached and cannot be downloaded.
+            RuntimeError: If the model is not cached and cannot be obtained.
         """
         import mujoco_menagerie  # noqa: PLC0415
 
+        robot = mujoco_menagerie.get(self.menagerie_model)
+        cache = mujoco_menagerie.Cache()
+        if cache.root is None and not cache.is_cached(robot):
+            logger.info(
+                "Downloading the {} model from MuJoCo Menagerie ({:.1f} MB) into {}",
+                self.name,
+                (robot.download_size or 0) / 2**20,
+                cache.dir,
+            )
         try:
-            spec = mujoco_menagerie.get(self.menagerie_model).spec(self.menagerie_entry)
+            return robot.path(cache)
         except mujoco_menagerie.DownloadError as exc:
             msg = (
-                f"Could not download the MuJoCo Menagerie model {self.menagerie_model!r}. "
-                f"Connect to the internet once, run `mujoco-menagerie prefetch {self.menagerie_model}`, "
+                f"Could not download the MuJoCo Menagerie model {self.menagerie_model!r}: {exc}. "
+                f"Connect to the internet and run `physicalai-mujoco-so101 prefetch`, "
                 "or set MENAGERIE_ROOT to a mujoco_menagerie checkout."
             )
             raise RuntimeError(msg) from exc
+        except mujoco_menagerie.MenagerieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    def load_spec(self) -> mujoco.MjSpec:
+        """Load the robot from MuJoCo Menagerie and apply the profile's ranges, force limits, and customization.
+
+        The first call on a machine downloads the model into the Menagerie cache (see :meth:`fetch`).
+
+        Returns:
+            A new robot spec, ready to attach.
+        """
+        import mujoco  # noqa: PLC0415
+        import mujoco_menagerie  # noqa: PLC0415
+
+        entry = mujoco_menagerie.get(self.menagerie_model).entry(self.menagerie_entry)
+        spec = mujoco.MjSpec.from_file(str(self.fetch() / entry.file))
         for joint_name, lower, upper in self.joint_ranges:
             spec.joint(joint_name).range = [lower, upper]
         for joint_name in self.joint_order:
@@ -167,6 +194,10 @@ SO101_PROFILE = RobotProfile(
 )
 
 
+PROFILES: tuple[RobotProfile, ...] = (SO101_PROFILE,)
+"""Every robot the plugin can attach; ``physicalai-mujoco-so101 prefetch`` downloads all of them."""
+
+
 def robot_mount_prefixes(spec: mujoco.MjSpec) -> tuple[str, ...]:
     """Return the arm prefixes of the scene's mount frames, in document order."""
     return tuple(
@@ -194,6 +225,17 @@ def attach_robot(scene: mujoco.MjSpec, profile: RobotProfile, prefix: str) -> No
     if overridden:
         logger.debug("{} options overridden by the scene: {}", profile.name, ", ".join(overridden))
     scene.attach(robot, frame=scene.frame(f"{prefix}{ROBOT_MOUNT_FRAME}"), prefix=prefix)
+
+
+def scene_needs_robot(xml_path: str | Path) -> bool:
+    """Return whether loading the scene XML attaches a robot, so its model must be available.
+
+    Returns:
+        ``True`` if the XML has at least one mount frame.
+    """
+    import mujoco  # noqa: PLC0415
+
+    return bool(robot_mount_prefixes(mujoco.MjSpec.from_file(str(xml_path))))
 
 
 def compose_scene_spec(xml_path: str | Path, profile: RobotProfile = SO101_PROFILE) -> mujoco.MjSpec:
