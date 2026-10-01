@@ -72,6 +72,43 @@ class TestUVCCameraConfig:
 
 
 @pytest.fixture
+def mock_pynokhwa(monkeypatch: pytest.MonkeyPatch) -> None:
+    # setitem restores only this key; patch.dict(sys.modules) would also drop
+    # every module imported lazily while instantiating.
+    monkeypatch.setitem(sys.modules, "pynokhwa", MagicMock())
+    monkeypatch.delitem(sys.modules, "physicalai.capture.cameras.uvc._omnicamera", raising=False)
+
+
+@pytest.mark.usefixtures("mock_pynokhwa")
+class TestUVCCameraIdentityDevice:
+    """An identity dict reaches the camera exactly as written in the config.
+
+    pynokhwa matches identities with ``==``, so a string that comes back as an
+    int (a macOS hex ``uuid``, a numeric Linux ``serial``) matches no camera.
+    """
+
+    @pytest.mark.parametrize(
+        "device",
+        [
+            pytest.param({"uuid": "0x21230000c456366"}, id="macos-hex-uuid"),
+            pytest.param({"serial": "200901010001"}, id="numeric-serial"),
+            pytest.param({"index": 2}, id="int-index"),
+            pytest.param({"uuid": "6C707041-05AC-0010-0005-000000000001"}, id="plain-uuid"),
+        ],
+    )
+    def test_identity_dict_is_kept_as_given(self, device: dict[str, str | int]) -> None:
+        from physicalai.capture import UVCCamera
+        from physicalai.capture.cameras.uvc._omnicamera import OmniCamera  # noqa: PLC2701
+
+        camera = Config("physicalai.capture.UVCCamera", {"device": device}).instantiate(expected_type=Camera)
+
+        assert isinstance(camera, UVCCamera)
+        assert camera._device == device  # noqa: SLF001
+        assert isinstance(camera._inner, OmniCamera)  # noqa: SLF001
+        assert camera._inner._device_id_raw == device  # noqa: SLF001
+
+
+@pytest.fixture
 def mock_pyrealsense2() -> Generator[MagicMock, None, None]:
     mock_rs = MagicMock()
     with patch.dict(sys.modules, {"pyrealsense2": mock_rs}):
