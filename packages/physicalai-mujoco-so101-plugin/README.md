@@ -37,7 +37,13 @@ MUJOCO_GL=egl uv run --package physicalai-mujoco-so101-plugin physicalai-mujoco-
 
 Use `MUJOCO_GL=osmesa` on a machine without a GPU driver (slower, needs OSMesa installed). The same applies to the `start` command in the Studio setup below.
 
-The first `start` on a machine downloads the SO-101 model from [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) (about 4 MB) into a per-user cache. On a machine without internet access, run `uv run mujoco-menagerie prefetch robotstudio_so101` on a connected machine and copy the cache (set its location with `MENAGERIE_CACHE_DIR`), or set `MENAGERIE_ROOT` to a `mujoco_menagerie` checkout.
+The first `start` on a machine downloads the SO-101 model from [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) (about 4 MB) into a per-user cache before the simulation starts. To download it ahead of time, for example while building a container image, run:
+
+```bash
+uv run --package physicalai-mujoco-so101-plugin physicalai-mujoco-so101 prefetch
+```
+
+On a machine without internet access, run `prefetch` on a connected machine and copy the cache (set its location with `MENAGERIE_CACHE_DIR`), or set `MENAGERIE_ROOT` to a `mujoco_menagerie` checkout. A simulation owner started some other way, such as `examples/run_mujoco_owner.py`, downloads the model during its startup instead, so run `prefetch` first on a slow connection.
 
 By default this starts:
 

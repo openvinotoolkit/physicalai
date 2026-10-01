@@ -6,9 +6,11 @@
 Usage:
 
     physicalai-mujoco-so101 start --model <path> [options]
+    physicalai-mujoco-so101 prefetch
 
 Start a MuJoCo SO-101 simulation as a zenoh robot owner, making it
-discoverable and controllable from PhysicalAI Studio.
+discoverable and controllable from PhysicalAI Studio. ``prefetch`` downloads
+the robot models from MuJoCo Menagerie ahead of time, for offline use.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ from physicalai_mujoco_so101_plugin.constants import (
     DEFAULT_MUJOCO_OWNER_NAME,
 )
 from physicalai_mujoco_so101_plugin.mujoco_robot import BiMuJoCoSO101, MuJoCoSO101
+from physicalai_mujoco_so101_plugin.robot_profile import PROFILES, SO101_PROFILE, scene_needs_robot
 from physicalai_mujoco_so101_plugin.studio_recorder import DEFAULT_STUDIO_URL, validate_studio_url
 
 _CLI_NAME = "physicalai-mujoco-so101"
@@ -158,6 +161,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"Physical AI Studio backend for automatic episode recording (default: {DEFAULT_STUDIO_URL})",
     )
 
+    sub.add_parser("prefetch", help="Download the robot models from MuJoCo Menagerie into the local cache")
+
     stop = sub.add_parser("stop", help="Stop a running MuJoCo simulation owner")
     stop.add_argument(
         "--name",
@@ -222,9 +227,26 @@ def _resolve_owner_name(args: argparse.Namespace) -> str:
     return DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME if args.bimanual else DEFAULT_MUJOCO_OWNER_NAME
 
 
+def _fetch_robot_models(model_path: str) -> None:
+    """Fetch the robot the model attaches before the owner starts, or exit with the reason.
+
+    The owner subprocess must report ready within a fixed startup timeout; a
+    first-run download inside it could exceed that and fail with an unrelated
+    timeout error. Fetching here has no deadline and shows its progress.
+    """
+    if not scene_needs_robot(model_path):
+        return
+    try:
+        SO101_PROFILE.fetch()
+    except RuntimeError as exc:
+        logger.error("{}", exc)
+        sys.exit(1)
+
+
 def _start(args: argparse.Namespace) -> None:  # noqa: PLR0912, PLR0915
     model_path, scene_config = _resolve_model_and_scene(args.model, args.scene, bimanual=args.bimanual)
     owner_name = _resolve_owner_name(args)
+    _fetch_robot_models(model_path)
 
     http_enabled = not args.no_http and args.http_port > 0
 
@@ -607,6 +629,16 @@ def _stop(args: argparse.Namespace) -> None:
         logger.warning("No running MuJoCo SO-101 simulation found for name '{}'", args.name)
 
 
+def _prefetch() -> None:
+    for profile in PROFILES:
+        try:
+            path = profile.fetch()
+        except RuntimeError as exc:
+            logger.error("{}", exc)
+            sys.exit(1)
+        logger.info("{} model ready at {}", profile.name, path)
+
+
 def main() -> None:
     """Parse command-line arguments and run the requested command."""
     parser = _build_parser()
@@ -614,6 +646,8 @@ def main() -> None:
 
     if args.command == "start":
         _start(args)
+    elif args.command == "prefetch":
+        _prefetch()
     elif args.command == "stop":
         _stop(args)
     else:

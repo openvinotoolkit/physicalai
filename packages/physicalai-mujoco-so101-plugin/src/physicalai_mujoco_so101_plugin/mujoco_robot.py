@@ -1905,8 +1905,8 @@ class BiMuJoCoSO101(MuJoCoSO101):
     """Bimanual SO-101 simulated with a single MuJoCo model.
 
     Runs both arms in one model with ``left_*`` then ``right_*`` joints
-    (12 total). ``send_action`` writes into the model actuator array, so the
-    dual-arm XML must declare its actuators in ``BIMANUAL_SO101_JOINT_ORDER``.
+    (12 total), in ``BIMANUAL_SO101_JOINT_ORDER``. Joints and actuators are
+    looked up by name, so their order in the compiled model does not matter.
     """
 
     JOINT_ORDER: ClassVar[tuple[str, ...]] = BIMANUAL_SO101_JOINT_ORDER

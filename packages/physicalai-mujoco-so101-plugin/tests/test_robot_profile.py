@@ -20,6 +20,7 @@ from physicalai_mujoco_so101_plugin.robot_profile import (
     compose_scene_spec,
     load_scene_model,
     robot_mount_prefixes,
+    scene_needs_robot,
 )
 from physicalai_mujoco_so101_plugin.scene_registry import get_scene, list_scenes, list_scenes_for_arms
 
@@ -186,6 +187,30 @@ def test_missing_download_explains_how_to_get_the_model(monkeypatch: pytest.Monk
     def fail(*_args: object) -> None:
         raise mujoco_menagerie.DownloadError("offline")
 
-    monkeypatch.setattr(mujoco_menagerie.Robot, "spec", fail)
-    with pytest.raises(RuntimeError, match="mujoco-menagerie prefetch robotstudio_so101"):
+    monkeypatch.setattr(mujoco_menagerie.Robot, "path", fail)
+    with pytest.raises(RuntimeError, match=r"physicalai-mujoco-so101 prefetch.*MENAGERIE_ROOT"):
+        SO101_PROFILE.fetch()
+    with pytest.raises(RuntimeError, match="robotstudio_so101"):
         SO101_PROFILE.load_spec()
+
+
+def test_missing_menagerie_root_model_is_reported(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MENAGERIE_ROOT", str(tmp_path))
+    with pytest.raises(RuntimeError, match="not found under MENAGERIE_ROOT"):
+        SO101_PROFILE.fetch()
+
+
+def test_fetch_returns_the_model_directory() -> None:
+    entry = mujoco_menagerie.get(SO101_PROFILE.menagerie_model).entry(SO101_PROFILE.menagerie_entry)
+    assert (SO101_PROFILE.fetch() / entry.file).is_file()
+
+
+@pytest.mark.parametrize("scene_id", sorted(list_scenes()))
+def test_every_scene_needs_the_robot(scene_id: str) -> None:
+    assert scene_needs_robot(get_scene(scene_id).scene_xml_path)
+
+
+def test_xml_without_mount_frames_needs_no_robot(tmp_path: Path) -> None:
+    path = tmp_path / "custom.xml"
+    path.write_text("<mujoco><worldbody/></mujoco>")
+    assert not scene_needs_robot(path)
