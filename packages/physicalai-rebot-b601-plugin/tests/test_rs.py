@@ -288,6 +288,15 @@ class TestReBotB601RSAction:
         robot.enable_torque()
         controller.enable_all.assert_called()
 
+    def test_shoulder_pan_accepts_negative_base_rotation(self, mock_motorbridge: MagicMock) -> None:
+        robot = _create_robot(mock_motorbridge)
+        robot.connect()
+        motors = list(mock_motorbridge.Controller.return_value.mock_motors)
+
+        robot.send_action(np.array([-30.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32))
+
+        motors[0].send_mit.assert_called_once_with(math.radians(-30.0), 0.0, 50.0, 3.0, 0.0)
+
     def test_echoing_observation_holds_current_pose(self, mock_motorbridge: MagicMock) -> None:
         """Sending the observation back as the action must hold every joint in place."""
         robot = _create_robot(mock_motorbridge)
