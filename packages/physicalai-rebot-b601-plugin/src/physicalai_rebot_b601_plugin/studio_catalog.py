@@ -28,7 +28,7 @@ from physicalai_studio_plugin import (
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 import physicalai_rebot_b601_plugin
-from physicalai_rebot_b601_plugin import ReBotB601DM, get_urdf_path
+from physicalai_rebot_b601_plugin import ReBotB601DM, ReBotB601RS, get_urdf_path
 
 if TYPE_CHECKING:
     from typing import Protocol
@@ -219,6 +219,72 @@ async def _build_rebot_b601_dm_driver(
     )
 
 
+_SYSFS_NET_ROOT = Path("/sys/class/net")
+# Linux interface names are at most 15 characters; starting with an alphanumeric excludes "." and "..".
+_SOCKETCAN_INTERFACE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$"
+
+
+class ReBotB601RSPayload(BaseModel):
+    """Connection payload for a ReBot B601 RS follower arm on a SocketCAN interface."""
+
+    connection_string: str = Field(
+        default="can0",
+        title="CAN interface",
+        description="SocketCAN interface wired to the arm, for example can0. Bring it up at 1 Mbit/s first.",
+        pattern=_SOCKETCAN_INTERFACE_PATTERN,
+    )
+
+
+class ReBotRSProbe(RobotProbe[ReBotB601RSPayload]):
+    """Online check for ReBot RS arms, based on the SocketCAN interface state."""
+
+    async def discover(self, manager: PortScanner) -> list[SerialPortInfo]:
+        """Return no devices: SocketCAN interfaces are not serial ports.
+
+        Returns:
+            list[SerialPortInfo]: Always empty.
+        """
+        _ = self, manager
+        return []
+
+    async def identify(
+        self,
+        payload: ReBotB601RSPayload,
+        manager: PortScanner | None = None,
+        joint: str | None = None,
+    ) -> None:
+        """Request a visual identify action; not supported for ReBot RS arms."""
+        _ = self, payload, manager, joint
+
+    async def is_online(self, payload: ReBotB601RSPayload, manager: PortScanner | None = None) -> bool:
+        """Report whether the configured SocketCAN interface is up.
+
+        Returns:
+            bool: ``True`` if the interface exists and its operational state is ``up``.
+        """
+        _ = self, manager
+        operstate = _SYSFS_NET_ROOT / payload.connection_string / "operstate"
+        try:
+            return operstate.read_text(encoding="utf-8").strip() == "up"
+        except OSError:
+            return False
+
+
+_REBOT_RS_PROBE = ReBotRSProbe()
+
+
+async def _build_rebot_b601_rs_driver(  # noqa: RUF029 - Studio awaits every robot builder
+    robot: PayloadContainer[ReBotB601RSPayload],
+    factory: CatalogRobotFactory,
+) -> PhysicalAIRobot:
+    _ = factory  # SocketCAN interfaces are network devices, so there is no serial port to resolve.
+    raw = robot.payload
+    if isinstance(raw, BaseModel) and type(raw) is not ReBotB601RSPayload:
+        raw = raw.model_dump()
+    validated = raw if isinstance(raw, ReBotB601RSPayload) else ReBotB601RSPayload.model_validate(raw)
+    return ReBotB601RS(port=validated.connection_string, can_adapter="socketcan", role="follower")
+
+
 def _definitions() -> list[RobotCatalogDefinition]:
     return [
         RobotCatalogDefinition(
@@ -230,6 +296,17 @@ def _definitions() -> list[RobotCatalogDefinition]:
             asset=_REBOT_B601_DM_ASSET,
             adapter_options=RobotAdapterOptions(include_velocities=True, external_effort_gain=None),
             probe=_REBOT_PROBE,
+        ),
+        # No RobotAsset: the bundled RS URDF uses motor-frame joint signs, so a preview would mirror
+        # elbow_flex, wrist_flex, and wrist_yaw.
+        RobotCatalogDefinition(
+            type="ReBot_B601_RS_Follower",
+            display_name="ReBot B601 RS Follower",
+            role="follower",
+            robot_builder=_build_rebot_b601_rs_driver,
+            robot_payload=ReBotB601RSPayload,
+            adapter_options=RobotAdapterOptions(include_velocities=True, external_effort_gain=None),
+            probe=_REBOT_RS_PROBE,
         ),
     ]
 

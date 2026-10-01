@@ -69,14 +69,14 @@ def test_definitions_count() -> None:
     from physicalai_rebot_b601_plugin.studio_catalog import _definitions
 
     defs = _definitions()
-    assert len(defs) == 1
+    assert len(defs) == 2
 
 
 def test_definitions_have_expected_types() -> None:
     from physicalai_rebot_b601_plugin.studio_catalog import _definitions
 
     types = {d.type for d in _definitions()}
-    assert types == {"ReBot_B601_DM_Follower"}
+    assert types == {"ReBot_B601_DM_Follower", "ReBot_B601_RS_Follower"}
 
 
 def test_register_physicalai_studio_plugin() -> None:
@@ -84,7 +84,7 @@ def test_register_physicalai_studio_plugin() -> None:
 
     registry = _FakeRegistry()
     register_physicalai_studio_plugin(registry)
-    assert len(registry.definitions) == 1
+    assert len(registry.definitions) == 2
 
 
 def test_dm_follower_structure() -> None:
@@ -105,7 +105,7 @@ def test_definition_robot_type_property() -> None:
     from physicalai_rebot_b601_plugin.studio_catalog import _definitions
 
     for d in _definitions():
-        assert d.type == "ReBot_B601_DM_Follower"
+        assert d.type in {"ReBot_B601_DM_Follower", "ReBot_B601_RS_Follower"}
 
 
 def test_dm_follower_has_robot_builder() -> None:
@@ -203,3 +203,71 @@ def test_get_rebot_urdf_root_returns_path() -> None:
     root = _get_rebot_urdf_root()
     assert isinstance(root, Path)
     assert root.exists()
+
+
+def test_rs_follower_structure() -> None:
+    from physicalai_rebot_b601_plugin.studio_catalog import ReBotB601RSPayload, _definitions
+
+    rs = next(d for d in _definitions() if d.type == "ReBot_B601_RS_Follower")
+
+    assert rs.display_name == "ReBot B601 RS Follower"
+    assert rs.role == "follower"
+    assert callable(rs.robot_builder)
+    assert rs.robot_payload is ReBotB601RSPayload
+    assert rs.asset is None
+    assert rs.probe is not None
+    assert rs.adapter_options.include_velocities is True
+    assert rs.adapter_options.external_effort_gain is None
+
+
+def test_rebot_b601_rs_payload_defaults_and_ui_schema() -> None:
+    from physicalai_studio_plugin import validate_robot_payload_ui
+
+    from physicalai_rebot_b601_plugin.studio_catalog import ReBotB601RSPayload
+
+    assert ReBotB601RSPayload().connection_string == "can0"
+    ReBotB601RSPayload.model_rebuild(raise_errors=True)
+    validate_robot_payload_ui(ReBotB601RSPayload)
+    _assert_no_retired_ui_keys(ReBotB601RSPayload.model_json_schema())
+
+
+@pytest.mark.parametrize("interface", ["", ".", "..", "can0/../x", "can0;ls", "a" * 16])
+def test_rebot_b601_rs_payload_rejects_invalid_interface_names(interface: str) -> None:
+    from pydantic import ValidationError
+
+    from physicalai_rebot_b601_plugin.studio_catalog import ReBotB601RSPayload
+
+    with pytest.raises(ValidationError):
+        ReBotB601RSPayload(connection_string=interface)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("as_model", [True, False])
+async def test_build_rebot_b601_rs_returns_exportable_socketcan_driver(as_model: bool) -> None:
+    from physicalai.config import Config
+
+    from physicalai_rebot_b601_plugin.studio_catalog import ReBotB601RSPayload, _build_rebot_b601_rs_driver
+
+    payload = ReBotB601RSPayload(connection_string="can1") if as_model else {"connection_string": "can1"}
+    driver = await _build_rebot_b601_rs_driver(_StubRobot(payload), cast(Any, _StubFactory(port=None)))
+
+    assert driver.device_ids == ("rebot-rs:socketcan:can1",)
+    exported = Config.from_instance(driver)
+    assert exported["class_path"].endswith("ReBotB601RS")
+    assert exported["init_args"]["port"] == "can1"
+
+
+@pytest.mark.anyio
+async def test_rs_probe_reports_socketcan_interface_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from physicalai_rebot_b601_plugin import studio_catalog
+
+    for interface, state in (("can0", "up"), ("can1", "down")):
+        (tmp_path / interface).mkdir()
+        (tmp_path / interface / "operstate").write_text(f"{state}\n", encoding="utf-8")
+    monkeypatch.setattr(studio_catalog, "_SYSFS_NET_ROOT", tmp_path)
+    probe = studio_catalog.ReBotRSProbe()
+
+    assert await probe.is_online(studio_catalog.ReBotB601RSPayload(connection_string="can0")) is True
+    assert await probe.is_online(studio_catalog.ReBotB601RSPayload(connection_string="can1")) is False
+    assert await probe.is_online(studio_catalog.ReBotB601RSPayload(connection_string="can9")) is False
+    assert await probe.discover(cast(Any, None)) == []
