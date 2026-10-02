@@ -40,6 +40,18 @@ ROBOT_MOUNT_FRAME = "robot_mount"
 
 
 @dataclass(frozen=True)
+class ArmKinematics:
+    """The parts of an arm that the conveyor autopilot's inverse kinematics drives."""
+
+    ik_joints: tuple[str, ...]
+    """Joints the IK solves for, unprefixed; followed by the gripper they make up ``RobotProfile.joint_order``."""
+    tcp_body: str
+    """Body that carries the grasp point."""
+    tcp_offset: tuple[float, float, float]
+    """Grasp point in the ``tcp_body`` frame, in metres."""
+
+
+@dataclass(frozen=True)
 class RobotProfile:
     """How to load one robot model and adapt it to the plugin's public contract."""
 
@@ -53,10 +65,18 @@ class RobotProfile:
     joint_ranges: tuple[tuple[str, float, float], ...]
     """Joint ranges in radians. Normalized units span these ranges, so they are pinned here."""
     actuator_forcerange: tuple[float, float]
+    gripper: str
+    """The gripper joint, unprefixed; normalized units map it to ``[0, 100]`` instead of ``[-100, 100]``."""
     wrist_camera: str
     """Name of the camera on the gripper, unprefixed."""
+    kinematics: ArmKinematics | None = None
+    """What the conveyor autopilot needs; ``None`` means the arm has no autopilot."""
     customize: Callable[[mujoco.MjSpec], None] | None = None
     """Further edits applied to the freshly loaded robot spec, before it is attached."""
+
+    def joint_names(self, prefix: str = "") -> tuple[str, ...]:
+        """Return the public joint names of this robot attached with `prefix`, in observation/action order."""
+        return tuple(f"{prefix}{name}" for name in self.joint_order)
 
     def fetch(self) -> Path:
         """Put the robot's Menagerie model in the cache, downloading it if it is not there yet.
@@ -189,7 +209,14 @@ SO101_PROFILE = RobotProfile(
     ),
     # The plugin's servos have always used 3.35 N m; Menagerie's class default is 2.94.
     actuator_forcerange=(-3.35, 3.35),
+    gripper="gripper",
     wrist_camera="wrist",
+    kinematics=ArmKinematics(
+        ik_joints=("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"),
+        tcp_body="gripper",
+        # Between the jaw pads, about 10 mm off the fixed jaw.
+        tcp_offset=(0.015, 0.0, -0.09),
+    ),
     customize=_customize_so101,
 )
 

@@ -243,39 +243,25 @@ def _fetch_robot_models(model_path: str) -> None:
         sys.exit(1)
 
 
-def _start(args: argparse.Namespace) -> None:  # noqa: PLR0912, PLR0915
+def _camera_configs(robot_cls: type[MuJoCoSO101]) -> list[dict[str, object]]:
+    """Stream the first arm's wrist camera, the overview, then any other wrist cameras.
+
+    Returns:
+        One camera config per stream.
+    """
+    first_wrist, *other_wrists = robot_cls.wrist_cameras()
+    return [{"name": name, "width": 640, "height": 480, "fps": 30} for name in (first_wrist, "overview", *other_wrists)]
+
+
+def _start(args: argparse.Namespace) -> None:
     model_path, scene_config = _resolve_model_and_scene(args.model, args.scene, bimanual=args.bimanual)
     owner_name = _resolve_owner_name(args)
     _fetch_robot_models(model_path)
 
     http_enabled = not args.no_http and args.http_port > 0
 
-    cameras: list[dict[str, object]] = []
-    if not args.no_cameras:
-        left_wrist_name = "left_wrist" if args.bimanual else "wrist"
-        cameras = [
-            {
-                "name": left_wrist_name,
-                "width": 640,
-                "height": 480,
-                "fps": 30,
-            },
-            {
-                "name": "overview",
-                "width": 640,
-                "height": 480,
-                "fps": 30,
-            },
-        ]
-        if args.bimanual:
-            cameras.append(
-                {
-                    "name": "right_wrist",
-                    "width": 640,
-                    "height": 480,
-                    "fps": 30,
-                },
-            )
+    robot_cls = BiMuJoCoSO101 if args.bimanual else MuJoCoSO101
+    cameras = [] if args.no_cameras else _camera_configs(robot_cls)
 
     robot_kwargs = {
         "model_path": model_path,
@@ -298,7 +284,7 @@ def _start(args: argparse.Namespace) -> None:  # noqa: PLR0912, PLR0915
         idle_timeout = 10.0
 
     robot = SharedRobot.from_config(
-        Config.from_instance((BiMuJoCoSO101 if args.bimanual else MuJoCoSO101)(**robot_kwargs)),  # type: ignore[arg-type]
+        Config.from_instance(robot_cls(**robot_kwargs)),  # type: ignore[arg-type]
         name=owner_name,
         allow_remote=args.allow_remote,
         rate_hz=args.rate_hz,

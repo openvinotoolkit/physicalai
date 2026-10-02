@@ -31,13 +31,12 @@ from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
+from physicalai_mujoco_so101_plugin.robot_profile import SO101_PROFILE
+
 if TYPE_CHECKING:
     from physicalai_mujoco_so101_plugin.conveyor import ConveyorItem, ConveyorSort
+    from physicalai_mujoco_so101_plugin.robot_profile import ArmKinematics, RobotProfile
 
-ARM_JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
-GRIPPER = "gripper"
-TCP_LOCAL = np.array([0.015, 0.0, -0.09])
-"""Grasp point in the gripper frame: between the jaw pads, ~10 mm off the fixed jaw."""
 MAX_IK_STEP = 0.25
 """Largest joint change (rad) per IK iteration."""
 SYMMETRY = {"cube": np.pi / 2, "hex": np.pi / 3, "cylinder": None}
@@ -102,19 +101,27 @@ class _Plan:
 class ArmIK:
     """Damped least-squares IK for the grasp point, fingers down, jaw at a given yaw."""
 
-    def __init__(self, model: object) -> None:
-        """Resolve the arm joints; IK runs on a private `MjData` so the simulation is untouched."""
+    def __init__(self, model: object, kinematics: ArmKinematics | None = SO101_PROFILE.kinematics) -> None:
+        """Resolve the arm joints; IK runs on a private `MjData` so the simulation is untouched.
+
+        Raises:
+            ValueError: If `kinematics` is ``None`` (the arm has no autopilot).
+        """
         import mujoco  # noqa: PLC0415
 
+        if kinematics is None:
+            msg = "This arm has no kinematics for the autopilot"
+            raise ValueError(msg)
         self._mujoco = mujoco
         self.model = model
         self.data = mujoco.MjData(model)
-        joints = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name) for name in ARM_JOINTS]
+        self._tcp_offset = np.asarray(kinematics.tcp_offset, dtype=np.float64)
+        joints = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name) for name in kinematics.ik_joints]
         self.qpos_adr = np.array([model.jnt_qposadr[j] for j in joints])
         self.dof_adr = np.array([model.jnt_dofadr[j] for j in joints])
         self.lower = np.array([model.jnt_range[j][0] for j in joints])
         self.upper = np.array([model.jnt_range[j][1] for j in joints])
-        self.body = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "gripper"))
+        self.body = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, kinematics.tcp_body))
         self._jacp = np.zeros((3, model.nv))
         self._jacr = np.zeros((3, model.nv))
 
@@ -124,7 +131,7 @@ class ArmIK:
         Returns:
             The grasp point, in metres.
         """
-        return data.xpos[self.body] + data.xmat[self.body].reshape(3, 3) @ TCP_LOCAL
+        return data.xpos[self.body] + data.xmat[self.body].reshape(3, 3) @ self._tcp_offset
 
     def gripper_yaw(self, data: object) -> float:
         """World yaw of the jaw's closing axis (the gripper x axis).
@@ -208,21 +215,27 @@ def _yaw_distance(a: float, b: float) -> float:
 class ConveyorDemonstrator:
     """Sort items off the belt with privileged state, one control tick at a time."""
 
-    def __init__(self, model: object, conveyor: ConveyorSort, config: DemoConfig | None = None) -> None:
-        """Bind to a model and its conveyor controller."""
+    def __init__(
+        self,
+        model: object,
+        conveyor: ConveyorSort,
+        config: DemoConfig | None = None,
+        profile: RobotProfile = SO101_PROFILE,
+    ) -> None:
+        """Bind to a model and its conveyor controller, driving the unprefixed arm of `profile`."""
         import mujoco  # noqa: PLC0415
 
         self._mujoco = mujoco
         self.model = model
         self.conveyor = conveyor
         self.config = config or DemoConfig()
-        self.ik = ArmIK(model)
+        self.ik = ArmIK(model, profile.kinematics)
         self.stats = DemoStats()
         self._plan = _Plan()
         self._q: np.ndarray | None = None
         self._grip = self.config.grip_open
         self._actuators = [
-            int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)) for name in (*ARM_JOINTS, GRIPPER)
+            int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)) for name in profile.joint_order
         ]
 
     @property
@@ -328,7 +341,7 @@ class ConveyorDemonstrator:
         virtual leader arm, say).
 
         Returns:
-            Joint targets in radians, ordered like ``SO101_JOINT_ORDER`` (arm joints, then gripper).
+            Joint targets in radians, in the profile's joint order (IK joints, then gripper).
         """
         cfg, plan = self.config, self._plan
         now = float(data.time)

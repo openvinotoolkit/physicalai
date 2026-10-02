@@ -196,7 +196,7 @@ def test_compatible_scene_lists_match_real_models() -> None:
     for scene_id, scene in list_scenes().items():
         robot_cls = BiMuJoCoSO101 if scene.num_arms == 2 else MuJoCoSO101
         model = scene.load_model()
-        assert robot_cls(model_path="unused")._actuator_indices_for_joint_order(model) is not None, scene_id
+        assert robot_cls(model_path="unused")._resolve_arms(model) is not None, scene_id
         assert scene_id in list_scenes_for_arms(scene.num_arms)
 
 
