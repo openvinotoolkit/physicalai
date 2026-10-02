@@ -31,6 +31,7 @@ from physicalai_mujoco_so101_plugin.constants import (
     DEFAULT_MUJOCO_OWNER_NAME,
     SO101_JOINT_ORDER,
 )
+from physicalai_mujoco_so101_plugin.virtual_leader import DEFAULT_HTTP_PORT, MuJoCoVirtualLeader
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -164,6 +165,66 @@ class MuJoCoSO101Probe(RobotProbe[MuJoCoSO101Payload]):
 _MUJOCO_PROBE = MuJoCoSO101Probe()
 
 
+class MuJoCoVirtualLeaderPayload(BaseModel):
+    """Connection settings for the simulation's virtual leader arm."""
+
+    http_port: int = Field(  # type: ignore[call-overload]
+        default=DEFAULT_HTTP_PORT,
+        ge=1,
+        le=65535,
+        description="HTTP port of the running MuJoCo simulation on this machine (its --http-port)",
+    )
+
+
+def _check_virtual_leader_online(http_port: int) -> bool:
+    leader = MuJoCoVirtualLeader(http_port=http_port, timeout_s=1.0)
+    try:
+        leader.connect()
+    except ConnectionError:
+        return False
+    leader.disconnect()
+    return True
+
+
+class MuJoCoVirtualLeaderProbe(RobotProbe[MuJoCoVirtualLeaderPayload]):
+    """Check that a simulation publishes a virtual leader pose."""
+
+    async def discover(self, manager: PortScanner) -> list[SerialPortInfo]:
+        """Return no serial devices: the leader is a simulation endpoint."""
+        _ = self, manager
+        await asyncio.sleep(0)
+        return []
+
+    async def identify(
+        self,
+        payload: MuJoCoVirtualLeaderPayload,
+        manager: PortScanner | None = None,
+        joint: str | None = None,
+    ) -> None:
+        """Perform no visual identification for the virtual leader."""
+        _ = self, payload, manager, joint
+
+    async def is_online(
+        self,
+        payload: MuJoCoVirtualLeaderPayload,
+        manager: PortScanner | None = None,
+    ) -> bool:
+        """Return whether the simulation answers on its HTTP port."""
+        _ = self, manager
+        return await asyncio.to_thread(_check_virtual_leader_online, payload.http_port)
+
+
+async def _build_virtual_leader(
+    robot: PayloadContainer[MuJoCoVirtualLeaderPayload],
+    factory: CatalogRobotFactory,
+) -> PhysicalAIRobot:
+    _ = factory
+    await asyncio.sleep(0)
+    raw = robot.payload
+    validated = raw if isinstance(raw, MuJoCoVirtualLeaderPayload) else MuJoCoVirtualLeaderPayload.model_validate(raw)
+    return MuJoCoVirtualLeader(http_port=validated.http_port)
+
+
 @export_config(class_path="physicalai_mujoco_so101_plugin.studio_catalog._SharedSO101Robot")
 class _SharedSO101Robot:
     def __init__(self, shared_robot: SharedRobot, joint_names: list[str] | tuple[str, ...]) -> None:
@@ -251,6 +312,19 @@ def _definitions() -> list[RobotCatalogDefinition]:
                 external_effort_gain=None,
             ),
             probe=_MUJOCO_PROBE,
+        ),
+        RobotCatalogDefinition(
+            type="MuJoCo_SO101_Virtual_Leader",
+            display_name="MuJoCo SO-101 Virtual Leader",
+            role="leader",
+            robot_builder=_build_virtual_leader,
+            robot_payload=MuJoCoVirtualLeaderPayload,
+            asset=_MUJOCO_SO101_ASSET,
+            adapter_options=RobotAdapterOptions(
+                include_velocities=False,
+                external_effort_gain=None,
+            ),
+            probe=MuJoCoVirtualLeaderProbe(),
         ),
     ]
 

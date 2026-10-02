@@ -33,6 +33,7 @@ from physicalai_mujoco_so101_plugin.constants import (
     DEFAULT_MUJOCO_OWNER_NAME,
 )
 from physicalai_mujoco_so101_plugin.mujoco_robot import BiMuJoCoSO101, MuJoCoSO101
+from physicalai_mujoco_so101_plugin.studio_recorder import DEFAULT_STUDIO_URL, validate_studio_url
 
 _CLI_NAME = "physicalai-mujoco-so101"
 
@@ -150,6 +151,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Disable the camera/control HTTP server",
     )
+    start.add_argument(
+        "--studio-url",
+        type=str,
+        default=DEFAULT_STUDIO_URL,
+        help=f"Physical AI Studio backend for automatic episode recording (default: {DEFAULT_STUDIO_URL})",
+    )
 
     stop = sub.add_parser("stop", help="Stop a running MuJoCo simulation owner")
     stop.add_argument(
@@ -259,6 +266,7 @@ def _start(args: argparse.Namespace) -> None:  # noqa: PLR0912, PLR0915
         "http_port": args.http_port if http_enabled else 0,
         "viser_host": args.viser_host,
         "viser_port": args.viser_port if not args.no_gui else 0,
+        "studio_url": validate_studio_url(args.studio_url),
     }
     if scene_config is not None:
         robot_kwargs["scene_config"] = asdict(scene_config)  # type: ignore[arg-type]

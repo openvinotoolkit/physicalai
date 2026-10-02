@@ -2146,6 +2146,7 @@ dependencies = [
     { name = "physicalai-studio-plugin" },
     { name = "pydantic" },
     { name = "uvicorn" },
+    { name = "websockets" },
 ]
 
 [package.optional-dependencies]
@@ -2171,6 +2172,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'tests'" },
     { name = "pytest-asyncio", marker = "extra == 'tests'" },
     { name = "uvicorn", specifier = ">=0.30" },
+    { name = "websockets", specifier = ">=13.0" },
 ]
 provides-extras = ["tests"]
 

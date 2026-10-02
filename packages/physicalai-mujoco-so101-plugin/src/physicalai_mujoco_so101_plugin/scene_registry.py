@@ -16,6 +16,7 @@ import numpy as np
 from loguru import logger
 
 from physicalai_mujoco_so101_plugin._urdf import get_urdf_path
+from physicalai_mujoco_so101_plugin.conveyor import park_items, pool_item_names
 from physicalai_mujoco_so101_plugin.spawn import (
     place_freejoint,
     read_body_xy,
@@ -66,6 +67,16 @@ _GARMENT_FOLD_HOME: tuple[tuple[str, float], ...] = (
     ("right_wrist_flex", 0.3),
 )
 
+# Gripper hovering ~8 cm above the near belt rail, angled down at the pick zone.
+_CONVEYOR_SORT_HOME: tuple[tuple[str, float], ...] = (
+    ("shoulder_pan", 0.0),
+    ("shoulder_lift", -1.4),
+    ("elbow_flex", 0.7),
+    ("wrist_flex", 1.6),
+    ("wrist_roll", 0.0),
+    ("gripper", 0.0),
+)
+
 
 # ---------------------------------------------------------------------------
 # Scene reset functions
@@ -98,10 +109,11 @@ def _freejoint_spawn_reset(scene_id: str) -> ResetFn:
     return reset
 
 
-def _garment_fold_reset(model: object, data: object, rng: np.random.Generator) -> None:  # noqa: ARG001
+def _set_arm_pose(model: object, data: object, pose: tuple[tuple[str, float], ...]) -> None:
+    """Put the named arm joints (and their position actuators) at `pose`, at rest."""
     import mujoco  # noqa: PLC0415
 
-    for joint_name, val in _GARMENT_FOLD_HOME:
+    for joint_name, val in pose:
         # pyrefly: ignore [missing-attribute]
         jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
         if jid < 0:
@@ -119,6 +131,12 @@ def _garment_fold_reset(model: object, data: object, rng: np.random.Generator) -
         if aid >= 0:
             # pyrefly: ignore [missing-attribute]
             data.ctrl[aid] = val
+
+
+def _garment_fold_reset(model: object, data: object, rng: np.random.Generator) -> None:  # noqa: ARG001
+    import mujoco  # noqa: PLC0415
+
+    _set_arm_pose(model, data, _GARMENT_FOLD_HOME)
 
     # pyrefly: ignore [missing-attribute]
     if model.nflex > 0:
@@ -189,6 +207,12 @@ def _yahtzee_reset(model: object, data: object, rng: np.random.Generator) -> Non
     mujoco.mj_forward(model, data)
 
 
+def _conveyor_sort_reset(model: object, data: object, rng: np.random.Generator) -> None:  # noqa: ARG001
+    # The belt feed (conveyor.ConveyorSort) randomizes each item as it enters.
+    _set_arm_pose(model, data, _CONVEYOR_SORT_HOME)
+    park_items(model, data)
+
+
 # ---------------------------------------------------------------------------
 # Scene configurations
 # ---------------------------------------------------------------------------
@@ -222,6 +246,14 @@ _SCENES: dict[str, SceneConfig] = {
         block_min_sep=0.018,
         target_min_sep=0.02,
     ),
+    "conveyor_sort": SceneConfig(
+        scene_id="conveyor_sort",
+        display_name="Conveyor Sort",
+        description="Sort items off a moving belt by color; cracked or purple items go to reject",
+        scene_xml_relpath="scenes/conveyor_sort/scene.xml",
+        free_joints=tuple(f"{name}:joint" for name in pool_item_names()),
+        home_qpos=_CONVEYOR_SORT_HOME,
+    ),
     "garment_fold": SceneConfig(
         scene_id="garment_fold",
         display_name="Garment Fold",
@@ -235,6 +267,7 @@ _SCENES: dict[str, SceneConfig] = {
 _RESET_FUNCTIONS: dict[str, ResetFn] = {
     "single_pick_place": _freejoint_spawn_reset("single_pick_place"),
     "yahtzee": _yahtzee_reset,
+    "conveyor_sort": _conveyor_sort_reset,
     "garment_fold": _garment_fold_reset,
 }
 

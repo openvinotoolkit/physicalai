@@ -19,6 +19,7 @@ dependencies = [
     "defusedxml>=0.7.1",
     "fastapi>=0.115",
     "uvicorn>=0.30",
+    "websockets>=13.0",
     "opencv-python-headless>=4.10",
     # 0.0.x with no stability promise, and the viser sync reaches into
     # ViserMujocoScene internals; pin the patch range deliberately.

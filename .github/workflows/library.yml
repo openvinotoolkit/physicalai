@@ -16,6 +16,7 @@ jobs:
     outputs:
       run_lint: ${{ steps.check_paths_lint.outputs.run }}
       run_tests: ${{ steps.check_paths_tests.outputs.run }}
+      run_mujoco_slow_tests: ${{ steps.check_paths_mujoco.outputs.run }}
     permissions:
       contents: read
     steps:
@@ -50,6 +51,19 @@ jobs:
               - packages/**/pyproject.toml
               - .gitattributes
               - pyproject.toml
+              - uv.lock
+              - .github/workflows/library.yml
+
+      # The MuJoCo plugin's slow tests step real simulations for seconds each.
+      # Pull requests run them only when the plugin (or its pinned deps) change;
+      # pushes to main always run them.
+      - name: Check MuJoCo plugin paths
+        id: check_paths_mujoco
+        uses: open-edge-platform/geti-ci/actions/check-paths@2ed3ce382d1dbd6db52c7c6b93ffdae280a1c06f # check-paths/v0.1.0
+        with:
+          files_yaml: |
+            test:
+              - packages/physicalai-mujoco-so101-plugin/**
               - uv.lock
               - .github/workflows/library.yml
 
@@ -111,6 +125,9 @@ jobs:
           uv pip install --python .venv/bin/python --no-deps -e packages/physicalai-lerobot-plugin
 
       - name: Run python unit tests
+        env:
+          # "false" skips the MuJoCo plugin's slow tests (see its tests/conftest.py).
+          PHYSICALAI_MUJOCO_SLOW_TESTS: ${{ needs.check-paths.outputs.run_mujoco_slow_tests }}
         run: uv run pytest --import-mode=importlib tests/unit packages/*/tests
 
   required-check:

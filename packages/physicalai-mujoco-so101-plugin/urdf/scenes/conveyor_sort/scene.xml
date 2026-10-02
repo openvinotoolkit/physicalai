@@ -1,0 +1,233 @@
+<?xml version="1.0"?>
+<!--
+  conveyor_sort: items ride a belt past the SO-101; sort them into bins.
+
+  Layout (world frame, metres; the robot base sits at the origin facing +x):
+    - Belt along y at x = 0.25, top at z = 0.06, flowing from +y (entry hood)
+      to -y (drive end). Items that ride off the end drop into the catch tray.
+    - Bins on the robot side of the belt, axis-aligned so all four stay in
+      the standard overview frame: red (0.13, 0.13), blue (0.03, 0.21),
+      green (0.13, -0.13), reject (0.03, -0.21); 18-21 cm from the base.
+  The belt is a slide-jointed slab driven by a velocity actuator; the scene's
+  conveyor controller wraps it back by one texture tile (BELT_TILE) so it runs
+  forever. Visual meshes (frame, hood, bins) are built in Blender; collisions
+  use primitives. Regenerate textures and conveyor_items.xml with
+  scripts/generate_conveyor_assets.py.
+-->
+<mujoco model="conveyor_sort">
+  <compiler angle="radian" meshdir="../../so101/assets" texturedir="assets" autolimits="true"/>
+  <include file="../../so101/so101_robot_config.xml"/>
+
+  <default>
+    <!-- Visual-only meshes. Textured surfaces are always UV-mapped meshes with 2D textures:
+         mjviser (the browser viewer) draws primitives flat and reduces cube maps to one color
+         per face, while MuJoCo's own renderer handles either. -->
+    <default class="conveyor_visual">
+      <geom contype="0" conaffinity="0" group="2" type="mesh" density="0"/>
+    </default>
+    <default class="conveyor_collision">
+      <geom group="3" rgba="0.5 0.5 0.5 0" condim="3" friction="0.6 0.005 0.0001"/>
+    </default>
+    <!-- Items collide with the world (bit 1) and the moving belt (bit 2). -->
+    <default class="conveyor_item">
+      <geom contype="3" conaffinity="3" condim="4" friction="1.0 0.005 0.0001" group="0"/>
+    </default>
+    <!-- Crack skin of a cracked item: visual only, over an invisible collision primitive. -->
+    <default class="conveyor_item_skin">
+      <geom contype="0" conaffinity="0" group="0" type="mesh" density="0"/>
+    </default>
+  </default>
+
+  <asset>
+    <mesh name="conveyor_frame" file="../../scenes/conveyor_sort/assets/conveyor_frame.obj" inertia="shell"/>
+    <mesh name="conveyor_frame_dark" file="../../scenes/conveyor_sort/assets/conveyor_frame_dark.obj" inertia="shell"/>
+    <mesh name="conveyor_rollers" file="../../scenes/conveyor_sort/assets/conveyor_rollers.obj" inertia="shell"/>
+    <mesh name="conveyor_motor" file="../../scenes/conveyor_sort/assets/conveyor_motor.obj" inertia="shell"/>
+    <mesh name="conveyor_hood" file="../../scenes/conveyor_sort/assets/conveyor_hood.obj" inertia="shell"/>
+    <mesh name="conveyor_hood_dark" file="../../scenes/conveyor_sort/assets/conveyor_hood_dark.obj" inertia="shell"/>
+    <mesh name="bin" file="../../scenes/conveyor_sort/assets/bin.obj" inertia="shell"/>
+    <mesh name="catch_tray" file="../../scenes/conveyor_sort/assets/bin.obj" inertia="shell" scale="1.2 1.4 0.6"/>
+    <mesh name="supply_crate" file="../../scenes/conveyor_sort/assets/bin.obj" inertia="shell" scale="1.9 2.9 1.4"/>
+    <mesh name="skin_cube" file="../../scenes/conveyor_sort/assets/skin_cube.obj"/>
+    <mesh name="skin_cylinder" file="../../scenes/conveyor_sort/assets/skin_cylinder.obj"/>
+    <mesh name="skin_hex" file="../../scenes/conveyor_sort/assets/skin_hex.obj"/>
+    <mesh name="belt_surface" file="../../scenes/conveyor_sort/assets/belt_surface.obj"/>
+    <mesh name="bin_label" file="../../scenes/conveyor_sort/assets/bin_label.obj"/>
+    <!-- Hexagonal prism, circumradius 16 mm (28 mm across flats), 30 mm tall. -->
+    <mesh name="hex_prism" vertex="
+       0.016 0 -0.015   0.008 0.013856 -0.015   -0.008 0.013856 -0.015
+      -0.016 0 -0.015  -0.008 -0.013856 -0.015   0.008 -0.013856 -0.015
+       0.016 0 0.015    0.008 0.013856 0.015    -0.008 0.013856 0.015
+      -0.016 0 0.015   -0.008 -0.013856 0.015    0.008 -0.013856 0.015"/>
+
+    <texture name="cell_floor" type="2d" builtin="checker" mark="edge" rgb1="0.36 0.37 0.39" rgb2="0.32 0.33 0.35"
+             markrgb="0.45 0.46 0.48" width="300" height="300"/>
+    <!-- No reflectance: a reflective floor makes MuJoCo draw the whole scene again every frame (~2.8 ms). -->
+    <material name="cell_floor" texture="cell_floor" texuniform="true" texrepeat="4 4"/>
+
+    <texture name="belt" type="2d" file="belt.png"/>
+    <!-- belt_surface.obj repeats the texture every 20 mm (= BELT_TILE in conveyor.py). -->
+    <material name="belt" texture="belt" specular="0.1"/>
+
+    <material name="alu" rgba="0.72 0.74 0.77 1" specular="0.6" shininess="0.6"/>
+    <material name="steel" rgba="0.55 0.56 0.58 1" specular="0.8" shininess="0.8"/>
+    <material name="dark" rgba="0.12 0.12 0.13 1"/>
+    <material name="hood_paint" rgba="0.20 0.33 0.52 1" specular="0.3"/>
+
+    <material name="bin_red" rgba="0.93 0.55 0.55 1"/>
+    <material name="bin_blue" rgba="0.55 0.65 0.95 1"/>
+    <material name="bin_green" rgba="0.55 0.85 0.58 1"/>
+    <texture name="reject_stripes" type="2d" file="reject_stripes.png"/>
+    <material name="bin_reject" texture="reject_stripes" rgba="1 1 1 1"/>
+    <material name="catch_tray" rgba="0.25 0.26 0.28 1"/>
+    <!-- Stack light: dim lenses always shown; the lit lamps are mocap bodies moved over them
+         (the browser viewer only updates poses at run time, not colors). -->
+    <material name="light_green_off" rgba="0.10 0.24 0.12 1"/>
+    <material name="light_amber_off" rgba="0.30 0.21 0.04 1"/>
+    <material name="light_red_off" rgba="0.28 0.06 0.05 1"/>
+    <material name="light_green_on" rgba="0.20 1.00 0.30 1" emission="1"/>
+    <material name="light_amber_on" rgba="1.00 0.68 0.08 1" emission="1"/>
+    <material name="light_red_on" rgba="1.00 0.15 0.10 1" emission="1"/>
+    <texture name="label_red" type="2d" file="label_red.png"/>
+    <texture name="label_blue" type="2d" file="label_blue.png"/>
+    <texture name="label_green" type="2d" file="label_green.png"/>
+    <texture name="label_reject" type="2d" file="label_reject.png"/>
+    <material name="label_red" texture="label_red"/>
+    <material name="label_blue" texture="label_blue"/>
+    <material name="label_green" texture="label_green"/>
+    <material name="label_reject" texture="label_reject"/>
+    <material name="supply_crate" rgba="0.30 0.42 0.30 1"/>
+
+    <!-- Item colours: keep in sync with ITEM_COLORS in generate_conveyor_assets.py. -->
+    <material name="item_red" rgba="0.80 0.12 0.12 1" specular="0.3"/>
+    <material name="item_blue" rgba="0.12 0.31 0.86 1" specular="0.3"/>
+    <material name="item_green" rgba="0.16 0.65 0.22 1" specular="0.3"/>
+    <material name="item_purple" rgba="0.55 0.22 0.71 1" specular="0.3"/>
+    <texture name="cracked_red" type="2d" file="cracked_red.png"/>
+    <texture name="cracked_blue" type="2d" file="cracked_blue.png"/>
+    <texture name="cracked_green" type="2d" file="cracked_green.png"/>
+    <texture name="cracked_purple" type="2d" file="cracked_purple.png"/>
+    <material name="item_red_cracked" texture="cracked_red" specular="0.3"/>
+    <material name="item_blue_cracked" texture="cracked_blue" specular="0.3"/>
+    <material name="item_green_cracked" texture="cracked_green" specular="0.3"/>
+    <material name="item_purple_cracked" texture="cracked_purple" specular="0.3"/>
+  </asset>
+
+  <worldbody>
+    <light pos="1 1 3.5" dir="-0.227 -0.268 -0.936" directional="false" cutoff="25" exponent="1" diffuse="0.5 0.5 0.5"/>
+    <light pos="0 0 3.5" dir="0 0 -1" directional="true" diffuse="0.5 0.5 0.5" castshadow="false"/>
+    <geom name="floor" type="plane" size="0 0 0.01" pos="0 0 0" material="cell_floor" condim="3" friction="0.5 0.005 0.0001"/>
+
+    <!-- Conveyor frame: Blender visuals + primitive collisions. -->
+    <geom class="conveyor_visual" mesh="conveyor_frame" material="alu"/>
+    <geom class="conveyor_visual" mesh="conveyor_frame_dark" material="dark"/>
+    <geom class="conveyor_visual" mesh="conveyor_rollers" material="steel"/>
+    <geom class="conveyor_visual" mesh="conveyor_motor" material="dark"/>
+    <geom class="conveyor_visual" mesh="conveyor_hood" material="hood_paint"/>
+    <geom class="conveyor_visual" mesh="conveyor_hood_dark" material="dark"/>
+    <geom name="rail_left" class="conveyor_collision" type="box" pos="0.298 0 0.0525" size="0.006 0.415 0.0175"/>
+    <geom name="rail_right" class="conveyor_collision" type="box" pos="0.202 0 0.0525" size="0.006 0.415 0.0175"/>
+    <!-- Static bed just under the belt surface: stops the gripper pushing through the belt. -->
+    <geom name="belt_bed" class="conveyor_collision" type="box" pos="0.25 0 0.053" size="0.04 0.40 0.005"/>
+    <geom name="hood_wall_left" class="conveyor_collision" type="box" pos="0.306 0.3625 0.0875" size="0.002 0.0625 0.0525"/>
+    <geom name="hood_wall_right" class="conveyor_collision" type="box" pos="0.194 0.3625 0.0875" size="0.002 0.0625 0.0525"/>
+    <geom name="hood_roof" class="conveyor_collision" type="box" pos="0.25 0.3625 0.142" size="0.061 0.0625 0.002"/>
+
+    <!-- Stack light on the back corner of the entry hood (out of the arm's reach): green = belt
+         running, amber = an item comes out of the hood within ~2 s, red = belt paused. -->
+    <geom class="conveyor_visual" type="cylinder" pos="0.295 0.405 0.154" size="0.004 0.010" material="dark"/>
+    <geom class="conveyor_visual" type="cylinder" pos="0.295 0.405 0.1715" size="0.009 0.0065" material="light_green_off"/>
+    <geom class="conveyor_visual" type="cylinder" pos="0.295 0.405 0.1855" size="0.009 0.0065" material="light_amber_off"/>
+    <geom class="conveyor_visual" type="cylinder" pos="0.295 0.405 0.1995" size="0.009 0.0065" material="light_red_off"/>
+    <geom class="conveyor_visual" type="cylinder" pos="0.295 0.405 0.2075" size="0.0095 0.0015" material="dark"/>
+    <body name="light_green_on" mocap="true" pos="0.295 0.405 0.1715">
+      <geom class="conveyor_visual" type="cylinder" size="0.0095 0.0068" material="light_green_on"/>
+    </body>
+    <body name="light_amber_on" mocap="true" pos="0.295 0.405 0.1855">
+      <geom class="conveyor_visual" type="cylinder" size="0.0095 0.0068" material="light_amber_on"/>
+    </body>
+    <body name="light_red_on" mocap="true" pos="0.295 0.405 0.1995">
+      <geom class="conveyor_visual" type="cylinder" size="0.0095 0.0068" material="light_red_on"/>
+    </body>
+
+    <!-- Moving belt: slides along y. Covers y in [q - 0.40, q + 0.42] for joint q in (-0.02, 0]. -->
+    <body name="conveyor_belt" pos="0.25 0.01 0.055">
+      <joint name="conveyor_belt" type="slide" axis="0 1 0" damping="0" armature="0.01"/>
+      <geom name="conveyor_belt" type="box" size="0.04 0.41 0.005" contype="2" conaffinity="2" group="3"
+            rgba="0 0 0 0" condim="4" friction="1.2 0.005 0.0001" mass="0.5"/>
+      <geom class="conveyor_visual" mesh="belt_surface" material="belt"/>
+    </body>
+
+    <!-- Bins (open boxes, 10 x 10 x 4.5 cm). Collision: floor + four walls. -->
+    <body name="bin_red" pos="0.13 0.13 0">
+      <geom class="conveyor_visual" mesh="bin" material="bin_red"/>
+      <geom class="conveyor_visual" mesh="bin_label" material="label_red" pos="0 0 0.0046"/>
+      <geom class="conveyor_collision" type="box" pos="0 0 0.002" size="0.05 0.05 0.002"/>
+      <geom class="conveyor_collision" type="box" pos="0.048 0 0.0225" size="0.002 0.05 0.0225"/>
+      <geom class="conveyor_collision" type="box" pos="-0.048 0 0.0225" size="0.002 0.05 0.0225"/>
+      <geom class="conveyor_collision" type="box" pos="0 0.048 0.0225" size="0.05 0.002 0.0225"/>
+      <geom class="conveyor_collision" type="box" pos="0 -0.048 0.0225" size="0.05 0.002 0.0225"/>
+    </body>
+    <body name="bin_blue" pos="0.03 0.21 0">
+      <geom class="conveyor_visual" mesh="bin" material="bin_blue"/>
+      <geom class="conveyor_visual" mesh="bin_label" material="label_blue" pos="0 0 0.0046"/>
+      <geom class="conveyor_collision" type="box" pos="0 0 0.002" size="0.05 0.05 0.002"/>
+      <geom class="conveyor_collision" type="box" pos="0.048 0 0.0225" size="0.002 0.05 0.0225"/>
+      <geom class="conveyor_collision" type="box" pos="-0.048 0 0.0225" size="0.002 0.05 0.0225"/>
+      <geom class="conveyor_collision" type="box" pos="0 0.048 0.0225" size="0.05 0.002 0.0225"/>
+      <geom class="conveyor_collision" type="box" pos="0 -0.048 0.0225" size="0.05 0.002 0.0225"/>
+    </body>
+    <body name="bin_green" pos="0.13 -0.13 0">
+      <geom class="conveyor_visual" mesh="bin" material="bin_green"/>
+      <geom class="conveyor_visual" mesh="bin_label" material="label_green" pos="0 0 0.0046"/>
+      <geom class="conveyor_collision" type="box" pos="0 0 0.002" size="0.05 0.05 0.002"/>
+      <geom class="conveyor_collision" type="box" pos="0.048 0 0.0225" size="0.002 0.05 0.0225"/>
+      <geom class="conveyor_collision" type="box" pos="-0.048 0 0.0225" size="0.002 0.05 0.0225"/>
+      <geom class="conveyor_collision" type="box" pos="0 0.048 0.0225" size="0.05 0.002 0.0225"/>
+      <geom class="conveyor_collision" type="box" pos="0 -0.048 0.0225" size="0.05 0.002 0.0225"/>
+    </body>
+    <body name="bin_reject" pos="0.03 -0.21 0">
+      <geom class="conveyor_visual" mesh="bin" material="bin_reject"/>
+      <geom class="conveyor_visual" mesh="bin_label" material="label_reject" pos="0 0 0.0046"/>
+      <geom class="conveyor_collision" type="box" pos="0 0 0.002" size="0.05 0.05 0.002"/>
+      <geom class="conveyor_collision" type="box" pos="0.048 0 0.0225" size="0.002 0.05 0.0225"/>
+      <geom class="conveyor_collision" type="box" pos="-0.048 0 0.0225" size="0.002 0.05 0.0225"/>
+      <geom class="conveyor_collision" type="box" pos="0 0.048 0.0225" size="0.05 0.002 0.0225"/>
+      <geom class="conveyor_collision" type="box" pos="0 -0.048 0.0225" size="0.05 0.002 0.0225"/>
+    </body>
+    <!-- Catch tray under the drive end: anything landing here is a miss. It reaches under the
+         belt end; the belt underside (z = 0.05) clears items lying in the tray. -->
+    <body name="catch_tray" pos="0.25 -0.465 0">
+      <geom class="conveyor_visual" mesh="catch_tray" material="catch_tray"/>
+      <geom class="conveyor_collision" type="box" pos="0 0 0.002" size="0.06 0.07 0.002"/>
+      <geom class="conveyor_collision" type="box" pos="0.058 0 0.0135" size="0.002 0.07 0.0135"/>
+      <geom class="conveyor_collision" type="box" pos="-0.058 0 0.0135" size="0.002 0.07 0.0135"/>
+      <geom class="conveyor_collision" type="box" pos="0 -0.068 0.0135" size="0.06 0.002 0.0135"/>
+    </body>
+
+    <!-- Lidded supply crate behind the robot: unused pool items wait here, out of reach and
+         out of the overview view, until the belt feed teleports them into the entry hood. -->
+    <body name="supply_crate" pos="-0.35 0 0">
+      <geom class="conveyor_visual" mesh="supply_crate" material="supply_crate"/>
+      <geom name="supply_crate_lid" class="conveyor_visual" type="box" pos="0 0 0.066" size="0.098 0.148 0.003"
+            material="supply_crate"/>
+      <geom class="conveyor_collision" type="box" pos="0 0 0.003" size="0.095 0.145 0.003"/>
+      <geom class="conveyor_collision" type="box" pos="0.092 0 0.032" size="0.003 0.145 0.032"/>
+      <geom class="conveyor_collision" type="box" pos="-0.092 0 0.032" size="0.003 0.145 0.032"/>
+      <geom class="conveyor_collision" type="box" pos="0 0.142 0.032" size="0.095 0.003 0.032"/>
+      <geom class="conveyor_collision" type="box" pos="0 -0.142 0.032" size="0.095 0.003 0.032"/>
+    </body>
+    <include file="conveyor_items.xml"/>
+    <include file="../../so101/so101_robot_bodies.xml"/>
+    <body name="overview_camera_rig" pos="-0.10 0.1 0.80" euler="-1.5707963267948966 -1.5707963267948966 0">
+      <body name="overview_camera_tilt" euler="1.00 0 0">
+        <camera name="overview" mode="fixed" euler="0 0 3.141592653589793" fovy="58"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <!-- Stiff drive: a gripper pressing an item into the belt must not push the belt backwards. -->
+    <velocity name="conveyor_belt" joint="conveyor_belt" kv="500" forcerange="-500 500" ctrlrange="-0.2 0.2"/>
+  </actuator>
+</mujoco>
