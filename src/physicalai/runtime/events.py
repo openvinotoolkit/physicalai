@@ -25,6 +25,10 @@ class TickEvent:
     read once this tick and passed to the action source's ``update()`` — no
     lazy handle, no wrapper.
 
+    ``source_updated`` is ``False`` on interpolated ticks that only send the
+    next interpolated command; those ticks skip camera reads, so their
+    ``camera_frames`` is empty.
+
     Timestamps:
         - ``timestamp``: wall-clock UTC seconds (``time.time()``) when the event was emitted.
     """
@@ -38,6 +42,7 @@ class TickEvent:
     loop_duration_s: float
     sleep_time_s: float
     stale_obs: bool
+    source_updated: bool = True
 
 
 @dataclass(frozen=True, slots=True)

@@ -11,6 +11,7 @@ RobotRuntime(
     fps: float,
     cameras: Mapping[str, Camera] | None = None,
     callbacks: Sequence[RuntimeCallback] = (),
+    interpolator: ActionInterpolator | None = None,
 )
 ```
 
@@ -24,7 +25,7 @@ runtime.stop() -> None
 runtime.last_run_reason -> RunReason | None
 ```
 
-`RobotRuntime` also supports context-manager usage so connections are cleaned up automatically. A "step" is one iteration of the control loop at `fps`: read an observation, get one action from `action_source`, and send it to the robot. `run()` returns the number of steps completed this run — there is no aggregate stats object. Other stats are read directly off the objects the caller already holds, e.g. `runtime.action_source.action_queue.total_pops` or `execution.inference_count`. Each `run()` starts those counters from zero, so they describe the latest run rather than a running total.
+`RobotRuntime` also supports context-manager usage so connections are cleaned up automatically. A "step" is one control tick: read an observation and send one command to the robot. Without an interpolator every tick also gets a new action from `action_source` at `fps`. `run()` returns the number of steps completed this run — there is no aggregate stats object. Other stats are read directly off the objects the caller already holds, e.g. `runtime.action_source.action_queue.total_pops` or `execution.inference_count`. Each `run()` starts those counters from zero, so they describe the latest run rather than a running total.
 
 Callbacks belong to the runtime. They remain open across consecutive `run()` calls and receive a separate `start` and `shutdown` lifecycle event for each one. `disconnect()` means the caller is finished with the runtime: it closes callbacks and hardware exactly once, and the runtime cannot reconnect. If `connect()` fails, it rolls back partially connected hardware; call `connect()` again directly to retry.
 
@@ -55,6 +56,32 @@ Running again starts a fresh session rather than continuing the old one. Actions
 | `error`            | Any other exception, which then propagates to the caller      |
 
 `stop_event` is absent from the config schema and the CLI, since a live synchronisation object has no serialisable form; `physicalai run` stops via `--run.duration_s` or Ctrl+C.
+
+## Action Interpolation
+
+`interpolator` commands the robot faster than the action source produces actions. With `LinearInterpolator(multiplier=N)` the runtime queries `action_source` at `fps` and sends `N` commands per action, linearly interpolated from the previous action, so the robot is commanded at `fps * N`.
+
+```python
+from physicalai.runtime import ActionInterpolator, LinearInterpolator
+
+runtime = RobotRuntime(robot=robot, action_source=source, fps=30, interpolator=LinearInterpolator(multiplier=3))
+```
+
+```yaml
+runtime:
+  fps: 30
+  interpolator:
+    class_path: physicalai.runtime.LinearInterpolator
+    init_args:
+      multiplier: 3
+```
+
+- `fps` stays the action-source rate, so `RTCExecution(fps=...)` keeps the same value as `runtime.fps`.
+- The last command of each cycle is the action itself; the first action of a run is sent without interpolation.
+- Tick deadlines are anchored to the start of each cycle. A slow action-source update, such as `SyncExecution` inference, skips the commands that fell due while it ran instead of delaying the cycle.
+- Interpolated ticks skip camera reads. Their `TickEvent` has `source_updated=False` and empty `camera_frames`.
+- `on_action_ready` and `on_action_sent` run on every command, and `goal_time` passed to `Robot.send_action` scales with the control rate.
+- Interpolating adds up to one action period of lag, so it suits policies more than teleoperation.
 
 ## `ActionSource`
 
@@ -122,7 +149,7 @@ The execution implementations shipped today are listed below.
 | `AsyncExecution` | runs inference in a background thread          |
 | `RTCExecution`   | runs real-time chunking in a background thread |
 
-`RTCExecution` requires an `RTCActionQueue`. Its `fps` argument is the robot control rate used to convert measured inference latency into an action delay.
+`RTCExecution` requires an `RTCActionQueue`. Its `fps` argument is the action-source rate (`RobotRuntime.fps`) used to convert measured inference latency into an action delay.
 
 > **Preview:** `RemoteExecution` is a planned API and is not part of the current package release.
 

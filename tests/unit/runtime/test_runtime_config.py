@@ -641,7 +641,7 @@ class TestRobotRuntimeConfig:
         from physicalai.runtime import RobotRuntime
 
         params = list(inspect.signature(RobotRuntime.__init__).parameters)
-        assert params == ["self", "robot", "action_source", "fps", "cameras", "callbacks"]
+        assert params == ["self", "robot", "action_source", "fps", "cameras", "callbacks", "interpolator"]
 
     def test_nested_shared_robot_and_shared_camera(
         self, inference_model: Any, _patch_adapter: MagicMock
