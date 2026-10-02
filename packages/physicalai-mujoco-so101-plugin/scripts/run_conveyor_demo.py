@@ -62,7 +62,7 @@ def run(  # noqa: PLR0913, PLR0917 - a script entry point with plain knobs
         The summed scores and demonstrator counters.
     """
     scene = get_scene("conveyor_sort")
-    model = mujoco.MjModel.from_xml_path(str(scene.scene_xml_path))
+    model = scene.load_model()
     data = mujoco.MjData(model)
     reset = get_reset_fn("conveyor_sort")
     conveyor = ConveyorSort.maybe_create(model, rng=np.random.default_rng(seed + 1000), belt_speed=speed)

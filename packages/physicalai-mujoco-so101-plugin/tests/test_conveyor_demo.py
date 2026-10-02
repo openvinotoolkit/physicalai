@@ -14,7 +14,7 @@ SUBSTEPS = 10
 
 @pytest.fixture
 def sim() -> tuple[object, object, ConveyorSort]:
-    model = mujoco.MjModel.from_xml_path(str(get_scene("conveyor_sort").scene_xml_path))
+    model = get_scene("conveyor_sort").load_model()
     data = mujoco.MjData(model)
     get_reset_fn("conveyor_sort")(model, data, np.random.default_rng(0))
     conveyor = ConveyorSort.maybe_create(model, rng=np.random.default_rng(1), belt_speed=0.03)

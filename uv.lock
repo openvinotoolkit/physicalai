@@ -1640,6 +1640,18 @@ wheels = [
 ]
 
 [[package]]
+name = "mujoco-menagerie"
+version = "2026.9.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "mujoco" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1e/b7/f2be0e2b8907170bbbd72cc5f85a135cc928d50e627b985ef3a759d3a210/mujoco_menagerie-2026.9.4.tar.gz", hash = "sha256:098f17c9c51a8fd0182630584230fe41199d6eff4ac09073786cb1eea350be20", size = 24543, upload-time = "2026-09-28T19:54:38.514Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/85/e6/789d627b7196d2cd84a5e3ed7746c339e364b56ad65e6682fd20286ea99c/mujoco_menagerie-2026.9.4-py3-none-any.whl", hash = "sha256:ebebe9b765a5bb5f3e6f6b6a019eca1240b2c90aa95bae2bbc1168790a0bcb09", size = 29800, upload-time = "2026-09-28T19:54:37.462Z" },
+]
+
+[[package]]
 name = "mypy"
 version = "2.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2140,6 +2152,7 @@ dependencies = [
     { name = "loguru" },
     { name = "mjviser" },
     { name = "mujoco" },
+    { name = "mujoco-menagerie" },
     { name = "numpy" },
     { name = "opencv-python-headless" },
     { name = "physicalai", extra = ["transport"] },
@@ -2164,6 +2177,7 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7" },
     { name = "mjviser", specifier = ">=0.0.14,<0.1" },
     { name = "mujoco", specifier = ">=3.6.0" },
+    { name = "mujoco-menagerie", specifier = "==2026.9.4" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "opencv-python-headless", specifier = ">=4.10" },
     { name = "physicalai", extras = ["transport"], editable = "." },

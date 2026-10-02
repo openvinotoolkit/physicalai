@@ -37,6 +37,14 @@ MUJOCO_GL=egl uv run --package physicalai-mujoco-so101-plugin physicalai-mujoco-
 
 Use `MUJOCO_GL=osmesa` on a machine without a GPU driver (slower, needs OSMesa installed). The same applies to the `start` command in the Studio setup below.
 
+The first `start` on a machine downloads the SO-101 model from [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) (about 4 MB) into a per-user cache before the simulation starts. To download it ahead of time, for example while building a container image, run:
+
+```bash
+uv run --package physicalai-mujoco-so101-plugin physicalai-mujoco-so101 prefetch
+```
+
+On a machine without internet access, run `prefetch` on a connected machine and copy the cache (set its location with `MENAGERIE_CACHE_DIR`), or set `MENAGERIE_ROOT` to a `mujoco_menagerie` checkout. A simulation owner started some other way, such as `examples/run_mujoco_owner.py`, downloads the model during its startup instead, so run `prefetch` first on a slow connection.
+
 By default this starts:
 
 - A MuJoCo SO-101 owner named `mujoco-so101-follow`
@@ -407,7 +415,7 @@ Measured over 3 seeds of 3 episodes (90 items per speed): 99–100% of items sor
 
 Pick a scene in the viewer's **Scene** dropdown or send `POST /scenes/{scene_id}`. The switch happens on the next control cycle:
 
-- Loads the new scene XML
+- Loads the new scene XML and attaches the arm
 - Rebuilds the viewer for the new environment
 - Respawns the scene's free-object joints clear of their target, using the new spawn parameters (target bodies stay fixed)
 
@@ -433,7 +441,7 @@ uv build --package physicalai-mujoco-so101-plugin
 - **Viewer inputs ignore server-side events.** Setting a Viser input's `value` from the server fires its `on_update` callbacks with `client=None`. Panel callbacks skip those events, so syncing the panel from sim state never sends a command back.
 - **mjviser is used partly through its internals.** The plugin builds the viewer tabs itself, and does not use mjviser's `create_scene_gui` or `create_visualization_gui`. mjviser's camera tracking follows an arbitrary body by shifting the world, and each call registers another client-connect hook. The plugin also sets `camera_tracking_enabled`, installs a refresh handler, and moves the fixed-body handles itself. mjviser is pinned to `<0.1`; after upgrading it, check a scene switch and camera follow in a browser, because the unit tests mock viser.
 - **Scene switches rebuild the viewer.** `_build_viser_gui` clears every GUI element and scene node, then builds them again for the new model. Viewer preferences that should survive a switch live on `SimControlPanel`, not on the per-build handles.
-- **The robot is defined in three files.** `so101/so101.xml` (used by `examples/run_mujoco_owner.py`), `so101/so101_robot_bodies.xml` (included by the single-arm scenes), and `so101_dual/so101_dual_robot_bodies.xml` (included by the bimanual scenes) each define the arm and its wrist camera. Apply arm or camera changes to all three.
+- **Scenes hold no robot.** The arm is MuJoCo Menagerie's SO-101 (`robotstudio_so101`), loaded through the pinned `mujoco-menagerie` package, which downloads it on first use. Each scene marks an arm's base with a `<frame name="{prefix}robot_mount"/>`, and `robot_profile.load_scene_model` attaches the arm there with that name prefix (`left_`/`right_` in the bimanual scene). `SO101_PROFILE` pins the joint ranges, force limits and wrist camera the plugin has always used; change the arm or its wrist camera there. Load scenes with `SceneConfig.load_model()`: `mujoco.MjModel.from_xml_path` on a scene file gives a model without the arm. `urdf/so101/*.urdf` and their meshes remain for Studio's 3D view.
 - **Camera images are streamed as MuJoCo renders them.** `mujoco.Renderer` already returns upright images, so set a camera's orientation in the scene XML rather than flipping frames in code. In a MuJoCo camera frame, `-z` is the viewing direction and `+y` is the top of the image. `mirror_horizontal` exists for setups that need a mirrored feed; the `start` command does not use it.
 
 ### Compatibility with Studio
