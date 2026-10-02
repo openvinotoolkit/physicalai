@@ -38,7 +38,7 @@ from physicalai_rebot_b601_plugin.constants import (
 )
 
 if TYPE_CHECKING:
-    from motorbridge import Motor
+    from motorbridge import Motor, MotorState
 
     from physicalai.capture.frame import Frame
     from physicalai.robot.interface import RobotObservation
@@ -48,6 +48,11 @@ from motorbridge import Controller, Mode
 ReBotRSCanAdapter = Literal["socketcan", "robstride"]
 ReBotRole = Literal["follower"]
 RSMITGain = float | dict[str, float]
+
+# Gripper stall detection, matching the Seeed LeRobot RS follower.
+_GRIPPER_STALL_VEL_RAD_S = 0.25
+_GRIPPER_OPEN_STALL_ERROR_RAD = 0.05
+_GRIPPER_OPEN_STALL_CYCLES = 5
 
 
 def _validate_mit_gain(gain: RSMITGain | None, name: str) -> None:
@@ -122,7 +127,9 @@ class ReBotB601RS:
         mit_kd: RSMITGain | None = None,
         gripper_mit_kp: float = 12.0,
         gripper_mit_kd: float = 0.05,
-        gripper_mit_torque_limit: float = 10.0,
+        gripper_mit_torque_limit: float = 3.5,
+        gripper_mit_hold_torque_limit: float = 1.0,
+        max_relative_target: float | None = None,
     ) -> None:
         """Initialize the RobStride motor driver.
 
@@ -138,7 +145,12 @@ class ReBotB601RS:
                 overriding :data:`REBOT_B601_RS_MIT_KD`.
             gripper_mit_kp: MIT stiffness gain for gripper impedance control.
             gripper_mit_kd: MIT damping gain for gripper impedance control.
-            gripper_mit_torque_limit: Maximum torque (N·m) for gripper impedance.
+            gripper_mit_torque_limit: Maximum torque (N·m) for gripper impedance while moving.
+            gripper_mit_hold_torque_limit: Maximum gripper torque (N·m) once it stalls, e.g. on a grasped
+                object.
+            max_relative_target: Optional maximum allowed change (joint degrees, i.e. the action frame)
+                between the current and commanded position per step; limits how far the arm lunges on a
+                single command.
 
         Raises:
             ValueError: If any parameter has an invalid value.
@@ -149,8 +161,12 @@ class ReBotB601RS:
         if can_adapter not in VALID_RS_CAN_ADAPTERS:
             msg = f"Invalid can_adapter {can_adapter!r}. Must be one of {sorted(VALID_RS_CAN_ADAPTERS)}."
             raise ValueError(msg)
-        if gripper_mit_kp < 0.0 or gripper_mit_kd < 0.0 or gripper_mit_torque_limit < 0.0:
-            msg = "gripper MIT gains and torque limit must be non-negative."
+        gripper_values = (gripper_mit_kp, gripper_mit_kd, gripper_mit_torque_limit, gripper_mit_hold_torque_limit)
+        if not all(math.isfinite(value) and value >= 0.0 for value in gripper_values):
+            msg = "gripper MIT gains and torque limits must be non-negative finite values."
+            raise ValueError(msg)
+        if max_relative_target is not None and (not math.isfinite(max_relative_target) or max_relative_target <= 0.0):
+            msg = f"max_relative_target must be a finite positive value, got {max_relative_target!r}"
             raise ValueError(msg)
         _validate_mit_gain(mit_kp, "mit_kp")
         _validate_mit_gain(mit_kd, "mit_kd")
@@ -164,10 +180,14 @@ class ReBotB601RS:
         self._gripper_mit_kp = gripper_mit_kp
         self._gripper_mit_kd = gripper_mit_kd
         self._gripper_mit_torque_limit = gripper_mit_torque_limit
+        self._gripper_mit_hold_torque_limit = gripper_mit_hold_torque_limit
+        self._max_relative_target = max_relative_target
         self._controller: Controller | None = None
         self._motors: dict[str, Motor] = {}
         self._gripper_prev_target_pos: float | None = None
         self._gripper_prev_filtered_target_vel: float | None = None
+        self._gripper_prev_state_pos: float | None = None
+        self._gripper_open_stall_count = 0
 
     @property
     def joint_names(self) -> list[str]:
@@ -193,6 +213,11 @@ class ReBotB601RS:
     def role(self) -> ReBotRole:
         """Role of this driver instance (``"follower"``)."""
         return self._role
+
+    @property
+    def max_relative_target(self) -> float | None:
+        """Maximum per-step position change in degrees, or ``None`` when unlimited."""
+        return self._max_relative_target
 
     @property
     def disable_torque_on_disconnect(self) -> bool:
@@ -292,6 +317,24 @@ class ReBotB601RS:
         """Enable torque on all motors."""
         self._require_controller().enable_all()
 
+    def _read_motor_states(self) -> list[MotorState]:
+        if not self.is_connected():
+            msg = "Robot is not connected. Call connect() first."
+            raise ConnectionError(msg)
+        controller = self._require_controller()
+        for motor in self._motors.values():
+            motor.request_feedback()
+        controller.poll_feedback_once()
+
+        states: list[MotorState] = []
+        for name in self.JOINT_ORDER:
+            state = self._motors[name].get_state()
+            if state is None:
+                msg = f"No feedback received for motor '{name}'"
+                raise ConnectionError(msg)
+            states.append(state)
+        return states
+
     def get_observation(self) -> RobotObservation:
         """Read joint positions, velocities, torques, and temperatures from all motors.
 
@@ -309,11 +352,7 @@ class ReBotB601RS:
         if not self.is_connected():
             msg = "Robot is not connected. Call connect() first."
             raise ConnectionError(msg)
-        controller = self._require_controller()
-
-        for motor in self._motors.values():
-            motor.request_feedback()
-        controller.poll_feedback_once()
+        states = self._read_motor_states()
 
         positions = np.empty(self.NUM_JOINTS, dtype=np.float32)
         velocities = np.empty(self.NUM_JOINTS, dtype=np.float32)
@@ -322,11 +361,7 @@ class ReBotB601RS:
         rotor_temperatures = np.empty(self.NUM_JOINTS, dtype=np.float32)
         status_codes = np.empty(self.NUM_JOINTS, dtype=np.int32)
 
-        for i, name in enumerate(self.JOINT_ORDER):
-            state = self._motors[name].get_state()
-            if state is None:
-                msg = f"No feedback received for motor '{name}'"
-                raise ConnectionError(msg)
+        for i, (name, state) in enumerate(zip(self.JOINT_ORDER, states, strict=True)):
             direction = REBOT_B601_RS_JOINT_DIRECTIONS[name]
             positions[i] = math.degrees(float(state.pos)) / direction
             velocities[i] = math.degrees(float(state.vel)) / direction
@@ -371,8 +406,21 @@ class ReBotB601RS:
             msg = f"Expected action shape {expected_shape}, got {action.shape}"
             raise ValueError(msg)
 
+        max_relative_target = self._max_relative_target
+        present_deg: list[float] | None = None
+        if max_relative_target is not None:
+            present_deg = [math.degrees(float(s.pos)) for s in self._read_motor_states()]
+
         for i, name in enumerate(self.JOINT_ORDER):
             target_deg = self._map_and_clip_action(name, float(action[i]))
+            if present_deg is not None and max_relative_target is not None:
+                # Targets are in the motor frame; scale the action-frame limit to match (gripper is 6x).
+                max_step_deg = max_relative_target * abs(REBOT_B601_RS_JOINT_DIRECTIONS[name])
+                delta = target_deg - present_deg[i]
+                if abs(delta) > max_step_deg:
+                    limited = present_deg[i] + math.copysign(max_step_deg, delta)
+                    min_deg, max_deg = REBOT_B601_RS_JOINT_LIMITS_DEG[name]
+                    target_deg = float(np.clip(limited, min_deg, max_deg))
             target_rad = math.radians(target_deg)
             motor = self._motors[name]
 
@@ -429,7 +477,28 @@ class ReBotB601RS:
         target_vel = float(np.clip(filtered_target_vel, -target_vel_max, target_vel_max))
         self._gripper_prev_filtered_target_vel = target_vel
 
+        if self._gripper_prev_state_pos is None:
+            state_vel = 0.0
+        else:
+            state_vel = (state.pos - self._gripper_prev_state_pos) / control_dt_s
+        self._gripper_prev_state_pos = state.pos
+
         impedance_torque = self._gripper_mit_kp * (target_rad - state.pos) + self._gripper_mit_kd * (
             target_vel - state.vel
         )
-        return float(np.clip(impedance_torque, -self._gripper_mit_torque_limit, self._gripper_mit_torque_limit))
+
+        # Opening (positive) against a stop for several cycles: cut torque instead of pushing it.
+        stalled = abs(state_vel) < _GRIPPER_STALL_VEL_RAD_S
+        if target_rad - state.pos > _GRIPPER_OPEN_STALL_ERROR_RAD and stalled:
+            self._gripper_open_stall_count += 1
+        else:
+            self._gripper_open_stall_count = 0
+        if self._gripper_open_stall_count >= _GRIPPER_OPEN_STALL_CYCLES:
+            # Warn once per stall; torque stays cut on every later tick until the stall clears.
+            if self._gripper_open_stall_count == _GRIPPER_OPEN_STALL_CYCLES:
+                logger.warning("reBot RS gripper open-stall detected, cutting torque")
+            return 0.0
+
+        # Stalled while closing means an object is grasped: hold with the lower torque limit.
+        max_torque = self._gripper_mit_hold_torque_limit if stalled else self._gripper_mit_torque_limit
+        return float(np.clip(impedance_torque, -max_torque, max_torque))

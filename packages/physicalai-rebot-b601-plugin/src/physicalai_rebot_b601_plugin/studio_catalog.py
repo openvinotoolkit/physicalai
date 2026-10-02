@@ -10,7 +10,7 @@ for the ``physicalai.studio.catalog_plugins`` group.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Literal, Self
 
 from loguru import logger
 from physicalai_studio_plugin import (
@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 import physicalai_rebot_b601_plugin
 from physicalai_rebot_b601_plugin import ReBotB601DM, ReBotB601RS, get_urdf_path
+from physicalai_rebot_b601_plugin.constants import REBOT_B601_RS_MIT_KD, REBOT_B601_RS_MIT_KP
 
 if TYPE_CHECKING:
     from typing import Protocol
@@ -69,6 +70,15 @@ def _get_rebot_urdf_root() -> Path:
 _REBOT_B601_DM_ASSET = RobotAsset(
     urdf_relative_path=Path("rebot-b601-dm/urdf/reBot-DevArm_fixend.urdf"),
     packages={"rebot-b601-dm": Path("rebot-b601-dm")},
+    joint_map=_REBOT_B601_DM_TO_URDF,
+    root_resolver=_get_rebot_urdf_root,
+)
+
+# The RS preview uses a joint-frame copy of the URDF: the original follows the motor frame, so it would
+# mirror elbow_flex, wrist_flex and wrist_yaw (direction -1 in REBOT_B601_RS_JOINT_DIRECTIONS).
+_REBOT_B601_RS_ASSET = RobotAsset(
+    urdf_relative_path=Path("rebot-b601-rs/urdf/00-arm-rs_asm-v3_joint_frame.urdf"),
+    packages={"rebot-b601-rs": Path("rebot-b601-rs")},
     joint_map=_REBOT_B601_DM_TO_URDF,
     root_resolver=_get_rebot_urdf_root,
 )
@@ -224,6 +234,20 @@ _SYSFS_NET_ROOT = Path("/sys/class/net")
 _SOCKETCAN_INTERFACE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$"
 
 
+_Gain = Annotated[float, Field(ge=0.0, allow_inf_nan=False)]
+
+
+class ReBotB601RSJointGains(BaseModel):
+    """MIT gains for the six ReBot B601 RS position joints."""
+
+    shoulder_pan: _Gain
+    shoulder_lift: _Gain
+    elbow_flex: _Gain
+    wrist_flex: _Gain
+    wrist_yaw: _Gain
+    wrist_roll: _Gain
+
+
 class ReBotB601RSPayload(BaseModel):
     """Connection payload for a ReBot B601 RS follower arm on a SocketCAN interface."""
 
@@ -232,6 +256,57 @@ class ReBotB601RSPayload(BaseModel):
         title="CAN interface",
         description="SocketCAN interface wired to the arm, for example can0. Bring it up at 1 Mbit/s first.",
         pattern=_SOCKETCAN_INTERFACE_PATTERN,
+    )
+    max_relative_target: float = Field(
+        default=10.0,
+        gt=0.0,
+        allow_inf_nan=False,
+        title="Max step per command (degrees)",
+        description=(
+            "Largest move, in joint degrees, the arm makes toward a new target in one control step. "
+            "Stops the arm lunging when the leader or a policy jumps."
+        ),
+    )
+    mit_kp: ReBotB601RSJointGains = Field(  # pyrefly: ignore [bad-argument-type, no-matching-overload]
+        default=ReBotB601RSJointGains(**REBOT_B601_RS_MIT_KP),
+        title="Joint stiffness (kp)",
+        description="MIT stiffness per position joint. Lower values hold more softly but sag more under load.",
+        json_schema_extra=robot_field_ui({"advanced_configuration": True}),
+    )
+    mit_kd: ReBotB601RSJointGains = Field(  # pyrefly: ignore [bad-argument-type, no-matching-overload]
+        default=ReBotB601RSJointGains(**REBOT_B601_RS_MIT_KD),
+        title="Joint damping (kd)",
+        description="MIT damping per position joint. Higher values reduce overshoot but slow the response.",
+        json_schema_extra=robot_field_ui({"advanced_configuration": True}),
+    )
+    gripper_mit_kp: float = Field(  # pyrefly: ignore [bad-argument-type, no-matching-overload]
+        default=12.0,
+        ge=0.0,
+        allow_inf_nan=False,
+        title="Gripper stiffness (kp)",
+        json_schema_extra=robot_field_ui({"advanced_configuration": True}),
+    )
+    gripper_mit_kd: float = Field(  # pyrefly: ignore [bad-argument-type, no-matching-overload]
+        default=0.05,
+        ge=0.0,
+        allow_inf_nan=False,
+        title="Gripper damping (kd)",
+        json_schema_extra=robot_field_ui({"advanced_configuration": True}),
+    )
+    gripper_mit_torque_limit: float = Field(  # pyrefly: ignore [bad-argument-type, no-matching-overload]
+        default=3.5,
+        ge=0.0,
+        allow_inf_nan=False,
+        title="Gripper torque limit while moving (N·m)",
+        json_schema_extra=robot_field_ui({"advanced_configuration": True}),
+    )
+    gripper_mit_hold_torque_limit: float = Field(  # pyrefly: ignore [bad-argument-type, no-matching-overload]
+        default=1.0,
+        ge=0.0,
+        allow_inf_nan=False,
+        title="Gripper torque limit while holding (N·m)",
+        description="Torque limit once the gripper stalls, for example on a grasped object.",
+        json_schema_extra=robot_field_ui({"advanced_configuration": True}),
     )
 
 
@@ -282,7 +357,18 @@ async def _build_rebot_b601_rs_driver(  # noqa: RUF029 - Studio awaits every rob
     if isinstance(raw, BaseModel) and type(raw) is not ReBotB601RSPayload:
         raw = raw.model_dump()
     validated = raw if isinstance(raw, ReBotB601RSPayload) else ReBotB601RSPayload.model_validate(raw)
-    return ReBotB601RS(port=validated.connection_string, can_adapter="socketcan", role="follower")
+    return ReBotB601RS(
+        port=validated.connection_string,
+        can_adapter="socketcan",
+        role="follower",
+        max_relative_target=validated.max_relative_target,
+        mit_kp=validated.mit_kp.model_dump(),
+        mit_kd=validated.mit_kd.model_dump(),
+        gripper_mit_kp=validated.gripper_mit_kp,
+        gripper_mit_kd=validated.gripper_mit_kd,
+        gripper_mit_torque_limit=validated.gripper_mit_torque_limit,
+        gripper_mit_hold_torque_limit=validated.gripper_mit_hold_torque_limit,
+    )
 
 
 def _definitions() -> list[RobotCatalogDefinition]:
@@ -297,14 +383,13 @@ def _definitions() -> list[RobotCatalogDefinition]:
             adapter_options=RobotAdapterOptions(include_velocities=True, external_effort_gain=None),
             probe=_REBOT_PROBE,
         ),
-        # No RobotAsset: the bundled RS URDF uses motor-frame joint signs, so a preview would mirror
-        # elbow_flex, wrist_flex, and wrist_yaw.
         RobotCatalogDefinition(
             type="ReBot_B601_RS_Follower",
             display_name="ReBot B601 RS Follower",
             role="follower",
             robot_builder=_build_rebot_b601_rs_driver,
             robot_payload=ReBotB601RSPayload,
+            asset=_REBOT_B601_RS_ASSET,
             adapter_options=RobotAdapterOptions(include_velocities=True, external_effort_gain=None),
             probe=_REBOT_RS_PROBE,
         ),

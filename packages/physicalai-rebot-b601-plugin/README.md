@@ -100,6 +100,10 @@ rs_urdf = urdf_dir / "rebot-b601-rs" / "urdf" / "00-arm-rs_asm-v3.urdf"
 | `rebot-b601-dm` | B601-DM (fixend) | Gravity compensation for `ReBotB601DM` |
 | `rebot-b601-rs` | B601-RS v3       | Kinematics for `ReBotB601RS`           |
 
+`rebot-b601-rs/urdf/00-arm-rs_asm-v3_joint_frame.urdf` is a copy of the RS URDF with the
+`elbow_flex`, `wrist_flex` and `wrist_yaw` axes reversed to match the joint frame `ReBotB601RS`
+reports. Studio uses it for the 3D preview.
+
 ## Development
 
 ```bash
