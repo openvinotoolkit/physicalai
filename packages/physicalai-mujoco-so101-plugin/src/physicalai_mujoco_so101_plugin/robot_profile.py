@@ -205,6 +205,13 @@ def robot_mount_prefixes(spec: mujoco.MjSpec) -> tuple[str, ...]:
     )
 
 
+def _option_fields(option: object) -> tuple[str, ...]:
+    """Return the settable fields of a spec's ``<option>``, i.e. the binding's writable properties."""
+    return tuple(
+        name for name, attr in vars(type(option)).items() if isinstance(attr, property) and attr.fset is not None
+    )
+
+
 def attach_robot(scene: mujoco.MjSpec, profile: RobotProfile, prefix: str) -> None:
     """Attach a fresh copy of the profile's robot at the scene frame ``{prefix}robot_mount``.
 
@@ -215,9 +222,7 @@ def attach_robot(scene: mujoco.MjSpec, profile: RobotProfile, prefix: str) -> No
     """
     robot = profile.load_spec()
     overridden = []
-    for field in dir(scene.option):
-        if field.startswith("_"):
-            continue
+    for field in _option_fields(scene.option):
         scene_value = getattr(scene.option, field)
         if not np.array_equal(np.asarray(getattr(robot.option, field)), np.asarray(scene_value)):
             overridden.append(f"{field}={getattr(robot.option, field)}")

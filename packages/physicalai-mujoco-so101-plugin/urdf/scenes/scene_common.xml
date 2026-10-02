@@ -2,7 +2,7 @@
 <!-- Rendering settings, default contact dimension, sky and floor shared by every scene.
      Scenes hold no robot: each marks an arm's base with a <frame name="{prefix}robot_mount"/>
      and the plugin attaches the SO-101 there (robot_profile.py). -->
-<scene_common>
+<mujocoinclude>
   <visual>
     <scale contactwidth="0.1" contactheight="0.05" forcewidth="0.02" framelength="0.75" framewidth="0.025" camera="0.2"/>
     <headlight diffuse="0.0 0.0 0.0" ambient="0.3 0.3 0.3" specular="0 0 0"/>
@@ -17,4 +17,4 @@
     <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
     <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
   </asset>
-</scene_common>
+</mujocoinclude>

@@ -104,6 +104,17 @@ def test_attaching_the_arm_raises_no_warnings() -> None:
         get_scene("single_pick_place").load_model()
 
 
+@pytest.mark.parametrize("scene_id", list(list_scenes()))
+def test_scene_options_win_over_the_robot_options(scene_id: str) -> None:
+    scene = get_scene(scene_id)
+    scene_option = mujoco.MjSpec.from_file(str(scene.scene_xml_path)).option
+    opt = scene.load_model().opt
+    assert opt.timestep == scene_option.timestep
+    assert opt.iterations == scene_option.iterations
+    assert opt.solver == scene_option.solver
+    np.testing.assert_array_equal(opt.gravity, scene_option.gravity)
+
+
 @pytest.mark.parametrize("scene_id", list(list_scenes_for_arms(1)))
 def test_single_arm_scenes_attach_the_arm_at_the_world_origin(scene_id: str) -> None:
     model = get_scene(scene_id).load_model()
