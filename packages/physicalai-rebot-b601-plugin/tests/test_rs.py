@@ -295,6 +295,20 @@ class TestReBotB601RSAction:
         assert taus[:4] == [pytest.approx(1.0)] * 4
         assert taus[4] == 0.0
 
+    def test_gripper_open_stall_warns_once_while_torque_stays_cut(self, mock_motorbridge: MagicMock) -> None:
+        robot = _create_robot(mock_motorbridge)
+        robot.connect()
+        gripper = mock_motorbridge.Controller.return_value.mock_motors[6]
+        gripper.get_state.return_value = _MotorState(pos=0.0)
+        action = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 45.0], dtype=np.float32)
+
+        with patch("physicalai_rebot_b601_plugin.rs.logger") as logger:
+            for _ in range(20):
+                robot.send_action(action)
+
+        assert gripper.send_mit.call_args.args[4] == 0.0
+        logger.warning.assert_called_once()
+
     def test_send_action_max_relative_target_clamps(self, mock_motorbridge: MagicMock) -> None:
         robot = _create_robot(mock_motorbridge, max_relative_target=5.0)
         robot.connect()

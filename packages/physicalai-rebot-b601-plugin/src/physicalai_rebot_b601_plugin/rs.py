@@ -494,7 +494,9 @@ class ReBotB601RS:
         else:
             self._gripper_open_stall_count = 0
         if self._gripper_open_stall_count >= _GRIPPER_OPEN_STALL_CYCLES:
-            logger.warning("reBot RS gripper open-stall detected, cutting torque")
+            # Warn once per stall; torque stays cut on every later tick until the stall clears.
+            if self._gripper_open_stall_count == _GRIPPER_OPEN_STALL_CYCLES:
+                logger.warning("reBot RS gripper open-stall detected, cutting torque")
             return 0.0
 
         # Stalled while closing means an object is grasped: hold with the lower torque limit.
