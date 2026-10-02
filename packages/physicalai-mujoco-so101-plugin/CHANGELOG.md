@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-mujoco-so101-plugin-v0.3.1...physicalai-mujoco-so101-plugin-v0.4.0) (2026-10-02)
+
+
+### ✨ Features
+
+* **mujoco:** add SO-101 MuJoCo simulation plugin ([#296](https://github.com/openvinotoolkit/physicalai/issues/296)) ([99ae66a](https://github.com/openvinotoolkit/physicalai/commit/99ae66a8d775fb93b794fcbed618775c65eded00))
+
 ## [0.3.1](https://github.com/MarkRedeman/physicalai-plugins/compare/physicalai-mujoco-so101-plugin-v0.3.0...physicalai-mujoco-so101-plugin-v0.3.1) (2026-09-09)
 
 
