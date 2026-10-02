@@ -174,18 +174,20 @@ class RobotCatalogDefinition(Generic[_PayloadT]):
     asset: RobotAsset | None = None
     adapter_options: RobotAdapterOptions = field(default_factory=RobotAdapterOptions)
     probe: RobotProbe[_PayloadT] | None = None
+    zero_calibration: RobotZeroCalibration | None = None
 ```
 
-| Field             | Description                                                                                 |
-| ----------------- | ------------------------------------------------------------------------------------------- |
-| `type`            | Stable identifier used in DB storage and API paths. Must be unique across all plugins.      |
-| `display_name`    | Human-readable name shown in the Studio UI.                                                 |
-| `role`            | Either `"follower"` (executes actions) or `"leader"` (provides demonstrations).             |
-| `robot_builder`   | Async callable that receives a robot payload and factory, then returns a `PhysicalAIRobot`. |
-| `robot_payload`   | Pydantic model defining this robot type's configuration fields.                             |
-| `asset`           | Optional URDF and package maps for 3D visualization.                                        |
-| `adapter_options` | Controls velocity, timing, and effort-forwarding behavior.                                  |
-| `probe`           | Optional [`RobotProbe[_PayloadT]`](#robotprobe) for device interaction.                     |
+| Field              | Description                                                                                         |
+| ------------------ | --------------------------------------------------------------------------------------------------- |
+| `type`             | Stable identifier used in DB storage and API paths. Must be unique across all plugins.              |
+| `display_name`     | Human-readable name shown in the Studio UI.                                                         |
+| `role`             | Either `"follower"` (executes actions) or `"leader"` (provides demonstrations).                     |
+| `robot_builder`    | Async callable that receives a robot payload and factory, then returns a `PhysicalAIRobot`.         |
+| `robot_payload`    | Pydantic model defining this robot type's configuration fields.                                     |
+| `asset`            | Optional URDF and package maps for 3D visualization.                                                |
+| `adapter_options`  | Controls velocity, timing, and effort-forwarding behavior.                                          |
+| `probe`            | Optional [`RobotProbe[_PayloadT]`](#robotprobe) for device interaction.                             |
+| `zero_calibration` | Optional [`RobotZeroCalibration`](#robotzerocalibration) for Studio's guided zero-pose calibration. |
 
 ### `RobotAdapterOptions`
 
@@ -214,6 +216,35 @@ class RobotAsset:
 | `packages`           | Maps ROS package names to their filesystem paths.                      |
 | `joint_map`          | Maps Studio observation keys, such as `"gripper.pos"`, to URDF joints. |
 | `root_resolver`      | Callable returning the root directory used to resolve URDF paths.      |
+
+### `RobotZeroCalibration`
+
+```python
+@dataclass(frozen=True)
+class RobotZeroCalibration(Generic[_RobotT]):
+    instructions: str
+    set_zero: Callable[[_RobotT], Awaitable[None]]
+    release: Callable[[_RobotT], Awaitable[None]] | None = None
+    zero_tolerance_deg: float = 5.0
+```
+
+For arms whose calibration is a zero pose stored on the motors. Parameterize it with the driver class `robot_builder` returns so the steps can call that driver's methods. When a robot type sets `zero_calibration`, Studio offers a guided step while the robot is added: it opens its own exclusive connection to the driver from `robot_builder`, calls `release` so the arm can be moved by hand, and shows `instructions`, next to a live 3D view when the type has a `RobotAsset`. When the user confirms the pose it calls `set_zero`, then checks that every joint reads within `zero_tolerance_deg` of zero.
+
+```python
+async def _release(robot: MyRobot) -> None:
+    await asyncio.to_thread(robot.disable_torque)
+
+
+async def _set_zero(robot: MyRobot) -> None:
+    await asyncio.to_thread(robot.set_zero_position)
+
+
+zero_calibration = RobotZeroCalibration[MyRobot](
+    instructions="Move the arm to its rest pose and close the gripper.",
+    release=_release,
+    set_zero=_set_zero,
+)
+```
 
 ### `RobotProbe`
 

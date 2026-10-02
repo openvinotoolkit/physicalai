@@ -78,6 +78,12 @@ uv run physicalai run --config packages/physicalai-rebot-b601-plugin/examples/ru
 uv run physicalai run --config packages/physicalai-rebot-b601-plugin/examples/runtime/read-joints-rs.yaml
 ```
 
+## Zero-pose calibration
+
+`ReBotB601RS.set_zero_position()` disables torque and stores the arm's current pose as zero on
+every motor. Physical AI Studio runs it from its calibration step when you add a B601-RS follower:
+move the arm into its folded rest pose with the gripper closed, then set zero.
+
 ## URDF Models
 
 Bundled URDF descriptions for gravity compensation and kinematics:
@@ -99,6 +105,10 @@ rs_urdf = urdf_dir / "rebot-b601-rs" / "urdf" / "00-arm-rs_asm-v3.urdf"
 | --------------- | ---------------- | -------------------------------------- |
 | `rebot-b601-dm` | B601-DM (fixend) | Gravity compensation for `ReBotB601DM` |
 | `rebot-b601-rs` | B601-RS v3       | Kinematics for `ReBotB601RS`           |
+
+`rebot-b601-rs/urdf/00-arm-rs_asm-v3_joint_frame.urdf` is a copy of the RS URDF with the
+`elbow_flex`, `wrist_flex` and `wrist_yaw` axes reversed to match the joint frame `ReBotB601RS`
+reports. Studio uses it for the 3D preview.
 
 ## Development
 

@@ -31,6 +31,7 @@ from .ui_schema import (
     robot_payload_ui,
     validate_robot_payload_ui,
 )
+from .zero_calibration import RobotZeroCalibration
 
 __all__ = [
     "BuildRobotCallable",
@@ -53,6 +54,7 @@ __all__ = [
     "RobotUiIpAddressItem",
     "RobotUiItem",
     "RobotUiSectionOptions",
+    "RobotZeroCalibration",
     "SerialPortInfo",
     "robot_field_ui",
     "robot_payload_ui",
