@@ -186,6 +186,19 @@ class TestStarArm102HDLeaderObservation:
 
         assert robot.get_observation().joint_positions[0] == pytest.approx(120.0)
 
+    def test_reconnect_starts_new_glitch_baseline(self, mock_smart_servo: MagicMock) -> None:
+        robot = _create_robot(mock_smart_servo)
+        robot.connect()
+        robot.get_observation()
+        robot.disconnect()
+
+        cast("_ServoFactoryFn", _make_mock_smart_servo).servo_angles[0] = 120.0  # moved while disconnected
+        robot.connect()
+        obs = robot.get_observation()
+
+        assert obs.joint_positions[0] == pytest.approx(120.0)
+        assert obs.sensor_data["reliable"][0] == 1.0
+
     def test_observation_never_responded_servo_raises(self, mock_smart_servo: MagicMock) -> None:
         robot = _create_robot(mock_smart_servo)
         robot.connect()

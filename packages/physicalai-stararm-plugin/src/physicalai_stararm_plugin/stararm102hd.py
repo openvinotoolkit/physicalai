@@ -185,6 +185,7 @@ class StarArm102HDLeader:
             self._bus = None
             raise
 
+        self._reset_samples()
         logger.info(f"{self.__class__.__name__} connected on {self.port}")
 
     def disconnect(self) -> None:
@@ -194,12 +195,20 @@ class StarArm102HDLeader:
             return
         self._holding = False
         self._bus = None
+        self._reset_samples()
         bus.close()
         logger.info(f"{self.__class__.__name__} disconnected from {self.port}")
 
     def is_connected(self) -> bool:
         """Return whether the UART bus connection is active."""
         return self._bus is not None
+
+    def _reset_samples(self) -> None:
+        """Forget cached samples so a new connection starts a fresh glitch-filter baseline."""
+        self._last_positions = None
+        self._last_raw_positions = None
+        self._last_reliable = None
+        self._glitch_held[:] = 0
 
     def _ping_servos(self, bus: _FashionStarBus) -> None:
         for name in self.JOINT_ORDER:
