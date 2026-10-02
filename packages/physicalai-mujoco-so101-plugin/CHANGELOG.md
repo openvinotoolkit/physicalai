@@ -6,6 +6,7 @@
 
 * **mujoco:** The SO-101 arm is now MuJoCo Menagerie's `robotstudio_so101` loaded through the pinned `mujoco-menagerie` package (2026.9.4), which downloads it on first use (about 4 MB) into a per-user cache. Scenes hold no robot: `SceneConfig.load_model()` attaches the arm at each scene's `robot_mount` frame. Joint and camera names, normalized units, camera views and physics are unchanged. `urdf/so101/so101.xml`, `so101_robot_bodies.xml`, `so101_robot_config.xml` and `urdf/so101_dual/` are removed; `mujoco.MjModel.from_xml_path` on a scene file now gives a model without the arm.
 * **mujoco:** `physicalai-mujoco-so101 start` downloads the robot model before it starts the simulation owner, with a progress bar, so a slow first download no longer fails as an owner startup timeout. The new `physicalai-mujoco-so101 prefetch` command downloads every robot model ahead of time for offline machines.
+* **mujoco:** Studio's MuJoCo follower probes report an owner as online only when it drives that entry's joints, so the single-arm entry no longer attaches to a bimanual simulation or the other way round.
 
 ## [0.3.1](https://github.com/MarkRedeman/physicalai-plugins/compare/physicalai-mujoco-so101-plugin-v0.3.0...physicalai-mujoco-so101-plugin-v0.3.1) (2026-09-09)
 

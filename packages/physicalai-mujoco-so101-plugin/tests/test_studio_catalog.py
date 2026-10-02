@@ -271,6 +271,43 @@ class TestProbe:
             assert result is False
 
 
+class TestProbeJointCheck:
+    @staticmethod
+    def _owner(joint_names: tuple[str, ...]) -> MagicMock:
+        owner = MagicMock()
+        owner.joint_names = list(joint_names)
+        return owner
+
+    def test_matching_owner_is_online(self) -> None:
+        from physicalai_mujoco_so101_plugin import studio_catalog as sc
+
+        owner = self._owner(SO101_JOINT_ORDER)
+        with patch.object(sc.SharedRobot, "attach", return_value=owner):
+            assert sc._check_zenoh_robot_online("sim", SO101_JOINT_ORDER)  # noqa: SLF001
+        owner.disconnect.assert_called_once()
+
+    def test_owner_with_other_joints_is_not_online(self) -> None:
+        from physicalai_mujoco_so101_plugin import studio_catalog as sc
+
+        owner = self._owner(BIMANUAL_SO101_JOINT_ORDER)
+        with patch.object(sc.SharedRobot, "attach", return_value=owner):
+            assert not sc._check_zenoh_robot_online("sim", SO101_JOINT_ORDER)  # noqa: SLF001
+        owner.disconnect.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_each_follower_entry_probes_for_its_own_joints(self) -> None:
+        from physicalai_mujoco_so101_plugin import studio_catalog as sc
+
+        single, bimanual = _definitions()[:2]
+        with patch.object(sc, "_check_zenoh_robot_online", return_value=True) as check:
+            await single.probe.is_online(MuJoCoSO101Payload(name="a"))
+            await bimanual.probe.is_online(MuJoCoSO101BimanualPayload(name="b"))
+        assert [call.args for call in check.call_args_list] == [
+            ("a", SO101_JOINT_ORDER),
+            ("b", BIMANUAL_SO101_JOINT_ORDER),
+        ]
+
+
 class TestRegistration:
     def test_register_called(self) -> None:
         registry = MagicMock()
