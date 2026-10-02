@@ -251,6 +251,10 @@ class AsyncExecution(Execution):
 
     def _force_reset(self) -> None:
         with self._lock:
+            # The stuck call can still return. Its chunk describes an old
+            # observation and its offset would be measured against the next
+            # request's baseline, so it must be discarded, not queued.
+            self._incarnation += 1
             self._obs_slot = None
             self._running_inference = False
         logger.warning("Force reset — cleared stuck inference state")
