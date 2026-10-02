@@ -16,21 +16,16 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Literal, get_args
+from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
 from loguru import logger
 
 from physicalai.config import export_config
 from physicalai_mujoco_so101_plugin.camera_thread import CameraThread, RateMeter
-from physicalai_mujoco_so101_plugin.constants import (
-    BIMANUAL_NUM_JOINTS,
-    BIMANUAL_SO101_JOINT_ORDER,
-    NUM_JOINTS,
-    SO101_JOINT_ORDER,
-)
 from physicalai_mujoco_so101_plugin.conveyor_automation import ConveyorAutomation
-from physicalai_mujoco_so101_plugin.robot_profile import load_scene_model
+from physicalai_mujoco_so101_plugin.robot_profile import SO101_PROFILE, RobotProfile, load_scene_model
+from physicalai_mujoco_so101_plugin.sim_arm import SimArm, validate_joint_unit
 from physicalai_mujoco_so101_plugin.spawn import sample_object_positions, write_freejoint_qpos
 from physicalai_mujoco_so101_plugin.studio_recorder import DEFAULT_STUDIO_URL
 
@@ -38,65 +33,13 @@ if TYPE_CHECKING:
     from physicalai.capture.frame import Frame
     from physicalai.robot.interface import RobotObservation
     from physicalai_mujoco_so101_plugin.http_server import FrameBuffer, HttpServer, SimCommand
+    from physicalai_mujoco_so101_plugin.sim_arm import ArmBinding, JointUnit
     from physicalai_mujoco_so101_plugin.viser_controls import ObjectPose, PanelState, SimControlPanel
 
 # Scene XML is polled for live camera edits; walking the include graph is far
 # too expensive to do on every control cycle.
 _SCENE_XML_POLL_INTERVAL_S = 1.0
 _DEFAULT_SUCCESS_DWELL_S = 5.0
-
-JointUnit = Literal["normalized", "degrees"]
-"""Units of ``get_observation`` joint positions and ``send_action`` targets."""
-
-
-def _is_gripper(joint_name: str) -> bool:
-    return joint_name == "gripper" or joint_name.endswith("_gripper")
-
-
-def _normalized_span(joint_names: tuple[str, ...]) -> tuple[np.ndarray, np.ndarray]:
-    """Lower bound and width of each joint's normalized range, as the SO101 driver uses them.
-
-    Returns:
-        ``(lower, width)``: body joints span ``[-100, 100]``, grippers ``[0, 100]``.
-    """
-    gripper = np.array([_is_gripper(name) for name in joint_names])
-    return np.where(gripper, 0.0, -100.0), np.where(gripper, 100.0, 200.0)
-
-
-def radians_to_normalized(
-    radians: np.ndarray,
-    joint_limits: np.ndarray,
-    joint_names: tuple[str, ...],
-) -> np.ndarray:
-    """Map joint angles to the SO101 driver's calibrated normalized units.
-
-    The real driver maps each joint's calibrated tick range linearly onto
-    ``[-100, 100]`` (grippers onto ``[0, 100]``) and clamps. The simulation
-    uses the model's joint range as the calibrated range.
-
-    Returns:
-        Normalized positions, clamped to each joint's normalized range.
-    """
-    low, high = joint_limits[:, 0], joint_limits[:, 1]
-    lower, width = _normalized_span(joint_names)
-    fraction = np.clip((radians - low) / (high - low), 0.0, 1.0)
-    return lower + fraction * width
-
-
-def normalized_to_radians(
-    normalized: np.ndarray,
-    joint_limits: np.ndarray,
-    joint_names: tuple[str, ...],
-) -> np.ndarray:
-    """Map SO101 normalized units back to joint angles within the model's joint range.
-
-    Returns:
-        Joint angles in radians, clamped to each joint's range.
-    """
-    low, high = joint_limits[:, 0], joint_limits[:, 1]
-    lower, width = _normalized_span(joint_names)
-    fraction = np.clip((normalized - lower) / width, 0.0, 1.0)
-    return low + fraction * (high - low)
 
 
 def _signal_owner_shutdown() -> None:
@@ -150,9 +93,12 @@ class CameraConfig:
 class MuJoCoSO101:
     """SO-101 robot simulated with MuJoCo."""
 
-    JOINT_ORDER: ClassVar[tuple[str, ...]] = SO101_JOINT_ORDER
-    NUM_JOINTS: ClassVar[int] = NUM_JOINTS
-    NUM_ARMS: ClassVar[int] = 1
+    PROFILE: ClassVar[RobotProfile] = SO101_PROFILE
+    ARM_PREFIXES: ClassVar[tuple[str, ...]] = ("",)
+    """Name prefix of each arm, one per scene mount frame, in observation/action order."""
+    JOINT_ORDER: ClassVar[tuple[str, ...]] = SO101_PROFILE.joint_names()
+    NUM_JOINTS: ClassVar[int] = len(JOINT_ORDER)
+    NUM_ARMS: ClassVar[int] = len(ARM_PREFIXES)
     DEFAULT_BLOCK_FREEJOINTS: ClassVar[tuple[str, ...]] = ("block1:joint", "block2:joint", "block3:joint")
     DEFAULT_TARGET_BODY_NAME: ClassVar[str] = "target"
     DEFAULT_SPAWN_CENTER: ClassVar[tuple[float, float]] = (0.22, 0.0)
@@ -211,9 +157,6 @@ class MuJoCoSO101:
         self._http_port = http_port
         self._http_server: HttpServer | None = None
         self._viser_host = viser_host
-        self._ctrl_indices: tuple[int, ...] = ()
-        # (NUM_JOINTS, 2) joint ranges in radians, in JOINT_ORDER.
-        self._joint_limits: np.ndarray | None = None
         self._block_joint_addrs: list[tuple[int, int]] = []
         self._target_body_id: int | None = None
         self._last_sim_time: float | None = None
@@ -234,15 +177,54 @@ class MuJoCoSO101:
         self._apply_scene_params(scene_config)
 
     def _set_joint_unit(self, unit: JointUnit) -> None:
-        """Validate and adopt the joint unit.
+        """Validate the joint unit and build the unbound arms that use it."""
+        self._unit: JointUnit = validate_joint_unit(unit)
+        self._arms: tuple[SimArm, ...] = tuple(SimArm(self.PROFILE, prefix, self._unit) for prefix in self.ARM_PREFIXES)
 
-        Raises:
-            ValueError: If ``unit`` is not supported.
+    @classmethod
+    def wrist_cameras(cls) -> tuple[str, ...]:
+        """Names of the arms' wrist cameras.
+
+        Returns:
+            One camera name per arm, in arm order.
         """
-        if unit not in get_args(JointUnit):
-            msg = f"Unsupported unit {unit!r}; expected one of {get_args(JointUnit)}"
-            raise ValueError(msg)
-        self._unit: JointUnit = unit
+        return tuple(f"{prefix}{cls.PROFILE.wrist_camera}" for prefix in cls.ARM_PREFIXES)
+
+    @property
+    def _ctrl_indices(self) -> tuple[int, ...]:
+        """Actuator index of each public joint, in ``JOINT_ORDER``; empty while disconnected."""
+        return tuple(index for arm in self._arms for index in arm.ctrl_indices)
+
+    @property
+    def _joint_limits(self) -> np.ndarray | None:
+        """``(NUM_JOINTS, 2)`` joint ranges in radians, in ``JOINT_ORDER``; ``None`` while disconnected."""
+        if not all(arm.is_bound for arm in self._arms):
+            return None
+        return np.vstack([arm.joint_limits for arm in self._arms])
+
+    def _resolve_arms(self, model: object) -> list[ArmBinding] | None:
+        """Look up every arm's joints and actuators in `model`.
+
+        Returns:
+            One binding per arm, or ``None`` if `model` cannot drive one of them.
+        """
+        bindings = [arm.resolve(model) for arm in self._arms]
+        resolved = [binding for binding in bindings if binding is not None]
+        return resolved if len(resolved) == len(bindings) else None
+
+    def _bind_arms(self, bindings: list[ArmBinding] | None) -> None:
+        """Bind each arm to its entry of `bindings`, or unbind all with ``None``."""
+        for i, arm in enumerate(self._arms):
+            arm.bind(None if bindings is None else bindings[i])
+
+    def _split(self, values: np.ndarray) -> list[np.ndarray]:
+        """Split a ``JOINT_ORDER`` vector into one slice per arm.
+
+        Returns:
+            Each arm's part of `values`, in arm order.
+        """
+        bounds = np.cumsum([arm.num_joints for arm in self._arms])[:-1]
+        return np.split(np.asarray(values), bounds)
 
     def _init_control_state(self, studio_url: str = DEFAULT_STUDIO_URL) -> None:
         """Initialize operator-control state that is not part of the construction recipe."""
@@ -317,9 +299,8 @@ class MuJoCoSO101:
 
         logger.info("Loading MuJoCo model from {}", self._model_path)
         model = load_scene_model(self._model_path)
-        ctrl_indices = self._actuator_indices_for_joint_order(model)
-        joint_limits = self._joint_limits_for_joint_order(model)
-        if ctrl_indices is None or joint_limits is None:
+        bindings = self._resolve_arms(model)
+        if bindings is None:
             msg = f"Model {self._model_path!r} does not provide the joints/actuators for {type(self).__name__}"
             raise ValueError(msg)
         # pyrefly: ignore [missing-attribute]
@@ -331,8 +312,7 @@ class MuJoCoSO101:
             self._scene_on_reset(model, data, self._rng)
         self._model = model
         self._data = data
-        self._ctrl_indices = ctrl_indices
-        self._joint_limits = joint_limits
+        self._bind_arms(bindings)
         self._last_sim_time = float(self._data.time)
         self._init_block_joint_addrs()
         self._init_episode_auto_reset()
@@ -371,8 +351,7 @@ class MuJoCoSO101:
             self._target_body_id = None
             self._episode_auto_reset = None
             self._last_sim_time = None
-            self._ctrl_indices = ()
-            self._joint_limits = None
+            self._bind_arms(None)
 
             self._close_viewer()
             self._model = None
@@ -824,45 +803,13 @@ class MuJoCoSO101:
                 logger.info("No orientation attr (euler/xyaxes/quat) on {} camera", camera_name)
 
         update_camera_pose("overview", cam)
-        for camera_name in ("wrist", "left_wrist", "right_wrist"):
+        for camera_name in self.wrist_cameras():
             wrist_cam = find_first(f".//camera[@name='{camera_name}']")
             if wrist_cam is not None:
                 update_camera_pose(camera_name, wrist_cam)
 
         # pyrefly: ignore [missing-attribute]
         mujoco.mj_forward(self._model, self._data)
-
-    def _actuator_indices_for_joint_order(self, model: object) -> tuple[int, ...] | None:
-        """Resolve each public joint name to its direct MuJoCo actuator.
-
-        Returns:
-            Control indexes in ``JOINT_ORDER``, or ``None`` if the model is
-            missing a joint or does not have exactly one direct joint actuator
-            for every public joint.
-        """
-        import mujoco  # noqa: PLC0415
-
-        actuator_indices: list[int] = []
-        joint_ids: set[int] = set()
-        for name in self.JOINT_ORDER:
-            joint_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name))
-            if joint_id < 0 or joint_id in joint_ids:
-                return None
-            joint_ids.add(joint_id)
-
-            matches = [
-                actuator_id
-                for actuator_id in range(int(model.nu))
-                if int(model.actuator_trntype[actuator_id]) == mujoco.mjtTrn.mjTRN_JOINT
-                and int(model.actuator_trnid[actuator_id, 0]) == joint_id
-            ]
-            if len(matches) != 1:
-                return None
-            actuator_indices.append(matches[0])
-
-        if len(set(actuator_indices)) != self.NUM_JOINTS:
-            return None
-        return tuple(actuator_indices)
 
     def _switch_to_scene(self, scene_id: str) -> bool:
         """Hot-swap the simulation to another registered scene.
@@ -899,9 +846,8 @@ class MuJoCoSO101:
 
         # A scene built for a different arm count would leave get_observation and
         # send_action indexing joints/actuators the model does not have.
-        ctrl_indices = self._actuator_indices_for_joint_order(new_model)
-        joint_limits = self._joint_limits_for_joint_order(new_model)
-        if ctrl_indices is None or joint_limits is None:
+        bindings = self._resolve_arms(new_model)
+        if bindings is None:
             logger.error(
                 "Scene '{}' does not provide the {} joints {} drives; keeping scene '{}'",
                 scene_id,
@@ -926,8 +872,7 @@ class MuJoCoSO101:
             self._model_path = str(xml_path)
             self._model = new_model
             self._data = new_data
-            self._ctrl_indices = ctrl_indices
-            self._joint_limits = joint_limits
+            self._bind_arms(bindings)
             self._held_objects.clear()
 
             self._native_viewer_set_model_data(new_model, new_data)
@@ -1369,23 +1314,8 @@ class MuJoCoSO101:
 
         model, data = self._model, self._data
         home = self._home_targets()
-        for index, name in enumerate(self.JOINT_ORDER):
-            joint_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name))
-            qpos_addr = int(model.jnt_qposadr[joint_id])
-            dof_addr = int(model.jnt_dofadr[joint_id])
-            value = float(home.get(name, model.qpos0[qpos_addr]))
-            if bool(model.jnt_limited[joint_id]):
-                low, high = (float(v) for v in model.jnt_range[joint_id])
-                value = min(max(value, low), high)
-            data.qpos[qpos_addr] = value
-            data.qvel[dof_addr] = 0.0
-
-            actuator_id = self._ctrl_indices[index]
-            target = value
-            if bool(model.actuator_ctrllimited[actuator_id]):
-                low, high = (float(v) for v in model.actuator_ctrlrange[actuator_id])
-                target = min(max(target, low), high)
-            data.ctrl[actuator_id] = target
+        for arm in self._arms:
+            arm.go_home(model, data, home)
         mujoco.mj_forward(model, data)
         logger.info("Arm moved to the home pose")
 
@@ -1685,19 +1615,9 @@ class MuJoCoSO101:
         self._check_pending_scene_switch()
         self._step_and_sync()
 
-        positions = np.empty(self.NUM_JOINTS, dtype=np.float64)
-        velocities = np.empty(self.NUM_JOINTS, dtype=np.float64)
-
-        for i, name in enumerate(self.JOINT_ORDER):
-            positions[i], velocities[i] = self._read_joint_state(name)
-
-        if self._unit == "normalized":
-            limits = self._require_joint_limits()
-            _, width = _normalized_span(self.JOINT_ORDER)
-            velocities *= width / (limits[:, 1] - limits[:, 0])
-        else:
-            velocities = np.degrees(velocities)
-        positions = self._radians_to_units(positions)
+        states = [arm.read(self._data) for arm in self._arms]
+        positions = np.concatenate([position for position, _ in states])
+        velocities = np.concatenate([velocity for _, velocity in states])
 
         return MuJoCoSO101Observation(
             joint_positions=positions.astype(np.float32),
@@ -1729,27 +1649,18 @@ class MuJoCoSO101:
             return
         self._ignored_action_logged = False
 
-        if self._unit == "normalized":
-            targets = normalized_to_radians(
-                np.asarray(action, dtype=np.float64),
-                self._require_joint_limits(),
-                self.JOINT_ORDER,
-            )
-        else:
-            targets = np.radians(np.asarray(action, dtype=np.float64))
-        for i in range(self.NUM_JOINTS):
-            # pyrefly: ignore [missing-attribute]
-            self._data.ctrl[self._ctrl_indices[i]] = float(targets[i])
+        for arm, part in zip(self._arms, self._split(action), strict=True):
+            arm.write(self._data, part)
 
     def _radians_to_units(self, positions: np.ndarray) -> np.ndarray:
-        """Convert joint angles to this robot's ``unit``.
+        """Convert a ``JOINT_ORDER`` vector of joint angles to this robot's ``unit``.
 
         Returns:
             Normalized positions (clamped to each joint's range), or degrees.
         """
-        if self._unit == "normalized":
-            return radians_to_normalized(positions, self._require_joint_limits(), self.JOINT_ORDER)
-        return np.degrees(positions)
+        return np.concatenate([
+            arm.to_units(part) for arm, part in zip(self._arms, self._split(positions), strict=True)
+        ])
 
     def _arm_targets(self) -> np.ndarray:
         """Current actuator targets of the public joints, in radians.
@@ -1757,36 +1668,7 @@ class MuJoCoSO101:
         Returns:
             One target per ``JOINT_ORDER`` joint.
         """
-        # pyrefly: ignore [missing-attribute]
-        return np.asarray(self._data.ctrl[list(self._ctrl_indices)], dtype=np.float64)
-
-    def _require_joint_limits(self) -> np.ndarray:
-        if self._joint_limits is None:
-            msg = "Robot is not connected. Call connect() first."
-            raise ConnectionError(msg)
-        return self._joint_limits
-
-    def _joint_limits_for_joint_order(self, model: object) -> np.ndarray | None:
-        """Read each public joint's range, the simulated counterpart of a calibrated range.
-
-        Returns:
-            ``(NUM_JOINTS, 2)`` lower/upper limits in radians, or ``None`` if a
-            joint is missing or has no range.
-        """
-        import mujoco  # noqa: PLC0415
-
-        limits = np.empty((self.NUM_JOINTS, 2), dtype=np.float64)
-        for i, name in enumerate(self.JOINT_ORDER):
-            joint_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name))
-            if joint_id < 0:
-                return None
-            # pyrefly: ignore [missing-attribute]
-            low, high = (float(value) for value in model.jnt_range[joint_id])
-            if not high > low:
-                logger.error("Joint {!r} has no range; normalized units need one", name)
-                return None
-            limits[i] = (low, high)
-        return limits
+        return np.concatenate([arm.targets(self._data) for arm in self._arms])
 
     def render_camera(self, camera_name: str, width: int, height: int) -> np.ndarray:
         """Render an RGB image from a named camera.
@@ -1808,21 +1690,6 @@ class MuJoCoSO101:
         rgb = renderer.render()
         renderer.close()
         return rgb
-
-    def _read_joint_state(self, name: str) -> tuple[float, float]:
-        import mujoco  # noqa: PLC0415
-
-        # pyrefly: ignore [missing-attribute]
-        jnt_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_JOINT, name)
-        if jnt_id < 0:
-            msg = f"Joint {name!r} not found in MuJoCo model"
-            raise ValueError(msg)
-        # pyrefly: ignore [missing-attribute]
-        qpos_adr = self._model.jnt_qposadr[jnt_id]
-        # pyrefly: ignore [missing-attribute]
-        dof_adr = self._model.jnt_dofadr[jnt_id]
-        # pyrefly: ignore [missing-attribute]
-        return float(self._data.qpos[qpos_adr]), float(self._data.qvel[dof_adr])
 
     def __getstate__(self) -> dict:
         """Return serializable construction state."""
@@ -1891,8 +1758,6 @@ class MuJoCoSO101:
         self._last_sim_time = None
         self._rng = np.random.default_rng()
         self._pending_scene_switch = False
-        self._ctrl_indices = ()
-        self._joint_limits = None
         self._scene_xml_paths = None
         self._scene_xml_mtimes = {}
         self._scene_xml_next_check = 0.0
@@ -1909,6 +1774,9 @@ class BiMuJoCoSO101(MuJoCoSO101):
     looked up by name, so their order in the compiled model does not matter.
     """
 
-    JOINT_ORDER: ClassVar[tuple[str, ...]] = BIMANUAL_SO101_JOINT_ORDER
-    NUM_JOINTS: ClassVar[int] = BIMANUAL_NUM_JOINTS
-    NUM_ARMS: ClassVar[int] = 2
+    ARM_PREFIXES: ClassVar[tuple[str, ...]] = ("left_", "right_")
+    JOINT_ORDER: ClassVar[tuple[str, ...]] = tuple(
+        name for prefix in ARM_PREFIXES for name in SO101_PROFILE.joint_names(prefix)
+    )
+    NUM_JOINTS: ClassVar[int] = len(JOINT_ORDER)
+    NUM_ARMS: ClassVar[int] = len(ARM_PREFIXES)

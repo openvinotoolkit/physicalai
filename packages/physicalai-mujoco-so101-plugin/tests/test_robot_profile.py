@@ -225,3 +225,28 @@ def test_xml_without_mount_frames_needs_no_robot(tmp_path: Path) -> None:
     path = tmp_path / "custom.xml"
     path.write_text("<mujoco><worldbody/></mujoco>")
     assert not scene_needs_robot(path)
+
+
+def test_kinematics_and_gripper_make_up_the_joint_order() -> None:
+    """The autopilot returns IK joint targets followed by the gripper, in the robot's joint order."""
+    kinematics = SO101_PROFILE.kinematics
+    assert kinematics is not None
+    assert (*kinematics.ik_joints, SO101_PROFILE.gripper) == SO101_PROFILE.joint_order
+
+
+@pytest.mark.parametrize(
+    ("robot_cls", "joint_order", "wrist_cameras"),
+    [
+        (MuJoCoSO101, SO101_JOINT_ORDER, ("wrist",)),
+        (BiMuJoCoSO101, BIMANUAL_SO101_JOINT_ORDER, ("left_wrist", "right_wrist")),
+    ],
+)
+def test_robot_classes_take_their_layout_from_the_profile(
+    robot_cls: type[MuJoCoSO101], joint_order: tuple[str, ...], wrist_cameras: tuple[str, ...]
+) -> None:
+    """The Studio catalog uses the constants; the simulation derives the same names from the profile."""
+    assert robot_cls.JOINT_ORDER == joint_order
+    assert robot_cls.NUM_JOINTS == len(joint_order)
+    assert robot_cls.NUM_ARMS == len(robot_cls.ARM_PREFIXES)
+    assert robot_cls.wrist_cameras() == wrist_cameras
+

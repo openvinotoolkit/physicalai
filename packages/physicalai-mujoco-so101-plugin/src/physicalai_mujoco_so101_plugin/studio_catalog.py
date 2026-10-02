@@ -9,6 +9,7 @@ import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from loguru import logger
 from physicalai_studio_plugin import (
     CatalogRobotFactory,
     PayloadContainer,
@@ -123,19 +124,38 @@ class MuJoCoSO101BimanualPayload(MuJoCoSO101Payload):
     )
 
 
-def _check_zenoh_robot_online(name: str) -> bool:
+def _check_zenoh_robot_online(name: str, joint_order: tuple[str, ...]) -> bool:
+    """Return whether an owner named `name` is reachable and drives exactly `joint_order`.
+
+    A single-arm catalog entry pointed at a bimanual simulation (or the other
+    way round) would otherwise attach and fail on its first action.
+    """
     try:
         robot = SharedRobot.attach(name=name, connect_timeout=2.0)
         robot.connect()
-        robot.disconnect()
+        try:
+            joint_names = tuple(robot.joint_names)
+        finally:
+            robot.disconnect()
     except (ConnectionError, TimeoutError, RuntimeError):
         return False
-    else:
-        return True
+    if joint_names != joint_order:
+        logger.warning(
+            "MuJoCo owner {!r} drives joints {} but this robot type expects {}",
+            name,
+            list(joint_names),
+            list(joint_order),
+        )
+        return False
+    return True
 
 
 class MuJoCoSO101Probe(RobotProbe[MuJoCoSO101Payload]):
     """Discover and query MuJoCo SO-101 simulation owners."""
+
+    def __init__(self, joint_order: tuple[str, ...] = SO101_JOINT_ORDER) -> None:
+        """Probe for owners that drive `joint_order`."""
+        self.joint_order = tuple(joint_order)
 
     async def discover(self, manager: PortScanner) -> list[SerialPortInfo]:
         """Return robots found by the port scanner."""
@@ -157,12 +177,9 @@ class MuJoCoSO101Probe(RobotProbe[MuJoCoSO101Payload]):
         payload: MuJoCoSO101Payload,
         manager: PortScanner | None = None,
     ) -> bool:
-        """Return whether the configured simulation owner is reachable."""
-        _ = self, manager
-        return await asyncio.to_thread(_check_zenoh_robot_online, payload.name)
-
-
-_MUJOCO_PROBE = MuJoCoSO101Probe()
+        """Return whether the configured simulation owner is reachable and drives this robot type's joints."""
+        _ = manager
+        return await asyncio.to_thread(_check_zenoh_robot_online, payload.name, self.joint_order)
 
 
 class MuJoCoVirtualLeaderPayload(BaseModel):
@@ -298,7 +315,7 @@ def _definitions() -> list[RobotCatalogDefinition]:
                 include_velocities=False,
                 external_effort_gain=None,
             ),
-            probe=_MUJOCO_PROBE,
+            probe=MuJoCoSO101Probe(SO101_JOINT_ORDER),
         ),
         RobotCatalogDefinition(
             type="MuJoCo_SO101_Bimanual_Follower",
@@ -311,7 +328,7 @@ def _definitions() -> list[RobotCatalogDefinition]:
                 include_velocities=False,
                 external_effort_gain=None,
             ),
-            probe=_MUJOCO_PROBE,
+            probe=MuJoCoSO101Probe(BIMANUAL_SO101_JOINT_ORDER),
         ),
         RobotCatalogDefinition(
             type="MuJoCo_SO101_Virtual_Leader",

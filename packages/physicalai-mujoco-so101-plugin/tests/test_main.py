@@ -311,6 +311,30 @@ class TestRobotModelFetch:
         assert exit_info.value.code == 1
 
 
+class TestStartCameras:
+    @pytest.mark.parametrize(
+        ("flags", "names"),
+        [([], ["wrist", "overview"]), (["--bimanual"], ["left_wrist", "overview", "right_wrist"])],
+    )
+    def test_cameras_follow_the_arms(self, flags: list[str], names: list[str]) -> None:
+        args = cli._build_parser().parse_args(["start", "--no-gui", *flags])
+
+        def wait(shutdown, _name, _pid) -> None:
+            shutdown.set()
+
+        with (
+            patch.object(cli, "_fetch_robot_models"),
+            patch.object(cli.Config, "from_instance") as from_instance,
+            patch.object(cli.SharedRobot, "from_config"),
+            patch.object(cli, "_owner_pid", return_value=None),
+            patch.object(cli, "_wait_for_owner_shutdown", side_effect=wait),
+            patch.object(cli.signal, "signal"),
+        ):
+            cli._start(args)
+        robot = from_instance.call_args.args[0]
+        assert [camera.name for camera in robot._cameras] == names  # noqa: SLF001
+
+
 class TestResolveOwnerName:
     def test_single_arm_default(self) -> None:
         args = argparse.Namespace(name=None, bimanual=False)

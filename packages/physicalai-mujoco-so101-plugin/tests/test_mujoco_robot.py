@@ -12,7 +12,7 @@ import mujoco
 import pytest
 from physicalai.config import Config
 
-from physicalai_mujoco_so101_plugin.constants import BIMANUAL_SO101_JOINT_ORDER, JOINT_LIMITS_DEG, SO101_JOINT_ORDER
+from physicalai_mujoco_so101_plugin.constants import BIMANUAL_SO101_JOINT_ORDER, SO101_JOINT_ORDER
 from physicalai_mujoco_so101_plugin.http_server import (
     HomeCommand,
     ResetCommand,
@@ -26,12 +26,13 @@ from physicalai_mujoco_so101_plugin.mujoco_robot import (
     BiMuJoCoSO101,
     MuJoCoSO101,
     MuJoCoSO101Observation,
-    normalized_to_radians,
-    radians_to_normalized,
 )
+from physicalai_mujoco_so101_plugin.robot_profile import SO101_PROFILE
+from physicalai_mujoco_so101_plugin.sim_arm import normalized_to_radians, radians_to_normalized
 
 # The SO-101 model's joint ranges (radians), in SO101_JOINT_ORDER.
-SO101_JOINT_RANGES = np.radians([JOINT_LIMITS_DEG[name] for name in SO101_JOINT_ORDER])
+SO101_JOINT_RANGES = np.array([(low, high) for _, low, high in SO101_PROFILE.joint_ranges])
+SO101_GRIPPERS = [name == "gripper" for name in SO101_JOINT_ORDER]
 
 
 @pytest.fixture
@@ -192,7 +193,7 @@ class TestMuJoCoSO101Connect:
         assert robot._ctrl_indices == tuple(reversed(range(6)))  # noqa: SLF001
         action = np.arange(6, dtype=np.float32)
         robot.send_action(action)
-        expected = normalized_to_radians(action, SO101_JOINT_RANGES, SO101_JOINT_ORDER)
+        expected = normalized_to_radians(action, SO101_JOINT_RANGES, SO101_GRIPPERS)
         np.testing.assert_allclose(robot._data.ctrl[::-1], expected)  # noqa: SLF001
 
     @pytest.mark.parametrize(
@@ -1025,18 +1026,20 @@ class TestJointUnits:
         low, high = SO101_JOINT_RANGES[:, 0], SO101_JOINT_RANGES[:, 1]
         radians = low + fraction * (high - low)
 
-        normalized = radians_to_normalized(radians, SO101_JOINT_RANGES, SO101_JOINT_ORDER)
+        normalized = radians_to_normalized(radians, SO101_JOINT_RANGES, SO101_GRIPPERS)
 
         expected = [_driver_normalized(fraction, gripper=name == "gripper") for name in SO101_JOINT_ORDER]
         np.testing.assert_allclose(normalized, expected, atol=1e-9)
         np.testing.assert_allclose(
-            normalized_to_radians(normalized, SO101_JOINT_RANGES, SO101_JOINT_ORDER), radians, atol=1e-12
+            normalized_to_radians(normalized, SO101_JOINT_RANGES, SO101_GRIPPERS), radians, atol=1e-12
         )
 
     def test_bimanual_grippers_use_the_gripper_range(self) -> None:
         limits = np.tile(SO101_JOINT_RANGES, (2, 1))
-        normalized = radians_to_normalized(limits[:, 0], limits, BIMANUAL_SO101_JOINT_ORDER)
-        grippers = [i for i, name in enumerate(BIMANUAL_SO101_JOINT_ORDER) if name.endswith("gripper")]
+        robot = BiMuJoCoSO101(model_path="/fake/model.xml")
+        mask = [gripper for arm in robot._arms for gripper in arm.grippers]  # noqa: SLF001
+        normalized = radians_to_normalized(limits[:, 0], limits, mask)
+        grippers = [i for i, gripper in enumerate(mask) if gripper]
 
         assert grippers == [5, 11]
         np.testing.assert_allclose(normalized[grippers], 0.0)
@@ -1044,9 +1047,9 @@ class TestJointUnits:
 
     def test_values_outside_the_range_are_clamped(self) -> None:
         radians = SO101_JOINT_RANGES[:, 1] + 0.2
-        np.testing.assert_allclose(radians_to_normalized(radians, SO101_JOINT_RANGES, SO101_JOINT_ORDER), 100.0)
+        np.testing.assert_allclose(radians_to_normalized(radians, SO101_JOINT_RANGES, SO101_GRIPPERS), 100.0)
 
-        targets = normalized_to_radians(np.full(6, -150.0), SO101_JOINT_RANGES, SO101_JOINT_ORDER)
+        targets = normalized_to_radians(np.full(6, -150.0), SO101_JOINT_RANGES, SO101_GRIPPERS)
         np.testing.assert_allclose(targets, SO101_JOINT_RANGES[:, 0])
 
     def test_observation_and_action_use_normalized_units(self, mock_mujoco: MagicMock) -> None:
@@ -1058,7 +1061,7 @@ class TestJointUnits:
         obs = robot.get_observation()
 
         np.testing.assert_allclose(
-            obs.joint_positions, radians_to_normalized(qpos, SO101_JOINT_RANGES, SO101_JOINT_ORDER), rtol=1e-6
+            obs.joint_positions, radians_to_normalized(qpos, SO101_JOINT_RANGES, SO101_GRIPPERS), rtol=1e-6
         )
         span = SO101_JOINT_RANGES[:, 1] - SO101_JOINT_RANGES[:, 0]
         units = np.array([100.0 if name == "gripper" else 200.0 for name in SO101_JOINT_ORDER])
