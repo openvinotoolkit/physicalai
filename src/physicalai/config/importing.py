@@ -42,6 +42,9 @@ def import_dotted_path(path: str) -> object:
     for split_index in range(len(segments), 0, -1):
         module_name = ".".join(segments[:split_index])
         try:
+            # Caller is responsible for only resolving paths it trusts; this
+            # primitive is intentionally allowlist-free and must not gain one here.
+            # nosemgrep: python.lang.security.audit.non-literal-import.non-literal-import
             obj: object = importlib.import_module(module_name)
         except ModuleNotFoundError as exc:
             # Continue only when this prefix itself is missing — not when a real

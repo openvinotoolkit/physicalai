@@ -26,12 +26,17 @@ if TYPE_CHECKING:
 
 from motorbridge_smart_servo import FashionStarServo
 
+# A reading that jumps further than this in one sample is treated as a bus glitch
+# (e.g. a servo briefly reporting 0 after a brown-out) and the last value is held.
+_GLITCH_JUMP_DEG = 90.0
+# A jump that persists longer than this many samples is accepted as real.
+_GLITCH_MAX_HELD_SAMPLES = 3
 
-class _AngleSample(Protocol):
-    """Protocol for a single angle-read sample from a FashionStar servo."""
 
-    raw_deg: float
-    filtered_deg: float
+class _ServoMonitor(Protocol):
+    """Protocol for one servo's entry in a FashionStar sync-monitor reply."""
+
+    angle_deg: float
     reliable: bool
 
 
@@ -42,7 +47,7 @@ class _FashionStarBus(Protocol):
     def unlock(self, servo_id: int) -> None: ...
     def reset_multi_turn(self, servo_id: int) -> None: ...
     def set_origin_point(self, servo_id: int) -> None: ...
-    def read_angle(self, servo_id: int, *, multi_turn: bool = True) -> _AngleSample: ...
+    def sync_monitor(self, servo_ids: list[int]) -> dict[int, _ServoMonitor | None]: ...
     def set_angle(self, servo_id: int, angle_deg: float, *, multi_turn: bool = False, interval_ms: int = 0) -> None: ...
     def close(self) -> None: ...
 
@@ -114,6 +119,7 @@ class StarArm102HDLeader:
         self._last_positions: np.ndarray | None = None
         self._last_raw_positions: np.ndarray | None = None
         self._last_reliable: np.ndarray | None = None
+        self._glitch_held = np.zeros(self.NUM_JOINTS, dtype=np.int32)
         self._holding = False
 
     @property
@@ -179,6 +185,7 @@ class StarArm102HDLeader:
             self._bus = None
             raise
 
+        self._reset_samples()
         logger.info(f"{self.__class__.__name__} connected on {self.port}")
 
     def disconnect(self) -> None:
@@ -188,12 +195,20 @@ class StarArm102HDLeader:
             return
         self._holding = False
         self._bus = None
+        self._reset_samples()
         bus.close()
         logger.info(f"{self.__class__.__name__} disconnected from {self.port}")
 
     def is_connected(self) -> bool:
         """Return whether the UART bus connection is active."""
         return self._bus is not None
+
+    def _reset_samples(self) -> None:
+        """Forget cached samples so a new connection starts a fresh glitch-filter baseline."""
+        self._last_positions = None
+        self._last_raw_positions = None
+        self._last_reliable = None
+        self._glitch_held[:] = 0
 
     def _ping_servos(self, bus: _FashionStarBus) -> None:
         for name in self.JOINT_ORDER:
@@ -250,14 +265,32 @@ class StarArm102HDLeader:
         raw_positions = np.empty(self.NUM_JOINTS, dtype=np.float32)
         reliable = np.empty(self.NUM_JOINTS, dtype=np.float32)
 
+        # One sync command reads every servo, instead of a round trip per servo.
+        monitors = bus.sync_monitor([STAR_ARM_102_JOINT_IDS[name] for name in self.JOINT_ORDER])
+        last_positions = self._last_positions
+
         for i, name in enumerate(self.JOINT_ORDER):
             servo_id = STAR_ARM_102_JOINT_IDS[name]
-            sample = bus.read_angle(servo_id, multi_turn=True)
+            monitor = monitors.get(servo_id)
+            if monitor is None:
+                msg = f"Servo '{name}' (ID {servo_id}) has never responded on {self.port}."
+                raise ConnectionError(msg)
             range_min, range_max = STAR_ARM_102_JOINT_RANGES_DEG[name]
-            unwrapped, _ = self._round_to_valid_range(float(sample.filtered_deg), range_min, range_max)
+            unwrapped, _ = self._round_to_valid_range(float(monitor.angle_deg), range_min, range_max)
             positions[i] = float(np.clip(unwrapped, range_min, range_max))
-            raw_positions[i] = float(sample.raw_deg)
-            reliable[i] = 1.0 if sample.reliable else 0.0
+            raw_positions[i] = float(monitor.angle_deg)
+            reliable[i] = 1.0 if monitor.reliable else 0.0
+
+            if (
+                last_positions is not None
+                and abs(positions[i] - last_positions[i]) > _GLITCH_JUMP_DEG
+                and self._glitch_held[i] < _GLITCH_MAX_HELD_SAMPLES
+            ):
+                self._glitch_held[i] += 1
+                positions[i] = last_positions[i]
+                reliable[i] = 0.0
+            else:
+                self._glitch_held[i] = 0
 
         return positions, raw_positions, reliable
 

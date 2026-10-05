@@ -34,6 +34,9 @@ class UVCCamera(Camera):
         device: Unified device selector.
             - On Linux (V4L2): ``0`` maps to ``/dev/video0``.
             - On macOS/Windows (OmniCamera): ``0`` maps to OmniCamera index ``0``.
+            - An identity dict (e.g. ``{"uuid": ...}``, ``{"serial": ...}``) picks
+              a camera by its reported metadata. Values are ``str`` or ``int`` and
+              are kept as given, so ``"0x21230000c456366"`` stays a string.
         width: Requested frame width in pixels.
         height: Requested frame height in pixels.
         fps: Requested frames per second.
@@ -46,7 +49,7 @@ class UVCCamera(Camera):
     def __init__(
         self,
         *,
-        device: int | str | dict[str, Any] = 0,
+        device: int | str | dict[str, str | int] = 0,
         width: int = 640,
         height: int = 480,
         fps: int = 30,

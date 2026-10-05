@@ -2,11 +2,22 @@
 
 These rules apply when writing, editing, or reviewing runtime or plugin source code (see [`AGENTS.md`](../../AGENTS.md) for repository layout).
 
-1. No `# nosec` / `# nosemgrep` without a justification comment explaining why the suppression is safe.
+The [security model](../getting-started/security.md) defines operator-facing trust boundaries and accepted
+assumptions. Use the numbered rules below as coding and review requirements. Do not report behavior that the
+security model explicitly accepts unless a change crosses that boundary or makes its description inaccurate.
 
-2. No hardcoded secrets. No API keys, tokens, passwords, or credentials in any source file, test, config, or commit message.
+1. Every `# nosec` or `# nosemgrep` suppression must name the suppressed check and explain
+   why the code is safe. Do not copy an existing suppression without re-evaluating it in the new context.
 
-3. No path traversal. For user-supplied file paths (export directories, config paths, cache paths): resolve and verify containment using `pathlib.Path`. Never use `assert` for security checks. Correct pattern:
+2. No hardcoded secrets. Never commit real API keys, tokens, passwords, authenticated URLs, or other
+   credentials. Clearly non-secret placeholders and test fixtures are allowed when they cannot grant access
+   and are identified as test data.
+
+3. No path traversal across a defined base directory. When an API accepts an untrusted relative name that
+   is contractually confined beneath a base directory, resolve it and verify containment with `pathlib.Path`.
+   Never use `assert` for security checks. An explicit path selector such as `--config <path>` is allowed to
+   name an arbitrary operator-chosen path; automation must apply an allowlist or base-directory policy before
+   forwarding an untrusted value. When symlink targets must remain inside the base, use resolved containment:
 
    ```python
    resolved = (base_dir / user_path).resolve()
@@ -14,34 +25,54 @@ These rules apply when writing, editing, or reviewing runtime or plugin source c
        raise ValueError(f"Path escapes base directory: {user_path!r}")
    ```
 
-4. No arbitrary `class_path` import from untrusted manifests, YAML, or peer
-   payloads. `instantiate_component` in `inference/component_factory.py`
-   resolves `class_path` via `ComponentRegistry` and `importlib`. Only register
-   trusted short names; treat manifest `class_path` values as untrusted unless
-   the export directory is trusted. Prefer registered `type` names for
-   built-ins. `physicalai.config.instantiate` is a separate trusted-local /
-   parent→child-only construction boundary: never pass robot/camera network
-   metadata, Zenoh payloads, shared-memory control requests, or other
-   untrusted peer data into it. Camera reconfigure requests may carry only
-   explicitly allowlisted scalar settings; the publisher must merge them into
-   its trusted startup recipe without accepting a peer-selected `class_path`.
+   Some artifact stores intentionally use symlinks outside the lexical export directory. Such APIs must use
+   documented lexical containment instead and test both traversal rejection and the allowed symlink layout.
 
-5. Enforce component nesting limits. `_MAX_COMPONENT_DEPTH` in
-   `component_factory.py` caps recursive manifest/YAML instantiation;
-   `_MAX_CONFIG_DEPTH` in `physicalai.config` caps recursive
-   `Config.from_instance` / `instantiate` trees — do not raise or bypass either without a
-   security review.
+4. Preserve dynamic-construction trust boundaries. Name resolution by `ComponentRegistry`,
+   `instantiate_component()`, jsonargparse, or `physicalai.config.instantiate()` does not establish trust.
+   Operator-reviewed configs and export directories are trusted inputs under the security model; provenance
+   and review establish that trust, not directory completeness or successful parsing. Do not pass network
+   metadata, transport payloads, shared-memory control requests, or other untrusted peer data into these
+   construction paths. Never accept a peer-selected `class_path`. Prefer registered `type` names for built-in
+   manifest components, review new registry entries, and use an explicit module-prefix allowlist when a
+   feature intentionally supports only a package family.
 
-6. Never use `pickle`, `eval()`, `exec()`, `joblib`, `dill`, or `cloudpickle` on untrusted data. Prefer `json` for structured metadata, `safetensors` for weights, and `numpy.load(..., allow_pickle=False)` for arrays.
+5. Preserve recursive configuration limits. `_MAX_CONFIG_DEPTH` in `physicalai.config` caps recursive
+   normalization and instantiation of `Config` trees, and normalization rejects cycles. Manifest component
+   construction relies on those controls for nested typed configuration. Do not raise or bypass the limit or
+   cycle checks without a security review.
 
-7. Avoid `trust_remote_code=True` in Hugging Face loaders unless the repo id is a hardcoded first-party constant, the need is documented, and `revision=` is pinned to a commit SHA.
+6. Never use `pickle`, `eval()`, `exec()`, `joblib`, `dill`, or `cloudpickle` on untrusted data. Python
+   multiprocessing may pickle objects exchanged within a trusted local parent-child boundary; do not expose
+   that channel to attacker-controlled serialized data, and do not treat field validation in `__setstate__`
+   as a safe-unpickling control. Prefer `json` for structured metadata, `safetensors` for weights, and
+   `numpy.load(..., allow_pickle=False)` for arrays.
 
-8. Hugging Face Hub downloads (`inference/utils/_hub.py`): pin `revision=` to a commit SHA for reproducible loads when security matters; never log `HF_TOKEN` or tokens from the environment.
+7. Do not enable `trust_remote_code=True` in Hugging Face loaders unless the repository and code are reviewed,
+   the repository id is a hardcoded first-party constant, the need is documented, and `revision=` is pinned
+   to the reviewed commit SHA.
 
-9. Validate `manifest.json` and Hub-sourced JSON fields against expected types before use. Raise on unexpected errors in model loading and manifest parsing — do not silently fall back to insecure defaults.
+8. Hugging Face Hub loaders must preserve caller-supplied `revision=` values. APIs that promise immutable
+   loading must require and validate a commit SHA and test omitted, branch, tag, and commit values. Never log
+   `HF_TOKEN`, explicit token arguments, authenticated URLs, or tokens from the environment. The security
+   model treats policy revision pinning as an operator safeguard, so an allowed mutable revision is not a
+   finding unless an API promises immutability or the change makes the security model inaccurate.
+
+9. Validate `manifest.json` and other Hub-sourced JSON fields against explicit schemas or expected types
+   before use. Propagate unexpected model-loading and manifest-parsing errors; do not silently fall back to a
+   different backend, artifact, or insecure default.
 
 10. Prefer `.safetensors` over `.ckpt`/`.pt` for processor stats and weights when adding new artifact types.
 
-11. jsonargparse `parser.instantiate` in `cli/run.py` and runtime config loading can construct arbitrary registered classes from YAML — document new `class_path` targets and avoid exposing dangerous constructors through config without validation.
+11. jsonargparse `parser.instantiate()` in runtime config loading can import and construct arbitrary
+    `class_path` targets from trusted operator YAML. Document supported targets and validate constructor
+    arguments that can affect files, processes, networks, credentials, or hardware. Do not report dynamic
+    construction alone as a defect within this trusted boundary; report untrusted data entering the boundary
+    or a constructor that violates another numbered rule.
 
-12. Network transport trust boundary. `physicalai.robot.transport` (Zenoh) applies `/action` payloads to physical hardware **without authentication** — it assumes a trusted, isolated robot-cell network (VLAN/firewall or Zenoh ACL/TLS is the deployer's responsibility). Any new network-capable transport must document its trust boundary the same way, must never deserialize payloads with `pickle` (rule 6 — use msgpack/json), and must not silently widen exposure (e.g. adding remote-code or file-path semantics to wire payloads) without a security review.
+12. Network transports must remain local-only by default. The documented, explicitly enabled remote mode and
+    its deployment assumptions are accepted behavior, not a finding by themselves. Flag changes that widen
+    default exposure, alter peer-identity assumptions, add peer-selected code or path semantics, or weaken
+    payload validation. Preserve fixed payload-size limits before deserialization. If a change alters the
+    trust boundary, update the user security model in the same change. Deserialization of untrusted transport
+    data must comply with rule 6.

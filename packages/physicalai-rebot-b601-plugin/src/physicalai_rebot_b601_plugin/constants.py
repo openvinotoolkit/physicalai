@@ -110,7 +110,7 @@ REBOT_B601_RS_MOTOR_MODELS: Final = {
 }
 
 REBOT_B601_RS_JOINT_LIMITS_DEG: Final = {
-    "shoulder_pan": (-0.0, 145.0),
+    "shoulder_pan": (-145.0, 145.0),
     "shoulder_lift": (-0.0, 170.0),
     "elbow_flex": (-0.0, 200.0),
     "wrist_flex": (-80.0, 90.0),
