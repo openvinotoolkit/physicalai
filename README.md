@@ -55,7 +55,7 @@ pip install physicalai[trossen]     # Trossen WidowX robots
 With first-party plugins (Python 3.12+):
 
 ```bash
-pip install "physicalai[plugin-mujoco-so101]"    # simulated SO-101 (MuJoCo)
+pip install "physicalai[plugin-mujoco]"          # simulated SO-101 (MuJoCo)
 pip install "physicalai[plugin-bimanual-so101]"  # bimanual SO-101
 pip install "physicalai[plugin-rebot-b601]"      # Seeed reBot B601
 pip install "physicalai[plugin-stararm]"         # Fashion Star Arm 102
@@ -171,7 +171,7 @@ More robots ship as first-party plugins. Each plugin README covers setup and usa
 
 | Plugin                                                                 | Robots                                                                             |
 | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| [MuJoCo SO-101](packages/physicalai-mujoco-so101-plugin/README.md)     | Simulated single-arm and bimanual SO-101, with a browser viewer and camera streams |
+| [MuJoCo SO-101](packages/physicalai-mujoco-plugin/README.md)           | Simulated single-arm and bimanual SO-101, with a browser viewer and camera streams |
 | [Bimanual SO-101](packages/physicalai-bimanual-so101-plugin/README.md) | Two SO-101 arms as one robot (follower and leader)                                 |
 | [reBot B601](packages/physicalai-rebot-b601-plugin/README.md)          | Seeed reBot B601-DM / B601-RS followers                                            |
 | [Star Arm](packages/physicalai-stararm-plugin/README.md)               | Fashion Star Arm 102 leaders and a follower                                        |

@@ -117,14 +117,14 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/menagerie-cache
-          key: menagerie-${{ runner.os }}-${{ hashFiles('packages/physicalai-mujoco-so101-plugin/pyproject.toml') }}
+          key: menagerie-${{ runner.os }}-${{ hashFiles('packages/physicalai-mujoco-plugin/pyproject.toml') }}
           restore-keys: |
             menagerie-${{ runner.os }}-
 
       - name: Fetch MuJoCo Menagerie models
         env:
           MENAGERIE_CACHE_DIR: ${{ runner.temp }}/menagerie-cache
-        run: uv run physicalai-mujoco-so101 prefetch
+        run: uv run physicalai-mujoco prefetch
 
       - name: Run python unit tests
         env:
