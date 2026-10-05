@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import json
+import time
+import uuid
 from typing import TYPE_CHECKING
 
 from physicalai.robot.transport._ids import derive_endpoint_port
@@ -91,3 +94,44 @@ class TestSessionConfig:
         port = derive_endpoint_port("left-arm")
         config = self._captured_config(name="left-arm", listen=False, allow_remote=True)
         assert config.get_json("connect/endpoints") == f'["tcp/127.0.0.1:{port}"]'
+
+    def test_subscriber_retries_its_connection_quickly(self) -> None:
+        config = self._captured_config(name="left-arm", listen=False)
+        assert json.loads(config.get_json("connect/retry")) == {
+            "period_init_ms": 100,
+            "period_max_ms": 500,
+            "period_increase_factor": 1.5,
+        }
+
+
+@requires_zenoh
+def test_subscriber_reaches_an_owner_that_starts_listening_later() -> None:
+    """A subscriber opened before its owner listens must reach it within a fraction of a second.
+
+    With Zenoh's default connect backoff (1 s, 2 s, 4 s, ...) an owner that starts listening
+    between two retries stays unreachable for up to seconds, so ``SharedRobot.connect`` could
+    time out on ``/metadata`` or the owner's idle timeout could stop it first.
+    """
+    name = f"late-owner-{uuid.uuid4().hex}"
+    subscriber = open_session(name)
+    owner = None
+    try:
+        time.sleep(1.2)  # past Zenoh's default first retry, into its 2 s period
+        owner = open_session(name, listen=True)
+        key = f"test/{name}/ping"
+        queryable = owner.declare_queryable(key, lambda query: query.reply(key, b"pong"))
+        start = time.monotonic()
+        reply = None
+        while reply is None and time.monotonic() - start < 5.0:
+            replies = [r for r in subscriber.get(key, timeout=0.5) if r.ok is not None]
+            reply = replies[0] if replies else None
+            if reply is None:
+                time.sleep(0.05)
+        elapsed = time.monotonic() - start
+        queryable.undeclare()
+        assert reply is not None
+        assert elapsed < 1.0, f"first reply after {elapsed:.2f}s"
+    finally:
+        subscriber.close()
+        if owner is not None:
+            owner.close()
