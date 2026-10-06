@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import queue
 import sys
+import threading
 from unittest.mock import MagicMock, patch
 
 import mujoco
@@ -230,6 +231,32 @@ class TestCameraFrames:
         service.close()
         assert service.frame_buffers == {}
 
+    def test_stop_reports_a_camera_thread_that_is_still_rendering(self, model_data) -> None:
+        """A render stuck past the stop timeout still reads the model; a later stop waits for it again."""
+        rendering, release = threading.Event(), threading.Event()
+
+        def hang() -> np.ndarray:
+            rendering.set()
+            release.wait(10.0)
+            return np.zeros((4, 6, 3), dtype=np.uint8)
+
+        renderer = MagicMock()
+        renderer.render.side_effect = hang
+        service = CameraService([CameraConfig("overview", fps=100)])
+        with patch("mujoco.Renderer", return_value=renderer):
+            service.start(*model_data)
+            try:
+                assert rendering.wait(5.0)
+                assert service.stop(0.05) is False
+                assert service.on_thread
+                release.set()
+                assert service.stop() is True
+                assert not service.on_thread
+            finally:
+                release.set()
+                service.close()
+        renderer.close.assert_called_once()
+
 
 class TestSceneXmlWatch:
     def test_include_graph_is_walked_once_per_poll(self, tmp_path) -> None:
@@ -286,3 +313,64 @@ class TestSceneXmlWatch:
         watcher.poll(*model_data)
 
         np.testing.assert_allclose(model_data[0].cam_pos[0], (0.0, -2.0, 0.5))
+
+    def test_an_edit_is_offered_again_until_it_is_applied(self, tmp_path, model_data) -> None:
+        """A caller that cannot apply an edit yet (the camera thread did not stop) gets it at the next check."""
+        path = tmp_path / "scene.xml"
+        path.write_text(_XML)
+        watcher = SceneXmlWatcher(path)
+        watcher._mtimes = {}  # noqa: SLF001
+
+        watcher._next_check = 0.0  # noqa: SLF001
+        assert watcher.changed()
+        watcher._next_check = 0.0  # noqa: SLF001
+        assert watcher.changed()
+        watcher.apply(*model_data)
+        watcher._next_check = 0.0  # noqa: SLF001
+        assert not watcher.changed()
+
+    @pytest.mark.parametrize(
+        "orientation",
+        [
+            'xyaxes="0 0 0 0 1 0"',  # zero x axis
+            'xyaxes="1 0 0 2 0 0"',  # y collinear with x
+            'xyaxes="nan 0 0 0 1 0"',
+            'xyaxes="1 0 0 0 inf 1"',
+            'quat="0 0 0 0"',
+            'quat="nan 1 0 0"',
+            'quat="1e308 1e308 0 0"',  # finite, but its norm overflows
+            'euler="0 nan 0"',
+        ],
+    )
+    def test_an_unusable_orientation_leaves_the_camera_alone(self, tmp_path, model_data, orientation) -> None:
+        """A half-typed orientation must not install a NaN or zero quaternion in the live model."""
+        model = model_data[0]
+        path = tmp_path / "scene.xml"
+        path.write_text(_XML.replace('xyaxes="1 0 0 0 0.5 1"', orientation))
+        watcher = SceneXmlWatcher(path)
+        before = model.cam_quat[0].copy()
+
+        watcher.apply(*model_data)
+
+        np.testing.assert_array_equal(model.cam_quat[0], before)
+
+    def test_an_unusable_rig_orientation_leaves_the_rig_alone(self, tmp_path) -> None:
+        xml = """<mujoco><worldbody><camera name="overview" pos="0 -1 0.5"/>
+<body name="camera_mount" euler="0 0 0"><geom size="0.1"/></body></worldbody></mujoco>"""
+        model = mujoco.MjModel.from_xml_string(xml)
+        path = tmp_path / "scene.xml"
+        path.write_text(xml.replace('euler="0 0 0"', 'quat="0 0 0 0"'))
+
+        SceneXmlWatcher(path).apply(model, mujoco.MjData(model))
+
+        np.testing.assert_array_equal(model.body_quat[model.body("camera_mount").id], (1.0, 0.0, 0.0, 0.0))
+
+    def test_an_xyaxes_edit_turns_the_camera(self, tmp_path, model_data) -> None:
+        model = model_data[0]
+        path = tmp_path / "scene.xml"
+        path.write_text(_XML.replace('xyaxes="1 0 0 0 0.5 1"', 'xyaxes="0 1 0 -1 0 0"'))
+
+        SceneXmlWatcher(path).apply(*model_data)
+
+        expected = mujoco.MjModel.from_xml_string(_XML.replace('xyaxes="1 0 0 0 0.5 1"', 'xyaxes="0 1 0 -1 0 0"'))
+        np.testing.assert_allclose(model.cam_quat[0], expected.cam_quat[0], atol=1e-12)

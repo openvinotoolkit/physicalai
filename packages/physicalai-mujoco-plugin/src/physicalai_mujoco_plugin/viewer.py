@@ -22,7 +22,7 @@ import numpy as np
 from loguru import logger
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     from physicalai_mujoco_plugin.http_server import SimCommand
     from physicalai_mujoco_plugin.viser_controls import PanelState, SimControlPanel
@@ -146,6 +146,22 @@ class ViewerService:
             with contextlib.suppress(Exception):
                 return bool(is_running())
         return True
+
+    @contextlib.contextmanager
+    def native_lock(self) -> Iterator[None]:
+        """Hold the native viewer's lock, so its render thread does not read the model meanwhile.
+
+        A no-op without a native viewer. Never call ``set_texts`` inside: it takes the lock too.
+
+        Yields:
+            Nothing; the lock is held until the block exits.
+        """
+        lock = getattr(self.native, "lock", None)
+        if not callable(lock):
+            yield
+            return
+        with lock():
+            yield
 
     def native_sync(self) -> None:
         """Copy the simulation state into the native viewer."""

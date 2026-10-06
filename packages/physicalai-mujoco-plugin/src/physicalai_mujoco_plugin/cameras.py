@@ -82,7 +82,7 @@ class CameraService:
 
     @property
     def on_thread(self) -> bool:
-        """Whether a camera thread is rendering."""
+        """Whether a camera thread is rendering, or has not stopped yet."""
         return self._thread is not None
 
     def rendering(self) -> set[str]:
@@ -142,10 +142,20 @@ class CameraService:
         else:
             self.render(data)
 
-    def stop(self) -> None:
-        """Stop rendering and release the renderers; the frame buffers stay for the next model."""
-        thread, self._thread = self._thread, None
-        stopped = thread is None or thread.stop()
+    def stop(self, timeout_s: float = 5.0) -> bool:
+        """Stop rendering and release the renderers; the frame buffers stay for the next model.
+
+        Args:
+            timeout_s: How long to wait for the camera thread to finish its current render.
+
+        Returns:
+            Whether rendering stopped. If not, the camera thread is still inside a render of the
+            current model and stays `on_thread`; call `stop` again to wait for it again.
+        """
+        thread = self._thread
+        stopped = thread is None or thread.stop(timeout_s)
+        if stopped:
+            self._thread = None
         with self._lock:
             renderers, self._renderers = self._renderers, {}
         if stopped:
@@ -153,6 +163,7 @@ class CameraService:
         else:
             logger.warning("Leaving {} camera renderer(s) to the camera thread that did not stop", len(renderers))
         self._last_frame_ts.clear()
+        return stopped
 
     def close(self) -> None:
         """Stop rendering and drop the frame buffers."""

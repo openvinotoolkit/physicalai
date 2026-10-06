@@ -16,6 +16,7 @@ queued and applied on the sim thread at the start of the next tick.
 
 from __future__ import annotations
 
+import contextlib
 import queue
 import threading
 import time
@@ -45,6 +46,9 @@ if TYPE_CHECKING:
     from physicalai_mujoco_plugin.viewer import ViewerService
 
 _DEFAULT_SUCCESS_DWELL_S = 5.0
+_CAMERA_STOP_TIMEOUT_S = 5.0
+_EDIT_RETRY_STOP_TIMEOUT_S = 0.0
+"""A deferred live XML edit only checks again whether the camera thread has ended."""
 
 
 @dataclass
@@ -156,6 +160,7 @@ class MuJoCoRobot(OperatorControls):
         self._viewer: ViewerService | None = None
         self._http_server: HttpServer | None = None
         self._watcher: SceneXmlWatcher | None = None
+        self._scene_edit_deferred = False
         self._automation: ConveyorAutomation | None = None
         self._episode_auto_reset: object | None = None
         self._auto_reset_active = True
@@ -537,14 +542,24 @@ class MuJoCoRobot(OperatorControls):
         self._cameras.publish(data)
 
     def _apply_scene_edit(self, model: object, data: object) -> None:
-        """Apply live scene XML camera edits with no camera thread reading the model."""
-        # MuJoCo shares a model between threads only while it is read-only; the camera thread
-        # runs mj_fwdPosition and renders from this model, so it pauses for the edit.
+        """Apply live scene XML camera edits with no other thread reading the model."""
+        # MuJoCo shares a model between threads only while it is read-only. The camera thread
+        # runs mj_fwdPosition and renders from this model, so it pauses for the edit; if it does
+        # not stop, the edit stays pending and the watcher offers it again at its next check.
+        # The native viewer's render thread waits on the viewer lock meanwhile.
+        # A retry only checks whether the thread has finished, so a stuck render cannot stall
+        # every tick.
         restart = self._cameras.on_thread
-        if restart:
-            self._cameras.stop()
+        timeout_s = _EDIT_RETRY_STOP_TIMEOUT_S if self._scene_edit_deferred else _CAMERA_STOP_TIMEOUT_S
+        if restart and not self._cameras.stop(timeout_s):
+            if not self._scene_edit_deferred:
+                logger.warning("Scene XML camera edit deferred: the camera thread is still rendering")
+            self._scene_edit_deferred = True
+            return
+        self._scene_edit_deferred = False
         try:
-            self._watcher.apply(model, data)  # type: ignore[union-attr]
+            with self._viewer.native_lock() if self._viewer is not None else contextlib.nullcontext():
+                self._watcher.apply(model, data)  # type: ignore[union-attr]
         finally:
             if restart:
                 self._cameras.start(model, data)

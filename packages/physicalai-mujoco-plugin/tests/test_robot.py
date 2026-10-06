@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import sys
 import threading
 import types
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import mujoco
@@ -22,7 +24,12 @@ from physicalai_mujoco_plugin.http_server import (
 )
 from physicalai_mujoco_plugin.profiles.so101 import SO101_JOINT_RANGES
 from physicalai_mujoco_plugin.robot import MuJoCoObservation, MuJoCoRobot
+from physicalai_mujoco_plugin.scene_watch import SceneXmlWatcher
 from physicalai_mujoco_plugin.sim import default_cameras
+from physicalai_mujoco_plugin.viewer import ViewerService
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 RANGES = np.array([(low, high) for _name, low, high in SO101_JOINT_RANGES])
 """The SO-101 profile's pinned joint ranges (radians), in SO101_JOINT_ORDER."""
@@ -58,6 +65,30 @@ def _arm_xml(prefix: str = "", x: float = 0.0, *, ranges: bool = True, reverse_a
     if reverse_actuators:
         actuators.reverse()
     return bodies, "".join(actuators)
+
+
+class _NativeViewer:
+    """A passive native viewer handle that records whether its lock is held."""
+
+    def __init__(self) -> None:
+        self.locked = False
+
+    @contextlib.contextmanager
+    def lock(self) -> Iterator[None]:
+        self.locked = True
+        try:
+            yield
+        finally:
+            self.locked = False
+
+    def is_running(self) -> bool:
+        return True
+
+    def sync(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
 
 
 def _write_model(tmp_path, *, bimanual: bool = False, **arm) -> str:
@@ -523,7 +554,7 @@ class TestSceneSwitching:
         """The camera thread reads the shared model, so the edit must not race it."""
         calls: list[str] = []
         cameras = MagicMock(on_thread=True)
-        cameras.stop.side_effect = lambda: calls.append("stop")
+        cameras.stop.side_effect = lambda *_: calls.append("stop") or True
         cameras.start.side_effect = lambda *_: calls.append("start")
         watcher = MagicMock()
         watcher.changed.return_value = True
@@ -534,6 +565,52 @@ class TestSceneSwitching:
 
         assert calls == ["stop", "apply", "start"]
         cameras.start.assert_called_once_with(robot._model, robot._data)  # noqa: SLF001
+
+    def test_a_live_xml_edit_waits_for_a_camera_thread_that_did_not_stop(self, robot, tmp_path) -> None:
+        """A camera thread stuck in a render still reads the model: defer the edit until it stops."""
+        edit = tmp_path / "edit.xml"
+        edit.write_text('<mujoco><worldbody><camera name="overview" pos="0 -3 1"/></worldbody></mujoco>')
+        watcher = SceneXmlWatcher(edit)
+        watcher._mtimes = {}  # noqa: SLF001 - the file changed since the scene loaded
+        cameras = MagicMock(on_thread=True)
+        cameras.stop.side_effect = [False, True]
+        robot._cameras, robot._watcher = cameras, watcher  # noqa: SLF001
+        camera = robot._model.camera("overview").id  # noqa: SLF001
+
+        watcher._next_check = 0.0  # noqa: SLF001
+        robot.get_observation()
+
+        np.testing.assert_allclose(robot._model.cam_pos[camera], (0.0, -1.0, 0.5))  # noqa: SLF001
+        cameras.start.assert_not_called()  # the old thread still holds the cameras
+
+        watcher._next_check = 0.0  # noqa: SLF001
+        robot.get_observation()
+
+        np.testing.assert_allclose(robot._model.cam_pos[camera], (0.0, -3.0, 1.0))  # noqa: SLF001
+        cameras.start.assert_called_once_with(robot._model, robot._data)  # noqa: SLF001
+        # The retry only checks whether the thread ended, so a stuck render cannot stall the ticks.
+        assert [c.args for c in cameras.stop.call_args_list] == [(5.0,), (0.0,)]
+        watcher._next_check = 0.0  # noqa: SLF001
+        assert not watcher.changed()
+
+    def test_a_live_xml_edit_holds_the_native_viewer_lock(self, robot) -> None:
+        """The native viewer renders from the shared model on its own thread, under its lock."""
+        native = _NativeViewer()
+        viewer = ViewerService(host="127.0.0.1", port=0, submit_command=MagicMock(), panel_state=MagicMock())
+        viewer.native = native
+        locked_during: list[tuple[str, bool]] = []
+        cameras = MagicMock(on_thread=True)
+        cameras.stop.side_effect = lambda *_: locked_during.append(("stop", native.locked)) or True
+        cameras.start.side_effect = lambda *_: locked_during.append(("start", native.locked))
+        watcher = MagicMock()
+        watcher.changed.return_value = True
+        watcher.apply.side_effect = lambda *_: locked_during.append(("apply", native.locked))
+        robot._cameras, robot._watcher, robot._viewer = cameras, watcher, viewer  # noqa: SLF001
+
+        robot.get_observation()
+
+        assert locked_during == [("stop", False), ("apply", True), ("start", False)]
+        assert not native.locked
 
     def test_an_unchanged_xml_leaves_the_cameras_running(self, robot) -> None:
         cameras = MagicMock(on_thread=True)
