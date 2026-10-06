@@ -58,6 +58,13 @@ _TORQUE_ARM = """<mujoco><compiler angle="radian"/><option timestep="0.002"/><wo
   <actuator><motor name="hinge" joint="hinge" ctrlrange="-50 50"/></actuator></mujoco>"""
 
 
+_VELOCITY_ARM = """<mujoco><compiler angle="radian"/><option timestep="0.002" integrator="implicitfast"/><worldbody>
+  <body name="link"><joint name="hinge" axis="0 0 1" range="-2 2"/>
+  <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="1"/></body></worldbody>
+  <actuator><velocity name="hinge" joint="hinge" kv="50" ctrlrange="-1 1"/></actuator>
+  <keyframe><key qpos="0.7"/></keyframe></mujoco>"""
+
+
 def _model(xml: str = _MJCF) -> mujoco.MjModel:
     return mujoco.MjSpec.from_string(xml).compile()
 
@@ -168,7 +175,11 @@ def test_degrees_mode_converts_hinges_and_keeps_slides_and_tendons_in_metres() -
     assert positions[2] == pytest.approx(0.01)
     channels.write(np.asarray([30.0, 0.5, 0.05, 0.2, 0.7]))
     assert data.ctrl[0] == pytest.approx(np.radians(30.0))
-    assert data.ctrl[1] == pytest.approx(0.5)  # kv / gain = 1 for <velocity>
+    assert channels.model_targets()[1] == pytest.approx(0.1)  # a position, clipped to the slide's range
+    # kv / gain = 1 for <velocity>; the weak slide (kv 2) caps its tracking gain below 10 / s.
+    gain = channels._velocity_gains_by_index[1]  # noqa: SLF001
+    assert 0.0 < gain < 10.0
+    assert data.ctrl[1] == pytest.approx(gain * (0.1 - 0.01))
     assert data.ctrl[3] == pytest.approx(0.2)  # tendon length target
     assert data.ctrl[4] == pytest.approx(0.7)  # raw passes through
     assert channels.model_targets()[0] == pytest.approx(np.radians(30.0))
@@ -278,6 +289,88 @@ def test_velocity_and_raw_channels_observe_positions_not_commands() -> None:
     assert positions[4] == pytest.approx(data.qpos[model.jnt_qposadr[model.joint("hinge").id]])  # raw: radians
     assert positions[4] != pytest.approx(data.ctrl[4])
     assert channels.read_velocities()[1] == pytest.approx(data.qvel[model.jnt_dofadr[model.joint("slide").id]])
+
+
+def _run(model: mujoco.MjModel, data: mujoco.MjData, channels: ArmChannels, steps: int) -> list[float]:
+    ctrls = []
+    for _ in range(steps):
+        channels.apply_pd()
+        ctrls.append(float(data.ctrl[0]))
+        mujoco.mj_step(model, data)
+    return ctrls
+
+
+def test_echoing_a_velocity_channels_position_holds_the_joint() -> None:
+    model, data, channels = _bound(_VELOCITY_ARM, unit="degrees")
+    assert channels.channels[0].first.kind == "velocity"
+    start = channels.read_positions()
+
+    for _ in range(50):
+        channels.write(channels.read_positions())
+        _run(model, data, channels, 10)
+
+    assert channels.read_positions()[0] == pytest.approx(start[0], abs=0.01)
+    assert channels.read_velocities()[0] == pytest.approx(0.0, abs=0.01)
+
+
+@pytest.mark.parametrize("kv", [0.05, 50.0])
+@pytest.mark.parametrize("transmission", ["joint", "tendon"])
+def test_velocity_tracking_does_not_overshoot_a_weak_actuator(kv: float, transmission: str) -> None:
+    """A weak velocity servo lags its command; the position loop's gain is capped so it doesn't ring."""
+    xml = _VELOCITY_ARM.replace('kv="50" ctrlrange="-1 1"', f'kv="{kv}"')
+    step = 30.0  # degrees on the hinge
+    if transmission == "tendon":
+        xml = xml.replace('joint="hinge" kv', 'tendon="drive" kv').replace(
+            "<actuator>", '<tendon><fixed name="drive"><joint joint="hinge" coef="1"/></fixed></tendon><actuator>'
+        )
+        step = 0.5  # metres of tendon = radians of the hinge
+    model, data, channels = _bound(xml, unit="degrees")
+    start = channels.read_positions()[0]
+    channels.write(np.asarray([start + step]))
+
+    peak = start
+    for _ in range(4000):  # 8 s
+        channels.apply_pd()
+        mujoco.mj_step(model, data)
+        peak = max(peak, channels.read_positions()[0])
+
+    assert peak <= start + step * 1.002
+    assert channels.read_positions()[0] == pytest.approx(start + step, abs=step * 0.03)
+
+
+def test_velocity_channels_drive_the_joint_to_a_position_target_within_ctrlrange() -> None:
+    model, data, channels = _bound(_VELOCITY_ARM, unit="degrees")
+
+    channels.write(np.asarray([-30.0]))
+    ctrls = _run(model, data, channels, 1000)
+
+    assert channels.read_positions()[0] == pytest.approx(-30.0, abs=0.5)
+    assert channels.model_targets()[0] == pytest.approx(np.radians(-30.0))
+    assert min(ctrls) == pytest.approx(-1.0)  # 70 degrees away commands more than the 1 rad/s ctrlrange
+    assert all(-1.0 <= ctrl <= 1.0 for ctrl in ctrls)
+
+
+def test_pd_torque_mode_rejects_a_torque_actuator_without_a_joint() -> None:
+    xml = _TORQUE_ARM.replace(
+        '<actuator><motor name="hinge" joint="hinge" ctrlrange="-50 50"/></actuator>',
+        '<tendon><fixed name="cable"><joint joint="hinge" coef="1"/></fixed></tendon>'
+        '<actuator><motor name="cable_motor" tendon="cable" ctrlrange="-50 50"/></actuator>',
+    )
+    with pytest.raises(ValueError, match=r"'cable_motor' is a torque actuator without a hinge or slide joint.*torque_mode='raw'"):
+        _bound(xml)
+    _, data, channels = _bound(xml, torque_mode="raw")
+    channels.write(np.asarray([3.0]))
+    assert data.ctrl[0] == 3.0
+
+
+def test_prefixed_pd_gains_use_the_unprefixed_override_names() -> None:
+    xml = _TORQUE_ARM.replace('"hinge"', '"left_hinge"')
+    profile = _profile(ChannelOverride("hinge", ("hinge",)), pd=PDOverride(kp={"hinge": 0.0}, kd={"hinge": 0.0}))
+    _, data, channels = _bound(xml, profile, prefix="left_")
+    assert channels.names == ("left_hinge",)
+    channels.write(np.asarray([30.0]))
+    channels.apply_pd()
+    assert data.ctrl[0] == 0.0
 
 
 def test_pd_gains_can_be_overridden() -> None:

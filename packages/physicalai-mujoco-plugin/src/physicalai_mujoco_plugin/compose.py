@@ -187,7 +187,18 @@ def attach_robot(scene: mujoco.MjSpec, profile: RobotProfile, prefix: str) -> No
     values on attach and warns about every field the robot MJCF sets differently. The robot's
     options are replaced by the scene's before attaching; the overridden values are logged at
     debug level instead. The robot's keyframes are dropped: the layout has read them already.
+
+    Raises:
+        ValueError: If the robot has a floating base, which a mount frame would not hold.
     """
+    layout = robot_layout(profile)
+    if layout.floating_base_joint is not None:
+        msg = (
+            f"Profile {profile.name!r} has a floating base ({layout.floating_base_joint!r}), which a robot_mount "
+            "frame cannot hold: floating bases need a robot_spawn frame, not supported yet. A robot-complete "
+            "model XML without mount frames keeps its free joint"
+        )
+        raise ValueError(msg)
     robot = load_robot_spec(profile)
     overridden = []
     for field in _option_fields(scene.option):

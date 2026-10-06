@@ -11,7 +11,8 @@ Usage:
 
 Start a MuJoCo simulation as a zenoh robot owner, making it discoverable and
 controllable from PhysicalAI Studio. ``profiles`` lists the robots with a
-hand-written profile; any other MuJoCo Menagerie model name works too.
+hand-written profile; any other MuJoCo Menagerie model name loads as an
+unsupported profile, outside CI and Studio.
 ``prefetch`` downloads the profiles' models ahead of time, for offline use.
 """
 
@@ -36,7 +37,7 @@ from physicalai_mujoco_plugin.constants import (
     DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME,
     DEFAULT_MUJOCO_OWNER_NAME,
 )
-from physicalai_mujoco_plugin.profiles import RobotProfile, get_profile, list_profiles
+from physicalai_mujoco_plugin.profiles import PROFILES, RobotProfile, get_profile, list_profiles
 from physicalai_mujoco_plugin.studio_recorder import DEFAULT_STUDIO_URL, validate_studio_url
 
 _CLI_NAME = "physicalai-mujoco"
@@ -523,15 +524,17 @@ def _pid_command_line(pid: int) -> str | None:
 def _pid_owner_name(pid: int) -> str | None:
     """Return the zenoh owner name a ``start`` process at *pid* resolves to.
 
-    Parses ``--name`` and ``--bimanual`` out of the process's own command
-    line, applying the same defaulting rules as :func:`_resolve_owner_name`,
-    so the pgrep fallback in :func:`_stop` can filter matches down to the
-    requested owner instead of killing every ``start`` process on the
-    machine.
+    Parses ``--name``, ``--profile``, ``--scene``, ``--model`` and
+    ``--bimanual`` out of the process's own command line and resolves them
+    through :func:`_resolve_owner_name`, as ``start`` does, so the pgrep
+    fallback in :func:`_stop` can filter matches down to the requested owner
+    instead of killing every ``start`` process on the machine. A custom
+    ``--model`` without ``--scene`` counts its mount frames, as ``start``
+    does (:func:`_model_robot_count`).
 
     Returns:
         The resolved owner name, or ``None`` when the command line for *pid*
-        can't be read.
+        can't be read or its ``--model`` arm count is unknown (never a match).
     """
     command_line = _pid_command_line(pid)
     if command_line is None:
@@ -540,18 +543,99 @@ def _pid_owner_name(pid: int) -> str | None:
         tokens = shlex.split(command_line)
     except ValueError:
         return None
-    name: str | None = None
-    bimanual = False
+    values = _start_flag_values(tokens)
+    bimanual = "--bimanual" in tokens
+    if "--name" in values:
+        return values["--name"]
+    profile = values.get("--profile", "so101")
+    scene_id = values.get("--scene")
+    if scene_id is None and bimanual and profile == "so101":
+        scene_id = "garment_fold"
+    if scene_id is None and "--model" not in values:
+        registered = PROFILES.get(profile)
+        scene_id = registered.default_scene if registered is not None else None
+    num_arms = None
+    if scene_id is not None:
+        from physicalai_mujoco_plugin.scene_registry import get_scene  # noqa: PLC0415
+
+        try:
+            num_arms = get_scene(scene_id).num_arms
+        except KeyError:
+            num_arms = None
+    elif "--model" in values:
+        num_arms = _model_robot_count(pid, values["--model"])
+        if num_arms is None:
+            return None  # unknown arm count: never match, so stop cannot signal the wrong owner
+    return _resolve_owner_name(argparse.Namespace(name=None, bimanual=bimanual), profile, num_arms)
+
+
+def _start_flag_values(tokens: list[str]) -> dict[str, str]:
+    """Return the ``--name``/``--profile``/``--scene``/``--model`` values of a ``start`` command line.
+
+    Returns:
+        The flags present, in both ``--flag value`` and ``--flag=value`` forms, mapped to their values.
+    """
+    values: dict[str, str] = {}
     for i, arg in enumerate(tokens):
-        if arg == "--name" and i + 1 < len(tokens):
-            name = tokens[i + 1]
-        elif arg.startswith("--name="):
-            name = arg.split("=", 1)[1]
-        elif arg == "--bimanual":
-            bimanual = True
-    if name is not None:
-        return name
-    return DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME if bimanual else DEFAULT_MUJOCO_OWNER_NAME
+        flag, has_value, value = arg.partition("=")
+        if flag in {"--name", "--profile", "--scene", "--model"}:
+            if has_value:
+                values[flag] = value
+            elif i + 1 < len(tokens):
+                values[flag] = tokens[i + 1]
+    return values
+
+
+def _pid_cwd(pid: int) -> Path | None:
+    """Return the working directory of *pid*: ``/proc`` on Linux, ``lsof`` elsewhere (macOS).
+
+    Returns:
+        The directory, or ``None`` when it can't be read.
+    """
+    proc_cwd = Path(f"/proc/{pid}/cwd")
+    if proc_cwd.exists():
+        return proc_cwd.resolve()
+    import subprocess  # noqa: PLC0415, S404  # nosec B404
+
+    try:
+        # A fixed command that only reads this local process's working directory.
+        result = subprocess.run(  # nosec B603, B607  # noqa: S603
+            ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],  # noqa: S607
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    for line in result.stdout.splitlines():
+        if line.startswith("n/"):
+            return Path(line[1:])
+    return None
+
+
+def _model_robot_count(pid: int, model: str) -> int | None:
+    """Count the robots a ``start --model`` at *pid* loads, as :func:`_resolve_scene` does.
+
+    Returns:
+        The number of mount frames (at least 1), or ``None`` when the model file can't be found
+        or parsed: a relative path whose process directory is unknown, or a moved file.
+    """
+    path = Path(model)
+    if not path.is_absolute():
+        cwd = _pid_cwd(pid)
+        if cwd is None:
+            return None
+        path = cwd / path
+    try:
+        import mujoco  # noqa: PLC0415
+
+        from physicalai_mujoco_plugin.compose import anchor_prefixes  # noqa: PLC0415
+
+        spec = mujoco.MjSpec.from_file(str(path))  # pyrefly: ignore [missing-attribute]
+        return max(1, len(anchor_prefixes(spec)))
+    except Exception:  # noqa: BLE001 - any unreadable model means "unknown", never a match
+        return None
 
 
 def _matching_pids(pattern: str) -> list[int]:
@@ -647,13 +731,16 @@ def _prefetch() -> None:
 
 
 def _profiles() -> None:
-    """Print the hand-written profiles; any other Menagerie model name works as an unsupported profile."""
+    """Print the hand-written profiles; any other Menagerie model name loads as an unsupported profile."""
     sys.stdout.write(f"{'PROFILE':<10} {'TIER':<12} {'MENAGERIE MODEL':<24} NAME\n")
     for profile in list_profiles():
         sys.stdout.write(
             f"{profile.name:<10} {profile.tier:<12} {profile.menagerie_model:<24} {profile.display_name}\n"
         )
-    sys.stdout.write("Any other MuJoCo Menagerie model name also works, unsupported (no CI, no Studio entry).\n")
+    sys.stdout.write(
+        "Any other MuJoCo Menagerie model name loads as an unsupported profile, outside CI and Studio. "
+        'Tendon or site torque actuators need MuJoCoRobot(torque_mode="raw").\n'
+    )
 
 
 def main() -> None:

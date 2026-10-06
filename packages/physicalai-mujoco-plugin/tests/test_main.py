@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -65,10 +66,56 @@ class TestPidOwnerName:
         with patch("subprocess.run", return_value=self._ps_output(cmdline)):
             assert cli._pid_owner_name(1234) == DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME  # noqa: SLF001
 
-    def test_single_arm_default_without_explicit_name(self) -> None:
-        cmdline = "physicalai-mujoco start --model x.xml"
+    @pytest.mark.parametrize(
+        ("scene_id", "expected"),
+        [("single_pick_place", DEFAULT_MUJOCO_OWNER_NAME), ("garment_fold", DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME)],
+    )
+    def test_a_custom_model_counts_its_mount_frames_like_start(self, scene_id: str, expected: str) -> None:
+        """``start --model`` takes its arm count from the XML, so the stop fallback must too."""
+        from physicalai_mujoco_plugin.scene_registry import get_scene  # noqa: PLC0415
+
+        cmdline = f"physicalai-mujoco start --model {get_scene(scene_id).scene_xml_path}"
         with patch("subprocess.run", return_value=self._ps_output(cmdline)):
-            assert cli._pid_owner_name(1234) == DEFAULT_MUJOCO_OWNER_NAME  # noqa: SLF001
+            assert cli._pid_owner_name(1234) == expected  # noqa: SLF001
+
+    @pytest.mark.parametrize("model", ["/no/such/scene.xml", "relative/scene.xml"])
+    def test_a_custom_model_with_an_unknown_arm_count_matches_no_owner(self, model: str) -> None:
+        cmdline = f"physicalai-mujoco start --model {model}"
+        with (
+            patch("subprocess.run", return_value=self._ps_output(cmdline)),
+            patch.object(cli, "_pid_cwd", return_value=None),
+        ):
+            assert cli._pid_owner_name(1234) is None  # noqa: SLF001
+
+    def test_a_relative_custom_model_resolves_in_the_start_directory(self) -> None:
+        from physicalai_mujoco_plugin.scene_registry import get_scene  # noqa: PLC0415
+
+        scene_xml = get_scene("garment_fold").scene_xml_path
+        cmdline = f"physicalai-mujoco start --model {scene_xml.parent.name}/{scene_xml.name}"
+        with (
+            patch("subprocess.run", return_value=self._ps_output(cmdline)),
+            patch.object(cli, "_pid_cwd", return_value=scene_xml.parent.parent),
+        ):
+            assert cli._pid_owner_name(1234) == DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME  # noqa: SLF001
+
+    def test_pid_cwd_reads_this_process(self) -> None:
+        assert cli._pid_cwd(os.getpid()) == Path.cwd().resolve()  # noqa: SLF001
+
+    @pytest.mark.parametrize(
+        ("arguments", "expected"),
+        [
+            ("--profile ur5e", "mujoco-ur5e-follow"),
+            ("--profile=ur5e", "mujoco-ur5e-follow"),
+            ("--scene garment_fold", DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME),
+            ("--scene=garment_fold", DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME),
+            ("--profile ur5e --scene no_such_scene", "mujoco-ur5e-follow"),
+            ("--profile no_such_model", "mujoco-no_such_model-follow"),
+        ],
+    )
+    def test_profile_and_scene_resolve_like_start(self, arguments: str, expected: str) -> None:
+        cmdline = f"physicalai-mujoco start {arguments}"
+        with patch("subprocess.run", return_value=self._ps_output(cmdline)):
+            assert cli._pid_owner_name(1234) == expected  # noqa: SLF001
 
     def test_unreadable_command_line_returns_none(self) -> None:
         with patch("subprocess.run", side_effect=FileNotFoundError):

@@ -33,6 +33,14 @@ if TYPE_CHECKING:
 TorqueMode = Literal["pd", "raw"]
 """``pd``: torque actuators track position targets through a software PD. ``raw``: actions are ``ctrl``."""
 
+VELOCITY_TRACKING_GAIN = 10.0
+"""Most velocity a velocity actuator is commanded per unit of position error, in 1/s (a ~0.1 s time constant).
+
+A weak actuator reaches a commanded velocity with a time constant ``M_eff / kv`` (the inertia felt
+along the actuator at the home pose); its gain is capped at ``kv / (4·M_eff)``, so the position loop
+stays critically damped instead of overshooting.
+"""
+
 
 @dataclass(frozen=True)
 class Channel:
@@ -67,7 +75,13 @@ class Channel:
 
 
 class ArmChannels:
-    """Bind a profile's public channels to one attached robot of a compiled model."""
+    """Bind a profile's public channels to one attached robot of a compiled model.
+
+    Actions are positions in the channel's unit, like the observations, for position, velocity and
+    (with ``torque_mode="pd"``) torque channels. Velocity actuators are driven toward their position
+    target: every physics step commands ``VELOCITY_TRACKING_GAIN`` times the position error as the
+    velocity, so echoing ``joint_positions`` back holds the joint. Raw channels take ``ctrl``.
+    """
 
     def __init__(
         self,
@@ -92,8 +106,9 @@ class ArmChannels:
             torque_mode: How torque actuators are driven (CHN-9, CHN-10).
 
         Raises:
-            ValueError: If an override names a missing actuator, a group mixes control kinds, or a
-                ``normalized`` channel has no finite range.
+            ValueError: If an override names a missing actuator, a group mixes control kinds, a
+                ``normalized`` channel has no finite range, or ``torque_mode="pd"`` meets a torque
+                actuator without a hinge or slide joint.
         """
         if torque_mode not in {"pd", "raw"}:
             msg = f"Unsupported torque_mode {torque_mode!r}; expected 'pd' or 'raw'"
@@ -102,10 +117,13 @@ class ArmChannels:
         self.data = data
         self.profile = profile
         self.torque_mode: TorqueMode = torque_mode
+        self._prefix = prefix
         self.channels = _bind(layout, profile, prefix, unit or profile.default_unit, torque_mode)
         self.names = tuple(channel.name for channel in self.channels)
-        self._pd_targets = np.array([self._read_model(channel) for channel in self.channels], dtype=np.float64)
+        # Position targets of the channels driven here (PD torque, velocity), in model units.
+        self._tracked_targets = np.array([self._read_model(channel) for channel in self.channels], dtype=np.float64)
         self._pd_rows = self._pd_gains() if torque_mode == "pd" else ()
+        self._velocity_gains_by_index = dict(self._velocity_gains())
 
     def __len__(self) -> int:
         """Number of public channels.
@@ -139,8 +157,8 @@ class ArmChannels:
     def model_targets(self) -> np.ndarray:
         """Return each channel's current target in model units (radians, metres, ``ctrl`` for raw).
 
-        Position and velocity targets are read back from ``ctrl``, so targets written by scene
-        automation (the conveyor autopilot) are included.
+        Position targets are read back from ``ctrl``, so targets written by scene automation (the
+        conveyor autopilot) are included. Velocity and PD torque channels return their position target.
         """
         return np.array(list(starmap(self._target, enumerate(self.channels))))
 
@@ -233,11 +251,17 @@ class ArmChannels:
                 self._write_model(index, channel, float(data.qpos[first.qpos_adr]), clamp=True)
 
     def apply_pd(self) -> None:
-        """Update the torque of PD-driven channels; call before every physics step (CHN-9)."""
+        """Update the ``ctrl`` of the channels driven here; call before every physics step.
+
+        PD torque channels get a torque toward their target (CHN-9), velocity channels a velocity.
+        """
         data = self.data
         for index, member, kp, kd, gain in self._pd_rows:
-            torque = kp * (self._pd_targets[index] - data.qpos[member.qpos_adr]) - kd * data.qvel[member.dof_adr]
+            torque = kp * (self._tracked_targets[index] - data.qpos[member.qpos_adr]) - kd * data.qvel[member.dof_adr]
             data.ctrl[member.actuator_id] = self._clip_ctrl(member, torque / gain)
+        for index in self._velocity_gains_by_index:
+            channel = self.channels[index]
+            data.ctrl[channel.first.actuator_id] = self._velocity_ctrl(index, channel)
 
     # ------------------------------------------------------------------
     # Internals
@@ -272,11 +296,11 @@ class ArmChannels:
 
     def _target(self, index: int, channel: Channel) -> float:
         member = channel.first
-        if member.kind in {"position", "velocity"}:
+        if member.kind == "position":
             factor = member.ctrl_per_unit * member.gear
             return float(self.data.ctrl[member.actuator_id]) / factor
-        if member.kind == "torque" and self.torque_mode == "pd":
-            return float(self._pd_targets[index])
+        if member.kind == "velocity" or (member.kind == "torque" and self.torque_mode == "pd"):
+            return float(self._tracked_targets[index])
         return float(self.data.ctrl[member.actuator_id])
 
     def _write_model(self, index: int, channel: Channel, value: float, *, clamp: bool = False) -> None:
@@ -286,20 +310,30 @@ class ArmChannels:
             target = (
                 value if position == 0 or not channel.member_scales else value * channel.member_scales[position - 1]
             )
-            if member.kind == "position" or (member.kind == "torque" and self.torque_mode == "pd"):
+            if member.kind in {"position", "velocity"} or (member.kind == "torque" and self.torque_mode == "pd"):
                 # Position targets past a joint limit only push the joint into its stop.
                 target = self._clip_to_joint(member, target)
-            if member.kind in {"position", "velocity"}:
+            if member.kind == "position":
                 # MuJoCo clamps ctrl to ctrlrange itself; storing the unclamped target keeps it
                 # readable at full precision (model_targets, the virtual leader). Homing clamps,
                 # as it always has.
                 ctrl = member.ctrl_per_unit * member.gear * target
                 data.ctrl[member.actuator_id] = self._clip_ctrl(member, ctrl) if clamp else ctrl
+            elif member.kind == "velocity":
+                # Velocity channels are never grouped (_bind), so this is the channel's only member.
+                self._tracked_targets[index] = target
+                data.ctrl[member.actuator_id] = self._velocity_ctrl(index, channel)
             elif member.kind == "torque" and self.torque_mode == "pd":
                 if position == 0:
-                    self._pd_targets[index] = target
+                    self._tracked_targets[index] = target
             else:
                 data.ctrl[member.actuator_id] = self._clip_ctrl(member, target)
+
+    def _velocity_ctrl(self, index: int, channel: Channel) -> float:
+        """Return the ``ctrl`` that moves a velocity channel toward its position target, within ``ctrlrange``."""
+        member = channel.first
+        velocity = self._velocity_gains_by_index[index] * (self._tracked_targets[index] - self._read_model(channel))
+        return self._clip_ctrl(member, member.ctrl_per_unit * member.gear * velocity)
 
     def _clip_to_joint(self, member: DerivedChannel, value: float) -> float:
         joint_id = member.joint_id
@@ -313,6 +347,42 @@ class ArmChannels:
             low, high = (float(v) for v in self.model.actuator_ctrlrange[member.actuator_id])
             return min(max(ctrl, low), high)
         return ctrl
+
+    def _velocity_gains(self) -> tuple[tuple[int, float], ...]:
+        """Position-tracking gain of each velocity channel, capped by its actuator's response.
+
+        The servo reaches a commanded velocity with time constant ``M_eff / kv``, where ``M_eff`` is
+        the inertia felt along the actuator, ``1 / (m · M⁻¹ · mᵀ)`` for its moment row ``m`` (joint,
+        tendon or site transmission, gear included). Capping the gain at ``kv / (4 · M_eff)`` keeps
+        the position loop critically damped.
+
+        Returns:
+            One ``(channel index, gain in 1/s)`` row per velocity channel.
+        """
+        rows = [index for index, channel in enumerate(self.channels) if channel.first.kind == "velocity"]
+        if not rows:
+            return ()
+        import mujoco  # noqa: PLC0415
+
+        model, data = self.model, self.data
+        moments = np.zeros((model.nu, model.nv))
+        mujoco.mju_sparse2dense(
+            moments, data.actuator_moment, data.moment_rownnz, data.moment_rowadr, data.moment_colind
+        )
+        gains = []
+        for index in rows:
+            actuator_id = self.channels[index].first.actuator_id
+            gain = VELOCITY_TRACKING_GAIN
+            kv = -float(model.actuator_biasprm[actuator_id, 2])
+            moment = moments[actuator_id]
+            if kv > 0.0 and moment.any():
+                solved = np.zeros(model.nv)
+                mujoco.mj_solveM(model, data, solved.reshape(1, -1), moment.reshape(1, -1))
+                inverse_inertia = float(moment @ solved)  # 1 / M_eff
+                if inverse_inertia > 0.0:
+                    gain = min(gain, kv * inverse_inertia / 4.0)
+            gains.append((index, gain))
+        return tuple(gains)
 
     def _pd_gains(self) -> tuple[tuple[int, DerivedChannel, float, float, float], ...]:
         """Critically damped gains from the joint-space inertia at the current pose (CHN-9).
@@ -342,11 +412,13 @@ class ArmChannels:
             mass = float(inertia[member.dof_adr, member.dof_adr])
             kp = omega * omega * mass
             kd = 2.0 * sqrt(kp * mass)
+            # Profile overrides use unprefixed names; the public (prefixed) name also matches.
             name = self.channels[index].name
+            short = name.removeprefix(self._prefix)
             if override is not None and override.kp is not None:
-                kp = float(override.kp.get(name, kp))
+                kp = float(override.kp.get(short, override.kp.get(name, kp)))
             if override is not None and override.kd is not None:
-                kd = float(override.kd.get(name, kd))
+                kd = float(override.kd.get(short, override.kd.get(name, kd)))
             if not (isfinite(kp) and isfinite(kd) and kp >= 0 and kd >= 0):
                 msg = f"Profile {self.profile.name!r} has invalid PD gains for {name!r}"
                 raise ValueError(msg)
@@ -384,8 +456,8 @@ def _bind(
         The bound channels in public order.
 
     Raises:
-        ValueError: If an actuator is missing or ambiguous, a group mixes kinds, or a normalized
-            channel has no finite range.
+        ValueError: If an actuator is missing or ambiguous, a group mixes kinds, a normalized
+            channel has no finite range, or a PD torque channel has no joint to drive.
     """
     by_actuator = {channel.actuator: channel for channel in layout.channels}
     by_joint: dict[str, list[DerivedChannel]] = {}
@@ -414,6 +486,7 @@ def _bind(
             msg = f"Profile {profile.name!r} group {override.name!r} must contain only position actuators"
             raise ValueError(msg)
         first = members[0]
+        _check_pd_joint(name, first, torque_mode)
         if override.unit is not None:
             unit = override.unit
         elif first.kind == "raw" or first.unit == "raw" or (first.kind == "torque" and torque_mode == "raw"):
@@ -444,6 +517,20 @@ def _bind(
         msg = f"Profile {profile.name!r} has duplicate channel names: {names}"
         raise ValueError(msg)
     return tuple(channels)
+
+
+def _check_pd_joint(name: str, member: DerivedChannel, torque_mode: TorqueMode) -> None:
+    """Reject a torque channel the software PD cannot drive: it needs a hinge or slide joint.
+
+    Raises:
+        ValueError: If *member* is a torque actuator without a joint and ``torque_mode`` is ``pd``.
+    """
+    if member.kind == "torque" and torque_mode == "pd" and member.dof_adr is None:
+        msg = (
+            f"Channel {name!r} is a torque actuator without a hinge or slide joint ({member.transmission} "
+            "transmission), so the software PD cannot drive it; use torque_mode='raw' to send its ctrl"
+        )
+        raise ValueError(msg)
 
 
 def _is_gripper(name: str) -> bool:

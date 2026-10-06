@@ -270,3 +270,20 @@ def test_a_joint_and_its_differently_named_actuator_are_one_robot() -> None:
 
 def test_robot_layout_is_cached_per_profile() -> None:
     assert robot_layout(SO101_PROFILE) is robot_layout(SO101_PROFILE)
+
+
+def test_floating_base_robots_are_not_attached_at_mount_frames(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from physicalai_mujoco_plugin import compose
+    from physicalai_mujoco_plugin.profiles import RobotProfile
+
+    robot_xml = """<mujoco><worldbody><body name="base"><freejoint name="root"/><geom size="0.1"/>
+    <body name="leg"><joint name="hinge"/><geom size="0.05"/></body></body></worldbody>
+    <actuator><position name="hinge" joint="hinge" kp="10"/></actuator></mujoco>"""
+    monkeypatch.setattr(compose, "load_robot_spec", lambda _profile: mujoco.MjSpec.from_string(robot_xml))
+    monkeypatch.setattr(compose, "_LAYOUTS", {})
+    path = tmp_path / "table.xml"
+    path.write_text(f'<mujoco><worldbody><frame name="{ROBOT_MOUNT_FRAME}"/></worldbody></mujoco>')
+    profile = RobotProfile(name="floating", display_name="Floating", menagerie_model="inline")
+
+    with pytest.raises(ValueError, match=r"'floating' has a floating base \('root'\).*robot_spawn"):
+        compose_scene_spec(path, profile)

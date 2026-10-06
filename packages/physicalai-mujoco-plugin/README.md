@@ -269,7 +269,7 @@ Every robot comes from MuJoCo Menagerie and is described by a _profile_: what th
 | `so101` | SO-101, matching the real `SO101` driver | all                 | `normalized` |
 | `ur5e`  | Universal Robots UR5e                    | `single_pick_place` | `degrees`    |
 
-Any other Menagerie model name works too, as an unsupported profile: its channels, home pose, sensors and cameras are derived from the model, one channel per actuator. It needs a scene that supports it (`--scene`) or a robot-complete `--model`. Fixed-base robots only, for now.
+Any other Menagerie model name loads as an unsupported profile, outside CI and Studio: its channels, home pose, sensors and cameras are derived from the model, one channel per actuator. It needs a scene that supports it (`--scene`) or a robot-complete `--model`. Fixed-base robots only, for now. Every channel's action is a position, also for velocity actuators, which the simulation drives toward it. Torque actuators on a tendon or site need `MuJoCoRobot(..., torque_mode="raw")`, whose actions are `ctrl`.
 
 ```bash
 uv run --package physicalai-mujoco-plugin physicalai-mujoco start --profile ur5e
