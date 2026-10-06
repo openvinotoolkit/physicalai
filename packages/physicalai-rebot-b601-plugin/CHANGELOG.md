@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.8.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-rebot-b601-plugin-v0.7.0...physicalai-rebot-b601-plugin-v0.8.0) (2026-10-06)
+
+
+### ✨ Features
+
+* **rebot-b601,stararm:** add zero-pose calibration for B601-RS and Star Arm leaders ([#325](https://github.com/openvinotoolkit/physicalai/issues/325)) ([ab00dc7](https://github.com/openvinotoolkit/physicalai/commit/ab00dc71f64470940f67daadc0acd03ab0f8fd33))
+* **rebot-b601:** add B601-RS follower to the Studio catalog ([#319](https://github.com/openvinotoolkit/physicalai/issues/319)) ([216c65f](https://github.com/openvinotoolkit/physicalai/commit/216c65ffd9f6cd53892dcfeb799d1fde629e7e7c))
+* **rebot-b601:** expose B601-RS motion settings and 3D preview in Studio ([#324](https://github.com/openvinotoolkit/physicalai/issues/324)) ([818eaf4](https://github.com/openvinotoolkit/physicalai/commit/818eaf4224d43dda2d0c02b2af264a662f806d85))
+
+
+### 🐛 Bug Fixes
+
+* **rebot-b601:** add max_relative_target and Seeed gripper torque limits to B601-RS ([#322](https://github.com/openvinotoolkit/physicalai/issues/322)) ([9b69d6f](https://github.com/openvinotoolkit/physicalai/commit/9b69d6f23bfce6e3f1cf687a2108389b0e33e471))
+* **rebot-b601:** hold pose correctly and expose MIT gains on the RS driver ([#300](https://github.com/openvinotoolkit/physicalai/issues/300)) ([cba5932](https://github.com/openvinotoolkit/physicalai/commit/cba59327df509cf492e02dae11b049eaf5ded54c))
+
 ## [0.7.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-rebot-b601-plugin-v0.6.0...physicalai-rebot-b601-plugin-v0.7.0) (2026-09-15)
 
 

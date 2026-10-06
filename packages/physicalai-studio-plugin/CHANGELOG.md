@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-studio-plugin-v0.2.0...physicalai-studio-plugin-v0.3.0) (2026-10-06)
+
+
+### ✨ Features
+
+* **studio-plugin:** add RobotZeroCalibration for guided zero-pose calibration ([#323](https://github.com/openvinotoolkit/physicalai/issues/323)) ([d58921b](https://github.com/openvinotoolkit/physicalai/commit/d58921b83a74172752b188449b2ab33e3f8cd603))
+
 ## [0.2.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-studio-plugin-v0.1.0...physicalai-studio-plugin-v0.2.0) (2026-09-14)
 
 

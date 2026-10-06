@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -10,7 +10,7 @@ resolution-markers = [
 members = [
     "physicalai",
     "physicalai-bimanual-so101-plugin",
-    "physicalai-mujoco-so101-plugin",
+    "physicalai-mujoco-plugin",
     "physicalai-rebot-b601-plugin",
     "physicalai-stararm-plugin",
     "physicalai-studio-plugin",
@@ -183,7 +183,7 @@ name = "cffi"
 version = "2.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pycparser" },
+    { name = "pycparser", marker = "implementation_name != 'PyPy'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9e/ef/008a1939e372c06329a3fce4279c02f328488f3526744906eeec3da7ad5f/cffi-2.1.1.tar.gz", hash = "sha256:dd31f52ea1086513bb9df30f8fcee9b8918323ae067a3d5b78bc826a000712be", size = 530807, upload-time = "2026-08-03T21:21:18.939Z" }
 wheels = [
@@ -2095,8 +2095,8 @@ observer-rerun = [
 plugin-bimanual-so101 = [
     { name = "physicalai-bimanual-so101-plugin" },
 ]
-plugin-mujoco-so101 = [
-    { name = "physicalai-mujoco-so101-plugin" },
+plugin-mujoco = [
+    { name = "physicalai-mujoco-plugin" },
 ]
 plugin-rebot-b601 = [
     { name = "physicalai-rebot-b601-plugin" },
@@ -2167,7 +2167,7 @@ requires-dist = [
     { name = "openvino", specifier = ">=2026.4.0" },
     { name = "openvino-tokenizers", specifier = ">=2026.4.0.0" },
     { name = "physicalai-bimanual-so101-plugin", marker = "python_full_version >= '3.12' and extra == 'plugin-bimanual-so101'", editable = "packages/physicalai-bimanual-so101-plugin" },
-    { name = "physicalai-mujoco-so101-plugin", marker = "python_full_version >= '3.12' and extra == 'plugin-mujoco-so101'", editable = "packages/physicalai-mujoco-so101-plugin" },
+    { name = "physicalai-mujoco-plugin", marker = "python_full_version >= '3.12' and extra == 'plugin-mujoco'", editable = "packages/physicalai-mujoco-plugin" },
     { name = "physicalai-rebot-b601-plugin", marker = "python_full_version >= '3.12' and extra == 'plugin-rebot-b601'", editable = "packages/physicalai-rebot-b601-plugin" },
     { name = "physicalai-stararm-plugin", marker = "python_full_version >= '3.12' and extra == 'plugin-stararm'", editable = "packages/physicalai-stararm-plugin" },
     { name = "pydantic", specifier = ">=2.5" },
@@ -2188,7 +2188,7 @@ requires-dist = [
     { name = "trossen-arm", marker = "extra == 'trossen'", specifier = ">=1.9.0" },
     { name = "typing-extensions", specifier = ">=4.5" },
 ]
-provides-extras = ["abb", "basler", "capture", "franka", "genicam", "notebooks", "observer-rerun", "plugin-bimanual-so101", "plugin-mujoco-so101", "plugin-rebot-b601", "plugin-stararm", "realsense", "robots", "so101", "tests", "transport", "trossen", "ur"]
+provides-extras = ["abb", "basler", "capture", "franka", "genicam", "notebooks", "observer-rerun", "plugin-bimanual-so101", "plugin-mujoco", "plugin-rebot-b601", "plugin-stararm", "realsense", "robots", "so101", "tests", "transport", "trossen", "ur"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2235,8 +2235,8 @@ requires-dist = [
 provides-extras = ["tests"]
 
 [[package]]
-name = "physicalai-mujoco-so101-plugin"
-source = { editable = "packages/physicalai-mujoco-so101-plugin" }
+name = "physicalai-mujoco-plugin"
+source = { editable = "packages/physicalai-mujoco-plugin" }
 dependencies = [
     { name = "defusedxml" },
     { name = "fastapi" },

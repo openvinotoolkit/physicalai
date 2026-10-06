@@ -52,9 +52,9 @@
       "package-name": "physicalai-stararm-plugin",
       "changelog-path": "CHANGELOG.md"
     },
-    "packages/physicalai-mujoco-so101-plugin": {
+    "packages/physicalai-mujoco-plugin": {
       "release-type": "python",
-      "package-name": "physicalai-mujoco-so101-plugin",
+      "package-name": "physicalai-mujoco-plugin",
       "changelog-path": "CHANGELOG.md"
     }
   }

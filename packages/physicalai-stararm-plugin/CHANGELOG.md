@@ -12,6 +12,16 @@
 
 * read Star Arm 102 leader with one sync command ([#321](https://github.com/openvinotoolkit/physicalai/issues/321)) ([111e648](https://github.com/openvinotoolkit/physicalai/commit/111e648d98343bf399f35e969aa20c27edaa9fc8))
 
+
+### 🔧 Chores
+
+* **main:** release physicalai-stararm-plugin 0.4.0 ([#326](https://github.com/openvinotoolkit/physicalai/issues/326)) ([e991e36](https://github.com/openvinotoolkit/physicalai/commit/e991e36da7ae97159e0beb083d9f004ab2b9ecb0))
+
+
+### ⏪ Reverts
+
+* "chore(main): release physicalai-stararm-plugin 0.4.0" ([#339](https://github.com/openvinotoolkit/physicalai/issues/339)) ([abaebe8](https://github.com/openvinotoolkit/physicalai/commit/abaebe8e9a3c016fd5e9fdd40263c37a1259c859))
+
 ## [0.3.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-stararm-plugin-v0.2.0...physicalai-stararm-plugin-v0.3.0) (2026-09-15)
 
 
