@@ -78,7 +78,7 @@ class ActionInterpolator(ABC):
             raise RuntimeError(msg)
         if self._prev is None or substep >= self.multiplier - 1:
             self._done = True
-            return self._target
+            return self._target.copy()
         return self._interpolate(self._prev, self._target, (substep + 1) / self.multiplier)
 
     @abstractmethod

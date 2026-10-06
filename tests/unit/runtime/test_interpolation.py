@@ -242,6 +242,22 @@ class TestRuntimeInterpolation:
 
         assert _sent(robot) == pytest.approx([9.0])
 
+    def test_in_place_action_transform_does_not_corrupt_interpolation(self) -> None:
+        class _DoubleInPlace:
+            def on_action_ready(self, *, action: np.ndarray, step: int) -> np.ndarray:  # noqa: PLR6301
+                action *= 2
+                return action
+
+        robot = _make_robot()
+        runtime = _make_runtime(
+            _SequenceSource(actions=[_a(4.0)]), robot, fps=10.0, multiplier=2, callbacks=[_DoubleInPlace()]
+        )
+
+        with _patched_time(_FakeClock()):
+            runtime.run(duration_s=0.3)
+
+        assert _sent(robot) == pytest.approx([8.0] * 5)
+
     def test_start_event_reports_multiplier(self) -> None:
         recorder = _Recorder()
         runtime = _make_runtime(
