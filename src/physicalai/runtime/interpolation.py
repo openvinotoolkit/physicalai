@@ -58,7 +58,7 @@ class ActionInterpolator(ABC):
     def add(self, action: np.ndarray) -> None:
         """Start a new segment from the previous action towards ``action``."""
         self._prev = self._target
-        self._target = action
+        self._target = action.copy()
         self._done = False
 
     def get(self, substep: int) -> np.ndarray:
