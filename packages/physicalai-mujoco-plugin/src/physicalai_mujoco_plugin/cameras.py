@@ -43,6 +43,17 @@ class CameraConfig:
     fps: int = 30
     mirror_horizontal: bool = False
 
+    def __post_init__(self) -> None:
+        """Reject sizes and frame rates the renderer cannot use.
+
+        Raises:
+            ValueError: If the width, height or frame rate is not positive.
+        """
+        if self.width <= 0 or self.height <= 0 or self.fps <= 0:
+            size = f"{self.width}x{self.height}@{self.fps}"
+            msg = f"Camera {self.name!r} needs a positive size and frame rate, got {size}"
+            raise ValueError(msg)
+
 
 class CameraService:
     """Render configured cameras of the current model into one :class:`FrameBuffer` each."""

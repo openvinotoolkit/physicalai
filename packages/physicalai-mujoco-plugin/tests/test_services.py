@@ -190,6 +190,12 @@ class TestViewerGui:
         assert viewer.native is None
 
 
+@pytest.mark.parametrize("size", [{"fps": 0}, {"fps": -5}, {"width": 0}])
+def test_camera_config_rejects_non_positive_sizes_and_rates(size: dict[str, int]) -> None:
+    with pytest.raises(ValueError, match="positive size and frame rate"):
+        CameraConfig("overview", **size)
+
+
 class TestCameraFrames:
     @staticmethod
     def _stream_one_frame(model_data, rendered: np.ndarray, *, mirror: bool) -> np.ndarray:

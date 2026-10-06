@@ -203,6 +203,25 @@ def test_groups_write_every_member_and_must_be_position_like() -> None:
         _bound(xml, _profile(ChannelOverride("bad", ("a", "m"))))
 
 
+def test_placing_a_group_homes_every_member() -> None:
+    xml = """<mujoco><compiler angle="radian"/><worldbody><body><joint name="a" type="slide" range="0 0.1"/>
+    <geom size="0.01"/><body><joint name="b" type="slide" range="-0.1 0"/><geom size="0.01"/></body></body></worldbody>
+    <actuator><position name="a" joint="a" kp="10"/><position name="b" joint="b" kp="10"/></actuator></mujoco>"""
+    model, data, channels = _bound(xml, _profile(ChannelOverride("gripper", ("a", "b"), member_scales=(-1.0,))))
+    data.qpos[:] = [0.05, -0.05]
+
+    channels.place({"a": 0.02, "b": -0.02})
+
+    np.testing.assert_allclose(data.qpos, [0.02, -0.02])
+    np.testing.assert_allclose(data.ctrl, [0.02, -0.02])
+
+
+def test_pd_targets_clip_to_the_joint_range() -> None:
+    _, _, channels = _bound(_TORQUE_ARM, unit="degrees")
+    channels.write(np.asarray([500.0]))
+    assert channels.model_targets()[0] == pytest.approx(2.0)  # the joint's upper limit, not 500 degrees
+
+
 def test_scale_and_offset_map_public_values() -> None:
     profile = _profile(ChannelOverride("hinge", ("hinge_pos",), scale=-1.0, offset=10.0))
     _, data, channels = _bound(profile=profile)
@@ -267,16 +286,17 @@ def test_renames_update_tendon_sensor_equality_and_exclusion_references(tmp_path
   </worldbody>
   <tendon><spatial name="t"><site site="site0"/><site site="site1"/></spatial></tendon>
   <actuator><motor name="motor" joint="joint0"/></actuator>
-  <sensor><jointpos name="sensor" joint="joint0"/></sensor>
+  <sensor><jointpos name="sensor" joint="joint0"/><actuatorfrc name="force" actuator="motor"/></sensor>
   <equality><weld name="w" body1="body0" body2="other"/></equality>
   <contact><exclude body1="body0" body2="other"/></contact>
 </mujoco>""",
     )
 
-    for old_name, new_name in (("joint0", "joint1"), ("body0", "body1"), ("site0", "site2")):
+    for old_name, new_name in (("joint0", "joint1"), ("body0", "body1"), ("site0", "site2"), ("motor", "motor1")):
         spec = _rename(spec, old_name, new_name, tmp_path)
 
-    assert spec.actuator("motor").target == "joint1"
+    assert spec.actuator("motor1").target == "joint1"
+    assert spec.sensor("force").objname == "motor1"
     assert spec.sensor("sensor").objname == "joint1"
     assert spec.equalities[0].name1 == "body1"
     assert spec.excludes[0].bodyname1 == "body1"

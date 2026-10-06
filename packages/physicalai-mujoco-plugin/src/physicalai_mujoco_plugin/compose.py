@@ -260,8 +260,13 @@ def model_prefixes(layout: DerivedLayout, profile: RobotProfile) -> tuple[str, .
     if not profile.channels:
         return ("",)
     first = profile.channels[0].actuators[0]
-    names = [name for channel in layout.channels for name in (channel.actuator, channel.joint) if name]
-    prefixes = [name.removesuffix(first) for name in names if name.endswith(first)]
+    prefixes = []
+    for channel in layout.channels:
+        # One candidate per actuator, the joint's name first: a model may name the joint
+        # ``shoulder_pan`` and its actuator ``motor_shoulder_pan``, which is still one robot.
+        name = next((n for n in (channel.joint, channel.actuator) if n and n.endswith(first)), None)
+        if name is not None:
+            prefixes.append(name.removesuffix(first))
     return tuple(dict.fromkeys(prefixes)) or ("",)
 
 
@@ -337,7 +342,7 @@ def _rename(spec: mujoco.MjSpec, old: str, new: str, asset_root: Path) -> mujoco
     named_tags = {"body", "joint", "freejoint", "camera", "site"}
     actuator_tags = {"motor", "position", "velocity", "general", "intvelocity", "damper", "adhesion", "muscle"}
     references = {
-        "body", "body1", "body2", "bodyname1", "bodyname2", "camera", "joint", "joint1", "joint2",
+        "actuator", "body", "body1", "body2", "bodyname1", "bodyname2", "camera", "joint", "joint1", "joint2",
         "name1", "name2", "objname", "refname", "site", "site1", "site2", "sidesite", "target", "tendon",
     }  # fmt: skip
     parents = {child: parent for parent in root.iter() for child in parent}

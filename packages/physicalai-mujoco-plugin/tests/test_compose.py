@@ -258,5 +258,15 @@ def test_composed_layout_is_bound_to_each_anchor() -> None:
         assert set(layout.home_qpos) == {f"{binding.prefix}{name}" for name in SO101_JOINT_ORDER}
 
 
+def test_a_joint_and_its_differently_named_actuator_are_one_robot() -> None:
+    from physicalai_mujoco_plugin.compose import model_prefixes
+    from physicalai_mujoco_plugin.profiles.derive import derive_profile
+
+    xml = "<mujoco><worldbody><body><joint name='shoulder_pan'/><geom size='0.1'/></body></worldbody>"
+    xml += "<actuator><position name='motor_shoulder_pan' joint='shoulder_pan'/></actuator></mujoco>"
+    layout = derive_profile(mujoco.MjModel.from_xml_string(xml))
+    assert model_prefixes(layout, SO101_PROFILE) == ("",)
+
+
 def test_robot_layout_is_cached_per_profile() -> None:
     assert robot_layout(SO101_PROFILE) is robot_layout(SO101_PROFILE)

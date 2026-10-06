@@ -211,23 +211,22 @@ class ArmChannels:
                 self._write_model(index, channel, float(model_values[joint]))
 
     def place(self, qpos: Mapping[str, float]) -> None:
-        """Teleport each channel's joint to ``qpos[joint]`` at rest, and hold it there.
+        """Teleport each channel's joints to ``qpos[joint]`` at rest, and hold them there.
 
-        Positions are clipped to the joint ranges. Channels whose joint is not in *qpos* keep
-        their position and target.
+        Every member of a group is placed (both fingers of a gripper); the group's target comes
+        from its first member. Positions are clipped to the joint ranges. Joints not in *qpos*
+        keep their position, and channels whose first joint is not in it keep their target.
         """
-        model, data = self.model, self.data
+        data = self.data
         for index, channel in enumerate(self.channels):
-            joint, joint_id = channel.first.joint, channel.first.joint_id
-            if joint is None or joint_id is None or joint not in qpos:
-                continue
-            value = float(qpos[joint])
-            if bool(model.jnt_limited[joint_id]):
-                low, high = (float(v) for v in model.jnt_range[joint_id])
-                value = min(max(value, low), high)
-            data.qpos[channel.first.qpos_adr] = value
-            data.qvel[channel.first.dof_adr] = 0.0
-            self._write_model(index, channel, value, clamp=True)
+            for member in channel.members:
+                if member.joint is None or member.joint_id is None or member.joint not in qpos:
+                    continue
+                data.qpos[member.qpos_adr] = self._clip_to_joint(member, float(qpos[member.joint]))
+                data.qvel[member.dof_adr] = 0.0
+            first = channel.first
+            if first.joint is not None and first.joint in qpos:
+                self._write_model(index, channel, float(data.qpos[first.qpos_adr]), clamp=True)
 
     def apply_pd(self) -> None:
         """Update the torque of PD-driven channels; call before every physics step (CHN-9)."""
@@ -277,14 +276,14 @@ class ArmChannels:
 
     def _write_model(self, index: int, channel: Channel, value: float, *, clamp: bool = False) -> None:
         """Set *channel*'s target to a model value; group members get their scaled share (PRF-8)."""
-        model, data = self.model, self.data
+        data = self.data
         for position, member in enumerate(channel.members):
             target = (
                 value if position == 0 or not channel.member_scales else value * channel.member_scales[position - 1]
             )
-            if member.kind == "position" and member.joint_id is not None and bool(model.jnt_limited[member.joint_id]):
-                low, high = (float(v) for v in model.jnt_range[member.joint_id])
-                target = min(max(target, low), high)
+            if member.kind == "position" or (member.kind == "torque" and self.torque_mode == "pd"):
+                # Position targets past a joint limit only push the joint into its stop.
+                target = self._clip_to_joint(member, target)
             if member.kind in {"position", "velocity"}:
                 # MuJoCo clamps ctrl to ctrlrange itself; storing the unclamped target keeps it
                 # readable at full precision (model_targets, the virtual leader). Homing clamps,
@@ -296,6 +295,13 @@ class ArmChannels:
                     self._pd_targets[index] = target
             else:
                 data.ctrl[member.actuator_id] = self._clip_ctrl(member, target)
+
+    def _clip_to_joint(self, member: DerivedChannel, value: float) -> float:
+        joint_id = member.joint_id
+        if joint_id is None or not bool(self.model.jnt_limited[joint_id]):
+            return value
+        low, high = (float(v) for v in self.model.jnt_range[joint_id])
+        return min(max(value, low), high)
 
     def _clip_ctrl(self, member: DerivedChannel, ctrl: float) -> float:
         if bool(self.model.actuator_ctrllimited[member.actuator_id]):
