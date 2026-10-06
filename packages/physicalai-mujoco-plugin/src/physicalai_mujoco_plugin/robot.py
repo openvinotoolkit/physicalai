@@ -516,8 +516,8 @@ class MuJoCoRobot(OperatorControls):
         self._drain_commands()
         sim = self._sim
         model, data = sim.model, sim.data  # type: ignore[union-attr]
-        if self._watcher is not None:
-            self._watcher.poll(model, data)
+        if self._watcher is not None and self._watcher.changed():
+            self._apply_scene_edit(model, data)
         control_dt = self._substeps * float(model.opt.timestep)
         self._automation.tick(model, data, control_dt, self._arm_targets())  # type: ignore[union-attr]
         for _ in range(self._substeps):
@@ -535,6 +535,19 @@ class MuJoCoRobot(OperatorControls):
             elif self._viewer.native is not None:
                 self._handle_viewer_reset()
         self._cameras.publish(data)
+
+    def _apply_scene_edit(self, model: object, data: object) -> None:
+        """Apply live scene XML camera edits with no camera thread reading the model."""
+        # MuJoCo shares a model between threads only while it is read-only; the camera thread
+        # runs mj_fwdPosition and renders from this model, so it pauses for the edit.
+        restart = self._cameras.on_thread
+        if restart:
+            self._cameras.stop()
+        try:
+            self._watcher.apply(model, data)  # type: ignore[union-attr]
+        finally:
+            if restart:
+                self._cameras.start(model, data)
 
     def _record_tick(self, sim_time: float) -> None:
         if self._last_tick_sim_time is not None and sim_time < self._last_tick_sim_time:

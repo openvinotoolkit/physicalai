@@ -164,7 +164,7 @@ def test_degrees_mode_converts_hinges_and_keeps_slides_and_tendons_in_metres() -
     assert channels.units == ("degrees", "metres", "metres", "metres", "raw")
     positions = channels.read_positions()
     assert positions[0] == pytest.approx(np.degrees(0.25))
-    assert positions[1] == pytest.approx(0.0)  # velocity channel reads its velocity
+    assert positions[1] == pytest.approx(0.01)  # velocity channel reads its joint position
     assert positions[2] == pytest.approx(0.01)
     channels.write(np.asarray([30.0, 0.5, 0.05, 0.2, 0.7]))
     assert data.ctrl[0] == pytest.approx(np.radians(30.0))
@@ -262,6 +262,22 @@ def test_raw_torque_mode_passes_ctrl_through() -> None:
     channels.write(np.asarray([3.0]))
     channels.apply_pd()
     assert data.ctrl[0] == 3.0
+    assert channels.read_positions()[0] == pytest.approx(0.0)  # the joint, not the torque command
+
+
+def test_velocity_and_raw_channels_observe_positions_not_commands() -> None:
+    model, data, channels = _bound()
+    channels.write(np.asarray([np.degrees(0.25), 0.5, 0.01, 0.1, 0.7]))
+    for _ in range(20):
+        mujoco.mj_step(model, data)
+    mujoco.mj_forward(model, data)
+
+    positions = channels.read_positions()
+    assert positions[1] == pytest.approx(data.qpos[model.jnt_qposadr[model.joint("slide").id]])
+    assert positions[1] != pytest.approx(data.actuator_velocity[1])
+    assert positions[4] == pytest.approx(data.qpos[model.jnt_qposadr[model.joint("hinge").id]])  # raw: radians
+    assert positions[4] != pytest.approx(data.ctrl[4])
+    assert channels.read_velocities()[1] == pytest.approx(data.qvel[model.jnt_dofadr[model.joint("slide").id]])
 
 
 def test_pd_gains_can_be_overridden() -> None:

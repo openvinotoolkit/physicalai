@@ -125,7 +125,11 @@ class ArmChannels:
     # ------------------------------------------------------------------
 
     def read_positions(self) -> np.ndarray:
-        """Return the current positions in public units, in channel order (``float64``)."""
+        """Return the current positions in public units, in channel order (``float64``).
+
+        Every channel reports a position, also velocity, torque and raw channels; a raw channel's
+        position is in model units (radians or metres), while its action stays ``ctrl``.
+        """
         return np.array([self.to_public(channel, self._read_model(channel)) for channel in self.channels])
 
     def read_velocities(self) -> np.ndarray:
@@ -240,11 +244,12 @@ class ArmChannels:
     # ------------------------------------------------------------------
 
     def _read_model(self, channel: Channel) -> float:
+        """Return *channel*'s position in model units, whatever its control kind.
+
+        Observations carry positions (the ``RobotObservation`` contract): velocity, torque and raw
+        channels report their joint (or actuator length), not the velocity or ``ctrl`` they take.
+        """
         member, data = channel.first, self.data
-        if member.kind == "raw" or (member.kind == "torque" and self.torque_mode == "raw"):
-            return float(data.ctrl[member.actuator_id])
-        if member.kind == "velocity":
-            return _per_gear(member, float(data.actuator_velocity[member.actuator_id]))
         if member.qpos_adr is not None:
             return float(data.qpos[member.qpos_adr])
         return _per_gear(member, float(data.actuator_length[member.actuator_id]))

@@ -519,6 +519,33 @@ class TestSceneSwitching:
         assert robot._model is model  # noqa: SLF001
         assert robot._current_scene_id is None  # noqa: SLF001
 
+    def test_a_live_xml_edit_pauses_the_camera_thread(self, robot) -> None:
+        """The camera thread reads the shared model, so the edit must not race it."""
+        calls: list[str] = []
+        cameras = MagicMock(on_thread=True)
+        cameras.stop.side_effect = lambda: calls.append("stop")
+        cameras.start.side_effect = lambda *_: calls.append("start")
+        watcher = MagicMock()
+        watcher.changed.return_value = True
+        watcher.apply.side_effect = lambda *_: calls.append("apply")
+        robot._cameras, robot._watcher = cameras, watcher  # noqa: SLF001
+
+        robot.get_observation()
+
+        assert calls == ["stop", "apply", "start"]
+        cameras.start.assert_called_once_with(robot._model, robot._data)  # noqa: SLF001
+
+    def test_an_unchanged_xml_leaves_the_cameras_running(self, robot) -> None:
+        cameras = MagicMock(on_thread=True)
+        watcher = MagicMock()
+        watcher.changed.return_value = False
+        robot._cameras, robot._watcher = cameras, watcher  # noqa: SLF001
+
+        robot.get_observation()
+
+        cameras.stop.assert_not_called()
+        watcher.apply.assert_not_called()
+
     def test_scene_key_cycles_only_compatible_scenes(self, bimanual_path) -> None:
         robot = so101(bimanual_path, scene="garment_fold")
         robot.connect()

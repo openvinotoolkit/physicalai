@@ -38,15 +38,32 @@ class SceneXmlWatcher:
 
     def poll(self, model: object, data: object) -> None:
         """Apply camera edits if a watched file changed since the last poll (sim thread)."""
+        if self.changed():
+            self.apply(model, data)
+
+    def changed(self) -> bool:
+        """Return whether a watched file changed since the last check; checks at most once a second.
+
+        Returns:
+            ``True`` once per change; call `apply` then, with nothing else reading the model.
+        """
         now = time.monotonic()
         if now < self._next_check:
-            return
+            return False
         self._next_check = now + POLL_INTERVAL_S
         mtimes = self._snapshot()
         if mtimes == self._mtimes:
-            return
-        logger.info("Scene XML changed, updating camera")
+            return False
         self._mtimes = mtimes
+        return True
+
+    def apply(self, model: object, data: object) -> None:
+        """Write the scene XML's camera poses into *model*.
+
+        This mutates the model, so no other thread may be using it (MuJoCo shares a model between
+        threads only while it is read-only): stop the camera thread first.
+        """
+        logger.info("Scene XML changed, updating camera")
         try:
             self._apply_camera_edits(model, data)
         except Exception as exc:  # noqa: BLE001 - a half-typed edit must not stop the control loop
