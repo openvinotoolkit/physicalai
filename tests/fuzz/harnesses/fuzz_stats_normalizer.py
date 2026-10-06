@@ -22,7 +22,7 @@ from _helpers import make_float_array, make_stats_dict
 
 _MODES = ["mean_std", "min_max", "quantiles", "identity"]
 _EPS = 1e-8
-_VALUE_BOUND = 1e3
+_VALUE_BOUND = 1e6
 _VALUE_STEP = 2.0**-10
 
 
