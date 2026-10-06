@@ -21,7 +21,7 @@ from physicalai_mujoco_plugin.studio_catalog import (
     MuJoCoSO101Payload,
     MuJoCoSO101Probe,
     _definitions,
-    _SharedSO101Robot,
+    _SharedMuJoCoRobot,
     register_physicalai_studio_plugin,
 )
 
@@ -125,7 +125,7 @@ class TestDefinitions:
         recipe = Config.from_instance(robot)
         built = RobotOwnerConfig(name="studio-owner", robot=recipe).build()
 
-        assert isinstance(built, _SharedSO101Robot)
+        assert isinstance(built, _SharedMuJoCoRobot)
         assert built._shared_robot._name == name  # noqa: SLF001
         assert built._shared_robot._allow_remote is True  # noqa: SLF001
         assert built._shared_robot._connect_timeout == 3.0  # noqa: SLF001
@@ -161,19 +161,19 @@ class TestDefinitions:
 
 class TestSharedRobotAdapter:
     def test_has_no_owned_devices(self) -> None:
-        robot = _SharedSO101Robot(SharedRobot.attach(DEFAULT_MUJOCO_OWNER_NAME), SO101_JOINT_ORDER)
+        robot = _SharedMuJoCoRobot(SharedRobot.attach(DEFAULT_MUJOCO_OWNER_NAME), SO101_JOINT_ORDER)
         assert robot.device_ids == ()
         assert robot.joint_names == list(SO101_JOINT_ORDER)
 
     def test_bimanual_joint_names(self) -> None:
-        robot = _SharedSO101Robot(SharedRobot.attach(DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME), BIMANUAL_SO101_JOINT_ORDER)
+        robot = _SharedMuJoCoRobot(SharedRobot.attach(DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME), BIMANUAL_SO101_JOINT_ORDER)
         assert robot.joint_names == list(BIMANUAL_SO101_JOINT_ORDER)
 
     def test_exports_attach_only_shared_robot_recipe(self) -> None:
-        robot = _SharedSO101Robot(SharedRobot.attach(DEFAULT_MUJOCO_OWNER_NAME, connect_timeout=5.0), SO101_JOINT_ORDER)
+        robot = _SharedMuJoCoRobot(SharedRobot.attach(DEFAULT_MUJOCO_OWNER_NAME, connect_timeout=5.0), SO101_JOINT_ORDER)
 
         assert Config.from_instance(robot) == {
-            "class_path": "physicalai_mujoco_plugin.studio_catalog._SharedSO101Robot",
+            "class_path": "physicalai_mujoco_plugin.studio_catalog._SharedMuJoCoRobot",
             "init_args": {
                 "shared_robot": {
                     "class_path": "physicalai.robot.SharedRobot",
@@ -189,7 +189,7 @@ class TestSharedRobotAdapter:
 
     def test_owner_build_constructs_attach_only_shared_robot(self) -> None:
         recipe = Config.from_instance(
-            _SharedSO101Robot(
+            _SharedMuJoCoRobot(
                 SharedRobot.attach("mujoco-so101", connect_timeout=5.0),
                 SO101_JOINT_ORDER,
             ),
@@ -197,7 +197,7 @@ class TestSharedRobotAdapter:
 
         built = RobotOwnerConfig(name="studio-owner", robot=recipe).build()
 
-        assert isinstance(built, _SharedSO101Robot)
+        assert isinstance(built, _SharedMuJoCoRobot)
         assert isinstance(built._shared_robot, SharedRobot)  # noqa: SLF001
         assert built._shared_robot._name == "mujoco-so101"  # noqa: SLF001
         assert built._shared_robot._robot is None  # noqa: SLF001
@@ -207,7 +207,7 @@ class TestSharedRobotAdapter:
 class TestSharedRobotLifecycle:
     def test_real_shared_robot_disconnect_and_reconnect(self) -> None:
         shared = SharedRobot.attach("mujoco-lifecycle-test")
-        robot = _SharedSO101Robot(shared, SO101_JOINT_ORDER)
+        robot = _SharedMuJoCoRobot(shared, SO101_JOINT_ORDER)
         sessions = [MagicMock(), MagicMock()]
         with (
             patch("physicalai.robot.transport._shared_robot.open_session", side_effect=sessions),
@@ -232,7 +232,7 @@ class TestSharedRobotLifecycle:
     def test_delegates_connection_to_shared_robot(self) -> None:
         shared = MagicMock(spec=SharedRobot)
         shared.is_connected.return_value = True
-        robot = _SharedSO101Robot(shared, SO101_JOINT_ORDER)
+        robot = _SharedMuJoCoRobot(shared, SO101_JOINT_ORDER)
 
         robot.connect()
         assert robot.is_connected() is True

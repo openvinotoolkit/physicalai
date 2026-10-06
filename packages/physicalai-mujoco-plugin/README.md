@@ -1,6 +1,6 @@
 # Physical AI MuJoCo Plugin
 
-Run single-arm or bimanual SO-101 simulations through [PhysicalAI Runtime](https://github.com/openvinotoolkit/physicalai). The plugin provides a browser viewer, camera streams, task scenes, and follower catalog entries for [Physical AI Studio](https://github.com/open-edge-platform/physical-ai-studio).
+Run single-arm or bimanual SO-101 simulations, and other [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) robots, through [PhysicalAI Runtime](https://github.com/openvinotoolkit/physicalai). The plugin provides a browser viewer, camera streams, task scenes, and follower catalog entries for [Physical AI Studio](https://github.com/open-edge-platform/physical-ai-studio).
 
 ## Features
 
@@ -227,9 +227,10 @@ uv run --no-sync physicalai-mujoco start --help
 Common options:
 
 - `--name <robot-name>`: transport name (must match Studio payload)
-- `--bimanual`: run two arms with the `garment_fold` scene by default
-- `--model <path>`: custom XML/URDF path to load initially (bypasses default scene resolution)
-- `--scene <name>`: scene name (`single_pick_place`, `yahtzee` or `conveyor_sort`; with `--bimanual`, `garment_fold`). Default `single_pick_place`
+- `--profile <name>`: select a registered profile (`so101`, `ur5e`) or Menagerie model name; `physicalai-mujoco profiles` lists registered profiles
+- `--bimanual`: run two SO-101 arms with the `garment_fold` scene by default
+- `--model <path>`: scene XML to load instead of the registered scene's. Its `robot_mount` frames get the profile's robot; an XML without them is used as is
+- `--scene <name>`: scene name (`single_pick_place`, `yahtzee` or `conveyor_sort`; with `--bimanual`, `garment_fold`). Default comes from the selected profile
 - `--no-gui`: disable all viewers
 - `--viser-port <port>`: browser viewer port (default `9090`)
 - `--viser-host <host>`: browser viewer bind host (default `127.0.0.1`; use `0.0.0.0` to expose it remotely)
@@ -238,8 +239,8 @@ Common options:
 - `--http-port <port>`: port for the camera/control HTTP server (default `8080`)
 - `--no-http`: disable the camera/control HTTP server
 - `--rate-hz <float>`: owner loop frequency
-- `--substeps <int>`: MuJoCo steps per control cycle
-- `--unit <normalized|degrees>`: joint units for observations and actions (default `normalized`, see [Joint units](#joint-units))
+- `--substeps <int>`: MuJoCo steps per control cycle (default: real time at `--rate-hz`, `10` in the SO-101 scenes)
+- `--unit <normalized|degrees>`: joint units for observations and actions (default comes from the selected profile; SO-101 uses `normalized`, see [Joint units](#joint-units))
 - `--idle-timeout <seconds>`: seconds with zero subscribers before self-exit
   (default `10` without HTTP, disabled when HTTP is enabled so stream viewers keep the sim alive)
 - `--allow-remote`: allow non-loopback zenoh connections
@@ -257,7 +258,30 @@ This lets a real leader arm drive the simulation, and makes simulated datasets u
 
 The match is not exact. If a joint was moved further one way than the other during calibration, its `0` is not at the joint's straight position, so the same value points the real joint and the simulated joint in slightly different directions. A real arm's calibrated range also differs from the URDF limits by a few degrees because of assembly tolerances, which adds to the difference towards the ends of a joint's range.
 
-Use `--unit degrees` (or `unit="degrees"` on `MuJoCoSO101`) to get joint angles in degrees instead.
+Use `--unit degrees` (or `unit="degrees"` on `MuJoCoRobot`) to get joint angles in degrees instead. Sliding joints, such as a parallel gripper's, stay in metres.
+
+## Other robots
+
+Every robot comes from MuJoCo Menagerie and is described by a _profile_: what the plugin knows about it beyond its model. `physicalai-mujoco profiles` lists the hand-written ones:
+
+| Profile | Robot                                    | Scenes              | Units        |
+| ------- | ---------------------------------------- | ------------------- | ------------ |
+| `so101` | SO-101, matching the real `SO101` driver | all                 | `normalized` |
+| `ur5e`  | Universal Robots UR5e                    | `single_pick_place` | `degrees`    |
+
+Any other Menagerie model name works too, as an unsupported profile: its channels, home pose, sensors and cameras are derived from the model, one channel per actuator. It needs a scene that supports it (`--scene`) or a robot-complete `--model`. Fixed-base robots only, for now.
+
+```bash
+uv run --package physicalai-mujoco-plugin physicalai-mujoco start --profile ur5e
+```
+
+From Python, or with `physicalai robot serve`, use the generic driver:
+
+```python
+from physicalai_mujoco_plugin import MuJoCoRobot
+
+robot = MuJoCoRobot(profile="ur5e", scene="single_pick_place")
+```
 
 ## Cameras over HTTP
 
@@ -437,11 +461,12 @@ uv build --package physicalai-mujoco-plugin
 
 ### Changing the simulation and viewer
 
-- **Only the simulation thread touches MuJoCo state.** Viewer and HTTP callbacks only enqueue a `SimCommand` (`http_server.py`), which `MuJoCoSO101._handle_command` applies on the next control cycle. HTTP and viewer readouts go through snapshots (`_http_status`, `_panel_state`) taken under `_state_lock`. To add a control, add a command, handle it in `_handle_command`, then add its HTTP route and its input in `viser_controls.py`.
+- **Only the simulation thread touches MuJoCo state.** Viewer and HTTP callbacks only enqueue a `SimCommand` (`http_server.py`), which `MuJoCoRobot._handle_command` applies on the next control cycle. HTTP and viewer readouts go through snapshots (`_http_status`, `_panel_state`) taken under `_state_lock`. To add a control, add a command, handle it in `_handle_command`, then add its HTTP route and its input in `viser_controls.py`.
 - **Viewer inputs ignore server-side events.** Setting a Viser input's `value` from the server fires its `on_update` callbacks with `client=None`. Panel callbacks skip those events, so syncing the panel from sim state never sends a command back.
 - **mjviser is used partly through its internals.** The plugin builds the viewer tabs itself, and does not use mjviser's `create_scene_gui` or `create_visualization_gui`. mjviser's camera tracking follows an arbitrary body by shifting the world, and each call registers another client-connect hook. The plugin also sets `camera_tracking_enabled`, installs a refresh handler, and moves the fixed-body handles itself. mjviser is pinned to `<0.1`; after upgrading it, check a scene switch and camera follow in a browser, because the unit tests mock viser.
-- **Scene switches rebuild the viewer.** `_build_viser_gui` clears every GUI element and scene node, then builds them again for the new model. Viewer preferences that should survive a switch live on `SimControlPanel`, not on the per-build handles.
-- **Scenes hold no robot.** The arm is MuJoCo Menagerie's SO-101 (`robotstudio_so101`), loaded through the pinned `mujoco-menagerie` package, which downloads it on first use. Each scene marks an arm's base with a `<frame name="{prefix}robot_mount"/>`, and `robot_profile.load_scene_model` attaches the arm there with that name prefix (`left_`/`right_` in the bimanual scene). `SO101_PROFILE` pins the joint ranges, force limits and wrist camera the plugin has always used; change the arm or its wrist camera there. Load scenes with `SceneConfig.load_model()`: `mujoco.MjModel.from_xml_path` on a scene file gives a model without the arm. `urdf/so101/*.urdf` and their meshes remain for Studio's 3D view.
+- **The driver owns services, it does not implement them.** `robot.py` steps physics and converts units through `channels.py`; the viewer (`viewer.py`), cameras (`cameras.py`), free objects (`scene_objects.py`) and live camera edits (`scene_watch.py`) are services it starts, syncs once per tick, and stops. None of them steps physics.
+- **Scene switches rebuild the viewer.** `ViewerService.build_gui` clears every GUI element and scene node, then builds them again for the new model. Viewer preferences that should survive a switch live on `SimControlPanel`, not on the per-build handles.
+- **Scenes hold no robot.** The arm is MuJoCo Menagerie's SO-101 (`robotstudio_so101`), loaded through the pinned `mujoco-menagerie` package, which downloads it on first use. Each scene marks an arm's base with a `<frame name="{prefix}robot_mount"/>`, and `compose.compose_scene` attaches the profile's robot there with that name prefix (`left_`/`right_` in the bimanual scene). `profiles/so101.py` pins the joint ranges, force limits and wrist camera the plugin has always used; change the arm or its wrist camera there. Scenes list the profiles they support in `SceneConfig.robots`. Load scenes with `SceneConfig.load_model()`: `mujoco.MjModel.from_xml_path` on a scene file gives a model without the arm. `urdf/so101/*.urdf` and their meshes remain for Studio's 3D view.
 - **Camera images are streamed as MuJoCo renders them.** `mujoco.Renderer` already returns upright images, so set a camera's orientation in the scene XML rather than flipping frames in code. In a MuJoCo camera frame, `-z` is the viewing direction and `+y` is the top of the image. `mirror_horizontal` exists for setups that need a mirrored feed; the `start` command does not use it.
 
 ### Compatibility with Studio

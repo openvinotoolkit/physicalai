@@ -1,6 +1,5 @@
 """Conveyor belt, item feed and scoring in the bundled conveyor_sort model (real MuJoCo, no display)."""
 
-from dataclasses import asdict
 from pathlib import Path
 
 import mujoco
@@ -15,7 +14,7 @@ from physicalai_mujoco_plugin.conveyor import (
     pool_item_names,
 )
 from physicalai_mujoco_plugin.http_server import SetAutoResetCommand, SetBeltSpeedCommand
-from physicalai_mujoco_plugin.mujoco_robot import MuJoCoSO101
+from physicalai_mujoco_plugin.robot import MuJoCoRobot
 from physicalai_mujoco_plugin.scene_registry import get_scene
 from physicalai_mujoco_plugin.viser_controls import _episode_markdown
 
@@ -214,7 +213,7 @@ def test_held_item_is_not_scored_as_a_miss(sim: tuple) -> None:
 
 def test_robot_runs_conveyor_and_keeps_belt_speed_across_switches() -> None:
     scene = get_scene("conveyor_sort")
-    robot = MuJoCoSO101(model_path=str(scene.scene_xml_path), scene_config=asdict(scene))
+    robot = MuJoCoRobot(scene=scene.scene_id, cameras=[], substeps=1)
     robot.connect()
     try:
         episode = robot._http_status()["episode"]

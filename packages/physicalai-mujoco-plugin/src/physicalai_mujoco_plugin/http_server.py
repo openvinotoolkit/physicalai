@@ -376,7 +376,7 @@ def build_app(
             robot can switch to), ``seed``, ``episode``, ``objects``
             (free-object poses), and ``cameras`` (per-camera config).
         get_leader: Returns the virtual leader pose served at ``GET /leader``
-            (see ``MuJoCoSO101._leader_snapshot``); no route without it.
+            (see ``ConveyorAutomation.leader_snapshot``); no route without it.
         jpeg_quality: JPEG quality for streams and snapshots.
 
     Returns:
@@ -413,6 +413,7 @@ def build_app(
             },
             "cameras": [camera["name"] for camera in status["cameras"]],
             "scene": status["scene"],
+            **{key: status[key] for key in ("profile", "tier", "joint_names", "units") if key in status},
         }
 
     @app.get("/health")

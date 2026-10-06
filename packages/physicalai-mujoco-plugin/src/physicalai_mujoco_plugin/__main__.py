@@ -5,12 +5,14 @@
 
 Usage:
 
-    physicalai-mujoco start --model <path> [options]
+    physicalai-mujoco start [--profile so101] [--scene <id>] [options]
+    physicalai-mujoco profiles
     physicalai-mujoco prefetch
 
-Start a MuJoCo SO-101 simulation as a zenoh robot owner, making it
-discoverable and controllable from PhysicalAI Studio. ``prefetch`` downloads
-the robot models from MuJoCo Menagerie ahead of time, for offline use.
+Start a MuJoCo simulation as a zenoh robot owner, making it discoverable and
+controllable from PhysicalAI Studio. ``profiles`` lists the robots with a
+hand-written profile; any other MuJoCo Menagerie model name works too.
+``prefetch`` downloads the profiles' models ahead of time, for offline use.
 """
 
 from __future__ import annotations
@@ -23,19 +25,18 @@ import shlex
 import signal
 import sys
 import threading
-from dataclasses import asdict
 from pathlib import Path
 
 from loguru import logger
 
 from physicalai.config import Config
 from physicalai.robot.transport import SharedRobot
+from physicalai_mujoco_plugin.compose import fetch_profile, scene_needs_robot
 from physicalai_mujoco_plugin.constants import (
     DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME,
     DEFAULT_MUJOCO_OWNER_NAME,
 )
-from physicalai_mujoco_plugin.mujoco_robot import BiMuJoCoSO101, MuJoCoSO101
-from physicalai_mujoco_plugin.robot_profile import PROFILES, SO101_PROFILE, scene_needs_robot
+from physicalai_mujoco_plugin.profiles import RobotProfile, get_profile, list_profiles
 from physicalai_mujoco_plugin.studio_recorder import DEFAULT_STUDIO_URL, validate_studio_url
 
 _CLI_NAME = "physicalai-mujoco"
@@ -44,7 +45,7 @@ _CLI_NAME = "physicalai-mujoco"
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=_CLI_NAME,
-        description="MuJoCo SO-101 simulation for PhysicalAI Studio",
+        description="MuJoCo simulation of MuJoCo Menagerie robots for Physical AI Runtime and Studio",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -53,15 +54,24 @@ def _build_parser() -> argparse.ArgumentParser:
         "--model",
         type=str,
         default=None,
-        help="Path to MuJoCo model XML or URDF (default: bundled SO101 model)",
+        help=(
+            "Scene XML to load instead of the registered scene's; its robot_mount frames get the profile's "
+            "robot, and an XML without them is used as is"
+        ),
+    )
+    start.add_argument(
+        "--profile",
+        type=str,
+        default="so101",
+        help="Robot profile (see `profiles`) or any MuJoCo Menagerie model name (default: so101)",
     )
     start.add_argument(
         "--name",
         type=str,
         default=None,
         help=(
-            f"Zenoh robot name (default: {DEFAULT_MUJOCO_OWNER_NAME}, "
-            f"or {DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME} with --bimanual)"
+            "Zenoh robot name (default: mujoco-<profile>-follow, or mujoco-<profile>-bimanual-follow "
+            f"for two-arm scenes; {DEFAULT_MUJOCO_OWNER_NAME} for the SO-101)"
         ),
     )
     start.add_argument(
@@ -73,29 +83,29 @@ def _build_parser() -> argparse.ArgumentParser:
     start.add_argument(
         "--substeps",
         type=int,
-        default=10,
-        help="MuJoCo simulation steps per control cycle (default: 10, real-time at 50 Hz with dt=0.002)",
+        default=None,
+        help="MuJoCo simulation steps per control cycle (default: real time at --rate-hz, 10 for the SO-101 scenes)",
     )
     start.add_argument(
         "--unit",
         choices=["normalized", "degrees"],
-        default="normalized",
+        default=None,
         help=(
-            "Joint units for observations and actions (default: normalized, like the calibrated SO101 driver: "
-            "body joints -100..100 and gripper 0..100 across each joint's range)"
+            "Joint units for observations and actions (default: the profile's; normalized for the SO-101, like "
+            "the calibrated SO101 driver: body joints -100..100 and gripper 0..100 across each joint's range)"
         ),
     )
     start.add_argument(
         "--bimanual",
         action="store_true",
         default=False,
-        help="Run the dual-arm SO101 (bimanual) model (default scene: garment_fold)",
+        help="Deprecated: use --scene with a two-arm scene. Picks garment_fold for the SO-101",
     )
     start.add_argument(
         "--scene",
         type=str,
         default=None,
-        help="Scene name (default: garment_fold for bimanual, single_pick_place otherwise)",
+        help="Scene id (default: the profile's default scene, single_pick_place for the SO-101)",
     )
     start.add_argument(
         "--allow-remote",
@@ -161,7 +171,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"Physical AI Studio backend for automatic episode recording (default: {DEFAULT_STUDIO_URL})",
     )
 
-    sub.add_parser("prefetch", help="Download the robot models from MuJoCo Menagerie into the local cache")
+    sub.add_parser("profiles", help="List registered robot profiles")
+    sub.add_parser("prefetch", help="Download the supported robot models from MuJoCo Menagerie")
 
     stop = sub.add_parser("stop", help="Stop a running MuJoCo simulation owner")
     stop.add_argument(
@@ -189,32 +200,50 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _resolve_model_and_scene(
-    model_arg: str | None,
-    scene_arg: str | None,
-    *,
-    bimanual: bool,
-) -> tuple[str, object | None]:
-    if model_arg is not None:
-        path = Path(model_arg).resolve()
+def _resolve_scene(args: argparse.Namespace, profile: RobotProfile) -> tuple[str | None, int]:
+    """Return the scene id the driver will load and its number of robots, or exit with the reason.
+
+    Returns:
+        The scene id (``None`` for a custom ``--model`` without ``--scene``) and the robot count.
+    """
+    from physicalai_mujoco_plugin.scene_registry import get_scene  # noqa: PLC0415
+
+    scene_id = args.scene
+    if scene_id is None and args.bimanual:
+        if profile.name != "so101":
+            logger.error("--bimanual only applies to the SO-101; pass --scene with a two-arm scene")
+            sys.exit(1)
+        scene_id = "garment_fold"
+    if args.model is not None:
+        path = Path(args.model).resolve()
         if not path.exists():
             logger.error("Model file not found: {}", path)
             sys.exit(1)
-        return str(path), None
+        args.model = str(path)
+        if scene_id is None:
+            import mujoco  # noqa: PLC0415
 
-    from physicalai_mujoco_plugin.scene_registry import get_scene  # noqa: PLC0415
+            from physicalai_mujoco_plugin.compose import anchor_prefixes  # noqa: PLC0415
 
-    scene_id = scene_arg or ("garment_fold" if bimanual else "single_pick_place")
-    scene = get_scene(scene_id)
-    xml_path = scene.scene_xml_path
-    if not xml_path.exists():
-        logger.error("Scene XML not found: {}", xml_path)
+            spec = mujoco.MjSpec.from_file(args.model)  # pyrefly: ignore [missing-attribute]
+            return None, max(1, len(anchor_prefixes(spec)))
+    scene_id = scene_id or profile.default_scene
+    if scene_id is None:
+        logger.error("Profile {} has no default scene; pass --scene or --model", profile.name)
         sys.exit(1)
-    return str(xml_path), scene
+    try:
+        scene = get_scene(scene_id)
+    except KeyError as exc:
+        logger.error("{}", exc.args[0])
+        sys.exit(1)
+    if not scene.supports(profile):
+        logger.error("Scene {} does not support the {} profile", scene_id, profile.name)
+        sys.exit(1)
+    return scene_id, scene.num_arms
 
 
-def _resolve_owner_name(args: argparse.Namespace) -> str:
-    """Return the explicit ``--name``, or the default for this arm count.
+def _resolve_owner_name(args: argparse.Namespace, profile: str = "so101", num_arms: int | None = None) -> str:
+    """Return the explicit ``--name``, or the default for this profile and arm count (CLI-3).
 
     Single-arm and bimanual simulations get distinct defaults so that running
     both at once does not have them fight over one zenoh name.
@@ -224,10 +253,13 @@ def _resolve_owner_name(args: argparse.Namespace) -> str:
     """
     if args.name is not None:
         return str(args.name)
-    return DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME if args.bimanual else DEFAULT_MUJOCO_OWNER_NAME
+    bimanual = num_arms == 2 if num_arms is not None else args.bimanual  # noqa: PLR2004
+    if profile == "so101":
+        return DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME if bimanual else DEFAULT_MUJOCO_OWNER_NAME
+    return f"mujoco-{profile}-bimanual-follow" if bimanual else f"mujoco-{profile}-follow"
 
 
-def _fetch_robot_models(model_path: str) -> None:
+def _fetch_robot_models(model_path: str | Path, profile: RobotProfile) -> None:
     """Fetch the robot the model attaches before the owner starts, or exit with the reason.
 
     The owner subprocess must report ready within a fixed startup timeout; a
@@ -237,94 +269,69 @@ def _fetch_robot_models(model_path: str) -> None:
     if not scene_needs_robot(model_path):
         return
     try:
-        SO101_PROFILE.fetch()
+        fetch_profile(profile)
     except RuntimeError as exc:
         logger.error("{}", exc)
         sys.exit(1)
 
 
-def _start(args: argparse.Namespace) -> None:  # noqa: PLR0912, PLR0915
-    model_path, scene_config = _resolve_model_and_scene(args.model, args.scene, bimanual=args.bimanual)
-    owner_name = _resolve_owner_name(args)
-    _fetch_robot_models(model_path)
+def _start(args: argparse.Namespace) -> None:
+    from physicalai_mujoco_plugin.robot import MuJoCoRobot  # noqa: PLC0415
+    from physicalai_mujoco_plugin.scene_registry import get_scene  # noqa: PLC0415
+
+    try:
+        profile = get_profile(args.profile)
+    except KeyError as exc:
+        logger.error("{}", exc.args[0])
+        sys.exit(1)
+    scene_id, num_arms = _resolve_scene(args, profile)
+    owner_name = _resolve_owner_name(args, profile.name, num_arms)
+    xml_path = args.model if args.model is not None else get_scene(scene_id).scene_xml_path  # type: ignore[arg-type]
+    _fetch_robot_models(xml_path, profile)
 
     http_enabled = not args.no_http and args.http_port > 0
-
-    cameras: list[dict[str, object]] = []
-    if not args.no_cameras:
-        left_wrist_name = "left_wrist" if args.bimanual else "wrist"
-        cameras = [
-            {
-                "name": left_wrist_name,
-                "width": 640,
-                "height": 480,
-                "fps": 30,
-            },
-            {
-                "name": "overview",
-                "width": 640,
-                "height": 480,
-                "fps": 30,
-            },
-        ]
-        if args.bimanual:
-            cameras.append(
-                {
-                    "name": "right_wrist",
-                    "width": 640,
-                    "height": 480,
-                    "fps": 30,
-                },
-            )
-
-    robot_kwargs = {
-        "model_path": model_path,
-        "substeps": args.substeps,
-        "unit": args.unit,
-        "enable_viewer": not args.no_gui,
-        "cameras": cameras,
-        "owner_name": owner_name,
-        "http_host": args.http_host,
-        "http_port": args.http_port if http_enabled else 0,
-        "viser_host": args.viser_host,
-        "viser_port": args.viser_port if not args.no_gui else 0,
-        "studio_url": validate_studio_url(args.studio_url),
-    }
-    if scene_config is not None:
-        robot_kwargs["scene_config"] = asdict(scene_config)  # type: ignore[arg-type]
+    robot = MuJoCoRobot(
+        profile.name,
+        scene=scene_id,
+        model_path=args.model,
+        unit=args.unit,
+        substeps=args.substeps,
+        rate_hz=args.rate_hz,
+        # None streams the robot cameras and `overview`: wrist, overview (and right_wrist).
+        cameras=[] if args.no_cameras else None,
+        enable_viewer=not args.no_gui,
+        viser_host=args.viser_host,
+        viser_port=args.viser_port if not args.no_gui else 0,
+        http_host=args.http_host,
+        http_port=args.http_port if http_enabled else 0,
+        owner_name=owner_name,
+        studio_url=validate_studio_url(args.studio_url),
+    )
 
     idle_timeout = args.idle_timeout
     if idle_timeout is None and not http_enabled:
         idle_timeout = 10.0
 
-    robot = SharedRobot.from_config(
-        Config.from_instance((BiMuJoCoSO101 if args.bimanual else MuJoCoSO101)(**robot_kwargs)),  # type: ignore[arg-type]
+    shared = SharedRobot.from_config(
+        Config.from_instance(robot),
         name=owner_name,
         allow_remote=args.allow_remote,
         rate_hz=args.rate_hz,
         idle_timeout=idle_timeout,
     )
 
-    logger.info("Connecting MuJoCo SO-101 as zenoh owner '{}' ...", owner_name)
-    robot.connect()
+    logger.info("Connecting MuJoCo {} as zenoh owner '{}' ...", profile.display_name, owner_name)
+    shared.connect()
     owner_pid = _owner_pid(owner_name)
     logger.info(
-        "MuJoCo SO-101 running (model={}, rate={} Hz, substeps={}, bimanual={})",
-        model_path,
+        "MuJoCo {} running (scene={}, rate={} Hz)",
+        profile.display_name,
+        scene_id or xml_path,
         args.rate_hz,
-        args.substeps,
-        args.bimanual,
     )
     if http_enabled:
         base_url = f"http://{args.http_host}:{args.http_port}"
-        logger.info("Camera/control HTTP server: {}", base_url)
-        for cam in cameras:
-            # `cameras` is a list[dict[str, object]] built from CLI args.
-            name = cam.get("name")
-            if not isinstance(name, str):
-                continue
-            logger.info("MJPEG: {} -> {}/cameras/{}/mjpeg", name, base_url, name)
-            logger.info("Snapshot: {} -> {}/cameras/{}/frame.jpg", name, base_url, name)
+        logger.info("Camera/control HTTP server: {} (camera streams: {}/cameras)", base_url, base_url)
     if not args.no_gui and args.viser_port > 0:
         logger.info("3D viewer: http://{}:{}", args.viser_host, args.viser_port)
 
@@ -351,8 +358,8 @@ def _start(args: argparse.Namespace) -> None:  # noqa: PLR0912, PLR0915
                 if not stopped:
                     _stop_owner_by_signal(owner_name, owner_pid)
         finally:
-            robot.disconnect()
-        logger.info("MuJoCo SO-101 stopped")
+            shared.disconnect()
+        logger.info("MuJoCo {} stopped", profile.display_name)
 
 
 def _wait_for_owner_shutdown(shutdown: threading.Event, name: str, pid: int | None) -> None:
@@ -626,17 +633,27 @@ def _stop(args: argparse.Namespace) -> None:
         stopped = _terminate(pid, f"{_CLI_NAME} start") or stopped
 
     if not stopped:
-        logger.warning("No running MuJoCo SO-101 simulation found for name '{}'", args.name)
+        logger.warning("No running MuJoCo simulation found for name '{}'", args.name)
 
 
 def _prefetch() -> None:
-    for profile in PROFILES:
+    for profile in list_profiles():
         try:
-            path = profile.fetch()
+            path = fetch_profile(profile)
         except RuntimeError as exc:
             logger.error("{}", exc)
             sys.exit(1)
         logger.info("{} model ready at {}", profile.name, path)
+
+
+def _profiles() -> None:
+    """Print the hand-written profiles; any other Menagerie model name works as an unsupported profile."""
+    sys.stdout.write(f"{'PROFILE':<10} {'TIER':<12} {'MENAGERIE MODEL':<24} NAME\n")
+    for profile in list_profiles():
+        sys.stdout.write(
+            f"{profile.name:<10} {profile.tier:<12} {profile.menagerie_model:<24} {profile.display_name}\n"
+        )
+    sys.stdout.write("Any other MuJoCo Menagerie model name also works, unsupported (no CI, no Studio entry).\n")
 
 
 def main() -> None:
@@ -646,6 +663,8 @@ def main() -> None:
 
     if args.command == "start":
         _start(args)
+    elif args.command == "profiles":
+        _profiles()
     elif args.command == "prefetch":
         _prefetch()
     elif args.command == "stop":

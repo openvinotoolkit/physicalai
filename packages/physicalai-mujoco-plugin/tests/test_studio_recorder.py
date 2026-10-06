@@ -5,14 +5,14 @@ from __future__ import annotations
 import json
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import pytest
 from websockets.sync.server import serve
 
 from physicalai_mujoco_plugin.http_server import SetStudioRecordingCommand
-from physicalai_mujoco_plugin.mujoco_robot import MuJoCoSO101
+from physicalai_mujoco_plugin.robot import MuJoCoRobot
 from physicalai_mujoco_plugin.scene_registry import get_scene
 from physicalai_mujoco_plugin.studio_recorder import (
     CONNECT_TIMEOUT_S,
@@ -429,9 +429,9 @@ def test_invalid_json_from_studio_is_a_studio_error(monkeypatch: pytest.MonkeyPa
 @pytest.mark.slow
 def test_simulation_records_an_autopilot_episode_into_studio(studio: FakeStudio) -> None:
     scene = get_scene("conveyor_sort")
-    robot = MuJoCoSO101(
-        model_path=str(scene.scene_xml_path),
-        scene_config=asdict(scene),
+    robot = MuJoCoRobot(
+        scene=scene.scene_id,
+        cameras=[],
         substeps=10,
         owner_name="mujoco-so101-follow",
     )
