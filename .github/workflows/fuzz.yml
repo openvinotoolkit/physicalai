@@ -79,6 +79,9 @@ jobs:
             seed_dir: ""
           - harness: import_dotted_path
             seed_dir: ""
+          # Robot transport msgpack codec (action/state/metadata records)
+          - harness: transport_codec
+            seed_dir: ""
 
     permissions:
       contents: read
@@ -100,7 +103,8 @@ jobs:
           version: "0.8.8"
 
       - name: Install project dependencies
-        run: uv sync --frozen
+        # --extra transport pulls in msgpack, required to import the transport_codec harness.
+        run: uv sync --frozen --extra transport
 
       # TODO: move atheris into pyproject.toml
       - name: Install atheris

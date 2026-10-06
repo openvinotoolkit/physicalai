@@ -68,6 +68,12 @@ class TestStateRoundtrip:
         obs = decode_state(encode_state(joint_positions=jp, state=jp, timestamp=0.0, sensor_data=None))
         np.testing.assert_array_equal(obs.joint_positions, np.array([0, 6, 12, 18], dtype=np.float32))
 
+    def test_0d_scalar_joint_positions_shape_preserved(self) -> None:
+        jp = np.array(1.5, dtype=np.float32)
+        obs = decode_state(encode_state(joint_positions=jp, state=jp, timestamp=0.0, sensor_data=None))
+        assert obs.joint_positions.shape == ()
+        assert float(obs.joint_positions) == 1.5
+
 
 class TestTransportObservation:
     def test_state_falls_back_to_joint_positions(self) -> None:
@@ -96,6 +102,12 @@ class TestActionRoundtrip:
         action = np.arange(6, dtype=np.float64)
         decoded, _, _ = decode_action(encode_action(action, goal_time=0.1))
         assert decoded.dtype == np.float64
+
+    def test_0d_scalar_action_shape_preserved(self) -> None:
+        action = np.array(True, dtype=np.bool_)
+        decoded, _, _ = decode_action(encode_action(action, goal_time=0.1))
+        assert decoded.shape == ()
+        assert bool(decoded) == bool(action)
 
 
 class TestMetadataRoundtrip:
@@ -128,3 +140,13 @@ class TestMetadataRoundtrip:
             decode_metadata(oversized)
 
         unpackb.assert_not_called()
+
+    def test_deeply_nested_payload_rejected(self) -> None:
+        import msgpack
+
+        payload: dict = {"leaf": 1}
+        for _ in range(100):
+            payload = {"k": payload}
+
+        with pytest.raises(ValueError, match="nesting exceeds"):
+            decode_metadata(msgpack.packb(payload, use_bin_type=True))

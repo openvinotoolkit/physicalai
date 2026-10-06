@@ -20,15 +20,19 @@ from physicalai_mujoco_so101_plugin.http_server import (
     HomeCommand,
     HttpServer,
     ResetCommand,
+    SetAutopilotCommand,
     SetAutoResetCommand,
+    SetBeltSpeedCommand,
     SetObjectPoseCommand,
     SetSeedCommand,
+    SetStudioRecordingCommand,
     ShutdownCommand,
     SwitchSceneCommand,
     _mjpeg_stream,
     build_app,
     encode_jpeg,
 )
+from physicalai_mujoco_so101_plugin.studio_recorder import RecordingOptions
 
 
 @pytest.fixture
@@ -218,6 +222,22 @@ class TestAppEndpoints:
         app_context["status"]["episode"] = {"enabled": False}
         client = TestClient(app_context["app"])
         assert client.post("/episode/auto-reset", json={"enabled": True}).status_code == 409
+        assert app_context["commands"].empty()
+
+    def test_belt_speed_enqueues_command_for_conveyor_scenes(self, app_context: dict) -> None:
+        app_context["status"]["episode"] = {"enabled": True, "kind": "conveyor"}
+        response = TestClient(app_context["app"]).post("/conveyor/belt-speed", json={"speed": 0.04})
+        assert response.status_code == 200
+        assert app_context["commands"].get_nowait() == SetBeltSpeedCommand(speed=0.04)
+
+    @pytest.mark.parametrize("body", [{}, {"speed": -0.01}, {"speed": 0.5}])
+    def test_belt_speed_rejects_invalid_bodies(self, app_context: dict, body: dict) -> None:
+        app_context["status"]["episode"] = {"enabled": True, "kind": "conveyor"}
+        assert TestClient(app_context["app"]).post("/conveyor/belt-speed", json=body).status_code == 422
+        assert app_context["commands"].empty()
+
+    def test_belt_speed_conflicts_without_a_belt(self, client: TestClient, app_context: dict) -> None:
+        assert client.post("/conveyor/belt-speed", json={"speed": 0.02}).status_code == 409
         assert app_context["commands"].empty()
 
     def test_objects_lists_free_objects(self, client: TestClient) -> None:
@@ -425,3 +445,61 @@ class TestHttpServerLifecycle:
             server.stop()
         assert b"--mujoco-frame" in chunk
         assert b"\xff\xd8" in chunk
+
+
+class TestAutomationRoutes:
+    @pytest.fixture
+    def leader_app(self, app_context: dict) -> dict:
+        leader = {"seq": 3, "mode": "leader", "joint_names": ["shoulder_pan"], "joint_positions": [1.5]}
+        app = build_app(
+            service_name="mujoco-so101",
+            buffers=app_context["buffers"],
+            commands=app_context["commands"],
+            get_status=lambda: app_context["status"],
+            get_leader=lambda: leader,
+        )
+        return {**app_context, "client": TestClient(app), "leader": leader}
+
+    def test_leader_serves_the_pose(self, leader_app: dict) -> None:
+        assert leader_app["client"].get("/leader").json() == leader_app["leader"]
+
+    def test_leader_is_unavailable_until_the_first_tick(self, leader_app: dict) -> None:
+        leader = leader_app["leader"]
+        for key in ("mode", "unit", "joint_positions"):
+            leader.pop(key, None)
+        response = leader_app["client"].get("/leader")
+        assert response.status_code == 503
+        assert "not ticked" in response.json()["detail"]
+
+    def test_no_leader_route_without_a_source(self, client: TestClient) -> None:
+        assert client.get("/leader").status_code == 404
+
+    def test_autopilot_needs_a_scene_with_one(self, leader_app: dict) -> None:
+        client = leader_app["client"]
+        assert client.post("/autopilot", json={"mode": "drive"}).status_code == 409
+        leader_app["status"]["autopilot"] = {"available": True}
+        assert client.post("/autopilot", json={"mode": "fly"}).status_code == 422
+        assert client.post("/autopilot", json={"mode": "leader"}).status_code == 200
+        assert leader_app["commands"].get_nowait() == SetAutopilotCommand(mode="leader")
+
+    def test_studio_recording_is_bounded_and_needs_the_conveyor(self, leader_app: dict) -> None:
+        client = leader_app["client"]
+        body = {"enabled": True, "task": "Sort", "keep": "all", "max_episodes": 5}
+        assert client.post("/studio/recording", json=body).status_code == 409
+        leader_app["status"]["episode"] = {"enabled": True, "kind": "conveyor"}
+        for bad in (
+            {"task": "x" * 201},
+            {"task": "   "},
+            {"keep": "most"},
+            {"max_episodes": -1},
+            {"studio_url": "http://evil"},
+        ):
+            assert client.post("/studio/recording", json={**body, **bad}).status_code == 422, bad
+        assert leader_app["commands"].empty()
+        assert client.post("/studio/recording", json=body).status_code == 200
+        command = leader_app["commands"].get_nowait()
+        assert command == SetStudioRecordingCommand(options=RecordingOptions(task="Sort", keep="all", max_episodes=5))
+        assert client.post("/studio/recording", json={"enabled": False}).status_code == 200
+        assert leader_app["commands"].get_nowait() == SetStudioRecordingCommand(options=None)
+        assert client.post("/studio/recording", json={**body, "task": "  Sort  "}).status_code == 200
+        assert leader_app["commands"].get_nowait().options.task == "Sort"  # stored trimmed

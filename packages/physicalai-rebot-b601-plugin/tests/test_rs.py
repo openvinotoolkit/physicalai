@@ -12,7 +12,11 @@ import numpy as np
 import pytest
 from physicalai.config import Config
 
-from physicalai_rebot_b601_plugin.constants import REBOT_B601_RS_JOINT_DIRECTIONS, REBOT_B601_RS_JOINT_ORDER
+from physicalai_rebot_b601_plugin.constants import (
+    REBOT_B601_RS_GRIPPER_MAX_TORQUE_NM,
+    REBOT_B601_RS_JOINT_DIRECTIONS,
+    REBOT_B601_RS_JOINT_ORDER,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -110,6 +114,11 @@ class TestReBotB601RSConstruction:
     def test_invalid_gripper_gain_raises(self, mock_motorbridge: MagicMock, name: str, value: float) -> None:
         with pytest.raises(ValueError, match="gripper MIT"):
             _create_robot(mock_motorbridge, **{name: value})
+
+    @pytest.mark.parametrize("name", ["gripper_mit_torque_limit", "gripper_mit_hold_torque_limit"])
+    def test_gripper_torque_limit_above_motor_peak_raises(self, mock_motorbridge: MagicMock, name: str) -> None:
+        with pytest.raises(ValueError, match="must not exceed"):
+            _create_robot(mock_motorbridge, **{name: REBOT_B601_RS_GRIPPER_MAX_TORQUE_NM + 0.1})
 
     def test_exports_recipe_and_device_identity(self, mock_motorbridge: MagicMock) -> None:
         robot = _create_robot(mock_motorbridge, port="can1", mit_kp={"shoulder_lift": 40.0})
@@ -324,9 +333,12 @@ class TestReBotB601RSAction:
         motors[3].send_mit.assert_called_once_with(math.radians(12.0), 0.0, 50.0, 5.0, 0.0)
 
     def test_send_action_max_relative_target_scales_gripper_step(self, mock_motorbridge: MagicMock) -> None:
-        # Uncapped torque so the impedance term exposes the limited gripper target.
+        # Torque capped only at the motor peak so the impedance term exposes the limited gripper target.
         robot = _create_robot(
-            mock_motorbridge, max_relative_target=10.0, gripper_mit_torque_limit=100.0, gripper_mit_hold_torque_limit=100.0
+            mock_motorbridge,
+            max_relative_target=10.0,
+            gripper_mit_torque_limit=REBOT_B601_RS_GRIPPER_MAX_TORQUE_NM,
+            gripper_mit_hold_torque_limit=REBOT_B601_RS_GRIPPER_MAX_TORQUE_NM,
         )
         robot.connect()
         motors = list(mock_motorbridge.Controller.return_value.mock_motors)
@@ -356,6 +368,22 @@ class TestReBotB601RSAction:
 
         with pytest.raises(ConnectionError, match="not connected"):
             robot.send_action(np.zeros(7, dtype=np.float32))
+
+    def test_set_zero_position_disables_torque_and_zeroes_every_motor(self, mock_motorbridge: MagicMock) -> None:
+        robot = _create_robot(mock_motorbridge)
+        robot.connect()
+        controller = mock_motorbridge.Controller.return_value
+        controller.reset_mock()
+
+        robot.set_zero_position()
+
+        controller.disable_all.assert_called_once()
+        for motor in controller.mock_motors:
+            motor.set_zero_position.assert_called_once()
+
+    def test_set_zero_position_disconnected_raises(self, mock_motorbridge: MagicMock) -> None:
+        with pytest.raises(ConnectionError, match="not connected"):
+            _create_robot(mock_motorbridge).set_zero_position()
 
     def test_disable_enable_torque(self, mock_motorbridge: MagicMock) -> None:
         robot = _create_robot(mock_motorbridge)

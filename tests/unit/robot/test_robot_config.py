@@ -10,7 +10,7 @@ import json
 import sys
 from collections.abc import Generator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -49,11 +49,10 @@ def _assert_construction_round_trip(robot: object) -> dict[str, Any]:
 
 
 @pytest.fixture
-def mock_scservo_sdk() -> Generator[MagicMock, None, None]:
-    sdk = MagicMock()
-    with patch.dict(sys.modules, {"scservo_sdk": sdk}):
-        # Ensure SO101 can be imported under the mock (idempotent if already loaded).
-        yield sdk
+def mock_scservo_sdk() -> MagicMock:
+    # Reuse the module-level mock rather than patch.dict(sys.modules), which drops
+    # modules imported during the test (e.g. docstring_parser) and breaks later tests.
+    return cast("MagicMock", sys.modules["scservo_sdk"])
 
 
 class TestSO101Config:

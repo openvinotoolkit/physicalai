@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import queue
 import sys
 import threading
@@ -21,13 +22,17 @@ import numpy as np
 from loguru import logger
 
 from physicalai.config import export_config
+from physicalai_mujoco_so101_plugin.camera_thread import CameraThread, RateMeter
 from physicalai_mujoco_so101_plugin.constants import (
     BIMANUAL_NUM_JOINTS,
     BIMANUAL_SO101_JOINT_ORDER,
     NUM_JOINTS,
     SO101_JOINT_ORDER,
 )
+from physicalai_mujoco_so101_plugin.conveyor_automation import ConveyorAutomation
+from physicalai_mujoco_so101_plugin.robot_profile import load_scene_model
 from physicalai_mujoco_so101_plugin.spawn import sample_object_positions, write_freejoint_qpos
+from physicalai_mujoco_so101_plugin.studio_recorder import DEFAULT_STUDIO_URL
 
 if TYPE_CHECKING:
     from physicalai.capture.frame import Frame
@@ -173,8 +178,12 @@ class MuJoCoSO101:
         viser_host: str = "127.0.0.1",
         viser_port: int = 9090,
         unit: JointUnit = "normalized",
+        studio_url: str = DEFAULT_STUDIO_URL,
     ) -> None:
         """Initialize a disconnected simulation robot.
+
+        ``studio_url`` is the Physical AI Studio backend that automatic episode
+        recording attaches to (``http(s)://host:port``).
 
         ``unit`` selects the units of observed joint positions and action
         targets. ``"normalized"`` matches the calibrated SO101 driver: body
@@ -194,9 +203,8 @@ class MuJoCoSO101:
         self._viser_scene: object | None = None
         self._native_viewer: object | None = None
         self._viser_port = viser_port
-        self._camera_renderers: dict[str, object] = {}
-        self._camera_last_frame_ts: dict[str, float] = {}
         self._frame_buffers: dict[str, FrameBuffer] = {}
+        self._init_render_state()
         self._commands: queue.Queue[SimCommand] = queue.Queue()
         self._owner_name = owner_name
         self._http_host = http_host
@@ -221,7 +229,7 @@ class MuJoCoSO101:
         # Guards state the HTTP thread reads (``_http_status``) while the sim
         # thread rebuilds it during a scene switch or disconnect.
         self._state_lock = threading.RLock()
-        self._init_control_state()
+        self._init_control_state(studio_url)
 
         self._apply_scene_params(scene_config)
 
@@ -236,8 +244,16 @@ class MuJoCoSO101:
             raise ValueError(msg)
         self._unit: JointUnit = unit
 
-    def _init_control_state(self) -> None:
+    def _init_control_state(self, studio_url: str = DEFAULT_STUDIO_URL) -> None:
         """Initialize operator-control state that is not part of the construction recipe."""
+        self._automation = ConveyorAutomation(
+            studio_url,
+            joint_names=self.JOINT_ORDER,
+            unit=self._unit,
+            to_units=self._radians_to_units,
+            owner_name=lambda: self._owner_name,
+        )
+        self._ignored_action_logged = False
         self._seed: int | None = None
         self._auto_reset_active = True
         self._auto_reset_dwell_s = _DEFAULT_SUCCESS_DWELL_S
@@ -300,8 +316,7 @@ class MuJoCoSO101:
         import mujoco  # noqa: PLC0415
 
         logger.info("Loading MuJoCo model from {}", self._model_path)
-        # pyrefly: ignore [missing-attribute]
-        model = mujoco.MjModel.from_xml_path(self._model_path)
+        model = load_scene_model(self._model_path)
         ctrl_indices = self._actuator_indices_for_joint_order(model)
         joint_limits = self._joint_limits_for_joint_order(model)
         if ctrl_indices is None or joint_limits is None:
@@ -341,11 +356,10 @@ class MuJoCoSO101:
     def disconnect(self) -> None:
         """Release simulation resources."""
         self._stop_http_server()
+        stopped = self._stop_camera_thread()
+        self._automation.close()
         with self._state_lock:
-            for renderer in self._camera_renderers.values():
-                with contextlib.suppress(Exception):
-                    renderer.close()
-            self._camera_renderers.clear()
+            self._release_camera_renderers(stopped=stopped)
             self._camera_last_frame_ts.clear()
             self._frame_buffers.clear()
             self._block_joint_addrs.clear()
@@ -378,10 +392,14 @@ class MuJoCoSO101:
 
         self._drain_commands()
         self._check_scene_xml_camera()
+        # pyrefly: ignore [missing-attribute]
+        control_dt = self._substeps * float(self._model.opt.timestep)
+        self._automation.tick(self._model, self._data, control_dt, self._arm_targets())
 
         for _ in range(self._substeps):
             # pyrefly: ignore [missing-attribute]
             mujoco.mj_step(self._model, self._data)
+        self._record_tick()
 
         if self._episode_auto_reset is not None:
             self._episode_auto_reset.update(self._model, self._data)
@@ -401,33 +419,117 @@ class MuJoCoSO101:
                 self._enable_viewer = False
                 self._native_viewer = None
 
-        self._render_cameras()
+        if self._camera_thread is not None:
+            self._camera_thread.publish(self._data)
+        else:
+            self._render_cameras()
+
+    def _init_render_state(self) -> None:
+        """Camera-thread and timing state; not part of the construction recipe."""
+        self._camera_renderers: dict[str, object] = {}
+        self._camera_last_frame_ts: dict[str, float] = {}
+        self._render_in_thread = True
+        """Render cameras on their own thread (tests turn this off to render synchronously)."""
+        self._camera_thread: CameraThread | None = None
+        self._last_tick_sim_time: float | None = None
+        self._tick_meter = RateMeter()
+        self._camera_meters: dict[str, RateMeter] = {}
+
+    def _record_tick(self) -> None:
+        # pyrefly: ignore [missing-attribute]
+        sim_time = float(self._data.time)
+        if self._last_tick_sim_time is not None and sim_time < self._last_tick_sim_time:
+            self._tick_meter.reset()  # the clock restarted (new model)
+        self._last_tick_sim_time = sim_time
+        self._tick_meter.add(sim_time)
+
+    def _timing_status(self) -> dict[str, object]:
+        """Real-time factor, control rate and per-camera frame rates over the last ~2 s.
+
+        Returns:
+            A JSON-friendly dict; rates are ``None`` until enough ticks or frames were seen.
+        """
+        return {
+            "real_time_factor": self._tick_meter.value_rate(),
+            "control_hz": self._tick_meter.rate(),
+            "camera_fps": {name: meter.rate() for name, meter in self._camera_meters.items()},
+            "cameras_on_thread": self._camera_thread is not None,
+        }
 
     def _init_cameras(self) -> None:
         if not self._cameras:
             return
 
-        import mujoco  # noqa: PLC0415
-
         for config in self._cameras:
-            try:
-                renderer = mujoco.Renderer(self._model, config.height, config.width)
-            except OSError as exc:
-                logger.warning("Camera '{}' renderer unavailable: {}", config.name, exc)
-                continue
-            self._camera_renderers[config.name] = renderer
             if config.name not in self._frame_buffers:
                 from physicalai_mujoco_so101_plugin.http_server import FrameBuffer  # noqa: PLC0415
 
                 self._frame_buffers[config.name] = FrameBuffer(config.name)
             self._camera_last_frame_ts[config.name] = 0.0
+            self._camera_meters.setdefault(config.name, RateMeter())
             logger.info(
-                "Camera started: {} ({}x{}@{} fps)",
+                "Camera started: {} ({}x{}@{} fps, {})",
                 config.name,
                 config.width,
                 config.height,
                 config.fps,
+                "own thread" if self._render_in_thread else "control loop",
             )
+        # Each camera thread gets its own renderer dict, bound to its own model. A thread that
+        # outlives stop() can then only touch its own renderers, never the next scene's.
+        renderers: dict[str, object] = {}
+        with self._state_lock:
+            self._camera_renderers = renderers
+        if self._render_in_thread:
+            self._camera_thread = CameraThread(
+                self._model,
+                setup=functools.partial(self._create_camera_renderers, renderers),
+                render=functools.partial(self._render_cameras, renderers=renderers),
+                teardown=functools.partial(self._close_camera_renderers, renderers),
+            )
+            self._camera_thread.publish(self._data)  # the first frame shows the real scene
+            self._camera_thread.start()
+        else:
+            self._create_camera_renderers(renderers)
+
+    def _create_camera_renderers(self, renderers: dict[str, object], model: object | None = None) -> None:
+        """Fill `renderers` with one renderer per camera for `model`, on the thread that will use them."""
+        import mujoco  # noqa: PLC0415
+
+        model = self._model if model is None else model
+        created: dict[str, object] = {}
+        for config in self._cameras:
+            try:
+                created[config.name] = mujoco.Renderer(model, config.height, config.width)
+            except OSError as exc:
+                logger.warning("Camera '{}' renderer unavailable: {}", config.name, exc)
+        with self._state_lock:
+            renderers.update(created)
+
+    def _close_camera_renderers(self, renderers: dict[str, object]) -> None:
+        with self._state_lock:
+            closing = list(renderers.values())
+            renderers.clear()
+        for renderer in closing:
+            with contextlib.suppress(Exception):
+                renderer.close()
+
+    def _stop_camera_thread(self) -> bool:
+        """Stop camera rendering; call without holding ``_state_lock`` (the thread's teardown takes it).
+
+        Returns:
+            Whether no camera thread is left running.
+        """
+        thread, self._camera_thread = self._camera_thread, None
+        return thread is None or thread.stop()
+
+    def _release_camera_renderers(self, *, stopped: bool) -> None:
+        """Drop the current renderers; close them only if no camera thread may still use them."""
+        renderers, self._camera_renderers = self._camera_renderers, {}
+        if stopped:
+            self._close_camera_renderers(renderers)  # no-op after the thread closed its own
+        else:
+            logger.warning("Leaving {} camera renderer(s) to the camera thread that did not stop", len(renderers))
 
     def _init_block_joint_addrs(self) -> None:
         import mujoco  # noqa: PLC0415
@@ -481,6 +583,13 @@ class MuJoCoSO101:
         if self._model is None:
             with self._state_lock:
                 self._episode_auto_reset = None
+            return
+        # Scenes with a conveyor belt get the conveyor controller instead of the
+        # cube-on-plate auto-reset; both expose the same episode interface.
+        conveyor = self._automation.attach_scene(self._model, rng=self._rng, active=self._auto_reset_active)
+        if conveyor is not None:
+            with self._state_lock:
+                self._episode_auto_reset = conveyor
             return
         episode_auto_reset = EpisodeAutoReset.maybe_create(
             self._model,
@@ -782,8 +891,7 @@ class MuJoCoSO101:
             logger.error("Scene XML not found: {}", xml_path)
             return False
 
-        # pyrefly: ignore [missing-attribute]
-        new_model = mujoco.MjModel.from_xml_path(str(xml_path))
+        new_model = load_scene_model(xml_path)
         # pyrefly: ignore [missing-attribute]
         new_data = mujoco.MjData(new_model)
         # pyrefly: ignore [missing-attribute]
@@ -810,11 +918,10 @@ class MuJoCoSO101:
             self._reseed_if_fixed()
             on_reset(new_model, new_data, self._rng)
 
+        # The camera thread renders the old model; stop it before taking the lock it needs to shut down.
+        stopped = self._stop_camera_thread()
         with self._state_lock:
-            for renderer in self._camera_renderers.values():
-                with contextlib.suppress(Exception):
-                    renderer.close()
-            self._camera_renderers.clear()
+            self._release_camera_renderers(stopped=stopped)
 
             self._model_path = str(xml_path)
             self._model = new_model
@@ -1010,6 +1117,8 @@ class MuJoCoSO101:
                 object_bodies=dict(self._free_joint_bodies),
                 view_center=self._view_center(),
                 view_extent=float(self._model.stat.extent) if self._model is not None else 1.0,
+                timing=self._timing_status(),
+                **self._automation.status(),
             )
 
     @staticmethod
@@ -1198,6 +1307,7 @@ class MuJoCoSO101:
             return
         if self._episode_auto_reset is not None:
             self._episode_auto_reset.notify_manual_reset()
+        self._automation.reset()
 
     def _reseed_if_fixed(self) -> None:
         """Restart the shared RNG from the fixed seed so the next reset repeats.
@@ -1230,6 +1340,12 @@ class MuJoCoSO101:
             "enabled" if self._auto_reset_active else "disabled",
             self._auto_reset_dwell_s,
         )
+
+    def _set_belt_speed(self, speed: float) -> None:
+        with self._state_lock:
+            has_belt = self._automation.set_belt_speed(speed)
+        if not has_belt:
+            logger.warning("Scene '{}' has no conveyor belt", self._current_scene_id)
 
     def _home_targets(self) -> dict[str, float]:
         """Return the current scene's home joint positions (radians)."""
@@ -1378,10 +1494,15 @@ class MuJoCoSO101:
             )
         mujoco.mj_forward(self._model, self._data)
 
-    def _render_cameras(self) -> None:
+    def _render_cameras(self, data: object | None = None, renderers: dict[str, object] | None = None) -> None:
+        """Render every camera that is due, from `data` with `renderers` (the sim's own by default)."""
+        data = self._data if data is None else data
+        renderers = self._camera_renderers if renderers is None else renderers
         now = time.monotonic()
         for config in self._cameras:
-            renderer = self._camera_renderers.get(config.name)
+            if renderers is not self._camera_renderers:
+                return  # a camera thread that outlived stop(): the scene moved on, publish nothing
+            renderer = renderers.get(config.name)
             if renderer is None:
                 continue
 
@@ -1391,7 +1512,7 @@ class MuJoCoSO101:
 
             try:
                 # pyrefly: ignore [missing-attribute]
-                renderer.update_scene(self._data, camera=config.name)
+                renderer.update_scene(data, camera=config.name)
                 # mujoco.Renderer already returns the image upright (it flips the
                 # OpenGL read-back itself), so the frame is used as rendered.
                 # pyrefly: ignore [missing-attribute]
@@ -1400,6 +1521,8 @@ class MuJoCoSO101:
                 logger.debug("Camera render error for '{}': {}", config.name, exc)
                 continue
 
+            if renderers is not self._camera_renderers:
+                return  # the scene switched while this frame rendered
             if config.mirror_horizontal:
                 frame = frame[:, ::-1, :]
             frame = np.ascontiguousarray(frame)
@@ -1408,7 +1531,12 @@ class MuJoCoSO101:
             if buffer is not None:
                 buffer.put(frame)
 
-            self._camera_last_frame_ts[config.name] = now
+            # Keep a fixed frame grid so polling jitter does not lower the rate; after a stall, restart it.
+            last = self._camera_last_frame_ts[config.name]
+            self._camera_last_frame_ts[config.name] = last + period if now - last < 2 * period else now
+            meter = self._camera_meters.get(config.name)
+            if meter is not None:
+                meter.add(now=now)
 
     def _start_http_server(self) -> None:
         if self._http_port <= 0:
@@ -1421,6 +1549,7 @@ class MuJoCoSO101:
             buffers=self._frame_buffers,
             commands=self._commands,
             get_status=self._http_status,
+            get_leader=self._automation.leader_snapshot,
         )
         server = HttpServer(app, self._http_host, self._http_port)
         try:
@@ -1462,6 +1591,8 @@ class MuJoCoSO101:
                 "compatible_scenes": compatible,
                 "seed": self._seed,
                 "episode": self._episode_status(auto_reset),
+                "timing": self._timing_status(),
+                **self._automation.status(),
                 "objects": [
                     {"joint": joint, "position": list(pose.position), "wxyz": list(pose.wxyz)}
                     for joint, pose in self._object_poses.items()
@@ -1502,9 +1633,12 @@ class MuJoCoSO101:
         from physicalai_mujoco_so101_plugin.http_server import (  # noqa: PLC0415
             HomeCommand,
             ResetCommand,
+            SetAutopilotCommand,
             SetAutoResetCommand,
+            SetBeltSpeedCommand,
             SetObjectPoseCommand,
             SetSeedCommand,
+            SetStudioRecordingCommand,
             ShutdownCommand,
             SwitchSceneCommand,
         )
@@ -1526,6 +1660,12 @@ class MuJoCoSO101:
             self._set_seed(command.seed)
         elif isinstance(command, SetAutoResetCommand):
             self._set_auto_reset(enabled=command.enabled, dwell_s=command.dwell_s)
+        elif isinstance(command, SetBeltSpeedCommand):
+            self._set_belt_speed(command.speed)
+        elif isinstance(command, SetAutopilotCommand):
+            self._automation.set_autopilot(command.mode)
+        elif isinstance(command, SetStudioRecordingCommand):
+            self._automation.set_studio_recording(command.options)
         elif isinstance(command, SetObjectPoseCommand):
             self._set_object_pose(command.joint, command.position, command.wxyz, hold=command.hold)
         elif isinstance(command, ShutdownCommand):
@@ -1555,10 +1695,9 @@ class MuJoCoSO101:
             limits = self._require_joint_limits()
             _, width = _normalized_span(self.JOINT_ORDER)
             velocities *= width / (limits[:, 1] - limits[:, 0])
-            positions = radians_to_normalized(positions, limits, self.JOINT_ORDER)
         else:
-            positions = np.degrees(positions)
             velocities = np.degrees(velocities)
+        positions = self._radians_to_units(positions)
 
         return MuJoCoSO101Observation(
             joint_positions=positions.astype(np.float32),
@@ -1583,6 +1722,12 @@ class MuJoCoSO101:
         if action.shape != (self.NUM_JOINTS,):
             msg = f"Expected action shape ({self.NUM_JOINTS},), got {action.shape}"
             raise ValueError(msg)
+        if self._automation.drives_arm:
+            if not self._ignored_action_logged:
+                logger.info("The autopilot drives the arm; ignoring actions until it is switched off")
+                self._ignored_action_logged = True
+            return
+        self._ignored_action_logged = False
 
         if self._unit == "normalized":
             targets = normalized_to_radians(
@@ -1595,6 +1740,25 @@ class MuJoCoSO101:
         for i in range(self.NUM_JOINTS):
             # pyrefly: ignore [missing-attribute]
             self._data.ctrl[self._ctrl_indices[i]] = float(targets[i])
+
+    def _radians_to_units(self, positions: np.ndarray) -> np.ndarray:
+        """Convert joint angles to this robot's ``unit``.
+
+        Returns:
+            Normalized positions (clamped to each joint's range), or degrees.
+        """
+        if self._unit == "normalized":
+            return radians_to_normalized(positions, self._require_joint_limits(), self.JOINT_ORDER)
+        return np.degrees(positions)
+
+    def _arm_targets(self) -> np.ndarray:
+        """Current actuator targets of the public joints, in radians.
+
+        Returns:
+            One target per ``JOINT_ORDER`` joint.
+        """
+        # pyrefly: ignore [missing-attribute]
+        return np.asarray(self._data.ctrl[list(self._ctrl_indices)], dtype=np.float64)
 
     def _require_joint_limits(self) -> np.ndarray:
         if self._joint_limits is None:
@@ -1682,6 +1846,7 @@ class MuJoCoSO101:
             "_viser_host": self._viser_host,
             "_viser_port": self._viser_port,
             "_unit": self._unit,
+            "_studio_url": self._automation.studio_url,
         }
 
     def __setstate__(self, state: dict) -> None:
@@ -1713,9 +1878,8 @@ class MuJoCoSO101:
         self._native_viewer = None
         self._viser_port = state.get("_viser_port", 9090)
         self._owner_name = state.get("_owner_name", "")
-        self._camera_renderers = {}
-        self._camera_last_frame_ts = {}
         self._frame_buffers = {}
+        self._init_render_state()
         self._commands = queue.Queue()
         self._http_host = state.get("_http_host", "127.0.0.1")
         self._http_port = state.get("_http_port", 0)
@@ -1734,15 +1898,15 @@ class MuJoCoSO101:
         self._scene_xml_next_check = 0.0
         self._viser_sync_failed = False
         self._state_lock = threading.RLock()
-        self._init_control_state()
+        self._init_control_state(state.get("_studio_url", DEFAULT_STUDIO_URL))
 
 
 class BiMuJoCoSO101(MuJoCoSO101):
     """Bimanual SO-101 simulated with a single MuJoCo model.
 
     Runs both arms in one model with ``left_*`` then ``right_*`` joints
-    (12 total). ``send_action`` writes into the model actuator array, so the
-    dual-arm XML must declare its actuators in ``BIMANUAL_SO101_JOINT_ORDER``.
+    (12 total), in ``BIMANUAL_SO101_JOINT_ORDER``. Joints and actuators are
+    looked up by name, so their order in the compiled model does not matter.
     """
 
     JOINT_ORDER: ClassVar[tuple[str, ...]] = BIMANUAL_SO101_JOINT_ORDER

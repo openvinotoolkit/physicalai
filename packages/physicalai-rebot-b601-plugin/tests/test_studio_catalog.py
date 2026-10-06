@@ -260,6 +260,8 @@ def test_rebot_b601_rs_payload_rejects_invalid_interface_names(interface: str) -
         {"max_relative_target": 0.0},
         {"max_relative_target": float("inf")},
         {"gripper_mit_torque_limit": -1.0},
+        {"gripper_mit_torque_limit": 14.1},
+        {"gripper_mit_hold_torque_limit": 14.1},
         {"gripper_mit_kp": float("nan")},
         {"mit_kp": {"shoulder_pan": -1.0, "shoulder_lift": 1, "elbow_flex": 1, "wrist_flex": 1, "wrist_yaw": 1, "wrist_roll": 1}},
     ],
@@ -346,3 +348,29 @@ async def test_rs_probe_reports_socketcan_interface_state(tmp_path: Path, monkey
     assert await probe.is_online(studio_catalog.ReBotB601RSPayload(connection_string="can1")) is False
     assert await probe.is_online(studio_catalog.ReBotB601RSPayload(connection_string="can9")) is False
     assert await probe.discover(cast(Any, None)) == []
+
+
+@pytest.mark.anyio
+async def test_rs_calibration_releases_torque_then_sets_zero() -> None:
+    from unittest.mock import MagicMock
+
+    from physicalai_rebot_b601_plugin import ReBotB601RS
+    from physicalai_rebot_b601_plugin.studio_catalog import _definitions
+
+    calibration = next(d for d in _definitions() if d.type == "ReBot_B601_RS_Follower").zero_calibration
+    assert calibration is not None
+    assert calibration.release is not None
+    robot = MagicMock(spec=ReBotB601RS)
+
+    await calibration.release(robot)
+    await calibration.set_zero(robot)
+
+    robot.disable_torque.assert_called_once_with()
+    robot.set_zero_position.assert_called_once_with()
+
+
+
+def test_dm_follower_has_no_zero_calibration() -> None:
+    from physicalai_rebot_b601_plugin.studio_catalog import _definitions
+
+    assert next(d for d in _definitions() if d.type == "ReBot_B601_DM_Follower").zero_calibration is None

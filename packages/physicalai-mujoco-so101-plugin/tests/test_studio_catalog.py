@@ -8,6 +8,7 @@ from physicalai.config import Config
 from physicalai.robot.errors import RobotNotConnectedError
 from physicalai.robot.transport import RobotOwnerConfig, SharedRobot
 
+from physicalai_mujoco_so101_plugin.virtual_leader import MuJoCoVirtualLeader
 from physicalai_mujoco_so101_plugin.constants import (
     BIMANUAL_SO101_JOINT_ORDER,
     DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME,
@@ -15,6 +16,7 @@ from physicalai_mujoco_so101_plugin.constants import (
     SO101_JOINT_ORDER,
 )
 from physicalai_mujoco_so101_plugin.studio_catalog import (
+    MuJoCoVirtualLeaderPayload,
     MuJoCoSO101BimanualPayload,
     MuJoCoSO101Payload,
     MuJoCoSO101Probe,
@@ -68,7 +70,7 @@ class TestMuJoCoSO101BimanualPayload:
 class TestDefinitions:
     def test_definitions_return_list(self) -> None:
         defs = _definitions()
-        assert len(defs) == 2
+        assert [d.role for d in defs] == ["follower", "follower", "leader"]
 
     def test_definition_contents(self) -> None:
         defs = _definitions()
@@ -269,8 +271,80 @@ class TestProbe:
             assert result is False
 
 
+class TestProbeJointCheck:
+    @staticmethod
+    def _owner(joint_names: tuple[str, ...]) -> MagicMock:
+        owner = MagicMock()
+        owner.joint_names = list(joint_names)
+        return owner
+
+    def test_matching_owner_is_online(self) -> None:
+        from physicalai_mujoco_so101_plugin import studio_catalog as sc
+
+        owner = self._owner(SO101_JOINT_ORDER)
+        with patch.object(sc.SharedRobot, "attach", return_value=owner):
+            assert sc._check_zenoh_robot_online("sim", SO101_JOINT_ORDER)  # noqa: SLF001
+        owner.disconnect.assert_called_once()
+
+    def test_owner_with_other_joints_is_not_online(self) -> None:
+        from physicalai_mujoco_so101_plugin import studio_catalog as sc
+
+        owner = self._owner(BIMANUAL_SO101_JOINT_ORDER)
+        with patch.object(sc.SharedRobot, "attach", return_value=owner):
+            assert not sc._check_zenoh_robot_online("sim", SO101_JOINT_ORDER)  # noqa: SLF001
+        owner.disconnect.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_each_follower_entry_probes_for_its_own_joints(self) -> None:
+        from physicalai_mujoco_so101_plugin import studio_catalog as sc
+
+        single, bimanual = _definitions()[:2]
+        with patch.object(sc, "_check_zenoh_robot_online", return_value=True) as check:
+            await single.probe.is_online(MuJoCoSO101Payload(name="a"))
+            await bimanual.probe.is_online(MuJoCoSO101BimanualPayload(name="b"))
+        assert [call.args for call in check.call_args_list] == [
+            ("a", SO101_JOINT_ORDER),
+            ("b", BIMANUAL_SO101_JOINT_ORDER),
+        ]
+
+
 class TestRegistration:
     def test_register_called(self) -> None:
         registry = MagicMock()
         register_physicalai_studio_plugin(registry)
-        assert registry.register_robot.call_count == 2
+        assert registry.register_robot.call_count == 3
+
+
+class TestVirtualLeaderDefinition:
+    def test_definition_contents(self) -> None:
+        definition = _definitions()[2]
+        assert definition.type == "MuJoCo_SO101_Virtual_Leader"
+        assert definition.role == "leader"
+        assert definition.robot_payload is MuJoCoVirtualLeaderPayload
+        assert definition.asset is not None
+        assert definition.probe is not None
+
+    def test_payload_bounds_the_port(self) -> None:
+        assert MuJoCoVirtualLeaderPayload().http_port == 8080
+        with pytest.raises(ValueError, match="less than or equal"):
+            MuJoCoVirtualLeaderPayload(http_port=70000)
+
+    @pytest.mark.anyio
+    async def test_builder_exports_a_leader_recipe(self) -> None:
+        definition = _definitions()[2]
+        robot = await definition.robot_builder(MagicMock(payload={"http_port": 8123}), MagicMock())
+        recipe = Config.from_instance(robot)
+        built = RobotOwnerConfig(name="studio-leader", robot=recipe).build()
+
+        assert isinstance(built, MuJoCoVirtualLeader)
+        assert built.http_port == 8123
+        assert built.host == "127.0.0.1"
+        assert built.joint_names == list(SO101_JOINT_ORDER)
+
+    @pytest.mark.anyio
+    async def test_probe_reports_offline_without_a_simulation(self) -> None:
+        probe = _definitions()[2].probe
+        assert probe is not None
+        assert await probe.discover(MagicMock()) == []
+        # Port 1 is never a simulation.
+        assert await probe.is_online(MuJoCoVirtualLeaderPayload(http_port=1)) is False

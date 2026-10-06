@@ -9,6 +9,10 @@ from typing import Any
 
 import numpy as np
 
+_MAX_PAYLOAD_DEPTH = 32
+"""Nesting depth limit for :func:`decode_payload`'s recursive walk.
+"""
+
 
 def encode_numpy(array: np.ndarray) -> dict[str, Any]:
     """Encode an array with its exact dtype and shape.
@@ -33,18 +37,24 @@ def decode_numpy(record: dict[str, Any]) -> np.ndarray:
     return np.frombuffer(record["data"], dtype=np.dtype(record["dtype"])).reshape(record["shape"])
 
 
-def decode_payload(value: object) -> object:
+def decode_payload(value: object, _depth: int = 0) -> object:
     """Recursively decode array records in a telemetry payload.
 
     Returns:
         The payload with array records replaced by NumPy arrays.
+
+    Raises:
+        ValueError: If nesting exceeds ``_MAX_PAYLOAD_DEPTH``.
     """
+    if isinstance(value, (dict, list)) and _depth > _MAX_PAYLOAD_DEPTH:
+        msg = f"Telemetry payload nesting exceeds the {_MAX_PAYLOAD_DEPTH}-level limit"
+        raise ValueError(msg)
     if isinstance(value, dict):
         if value.get("__np__"):
             return decode_numpy(value)
-        return {key: decode_payload(item) for key, item in value.items()}
+        return {key: decode_payload(item, _depth + 1) for key, item in value.items()}
     if isinstance(value, list):
-        return [decode_payload(item) for item in value]
+        return [decode_payload(item, _depth + 1) for item in value]
     return value
 
 

@@ -333,6 +333,49 @@ class TestStatsNormalizerCorruptedStats:
         np.testing.assert_allclose(result["obs"], [(x - mean) / (std + _EPS)], rtol=1e-6)
 
 
+class TestStatsNormalizerFloat32Overflow:
+    # Regression for fuzzer crash: an intermediate such as ``2 * (x - q01)``
+    # overflowed float32 to inf although the normalized value is representable.
+    @pytest.mark.parametrize(
+        ("mode", "stats", "x", "expected"),
+        [
+            ("quantiles", {"q01": [-2.3e38], "q99": [0.0]}, 0.0, 1.0),
+            ("min_max", {"min": [-2.3e38], "max": [0.0]}, 0.0, 1.0),
+            ("mean_std", {"mean": [-3.0e38], "std": [3.0e38]}, 3.0e38, 2.0),
+        ],
+    )
+    def test_large_stats_do_not_overflow(self, mode: str, stats: dict, x: float, expected: float) -> None:
+        norm = StatsNormalizer(
+            mode=mode,
+            features=["obs"],
+            stats={"obs": {key: np.array(value, dtype=np.float32) for key, value in stats.items()}},
+        )
+        result = norm({"obs": np.array([[x]], dtype=np.float32)})["obs"]
+
+        assert np.all(np.isfinite(result))
+        np.testing.assert_allclose(result, [[expected]], rtol=1e-6)
+
+    @pytest.mark.parametrize("mode", ["mean_std", "min_max", "quantiles"])
+    @pytest.mark.parametrize("dtype", [np.float16, np.float32, np.float64])
+    def test_output_dtype_is_unchanged(self, mode: str, dtype: type[np.floating]) -> None:
+        stats = {
+            "mean": [1.0, 2.0],
+            "std": [0.5, 1.0],
+            "min": [0.0, 0.0],
+            "max": [2.0, 4.0],
+            "q01": [0.1, 0.2],
+            "q99": [1.9, 3.8],
+        }
+        norm = StatsNormalizer(
+            mode=mode,
+            features=["obs"],
+            stats={"obs": {key: np.array(value, dtype=dtype) for key, value in stats.items()}},
+        )
+        result = norm({"obs": np.array([[0.5, 1.5]], dtype=dtype)})["obs"]
+
+        assert result.dtype == dtype
+
+
 class TestParseFlatStats:
     def test_skips_keys_without_slash(self, tmp_path: Path) -> None:
         stats = {

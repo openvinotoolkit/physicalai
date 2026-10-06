@@ -1,7 +1,8 @@
 """Exercise bundled models with real MuJoCo, without a renderer or display."""
 
+import time
 from dataclasses import asdict
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import mujoco
 import numpy as np
@@ -52,7 +53,7 @@ def test_switch_initializes_cube_and_keeps_target_fixed() -> None:
     robot.connect()
     try:
         scene = get_scene("single_pick_place")
-        defaults = mujoco.MjModel.from_xml_path(str(scene.scene_xml_path))
+        defaults = scene.load_model()
         data = mujoco.MjData(defaults)
         mujoco.mj_forward(defaults, data)
         target = defaults.body("target").id
@@ -194,7 +195,7 @@ def test_auto_reset_settings_survive_scene_switches() -> None:
 def test_compatible_scene_lists_match_real_models() -> None:
     for scene_id, scene in list_scenes().items():
         robot_cls = BiMuJoCoSO101 if scene.num_arms == 2 else MuJoCoSO101
-        model = mujoco.MjModel.from_xml_path(str(scene.scene_xml_path))
+        model = scene.load_model()
         assert robot_cls(model_path="unused")._actuator_indices_for_joint_order(model) is not None, scene_id
         assert scene_id in list_scenes_for_arms(scene.num_arms)
 
@@ -241,8 +242,7 @@ def test_viewer_follow_targets_track_bodies_and_the_world_stays_put() -> None:
         robot.disconnect()
 
 
-def _wrist_camera_pose_in_gripper(model_path: str, camera: str, gripper: str) -> tuple[np.ndarray, np.ndarray]:
-    model = mujoco.MjModel.from_xml_path(model_path)
+def _wrist_camera_pose_in_gripper(model: mujoco.MjModel, camera: str, gripper: str) -> tuple[np.ndarray, np.ndarray]:
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
     gripper_rot = data.xmat[model.body(gripper).id].reshape(3, 3)
@@ -253,21 +253,25 @@ def _wrist_camera_pose_in_gripper(model_path: str, camera: str, gripper: str) ->
 
 
 @pytest.mark.parametrize(
-    ("model_path", "camera", "gripper"),
+    ("scene_id", "camera", "gripper"),
     [
-        (str(get_scene("single_pick_place").scene_xml_path), "wrist", "gripper"),
-        (str(get_scene("garment_fold").scene_xml_path), "left_wrist", "left_gripper"),
-        (str(get_scene("garment_fold").scene_xml_path), "right_wrist", "right_gripper"),
+        *[(scene_id, "wrist", "gripper") for scene_id in list_scenes_for_arms(1)],
+        ("garment_fold", "left_wrist", "left_gripper"),
+        ("garment_fold", "right_wrist", "right_gripper"),
     ],
 )
-def test_wrist_cameras_match_the_reference_model(model_path: str, camera: str, gripper: str) -> None:
-    """The arm is defined in three XML files; their wrist cameras must stay identical."""
-    reference = str(get_urdf_path() / "so101/so101.xml")
-    ref_position, ref_rotation = _wrist_camera_pose_in_gripper(reference, "wrist", "gripper")
-    position, rotation = _wrist_camera_pose_in_gripper(model_path, camera, gripper)
+def test_wrist_cameras_keep_their_pose_on_the_gripper(scene_id: str, camera: str, gripper: str) -> None:
+    """Every arm's wrist camera keeps the pose and field of view that trained policies saw."""
+    model = get_scene(scene_id).load_model()
+    position, rotation = _wrist_camera_pose_in_gripper(model, camera, gripper)
+    expected_rotation = np.zeros(9)
+    quat = np.zeros(4)
+    mujoco.mju_euler2Quat(quat, np.array([0.57, 0.0, np.pi]), "xyz")
+    mujoco.mju_quat2Mat(expected_rotation, quat)
 
-    np.testing.assert_allclose(position, ref_position, atol=1e-6)
-    np.testing.assert_allclose(rotation, ref_rotation, atol=1e-6)
+    np.testing.assert_allclose(position, [0.0, -0.055, -0.045], atol=1e-6)
+    np.testing.assert_allclose(rotation, expected_rotation.reshape(3, 3), atol=1e-6)
+    assert model.cam_fovy[model.camera(camera).id] == pytest.approx(75.0)
     # As on the physical SO-101, the wrist camera is on the gripper's -y side.
     assert position[1] < 0
 
@@ -282,7 +286,7 @@ def test_wrist_cameras_match_the_reference_model(model_path: str, camera: str, g
 )
 def test_wrist_cameras_see_the_jaws_in_the_lower_half(scene_id: str, camera: str, tip_site: str) -> None:
     """Frames are streamed as MuJoCo renders them, so camera-frame -y is the bottom of the image."""
-    model = mujoco.MjModel.from_xml_path(str(get_scene(scene_id).scene_xml_path))
+    model = get_scene(scene_id).load_model()
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
     cam = model.camera(camera).id
@@ -318,21 +322,139 @@ def _urdf_joint_limits(urdf_name: str) -> dict[str, tuple[float, float]]:
 
 
 @pytest.mark.parametrize(
-    ("model_path", "urdf_name"),
+    ("scene_id", "urdf_name"),
     [
-        *[
-            (str(get_scene(scene_id).scene_xml_path), "so101/so101_new_calib.urdf")
-            for scene_id in list_scenes_for_arms(1)
-        ],
-        *[(str(get_scene(scene_id).scene_xml_path), "so101/so101_dual.urdf") for scene_id in list_scenes_for_arms(2)],
-        (str(get_urdf_path() / "so101/so101.xml"), "so101/so101_new_calib.urdf"),
+        *[(scene_id, "so101/so101_new_calib.urdf") for scene_id in list_scenes_for_arms(1)],
+        *[(scene_id, "so101/so101_dual.urdf") for scene_id in list_scenes_for_arms(2)],
     ],
 )
-def test_joint_and_control_ranges_match_the_urdf(model_path: str, urdf_name: str) -> None:
+def test_joint_and_control_ranges_match_the_urdf(scene_id: str, urdf_name: str) -> None:
     """The URDF is the source of truth; normalized units span these ranges."""
-    model = mujoco.MjModel.from_xml_path(model_path)
+    model = get_scene(scene_id).load_model()
     limits = _urdf_joint_limits(urdf_name)
 
     for name, (lower, upper) in limits.items():
         np.testing.assert_allclose(model.jnt_range[model.joint(name).id], (lower, upper), atol=1e-5, err_msg=name)
         np.testing.assert_allclose(model.actuator(name).ctrlrange, (lower, upper), atol=1e-4, err_msg=name)
+
+
+def test_cameras_render_on_their_own_thread_from_pose_snapshots() -> None:
+    scene = get_scene("conveyor_sort")
+    robot = MuJoCoSO101(
+        model_path=str(scene.scene_xml_path), scene_config=asdict(scene), cameras=[{"name": "overview", "fps": 100}]
+    )
+    rendered = np.full((4, 6, 3), 7, dtype=np.uint8)
+    renderer = MagicMock()
+    renderer.render.return_value = rendered
+    with patch("mujoco.Renderer", return_value=renderer):
+        robot.connect()
+        try:
+            assert robot._camera_thread is not None
+            deadline = time.monotonic() + 5.0
+            while robot._frame_buffers["overview"].snapshot() is None and time.monotonic() < deadline:
+                robot._step_and_sync()  # publishes a pose snapshot every tick
+                time.sleep(0.01)
+            snapshot = robot._frame_buffers["overview"].snapshot()
+            assert snapshot is not None
+            np.testing.assert_array_equal(snapshot.frame, rendered)
+            # The renderer got the camera thread's own MjData, not the simulation's.
+            rendered_from = renderer.update_scene.call_args.args[0]
+            assert rendered_from is not robot._data
+            np.testing.assert_allclose(rendered_from.qpos, robot._data.qpos)
+            for _ in range(5):
+                robot._step_and_sync()
+                time.sleep(0.01)
+            timing = robot._http_status()["timing"]
+            assert timing["cameras_on_thread"] is True
+            assert timing["control_hz"] is not None
+        finally:
+            robot.disconnect()
+    assert robot._camera_thread is None
+    renderer.close.assert_called()
+
+
+def test_a_camera_thread_that_does_not_stop_keeps_its_own_renderers() -> None:
+    """A render stuck past stop() must not see, or close, the next scene's renderers."""
+    import threading
+
+    from physicalai_mujoco_so101_plugin import camera_thread
+
+    scene = get_scene("conveyor_sort")
+    robot = MuJoCoSO101(
+        model_path=str(scene.scene_xml_path), scene_config=asdict(scene), cameras=[{"name": "overview", "fps": 100}]
+    )
+    rendering, release = threading.Event(), threading.Event()
+    stuck = MagicMock()
+
+    def hang() -> np.ndarray:
+        rendering.set()
+        release.wait(10.0)
+        return np.full((4, 6, 3), 99, dtype=np.uint8)  # an old-scene frame
+
+    stuck.render.side_effect = hang
+    fresh = MagicMock()
+    fresh.render.return_value = np.zeros((4, 6, 3), dtype=np.uint8)
+    original_stop = camera_thread.CameraThread.stop
+    renderers = iter([stuck, fresh])
+    built_for: list[object] = []
+
+    def build(model: object, _height: int, _width: int) -> MagicMock:
+        built_for.append(model)
+        return next(renderers)
+
+    with (
+        patch("mujoco.Renderer", side_effect=build),
+        patch.object(camera_thread.CameraThread, "stop", lambda self, timeout_s=0.2: original_stop(self, timeout_s)),
+    ):
+        robot.connect()
+        try:
+            deadline = time.monotonic() + 5.0
+            while not rendering.is_set() and time.monotonic() < deadline:
+                robot._step_and_sync()
+                time.sleep(0.01)
+            assert rendering.is_set()
+            old_model = robot._model
+            assert robot._switch_to_scene("single_pick_place")  # the old thread is still inside render()
+            stuck.close.assert_not_called()  # left to the thread that still uses it
+            deadline = time.monotonic() + 5.0
+            while fresh.update_scene.call_count == 0 and time.monotonic() < deadline:
+                robot._step_and_sync()
+                time.sleep(0.01)
+            assert fresh.update_scene.call_count > 0
+            release.set()
+            deadline = time.monotonic() + 5.0
+            while not stuck.close.called and time.monotonic() < deadline:
+                time.sleep(0.01)
+            stuck.close.assert_called_once()  # by its own thread, once the render returned
+            assert built_for == [old_model, robot._model]  # each thread renders its own model
+            latest = robot._frame_buffers["overview"].snapshot()
+            assert latest is not None
+            assert not (latest.frame == 99).all()  # the late old-scene frame was dropped
+            fresh.close.assert_not_called()
+            assert stuck.update_scene.call_count == 1  # never used again after the switch
+        finally:
+            release.set()
+            robot.disconnect()
+    fresh.close.assert_called_once()
+
+
+def test_the_camera_thread_renders_nothing_before_the_first_pose() -> None:
+    """A zeroed snapshot puts every body at the origin with zero quaternions; never render it."""
+    from physicalai_mujoco_so101_plugin.camera_thread import CameraThread
+
+    model = mujoco.MjModel.from_xml_path(str(get_scene("conveyor_sort").scene_xml_path))
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    seen: list[np.ndarray] = []
+    thread = CameraThread(model, setup=lambda _model: None, render=lambda d: seen.append(d.qpos.copy()), teardown=lambda: None)
+    thread.start()
+    try:
+        time.sleep(0.05)
+        assert seen == []
+        thread.publish(data)
+        deadline = time.monotonic() + 2.0
+        while not seen and time.monotonic() < deadline:
+            time.sleep(0.005)
+        np.testing.assert_array_equal(seen[0], data.qpos)
+    finally:
+        assert thread.stop()

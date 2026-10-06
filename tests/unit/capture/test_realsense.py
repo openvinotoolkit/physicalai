@@ -91,6 +91,14 @@ def realsense_cls():  # noqa: ANN201
     sys.modules.pop("physicalai.capture.cameras.realsense._discover", None)
 
 
+@pytest.fixture(autouse=True)
+def _reset_realsense_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reset cached RealSense context between tests for isolation."""
+    pkg = sys.modules.get("physicalai.capture.cameras.realsense")
+    if pkg is not None and hasattr(pkg, "_discover"):
+        monkeypatch.setattr(pkg._discover, "_context", None)
+
+
 def test_connect_starts_pipeline(realsense_cls: tuple) -> None:
     """connect() starts pipeline with config object."""
     camera_cls, mock_rs = realsense_cls
@@ -278,6 +286,77 @@ def test_discover_returns_empty_when_no_sdk() -> None:
     with mock.patch("builtins.__import__", side_effect=_import):
         module = importlib.import_module("physicalai.capture.cameras.realsense._discover")
         assert module.discover_realsense() == []
+
+
+def test_discover_reuses_context_across_calls(realsense_cls: tuple) -> None:
+    """discover_realsense() constructs rs.context once and queries devices on each call."""
+    _, mock_rs = realsense_cls
+    from physicalai.capture.cameras.realsense._discover import discover_realsense
+
+    dev1 = mock.MagicMock()
+    dev1.get_info.side_effect = lambda k: "serial-1" if k == mock_rs.camera_info.serial_number else "Camera 1"
+    dev2 = mock.MagicMock()
+    dev2.get_info.side_effect = lambda k: "serial-2" if k == mock_rs.camera_info.serial_number else "Camera 2"
+
+    mock_rs.context.return_value.query_devices.return_value = [dev1]
+    devs_first = discover_realsense()
+    assert len(devs_first) == 1
+
+    # Second call reuses context instance while reflecting device list changes
+    mock_rs.context.return_value.query_devices.return_value = [dev1, dev2]
+    devs_second = discover_realsense()
+    assert len(devs_second) == 2
+
+    mock_rs.context.assert_called_once()
+    assert mock_rs.context.return_value.query_devices.call_count == 2
+
+
+def test_discover_zero_devices(realsense_cls: tuple) -> None:
+    """discover_realsense() returns empty list when context reports 0 devices."""
+    _, mock_rs = realsense_cls
+    mock_rs.context.return_value.query_devices.return_value = []
+    from physicalai.capture.cameras.realsense._discover import discover_realsense
+
+    assert discover_realsense() == []
+
+
+def test_discover_multiple_devices(realsense_cls: tuple) -> None:
+    """discover_realsense() returns DeviceInfo for each discovered device."""
+    _, mock_rs = realsense_cls
+
+    dev1 = mock.MagicMock()
+    dev1.get_info.side_effect = lambda k: "serial-1" if k == mock_rs.camera_info.serial_number else "Camera 1"
+    dev2 = mock.MagicMock()
+    dev2.get_info.side_effect = lambda k: "serial-2" if k == mock_rs.camera_info.serial_number else "Camera 2"
+
+    mock_rs.context.return_value.query_devices.return_value = [dev1, dev2]
+    from physicalai.capture.cameras.realsense._discover import discover_realsense
+
+    devices = discover_realsense()
+    assert len(devices) == 2
+    assert devices[0].device_id == "serial-1"
+    assert devices[0].index == 0
+    assert devices[0].name == "Camera 1"
+    assert devices[1].device_id == "serial-2"
+    assert devices[1].index == 1
+    assert devices[1].name == "Camera 2"
+
+
+def test_discover_context_init_failure_does_not_cache(realsense_cls: tuple) -> None:
+    """rs.context() exception propagates and is not cached for subsequent calls."""
+    _, mock_rs = realsense_cls
+    from physicalai.capture.cameras.realsense import _discover
+
+    mock_rs.context.side_effect = RuntimeError("Failed to create context")
+    with pytest.raises(RuntimeError, match="Failed to create context"):
+        _discover.discover_realsense()
+
+    assert _discover._context is None
+
+    mock_rs.context.side_effect = None
+    devices = _discover.discover_realsense()
+    assert len(devices) == 1
+    assert _discover._context is not None
 
 
 def test_color_mode_bgr_conversion(realsense_cls: tuple) -> None:

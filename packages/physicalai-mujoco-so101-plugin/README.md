@@ -5,11 +5,12 @@ Run single-arm or bimanual SO-101 simulations through [PhysicalAI Runtime](https
 ## Features
 
 - Run a virtual SO-101 as a PhysicalAI transport owner
-- Viser browser viewer with a Simulation tab (scene switching, reset, arm homing, seeded resets, episode auto-reset, object dragging, camera previews, confirmed shutdown) and a Camera tab to follow an object, the target, or a gripper
+- Viser browser viewer with a Simulation tab (scene switching, reset, arm homing, seeded resets, episode auto-reset, conveyor belt controls, object dragging, camera previews, confirmed shutdown) and a Camera tab to follow an object, the target, or a gripper
 - Camera streams over HTTP (MJPEG), used in Studio as IP cameras
 - REST control server with the same controls as the viewer
 - Built-in task scenes
 - Automatic cube respawn after a configurable success dwell (five seconds by default) in `single_pick_place`
+- A conveyor-belt sorting cell (`conveyor_sort`) with an adjustable belt speed, a continuous item feed, and per-episode scoring
 
 ## What this is for
 
@@ -36,6 +37,14 @@ MUJOCO_GL=egl uv run --package physicalai-mujoco-so101-plugin physicalai-mujoco-
 
 Use `MUJOCO_GL=osmesa` on a machine without a GPU driver (slower, needs OSMesa installed). The same applies to the `start` command in the Studio setup below.
 
+The first `start` on a machine downloads the SO-101 model from [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) (about 4 MB) into a per-user cache before the simulation starts. To download it ahead of time, for example while building a container image, run:
+
+```bash
+uv run --package physicalai-mujoco-so101-plugin physicalai-mujoco-so101 prefetch
+```
+
+On a machine without internet access, run `prefetch` on a connected machine and copy the cache (set its location with `MENAGERIE_CACHE_DIR`), or set `MENAGERIE_ROOT` to a `mujoco_menagerie` checkout. A simulation owner started some other way, such as `examples/run_mujoco_owner.py`, downloads the model during its startup instead, so run `prefetch` first on a slow connection.
+
 By default this starts:
 
 - A MuJoCo SO-101 owner named `mujoco-so101-follow`
@@ -51,8 +60,10 @@ To drive the simulation from Physical AI Studio, see [Use with Physical AI Studi
 The viewer opens on its **Simulation** tab, which controls the simulation. The **Camera** tab controls whether the view follows a body. The **Visualization** and **Groups** tabs come from mjviser and control what is drawn.
 
 - **Scene**: pick another scene that fits the running robot (single-arm or bimanual). **Reset Scene** respawns the scene's objects while keeping the target fixed. **Home Arm** puts the arm joints and their position targets at the scene's home pose. An active policy or teleop session will drive the arm away again on its next action.
+- **Performance**: the simulation speed as a multiple of real time, the control loop rate, and each camera's frame rate, over the last two seconds. Below 0.95x real time, the belt, arm and physics all run slower than the wall clock, while Studio records and policies run at wall-clock rates. Keep it at 1.00x when recording or evaluating.
 - **Randomization**: tick **Fixed seed** to reseed before every reset and scene switch, so object layouts repeat. Untick it to go back to random layouts.
 - **Episode** (`single_pick_place` only): the cube respawns after it rests on the target for the success dwell. Turn **Auto-reset** off or change the dwell here. The panel shows the countdown and the number of completed episodes.
+- **Conveyor** (`conveyor_sort` only, in place of **Episode**): **Belt running** pauses or resumes the belt and the item feed. **Belt speed** sets the belt surface speed from 0 to 10 cm/s. The panel shows the items fed so far, the current and last episode's score, and the sorting rule.
 - **Objects**: tick **Drag objects** to show a handle on each free object. While you drag, the object stays at the handle's pose. When you let go, it falls from there with zero velocity. The target stays fixed.
 - **Cameras**: tick **Show previews** to see low-rate thumbnails of the rendered cameras. Previews start off because every open viewer receives them.
 - **Shutdown** asks for confirmation before stopping the owner.
@@ -177,6 +188,22 @@ Record from the dataset page as with a real robot (**Add episode**, **Start epis
 
 The same controls are available over HTTP (see [REST control API](#rest-control-api)) if you want to script resets between episodes.
 
+#### Record the conveyor autopilot, with automatic episodes
+
+In `conveyor_sort`, the scripted demonstrator can act as the leader arm, and the simulation can save each conveyor episode to the open dataset. No one has to teleoperate, and no one has to press **Accept** or **Start episode**.
+
+1. In Studio, add a robot of type **MuJoCo SO-101 Virtual Leader**. Its port is the simulation's `--http-port` (default `8080`). Use it as the leader of the MuJoCo environment.
+2. In the viewer's **Autopilot** folder, set **Autopilot** to **Virtual leader (Studio teleop)**. The demonstrator now only publishes its joint targets (`GET /leader`); the arm moves once Studio sends them back as actions.
+3. In Studio, open the dataset's recording view and start teleoperation. The demonstrator's targets become the recorded actions.
+4. In the viewer, set **Task** and **Keep**, then tick **Record in Studio**. The simulation attaches to Studio's running session. For each episode it clears the belt, starts a recording with the task, and holds the belt when the tenth item is scored. Then it saves the episode, or discards it if **Keep** is **Perfect episodes only** and the episode had a wrong or missed item.
+5. Untick **Record in Studio** to stop, or set **Episodes** to stop after that many saved episodes. Pressing stop in Studio also stops the automation.
+
+**Record in Studio** also works with a physical leader arm. You teleoperate, and the simulation saves an episode each time the belt's ten items are scored.
+
+The simulation joins Studio's session the same way a second browser tab does. It finds the session through `GET /api/runtime/sessions` and never stops that session. Use `--studio-url` if Studio does not run at `http://127.0.0.1:7860`.
+
+**Autopilot** has a third mode, **Drive the arm**. It moves the arm directly and ignores incoming actions, which is useful for demos, but don't record in this mode.
+
 ### 5. Run a trained policy
 
 On the **Models** page, select **Run model** for a policy trained on the simulation dataset. Studio loads the environment the dataset was recorded with, so keep the simulation running with the same owner name and camera ports. Use **Reset Scene** or **Fixed seed** in the viewer between runs.
@@ -202,7 +229,7 @@ Common options:
 - `--name <robot-name>`: transport name (must match Studio payload)
 - `--bimanual`: run two arms with the `garment_fold` scene by default
 - `--model <path>`: custom XML/URDF path to load initially (bypasses default scene resolution)
-- `--scene <name>`: scene name (`single_pick_place` or `yahtzee`; with `--bimanual`, `garment_fold`). Default `single_pick_place`
+- `--scene <name>`: scene name (`single_pick_place`, `yahtzee` or `conveyor_sort`; with `--bimanual`, `garment_fold`). Default `single_pick_place`
 - `--no-gui`: disable all viewers
 - `--viser-port <port>`: browser viewer port (default `9090`)
 - `--viser-host <host>`: browser viewer bind host (default `127.0.0.1`; use `0.0.0.0` to expose it remotely)
@@ -216,6 +243,7 @@ Common options:
 - `--idle-timeout <seconds>`: seconds with zero subscribers before self-exit
   (default `10` without HTTP, disabled when HTTP is enabled so stream viewers keep the sim alive)
 - `--allow-remote`: allow non-loopback zenoh connections
+- `--studio-url <url>`: Physical AI Studio backend for automatic episode recording (default `http://127.0.0.1:7860`)
 
 ## Joint units
 
@@ -233,7 +261,7 @@ Use `--unit degrees` (or `unit="degrees"` on `MuJoCoSO101`) to get joint angles 
 
 ## Cameras over HTTP
 
-The plugin renders two camera feeds and serves them over HTTP:
+The plugin renders two camera feeds on their own thread and serves them over HTTP. The control loop only hands the camera thread a pose snapshot each tick, so rendering never delays physics:
 
 - `wrist` -> `http://127.0.0.1:8080/cameras/wrist/mjpeg`
 - `overview` -> `http://127.0.0.1:8080/cameras/overview/mjpeg`
@@ -264,6 +292,9 @@ curl -X POST http://127.0.0.1:8080/seed -H 'content-type: application/json' -d '
 curl -X POST http://127.0.0.1:8080/episode/auto-reset -H 'content-type: application/json' \
   -d '{"enabled": false, "dwell_s": 3.0}'
 
+# conveyor_sort only: set the belt speed in m/s (pause it with /episode/auto-reset enabled=false)
+curl -X POST http://127.0.0.1:8080/conveyor/belt-speed -H 'content-type: application/json' -d '{"speed": 0.05}'
+
 # Read and move free objects (world frame, metres; wxyz is optional)
 curl http://127.0.0.1:8080/objects
 curl -X POST 'http://127.0.0.1:8080/objects/block1:joint/pose' -H 'content-type: application/json' \
@@ -273,22 +304,26 @@ curl -X POST 'http://127.0.0.1:8080/objects/block1:joint/pose' -H 'content-type:
 curl -X POST http://127.0.0.1:8080/shutdown
 ```
 
-| Endpoint                    | Method | Description                                                                      |
-| --------------------------- | ------ | -------------------------------------------------------------------------------- |
-| `/`                         | GET    | Service info, endpoint index                                                     |
-| `/health`                   | GET    | Sim status: connected, scene, compatible scenes, seed, episode, objects, cameras |
-| `/cameras`                  | GET    | Camera list with stream/snapshot URLs                                            |
-| `/cameras/{name}/mjpeg`     | GET    | MJPEG stream (`multipart/x-mixed-replace`)                                       |
-| `/cameras/{name}/frame.jpg` | GET    | Latest frame as a JPEG snapshot                                                  |
-| `/scenes`                   | GET    | Current scene, available scene IDs, and IDs compatible with this robot           |
-| `/scenes/{scene_id}`        | POST   | Switch to a compatible scene (`409` for another arm count)                       |
-| `/reset`                    | POST   | Reset/randomize the current scene                                                |
-| `/home`                     | POST   | Move the arm joints and targets to the scene's home pose                         |
-| `/seed`                     | POST   | `{"seed": <0..4294967295> or null}`: fix or clear the reset seed                 |
-| `/episode/auto-reset`       | POST   | `{"enabled": bool, "dwell_s": 0.5..120}` (either field); `409` if unsupported    |
-| `/objects`                  | GET    | Free-object joint names and world poses                                          |
-| `/objects/{joint}/pose`     | POST   | `{"position": [x, y, z], "wxyz": [w, x, y, z]}`: teleport a free object          |
-| `/shutdown`                 | POST   | Gracefully stop the simulation owner                                             |
+| Endpoint                    | Method | Description                                                                                    |
+| --------------------------- | ------ | ---------------------------------------------------------------------------------------------- |
+| `/`                         | GET    | Service info, endpoint index                                                                   |
+| `/health`                   | GET    | Sim status: connected, scene, compatible scenes, seed, episode, timing, objects, cameras       |
+| `/cameras`                  | GET    | Camera list with stream/snapshot URLs                                                          |
+| `/cameras/{name}/mjpeg`     | GET    | MJPEG stream (`multipart/x-mixed-replace`)                                                     |
+| `/cameras/{name}/frame.jpg` | GET    | Latest frame as a JPEG snapshot                                                                |
+| `/scenes`                   | GET    | Current scene, available scene IDs, and IDs compatible with this robot                         |
+| `/scenes/{scene_id}`        | POST   | Switch to a compatible scene (`409` for another arm count)                                     |
+| `/reset`                    | POST   | Reset/randomize the current scene                                                              |
+| `/home`                     | POST   | Move the arm joints and targets to the scene's home pose                                       |
+| `/seed`                     | POST   | `{"seed": <0..4294967295> or null}`: fix or clear the reset seed                               |
+| `/episode/auto-reset`       | POST   | `{"enabled": bool, "dwell_s": 0.5..120}` (either field); `409` if unsupported                  |
+| `/conveyor/belt-speed`      | POST   | `{"speed": 0..0.1}` belt speed in m/s; `409` if the scene has no conveyor belt                 |
+| `/autopilot`                | POST   | `{"mode": "off" \| "drive" \| "leader"}`; `409` if the scene has no autopilot                  |
+| `/leader`                   | GET    | Virtual leader pose: `seq`, `mode`, `unit`, `joint_names`, `joint_positions`                   |
+| `/studio/recording`         | POST   | `{"enabled": bool, "task": str (1-200), "keep": "perfect" \| "all", "max_episodes": 0..10000}` |
+| `/objects`                  | GET    | Free-object joint names and world poses                                                        |
+| `/objects/{joint}/pose`     | POST   | `{"position": [x, y, z], "wxyz": [w, x, y, z]}`: teleport a free object                        |
+| `/shutdown`                 | POST   | Gracefully stop the simulation owner                                                           |
 
 Control requests are queued and applied on the next control cycle. Invalid bodies return `422`. Object coordinates must be finite and within ±2 m.
 
@@ -339,6 +374,7 @@ The plugin ships with built-in scenes that provide different environments for th
 | ----------------------------- | --------------------------------------- | ------------ | ----------- |
 | `single_pick_place` (default) | One block and a target disc             | 1 cube       | target disc |
 | `yahtzee`                     | Six dice and a cup                      | 6 dice       | cup         |
+| `conveyor_sort`               | Sort items off a moving belt into bins  | 24-item pool | 4 bins      |
 | `garment_fold`                | Bimanual SO-101 with a flexible garment | garment      | none        |
 
 Start with a specific scene:
@@ -347,11 +383,39 @@ Start with a specific scene:
 uv run --no-sync physicalai-mujoco-so101 start --scene yahtzee
 ```
 
+### Conveyor sort
+
+`conveyor_sort` is a factory cell: items ride a belt past the arm and have to be sorted into bins before they reach the end.
+
+- **Items**: cubes, upright cylinders and hexagonal prisms, 3 cm across, in red, blue, green or purple. About 30% are cracked (a bold dark crack texture). Unused items wait in the lidded supply crate behind the robot, and the feed moves them onto the belt inside the entry hood.
+- **Bins**: red, blue and green bins plus a striped reject bin, each labelled on its floor (RED, BLUE, GREEN, REJECT) so the labels read upright in the overview camera.
+- **Rule**: cracked items and purple items (which have no bin of their own) go to the striped reject bin; the others go to the bin of their color. An item that rides off the end of the belt, or comes to rest anywhere else, is a miss.
+- **Episodes**: an episode feeds 10 items, 15 cm apart along the belt (so the spacing does not depend on the belt speed). Once every item is scored, the next episode starts. **Reset Scene** starts a fresh episode.
+- **Stack light**: a three-lamp light on the entry hood shows green while the belt runs, amber about 2 s before the next item leaves the hood, and red while the belt is paused. `/health` reports the same lamps and the seconds until the next item (`episode.lights`, `episode.next_item_s`).
+- **Belt speed**: 3 cm/s by default, adjustable from 0 to 10 cm/s in the viewer or with `POST /conveyor/belt-speed`. **Home Arm** holds the gripper above the pick zone.
+
+At 224 px the overview camera shows item colors clearly, but not cracks: an item covers about 5 px. The wrist camera and the full-resolution overview show them.
+
+The scene's textures and item pool (`conveyor_items.xml`) come from `scripts/generate_conveyor_assets.py`. The visual meshes for the conveyor frame, hood and bins come from `scripts/build_conveyor_meshes.py`, run with `blender --background --factory-startup --python scripts/build_conveyor_meshes.py`. Collisions use primitives in `scene.xml`, so keep the dimensions in both files in sync. Give every textured surface UV coordinates and a 2D texture: the browser viewer draws primitives in a flat color and reduces cube maps to one color per face, while the camera streams render either.
+
+#### Scripted demonstrator
+
+`physicalai_mujoco_so101_plugin.conveyor_demo.ConveyorDemonstrator` sorts items using privileged simulation state (item poses, the belt speed, the sorting rule). It is meant for generating consistent demonstrations, not as a policy. Each cycle, it waits over the belt, tracks the most downstream item in the pick window, grasps it with the jaw closing along the belt, and drops it in the bin the rule assigns. It writes the arm's joint targets directly and runs headless:
+
+```bash
+cd packages/physicalai-mujoco-so101-plugin
+uv run python scripts/run_conveyor_demo.py --speed 0.03 --episodes 3             # score
+uv run python scripts/run_conveyor_demo.py --sweep 0.01 0.03 0.05 0.07 --seeds 3  # success vs belt speed
+uv run python scripts/run_conveyor_demo.py --speed 0.03 --video /tmp/demo.mp4     # overview, wrist, orbit video
+```
+
+Measured over 3 seeds of 3 episodes (90 items per speed): 99–100% of items sorted correctly at 1–5 cm/s, 81% at 7 cm/s and 48% at 10 cm/s. Above about 5 cm/s, items arrive faster than one pick-and-place cycle (about 2.3 s).
+
 ### Switching scenes at runtime
 
 Pick a scene in the viewer's **Scene** dropdown or send `POST /scenes/{scene_id}`. The switch happens on the next control cycle:
 
-- Loads the new scene XML
+- Loads the new scene XML and attaches the arm
 - Rebuilds the viewer for the new environment
 - Respawns the scene's free-object joints clear of their target, using the new spawn parameters (target bodies stay fixed)
 
@@ -377,7 +441,7 @@ uv build --package physicalai-mujoco-so101-plugin
 - **Viewer inputs ignore server-side events.** Setting a Viser input's `value` from the server fires its `on_update` callbacks with `client=None`. Panel callbacks skip those events, so syncing the panel from sim state never sends a command back.
 - **mjviser is used partly through its internals.** The plugin builds the viewer tabs itself, and does not use mjviser's `create_scene_gui` or `create_visualization_gui`. mjviser's camera tracking follows an arbitrary body by shifting the world, and each call registers another client-connect hook. The plugin also sets `camera_tracking_enabled`, installs a refresh handler, and moves the fixed-body handles itself. mjviser is pinned to `<0.1`; after upgrading it, check a scene switch and camera follow in a browser, because the unit tests mock viser.
 - **Scene switches rebuild the viewer.** `_build_viser_gui` clears every GUI element and scene node, then builds them again for the new model. Viewer preferences that should survive a switch live on `SimControlPanel`, not on the per-build handles.
-- **The robot is defined in three files.** `so101/so101.xml` (used by `examples/run_mujoco_owner.py`), `so101/so101_robot_bodies.xml` (included by the single-arm scenes), and `so101_dual/so101_dual_robot_bodies.xml` (included by the bimanual scenes) each define the arm and its wrist camera. Apply arm or camera changes to all three.
+- **Scenes hold no robot.** The arm is MuJoCo Menagerie's SO-101 (`robotstudio_so101`), loaded through the pinned `mujoco-menagerie` package, which downloads it on first use. Each scene marks an arm's base with a `<frame name="{prefix}robot_mount"/>`, and `robot_profile.load_scene_model` attaches the arm there with that name prefix (`left_`/`right_` in the bimanual scene). `SO101_PROFILE` pins the joint ranges, force limits and wrist camera the plugin has always used; change the arm or its wrist camera there. Load scenes with `SceneConfig.load_model()`: `mujoco.MjModel.from_xml_path` on a scene file gives a model without the arm. `urdf/so101/*.urdf` and their meshes remain for Studio's 3D view.
 - **Camera images are streamed as MuJoCo renders them.** `mujoco.Renderer` already returns upright images, so set a camera's orientation in the scene XML rather than flipping frames in code. In a MuJoCo camera frame, `-z` is the viewing direction and `+y` is the top of the image. `mirror_horizontal` exists for setups that need a mirrored feed; the `start` command does not use it.
 
 ### Compatibility with Studio
@@ -400,6 +464,7 @@ git worktree remove /tmp/physicalai-v0.2.0
 
 - Run the repository hooks on the files you changed (`prek run --files <files>`). `prek run --all-files` also reformats unrelated files elsewhere in the repository.
 - The ruff hook runs with `--unsafe-fixes` and can rewrite code, for example by collapsing a lambda into a bound method. Run the tests again after the hooks.
+- Tests that step a real simulation for seconds are marked `@pytest.mark.slow`. Run the quick set with `-m "not slow"` while iterating, and the full suite before pushing.
 - Run the security scans used by CI:
 
   ```bash

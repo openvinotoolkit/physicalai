@@ -42,7 +42,7 @@ def mock_mujoco() -> MagicMock:
         MagicMock: The mock context.
     """
     with (
-        patch("mujoco.MjModel.from_xml_path") as mock_from_xml,
+        patch("physicalai_mujoco_so101_plugin.mujoco_robot.load_scene_model") as mock_load_scene_model,
         patch("mujoco.MjData") as mock_data_cls,
         patch("mujoco.mj_forward"),
         patch("mujoco.mj_step"),
@@ -64,7 +64,7 @@ def mock_mujoco() -> MagicMock:
         mock_model.jnt_qposadr = [0, 1, 2, 3, 4, 5]
         mock_model.jnt_dofadr = [0, 1, 2, 3, 4, 5]
         mock_model.jnt_range = SO101_JOINT_RANGES.copy()
-        mock_from_xml.return_value = mock_model
+        mock_load_scene_model.return_value = mock_model
 
         mock_data = MagicMock()
         mock_data.qpos = np.array([0.0, 0.5, -0.3, 0.1, -0.2, 0.8])
@@ -83,7 +83,7 @@ def mock_mujoco_bimanual() -> MagicMock:
         MagicMock: The mock context.
     """
     with (
-        patch("mujoco.MjModel.from_xml_path") as mock_from_xml,
+        patch("physicalai_mujoco_so101_plugin.mujoco_robot.load_scene_model") as mock_load_scene_model,
         patch("mujoco.MjData") as mock_data_cls,
         patch("mujoco.mj_forward"),
         patch("mujoco.mj_step"),
@@ -105,7 +105,7 @@ def mock_mujoco_bimanual() -> MagicMock:
         mock_model.jnt_qposadr = list(range(12))
         mock_model.jnt_dofadr = list(range(12))
         mock_model.jnt_range = np.tile(SO101_JOINT_RANGES, (2, 1))
-        mock_from_xml.return_value = mock_model
+        mock_load_scene_model.return_value = mock_model
 
         mock_data = MagicMock()
         mock_data.qpos = np.array([0.0] * 12)
@@ -311,6 +311,7 @@ class TestMuJoCoSO101Pickling:
             "_viser_host": "127.0.0.1",
             "_viser_port": 9090,
             "_unit": "normalized",
+            "_studio_url": "http://127.0.0.1:7860",
         }
 
     def test_getstate_after_connect(self, mock_mujoco: MagicMock) -> None:
@@ -882,7 +883,7 @@ class TestSceneCompatibility:
         robot = MuJoCoSO101(model_path="/fake/model.xml")
         robot.connect()
 
-        with patch("mujoco.MjModel.from_xml_path") as load:
+        with patch("physicalai_mujoco_so101_plugin.mujoco_robot.load_scene_model") as load:
             assert robot._switch_to_scene("garment_fold") is False  # noqa: SLF001
 
         load.assert_not_called()
@@ -994,12 +995,14 @@ class TestCameraFrames:
     def _stream_one_frame(mock_mujoco: MagicMock, rendered: np.ndarray, *, mirror: bool) -> np.ndarray:
         _ = mock_mujoco
         robot = MuJoCoSO101(model_path="/fake/model.xml", cameras=[{"name": "wrist", "mirror_horizontal": mirror}])
+        robot._render_in_thread = False  # noqa: SLF001 - render on this thread, deterministically
         renderer = MagicMock()
         renderer.render.return_value = rendered
         with patch("mujoco.Renderer", return_value=renderer):
             robot.connect()
         robot._render_cameras()  # noqa: SLF001
         return robot._frame_buffers["wrist"].snapshot().frame  # noqa: SLF001
+
 
     def test_frames_are_streamed_as_rendered(self, mock_mujoco: MagicMock) -> None:
         """mujoco.Renderer already returns upright images; flipping again turns them upside down."""

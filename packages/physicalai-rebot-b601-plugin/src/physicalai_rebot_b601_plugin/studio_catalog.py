@@ -9,6 +9,7 @@ for the ``physicalai.studio.catalog_plugins`` group.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal, Self
 
@@ -21,6 +22,7 @@ from physicalai_studio_plugin import (
     RobotAsset,
     RobotCatalogDefinition,
     RobotProbe,
+    RobotZeroCalibration,
     SerialPortInfo,
     robot_field_ui,
     robot_payload_ui,
@@ -29,7 +31,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 import physicalai_rebot_b601_plugin
 from physicalai_rebot_b601_plugin import ReBotB601DM, ReBotB601RS, get_urdf_path
-from physicalai_rebot_b601_plugin.constants import REBOT_B601_RS_MIT_KD, REBOT_B601_RS_MIT_KP
+from physicalai_rebot_b601_plugin.constants import (
+    REBOT_B601_RS_GRIPPER_MAX_TORQUE_NM,
+    REBOT_B601_RS_MIT_KD,
+    REBOT_B601_RS_MIT_KP,
+)
 
 if TYPE_CHECKING:
     from typing import Protocol
@@ -296,6 +302,7 @@ class ReBotB601RSPayload(BaseModel):
     gripper_mit_torque_limit: float = Field(  # pyrefly: ignore [bad-argument-type, no-matching-overload]
         default=3.5,
         ge=0.0,
+        le=REBOT_B601_RS_GRIPPER_MAX_TORQUE_NM,
         allow_inf_nan=False,
         title="Gripper torque limit while moving (N·m)",
         json_schema_extra=robot_field_ui({"advanced_configuration": True}),
@@ -303,6 +310,7 @@ class ReBotB601RSPayload(BaseModel):
     gripper_mit_hold_torque_limit: float = Field(  # pyrefly: ignore [bad-argument-type, no-matching-overload]
         default=1.0,
         ge=0.0,
+        le=REBOT_B601_RS_GRIPPER_MAX_TORQUE_NM,
         allow_inf_nan=False,
         title="Gripper torque limit while holding (N·m)",
         description="Torque limit once the gripper stalls, for example on a grasped object.",
@@ -371,6 +379,24 @@ async def _build_rebot_b601_rs_driver(  # noqa: RUF029 - Studio awaits every rob
     )
 
 
+async def _release_rs(robot: ReBotB601RS) -> None:
+    await asyncio.to_thread(robot.disable_torque)
+
+
+async def _set_rs_zero(robot: ReBotB601RS) -> None:
+    await asyncio.to_thread(robot.set_zero_position)
+
+
+_REBOT_B601_RS_ZERO_CALIBRATION = RobotZeroCalibration[ReBotB601RS](
+    instructions=(
+        "Motor torque is off, so the arm can be moved by hand. Move it into its zero pose: the folded rest "
+        "pose it sits in when powered off, with the gripper fully closed. Hold it still, then set zero."
+    ),
+    release=_release_rs,
+    set_zero=_set_rs_zero,
+)
+
+
 def _definitions() -> list[RobotCatalogDefinition]:
     return [
         RobotCatalogDefinition(
@@ -392,6 +418,7 @@ def _definitions() -> list[RobotCatalogDefinition]:
             asset=_REBOT_B601_RS_ASSET,
             adapter_options=RobotAdapterOptions(include_velocities=True, external_effort_gain=None),
             probe=_REBOT_RS_PROBE,
+            zero_calibration=_REBOT_B601_RS_ZERO_CALIBRATION,
         ),
     ]
 

@@ -8,7 +8,7 @@ The simulation thread renders camera frames into per-camera
 reads the latest frame per client and encodes it as JPEG. Streams wait
 for new frames on the event loop (:meth:`FrameBuffer.async_waiter`), so a
 client costs a task rather than a pooled thread. Control requests (reset,
-scene switch, home, seed, auto-reset, object pose, shutdown) are enqueued
+scene switch, home, seed, auto-reset, belt speed, object pose, shutdown) are enqueued
 onto a command queue that the simulation thread drains, so MuJoCo
 *stepping* only ever happens on the simulation thread; the status callback
 passed to :func:`build_app` runs on the HTTP thread and is responsible for
@@ -23,7 +23,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 import cv2
 import uvicorn
@@ -31,13 +31,17 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from loguru import logger
-from pydantic import BaseModel, Field, FiniteFloat, model_validator
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, field_validator, model_validator
+
+from physicalai_mujoco_so101_plugin.studio_recorder import DEFAULT_TASK, MAX_EPISODES, MAX_TASK_CHARS, RecordingOptions
 
 if TYPE_CHECKING:
     import queue
     from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 
     import numpy as np
+
+    from physicalai_mujoco_so101_plugin.autopilot import AutopilotMode
 
 _MJPEG_BOUNDARY = "mujoco-frame"
 _FRAME_WAIT_TIMEOUT_S = 1.0
@@ -91,6 +95,13 @@ class SetAutoResetCommand:
 
 
 @dataclass(frozen=True)
+class SetBeltSpeedCommand:
+    """Change the conveyor belt speed (m/s) in scenes that have a belt."""
+
+    speed: float
+
+
+@dataclass(frozen=True)
 class SetObjectPoseCommand:
     """Teleport a free object to a world pose and zero its velocity.
 
@@ -105,6 +116,20 @@ class SetObjectPoseCommand:
     hold: bool = False
 
 
+@dataclass(frozen=True)
+class SetAutopilotCommand:
+    """Switch the conveyor autopilot off, to drive the arm, or to act as a virtual leader."""
+
+    mode: AutopilotMode
+
+
+@dataclass(frozen=True)
+class SetStudioRecordingCommand:
+    """Switch automatic Studio episode recording on with `options`, or off with ``None``."""
+
+    options: RecordingOptions | None
+
+
 SimCommand = (
     ResetCommand
     | SwitchSceneCommand
@@ -112,8 +137,46 @@ SimCommand = (
     | HomeCommand
     | SetSeedCommand
     | SetAutoResetCommand
+    | SetBeltSpeedCommand
     | SetObjectPoseCommand
+    | SetAutopilotCommand
+    | SetStudioRecordingCommand
 )
+
+MAX_BELT_SPEED = 0.10
+"""Largest accepted conveyor belt speed in m/s; keep in sync with ``conveyor.MAX_BELT_SPEED``."""
+
+
+class BeltSpeedRequest(BaseModel):
+    """Body for ``POST /conveyor/belt-speed``."""
+
+    speed: Annotated[float, Field(ge=0.0, le=MAX_BELT_SPEED)]
+
+
+class AutopilotRequest(BaseModel):
+    """Body for ``POST /autopilot``."""
+
+    mode: Literal["off", "drive", "leader"]
+
+
+class StudioRecordingRequest(BaseModel):
+    """Body for ``POST /studio/recording``; the Studio URL is a launch option, not a request field."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+    task: Annotated[str, Field(min_length=1, max_length=MAX_TASK_CHARS)] = DEFAULT_TASK
+    keep: Literal["all", "perfect"] = "perfect"
+    max_episodes: Annotated[int, Field(ge=0, le=MAX_EPISODES)] = 0
+
+    @field_validator("task")
+    @classmethod
+    def _task_has_text(cls, task: str) -> str:
+        task = task.strip()
+        if not task:
+            msg = "task must not be blank"
+            raise ValueError(msg)
+        return task
 
 
 class SeedRequest(BaseModel):
@@ -297,6 +360,7 @@ def build_app(
     buffers: Mapping[str, FrameBuffer],
     commands: queue.Queue[SimCommand],
     get_status: Callable[[], dict[str, Any]],
+    get_leader: Callable[[], dict[str, Any]] | None = None,
     jpeg_quality: int = 85,
 ) -> FastAPI:
     """Build the FastAPI application serving camera streams and control.
@@ -311,6 +375,8 @@ def build_app(
             ``scenes`` (available ids), ``compatible_scenes`` (ids this
             robot can switch to), ``seed``, ``episode``, ``objects``
             (free-object poses), and ``cameras`` (per-camera config).
+        get_leader: Returns the virtual leader pose served at ``GET /leader``
+            (see ``MuJoCoSO101._leader_snapshot``); no route without it.
         jpeg_quality: JPEG quality for streams and snapshots.
 
     Returns:
@@ -340,6 +406,7 @@ def build_app(
                 "home": "POST /home",
                 "seed": "POST /seed",
                 "auto_reset": "POST /episode/auto-reset",
+                "belt_speed": "POST /conveyor/belt-speed",
                 "objects": "/objects",
                 "object_pose": "POST /objects/{joint}/pose",
                 "shutdown": "POST /shutdown",
@@ -355,6 +422,7 @@ def build_app(
     _add_camera_routes(app, buffers=buffers, get_status=get_status, jpeg_quality=jpeg_quality)
     _add_scene_routes(app, commands=commands, get_status=get_status)
     _add_sim_control_routes(app, commands=commands, get_status=get_status)
+    _add_automation_routes(app, commands=commands, get_status=get_status, get_leader=get_leader)
     return app
 
 
@@ -459,6 +527,13 @@ def _add_sim_control_routes(
         commands.put(SetAutoResetCommand(enabled=request.enabled, dwell_s=request.dwell_s))
         return {"status": "queued", "enabled": request.enabled, "dwell_s": request.dwell_s}
 
+    @app.post("/conveyor/belt-speed")
+    def belt_speed(request: BeltSpeedRequest) -> dict[str, Any]:
+        if get_status().get("episode", {}).get("kind") != "conveyor":
+            raise HTTPException(status_code=409, detail="The current scene has no conveyor belt")
+        commands.put(SetBeltSpeedCommand(speed=request.speed))
+        return {"status": "queued", "speed": request.speed}
+
     @app.get("/objects")
     def objects() -> list[dict[str, Any]]:
         return list(get_status().get("objects", []))
@@ -470,6 +545,42 @@ def _add_sim_control_routes(
             raise HTTPException(status_code=404, detail=f"Unknown free object joint {joint!r}")
         commands.put(SetObjectPoseCommand(joint=joint, position=request.position, wxyz=request.wxyz))
         return {"status": "queued", "joint": joint}
+
+
+def _add_automation_routes(
+    app: FastAPI,
+    *,
+    commands: queue.Queue[SimCommand],
+    get_status: Callable[[], dict[str, Any]],
+    get_leader: Callable[[], dict[str, Any]] | None,
+) -> None:
+    if get_leader is not None:
+
+        @app.get("/leader")
+        def leader() -> dict[str, Any]:
+            snapshot = get_leader()
+            if "joint_positions" not in snapshot:
+                raise HTTPException(status_code=503, detail="No leader pose yet: the simulation has not ticked")
+            return snapshot
+
+    @app.post("/autopilot")
+    def autopilot(request: AutopilotRequest) -> dict[str, Any]:
+        if not get_status().get("autopilot", {}).get("available", False):
+            raise HTTPException(status_code=409, detail="The current scene has no autopilot")
+        commands.put(SetAutopilotCommand(mode=request.mode))
+        return {"status": "queued", "mode": request.mode}
+
+    @app.post("/studio/recording")
+    def studio_recording(request: StudioRecordingRequest) -> dict[str, Any]:
+        if request.enabled and get_status().get("episode", {}).get("kind") != "conveyor":
+            raise HTTPException(status_code=409, detail="Automatic Studio recording needs the conveyor scene")
+        options = (
+            RecordingOptions(task=request.task, keep=request.keep, max_episodes=request.max_episodes)
+            if request.enabled
+            else None
+        )
+        commands.put(SetStudioRecordingCommand(options=options))
+        return {"status": "queued", "enabled": request.enabled}
 
 
 class HttpServer:

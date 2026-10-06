@@ -15,7 +15,7 @@ import pytest
 
 from physicalai.runtime._callback_bus import _CallbackBus
 from physicalai.runtime import AsyncCallback, ConsoleCallback, JsonlCallback
-from physicalai.runtime.observer._codec import decode_numpy, encode_numpy
+from physicalai.runtime.observer._codec import decode_numpy, decode_payload, encode_numpy
 from physicalai.runtime.observer._telemetry import TelemetryEmitter
 from physicalai.runtime.events import InferenceEvent, LifecycleEvent, TickEvent
 from tests.unit.runtime.conftest import FakeRobotObservation
@@ -40,6 +40,16 @@ class TestNumpyEncoding:
         arr = np.array([1.5, 2.5, 3.5], dtype=np.float32)
         decoded = decode_numpy(encode_numpy(arr))
         np.testing.assert_array_equal(arr, decoded)
+
+
+class TestDecodePayload:
+    def test_deeply_nested_payload_rejected(self) -> None:
+        payload: dict = {"leaf": 1}
+        for _ in range(100):
+            payload = {"k": payload}
+
+        with pytest.raises(ValueError, match="nesting exceeds"):
+            decode_payload(payload)
 
 
 class TestTelemetryEmitterNoOp:

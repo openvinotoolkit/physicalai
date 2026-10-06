@@ -9,6 +9,7 @@ import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from loguru import logger
 from physicalai_studio_plugin import (
     CatalogRobotFactory,
     PayloadContainer,
@@ -31,6 +32,7 @@ from physicalai_mujoco_so101_plugin.constants import (
     DEFAULT_MUJOCO_OWNER_NAME,
     SO101_JOINT_ORDER,
 )
+from physicalai_mujoco_so101_plugin.virtual_leader import DEFAULT_HTTP_PORT, MuJoCoVirtualLeader
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -122,19 +124,38 @@ class MuJoCoSO101BimanualPayload(MuJoCoSO101Payload):
     )
 
 
-def _check_zenoh_robot_online(name: str) -> bool:
+def _check_zenoh_robot_online(name: str, joint_order: tuple[str, ...]) -> bool:
+    """Return whether an owner named `name` is reachable and drives exactly `joint_order`.
+
+    A single-arm catalog entry pointed at a bimanual simulation (or the other
+    way round) would otherwise attach and fail on its first action.
+    """
     try:
         robot = SharedRobot.attach(name=name, connect_timeout=2.0)
         robot.connect()
-        robot.disconnect()
+        try:
+            joint_names = tuple(robot.joint_names)
+        finally:
+            robot.disconnect()
     except (ConnectionError, TimeoutError, RuntimeError):
         return False
-    else:
-        return True
+    if joint_names != joint_order:
+        logger.warning(
+            "MuJoCo owner {!r} drives joints {} but this robot type expects {}",
+            name,
+            list(joint_names),
+            list(joint_order),
+        )
+        return False
+    return True
 
 
 class MuJoCoSO101Probe(RobotProbe[MuJoCoSO101Payload]):
     """Discover and query MuJoCo SO-101 simulation owners."""
+
+    def __init__(self, joint_order: tuple[str, ...] = SO101_JOINT_ORDER) -> None:
+        """Probe for owners that drive `joint_order`."""
+        self.joint_order = tuple(joint_order)
 
     async def discover(self, manager: PortScanner) -> list[SerialPortInfo]:
         """Return robots found by the port scanner."""
@@ -156,12 +177,69 @@ class MuJoCoSO101Probe(RobotProbe[MuJoCoSO101Payload]):
         payload: MuJoCoSO101Payload,
         manager: PortScanner | None = None,
     ) -> bool:
-        """Return whether the configured simulation owner is reachable."""
+        """Return whether the configured simulation owner is reachable and drives this robot type's joints."""
+        _ = manager
+        return await asyncio.to_thread(_check_zenoh_robot_online, payload.name, self.joint_order)
+
+
+class MuJoCoVirtualLeaderPayload(BaseModel):
+    """Connection settings for the simulation's virtual leader arm."""
+
+    http_port: int = Field(  # type: ignore[call-overload]
+        default=DEFAULT_HTTP_PORT,
+        ge=1,
+        le=65535,
+        description="HTTP port of the running MuJoCo simulation on this machine (its --http-port)",
+    )
+
+
+def _check_virtual_leader_online(http_port: int) -> bool:
+    leader = MuJoCoVirtualLeader(http_port=http_port, timeout_s=1.0)
+    try:
+        leader.connect()
+    except ConnectionError:
+        return False
+    leader.disconnect()
+    return True
+
+
+class MuJoCoVirtualLeaderProbe(RobotProbe[MuJoCoVirtualLeaderPayload]):
+    """Check that a simulation publishes a virtual leader pose."""
+
+    async def discover(self, manager: PortScanner) -> list[SerialPortInfo]:
+        """Return no serial devices: the leader is a simulation endpoint."""
         _ = self, manager
-        return await asyncio.to_thread(_check_zenoh_robot_online, payload.name)
+        await asyncio.sleep(0)
+        return []
+
+    async def identify(
+        self,
+        payload: MuJoCoVirtualLeaderPayload,
+        manager: PortScanner | None = None,
+        joint: str | None = None,
+    ) -> None:
+        """Perform no visual identification for the virtual leader."""
+        _ = self, payload, manager, joint
+
+    async def is_online(
+        self,
+        payload: MuJoCoVirtualLeaderPayload,
+        manager: PortScanner | None = None,
+    ) -> bool:
+        """Return whether the simulation answers on its HTTP port."""
+        _ = self, manager
+        return await asyncio.to_thread(_check_virtual_leader_online, payload.http_port)
 
 
-_MUJOCO_PROBE = MuJoCoSO101Probe()
+async def _build_virtual_leader(
+    robot: PayloadContainer[MuJoCoVirtualLeaderPayload],
+    factory: CatalogRobotFactory,
+) -> PhysicalAIRobot:
+    _ = factory
+    await asyncio.sleep(0)
+    raw = robot.payload
+    validated = raw if isinstance(raw, MuJoCoVirtualLeaderPayload) else MuJoCoVirtualLeaderPayload.model_validate(raw)
+    return MuJoCoVirtualLeader(http_port=validated.http_port)
 
 
 @export_config(class_path="physicalai_mujoco_so101_plugin.studio_catalog._SharedSO101Robot")
@@ -237,7 +315,7 @@ def _definitions() -> list[RobotCatalogDefinition]:
                 include_velocities=False,
                 external_effort_gain=None,
             ),
-            probe=_MUJOCO_PROBE,
+            probe=MuJoCoSO101Probe(SO101_JOINT_ORDER),
         ),
         RobotCatalogDefinition(
             type="MuJoCo_SO101_Bimanual_Follower",
@@ -250,7 +328,20 @@ def _definitions() -> list[RobotCatalogDefinition]:
                 include_velocities=False,
                 external_effort_gain=None,
             ),
-            probe=_MUJOCO_PROBE,
+            probe=MuJoCoSO101Probe(BIMANUAL_SO101_JOINT_ORDER),
+        ),
+        RobotCatalogDefinition(
+            type="MuJoCo_SO101_Virtual_Leader",
+            display_name="MuJoCo SO-101 Virtual Leader",
+            role="leader",
+            robot_builder=_build_virtual_leader,
+            robot_payload=MuJoCoVirtualLeaderPayload,
+            asset=_MUJOCO_SO101_ASSET,
+            adapter_options=RobotAdapterOptions(
+                include_velocities=False,
+                external_effort_gain=None,
+            ),
+            probe=MuJoCoVirtualLeaderProbe(),
         ),
     ]
 

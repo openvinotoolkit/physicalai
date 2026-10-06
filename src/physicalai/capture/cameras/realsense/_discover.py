@@ -3,11 +3,15 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any, cast
 
 from physicalai.capture.discovery import DeviceInfo
 
 __all__ = ["discover_realsense"]
+
+_context: Any = None
+_context_lock = threading.Lock()
 
 
 def discover_realsense() -> list[DeviceInfo]:
@@ -17,7 +21,11 @@ def discover_realsense() -> list[DeviceInfo]:
         return []
 
     rs_any = cast("Any", rs)  # cast to Any to avoid false positive "missing-attribute"
-    ctx = rs_any.context()
+    global _context  # noqa: PLW0603
+    with _context_lock:
+        if _context is None:
+            _context = rs_any.context()
+        ctx = _context
     results: list[DeviceInfo] = []
 
     for i, dev in enumerate(ctx.query_devices()):

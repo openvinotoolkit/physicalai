@@ -285,6 +285,72 @@ class TestAsyncExecution:
         release_inference.set()
         ex.stop()
 
+    def test_watchdog_force_reset_discards_stuck_result(self) -> None:
+        stale = np.full((4, 2), 1.0, dtype=np.float32)
+        fresh = np.full((4, 2), 2.0, dtype=np.float32)
+        entered = threading.Event()
+        release_stuck = threading.Event()
+        release_fresh = threading.Event()
+        calls = 0
+
+        def predict(_obs: dict[str, Any]) -> np.ndarray:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                entered.set()
+                assert release_stuck.wait(timeout=5.0)
+                return stale
+            if calls == 3:
+                assert release_fresh.wait(timeout=5.0)
+                return fresh
+            return np.zeros((4, 2), dtype=np.float32)
+
+        model = _make_mock_model()
+        model.predict_action_chunk.side_effect = predict
+        queue = ChunkedActionQueue()
+        pushed: list[tuple[float, int]] = []
+        push_chunk = queue.push_chunk
+
+        def record_push(chunk: np.ndarray, offset: int = 0) -> None:
+            pushed.append((float(chunk[0, 0]), offset))
+            push_chunk(chunk, offset)
+
+        queue.push_chunk = record_push  # type: ignore[method-assign]
+        ex = AsyncExecution(request_threshold=0.5, watchdog_timeout_s=0.1)
+        ex.start(model, queue)
+        ex.warmup({"state": np.zeros(2)})
+        for _ in range(4):
+            queue.pop()
+
+        try:
+            ex.maybe_request({"state": np.ones(2)})
+            assert entered.wait(timeout=5.0)
+            time.sleep(0.2)
+            # Watchdog fires and submits a fresh observation behind the stuck call.
+            ex.maybe_request({"state": np.full(2, 2.0)})
+
+            release_stuck.set()
+            deadline = time.monotonic() + 5.0
+            while calls < 3 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert calls == 3
+            # The stuck call has returned; its chunk must not have reached the queue.
+            assert queue.remaining == 0
+            assert pushed == [(0.0, 0)]
+
+            release_fresh.set()
+            deadline = time.monotonic() + 5.0
+            while ex.inference_count < 1 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert [value for value, _ in pushed] == [0.0, 2.0]
+            action = queue.pop()
+            assert action is not None
+            np.testing.assert_array_equal(action, fresh[0])
+        finally:
+            release_stuck.set()
+            release_fresh.set()
+            ex.stop()
+
     def test_reset_discards_in_flight_result_without_restarting_worker(self) -> None:
         chunk = np.ones((4, 2), dtype=np.float32)
         entered = threading.Event()
@@ -720,6 +786,75 @@ class TestRTCExecutionObsSlot:
             ex.stop()
 
         assert queue.remaining == 0
+
+    def test_warmup_timeout_discards_late_chunk(self) -> None:
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+        from physicalai.runtime.execution import rtc
+
+        entered = threading.Event()
+        release = threading.Event()
+        processed = threading.Event()
+        model = _rtc_model(chunk_size=20, action_dim=3)
+
+        def predict(_inputs: dict[str, Any]) -> dict[str, np.ndarray]:
+            entered.set()
+            assert release.wait(timeout=5.0)
+            return {"action": np.ones((1, 20, 3), dtype=np.float32)}
+
+        model.side_effect = predict
+        queue = RTCActionQueue()
+        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0)
+        accept_result = ex._accept_result  # noqa: SLF001
+
+        def tracked_accept(*args: Any, **kwargs: Any) -> np.ndarray | None:  # noqa: ANN401
+            try:
+                return accept_result(*args, **kwargs)
+            finally:
+                processed.set()
+
+        ex._accept_result = tracked_accept  # type: ignore[method-assign]  # noqa: SLF001
+        ex.start(model, queue)
+        try:
+            with (
+                patch.object(rtc, "_WARMUP_TIMEOUT_S", 0.1),
+                pytest.raises(RuntimeError, match="timed out"),
+            ):
+                ex.warmup({"state": np.zeros(3, dtype=np.float32)})
+            assert entered.is_set()
+
+            # The abandoned inference finishes after warmup has already failed.
+            release.set()
+            assert processed.wait(timeout=5.0)
+            assert queue.remaining == 0
+            assert ex.inference_count == 0
+        finally:
+            release.set()
+            ex.stop()
+
+    def test_warmup_accepted_just_after_timeout_is_not_reported_as_failure(self) -> None:
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+        from physicalai.runtime.execution import rtc
+
+        class _LateEvent(threading.Event):
+            """Report a timeout only after the worker has already completed the signal."""
+
+            def wait(self, timeout: float | None = None) -> bool:  # noqa: ARG002
+                assert super().wait(timeout=5.0)
+                return False
+
+        warmup_signal = rtc._WarmupSignal  # noqa: SLF001
+        queue = RTCActionQueue()
+        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0)
+        ex.start(_rtc_model(chunk_size=20, action_dim=3), queue)
+        try:
+            with patch.object(rtc, "_WarmupSignal", lambda: warmup_signal(event=_LateEvent())):
+                # The chunk is already queued, so warmup must succeed rather than
+                # report a timeout and leave the queue seeded behind its back.
+                ex.warmup({"state": np.zeros(3, dtype=np.float32)})
+            assert queue.remaining == 20
+            assert ex.inference_count == 1
+        finally:
+            ex.stop()
 
     def test_start_cancels_existing_warmup_before_refusing_active_worker(self) -> None:
         from physicalai.runtime import RTCActionQueue, RTCExecution

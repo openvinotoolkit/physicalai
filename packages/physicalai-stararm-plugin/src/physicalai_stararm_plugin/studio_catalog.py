@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Self
 
@@ -16,6 +17,7 @@ from physicalai_studio_plugin import (
     RobotAsset,
     RobotCatalogDefinition,
     RobotProbe,
+    RobotZeroCalibration,
     SerialPortInfo,
     robot_field_ui,
     robot_payload_ui,
@@ -347,6 +349,25 @@ async def _build_stararm_102_ld_driver(
     )
 
 
+async def _release_leader(robot: StarArm102HDLeader) -> None:
+    # A payload may set unlock_on_connect=False, so unlock explicitly before the user moves the arm.
+    await asyncio.to_thread(robot.disable_torque)
+
+
+async def _set_leader_zero(robot: StarArm102HDLeader) -> None:
+    await asyncio.to_thread(robot.set_zero_position)
+
+
+_STAR_ARM_102_LEADER_ZERO_CALIBRATION = RobotZeroCalibration[StarArm102HDLeader](
+    instructions=(
+        "Move the leader into its zero pose: the same folded rest pose as the follower arm, "
+        "with the gripper fully closed. Hold it still, then set zero."
+    ),
+    release=_release_leader,
+    set_zero=_set_leader_zero,
+)
+
+
 def _definitions() -> list[RobotCatalogDefinition]:
     return [
         RobotCatalogDefinition(
@@ -358,6 +379,7 @@ def _definitions() -> list[RobotCatalogDefinition]:
             asset=_STAR_ARM_102_LD_ASSET,
             adapter_options=RobotAdapterOptions(include_velocities=False, external_effort_gain=None),
             probe=_STAR_ARM_PROBE,
+            zero_calibration=_STAR_ARM_102_LEADER_ZERO_CALIBRATION,
         ),
         RobotCatalogDefinition(
             type="StarArm_102_HD_Leader",
@@ -368,6 +390,7 @@ def _definitions() -> list[RobotCatalogDefinition]:
             asset=_STAR_ARM_102_HD_ASSET,
             adapter_options=RobotAdapterOptions(include_velocities=False, external_effort_gain=None),
             probe=_STAR_ARM_PROBE,
+            zero_calibration=_STAR_ARM_102_LEADER_ZERO_CALIBRATION,
         ),
         RobotCatalogDefinition(
             type="StarArm_102_FL_Follower",

@@ -45,6 +45,13 @@ uv run physicalai run --config packages/physicalai-stararm-plugin/examples/runti
 uv run physicalai run --config packages/physicalai-stararm-plugin/examples/runtime/policy-follow-hd.yaml
 ```
 
+## Zero-pose calibration
+
+`StarArm102HDLeader.set_zero_position()` (also on the LD leader) stores the arm's current pose as
+every servo's origin. Physical AI Studio runs it from its calibration step when you add a Star Arm
+leader: move the leader into the same rest pose as the follower with the gripper closed, then set
+zero.
+
 ## URDF
 
 ```python
