@@ -8,6 +8,19 @@
 * **mujoco:** `physicalai-mujoco-so101 start` downloads the robot model before it starts the simulation owner, with a progress bar, so a slow first download no longer fails as an owner startup timeout. The new `physicalai-mujoco-so101 prefetch` command downloads every robot model ahead of time for offline machines.
 * **mujoco:** Studio's MuJoCo follower probes report an owner as online only when it drives that entry's joints, so the single-arm entry no longer attaches to a bimanual simulation or the other way round.
 
+## [0.4.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-mujoco-so101-plugin-v0.3.1...physicalai-mujoco-so101-plugin-v0.4.0) (2026-10-06)
+
+
+### ✨ Features
+
+* **mujoco:** add conveyor_sort scene with IK autopilot and automatic Studio episodes ([#310](https://github.com/openvinotoolkit/physicalai/issues/310)) ([16b28e8](https://github.com/openvinotoolkit/physicalai/commit/16b28e82849c44e93343549e5adf8b6128b9a4ec))
+* **mujoco:** add SO-101 MuJoCo simulation plugin ([#296](https://github.com/openvinotoolkit/physicalai/issues/296)) ([99ae66a](https://github.com/openvinotoolkit/physicalai/commit/99ae66a8d775fb93b794fcbed618775c65eded00))
+
+
+### ♻️ Code Refactoring
+
+* **mujoco:** use MuJoCo Menagerie's SO-101 and attach it to robot-free scenes ([#312](https://github.com/openvinotoolkit/physicalai/issues/312)) ([9b39d9d](https://github.com/openvinotoolkit/physicalai/commit/9b39d9dafba5f47c7a5bb7d43b2451916bb2109e))
+
 ## [0.3.1](https://github.com/MarkRedeman/physicalai-plugins/compare/physicalai-mujoco-so101-plugin-v0.3.0...physicalai-mujoco-so101-plugin-v0.3.1) (2026-09-09)
 
 
