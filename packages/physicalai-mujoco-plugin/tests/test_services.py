@@ -257,6 +257,18 @@ class TestSceneXmlWatch:
 
         watcher._apply_camera_edits(*model_data)  # noqa: SLF001
 
+    def test_a_half_typed_edit_does_not_escape(self, tmp_path, model_data) -> None:
+        path = tmp_path / "scene.xml"
+        path.write_text(_XML)
+        watcher = SceneXmlWatcher(path)
+        path.write_text(_XML.replace('pos="0 -1 0.5"', 'pos="0 -1"'))  # valid XML, wrong shape
+        watcher._next_check = 0.0  # noqa: SLF001
+        watcher._mtimes = {}  # noqa: SLF001
+
+        watcher.poll(*model_data)
+
+        np.testing.assert_allclose(model_data[0].cam_pos[0], (0.0, -1.0, 0.5))
+
     def test_an_edit_moves_the_camera(self, tmp_path, model_data) -> None:
         path = tmp_path / "scene.xml"
         path.write_text(_XML)

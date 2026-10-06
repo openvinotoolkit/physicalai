@@ -307,7 +307,7 @@ class ArmChannels:
         """Critically damped gains from the joint-space inertia at the current pose (CHN-9).
 
         Returns:
-            One ``(channel index, member, kp, kd, actuator gain)`` row per PD-driven channel.
+            One ``(channel index, member, kp, kd, ctrl per joint torque)`` row per PD-driven channel.
 
         Raises:
             ValueError: If a profile gain is negative or not finite.
@@ -339,7 +339,11 @@ class ArmChannels:
             if not (isfinite(kp) and isfinite(kd) and kp >= 0 and kd >= 0):
                 msg = f"Profile {self.profile.name!r} has invalid PD gains for {name!r}"
                 raise ValueError(msg)
-            gains.append((index, member, kp, kd, float(self.model.actuator_gainprm[member.actuator_id, 0])))
+            # The joint receives gear * gain * ctrl, so a joint torque needs ctrl = torque / (gear * gain).
+            gain = float(self.model.actuator_gainprm[member.actuator_id, 0]) * member.gear
+            if gain == 0.0:  # noqa: RUF069 - exactly zero means the actuator cannot move the joint
+                continue
+            gains.append((index, member, kp, kd, gain))
         return tuple(gains)
 
 

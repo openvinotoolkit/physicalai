@@ -240,7 +240,7 @@ def compose_scene(xml_path: str | Path, profile: RobotProfile) -> ComposedScene:
     if not prefixes:
         model = scene.compile()
         layout = derive_profile(model)
-        return ComposedScene(model, tuple(RobotBinding(prefix, layout) for prefix in _model_prefixes(layout, profile)))
+        return ComposedScene(model, tuple(RobotBinding(prefix, layout) for prefix in model_prefixes(layout, profile)))
     for prefix in prefixes:
         attach_robot(scene, profile, prefix)
     model = scene.compile()
@@ -248,7 +248,7 @@ def compose_scene(xml_path: str | Path, profile: RobotProfile) -> ComposedScene:
     return ComposedScene(model, tuple(RobotBinding(prefix, bind_layout(layout, model, prefix)) for prefix in prefixes))
 
 
-def _model_prefixes(layout: DerivedLayout, profile: RobotProfile) -> tuple[str, ...]:
+def model_prefixes(layout: DerivedLayout, profile: RobotProfile) -> tuple[str, ...]:
     """Find the robots of a model that defines its own: the prefixes of the profile's first actuator.
 
     A bimanual model names its arms ``left_shoulder_pan`` and ``right_shoulder_pan``; each prefix
@@ -376,6 +376,7 @@ __all__ = [
     "fetch_profile",
     "load_robot_spec",
     "load_scene_model",
+    "model_prefixes",
     "robot_layout",
     "scene_needs_robot",
 ]

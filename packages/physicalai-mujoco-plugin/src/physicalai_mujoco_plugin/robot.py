@@ -419,6 +419,17 @@ class MuJoCoRobot(OperatorControls):
                 self._current_scene_id,
             )
             return False
+        running = self._sim.joint_names if self._sim is not None else None
+        if running is not None and sim.joint_names != running:
+            # The transport advertised the joint names on connect; actions and observations must keep them.
+            logger.error(
+                "Scene '{}' would change the joint names from {} to {}; keeping scene '{}'",
+                scene_id,
+                running,
+                sim.joint_names,
+                self._current_scene_id,
+            )
+            return False
 
         # The camera thread renders the old model; stop it before taking the lock.
         self._cameras.stop()
@@ -429,6 +440,8 @@ class MuJoCoRobot(OperatorControls):
             self._objects.area = self._area
             self._last_sim_time = None
             self._bind_scene()
+            if self._camera_arg is None:
+                self._cameras.configs = default_cameras(sim)
             self._cameras.start(sim.model, sim.data)
             # Rebuild last: the viewer panel renders the new scene's state.
             if self._viewer is not None:

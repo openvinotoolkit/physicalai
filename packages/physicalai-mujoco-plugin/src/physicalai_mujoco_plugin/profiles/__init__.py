@@ -7,8 +7,6 @@ Importing this package does not import MuJoCo, so the Studio catalog and the CLI
 """
 
 from physicalai_mujoco_plugin.profiles._types import (
-    BaseHold,
-    CameraSpec,
     ChannelOverride,
     DefaultUnit,
     PDOverride,
@@ -24,8 +22,6 @@ __all__ = [
     "PROFILES",
     "SO101_PROFILE",
     "UR5E_PROFILE",
-    "BaseHold",
-    "CameraSpec",
     "ChannelOverride",
     "DefaultUnit",
     "PDOverride",

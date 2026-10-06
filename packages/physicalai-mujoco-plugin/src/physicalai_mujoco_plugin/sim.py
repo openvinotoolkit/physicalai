@@ -142,18 +142,19 @@ def joint_names_before_load(profile: RobotProfile, xml_path: Path) -> list[str]:
     """
     import mujoco  # noqa: PLC0415
 
-    from physicalai_mujoco_plugin.compose import anchor_prefixes, robot_layout  # noqa: PLC0415
+    from physicalai_mujoco_plugin.compose import anchor_prefixes, model_prefixes, robot_layout  # noqa: PLC0415
     from physicalai_mujoco_plugin.profiles.derive import derive_profile  # noqa: PLC0415
 
     spec = mujoco.MjSpec.from_file(str(xml_path))
     prefixes = anchor_prefixes(spec)
-    if profile.channels:
-        names = [channel.name for channel in profile.channels]
-    elif prefixes:
-        names = list(robot_layout(profile).joint_names)
-    else:
-        return list(derive_profile(spec.compile()).joint_names)
-    return [f"{prefix}{name}" for prefix in prefixes or ("",) for name in names]
+    if not prefixes:
+        # A robot-complete model: one robot per name prefix of the profile's channels, as compose_scene binds it.
+        layout = derive_profile(spec.compile())
+        if not profile.channels:
+            return list(layout.joint_names)
+        prefixes = model_prefixes(layout, profile)
+    names = [channel.name for channel in profile.channels] or list(robot_layout(profile).joint_names)
+    return [f"{prefix}{name}" for prefix in prefixes for name in names]
 
 
 def default_cameras(sim: Sim) -> list[CameraConfig]:

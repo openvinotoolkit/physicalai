@@ -86,6 +86,9 @@ class CameraService:
     def start(self, model: object, data: object) -> None:
         """Create the buffers and renderers for *model* and start rendering *data*."""
         self._data = data
+        configured = {config.name for config in self.configs}
+        for name in [name for name in self.frame_buffers if name not in configured]:
+            del self.frame_buffers[name]  # a camera of the previous model; the HTTP server shares this dict
         if not self.configs:
             return
         for config in self.configs:

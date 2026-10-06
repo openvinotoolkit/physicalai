@@ -225,6 +225,19 @@ def test_torque_channels_track_targets_through_the_software_pd() -> None:
     assert channels.model_targets()[0] == pytest.approx(np.radians(30.0))
 
 
+@pytest.mark.parametrize("gear", [2.0, -1.0])
+def test_software_pd_accounts_for_the_actuator_gear(gear: float) -> None:
+    """The joint receives gear * gain * ctrl; a geared or reversed motor must still track its target."""
+    model, data, channels = _bound(_TORQUE_ARM.replace('ctrlrange="-50 50"', f'gear="{gear}" ctrlrange="-50 50"'), unit="degrees")
+
+    channels.write(np.asarray([30.0]))
+    for _ in range(1000):
+        channels.apply_pd()
+        mujoco.mj_step(model, data)
+
+    assert channels.read_positions()[0] == pytest.approx(30.0, abs=1.0)
+
+
 def test_raw_torque_mode_passes_ctrl_through() -> None:
     _, data, channels = _bound(_TORQUE_ARM, torque_mode="raw")
     channels.write(np.asarray([3.0]))

@@ -47,7 +47,10 @@ class SceneXmlWatcher:
             return
         logger.info("Scene XML changed, updating camera")
         self._mtimes = mtimes
-        self._apply_camera_edits(model, data)
+        try:
+            self._apply_camera_edits(model, data)
+        except Exception as exc:  # noqa: BLE001 - a half-typed edit must not stop the control loop
+            logger.warning("Scene XML camera edit not applied: {}", exc)
         # The edit may have added or removed an <include>; re-walk next poll.
         self._cached_paths = None
 

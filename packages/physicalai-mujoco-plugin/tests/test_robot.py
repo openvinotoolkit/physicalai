@@ -189,6 +189,7 @@ class TestConnect:
 
     def test_a_robot_complete_model_has_one_robot_per_name_prefix(self, bimanual_path) -> None:
         robot = so101(bimanual_path)
+        assert robot.joint_names == list(BIMANUAL_SO101_JOINT_ORDER)  # before connect, as after
         robot.connect()
         assert robot.joint_names == list(BIMANUAL_SO101_JOINT_ORDER)
         assert robot.get_observation().joint_positions.shape == (12,)
@@ -473,6 +474,34 @@ class TestStatus:
 
 
 class TestSceneSwitching:
+    def test_a_scene_that_changes_the_joint_names_is_rejected(self, tmp_path) -> None:
+        """The transport advertised the names on connect: a prefixed one-arm model cannot become an unprefixed one."""
+        bodies, actuators = _arm_xml("left_")
+        path = tmp_path / "left_arm.xml"
+        path.write_text(
+            f'''<mujoco><compiler angle="radian"/><worldbody>{bodies}</worldbody><actuator>{actuators}</actuator></mujoco>'''
+        )
+        robot = so101(str(path))
+        robot.connect()
+        try:
+            assert robot.joint_names[0] == "left_shoulder_pan"
+            assert robot._switch_to_scene("yahtzee") is False  # noqa: SLF001
+            assert robot.joint_names[0] == "left_shoulder_pan"
+        finally:
+            robot.disconnect()
+
+    def test_default_cameras_follow_the_new_scene(self, model_path) -> None:
+        robot = MuJoCoRobot("so101", model_path=model_path, substeps=1)
+        with patch("mujoco.Renderer"):
+            robot.connect()
+            try:
+                assert [config.name for config in robot._cameras.configs] == ["overview"]  # noqa: SLF001
+                assert robot._switch_to_scene("single_pick_place")  # noqa: SLF001
+                assert [config.name for config in robot._cameras.configs] == ["wrist", "overview"]  # noqa: SLF001
+                assert set(robot._cameras.frame_buffers) == {"wrist", "overview"}  # noqa: SLF001
+            finally:
+                robot.disconnect()
+
     def test_a_different_arm_count_is_rejected_before_loading(self, robot) -> None:
         model = robot._model  # noqa: SLF001
         with patch("physicalai_mujoco_plugin.compose.compose_scene") as compose:

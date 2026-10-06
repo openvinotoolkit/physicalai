@@ -22,7 +22,6 @@ Unit = Literal["degrees", "metres", "normalized", "raw"]
 DefaultUnit = Literal["normalized", "degrees"]
 """Robot-wide unit choice (``MuJoCoRobot(unit=...)``); channel overrides may pin their own."""
 ProfileTier = Literal["twin", "dataset", "experimental", "unsupported"]
-BaseHold = Literal["until_action", "always", "never"]
 
 
 @dataclass(frozen=True)
@@ -49,20 +48,6 @@ class ChannelOverride:
 
 
 @dataclass(frozen=True)
-class CameraSpec:
-    """A camera added to a robot body, in that body's frame. Names are unprefixed."""
-
-    name: str
-    body: str
-    pos: tuple[float, float, float]
-    quat: tuple[float, float, float, float]
-    """Orientation as ``w, x, y, z``."""
-    fovy: float
-    resolution: tuple[int, int] = (640, 480)
-    source: Literal["override", "model", "default"] = "override"
-
-
-@dataclass(frozen=True)
 class PDOverride:
     """Software-PD settings for torque-controlled channels."""
 
@@ -75,8 +60,9 @@ class PDOverride:
 class RobotProfile:
     """Everything the plugin knows about one robot beyond what its model says.
 
-    An empty profile (only the Menagerie name) is valid: channels, home pose, sensors and cameras
-    are then derived from the model.
+    An empty profile (only the Menagerie name) is valid: channels, the home pose (the model's home
+    keyframe, else ``qpos0``), sensors and cameras are then derived from the model. Fields for
+    floating bases, cameras and twins arrive with the pull requests that use them.
     """
 
     name: str
@@ -88,19 +74,12 @@ class RobotProfile:
     channels: tuple[ChannelOverride, ...] = ()
     """Public layout in order; empty means one derived channel per actuator."""
     default_unit: DefaultUnit = "degrees"
-    cameras: tuple[CameraSpec, ...] | None = None
-    model_cameras: tuple[str, ...] = ()
-    home: Mapping[str, float] | None = None
-    """Home joint positions in model units by joint name; ``None`` uses the model's home keyframe."""
-    base_hold: BaseHold = "until_action"
     pd: PDOverride | None = None
-    kinematics: object | None = None
     actuator_forcerange: tuple[float, float] | None = None
     """Force range applied to every actuator named in ``channels``."""
     customize: Callable[[mujoco.MjSpec], None] | None = None
     """Last-resort edits of the loaded robot spec, before it is attached."""
     renames: tuple[tuple[str, str], ...] = ()
-    reach: float | None = None
     default_scene: str | None = None
 
 
@@ -152,8 +131,6 @@ def validate_profile(profile: RobotProfile) -> None:
 
 
 __all__ = [
-    "BaseHold",
-    "CameraSpec",
     "ChannelOverride",
     "DefaultUnit",
     "PDOverride",
