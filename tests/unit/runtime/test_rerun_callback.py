@@ -58,7 +58,13 @@ def _lifecycle_start(session_id: str = "sess-1", fps: int = 30) -> LifecycleEven
     )
 
 
-def _tick(step: int = 0, dof: int = 7, camera_frames: dict[str, Any] | None = None) -> TickEvent:
+def _tick(
+    step: int = 0,
+    dof: int = 7,
+    camera_frames: dict[str, Any] | None = None,
+    *,
+    source_updated: bool = True,
+) -> TickEvent:
     return TickEvent(
         session_id="sess-1",
         step=step,
@@ -71,6 +77,7 @@ def _tick(step: int = 0, dof: int = 7, camera_frames: dict[str, Any] | None = No
         loop_duration_s=0.033,
         sleep_time_s=0.0,
         stale_obs=False,
+        source_updated=source_updated,
     )
 
 
@@ -344,6 +351,36 @@ class TestRerunCallbackImageDecimation:
                 image_logged_at.append(step)
 
         assert image_logged_at == [0, 3]
+
+    def test_decimation_counts_source_updated_ticks_with_interpolation(
+        self, make_callback: Any, mock_rerun: MagicMock
+    ) -> None:
+        # Multiplier 3: the first action completes immediately, so source ticks land at 0, 1, 4, 7, ...
+        source_updated = [True, True, False, False, True, False, False, True, False, False]
+        source_updated += [True, False, False, True, False, False, True]
+        cb = make_callback()
+        cb.on_lifecycle(_lifecycle_start())
+
+        image_logged_at: list[int] = []
+        for step, updated in enumerate(source_updated):
+            mock_rerun.reset_mock()
+            frames = {"top": _fake_frame()} if updated else None
+            cb.on_tick(_tick(step=step, camera_frames=frames, source_updated=updated))
+            if any("camera/top" in str(c.args[0]) for c in mock_rerun.log.call_args_list):
+                image_logged_at.append(step)
+
+        assert image_logged_at == [0, 7, 16]
+
+    def test_decimation_counter_resets_on_new_session(self, make_callback: Any, mock_rerun: MagicMock) -> None:
+        cb = make_callback()
+        cb.on_lifecycle(_lifecycle_start())
+        cb.on_tick(_tick(step=0, camera_frames={"top": _fake_frame()}))
+
+        cb.on_lifecycle(_lifecycle_start(session_id="sess-2"))
+        mock_rerun.reset_mock()
+        cb.on_tick(_tick(step=0, camera_frames={"top": _fake_frame()}))
+
+        assert any("camera/top" in str(c.args[0]) for c in mock_rerun.log.call_args_list)
 
     def test_decimation_default_is_3(self, make_callback: Any) -> None:
         cb = make_callback()

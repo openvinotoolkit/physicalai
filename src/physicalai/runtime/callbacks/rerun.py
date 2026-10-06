@@ -30,7 +30,8 @@ class RerunCallback:
     Requires ``physicalai[observer-rerun]``.  Logs scalars and chunks every
     tick / inference event, and camera frames (from ``TickEvent.camera_frames``
     — the same values the action source saw that tick, no independent camera
-    read) at ``image_decimation``-th tick. Camera names for the blueprint
+    read) every ``image_decimation``-th source-updated tick (interpolated ticks
+    carry no frames and are not counted). Camera names for the blueprint
     layout are discovered lazily from the first tick's ``camera_frames`` keys,
     so this callback never holds a ``Camera`` reference of its own.
 
@@ -68,6 +69,7 @@ class RerunCallback:
         self._application_id = application_id
 
         self._last_step: int = 0
+        self._source_ticks: int = 0
         self._fps: float = 30.0
         self._pred_horizon: int = 0
         self._initialized = False
@@ -76,8 +78,10 @@ class RerunCallback:
         self._latencies: deque[float] = deque(maxlen=200)
 
     def on_lifecycle(self, event: LifecycleEvent) -> None:  # noqa: D102
-        if event.event == "start" and not self._initialized:
-            self._init_rerun(event.session_id, event.metadata)
+        if event.event == "start":
+            self._source_ticks = 0
+            if not self._initialized:
+                self._init_rerun(event.session_id, event.metadata)
         self._log_lifecycle_marker(event)
 
     def on_tick(self, event: TickEvent) -> None:  # noqa: D102
@@ -106,8 +110,10 @@ class RerunCallback:
             if self._camera_names:
                 self._send_default_blueprint()
 
-        if self._log_images and event.step % self._image_decimation == 0:
-            self._log_camera_frames(event.camera_frames)
+        if event.source_updated:
+            if self._log_images and self._source_ticks % self._image_decimation == 0:
+                self._log_camera_frames(event.camera_frames)
+            self._source_ticks += 1
 
     @staticmethod
     def on_metrics(event: MetricsEvent) -> None:
