@@ -39,8 +39,17 @@ class TestLinearInterpolator:
 
         interp.add(first)
 
-        assert interp.get(0) is first
+        np.testing.assert_array_equal(interp.get(0), first)
         assert interp.needs_new_action()
+
+    def test_add_copies_action(self) -> None:
+        interp = LinearInterpolator(multiplier=2)
+        action = _a(1.0)
+
+        interp.add(action)
+        action[0] = 99.0
+
+        np.testing.assert_array_equal(interp.get(0), _a(1.0))
 
     def test_emits_linear_points_then_exact_target(self) -> None:
         interp = LinearInterpolator(multiplier=4)
@@ -52,7 +61,7 @@ class TestLinearInterpolator:
         points = [interp.get(i) for i in range(4)]
 
         np.testing.assert_allclose(points[:3], [[1.0, 2.0], [2.0, 4.0], [3.0, 6.0]])
-        assert points[3] is target
+        np.testing.assert_array_equal(points[3], target)
         assert points[0].dtype == np.float32
         assert interp.needs_new_action()
 
@@ -63,7 +72,7 @@ class TestLinearInterpolator:
         target = _a(4.0)
         interp.add(target)
 
-        assert interp.get(5) is target
+        np.testing.assert_array_equal(interp.get(5), target)
         assert interp.needs_new_action()
 
     def test_reset_drops_previous_action(self) -> None:
@@ -75,7 +84,7 @@ class TestLinearInterpolator:
 
         interp.add(target)
 
-        assert interp.get(0) is target
+        np.testing.assert_array_equal(interp.get(0), target)
 
     def test_config_round_trip(self) -> None:
         config = Config.from_instance(LinearInterpolator(multiplier=3))
