@@ -595,6 +595,8 @@ def _pid_cwd(pid: int) -> Path | None:
     proc_cwd = Path(f"/proc/{pid}/cwd")
     if proc_cwd.exists():
         return proc_cwd.resolve()
+    # The subprocess is limited to local process inspection (fixed argv, no shell); it never
+    # executes a user-provided command or shell script.
     import subprocess  # noqa: PLC0415, S404  # nosec B404
 
     try:

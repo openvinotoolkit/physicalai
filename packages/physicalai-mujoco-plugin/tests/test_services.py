@@ -365,6 +365,44 @@ class TestSceneXmlWatch:
 
         np.testing.assert_array_equal(model.body_quat[model.body("camera_mount").id], (1.0, 0.0, 0.0, 0.0))
 
+    @pytest.mark.parametrize(
+        ("edit", "field"),
+        [
+            ('pos="0 -1 0.5"', 'pos="nan -1 0.5"'),
+            ('pos="0 -1 0.5"', 'pos="0 inf 0.5"'),
+        ],
+    )
+    def test_a_non_finite_camera_position_leaves_the_camera_alone(self, tmp_path, model_data, edit, field) -> None:
+        model = model_data[0]
+        path = tmp_path / "scene.xml"
+        path.write_text(_XML.replace(edit, field))
+
+        SceneXmlWatcher(path).apply(*model_data)
+
+        np.testing.assert_array_equal(model.cam_pos[0], (0.0, -1.0, 0.5))
+
+    @pytest.mark.parametrize("fovy", ["nan", "inf", "0", "180"])
+    def test_an_unusable_fovy_leaves_the_camera_alone(self, tmp_path, model_data, fovy) -> None:
+        model = model_data[0]
+        before = float(model.cam_fovy[0])
+        path = tmp_path / "scene.xml"
+        path.write_text(_XML.replace('pos="0 -1 0.5"', f'pos="0 -1 0.5" fovy="{fovy}"'))
+
+        SceneXmlWatcher(path).apply(*model_data)
+
+        assert model.cam_fovy[0] == before
+
+    def test_a_non_finite_rig_position_leaves_the_rig_alone(self, tmp_path) -> None:
+        xml = """<mujoco><worldbody><camera name="overview" pos="0 -1 0.5"/>
+<body name="camera_mount" pos="0 0 1"><geom size="0.1"/></body></worldbody></mujoco>"""
+        model = mujoco.MjModel.from_xml_string(xml)
+        path = tmp_path / "scene.xml"
+        path.write_text(xml.replace('pos="0 0 1"', 'pos="0 nan 1"'))
+
+        SceneXmlWatcher(path).apply(model, mujoco.MjData(model))
+
+        np.testing.assert_array_equal(model.body_pos[model.body("camera_mount").id], (0.0, 0.0, 1.0))
+
     def test_an_xyaxes_edit_turns_the_camera(self, tmp_path, model_data) -> None:
         model = model_data[0]
         path = tmp_path / "scene.xml"

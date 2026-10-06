@@ -158,8 +158,7 @@ class SceneXmlWatcher:
             # pyrefly: ignore [missing-attribute]
             pos_str = body_elem.get("pos")
             if pos_str:
-                # pyrefly: ignore [missing-attribute]
-                model.body_pos[body_id] = [float(x) for x in pos_str.split()]
+                _write_finite(model.body_pos, body_id, pos_str, f"{body_name} pos")  # pyrefly: ignore [missing-attribute]
 
             for attr in ("euler", "quat"):  # as before: a quat wins over an euler
                 # pyrefly: ignore [missing-attribute]
@@ -181,15 +180,13 @@ class SceneXmlWatcher:
             # pyrefly: ignore [missing-attribute]
             pos_str = camera_elem.get("pos")
             if pos_str:
-                pos = [float(x) for x in pos_str.split()]
-                # pyrefly: ignore [missing-attribute]
-                model.cam_pos[camera_id] = pos
+                _write_finite(model.cam_pos, camera_id, pos_str, f"{camera_name} camera pos")  # pyrefly: ignore [missing-attribute]
 
             # pyrefly: ignore [missing-attribute]
             fovy_str = camera_elem.get("fovy")
             if fovy_str:
                 # pyrefly: ignore [missing-attribute]
-                model.cam_fovy[camera_id] = float(fovy_str)
+                _write_finite(model.cam_fovy, camera_id, fovy_str, f"{camera_name} camera fovy", within=(0.0, 180.0))
 
             # The first orientation attribute present wins, as before.
             for attr in ("quat", "xyaxes", "euler"):
@@ -214,6 +211,25 @@ class SceneXmlWatcher:
 
         # pyrefly: ignore [missing-attribute]
         mujoco.mj_forward(model, data)
+
+
+def _write_finite(
+    array: np.ndarray, index: int, text: str, what: str, within: tuple[float, float] | None = None
+) -> None:
+    """Write the numbers in *text* to ``array[index]``, unless a half-typed edit left them unusable.
+
+    The wrong count, ``nan``/``inf`` or, with *within*, a value outside that open interval is logged
+    and leaves the model as it was. A value that isn't a number raises ``ValueError``, which the
+    watcher contains.
+    """
+    values = np.asarray([float(x) for x in text.split()], dtype=np.float64)
+    usable = values.size == np.size(array[index]) and np.isfinite(values).all()
+    if usable and within is not None:
+        usable = bool(np.all((values > within[0]) & (values < within[1])))
+    if not usable:
+        logger.warning("Invalid {} values: {}", what, text)
+        return
+    array[index] = values if values.size > 1 else values[0]
 
 
 def _orientation_quat(attr: str, text: str) -> np.ndarray | None:
