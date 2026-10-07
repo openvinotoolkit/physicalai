@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import sys
 import threading
 import types
@@ -13,6 +14,7 @@ import numpy as np
 import pytest
 from physicalai.config import Config
 
+from physicalai_mujoco_plugin import control
 from physicalai_mujoco_plugin.constants import BIMANUAL_SO101_JOINT_ORDER, SO101_JOINT_ORDER
 from physicalai_mujoco_plugin.http_server import (
     HomeCommand,
@@ -223,6 +225,9 @@ class TestConstruction:
             ({"rate_hz": 0.0}, "rate_hz must be positive"),
             ({"substeps": 0}, "substeps at least 1"),
             ({"scene": "conveyor_sort", "profile": "ur5e"}, "does not support"),
+            ({"viewer_theme": "neon"}, "Unsupported viewer_theme"),
+            ({"exit_with_pid": 0}, "exit_with_pid must be a process ID"),
+            ({"exit_with_pid": -1}, "exit_with_pid must be a process ID"),
         ],
     )
     def test_rejects_invalid_arguments(self, kwargs: dict[str, object], message: str) -> None:
@@ -238,6 +243,109 @@ class TestConstruction:
         restored.__setstate__(state)
         assert not restored.is_connected()
         assert (restored._substeps, restored._http_port, restored._viser_host) == (3, 9000, "0.0.0.0")  # noqa: SLF001, S104
+
+    def test_viewer_theme_and_exit_with_pid_survive_the_config_round_trip(self) -> None:
+        robot = MuJoCoRobot("so101", viewer_theme="studio", exit_with_pid=4242)
+        restored = Config.from_instance(robot).instantiate()
+
+        assert (restored._viewer_theme, restored._exit_with_pid) == ("studio", 4242)  # noqa: SLF001
+        assert robot.__getstate__()["viewer_theme"] == "studio"
+
+
+class TestProcessWatch:
+    """``exit_with_pid``: the owner shuts down once ``start``, its parent, is gone (P5)."""
+
+    @staticmethod
+    def _exited_pid() -> int:
+        import subprocess  # noqa: PLC0415, S404
+
+        process = subprocess.Popen([sys.executable, "-c", "pass"])  # noqa: S603
+        process.wait()
+        return process.pid
+
+    def test_a_running_parent_is_not_gone(self) -> None:
+        assert control._parent_gone(os.getppid()) is False  # noqa: SLF001
+
+    def test_an_exited_process_is_gone(self) -> None:
+        assert control._parent_gone(self._exited_pid()) is True  # noqa: SLF001
+
+    def test_a_reparented_owner_sees_its_parent_gone_even_while_it_is_an_unreaped_zombie(self) -> None:
+        """A killed ``start`` stays a zombie until reaped, and signal 0 still reaches a zombie."""
+        parent = os.getppid()
+        with patch.object(control.os, "getppid", return_value=1):
+            assert control._parent_gone(parent) is True  # noqa: SLF001
+
+    def test_a_parent_running_as_another_user_is_not_gone(self) -> None:
+        with patch.object(control.os, "kill", side_effect=PermissionError):
+            assert control._parent_gone(os.getppid()) is False  # noqa: SLF001
+
+    def test_the_owner_shuts_down_once_its_parent_is_gone(self, model_path) -> None:
+        shut_down = threading.Event()
+        robot = so101(model_path, exit_with_pid=self._exited_pid())
+        with (
+            patch.object(control, "PROCESS_WATCH_INTERVAL_S", 0.01),
+            patch.object(control, "_signal_owner_shutdown", side_effect=shut_down.set),
+        ):
+            robot.connect()
+            try:
+                assert shut_down.wait(timeout=5.0)
+            finally:
+                robot.disconnect()
+
+    def test_the_watch_runs_before_the_scene_loads(self, model_path) -> None:
+        """A ``start`` killed while the owner loads must be noticed; loading can take seconds."""
+        robot = so101(model_path, exit_with_pid=os.getppid())
+        watching: list[bool] = []
+        load = robot._load  # noqa: SLF001
+
+        def recording_load(*args: object) -> object:
+            watching.append(robot._process_watch is not None)  # noqa: SLF001
+            return load(*args)  # type: ignore[arg-type]
+
+        with patch.object(robot, "_load", side_effect=recording_load):
+            robot.connect()
+        robot.disconnect()
+        assert watching == [True]
+
+    def test_a_failed_load_stops_the_watch(self, model_path) -> None:
+        robot = so101(model_path, exit_with_pid=os.getppid())
+        with patch.object(robot, "_load", side_effect=ValueError("bad scene")), pytest.raises(ValueError):
+            robot.connect()
+        assert robot._process_watch is None  # noqa: SLF001
+
+    def test_the_watch_keeps_quiet_while_the_parent_runs_and_stops_on_disconnect(self, model_path) -> None:
+        robot = so101(model_path, exit_with_pid=os.getppid())
+        with (
+            patch.object(control, "PROCESS_WATCH_INTERVAL_S", 0.01),
+            patch.object(control, "_signal_owner_shutdown") as shutdown,
+        ):
+            robot.connect()
+            watch = robot._process_watch  # noqa: SLF001
+            threading.Event().wait(0.1)
+            robot.disconnect()
+        assert watch is not None
+        assert watch.is_set()
+        assert robot._process_watch is None  # noqa: SLF001
+        shutdown.assert_not_called()
+
+    def test_no_watch_without_exit_with_pid(self, robot) -> None:
+        assert robot._process_watch is None  # noqa: SLF001
+
+    def test_status_reports_a_camera_whose_renderer_failed(self, model_path) -> None:
+        """``start --status-json`` leaves such a camera out of ``ready`` (P4 review)."""
+        robot = so101(model_path, cameras=[{"name": "overview", "width": 64, "height": 48}])
+        with patch("mujoco.Renderer", side_effect=OSError("no GL")):
+            robot.connect()
+            try:
+                deadline = threading.Event()
+                for _ in range(500):
+                    camera = robot._http_status()["cameras"][0]  # noqa: SLF001
+                    if camera["failed"]:
+                        break
+                    deadline.wait(0.01)
+            finally:
+                robot.disconnect()
+        assert (camera["has_frame"], camera["failed"]) == (False, True)
 
 
 class TestConnect:
@@ -538,7 +646,16 @@ class TestStatus:
         assert "floor_flat" not in status["compatible_scenes"]
         assert status["objects"] == []
         assert status["cameras"] == [
-            {"name": "overview", "width": 640, "height": 480, "fps": 30, "rendering": False, "source": None},
+            {
+                "name": "overview",
+                "width": 640,
+                "height": 480,
+                "fps": 30,
+                "rendering": False,
+                "has_frame": False,
+                "failed": False,
+                "source": None,
+            },
         ]
         tabletop = ["conveyor_sort", "garment_fold", "single_pick_place", "yahtzee"]
         assert status["compatible_scenes"] == tabletop

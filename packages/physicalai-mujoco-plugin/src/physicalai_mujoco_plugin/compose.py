@@ -45,6 +45,8 @@ from physicalai_mujoco_plugin.robot_cameras import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     import mujoco
 
 ROBOT_MOUNT_FRAME = "robot_mount"
@@ -107,10 +109,15 @@ class ComposedScene:
     robots: tuple[RobotBinding, ...]
 
 
-def fetch_profile(profile: RobotProfile) -> Path:
+def fetch_profile(profile: RobotProfile, progress: Callable[[int, int], None] | None = None) -> Path:
     """Put the profile's robot entry in the Menagerie cache, downloading it if needed.
 
     The download shows a progress bar when stderr is a terminal.
+
+    Args:
+        profile: The robot profile.
+        progress: Called with the bytes downloaded so far and the total (0 when unknown) after
+            each downloaded chunk; never called when the model is cached.
 
     Returns:
         The robot entry's XML file.
@@ -133,8 +140,14 @@ def fetch_profile(profile: RobotProfile) -> Path:
             (robot.download_size or 0) / 2**20,
             cache.dir,
         )
+
+    def report(name: str, done: int, total: int) -> None:
+        mujoco_menagerie.print_progress(name, done, total)
+        if progress is not None:
+            progress(done, total)
+
     try:
-        return robot.path(cache) / entry.file
+        return robot.path(cache, report) / entry.file
     except mujoco_menagerie.DownloadError as exc:
         msg = (
             f"Could not download the MuJoCo Menagerie model {profile.menagerie_model!r}: {exc}. "

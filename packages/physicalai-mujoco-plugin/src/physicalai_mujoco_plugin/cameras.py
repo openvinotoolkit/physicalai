@@ -147,6 +147,8 @@ class CameraService:
         self.meters: dict[str, RateMeter] = {}
         self._lock = threading.RLock()
         self._renderers: dict[str, object] = {}
+        self._set_up: dict[str, object] | None = None
+        """The renderer dict whose setup has finished; its missing cameras have no renderer."""
         self._last_frame_ts: dict[str, float] = {}
         self._thread: CameraThread | None = None
         self._data: object | None = None
@@ -165,6 +167,32 @@ class CameraService:
         """Return the names of the cameras that have a renderer (any thread)."""
         with self._lock:
             return set(self._renderers)
+
+    def with_frames(self) -> set[str]:
+        """Return the names of the configured cameras that have published a frame.
+
+        Returns:
+            Camera names; a camera is listed once its first frame is in its buffer.
+        """
+        return {
+            config.name
+            for config in self.configs
+            if (buffer := self.frame_buffers.get(config.name)) is not None and buffer.snapshot() is not None
+        }
+
+    def failed(self) -> set[str]:
+        """Return the names of the configured cameras that got no renderer.
+
+        Empty while the renderers are still being created; afterwards, the cameras whose renderer
+        could not be created, or every camera once the camera thread stopped on an error.
+
+        Returns:
+            Camera names.
+        """
+        with self._lock:
+            if self._set_up is None or self._set_up is not self._renderers:
+                return set()
+            return {config.name for config in self.configs if config.name not in self._renderers}
 
     def fps(self) -> dict[str, float | None]:
         """Return each camera's frame rate over the last ~2 s."""
@@ -293,13 +321,16 @@ class CameraService:
         import mujoco  # noqa: PLC0415
 
         created: dict[str, object] = {}
-        for config in self.configs:
-            try:
-                created[config.name] = mujoco.Renderer(model, config.height, config.width)
-            except OSError as exc:
-                logger.warning("Camera '{}' renderer unavailable: {}", config.name, exc)
-        with self._lock:
-            renderers.update(created)
+        try:
+            for config in self.configs:
+                try:
+                    created[config.name] = mujoco.Renderer(model, config.height, config.width)
+                except OSError as exc:
+                    logger.warning("Camera '{}' renderer unavailable: {}", config.name, exc)
+        finally:
+            with self._lock:
+                renderers.update(created)
+                self._set_up = renderers
 
     def _close_renderers(self, renderers: dict[str, object]) -> None:
         with self._lock:

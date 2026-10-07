@@ -29,13 +29,11 @@ uv sync --package physicalai-mujoco-plugin
 uv run --package physicalai-mujoco-plugin physicalai-mujoco start
 ```
 
-On a headless or remote Linux machine (no desktop session, for example over SSH), MuJoCo cannot create an OpenGL context for the cameras, so `start` runs without cameras and logs a warning. Render with EGL instead:
+On a headless Linux machine (neither `DISPLAY` nor `WAYLAND_DISPLAY` set, for example over SSH), `start` renders the cameras with EGL: it sets `MUJOCO_GL=egl` (and `PYOPENGL_PLATFORM=egl`) when `MUJOCO_GL` is unset and an EGL library is installed, and logs it. If MuJoCo still cannot render, `start` runs without cameras and logs a warning. An explicit `MUJOCO_GL` always wins; use `MUJOCO_GL=osmesa` on a machine without a GPU driver (slower, needs OSMesa installed):
 
 ```bash
-MUJOCO_GL=egl uv run --package physicalai-mujoco-plugin physicalai-mujoco start
+MUJOCO_GL=osmesa uv run --package physicalai-mujoco-plugin physicalai-mujoco start
 ```
-
-Use `MUJOCO_GL=osmesa` on a machine without a GPU driver (slower, needs OSMesa installed). The same applies to the `start` command in the Studio setup below.
 
 The first `start` on a machine downloads the SO-101 model from [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) (about 4 MB) into a per-user cache before the simulation starts. To download it ahead of time, for example while building a container image, run:
 
@@ -66,7 +64,7 @@ The viewer opens on its **Simulation** tab, which controls the simulation. The *
 - **Conveyor** (`conveyor_sort` only, in place of **Episode**): **Belt running** pauses or resumes the belt and the item feed. **Belt speed** sets the belt surface speed from 0 to 10 cm/s. The panel shows the items fed so far, the current and last episode's score, and the sorting rule.
 - **Objects**: tick **Drag objects** to show a handle on each free object. While you drag, the object stays at the handle's pose. When you let go, it falls from there with zero velocity. The target stays fixed.
 - **Cameras**: tick **Show previews** to see low-rate thumbnails of the rendered cameras. Previews start off because every open viewer receives them.
-- **Shutdown** asks for confirmation before stopping the owner.
+- **Shutdown** asks for confirmation before stopping the owner (hidden with `--viewer-theme studio`).
 
 On the **Camera** tab, **Follow** chooses a body for the view to stay on: a free object, the target, or a gripper. Orbiting and zooming keep the view on it. Panning away stops following, and **Follow** goes back to **None**. **None**, the default, is a free camera that nothing moves. While you drag the followed object, the view holds still, then glides back onto it when you let go. **FOV** and **Reset View** apply to every open viewer. The follow choice is shared too. Following moves the viewer cameras; the rendered scene itself never shifts.
 
@@ -237,12 +235,15 @@ Common options:
 - `--model <path>`: scene XML to load instead of the registered scene's. Its `robot_mount` frames get the profile's robot and decide the arm count (`--bimanual` needs `left_robot_mount` and `right_robot_mount`); an XML without them is used as is
 - `--scene <name>`: scene name (`single_pick_place`, `yahtzee`, `conveyor_sort` or `garment_fold`). Default comes from the selected profile
 - `--no-gui`: disable all viewers
-- `--viser-port <port>`: browser viewer port (default `9090`)
+- `--viser-port <port>`: browser viewer port (default `9090`; `0` picks a free port)
 - `--viser-host <host>`: browser viewer bind host (default `127.0.0.1`; use `0.0.0.0` to expose it remotely)
+- `--viewer-theme <default|studio>`: `studio` gives the browser viewer a dark look with Studio's accent colour, no share button and no **Shutdown** button, for a viewer embedded in Studio, which stops the simulation itself
 - `--no-cameras`: disable camera rendering (HTTP streams and viewer previews)
 - `--http-host <host>`: host for the camera/control HTTP server (default `127.0.0.1`)
-- `--http-port <port>`: port for the camera/control HTTP server (default `8080`)
+- `--http-port <port>`: port for the camera/control HTTP server (default `8080`; `0` picks a free port)
 - `--no-http`: disable the camera/control HTTP server
+- `--status-json`: print startup events as JSON lines on stdout, see [Start from another program](#start-from-another-program)
+- `--exit-with-parent`: shut down when stdin reaches end of file, see [Start from another program](#start-from-another-program)
 - `--rate-hz <float>`: owner loop frequency
 - `--substeps <int>`: MuJoCo steps per control cycle (default: real time at `--rate-hz`, `10` in the SO-101 scenes)
 - `--unit <normalized|degrees>`: joint units for observations and actions (default comes from the selected profile; SO-101 uses `normalized`, see [Joint units](#joint-units))
@@ -250,6 +251,38 @@ Common options:
   (default `10` without HTTP, disabled when HTTP is enabled so stream viewers keep the sim alive)
 - `--allow-remote`: allow non-loopback zenoh connections
 - `--studio-url <url>`: Physical AI Studio backend for automatic episode recording (default `http://127.0.0.1:7860`)
+
+### Start from another program
+
+A program that starts and supervises the simulation, such as Physical AI Studio, can follow its startup and tie its lifetime to its own:
+
+```bash
+physicalai-mujoco start --status-json --exit-with-parent --http-port 0 --viser-port 0 --viewer-theme studio
+```
+
+`--status-json` prints one JSON object per line on stdout and flushes each line; logs stay on stderr:
+
+```json
+{"event": "phase", "phase": "fetch"}
+{"event": "phase", "phase": "fetch", "bytes": 1048576, "total": 4194304}
+{"event": "phase", "phase": "connect"}
+{"event": "phase", "phase": "load"}
+{"event": "phase", "phase": "cameras"}
+{"event": "ready", "name": "mujoco-so101-follow", "pid": 4242, "profile": "so101", "scene": "single_pick_place", "arms": 1, "http_url": "http://127.0.0.1:53412", "viewer_url": "http://127.0.0.1:53413", "cameras": ["wrist", "overview"]}
+```
+
+- `fetch` comes before the robot model download from MuJoCo Menagerie; while it downloads, more `fetch` events report `bytes` so far and the `total` (`0` when unknown). A cached model sends no `bytes` events.
+- `connect` comes before the owner process starts, `load` once the owner loads the scene and starts the viewer, cameras and HTTP server, and `cameras` while `start` waits up to 15 s for each camera's first frame.
+- `ready` comes once the owner runs. `pid` is the owner process, `scene` is `null` for a `--model` without `--scene`, and `arms` is the number of robots. `cameras` lists only the cameras that streamed a first frame, served at `<http_url>/cameras/<name>/mjpeg`; a camera whose renderer failed is left out, with a warning on stderr. Without HTTP (`--no-http`), `http_url` is `null` and `cameras` is empty. `viewer_url` is `null` without a viewer. A bind-all host (`0.0.0.0`, `::`) is reported as loopback.
+- `error`, with a `message`, means `start` failed; it exits with a non-zero code. This includes a requested HTTP server that does not answer (for example its port was taken): `start` then stops the owner it started. Invalid arguments exit with code 2 before any event.
+
+With `--status-json` or `--exit-with-parent`, `start` only runs a simulation it starts itself. If a simulation with the same name is already running, `start` fails with an `error` and leaves that simulation alone; it never stops an owner it did not start.
+
+`--http-port 0` and `--viser-port 0` pick free ports; `ready` reports the ports in use. `start` picks them before the owner binds them, so another process could take one in between.
+
+`--exit-with-parent` makes `start` read stdin and shut down at end of file, as on `SIGTERM`. A parent keeps the write end of a pipe to `start`'s stdin open and never writes to it; when the parent exits or crashes, the operating system closes the pipe (macOS and Linux). The owner process watches `start` too, from the moment it starts loading, and shuts down if `start` itself is killed. Don't use `--exit-with-parent` with stdin at `/dev/null`: that is end of file at once.
+
+The browser viewer has no `X-Frame-Options` or `Content-Security-Policy` header, so a page can embed `viewer_url` in an iframe.
 
 ## Joint units
 
@@ -445,7 +478,7 @@ HTTP control has no authentication and binds to loopback by default. Use explici
 
 ### `start` fails with `an OpenGL platform library has not been loaded into this process`
 
-MuJoCo could not create an OpenGL context, usually because there is no desktop session (headless machine, SSH, container). Set `MUJOCO_GL=egl` before `start`, or `MUJOCO_GL=osmesa` without a GPU driver. See [Quick start](#quick-start).
+MuJoCo could not create an OpenGL context, usually because there is no desktop session (headless machine, SSH, container). `start` picks EGL by itself only when neither `DISPLAY` nor `WAYLAND_DISPLAY` is set and an EGL library is installed. Otherwise set `MUJOCO_GL=egl` before `start`, or `MUJOCO_GL=osmesa` without a GPU driver. See [Quick start](#quick-start).
 
 ### HTTP server unavailable or port already in use
 
@@ -460,7 +493,7 @@ These warnings are typically non-fatal on Wayland and can be ignored if simulati
 ### Camera/control server is not started
 
 - Confirm the sim is running and the port is free: `curl http://127.0.0.1:8080/health`
-- `--no-http` or `--http-port 0` disables the server; `--no-cameras` disables all camera rendering
+- `--no-http` disables the server (`--http-port 0` picks a free port instead); `--no-cameras` disables all camera rendering
 
 ### Studio shows the MuJoCo robot as offline
 
