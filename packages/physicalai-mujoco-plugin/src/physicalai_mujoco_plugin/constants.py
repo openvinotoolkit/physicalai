@@ -42,6 +42,9 @@ BIMANUAL_NUM_JOINTS: Final = 12
 DEFAULT_MUJOCO_OWNER_NAME: Final = "mujoco-so101-follow"
 DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME: Final = "mujoco-so101-bimanual-follow"
 
+MAX_SEED: Final = 2**32 - 1
+"""Largest accepted reset seed (``start --seed``, ``POST /seed``); it fits a JavaScript number exactly."""
+
 
 def default_owner_name(profile: str, num_arms: int = 1) -> str:
     """Return the default zenoh owner name of a simulation (CLI-3).

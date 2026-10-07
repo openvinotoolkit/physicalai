@@ -36,6 +36,7 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, ValidationError, field_validator, model_validator
 from starlette.concurrency import run_in_threadpool
 
+from physicalai_mujoco_plugin.constants import MAX_SEED
 from physicalai_mujoco_plugin.studio_recorder import DEFAULT_TASK, MAX_EPISODES, MAX_TASK_CHARS, RecordingOptions
 
 if TYPE_CHECKING:
@@ -49,8 +50,6 @@ _FRAME_WAIT_TIMEOUT_S = 1.0
 _SERVER_START_TIMEOUT_S = 5.0
 _SERVER_STOP_TIMEOUT_S = 5.0
 
-MAX_SEED = 2**32 - 1
-"""Largest accepted reset seed (fits a JavaScript number exactly)."""
 MIN_DWELL_S = 0.5
 MAX_DWELL_S = 120.0
 MAX_OBJECT_COORD_M = 2.0

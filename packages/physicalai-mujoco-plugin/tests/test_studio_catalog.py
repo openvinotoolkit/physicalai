@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -7,15 +8,18 @@ import numpy as np
 from physicalai.config import Config
 from physicalai.robot.errors import RobotNotConnectedError, RobotProtocolMismatch, RobotTransportError
 from physicalai.robot.transport import RobotOwnerConfig, SharedRobot
+from physicalai_studio_plugin import SimulationLaunch, SimulationScene
 
 from physicalai_mujoco_plugin.virtual_leader import MuJoCoVirtualLeader
 from physicalai_mujoco_plugin.constants import (
     BIMANUAL_SO101_JOINT_ORDER,
     DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME,
     DEFAULT_MUJOCO_OWNER_NAME,
+    MAX_SEED,
     SO101_JOINT_ORDER,
 )
 from physicalai_mujoco_plugin.profiles import PROFILES, SO101_PROFILE
+from physicalai_mujoco_plugin.scene_registry import check_arm_count, get_scene
 from physicalai_mujoco_plugin.studio_catalog import (
     CatalogEntry,
     MuJoCoRobotProbe,
@@ -599,3 +603,79 @@ class TestGeneratedEntries:
             "sys.exit('mujoco' in sys.modules)"
         )
         assert subprocess.run([sys.executable, "-c", code], check=False).returncode == 0  # noqa: S603
+
+
+class TestSimulationLaunch:
+    """P3: every follower entry tells Studio how to start its simulation."""
+
+    def test_followers_offer_the_scenes_for_their_arm_count_and_the_leader_none(self) -> None:
+        launches = {d.type: d.simulation for d in _definitions()}
+        assert launches.pop("MuJoCo_SO101_Virtual_Leader") is None
+        so101 = ["single_pick_place", "yahtzee", "conveyor_sort", "garment_fold"]
+        expected = {
+            "MuJoCo_SO101_Follower": so101,
+            "MuJoCo_SO101_Bimanual_Follower": so101,
+            "MuJoCo_WidowXAI_Follower": ["single_pick_place", "garment_fold"],
+            "MuJoCo_WidowXAI_Bimanual_Follower": ["single_pick_place", "garment_fold"],
+            **dict.fromkeys(
+                ["MuJoCo_UnitreeG1_Follower", "MuJoCo_UnitreeGo2_Follower", "MuJoCo_BostonDynamicsSpot_Follower"],
+                ["floor_flat"],
+            ),
+        }
+        for entry in list_catalog_entries():
+            launch = launches[entry.type]
+            assert launch is not None
+            scene_ids = [scene.id for scene in launch.scenes]
+            assert scene_ids == expected.get(entry.type, ["single_pick_place"]), entry.type
+            assert launch.default_scene == entry.profile.default_scene
+            for scene_id in scene_ids:
+                check_arm_count(get_scene(scene_id), entry.profile, len(entry.prefixes))
+
+    def test_scenes_carry_the_registrys_names_and_descriptions(self) -> None:
+        launch = SO101_ENTRY.simulation_launch()
+        assert launch is not None
+        conveyor = get_scene("conveyor_sort")
+        assert launch.scenes[2] == SimulationScene(
+            id="conveyor_sort", display_name=conveyor.display_name, description=conveyor.description
+        )
+
+    @pytest.mark.parametrize(
+        ("entry_type", "seed", "extra"),
+        [
+            ("MuJoCo_SO101_Follower", None, []),
+            ("MuJoCo_WidowXAI_Bimanual_Follower", 7, ["--bimanual"]),
+            ("MuJoCo_UnitreeGo2_Follower", SimulationLaunch.max_seed, []),
+        ],
+    )
+    def test_argv_starts_a_supervised_simulation_that_start_parses(
+        self, entry_type: str, seed: int | None, extra: list[str]
+    ) -> None:
+        from physicalai_mujoco_plugin import __main__ as cli  # noqa: PLC0415
+
+        entry = {entry.type: entry for entry in list_catalog_entries()}[entry_type]
+        launch = entry.simulation_launch()
+        assert launch is not None
+        argv = launch.argv(launch.default_scene, "-studio sim", seed)
+        assert argv[:6] == [sys.executable, "-m", "physicalai_mujoco_plugin", "start", "--profile", entry.profile.name]
+        assert argv[6 : 6 + len(extra)] == extra
+        args = cli._build_parser().parse_args(argv[3:])  # noqa: SLF001
+        assert (args.profile, args.bimanual, args.scene, args.name, args.seed) == (
+            entry.profile.name,
+            entry.bimanual,
+            launch.default_scene,
+            "-studio sim",
+            seed,
+        )
+        assert (args.status_json, args.exit_with_parent, args.http_port, args.viser_port) == (True, True, 0, 0)
+        assert args.viewer_theme == "studio"
+
+    def test_the_seed_range_matches_post_seed(self) -> None:
+        assert SimulationLaunch.max_seed == MAX_SEED
+
+    def test_the_module_runs_with_python_dash_m(self) -> None:
+        import subprocess  # noqa: PLC0415
+
+        command = [sys.executable, "-m", "physicalai_mujoco_plugin", "start", "--help"]
+        result = subprocess.run(command, check=False, capture_output=True, text=True)  # noqa: S603
+        assert result.returncode == 0
+        assert "--seed" in result.stdout
