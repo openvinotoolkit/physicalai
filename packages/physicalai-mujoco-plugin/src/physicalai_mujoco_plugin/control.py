@@ -20,6 +20,7 @@ model.
 from __future__ import annotations
 
 import contextlib
+import os
 import queue
 import sys
 import threading
@@ -58,6 +59,34 @@ def _signal_owner_shutdown() -> None:
     logger.warning("Owner shutdown event not found; use Ctrl+C or stop the process to exit")
 
 
+PROCESS_WATCH_INTERVAL_S = 0.5
+"""How often the owner checks that its parent process (``exit_with_pid``) still runs."""
+
+
+def _parent_gone(pid: int) -> bool:
+    """Return whether *pid*, the process that started this one, has exited.
+
+    A killed parent stays a zombie until its own parent reaps it, and signal 0 still reaches a
+    zombie; this process sees the exit at once, because it is re-parented.
+
+    Args:
+        pid: The parent process.
+
+    Returns:
+        ``True`` once this process is no longer *pid*'s child, or *pid* no longer exists.
+    """
+    if os.getppid() != pid:
+        return True
+    try:
+        # Signal 0 only checks that the PID exists.
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False  # it exists, under another user
+    return False
+
+
 class OperatorControls:
     """Commands and status of the simulation's operator surfaces (viewer panel, HTTP).
 
@@ -87,6 +116,8 @@ class OperatorControls:
     _base_status: tuple[BaseStatus, ...]
     _viewer: ViewerService | None
     _replay: Replay | None
+    _exit_with_pid: int | None
+    _process_watch: threading.Event | None
 
     @property
     def joint_names(self) -> list[str]:
@@ -447,6 +478,36 @@ class OperatorControls:
         self._http_server = server
         logger.info("HTTP camera server running at {}", server.url)
 
+    def _start_process_watch(self) -> None:
+        """Shut the owner down, as ``POST /shutdown`` does, once its parent ``exit_with_pid`` is gone.
+
+        ``start --exit-with-parent`` stops the owner itself when its own parent goes away; this
+        covers a ``start`` that is killed outright, since the owner runs in its own session and HTTP
+        turns its idle timeout off. It starts before the scene loads, so a parent killed while the
+        owner initializes is noticed too: the owner loop then ends as soon as it starts.
+        """
+        pid = self._exit_with_pid
+        if pid is None or self._process_watch is not None:
+            return
+        stop = threading.Event()
+
+        def _watch() -> None:
+            while True:
+                if _parent_gone(pid):
+                    logger.info("Parent process {} exited; shutting down the simulation", pid)
+                    _signal_owner_shutdown()
+                    return
+                if stop.wait(PROCESS_WATCH_INTERVAL_S):
+                    return
+
+        self._process_watch = stop
+        threading.Thread(target=_watch, name="mujoco-exit-with-pid", daemon=True).start()
+
+    def _stop_process_watch(self) -> None:
+        if self._process_watch is not None:
+            self._process_watch.set()
+            self._process_watch = None
+
     def _stop_http_server(self) -> None:
         if self._http_server is not None:
             with contextlib.suppress(Exception):
@@ -479,6 +540,7 @@ class OperatorControls:
         from physicalai_mujoco_plugin.scene_registry import list_scenes  # noqa: PLC0415
 
         rendering = self._cameras.rendering()
+        with_frames, failed = self._cameras.with_frames(), self._cameras.failed()
         compatible = sorted(self._compatible_scenes())
         with self._state_lock:
             sim = self._sim
@@ -512,6 +574,9 @@ class OperatorControls:
                         "height": config.height,
                         "fps": config.fps,
                         "rendering": config.name in rendering,
+                        # Startup state: a first frame arrived, or the renderer could not be created.
+                        "has_frame": config.name in with_frames,
+                        "failed": config.name in failed,
                         # override, model or default for robot cameras (CAM-3), scene otherwise.
                         "source": sources.get(config.name),
                     }

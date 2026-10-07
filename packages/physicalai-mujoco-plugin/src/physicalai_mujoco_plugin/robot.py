@@ -36,6 +36,7 @@ from physicalai_mujoco_plugin.profiles import DefaultUnit, RobotProfile, get_pro
 from physicalai_mujoco_plugin.scene_objects import SceneObjects, SpawnArea
 from physicalai_mujoco_plugin.sim import Sim, default_cameras, joint_names_before_load, load_sim, resolve_scene
 from physicalai_mujoco_plugin.studio_recorder import DEFAULT_STUDIO_URL
+from physicalai_mujoco_plugin.viewer import ViewerTheme
 
 if TYPE_CHECKING:
     from physicalai.capture.frame import Frame
@@ -95,11 +96,13 @@ class MuJoCoRobot(OperatorControls):
         enable_viewer: bool = False,
         viser_host: str = "127.0.0.1",
         viser_port: int = 9090,
+        viewer_theme: ViewerTheme = "default",
         http_host: str = "127.0.0.1",
         http_port: int = 0,
         owner_name: str = "",
         studio_url: str = DEFAULT_STUDIO_URL,
         seed: int | None = None,
+        exit_with_pid: int | None = None,
     ) -> None:
         """Create a disconnected simulation.
 
@@ -120,15 +123,21 @@ class MuJoCoRobot(OperatorControls):
             enable_viewer: Open the viser viewer (or the native viewer where viser is unavailable).
             viser_host: viser bind address.
             viser_port: viser port.
+            viewer_theme: ``studio`` gives viser a dark look with Studio's accent colour and no
+                Shutdown button, for a viewer embedded in Studio, which stops the simulation itself.
             http_host: HTTP camera and control server bind address.
             http_port: HTTP port; ``0`` disables the server.
             owner_name: The shared-robot owner name, used to find its Studio session.
             studio_url: Studio backend that automatic episode recording attaches to.
             seed: Fixed seed for scene resets; ``None`` randomizes.
+            exit_with_pid: The PID of the process that starts this owner, its parent: once this
+                process is no longer its child, the shared owner shuts down as on ``POST /shutdown``.
+                ``physicalai-mujoco start --exit-with-parent`` passes its own PID.
 
         Raises:
-            ValueError: If ``unit``, ``torque_mode``, ``rate_hz`` or ``substeps`` is invalid, or the
-                scene, the profile or ``model_path`` cannot run the requested arm count.
+            ValueError: If ``unit``, ``torque_mode``, ``rate_hz``, ``substeps``, ``viewer_theme`` or
+                ``exit_with_pid`` is invalid, or the scene, the profile or ``model_path`` cannot run
+                the requested arm count.
         """
         if unit is not None and unit not in get_args(DefaultUnit):
             msg = f"Unsupported unit {unit!r}; expected one of {get_args(DefaultUnit)}"
@@ -139,12 +148,18 @@ class MuJoCoRobot(OperatorControls):
         if not rate_hz > 0 or (substeps is not None and substeps < 1):
             msg = f"rate_hz must be positive and substeps at least 1, got {rate_hz!r} and {substeps!r}"
             raise ValueError(msg)
+        if viewer_theme not in get_args(ViewerTheme):
+            msg = f"Unsupported viewer_theme {viewer_theme!r}; expected one of {get_args(ViewerTheme)}"
+            raise ValueError(msg)
+        if exit_with_pid is not None and exit_with_pid < 1:
+            msg = f"exit_with_pid must be a process ID, got {exit_with_pid!r}"
+            raise ValueError(msg)
         self._recipe: dict[str, object] = {
             "profile": profile, "scene": scene, "bimanual": bimanual, "model_path": model_path, "unit": unit,
             "torque_mode": torque_mode, "substeps": substeps, "rate_hz": rate_hz, "cameras": cameras,
             "enable_viewer": enable_viewer, "viser_host": viser_host, "viser_port": viser_port,
-            "http_host": http_host, "http_port": http_port, "owner_name": owner_name, "studio_url": studio_url,
-            "seed": seed,
+            "viewer_theme": viewer_theme, "http_host": http_host, "http_port": http_port, "owner_name": owner_name,
+            "studio_url": studio_url, "seed": seed, "exit_with_pid": exit_with_pid,
         }  # fmt: skip
         """Constructor arguments, for pickling (``__getstate__``)."""
         self._profile: RobotProfile = get_profile(profile)
@@ -160,6 +175,7 @@ class MuJoCoRobot(OperatorControls):
         )
         self._enable_viewer = enable_viewer
         self._viser_host, self._viser_port = viser_host, viser_port
+        self._viewer_theme: ViewerTheme = viewer_theme
         self._http_host, self._http_port = http_host, http_port
         self._owner_name = owner_name
         self._studio_url = studio_url
@@ -198,6 +214,8 @@ class MuJoCoRobot(OperatorControls):
         self._base_status: tuple[BaseStatus, ...] = ()
         """Floating-base readouts of the last tick, for the HTTP and viewer threads."""
         self._replay: Replay | None = None
+        self._exit_with_pid = exit_with_pid
+        self._process_watch: threading.Event | None = None
 
     # ------------------------------------------------------------------
     # Robot protocol
@@ -232,9 +250,15 @@ class MuJoCoRobot(OperatorControls):
             return
         from physicalai_mujoco_plugin.conveyor_automation import ConveyorAutomation  # noqa: PLC0415
 
+        # Watch the parent before the slow part: loading, the viewer, cameras and HTTP.
+        self._start_process_watch()
         xml_path = self._xml_path(self._scene_config)
         logger.info("Loading MuJoCo scene {} with the {} robot", xml_path, self._profile.name)
-        sim = self._load(xml_path, self._scene_config)
+        try:
+            sim = self._load(xml_path, self._scene_config)
+        except Exception:
+            self._stop_process_watch()
+            raise
         if self._automation is None:
             self._automation = ConveyorAutomation(
                 self._studio_url,
@@ -261,6 +285,7 @@ class MuJoCoRobot(OperatorControls):
             self._viewer = ViewerService(
                 host=self._viser_host,
                 port=self._viser_port,
+                theme=self._viewer_theme,
                 submit_command=self._submit_command,
                 panel_state=self._panel_state,
                 key_callback=self._key_callback,
@@ -274,6 +299,7 @@ class MuJoCoRobot(OperatorControls):
 
     def disconnect(self) -> None:
         """Stop the services and release the simulation; repeated calls are harmless."""
+        self._stop_process_watch()
         self._stop_http_server()
         self._cameras.close()
         if self._automation is not None:

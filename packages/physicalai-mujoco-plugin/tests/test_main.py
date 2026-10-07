@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import functools
+import http.server
+import io
+import json
 import os
 import signal
 import subprocess
+import sys
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -17,6 +25,9 @@ from physicalai_mujoco_plugin.constants import (
     DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME,
     DEFAULT_MUJOCO_OWNER_NAME,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class TestHttpOwnerName:
@@ -316,7 +327,7 @@ class TestRobotModelFetch:
             shutdown.set()
 
         with (
-            patch.object(cli, "fetch_profile", lambda profile: calls.append(f"fetch {profile.name}")),
+            patch.object(cli, "fetch_profile", lambda profile, _progress: calls.append(f"fetch {profile.name}")),
             patch.object(
                 cli.SharedRobot, "from_config", side_effect=lambda *_a, **_k: calls.append("owner") or MagicMock()
             ),
@@ -646,3 +657,473 @@ def test_process_lookup_failures_are_bounded(error: Exception) -> None:
         assert cli._pid_command_line(1234) is None
         assert cli._matching_pids("physicalai-mujoco start") == []
     assert all(call.kwargs["timeout"] == 5 for call in run.call_args_list)
+
+
+ROOT = {"service": "my-sim", "cameras": ["wrist", "overview"], "viewer_url": "http://127.0.0.1:9090"}
+HEALTH = {
+    "cameras": [
+        {"name": "wrist", "has_frame": True, "failed": False},
+        {"name": "overview", "has_frame": True, "failed": False},
+    ]
+}
+
+
+class _Launch(SimpleNamespace):
+    """What a mocked ``start`` did: recipe, transport kwargs, events and the owner calls."""
+
+    @property
+    def events(self) -> list[dict[str, object]]:
+        return [json.loads(line) for line in self.stdout.getvalue().splitlines()]
+
+
+def _launch(  # noqa: PLR0913
+    argv: list[str],
+    *,
+    root: dict | None = ROOT,
+    health: dict | None = HEALTH,
+    owner_pid: int | None = 1234,
+    existing_pid: int | None = None,
+    spawned: bool = True,
+    on_connect: Callable[[], None] | None = None,
+    fetch: bool = False,
+    stdout: io.StringIO | None = None,
+) -> _Launch:
+    """Run ``start`` with the owner mocked.
+
+    Args:
+        argv: ``start`` arguments after ``--name my-sim``.
+        root: The owner's ``GET /``.
+        health: The owner's ``GET /health``.
+        owner_pid: The owner holding the name once ``connect`` ran.
+        existing_pid: The owner holding the name before ``connect`` (another simulation).
+        spawned: Whether that owner is a child of this process.
+        on_connect: Runs inside ``connect``, after the owner took its name.
+        fetch: Run the real ``fetch_profile`` instead of a no-op.
+        stdout: Where the events go (a new buffer by default).
+    """
+    args = cli._build_parser().parse_args(["start", "--name", "my-sim", *argv])
+    launch = _Launch(stdout=stdout or io.StringIO(), connected=False, exit_code=None)
+    shared = MagicMock()
+
+    def connect() -> None:
+        launch.connected = True
+        if on_connect is not None:
+            on_connect()
+
+    shared.connect.side_effect = connect
+
+    def factory(config, **kwargs):
+        launch.init_args, launch.kwargs = config["init_args"], kwargs
+        return shared
+
+    responses = {"/": root, "/health": health}
+    with contextlib.ExitStack() as stack:
+        if not fetch:
+            stack.enter_context(patch.object(cli, "fetch_profile"))
+        launch.factory = stack.enter_context(patch.object(cli.SharedRobot, "from_config", side_effect=factory))
+        stack.enter_context(
+            patch.object(cli, "_owner_pid", side_effect=lambda _name: owner_pid if launch.connected else existing_pid)
+        )
+        stack.enter_context(patch.object(cli, "_spawned_by_this_process", return_value=spawned))
+        launch.http_json = stack.enter_context(
+            patch.object(cli, "_http_json", side_effect=lambda _host, _port, path: responses[path])
+        )
+        launch.wait = stack.enter_context(patch.object(cli, "_wait_for_owner_shutdown"))
+        launch.http_stop = stack.enter_context(patch.object(cli, "_stop_owner_over_http", return_value=True))
+        launch.signal_stop = stack.enter_context(patch.object(cli, "_stop_owner_by_signal", return_value=True))
+        stack.enter_context(patch.object(cli.signal, "signal"))
+        stack.enter_context(patch.object(cli.sys, "stdout", launch.stdout))
+        try:
+            cli._start(args)  # noqa: SLF001
+        except SystemExit as exc:
+            launch.exit_code = exc.code
+    launch.shared = shared
+    return launch
+
+
+PHASES = [
+    {"event": "phase", "phase": "fetch"},
+    {"event": "phase", "phase": "connect"},
+    {"event": "phase", "phase": "load"},
+    {"event": "phase", "phase": "cameras"},
+]
+
+
+class TestStatusJson:
+    """``start --status-json``: startup events on stdout for a supervising process (P4)."""
+
+    def test_phases_then_ready_with_the_owners_addresses_and_cameras(self) -> None:
+        events = _launch(["--status-json", "--no-gui"]).events
+        assert events == [
+            *PHASES,
+            {
+                "event": "ready",
+                "name": "my-sim",
+                "pid": 1234,
+                "profile": "so101",
+                "scene": "single_pick_place",
+                "arms": 1,
+                "http_url": "http://127.0.0.1:8080",
+                "viewer_url": "http://127.0.0.1:9090",
+                "cameras": ["wrist", "overview"],
+            },
+        ]
+        assert list(events[-1]) == ["event", "name", "pid", "profile", "scene", "arms", "http_url", "viewer_url", "cameras"]
+
+    def test_load_is_announced_while_the_owner_loads(self) -> None:
+        """The owner takes its name, then loads; ``load`` must not wait for ``connect`` to return."""
+        stdout = io.StringIO()
+        seen: list[str] = []
+
+        def owner_loading() -> None:
+            deadline = time.monotonic() + 5.0
+            while '"load"' not in stdout.getvalue() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            seen.append(stdout.getvalue())
+
+        _launch(["--status-json", "--no-gui"], on_connect=owner_loading, stdout=stdout)
+        assert '"load"' in seen[0]
+        assert '"cameras"' not in seen[0]
+
+    def test_without_the_flag_stdout_stays_empty(self) -> None:
+        launch = _launch(["--no-gui"])
+        assert launch.stdout.getvalue() == ""
+        launch.http_json.assert_not_called()
+
+    def test_without_http_there_are_no_streams_and_the_viewer_url_is_the_configured_one(self) -> None:
+        launch = _launch(["--status-json", "--no-http", "--viser-port", "9191"])
+        assert launch.events[:-1] == PHASES
+        ready = launch.events[-1]
+        assert (ready["http_url"], ready["viewer_url"], ready["cameras"]) == (None, "http://127.0.0.1:9191", [])
+        launch.http_json.assert_not_called()
+
+    @pytest.mark.parametrize("root", [None, {**ROOT, "service": "other-sim"}])
+    def test_requested_http_that_does_not_answer_is_an_error_and_stops_the_owner(self, root) -> None:
+        """A failed bind or a port answering for another owner: Studio could not use the sim."""
+        launch = _launch(["--status-json", "--no-gui"], root=root)
+        assert launch.exit_code == 1
+        assert launch.events[-1]["event"] == "error"
+        assert "HTTP server of 'my-sim' is not answering" in str(launch.events[-1]["message"])
+        assert "ready" not in [event["event"] for event in launch.events]
+        launch.http_stop.assert_called_once_with("127.0.0.1", 8080, "my-sim", 1234)
+        launch.shared.disconnect.assert_called_once_with()
+
+    def test_a_bind_all_host_is_reached_and_reported_on_loopback(self) -> None:
+        launch = _launch(["--status-json", "--no-gui", "--http-host", "0.0.0.0"])  # noqa: S104
+        assert launch.events[-1]["http_url"] == "http://127.0.0.1:8080"
+        launch.http_json.assert_any_call("127.0.0.1", 8080, "/")
+
+    def test_a_start_error_is_reported_with_its_message_and_exits_non_zero(self) -> None:
+        launch = _launch(["--status-json", "--scene", "nope"])
+        assert launch.exit_code == 1
+        assert launch.events[-1]["event"] == "error"
+        assert "Unknown scene 'nope'" in str(launch.events[-1]["message"])
+
+    def test_an_owner_failure_is_reported_and_raised(self) -> None:
+        def fail() -> None:
+            raise RuntimeError("robot owner did not become ready")
+
+        stdout = io.StringIO()
+        with pytest.raises(RuntimeError):
+            _launch(["--status-json", "--no-gui"], on_connect=fail, stdout=stdout)
+        last = json.loads(stdout.getvalue().splitlines()[-1])
+        assert last == {"event": "error", "message": "robot owner did not become ready"}
+
+    def test_a_closed_reader_turns_the_writer_off(self) -> None:
+        stdout = MagicMock()
+        stdout.write.side_effect = BrokenPipeError
+        stdout.fileno.side_effect = ValueError
+        writer = cli._StatusWriter(enabled=True)  # noqa: SLF001
+        with patch.object(cli.sys, "stdout", stdout):
+            writer.phase("fetch")
+            writer.phase("connect")
+        assert writer.enabled is False
+        stdout.write.assert_called_once()
+
+    def test_each_event_is_one_flushed_line(self) -> None:
+        stdout = MagicMock()
+        with patch.object(cli.sys, "stdout", stdout):
+            cli._StatusWriter(enabled=True).error("boom")  # noqa: SLF001
+        stdout.write.assert_called_once_with('{"event": "error", "message": "boom"}\n')
+        stdout.flush.assert_called_once_with()
+
+
+class TestNameCollision:
+    """A supervised start never attaches to, or stops, a simulation that another command started."""
+
+    @pytest.mark.parametrize("flag", ["--status-json", "--exit-with-parent"])
+    def test_a_running_owner_with_the_name_is_an_error_before_spawning(self, flag: str) -> None:
+        with patch.object(cli, "_shut_down_on_stdin_eof"):
+            launch = _launch([flag, "--no-gui"], existing_pid=4242)
+        assert launch.exit_code == 1
+        launch.factory.assert_not_called()
+        launch.http_stop.assert_not_called()
+        launch.signal_stop.assert_not_called()
+
+    def test_an_owner_attached_in_a_race_is_never_stopped_even_on_eof(self) -> None:
+        shutdown_on_eof: list[threading.Event] = []
+        with patch.object(cli, "_shut_down_on_stdin_eof", side_effect=shutdown_on_eof.append):
+            launch = _launch(
+                ["--status-json", "--exit-with-parent", "--no-gui"],
+                spawned=False,
+                on_connect=lambda: shutdown_on_eof[0].set(),
+            )
+        assert launch.exit_code == 1
+        assert "was not started by this command" in str(launch.events[-1]["message"])
+        launch.http_stop.assert_not_called()
+        launch.signal_stop.assert_not_called()
+        launch.shared.disconnect.assert_called_once_with()
+
+    def test_an_unsupervised_start_keeps_its_old_behaviour(self) -> None:
+        """Without the flags, a second ``start`` still attaches and its Ctrl+C stops the owner."""
+        launch = _launch(["--no-gui"], existing_pid=4242, spawned=False)
+        assert launch.exit_code is None
+        launch.factory.assert_called_once()
+
+    def test_only_a_running_child_counts_as_spawned_by_this_process(self) -> None:
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])  # noqa: S603
+        try:
+            assert cli._spawned_by_this_process(child.pid) is True  # noqa: SLF001
+            # The owner of a simulation another command started is no child of this process.
+            assert cli._spawned_by_this_process(os.getppid()) is False  # noqa: SLF001
+        finally:
+            child.kill()
+            child.wait()
+        assert cli._spawned_by_this_process(child.pid) is False  # noqa: SLF001
+
+
+class TestCameraReadiness:
+    """``ready`` lists only cameras that stream (P4 review)."""
+
+    @staticmethod
+    def _health(*cameras: tuple[str, bool, bool]) -> dict:
+        return {"cameras": [{"name": n, "has_frame": f, "failed": x} for n, f, x in cameras]}
+
+    def test_waits_for_first_frames_and_drops_failed_cameras(self) -> None:
+        replies = [
+            None,  # the owner is still answering its first requests
+            self._health(("wrist", False, False), ("overview", False, False)),
+            self._health(("wrist", True, False), ("overview", False, True)),
+        ]
+        with patch.object(cli, "_http_json", side_effect=replies) as http_json:
+            assert cli._working_cameras("127.0.0.1", 8080) == ["wrist"]  # noqa: SLF001
+        assert http_json.call_count == 3
+
+    def test_cameras_without_a_frame_by_the_deadline_are_left_out(self) -> None:
+        pending = self._health(("wrist", True, False), ("overview", False, False))
+        with patch.object(cli, "_http_json", return_value=pending):
+            assert cli._working_cameras("127.0.0.1", 8080, timeout_s=0.2) == ["wrist"]  # noqa: SLF001
+
+    def test_an_unreachable_status_reports_no_cameras(self) -> None:
+        with patch.object(cli, "_http_json", return_value=None):
+            assert cli._working_cameras("127.0.0.1", 8080, timeout_s=0.2) == []  # noqa: SLF001
+
+    def test_ready_lists_the_working_cameras(self) -> None:
+        launch = _launch(["--status-json", "--no-gui"], health=self._health(("wrist", True, False), ("overview", False, True)))
+        assert launch.events[-1]["cameras"] == ["wrist"]
+
+
+class _ArchiveServer:
+    """Serve one Menagerie-style archive over local HTTP, as a fake ``mujoco_menagerie`` robot."""
+
+    def __init__(self, tmp_path: Path, size: int) -> None:
+        import hashlib  # noqa: PLC0415
+        import tarfile  # noqa: PLC0415
+
+        from mujoco_menagerie._registry import EntryPoint, Robot  # noqa: PLC0415, PLC2701
+
+        tree = tmp_path / "src" / "fake_arm"
+        tree.mkdir(parents=True)
+        (tree / "fake_arm.xml").write_text("<mujoco/>")
+        (tree / "mesh.bin").write_bytes(os.urandom(size))
+        served = tmp_path / "served"
+        served.mkdir()
+        archive = served / "fake_arm.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            tar.add(tree, arcname="fake_arm")
+        data = archive.read_bytes()
+        self.size = len(data)
+        self.robot = Robot(
+            name="fake_arm",
+            display_name="Fake arm",
+            category="arm",
+            license="MIT",
+            oid="0" * 40,
+            asset=archive.name,
+            sha256=hashlib.sha256(data).hexdigest(),
+            download_size=len(data),
+            installed_size=size,
+            entry_points=(EntryPoint(name="so101", kind="robot", file="fake_arm.xml"),),
+            default_model="so101",
+            default_scene=None,
+        )
+        handler = functools.partial(_QuietHandler, directory=str(served))
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class _QuietHandler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, *_args: object) -> None:
+        pass
+
+
+class TestDownloadProgress:
+    """``fetch`` events carry the Menagerie download's bytes and total; a cached model sends none."""
+
+    @pytest.fixture
+    def menagerie(self, tmp_path):
+        import mujoco_menagerie  # noqa: PLC0415
+
+        server = _ArchiveServer(tmp_path, size=3 * 2**20)
+        env = {"MENAGERIE_CACHE_DIR": str(tmp_path / "cache"), "MENAGERIE_BASE_URL": server.url}
+        with (
+            patch.dict(os.environ, env),
+            patch.object(mujoco_menagerie, "get", return_value=server.robot),
+        ):
+            os.environ.pop("MENAGERIE_ROOT", None)
+            yield server
+        server.close()
+
+    def test_a_real_download_reports_progress_in_order_and_a_cached_one_does_not(self, menagerie) -> None:
+        launch = _launch(["--status-json", "--no-gui"], fetch=True)
+        events = launch.events
+        progress = [event for event in events if "bytes" in event]
+        assert events[0] == {"event": "phase", "phase": "fetch"}
+        assert events[1 : 1 + len(progress)] == progress
+        assert events[1 + len(progress) :][:3] == PHASES[1:]
+        assert len(progress) >= 2  # the archive spans several 1 MiB chunks
+        assert [event["bytes"] for event in progress] == sorted(event["bytes"] for event in progress)
+        assert progress[-1]["bytes"] == progress[-1]["total"] == menagerie.size
+
+        cached = _launch(["--status-json", "--no-gui"], fetch=True).events
+        assert [event for event in cached if "bytes" in event] == []
+        assert cached[:4] == PHASES
+
+
+class TestPorts:
+    """``--http-port 0`` / ``--viser-port 0`` pick free ports; ``--no-http`` is what disables HTTP (P4)."""
+
+    def test_zero_picks_distinct_free_ports_and_ready_reports_them(self) -> None:
+        launch = _launch(["--status-json", "--http-port", "0", "--viser-port", "0"])
+        http_port, viser_port = launch.init_args["http_port"], launch.init_args["viser_port"]
+        assert 0 < http_port != viser_port > 0
+        assert launch.kwargs["idle_timeout"] is None  # HTTP stays on, so no idle exit
+        launch.http_json.assert_any_call("127.0.0.1", http_port, "/")
+        assert launch.events[-1]["http_url"] == f"http://127.0.0.1:{http_port}"
+
+    def test_disabled_servers_get_port_zero(self) -> None:
+        init_args = _launch(["--no-http", "--no-gui", "--http-port", "0", "--viser-port", "0"]).init_args
+        assert (init_args["http_port"], init_args["viser_port"]) == (0, 0)
+
+    def test_fixed_ports_are_kept(self) -> None:
+        init_args = _launch(["--http-port", "8123", "--viser-port", "9123"]).init_args
+        assert (init_args["http_port"], init_args["viser_port"]) == (8123, 9123)
+
+    def test_free_ports_keeps_each_socket_until_all_are_picked(self) -> None:
+        ports = cli._free_ports([("127.0.0.1", 0), ("127.0.0.1", 0), ("127.0.0.1", None), ("127.0.0.1", 8080)])  # noqa: SLF001
+        assert ports[0] != ports[1]
+        assert ports[0] > 0
+        assert ports[2:] == [0, 8080]
+
+    def test_an_unbindable_host_exits(self) -> None:
+        with patch.object(cli, "_free_ports", side_effect=OSError("cannot assign requested address")):
+            launch = _launch(["--http-port", "0"])
+        assert launch.exit_code == 1
+        launch.factory.assert_not_called()
+
+    @pytest.mark.parametrize("flag", ["--http-port", "--viser-port"])
+    @pytest.mark.parametrize("value", ["-1", "65536", "http"])
+    def test_out_of_range_ports_are_rejected(self, flag: str, value: str) -> None:
+        with pytest.raises(SystemExit) as exit_info:
+            cli._build_parser().parse_args(["start", flag, value])
+        assert exit_info.value.code == 2
+
+    @pytest.mark.parametrize(("url_host", "expected"), [("0.0.0.0", "127.0.0.1"), ("::", "[::1]"), ("::1", "[::1]")])  # noqa: S104
+    def test_local_url_reaches_bind_all_hosts_on_loopback(self, url_host: str, expected: str) -> None:
+        assert cli._local_url(url_host, 80) == f"http://{expected}:80"  # noqa: SLF001
+
+
+class TestExitWithParent:
+    """``--exit-with-parent``: stdin EOF stops the sim, and the owner follows ``start`` (P5)."""
+
+    def test_the_owner_follows_this_process(self) -> None:
+        with patch.object(cli, "_shut_down_on_stdin_eof"):
+            assert _launch(["--exit-with-parent"]).init_args["exit_with_pid"] == os.getpid()
+        assert _launch([]).init_args["exit_with_pid"] is None
+
+    def test_stdin_eof_requests_shutdown_but_input_does_not(self) -> None:
+        read_fd, write_fd = os.pipe()
+        shutdown = threading.Event()
+        with os.fdopen(read_fd) as stdin, patch.object(cli.sys, "stdin", stdin):
+            cli._shut_down_on_stdin_eof(shutdown)  # noqa: SLF001
+            os.write(write_fd, b"keep going\n")
+            assert not shutdown.wait(0.2)
+            os.close(write_fd)
+            assert shutdown.wait(5.0)
+
+    def test_a_missing_stdin_counts_as_eof(self) -> None:
+        shutdown = threading.Event()
+        with patch.object(cli.sys, "stdin", None):
+            cli._shut_down_on_stdin_eof(shutdown)  # noqa: SLF001
+            assert shutdown.wait(5.0)
+
+    def test_eof_stops_the_owner_this_command_spawned_like_sigterm(self) -> None:
+        shutdown_on_eof: list[threading.Event] = []
+        with patch.object(cli, "_shut_down_on_stdin_eof", side_effect=shutdown_on_eof.append):
+            launch = _launch(["--no-gui", "--exit-with-parent"], on_connect=lambda: shutdown_on_eof[0].set())
+        launch.http_stop.assert_called_once_with("127.0.0.1", 8080, "my-sim", 1234)
+        launch.shared.disconnect.assert_called_once_with()
+
+    def test_eof_during_the_download_starts_no_owner(self) -> None:
+        with patch.object(cli, "_shut_down_on_stdin_eof", side_effect=lambda shutdown: shutdown.set()):
+            launch = _launch(["--no-gui", "--exit-with-parent"])
+        launch.factory.assert_not_called()
+
+    def test_viewer_theme_reaches_the_driver(self) -> None:
+        assert _launch(["--viewer-theme", "studio"]).init_args["viewer_theme"] == "studio"
+        assert _launch([]).init_args["viewer_theme"] == "default"
+
+
+class TestHeadlessGl:
+    """``start`` renders with EGL on a headless Linux host (P8)."""
+
+    @pytest.mark.parametrize(
+        ("platform", "environ", "egl", "expected"),
+        [
+            ("linux", {}, "libEGL.so.1", {"MUJOCO_GL": "egl", "PYOPENGL_PLATFORM": "egl"}),
+            ("linux", {"PYOPENGL_PLATFORM": "egl"}, "libEGL.so.1", {"MUJOCO_GL": "egl"}),
+            ("linux", {"DISPLAY": ":0"}, "libEGL.so.1", {}),
+            ("linux", {"WAYLAND_DISPLAY": "wayland-0"}, "libEGL.so.1", {}),
+            ("linux", {"MUJOCO_GL": "osmesa"}, "libEGL.so.1", {}),
+            ("linux", {}, None, {}),
+            ("darwin", {}, "libEGL.dylib", {}),
+            ("win32", {}, "EGL.dll", {}),
+        ],
+    )
+    def test_egl_only_without_a_display_or_a_choice(self, platform, environ, egl, expected) -> None:
+        with patch("ctypes.util.find_library", return_value=egl):
+            assert cli._headless_gl_env(platform, environ) == expected  # noqa: SLF001
+
+    def test_start_sets_it_before_anything_loads_a_scene(self) -> None:
+        seen: list[tuple[str | None, str | None]] = []
+
+        def resolve_scene(*_args: object) -> None:
+            seen.append((os.environ.get("MUJOCO_GL"), os.environ.get("PYOPENGL_PLATFORM")))
+            raise SystemExit(1)
+
+        with (
+            patch.dict(os.environ),
+            patch.object(cli.sys, "platform", "linux"),
+            patch("ctypes.util.find_library", return_value="libEGL.so.1"),
+            patch.object(cli, "_resolve_scene", side_effect=resolve_scene),
+            pytest.raises(SystemExit),
+        ):
+            for name in ("MUJOCO_GL", "PYOPENGL_PLATFORM", "DISPLAY", "WAYLAND_DISPLAY"):
+                os.environ.pop(name, None)
+            cli._start(cli._build_parser().parse_args(["start"]))  # noqa: SLF001
+        assert seen == [("egl", "egl")]

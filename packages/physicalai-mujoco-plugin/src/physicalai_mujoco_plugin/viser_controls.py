@@ -515,11 +515,27 @@ class SimControlPanel:
     the panel.
     """
 
-    def __init__(self, server: Any, viser_module: Any, submit: Callable[[SimCommand], None]) -> None:  # noqa: ANN401
-        """Attach to *server*; *submit* enqueues commands for the sim thread."""
+    def __init__(
+        self,
+        server: Any,  # noqa: ANN401
+        viser_module: Any,  # noqa: ANN401
+        submit: Callable[[SimCommand], None],
+        *,
+        shutdown_button: bool = True,
+    ) -> None:
+        """Attach to *server*; *submit* enqueues commands for the sim thread.
+
+        Args:
+            server: The viser server.
+            viser_module: The ``viser`` module (icons).
+            submit: Enqueues commands for the sim thread.
+            shutdown_button: Whether the panel offers a Shutdown button; a viewer embedded in
+                Studio has none, since Studio stops the simulation.
+        """
         self._server = server
         self._viser = viser_module
         self._submit = submit
+        self._shutdown_button = shutdown_button
         self._handles = _Handles()
         self._show_previews = False
         self._drag_objects = False
@@ -576,7 +592,8 @@ class SimControlPanel:
             self._build_object_controls()
         if state.cameras:
             self._build_camera_previews(state)
-        self._build_shutdown()
+        if self._shutdown_button:
+            self._build_shutdown()
 
     def build_camera_tab(self, state: PanelState) -> None:
         """Add the follow, field-of-view and reset-view inputs to the current GUI container."""

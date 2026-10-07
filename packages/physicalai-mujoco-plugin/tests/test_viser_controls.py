@@ -183,10 +183,12 @@ def make_state(**overrides: Any) -> PanelState:  # noqa: ANN401
     return PanelState(**values)
 
 
-def build_panel(state: PanelState | None = None) -> tuple[SimControlPanel, FakeServer, list[object]]:
+def build_panel(
+    state: PanelState | None = None, *, shutdown_button: bool = True
+) -> tuple[SimControlPanel, FakeServer, list[object]]:
     commands: list[object] = []
     server = FakeServer()
-    panel = SimControlPanel(server, SimpleNamespace(Icon=MagicMock()), commands.append)
+    panel = SimControlPanel(server, SimpleNamespace(Icon=MagicMock()), commands.append, shutdown_button=shutdown_button)
     state = state or make_state()
     panel.build(state)
     panel.build_camera_tab(state)
@@ -826,6 +828,10 @@ class TestShutdown:
         _, server, commands = build_panel()
         server.gui.handles["Shutdown"].fire(client=None)
         assert commands == []
+
+    def test_a_viewer_embedded_in_studio_has_no_shutdown_button(self) -> None:
+        _, server, _ = build_panel(shutdown_button=False)
+        assert "Shutdown" not in server.gui.handles
 
 
 @pytest.mark.parametrize(
