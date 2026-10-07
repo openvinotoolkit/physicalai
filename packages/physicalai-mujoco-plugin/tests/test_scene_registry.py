@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import dataclasses
 from unittest.mock import MagicMock, patch
 
+import mujoco
 import numpy as np
 import pytest
 
 from physicalai_mujoco_plugin import scene_registry
+from physicalai_mujoco_plugin.compose import OverviewRig, SceneLayout, apply_layout
+from physicalai_mujoco_plugin.profiles import SO101_PROFILE, get_profile
 from physicalai_mujoco_plugin.scene_registry import (
     SceneConfig,
     get_reset_fn,
@@ -73,7 +77,7 @@ class TestFreejointSpawnReset:
             data.qvel = np.ones(18)
             data.xpos = np.array([[0.30, 0.0, 0.01]])
 
-            fn = scene_registry._freejoint_spawn_reset(scene.scene_id)  # noqa: SLF001
+            fn = scene_registry._freejoint_spawn_reset(scene)  # noqa: SLF001
             fn(model, data, np.random.default_rng(0))
 
             placed = [data.qpos[adr : adr + 3] for adr in (0, 7, 14)]
@@ -142,7 +146,8 @@ class TestArmCompatibility:
         single, bimanual = list_scenes_for_arms(1), list_scenes_for_arms(2)
         assert "garment_fold" in bimanual
         assert "garment_fold" not in single
-        assert set(single) | set(bimanual) == set(list_scenes())
+        # Floor scenes spawn floating-base robots, never SO-101 arms.
+        assert set(single) | set(bimanual) == set(list_scenes()) - {"floor_flat"}
         assert list_scenes_for_arms(3) == {}
 
     def test_garment_fold_home_matches_its_reset_pose(self) -> None:
@@ -233,3 +238,106 @@ class TestGarmentFoldReset:
             fn = get_reset_fn("garment_fold")
             assert fn is not None
             fn(model, data, np.random.default_rng(0))
+
+
+class TestReachLayout:
+    """``layout="reach"`` (SCN-6): the spawn arc and top-level bodies scale with reach / SO-101 reach."""
+
+    def test_so101_keeps_the_scene_itself(self) -> None:
+        scene = get_scene("single_pick_place")
+        assert scene.layout == "reach"
+        assert scene.layout_scale(SO101_PROFILE) == 1.0
+        assert scene.for_profile(SO101_PROFILE) is scene
+
+    def test_a_longer_arm_scales_the_spawn_arc_about_the_mount(self) -> None:
+        scene = get_scene("single_pick_place")
+        longer = dataclasses.replace(get_profile("ur5e"), reach=2 * SO101_PROFILE.reach)
+
+        laid_out = scene.for_profile(longer)
+
+        assert scene.layout_scale(longer) == pytest.approx(2.0)
+        assert laid_out.spawn_center == pytest.approx((0.44, 0.0))
+        assert (laid_out.spawn_min_r, laid_out.spawn_max_r) == pytest.approx((0.10, 0.28))
+        assert laid_out.spawn_angle_half_deg == scene.spawn_angle_half_deg
+        assert (laid_out.block_min_sep, laid_out.target_min_sep) == (scene.block_min_sep, scene.target_min_sep)
+
+    def test_a_profile_spawn_center_replaces_the_scenes_before_scaling(self) -> None:
+        scene = get_scene("single_pick_place")
+        aloha = get_profile("aloha")
+        scale = scene.layout_scale(aloha)
+
+        center = scene.for_profile(aloha).spawn_center
+
+        assert center == pytest.approx((-0.086 * scale, -0.01 * scale))
+
+    def test_fixed_layouts_ignore_reach(self) -> None:
+        assert get_scene("yahtzee").layout_scale(get_profile("ur5e")) == 1.0
+
+    def test_a_reach_scene_refuses_a_profile_without_reach(self) -> None:
+        scene = get_scene("single_pick_place")
+        with pytest.raises(ValueError, match="set RobotProfile.reach"):
+            scene.for_profile(dataclasses.replace(get_profile("ur5e"), reach=None))
+
+    def test_every_profile_a_reach_scene_lists_has_a_reach_and_end_effectors(self) -> None:
+        for scene in list_scenes().values():
+            if scene.layout != "reach" or scene.robots == "*":
+                continue
+            for name in scene.robots:
+                profile = get_profile(name)
+                assert profile.reach is not None, name
+                assert profile.end_effectors, name
+
+    def test_the_spawn_reset_uses_the_profiles_layout(self) -> None:
+        mock_mujoco = _mock_mujoco_for({"target": 0, "block1:joint": 1})
+        longer = dataclasses.replace(get_profile("ur5e"), reach=2 * SO101_PROFILE.reach)
+        laid_out = get_scene("single_pick_place").for_profile(longer)
+
+        with patch.dict("sys.modules", {"mujoco": mock_mujoco}):
+            model = MagicMock()
+            model.jnt_qposadr = [0, 0]
+            model.jnt_dofadr = [0, 0]
+            data = MagicMock()
+            data.qpos = np.zeros(7)
+            data.qvel = np.zeros(6)
+            data.xpos = np.array([[0.44, -0.60, 0.001]])
+            fn = get_reset_fn("single_pick_place", longer)
+            assert fn is not None
+            for seed in range(20):
+                fn(model, data, np.random.default_rng(seed))
+                offset = np.hypot(*(data.qpos[:2] - np.asarray(laid_out.spawn_center)))
+                assert laid_out.spawn_min_r - 1e-9 <= offset <= laid_out.spawn_max_r + 1e-9
+
+
+class TestApplyLayout:
+    _SCENE = """<mujoco><worldbody>
+      <body name="target" pos="0.2 -0.3 0.001"><geom type="cylinder" size="0.05 0.001"/></body>
+      <body name="rig" pos="-0.1 0.1 0.8" euler="0 0 1"><body name="tilt"><camera name="overview"/></body></body>
+      <frame name="robot_mount" pos="{mount}"/>
+    </worldbody></mujoco>"""
+
+    def test_top_level_bodies_move_away_from_the_mount(self) -> None:
+        spec = mujoco.MjSpec.from_string(self._SCENE.format(mount="0 0 0"))
+
+        apply_layout(spec, SceneLayout(scale=2.0))
+
+        np.testing.assert_allclose(spec.body("target").pos, [0.4, -0.6, 0.002])
+        np.testing.assert_allclose(spec.body("rig").pos, [-0.2, 0.2, 1.6])
+        assert spec.body("target").geoms[0].size[0] == pytest.approx(0.05)
+
+    def test_an_overview_rig_override_places_the_cameras_top_level_body(self) -> None:
+        spec = mujoco.MjSpec.from_string(self._SCENE.format(mount="0 0 0"))
+
+        apply_layout(spec, SceneLayout(scale=2.0, overview_rig=OverviewRig(pos=(0.0, -0.7, 1.1), quat=(0.0, 0.0, 0.0, 1.0))))
+        model = spec.compile()
+
+        np.testing.assert_allclose(model.body("rig").pos, [0.0, -0.7, 1.1])
+        np.testing.assert_allclose(model.body("rig").quat, [0.0, 0.0, 0.0, 1.0])
+        np.testing.assert_allclose(model.body("target").pos, [0.4, -0.6, 0.002])
+
+    def test_a_mount_off_the_origin_is_refused(self) -> None:
+        spec = mujoco.MjSpec.from_string(self._SCENE.format(mount="0.1 0 0"))
+        with pytest.raises(ValueError, match="robot mount at the origin"):
+            apply_layout(spec, SceneLayout(scale=2.0))
+
+    def test_the_so101_compiles_the_scene_as_written(self) -> None:
+        assert get_scene("single_pick_place").layout_for(SO101_PROFILE) is None

@@ -15,8 +15,11 @@ from dataclasses import dataclass
 from math import isfinite
 from typing import TYPE_CHECKING, Literal
 
+from physicalai_mujoco_plugin.profiles._types import CameraSpec
+
 if TYPE_CHECKING:
     import mujoco
+    import numpy as np
 
 ControlKind = Literal["position", "velocity", "torque", "raw"]
 TransmissionKind = Literal["joint", "tendon", "other"]
@@ -58,14 +61,17 @@ class SensorLayout:
 
 
 @dataclass(frozen=True)
-class CameraLayout:
-    """A camera authored in the model, and its parent body."""
+class FloatingBase:
+    """The root body of a floating-base robot and its free joint. Ids refer to the model it was derived from."""
 
-    name: str
     body: str
-    pos: tuple[float, float, float]
-    quat: tuple[float, float, float, float]
-    fovy: float
+    body_id: int
+    joint: str
+    """Free joint name; empty when the model leaves it unnamed (Go2)."""
+    qpos_adr: int
+    dof_adr: int
+    home: tuple[float, ...]
+    """Home pose: world position (3) and orientation quaternion (4, wxyz)."""
 
 
 @dataclass(frozen=True)
@@ -73,14 +79,16 @@ class DerivedLayout:
     """Everything derivable from a compiled robot-only model."""
 
     channels: tuple[DerivedChannel, ...]
-    floating_base_joint: str | None
-    base_body: str | None
+    base: FloatingBase | None
+    """The floating base, or ``None`` for a fixed base."""
     home_qpos: dict[str, tuple[float, ...]]
-    """Home ``qpos`` of every joint, by joint name: the ``home`` keyframe, else the first, else ``qpos0``."""
+    """Home ``qpos`` of every joint but the floating base's, by joint name: the ``home`` keyframe,
+    else the first, else ``qpos0``."""
     home_ctrl: dict[str, float]
     """Home ``ctrl`` by actuator name: the keyframe's, else each channel's home target."""
     sensors: tuple[SensorLayout, ...]
-    cameras: tuple[CameraLayout, ...]
+    cameras: tuple[CameraSpec, ...]
+    """Every model camera from :func:`derive_profile`; the robot's resolved cameras (CAM-2) from ``robot_layout``."""
 
     @property
     def joint_names(self) -> tuple[str, ...]:
@@ -123,23 +131,35 @@ def derive_profile(model: mujoco.MjModel) -> DerivedLayout:
         Channels in actuator order, the floating base if any, the home pose, sensors and cameras.
     """
     channels = tuple(_derive_channel(model, actuator_id) for actuator_id in range(model.nu))
-    base_joint, base_body = _find_floating_base(model)
-    home_qpos, home_ctrl = _derive_home(model, channels)
+    base_joint = _find_floating_base(model)
+    home_qpos, home_ctrl, qpos = _derive_home(model, channels, base_joint)
+    base = None
+    if base_joint is not None:
+        body_id, address = int(model.jnt_bodyid[base_joint]), int(model.jnt_qposadr[base_joint])
+        base = FloatingBase(
+            body=model.body(body_id).name,
+            body_id=body_id,
+            joint=model.joint(base_joint).name,
+            qpos_adr=address,
+            dof_adr=int(model.jnt_dofadr[base_joint]),
+            home=tuple(float(v) for v in qpos[address : address + 7]),
+        )
     sensors = tuple(
         SensorLayout(model.sensor(i).name or f"sensor_{i}", int(model.sensor_adr[i]), int(model.sensor_dim[i]))
         for i in range(model.nsensor)
     )
     cameras = tuple(
-        CameraLayout(
+        CameraSpec(
             name=model.camera(i).name or f"camera_{i}",
             body=model.body(int(model.cam_bodyid[i])).name,
             pos=tuple(float(v) for v in model.cam_pos[i]),  # type: ignore[arg-type]
             quat=tuple(float(v) for v in model.cam_quat[i]),  # type: ignore[arg-type]
             fovy=float(model.cam_fovy[i]),
+            source="model",
         )
         for i in range(model.ncam)
     )
-    return DerivedLayout(channels, base_joint, base_body, home_qpos, home_ctrl, sensors, cameras)
+    return DerivedLayout(channels, base, home_qpos, home_ctrl, sensors, cameras)
 
 
 def _derive_channel(model: mujoco.MjModel, actuator_id: int) -> DerivedChannel:  # noqa: PLR0914
@@ -186,11 +206,13 @@ def _derive_channel(model: mujoco.MjModel, actuator_id: int) -> DerivedChannel: 
     )
 
 
-def _find_floating_base(model: mujoco.MjModel) -> tuple[str | None, str | None]:
-    """Find the root free joint whose subtree holds a body that an actuator acts on.
+def _find_floating_base(model: mujoco.MjModel) -> int | None:
+    """Find the root free joint whose subtree holds a body that an actuator acts on (PoC finding 4).
+
+    Joint, site and body transmissions count, so a drone (site thrust) has a floating base too.
 
     Returns:
-        The base joint and body names, or ``(None, None)`` for a fixed base.
+        The free joint's id, or ``None`` for a fixed base.
     """
     import mujoco  # noqa: PLC0415
 
@@ -200,8 +222,8 @@ def _find_floating_base(model: mujoco.MjModel) -> tuple[str | None, str | None]:
             continue
         body_id = int(model.jnt_bodyid[joint_id])
         if int(model.body_parentid[body_id]) == 0 and any(_in_subtree(model, b, body_id) for b in actuated):
-            return model.joint(joint_id).name, model.body(body_id).name
-    return None, None
+            return joint_id
+    return None
 
 
 def _actuator_body(model: mujoco.MjModel, actuator_id: int) -> int:
@@ -231,11 +253,13 @@ def _in_subtree(model: mujoco.MjModel, body_id: int, root_id: int) -> bool:
 def _derive_home(
     model: mujoco.MjModel,
     channels: tuple[DerivedChannel, ...],
-) -> tuple[dict[str, tuple[float, ...]], dict[str, float]]:
+    base_joint: int | None,
+) -> tuple[dict[str, tuple[float, ...]], dict[str, float], np.ndarray]:
     """Read the home keyframe, or build a home pose from ``qpos0`` with matching position targets.
 
     Returns:
-        Home ``qpos`` by joint name and home ``ctrl`` by actuator name.
+        Home ``qpos`` by joint name (without the floating base), home ``ctrl`` by actuator name,
+        and the whole home ``qpos`` vector.
     """
     import mujoco  # noqa: PLC0415
 
@@ -245,13 +269,15 @@ def _derive_home(
     widths = {int(mujoco.mjtJoint.mjJNT_FREE): 7, int(mujoco.mjtJoint.mjJNT_BALL): 4}
     home_qpos = {}
     for joint_id in range(model.njnt):
+        if joint_id == base_joint:
+            continue
         address = int(model.jnt_qposadr[joint_id])
         width = widths.get(int(model.jnt_type[joint_id]), 1)
         home_qpos[model.joint(joint_id).name] = tuple(float(v) for v in qpos[address : address + width])
 
     if key is not None:
         ctrl = model.key_ctrl[key]
-        return home_qpos, {channel.actuator: float(ctrl[channel.actuator_id]) for channel in channels}
+        return home_qpos, {channel.actuator: float(ctrl[channel.actuator_id]) for channel in channels}, qpos
 
     data = mujoco.MjData(model)
     data.qpos[:] = qpos
@@ -267,14 +293,14 @@ def _derive_home(
                 target = length / channel.gear if channel.gear else length
             value = channel.ctrl_per_unit * channel.gear * target
         home_ctrl[channel.actuator] = value
-    return home_qpos, home_ctrl
+    return home_qpos, home_ctrl, qpos
 
 
 __all__ = [
-    "CameraLayout",
     "ControlKind",
     "DerivedChannel",
     "DerivedLayout",
+    "FloatingBase",
     "ModelUnit",
     "SensorLayout",
     "TransmissionKind",

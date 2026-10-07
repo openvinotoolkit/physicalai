@@ -36,6 +36,7 @@ from physicalai_mujoco_plugin.compose import fetch_profile, scene_needs_robot
 from physicalai_mujoco_plugin.constants import (
     DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME,
     DEFAULT_MUJOCO_OWNER_NAME,
+    default_owner_name,
 )
 from physicalai_mujoco_plugin.profiles import PROFILES, RobotProfile, get_profile, list_profiles
 from physicalai_mujoco_plugin.studio_recorder import DEFAULT_STUDIO_URL, validate_studio_url
@@ -100,7 +101,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--bimanual",
         action="store_true",
         default=False,
-        help="Deprecated: use --scene with a two-arm scene. Picks garment_fold for the SO-101",
+        help=(
+            "Deprecated: use --scene with a two-arm scene. Picks the profile's first two-arm scene "
+            "(garment_fold for the SO-101 and the WidowX AI)"
+        ),
     )
     start.add_argument(
         "--scene",
@@ -207,14 +211,14 @@ def _resolve_scene(args: argparse.Namespace, profile: RobotProfile) -> tuple[str
     Returns:
         The scene id (``None`` for a custom ``--model`` without ``--scene``) and the robot count.
     """
-    from physicalai_mujoco_plugin.scene_registry import get_scene  # noqa: PLC0415
+    from physicalai_mujoco_plugin.scene_registry import bimanual_scene_id, get_scene  # noqa: PLC0415
 
     scene_id = args.scene
     if scene_id is None and args.bimanual:
-        if profile.name != "so101":
-            logger.error("--bimanual only applies to the SO-101; pass --scene with a two-arm scene")
+        scene_id = bimanual_scene_id(profile.name)
+        if scene_id is None:
+            logger.error("No two-arm scene supports the {} profile; pass --scene", profile.name)
             sys.exit(1)
-        scene_id = "garment_fold"
     if args.model is not None:
         path = Path(args.model).resolve()
         if not path.exists():
@@ -254,10 +258,9 @@ def _resolve_owner_name(args: argparse.Namespace, profile: str = "so101", num_ar
     """
     if args.name is not None:
         return str(args.name)
-    bimanual = num_arms == 2 if num_arms is not None else args.bimanual  # noqa: PLR2004
-    if profile == "so101":
-        return DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME if bimanual else DEFAULT_MUJOCO_OWNER_NAME
-    return f"mujoco-{profile}-bimanual-follow" if bimanual else f"mujoco-{profile}-follow"
+    if num_arms is None:
+        num_arms = 2 if args.bimanual else 1
+    return default_owner_name(profile, num_arms)
 
 
 def _fetch_robot_models(model_path: str | Path, profile: RobotProfile) -> None:
@@ -549,8 +552,10 @@ def _pid_owner_name(pid: int) -> str | None:
         return values["--name"]
     profile = values.get("--profile", "so101")
     scene_id = values.get("--scene")
-    if scene_id is None and bimanual and profile == "so101":
-        scene_id = "garment_fold"
+    if scene_id is None and bimanual:
+        from physicalai_mujoco_plugin.scene_registry import bimanual_scene_id  # noqa: PLC0415
+
+        scene_id = bimanual_scene_id(profile)
     if scene_id is None and "--model" not in values:
         registered = PROFILES.get(profile)
         scene_id = registered.default_scene if registered is not None else None
@@ -734,10 +739,10 @@ def _prefetch() -> None:
 
 def _profiles() -> None:
     """Print the hand-written profiles; any other Menagerie model name loads as an unsupported profile."""
-    sys.stdout.write(f"{'PROFILE':<10} {'TIER':<12} {'MENAGERIE MODEL':<24} NAME\n")
+    sys.stdout.write(f"{'PROFILE':<22} {'TIER':<12} {'MENAGERIE MODEL':<24} NAME\n")
     for profile in list_profiles():
         sys.stdout.write(
-            f"{profile.name:<10} {profile.tier:<12} {profile.menagerie_model:<24} {profile.display_name}\n"
+            f"{profile.name:<22} {profile.tier:<12} {profile.menagerie_model:<24} {profile.display_name}\n"
         )
     sys.stdout.write(
         "Any other MuJoCo Menagerie model name loads as an unsupported profile, outside CI and Studio. "

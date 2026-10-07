@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 from types import SimpleNamespace
 from typing import Any, ClassVar
 from unittest.mock import MagicMock
@@ -11,6 +12,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
+from physicalai_mujoco_plugin.floating import BaseStatus
 from physicalai_mujoco_plugin.http_server import (
     MAX_DWELL_S,
     MAX_SEED,
@@ -22,6 +24,7 @@ from physicalai_mujoco_plugin.http_server import (
     SetObjectPoseCommand,
     SetSeedCommand,
     ShutdownCommand,
+    StopReplayCommand,
     SwitchSceneCommand,
 )
 from physicalai_mujoco_plugin.viser_controls import (
@@ -232,6 +235,57 @@ class TestSceneControls:
         server.gui.handles["Reset Scene"].fire()
         server.gui.handles["Home Arm"].fire()
         assert commands == [ResetCommand(), HomeCommand()]
+
+    def test_replay_status_and_stop_show_only_during_a_replay(self) -> None:
+        panel, server, commands = build_panel(make_state(replay={"active": False}))
+        status, stop = panel._handles.replay  # noqa: SLF001
+        assert (status.visible, stop.visible) == (False, False)
+
+        replay = {"active": True, "finished": False, "frame": 4, "frames": 90, "fps": 30.0}
+        panel.refresh(make_state(replay=replay), now=1.0)
+        assert (status.visible, stop.visible) == (True, True)
+        assert status.content == "**Replay:** frame 5/90 at 30 fps; actions are ignored"
+        server.gui.handles["Stop Replay"].fire()
+        assert commands == [StopReplayCommand()]
+
+        panel.refresh(make_state(replay={**replay, "finished": True, "frame": 89}), now=2.0)
+        assert status.content.startswith("**Replay:** finished, holding frame 90/90")
+        panel.refresh(make_state(replay={"active": False}), now=3.0)
+        assert (status.visible, stop.visible) == (False, False)
+
+
+class TestRobotStatus:
+    def test_shows_profile_tier_and_units(self) -> None:
+        panel, server, _ = build_panel(
+            make_state(profile="so101", tier="twin", units=("normalized",) * 5 + ("normalized",))
+        )
+        assert "Robot" in server.gui.folders
+        content = panel._handles.robot.content  # noqa: SLF001
+        assert "so101 (twin)" in content
+        assert "normalized (6)" in content
+        assert "base" not in content
+        assert "Reset Scene" in server.gui.handles
+
+    def test_floating_bases_get_their_status_and_a_reset_button(self) -> None:
+        held = BaseStatus(prefix="", height=0.79, tilt_deg=1.0, held=True, fallen=False)
+        state = make_state(profile="unitree_g1", tier="experimental", units=("degrees",) * 29, bases=(held,))
+        panel, server, commands = build_panel(state)
+        content = panel._handles.robot.content  # noqa: SLF001
+        assert "unitree_g1 (experimental)" in content
+        assert "degrees (29)" in content
+        assert "height 0.79 m" in content
+        assert "held" in content
+        server.gui.handles["Reset"].fire()
+        assert commands == [ResetCommand()]
+
+        fallen = BaseStatus(prefix="", height=0.2, tilt_deg=88.0, held=False, fallen=True)
+        panel.refresh(dataclasses.replace(state, bases=(fallen,)), now=1.0)
+        assert "tilt 88 deg, fallen" in panel._handles.robot.content  # noqa: SLF001
+
+    def test_no_robot_folder_without_a_profile(self) -> None:
+        _, server, _ = build_panel()
+        assert "Robot" not in server.gui.folders
+        assert "Reset" not in server.gui.handles
 
 
 class TestSeedControls:

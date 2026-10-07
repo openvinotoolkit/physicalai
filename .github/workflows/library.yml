@@ -112,12 +112,12 @@ jobs:
 
       # The MuJoCo plugin downloads its robot models from MuJoCo Menagerie. The
       # plugin pins the mujoco-menagerie version, which fixes every model file,
-      # so its pyproject keys the cache.
+      # and its profiles choose the models `prefetch` downloads, so both key the cache.
       - name: Restore MuJoCo Menagerie cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/menagerie-cache
-          key: menagerie-${{ runner.os }}-${{ hashFiles('packages/physicalai-mujoco-plugin/pyproject.toml') }}
+          key: menagerie-${{ runner.os }}-${{ hashFiles('packages/physicalai-mujoco-plugin/pyproject.toml', 'packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/profiles/*.py') }}
           restore-keys: |
             menagerie-${{ runner.os }}-
 
@@ -130,6 +130,12 @@ jobs:
         env:
           MENAGERIE_CACHE_DIR: ${{ runner.temp }}/menagerie-cache
         run: uv run pytest --import-mode=importlib tests/unit packages/*/tests
+
+      # Every supported MuJoCo robot profile in its default scene, and every arm's reach (no rendering), on the cached models.
+      - name: Run MuJoCo profile smoke matrix and reachability checks
+        env:
+          MENAGERIE_CACHE_DIR: ${{ runner.temp }}/menagerie-cache
+        run: uv run pytest --import-mode=importlib -m mujoco_smoke packages/physicalai-mujoco-plugin/tests
 
   required-check:
     name: Required Check library

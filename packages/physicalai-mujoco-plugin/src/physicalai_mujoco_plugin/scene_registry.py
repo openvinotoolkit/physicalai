@@ -9,14 +9,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 from loguru import logger
 
 from physicalai_mujoco_plugin._urdf import get_urdf_path
-from physicalai_mujoco_plugin.compose import load_scene_model
+from physicalai_mujoco_plugin.compose import OverviewRig, SceneLayout, load_scene_model, robot_layout
 from physicalai_mujoco_plugin.conveyor import park_items, pool_item_names
 from physicalai_mujoco_plugin.profiles import SO101_PROFILE
 from physicalai_mujoco_plugin.spawn import (
@@ -52,11 +52,28 @@ class SceneConfig:
     block_min_sep: float = 0.09
     target_min_sep: float = 0.11
     robots: tuple[str, ...] | Literal["*"] = ("so101",)
-    """Profiles the scene supports; ``"*"`` accepts any fixed-base profile."""
+    """Profiles the scene supports; ``"*"`` accepts any profile whose base type fits ``anchors``."""
+    anchors: Literal["mount", "spawn"] = "mount"
+    """Anchor frames of the XML: ``robot_mount`` (fixed bases) or ``robot_spawn`` (floating bases)."""
     num_arms: int = 1
-    """Number of robots the scene attaches: one per ``{prefix}robot_mount`` frame."""
+    """Number of robots the scene attaches: one per anchor frame."""
     home_qpos: tuple[tuple[str, float], ...] = ()
     """Home joint positions in radians; unlisted arm joints use the model default."""
+    auto_reset_on_fall: bool = False
+    """Reset when a floating base has fallen (DRV-9); off so a policy can see its fall."""
+    layout: Literal["fixed", "reach"] = "fixed"
+    """``reach``: the layout is sized for the SO-101 and grows with each profile's reach (SCN-6).
+
+    The spawn arc, the scene's top-level bodies (target, overview camera rig) and so the overview
+    camera's distance scale about the robot mount at the origin by ``reach / SO-101 reach``.
+    Separations and object sizes stay as they are. The SO-101 gets the scene as written.
+    """
+    profile_spawn_centers: tuple[tuple[str, tuple[float, float]], ...] = ()
+    """Per profile: a spawn centre that replaces ``spawn_center`` before scaling, for robots whose
+    arms are not at the mount (ALOHA's two arms face each other across it)."""
+    profile_overview_rigs: tuple[tuple[str, OverviewRig], ...] = ()
+    """Per profile: the overview rig's pose after scaling, for arms whose home pose the scaled
+    camera does not frame (an elbow folded behind the base, ALOHA's second arm)."""
 
     @property
     def scene_xml_path(self) -> Path:
@@ -66,18 +83,74 @@ class SceneConfig:
     def supports(self, profile: RobotProfile) -> bool:
         """Return whether *profile* may run in this scene.
 
+        A scene that accepts any profile still needs the right base type (SCN-5), which comes
+        from the profile's model: the first check of a profile compiles its robot model, which
+        downloads it on a cold Menagerie cache. Later checks hit the layout cache.
+
         Returns:
-            ``True`` if the scene lists the profile or accepts any.
+            ``True`` if the scene lists the profile, or accepts any with its base type.
         """
-        return self.robots == "*" or profile.name in self.robots
+        if self.robots != "*":
+            return profile.name in self.robots
+        floating = robot_layout(profile).base is not None
+        return floating == (self.anchors == "spawn")
+
+    def layout_scale(self, profile: RobotProfile) -> float:
+        """Return how much this scene's layout grows for *profile*: ``reach / SO-101 reach`` (SCN-6).
+
+        Returns:
+            ``1.0`` for a fixed layout and for the SO-101 (exactly, so nothing is recomputed),
+            else the ratio of the reaches.
+
+        Raises:
+            ValueError: If the layout scales with reach and the profile has none.
+        """
+        if self.layout == "fixed" or profile.reach == SO101_PROFILE.reach:
+            return 1.0
+        if profile.reach is None or SO101_PROFILE.reach is None:
+            msg = (
+                f"Scene {self.scene_id!r} scales with the robot's reach, but profile {profile.name!r} has none; "
+                "set RobotProfile.reach (tests/test_reach.py measures it)"
+            )
+            raise ValueError(msg)
+        return profile.reach / SO101_PROFILE.reach
+
+    def layout_for(self, profile: RobotProfile) -> SceneLayout | None:
+        """Return how to lay this scene out for *profile*, for :func:`~physicalai_mujoco_plugin.compose.compose_scene`.
+
+        Returns:
+            ``None`` when the scene compiles as written (a fixed layout, the SO-101).
+        """
+        scale = self.layout_scale(profile)
+        rig = dict(self.profile_overview_rigs).get(profile.name)
+        if scale == 1.0 and rig is None:  # noqa: RUF069 - layout_scale returns exactly 1.0 for the SO-101
+            return None
+        return SceneLayout(scale=scale, overview_rig=rig)
+
+    def for_profile(self, profile: RobotProfile) -> SceneConfig:
+        """Return this scene laid out for *profile*: its spawn centre and radii scaled with its reach.
+
+        Returns:
+            This scene itself when nothing changes (a fixed layout, the SO-101), else a copy.
+        """
+        center = dict(self.profile_spawn_centers).get(profile.name, self.spawn_center)
+        scale = self.layout_scale(profile)
+        if scale == 1.0 and center == self.spawn_center:  # noqa: RUF069 - exactly 1.0, see layout_scale
+            return self
+        return replace(
+            self,
+            spawn_center=(center[0] * scale, center[1] * scale),
+            spawn_min_r=self.spawn_min_r * scale,
+            spawn_max_r=self.spawn_max_r * scale,
+        )
 
     def load_model(self, profile: RobotProfile = SO101_PROFILE) -> mujoco.MjModel:
         """Compile this scene with the profile's robot attached at the scene's mount frames.
 
         Returns:
-            The compiled model.
+            The compiled model, laid out for the profile.
         """
-        return load_scene_model(self.scene_xml_path, profile)
+        return load_scene_model(self.scene_xml_path, profile, scene_layout=self.layout_for(profile))
 
 
 _GARMENT_FOLD_HOME: tuple[tuple[str, float], ...] = (
@@ -107,20 +180,22 @@ _CONVEYOR_SORT_HOME: tuple[tuple[str, float], ...] = (
 # ---------------------------------------------------------------------------
 
 
-def _freejoint_spawn_reset(scene_id: str) -> ResetFn:
+def _freejoint_spawn_reset(scene: SceneConfig) -> ResetFn:
     """Build a reset that respawns a scene's free objects clear of its target.
 
     The target body itself is left where it is; only the freejoints listed in
     the scene's ``free_joints`` are randomized, using that scene's spawn arc.
 
+    Args:
+        scene: The scene, laid out for its robot (:meth:`SceneConfig.for_profile`).
+
     Returns:
-        A reset callback for `scene_id`.
+        A reset callback for the scene.
     """
 
     def reset(model: object, data: object, rng: np.random.Generator) -> None:
         import mujoco  # noqa: PLC0415
 
-        scene = get_scene(scene_id)
         target_body = scene.target_bodies[0] if scene.target_bodies else ""
         target_xy = read_body_xy(model, data, target_body, scene.spawn_center)
         positions = sample_scene_positions(scene, len(scene.free_joints), rng=rng, target_xy=target_xy)
@@ -255,7 +330,37 @@ _SCENES: dict[str, SceneConfig] = {
         spawn_max_r=0.14,
         spawn_angle_half_deg=50.0,
         target_min_sep=0.11,
-        robots=("so101", "ur5e"),
+        layout="reach",
+        # ALOHA's arms sit at x = -0.47 and +0.47 facing each other: its arc spans x = 0.
+        profile_spawn_centers=(("aloha", (-0.086, -0.01)),),
+        # Pulled back along the line of sight until every arm's home pose, its geometry included,
+        # is in frame (tests/test_compose.py); ALOHA's camera looks across the table along +y, with
+        # the left arm on the left of the image. The SO-101, SO-ARM100 and Kinova fit as scaled.
+        profile_overview_rigs=(
+            ("trossen_wxai", OverviewRig(pos=(-0.416, 0.15, 1.625))),
+            ("rebot_b601", OverviewRig(pos=(-0.382, 0.15, 1.554))),
+            ("ur5e", OverviewRig(pos=(-0.404, 0.26, 2.294))),
+            ("aloha", OverviewRig(pos=(0.0, -0.736, 1.125), quat=(0.0, 0.0, -(0.5**0.5), 0.5**0.5))),
+            ("koch", OverviewRig(pos=(-0.136, 0.06, 0.6))),
+            ("piper", OverviewRig(pos=(-0.182, 0.155, 1.285))),
+            ("franka_fr3", OverviewRig(pos=(-0.313, 0.216, 1.88))),
+            ("franka_panda", OverviewRig(pos=(-0.323, 0.231, 1.994))),
+            ("xarm7", OverviewRig(pos=(-0.228, 0.212, 1.723))),
+        ),
+        robots=(
+            "so101",
+            "trossen_wxai",
+            "rebot_b601",
+            "ur5e",
+            "aloha",
+            "so_arm100",
+            "koch",
+            "piper",
+            "franka_fr3",
+            "franka_panda",
+            "xarm7",
+            "kinova_gen3",
+        ),
     ),
     "yahtzee": SceneConfig(
         scene_id="yahtzee",
@@ -286,11 +391,22 @@ _SCENES: dict[str, SceneConfig] = {
         scene_xml_relpath="scenes/garment_fold/scene.xml",
         num_arms=2,
         home_qpos=_GARMENT_FOLD_HOME,
+        robots=("so101", "trossen_wxai"),
+    ),
+    "floor_flat": SceneConfig(
+        scene_id="floor_flat",
+        display_name="Flat Floor",
+        description="A floating-base robot (humanoid, quadruped) standing on a flat floor",
+        scene_xml_relpath="scenes/floor_flat/scene.xml",
+        robots="*",
+        anchors="spawn",
     ),
 }
 
+_FREEJOINT_SPAWN_SCENES = ("single_pick_place",)
+"""Scenes whose reset respawns their free objects in the spawn arc laid out for the robot."""
+
 _RESET_FUNCTIONS: dict[str, ResetFn] = {
-    "single_pick_place": _freejoint_spawn_reset("single_pick_place"),
     "yahtzee": _yahtzee_reset,
     "conveyor_sort": _conveyor_sort_reset,
     "garment_fold": _garment_fold_reset,
@@ -316,12 +432,40 @@ def list_scenes() -> dict[str, SceneConfig]:
 
 def list_scenes_for_arms(num_arms: int) -> dict[str, SceneConfig]:
     """Return the scenes whose model provides exactly `num_arms` SO-101 arms."""
-    return {scene_id: scene for scene_id, scene in _SCENES.items() if scene.num_arms == num_arms}
+    return list_scenes_for(SO101_PROFILE, num_arms)
 
 
-def get_reset_fn(scene_id: str) -> ResetFn | None:
-    """Return the reset callback for `scene_id`, if one is registered."""
+def get_reset_fn(scene_id: str, profile: RobotProfile = SO101_PROFILE) -> ResetFn | None:
+    """Return the reset callback for `scene_id` with *profile*'s robot, if one is registered."""
+    if scene_id in _FREEJOINT_SPAWN_SCENES:
+        return _freejoint_spawn_reset(get_scene(scene_id).for_profile(profile))
     return _RESET_FUNCTIONS.get(scene_id)
+
+
+def list_scenes_naming(profile_name: str) -> dict[str, SceneConfig]:
+    """Return the scenes that list *profile_name* explicitly, not through ``"*"``.
+
+    Unlike :func:`list_scenes_for`, this never loads a robot model, so the Studio catalog and the
+    CLI can call it before anything is downloaded.
+
+    Returns:
+        The scenes by id, in registry order.
+    """
+    return {
+        scene_id: scene for scene_id, scene in _SCENES.items() if scene.robots != "*" and profile_name in scene.robots
+    }
+
+
+def bimanual_scene_id(profile_name: str) -> str | None:
+    """Return the first two-robot scene that lists *profile_name*, which ``start --bimanual`` picks.
+
+    Returns:
+        The scene id, or ``None`` when no two-robot scene lists the profile.
+    """
+    return next(
+        (scene_id for scene_id, scene in list_scenes_naming(profile_name).items() if scene.num_arms == 2),  # noqa: PLR2004
+        None,
+    )
 
 
 def list_scenes_for(profile: RobotProfile, num_arms: int | None = None) -> dict[str, SceneConfig]:

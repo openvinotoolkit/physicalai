@@ -3,6 +3,7 @@
 # MuJoCo's bindings are supplied by the C extension at runtime.
 # pyrefly: ignore-errors [missing-attribute]
 
+import dataclasses
 import warnings
 from pathlib import Path
 
@@ -23,10 +24,17 @@ from physicalai_mujoco_plugin.compose import (
     load_robot_spec,
     load_scene_model,
     robot_layout,
+    scene_anchors,
     scene_needs_robot,
 )
-from physicalai_mujoco_plugin.profiles import SO101_PROFILE
-from physicalai_mujoco_plugin.scene_registry import get_scene, list_scenes, list_scenes_for_arms
+from physicalai_mujoco_plugin.profiles import SO101_PROFILE, RobotProfile, get_profile
+from physicalai_mujoco_plugin.scene_registry import get_scene, list_scenes, list_scenes_for, list_scenes_for_arms
+from physicalai_mujoco_plugin.sim import place_home
+
+
+def _scene_profile(scene_id: str) -> RobotProfile:
+    """The SO-101 for tabletop scenes, the Go2 for floor scenes (spawn anchors)."""
+    return SO101_PROFILE if scene_id in list_scenes_for(SO101_PROFILE) else get_profile("unitree_go2")
 
 # Joint ranges (radians) of the plugin's SO-101 model before it moved to MuJoCo Menagerie's.
 # Normalized units span these ranges, so trained policies depend on them staying put.
@@ -84,7 +92,7 @@ def test_bundled_stl_meshes_are_not_git_lfs_pointers() -> None:
 @pytest.mark.parametrize("scene_id", list(list_scenes()))
 def test_composed_scenes_have_no_keyframes(scene_id: str) -> None:
     """Keyframes store raw qpos; the arm's position in qpos depends on where it is attached."""
-    assert get_scene(scene_id).load_model().nkey == 0
+    assert get_scene(scene_id).load_model(_scene_profile(scene_id)).nkey == 0
 
 
 @pytest.mark.parametrize("scene_id", list(list_scenes()))
@@ -92,6 +100,15 @@ def test_every_scene_mounts_one_arm_per_declared_arm(scene_id: str) -> None:
     scene = get_scene(scene_id)
     prefixes = anchor_prefixes(mujoco.MjSpec.from_file(str(scene.scene_xml_path)))
     assert prefixes == (("left_", "right_") if scene.num_arms == 2 else ("",))
+
+
+@pytest.mark.parametrize("scene_id", list(list_scenes()))
+def test_declared_anchors_match_the_scene_xml(scene_id: str) -> None:
+    """SCN-4: ``SceneConfig.anchors`` and ``num_arms`` agree with the frames in the scene file."""
+    scene = get_scene(scene_id)
+    anchors = scene_anchors(mujoco.MjSpec.from_file(str(scene.scene_xml_path)))
+    assert {kind for _, kind in anchors} == {scene.anchors}
+    assert len(anchors) == scene.num_arms
 
 
 @pytest.mark.parametrize("scene_id", list(list_scenes()))
@@ -111,7 +128,7 @@ def test_attaching_the_arm_raises_no_warnings() -> None:
 def test_scene_options_win_over_the_robot_options(scene_id: str) -> None:
     scene = get_scene(scene_id)
     scene_option = mujoco.MjSpec.from_file(str(scene.scene_xml_path)).option
-    opt = scene.load_model().opt
+    opt = scene.load_model(_scene_profile(scene_id)).opt
     assert opt.timestep == scene_option.timestep
     assert opt.iterations == scene_option.iterations
     assert opt.solver == scene_option.solver
@@ -235,11 +252,23 @@ def test_xml_without_mount_frames_needs_no_robot(tmp_path: Path) -> None:
     assert not scene_needs_robot(path)
 
 
-def test_spawn_anchors_are_not_supported_yet(tmp_path: Path) -> None:
-    path = tmp_path / "floor.xml"
-    path.write_text('<mujoco><worldbody><frame name="robot_spawn"/></worldbody></mujoco>')
-    with pytest.raises(ValueError, match="robot_spawn"):
-        anchor_prefixes(mujoco.MjSpec.from_file(str(path)))
+def test_anchors_are_mount_or_spawn_frames() -> None:
+    xml = """<mujoco><worldbody><frame name="left_robot_mount"/><frame name="robot_spawn"/>
+      <frame name="right_robot_spawn"/><frame name="spawn_marker"/></worldbody></mujoco>"""
+    spec = mujoco.MjSpec.from_string(xml)
+    assert scene_anchors(spec) == (("left_", "mount"), ("", "spawn"), ("right_", "spawn"))
+    assert anchor_prefixes(spec) == ("left_", "", "right_")
+
+
+def test_one_prefix_cannot_be_mounted_and_spawned() -> None:
+    xml = '<mujoco><worldbody><frame name="robot_mount"/><frame name="robot_spawn"/></worldbody></mujoco>'
+    with pytest.raises(ValueError, match="both robot_mount and robot_spawn"):
+        scene_anchors(mujoco.MjSpec.from_string(xml))
+
+
+def test_a_fixed_base_robot_cannot_spawn() -> None:
+    with pytest.raises(ValueError, match="fixed base"):
+        compose_scene(get_scene("floor_flat").scene_xml_path, SO101_PROFILE)
 
 
 def test_composed_layout_is_bound_to_each_anchor() -> None:
@@ -279,7 +308,7 @@ def test_floating_base_robots_are_not_attached_at_mount_frames(monkeypatch: pyte
     robot_xml = """<mujoco><worldbody><body name="base"><freejoint name="root"/><geom size="0.1"/>
     <body name="leg"><joint name="hinge"/><geom size="0.05"/></body></body></worldbody>
     <actuator><position name="hinge" joint="hinge" kp="10"/></actuator></mujoco>"""
-    monkeypatch.setattr(compose, "load_robot_spec", lambda _profile: mujoco.MjSpec.from_string(robot_xml))
+    monkeypatch.setattr(compose, "_customized_robot_spec", lambda _profile: mujoco.MjSpec.from_string(robot_xml))
     monkeypatch.setattr(compose, "_LAYOUTS", {})
     path = tmp_path / "table.xml"
     path.write_text(f'<mujoco><worldbody><frame name="{ROBOT_MOUNT_FRAME}"/></worldbody></mujoco>')
@@ -287,3 +316,96 @@ def test_floating_base_robots_are_not_attached_at_mount_frames(monkeypatch: pyte
 
     with pytest.raises(ValueError, match=r"'floating' has a floating base \('root'\).*robot_spawn"):
         compose_scene_spec(path, profile)
+
+
+def test_reach_layout_moves_the_target_and_the_overview_rig_with_the_arm() -> None:
+    """SCN-6, CAM-4: the SO-101 compiles the scene as written; a longer arm gets it scaled about the mount."""
+    scene = get_scene("single_pick_place")
+    xml = mujoco.MjSpec.from_file(str(scene.scene_xml_path))
+    ur5e = get_profile("ur5e")
+    scale = scene.layout_scale(ur5e)
+
+    so101 = scene.load_model(SO101_PROFILE)
+    longer = scene.load_model(dataclasses.replace(ur5e, name="ur5e-without-a-rig-override"))
+
+    for body in ("target", "overview_camera_rig", "block1"):
+        written = np.asarray(xml.body(body).pos)
+        np.testing.assert_array_equal(so101.body(body).pos, written)
+        np.testing.assert_allclose(longer.body(body).pos, written * scale)
+    assert scale > 2.0  # noqa: PLR2004
+
+
+OVERVIEW_MARGIN_PX = 8
+"""Closest a framed point may come to the edge of the 640x480 overview."""
+
+
+def _robot_geometry_points(model: mujoco.MjModel, data: mujoco.MjData, bodies: set[int]) -> np.ndarray:
+    """Return the world points that bound the visible geoms of *bodies*: mesh vertices, else box corners."""
+    corners = np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)], dtype=float)
+    points = []
+    for geom in range(model.ngeom):
+        if model.geom_bodyid[geom] not in bodies or model.geom_rgba[geom][3] == 0:
+            continue
+        rotation = data.geom_xmat[geom].reshape(3, 3)
+        if model.geom_type[geom] == mujoco.mjtGeom.mjGEOM_MESH:
+            mesh = model.geom_dataid[geom]
+            start, count = model.mesh_vertadr[mesh], model.mesh_vertnum[mesh]
+            local = model.mesh_vert[start : start + count]
+        else:
+            local = model.geom_aabb[geom][:3] + corners * model.geom_aabb[geom][3:]
+        points.append(local @ rotation.T + data.geom_xpos[geom])
+    return np.concatenate(points)
+
+
+@pytest.mark.parametrize("name", get_scene("single_pick_place").robots)
+def test_overview_frames_the_arm_at_home_the_spawn_arc_and_the_target(name: str) -> None:
+    """CAM-4: in the reach-scaled single_pick_place, the 640x480 overview shows the whole arm and the work area.
+
+    Projects the arm's visible geometry at home (mesh vertices, primitive bounding boxes), the spawn
+    arc and the target through the camera's intrinsics; nothing is rendered.
+    """
+    scene = get_scene("single_pick_place")
+    profile = get_profile(name)
+    composed = compose_scene(scene.scene_xml_path, profile, scene_layout=scene.layout_for(profile))
+    model, data = composed.model, mujoco.MjData(composed.model)
+    for binding in composed.robots:
+        place_home(model, data, binding)
+    mujoco.mj_forward(model, data)
+    scene_bodies = {body.name for body in mujoco.MjSpec.from_file(str(scene.scene_xml_path)).bodies}
+    robot = {i for i in range(1, model.nbody) if model.body(i).name not in scene_bodies}
+    laid_out = scene.for_profile(profile)
+    half = np.radians(laid_out.spawn_angle_half_deg)
+    arc = [
+        np.array([*(np.asarray(laid_out.spawn_center) + r * np.array([np.cos(a), np.sin(a)])), 0.02])
+        for r in (laid_out.spawn_min_r, laid_out.spawn_max_r)
+        for a in (-half, 0.0, half)
+    ]
+    points = np.vstack([_robot_geometry_points(model, data, robot), *arc, data.body("target").xpos])
+    camera = model.camera("overview").id
+    focal = 240 / np.tan(np.radians(model.cam_fovy[camera]) / 2)
+
+    local = (points - data.cam_xpos[camera]) @ data.cam_xmat[camera].reshape(3, 3)
+    assert np.all(local[:, 2] < 0), f"{name}: part of the arm or the work area is behind the overview camera"
+    u, v = 320 + focal * local[:, 0] / -local[:, 2], 240 - focal * local[:, 1] / -local[:, 2]
+    margin = OVERVIEW_MARGIN_PX
+    assert margin <= u.min() and u.max() <= 640 - margin, f"{name}: x spans {u.min():.0f}..{u.max():.0f} px"
+    assert margin <= v.min() and v.max() <= 480 - margin, f"{name}: y spans {v.min():.0f}..{v.max():.0f} px"
+
+
+@pytest.mark.parametrize("name", ["so101", "franka_fr3", "ur5e", "aloha"])
+def test_a_live_xml_edit_keeps_the_reach_layout_of_the_overview_rig(name: str) -> None:
+    """The scene watcher re-reads the unscaled XML; it scales and overrides the rig as compose did."""
+    from physicalai_mujoco_plugin.scene_watch import SceneXmlWatcher  # noqa: PLC0415
+
+    scene = get_scene("single_pick_place")
+    profile = get_profile(name)
+    layout = scene.layout_for(profile)
+    model = compose_scene(scene.scene_xml_path, profile, scene_layout=layout).model
+    data = mujoco.MjData(model)
+    rig = model.body("overview_camera_rig").id
+    composed = model.body_pos[rig].copy(), model.body_quat[rig].copy()
+
+    SceneXmlWatcher(scene.scene_xml_path, layout).apply(model, data)
+
+    np.testing.assert_allclose(model.body_pos[rig], composed[0], atol=1e-12)
+    np.testing.assert_allclose(model.body_quat[rig], composed[1], atol=1e-12)

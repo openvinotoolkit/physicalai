@@ -110,6 +110,8 @@ class TestPidOwnerName:
             ("--scene=garment_fold", DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME),
             ("--profile ur5e --scene no_such_scene", "mujoco-ur5e-follow"),
             ("--profile no_such_model", "mujoco-no_such_model-follow"),
+            ("--profile trossen_wxai --bimanual", "mujoco-trossen_wxai-bimanual-follow"),
+            ("--profile rebot_b601", "mujoco-rebot_b601-follow"),
         ],
     )
     def test_profile_and_scene_resolve_like_start(self, arguments: str, expected: str) -> None:
@@ -393,6 +395,19 @@ class TestStartRecipe:
         recipe = self._recipe(["--bimanual", "--no-gui", "--no-cameras"])
         assert (recipe["scene"], recipe["name"]) == ("garment_fold", "mujoco-so101-bimanual-follow")
         assert recipe["cameras"] == []
+
+    def test_bimanual_flag_picks_the_profiles_two_arm_scene(self) -> None:
+        recipe = self._recipe(["--profile", "trossen_wxai", "--bimanual", "--no-gui"])
+        assert (recipe["profile"], recipe["scene"], recipe["name"]) == (
+            "trossen_wxai",
+            "garment_fold",
+            "mujoco-trossen_wxai-bimanual-follow",
+        )
+
+    def test_bimanual_flag_without_a_two_arm_scene_exits(self) -> None:
+        with pytest.raises(SystemExit) as exit_info:
+            self._recipe(["--profile", "rebot_b601", "--bimanual", "--no-gui"])
+        assert exit_info.value.code == 1
 
     def test_two_arm_scene_gets_the_bimanual_name(self) -> None:
         assert self._recipe(["--scene", "garment_fold", "--no-gui"])["name"] == "mujoco-so101-bimanual-follow"

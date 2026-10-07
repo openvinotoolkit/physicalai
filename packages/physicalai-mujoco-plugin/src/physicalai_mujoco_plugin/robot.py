@@ -29,7 +29,7 @@ from loguru import logger
 
 from physicalai.config import export_config
 from physicalai_mujoco_plugin.camera_thread import RateMeter
-from physicalai_mujoco_plugin.cameras import CameraConfig, CameraService
+from physicalai_mujoco_plugin.cameras import CameraConfig, CameraService, offscreen_rendering_available
 from physicalai_mujoco_plugin.channels import TorqueMode
 from physicalai_mujoco_plugin.control import OperatorControls
 from physicalai_mujoco_plugin.profiles import DefaultUnit, RobotProfile, get_profile
@@ -40,7 +40,9 @@ from physicalai_mujoco_plugin.studio_recorder import DEFAULT_STUDIO_URL
 if TYPE_CHECKING:
     from physicalai.capture.frame import Frame
     from physicalai_mujoco_plugin.conveyor_automation import ConveyorAutomation
+    from physicalai_mujoco_plugin.floating import BaseStatus
     from physicalai_mujoco_plugin.http_server import HttpServer, SimCommand
+    from physicalai_mujoco_plugin.replay import Replay
     from physicalai_mujoco_plugin.scene_registry import SceneConfig
     from physicalai_mujoco_plugin.scene_watch import SceneXmlWatcher
     from physicalai_mujoco_plugin.viewer import ViewerService
@@ -59,11 +61,19 @@ class MuJoCoObservation:
     timestamp: float
     sensor_data: dict[str, np.ndarray] | None = None
     images: dict[str, Frame] | None = None
+    floating_state: np.ndarray | None = None
+    """Per floating base, in anchor order: ``base_quat ‖ base_angvel ‖ base_linvel ‖ model sensors``.
+
+    ``None`` without a floating base. With several floating robots, ``state`` is the joints of all
+    robots followed by one such block per robot: ``joints ‖ block(robot 1) ‖ block(robot 2)``.
+    """
 
     @property
     def state(self) -> np.ndarray:
-        """Joint positions, as on the real fixed-base drivers (OBS-2)."""
-        return self.joint_positions
+        """Joint positions, as on the real fixed-base drivers; floating bases append ``floating_state`` (OBS-2)."""
+        if self.floating_state is None:
+            return self.joint_positions
+        return np.concatenate([self.joint_positions, self.floating_state])
 
 
 @export_config(class_path="physicalai_mujoco_plugin.robot.MuJoCoRobot")
@@ -101,7 +111,8 @@ class MuJoCoRobot(OperatorControls):
             torque_mode: ``pd`` tracks position targets on torque actuators; ``raw`` passes ``ctrl``.
             substeps: Physics steps per control tick; ``None`` keeps real time at ``rate_hz``.
             rate_hz: The owner's control rate, used to derive ``substeps``.
-            cameras: Camera streams; ``None`` streams the robot cameras and ``overview``.
+            cameras: Camera streams; ``None`` streams the robot cameras and the scene's ``overview``
+                (and ``chase``), or nothing where MuJoCo cannot render.
             enable_viewer: Open the viser viewer (or the native viewer where viser is unavailable).
             viser_host: viser bind address.
             viser_port: viser port.
@@ -154,7 +165,11 @@ class MuJoCoRobot(OperatorControls):
         self._commands: queue.Queue[SimCommand] = queue.Queue()
         self._sim: Sim | None = None
         self._scene_config = self._initial_scene = resolve_scene(self._profile, scene, model_path)
-        self._area = SpawnArea() if self._scene_config is None else SpawnArea.from_scene(self._scene_config)
+        self._area = (
+            SpawnArea()
+            if self._scene_config is None
+            else SpawnArea.from_scene(self._scene_config.for_profile(self._profile))
+        )
         self._objects = SceneObjects(self._area, self._state_lock)
         self._cameras = CameraService(self._camera_arg or [])
         self._viewer: ViewerService | None = None
@@ -172,6 +187,9 @@ class MuJoCoRobot(OperatorControls):
         self._ignored_action_logged = False
         self._invalid_action_logged_at = 0.0
         self._names: list[str] | None = None
+        self._base_status: tuple[BaseStatus, ...] = ()
+        """Floating-base readouts of the last tick, for the HTTP and viewer threads."""
+        self._replay: Replay | None = None
 
     # ------------------------------------------------------------------
     # Robot protocol
@@ -221,6 +239,7 @@ class MuJoCoRobot(OperatorControls):
         if self._substeps_arg is None:
             self._substeps = max(1, round(1.0 / (self._rate_hz * float(sim.model.opt.timestep))))
         self._last_sim_time = float(sim.data.time)
+        self._base_status = sim.bases.status()
         self._bind_scene()
         logger.info(
             "MuJoCo {} connected ({} joints, timestep={})",
@@ -241,7 +260,7 @@ class MuJoCoRobot(OperatorControls):
             if not self._viewer.open(sim.model, sim.data):
                 self._viewer, self._enable_viewer = None, False
         if self._camera_arg is None:
-            self._cameras.configs = default_cameras(sim)
+            self._cameras.configs = self._default_cameras(sim)
         self._cameras.start(sim.model, sim.data)
         self._start_http_server()
 
@@ -259,6 +278,8 @@ class MuJoCoRobot(OperatorControls):
                 self._viewer.close()
                 self._viewer = None
             self._sim = None
+            self._base_status = ()
+            self._replay = None
             # Keep the selected scene and its reset recipe for reconnect.
             self._pending_scene_switch = False
             self._commands = queue.Queue()
@@ -269,7 +290,8 @@ class MuJoCoRobot(OperatorControls):
         """Advance physics by one control tick and return the robot's joints.
 
         Returns:
-            Joint positions and velocities in this robot's units.
+            Joint positions and velocities in this robot's units, model sensors, and for floating
+            bases the base pose and velocities (OBS-2, OBS-3).
 
         Raises:
             ConnectionError: If the robot is not connected.
@@ -282,17 +304,28 @@ class MuJoCoRobot(OperatorControls):
         sim = self._sim
         positions = np.concatenate([channels.read_positions() for channels in sim.channels])
         velocities = np.concatenate([channels.read_velocities() for channels in sim.channels])
+        sensor_data = {"velocities": velocities.astype(np.float32)}
+        for binding in sim.bindings:
+            for sensor in binding.layout.sensors:
+                values = sim.data.sensordata[sensor.address : sensor.address + sensor.dimension]
+                sensor_data[f"sensor/{sensor.name}"] = np.asarray(values, dtype=np.float32)
+        floating_state = None
+        if sim.bases:
+            base_data, floating_state = sim.bases.observe()
+            sensor_data.update(base_data)
         return MuJoCoObservation(
             joint_positions=positions.astype(np.float32),
             timestamp=time.monotonic(),
-            sensor_data={"velocities": velocities.astype(np.float32)},
+            sensor_data=sensor_data,
+            floating_state=floating_state,
         )
 
     def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None:  # noqa: ARG002
         """Set joint targets, in this robot's units, for the next ticks.
 
         A non-finite action is discarded and logged at most once per second (CHN-7). While the
-        conveyor autopilot drives the arm, actions are ignored.
+        conveyor autopilot drives the arm, or a replay runs, actions are ignored. The first action
+        releases the base-hold welds of floating bases (SCN-8).
 
         Raises:
             ConnectionError: If the robot is not connected.
@@ -313,16 +346,42 @@ class MuJoCoRobot(OperatorControls):
                 self._invalid_action_logged_at = now
                 logger.warning("Discarding an action with non-finite values")
             return
+        if self._replay is not None:
+            if not self._ignored_action_logged:
+                logger.info("A replay is running; ignoring actions until POST /replay/stop")
+                self._ignored_action_logged = True
+            return
         if self._automation is not None and self._automation.drives_arm:
             if not self._ignored_action_logged:
                 logger.info("The autopilot drives the arm; ignoring actions until it is switched off")
                 self._ignored_action_logged = True
             return
         self._ignored_action_logged = False
+        sim.bases.release_holds()
         start = 0
         for channels in sim.channels:
             channels.write(values[start : start + len(channels)])
             start += len(channels)
+
+    def reset(self) -> None:
+        """Restore the start state without changing the scene (DRV-8).
+
+        Floating-base robots return to their home pose, at rest, with their base held again until
+        the next action; then the scene's reset runs, reseeded when the seed is fixed. Fixed-base
+        robots keep the scene-only reset: they keep their pose unless the scene's reset sets it
+        (``POST /home`` homes them).
+
+        Call it from the thread that runs the control loop (the one calling ``get_observation``),
+        like ``send_action``: it writes the simulation state without a lock. The HTTP server and
+        the viewer queue a reset command instead.
+
+        Raises:
+            ConnectionError: If the robot is not connected.
+        """
+        if self._sim is None:
+            msg = "Robot is not connected. Call connect() first."
+            raise ConnectionError(msg)
+        self._reset()
 
     def render_camera(self, camera_name: str, width: int, height: int) -> np.ndarray:
         """Render an RGB image from a named camera.
@@ -377,6 +436,17 @@ class MuJoCoRobot(OperatorControls):
             robots=robots,
         )
 
+    @staticmethod
+    def _default_cameras(sim: Sim) -> list[CameraConfig]:
+        """Return the default streams, or none where MuJoCo cannot render (a headless host without EGL).
+
+        A failed probe runs again on the next connect or scene switch.
+
+        Returns:
+            The streams of :func:`~physicalai_mujoco_plugin.sim.default_cameras`, or an empty list.
+        """
+        return default_cameras(sim) if offscreen_rendering_available() else []
+
     def _bind_scene(self) -> None:
         """Bind the scene objects, episode automation and live XML watch to the current simulation."""
         from physicalai_mujoco_plugin.scene_watch import SceneXmlWatcher  # noqa: PLC0415
@@ -385,7 +455,9 @@ class MuJoCoRobot(OperatorControls):
         grippers = [f"{binding.prefix}gripper" for binding in sim.bindings]  # type: ignore[union-attr]
         self._objects.bind(sim.model, follow_bodies=grippers)  # type: ignore[union-attr]
         self._init_episode_auto_reset()
-        self._watcher = SceneXmlWatcher(sim.xml_path)  # type: ignore[union-attr]
+        scene = sim.scene  # type: ignore[union-attr]
+        layout = scene.layout_for(self._profile) if scene is not None else None
+        self._watcher = SceneXmlWatcher(sim.xml_path, layout)  # type: ignore[union-attr]
         self._objects.publish(sim.data)  # type: ignore[union-attr]
 
     def _switch_to_scene(self, scene_id: str) -> bool:
@@ -436,17 +508,24 @@ class MuJoCoRobot(OperatorControls):
             )
             return False
 
+        # A failed rendering probe runs again here and can take seconds: not under the lock.
+        streams = self._default_cameras(sim) if self._camera_arg is None else None
         # The camera thread renders the old model; stop it before taking the lock.
         self._cameras.stop()
         with self._state_lock:
+            if self._replay is not None:
+                # The replay's saved state belongs to the old model.
+                logger.info("Scene switch ended the replay")
+                self._replay = None
             self._sim = sim
             self._scene_config = scene
-            self._area = SpawnArea.from_scene(scene)
+            self._area = SpawnArea.from_scene(scene.for_profile(self._profile))
             self._objects.area = self._area
             self._last_sim_time = None
+            self._base_status = sim.bases.status()
             self._bind_scene()
-            if self._camera_arg is None:
-                self._cameras.configs = default_cameras(sim)
+            if streams is not None:
+                self._cameras.configs = streams
             self._cameras.start(sim.model, sim.data)
             # Rebuild last: the viewer panel renders the new scene's state.
             if self._viewer is not None:
@@ -523,16 +602,22 @@ class MuJoCoRobot(OperatorControls):
         model, data = sim.model, sim.data  # type: ignore[union-attr]
         if self._watcher is not None and self._watcher.changed():
             self._apply_scene_edit(model, data)
-        control_dt = self._substeps * float(model.opt.timestep)
-        self._automation.tick(model, data, control_dt, self._arm_targets())  # type: ignore[union-attr]
-        for _ in range(self._substeps):
-            for channels in sim.channels:  # type: ignore[union-attr]
-                channels.apply_pd()
-            mujoco.mj_step(model, data)
-        self._record_tick(float(data.time))
-        if self._episode_auto_reset is not None:
-            self._episode_auto_reset.update(model, data)
-        self._objects.apply_held(model, data)
+        if self._replay is not None:
+            # Kinematic playback: no physics step, scene automation, base or episode checks.
+            self._show_replay_frame(self._substeps * float(model.opt.timestep))
+        else:
+            control_dt = self._substeps * float(model.opt.timestep)
+            self._automation.tick(model, data, control_dt, self._arm_targets())  # type: ignore[union-attr]
+            for _ in range(self._substeps):
+                for channels in sim.channels:  # type: ignore[union-attr]
+                    channels.apply_pd()
+                mujoco.mj_step(model, data)
+            if sim.bases:  # type: ignore[union-attr]
+                self._update_bases()
+            self._record_tick(float(data.time))
+            if self._episode_auto_reset is not None:
+                self._episode_auto_reset.update(model, data)
+            self._objects.apply_held(model, data)
         self._objects.publish(data)
         if self._viewer is not None:
             if not self._viewer.sync(data):
@@ -540,6 +625,15 @@ class MuJoCoRobot(OperatorControls):
             elif self._viewer.native is not None:
                 self._handle_viewer_reset()
         self._cameras.publish(data)
+
+    def _update_bases(self) -> None:
+        """Detect falls, reset on one when the scene asks for it (DRV-9), and publish the base status."""
+        sim = self._sim
+        fell = sim.bases.update_falls(float(sim.data.time))  # type: ignore[union-attr]
+        if fell and self._scene_config is not None and self._scene_config.auto_reset_on_fall:
+            logger.info("Resetting after a fall")
+            self._reset()
+        self._base_status = sim.bases.status()  # type: ignore[union-attr]
 
     def _apply_scene_edit(self, model: object, data: object) -> None:
         """Apply live scene XML camera edits with no other thread reading the model."""
@@ -595,7 +689,9 @@ class MuJoCoRobot(OperatorControls):
         current = float(self._sim.data.time)  # type: ignore[union-attr]
         if self._last_sim_time is not None and current + 1e-9 < self._last_sim_time:
             logger.info("Viewer reset detected; randomizing")
-            self._run_scene_reset()
+            # Like POST /reset: a replay ends, restoring its saved state, before the reset.
+            self._stop_replay()
+            self._reset()
             if self._viewer is not None and self._viewer.native_running():
                 self._viewer.native_sync()
             current = float(self._sim.data.time)  # type: ignore[union-attr]

@@ -14,9 +14,13 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 from loguru import logger
+
+if TYPE_CHECKING:
+    from physicalai_mujoco_plugin.compose import SceneLayout
 
 POLL_INTERVAL_S = 1.0
 """Walking the include graph is far too expensive to do on every control cycle."""
@@ -30,8 +34,15 @@ _ORIENTATION_SIZES = {"quat": 4, "xyaxes": 6, "euler": 3}
 class SceneXmlWatcher:
     """Poll a scene XML and everything it includes for edits to its cameras."""
 
-    def __init__(self, xml_path: str | Path) -> None:
-        """Watch *xml_path*, baselining the current file times."""
+    def __init__(self, xml_path: str | Path, layout: SceneLayout | None = None) -> None:
+        """Watch *xml_path*, baselining the current file times.
+
+        Args:
+            xml_path: Scene XML.
+            layout: The layout the scene was composed with; the overview rig's edited pose is
+                scaled and overridden the same way, so an edit keeps the robot's framing.
+        """
+        self._layout = layout
         self.reset(xml_path)
 
     def reset(self, xml_path: str | Path) -> None:
@@ -113,6 +124,29 @@ class SceneXmlWatcher:
                 continue
         return mtimes
 
+    def _place_rig(self, model: object, body_id: int, *, moved: bool) -> bool:
+        """Lay the overview rig out as compose did: scale an edited position, then apply the override.
+
+        Args:
+            model: The compiled model.
+            body_id: The rig body.
+            moved: Whether the edit wrote the XML's (unscaled) position.
+
+        Returns:
+            ``True`` when the override also fixes the rig's orientation, so XML edits to it are ignored.
+        """
+        layout = self._layout
+        if moved:
+            model.body_pos[body_id] = np.asarray(model.body_pos[body_id]) * layout.scale
+        rig = layout.overview_rig
+        if rig is None:
+            return False
+        model.body_pos[body_id] = rig.pos
+        if rig.quat is None:
+            return False
+        model.body_quat[body_id] = rig.quat
+        return True
+
     def _apply_camera_edits(self, model: object, data: object) -> None:  # noqa: C901, PLR0915
         import mujoco  # noqa: PLC0415
         from defusedxml import ElementTree  # noqa: PLC0415
@@ -157,8 +191,13 @@ class SceneXmlWatcher:
 
             # pyrefly: ignore [missing-attribute]
             pos_str = body_elem.get("pos")
-            if pos_str:
-                _write_finite(model.body_pos, body_id, pos_str, f"{body_name} pos")  # pyrefly: ignore [missing-attribute]
+            moved = bool(pos_str) and _write_finite(model.body_pos, body_id, pos_str, f"{body_name} pos")
+            if (
+                body_name == "overview_camera_rig"
+                and self._layout is not None
+                and self._place_rig(model, body_id, moved=moved)
+            ):
+                continue
 
             for attr in ("euler", "quat"):  # as before: a quat wins over an euler
                 # pyrefly: ignore [missing-attribute]
@@ -215,12 +254,15 @@ class SceneXmlWatcher:
 
 def _write_finite(
     array: np.ndarray, index: int, text: str, what: str, within: tuple[float, float] | None = None
-) -> None:
+) -> bool:
     """Write the numbers in *text* to ``array[index]``, unless a half-typed edit left them unusable.
 
     The wrong count, ``nan``/``inf`` or, with *within*, a value outside that open interval is logged
     and leaves the model as it was. A value that isn't a number raises ``ValueError``, which the
     watcher contains.
+
+    Returns:
+        Whether the values were written.
     """
     values = np.asarray([float(x) for x in text.split()], dtype=np.float64)
     usable = values.size == np.size(array[index]) and np.isfinite(values).all()
@@ -228,8 +270,9 @@ def _write_finite(
         usable = bool(np.all((values > within[0]) & (values < within[1])))
     if not usable:
         logger.warning("Invalid {} values: {}", what, text)
-        return
+        return False
     array[index] = values if values.size > 1 else values[0]
+    return True
 
 
 def _orientation_quat(attr: str, text: str) -> np.ndarray | None:

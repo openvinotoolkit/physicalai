@@ -27,7 +27,7 @@ def make_robot(scene_id: str) -> MuJoCoRobot:
     return MuJoCoRobot(scene=scene_id, substeps=1, cameras=[])
 
 
-@pytest.mark.parametrize("scene_id", list(list_scenes()))
+@pytest.mark.parametrize("scene_id", list(list_scenes_for(SO101_PROFILE)))
 def test_scene_connect_reset_and_reconnect(scene_id: str) -> None:
     robot = instantiate(Config.from_instance(make_robot(scene_id)))
     assert isinstance(robot, Robot)
@@ -77,7 +77,7 @@ def test_failed_switch_reset_preserves_live_scene(monkeypatch: pytest.MonkeyPatc
     def fail(*args: object) -> None:
         raise ValueError("reset failed")
 
-    monkeypatch.setattr("physicalai_mujoco_plugin.scene_registry.get_reset_fn", lambda _: fail)
+    monkeypatch.setattr("physicalai_mujoco_plugin.scene_registry.get_reset_fn", lambda *_: fail)
     try:
         assert robot._switch_to_scene("yahtzee") is False
         assert robot._model is model
@@ -193,7 +193,7 @@ def test_auto_reset_settings_survive_scene_switches() -> None:
 
 
 def test_compatible_scene_lists_match_real_models() -> None:
-    for scene_id, scene in list_scenes().items():
+    for scene_id, scene in list_scenes_for(SO101_PROFILE).items():
         robot = make_robot(scene_id)
         expected = BIMANUAL_SO101_JOINT_ORDER if scene.num_arms == 2 else SO101_JOINT_ORDER
         robot.connect()
@@ -295,7 +295,8 @@ def test_wrist_cameras_see_the_jaws_in_the_lower_half(scene_id: str, camera: str
 @pytest.mark.parametrize("scene_id", list(list_scenes()))
 def test_scene_xml_camera_reload_keeps_the_compiled_poses(scene_id: str) -> None:
     """Live XML camera edits are re-applied by hand; unchanged XML must give the compiled poses."""
-    robot = make_robot(scene_id)
+    profile = "so101" if scene_id in list_scenes_for(SO101_PROFILE) else "unitree_go2"
+    robot = MuJoCoRobot(profile, scene=scene_id, substeps=1, cameras=[])
     robot.connect()
     try:
         model, data = robot._model, robot._data

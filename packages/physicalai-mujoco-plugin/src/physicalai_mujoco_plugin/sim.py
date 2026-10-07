@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING
 
 from physicalai_mujoco_plugin.cameras import CameraConfig
 from physicalai_mujoco_plugin.channels import ArmChannels
+from physicalai_mujoco_plugin.floating import FloatingBases
+from physicalai_mujoco_plugin.robot_cameras import CHASE_CAMERA, OVERVIEW_CAMERA
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -41,11 +43,23 @@ class Sim:
     bindings: tuple[RobotBinding, ...]
     channels: tuple[ArmChannels, ...]
     on_reset: ResetFn | None
+    bases: FloatingBases
+    """The floating-base robots, for observations, base holds and falls."""
 
     @property
     def joint_names(self) -> list[str]:
         """Public channel names of every robot, in anchor order."""
         return [name for channels in self.channels for name in channels.names]
+
+    def camera_sources(self) -> dict[str, str]:
+        """Label every model camera: ``override``, ``model`` or ``default`` for robot cameras, else ``scene``.
+
+        Returns:
+            The label of each camera, by name.
+        """
+        robot = {camera.name: camera.source for binding in self.bindings for camera in binding.layout.cameras}
+        names = (self.model.camera(i).name for i in range(self.model.ncam))
+        return {name: robot.get(name, "scene") for name in names}
 
 
 def resolve_scene(profile: RobotProfile, scene_id: str | None, model_path: str | None) -> SceneConfig | None:
@@ -87,7 +101,7 @@ def load_sim(
 
     Args:
         xml_path: Scene XML.
-        scene: The registered scene, for its reset; ``None`` for a custom model.
+        scene: The registered scene, for its layout and reset; ``None`` for a custom model.
         profile: Robot profile attached at every mount frame.
         unit: Robot-wide public unit.
         torque_mode: How torque actuators are driven.
@@ -106,32 +120,45 @@ def load_sim(
     from physicalai_mujoco_plugin.compose import compose_scene  # noqa: PLC0415
     from physicalai_mujoco_plugin.scene_registry import get_reset_fn  # noqa: PLC0415
 
-    composed = compose_scene(xml_path, profile)
+    composed = compose_scene(xml_path, profile, scene_layout=scene.layout_for(profile) if scene is not None else None)
     if robots is not None and len(composed.robots) != robots:
         msg = f"{xml_path} attaches {len(composed.robots)} robot(s), but this simulation drives {robots}"
         raise ValueError(msg)
     model = composed.model
     data = mujoco.MjData(model)
     for binding in composed.robots:
-        for joint, values in binding.layout.home_qpos.items():
-            joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint)
-            if joint_id >= 0:
-                address = int(model.jnt_qposadr[joint_id])
-                data.qpos[address : address + len(values)] = values
-        for actuator, value in binding.layout.home_ctrl.items():
-            actuator_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, actuator)
-            if actuator_id >= 0:
-                data.ctrl[actuator_id] = value
+        place_home(model, data, binding)
     mujoco.mj_forward(model, data)
     channels = tuple(
         ArmChannels(model, data, binding.layout, profile, prefix=binding.prefix, unit=unit, torque_mode=torque_mode)
         for binding in composed.robots
     )
-    on_reset = get_reset_fn(scene.scene_id) if scene is not None else None
+    on_reset = get_reset_fn(scene.scene_id, profile) if scene is not None else None
     if on_reset is not None:
         reseed()
         on_reset(model, data, rng)
-    return Sim(xml_path, scene, model, data, composed.robots, channels, on_reset)
+    return Sim(xml_path, scene, model, data, composed.robots, channels, on_reset, FloatingBases(data, composed.robots))
+
+
+def place_home(model: object, data: object, binding: RobotBinding) -> None:
+    """Put one robot at its home pose, at rest: floating base, joints and actuator ``ctrl``."""
+    import mujoco  # noqa: PLC0415
+
+    for joint, values in binding.layout.home_qpos.items():
+        joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint)
+        if joint_id >= 0:
+            address = int(model.jnt_qposadr[joint_id])
+            data.qpos[address : address + len(values)] = values
+            dof = int(model.jnt_dofadr[joint_id])
+            data.qvel[dof : dof + (len(values) - 1 if len(values) > 1 else 1)] = 0.0
+    for actuator, value in binding.layout.home_ctrl.items():
+        actuator_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, actuator)
+        if actuator_id >= 0:
+            data.ctrl[actuator_id] = value
+    base = binding.layout.base
+    if base is not None:
+        data.qpos[base.qpos_adr : base.qpos_adr + 7] = base.home
+        data.qvel[base.dof_adr : base.dof_adr + 6] = 0.0
 
 
 def joint_names_before_load(profile: RobotProfile, xml_path: Path) -> list[str]:
@@ -158,7 +185,7 @@ def joint_names_before_load(profile: RobotProfile, xml_path: Path) -> list[str]:
 
 
 def default_cameras(sim: Sim) -> list[CameraConfig]:
-    """Stream the first robot's cameras, then ``overview``, then the other robots' (CAM-6).
+    """Stream the first robot's first camera, ``overview`` and ``chase``, then the other robot cameras (CAM-6).
 
     Returns:
         One 640x480, 30 fps stream per camera that the model has.
@@ -166,7 +193,7 @@ def default_cameras(sim: Sim) -> list[CameraConfig]:
     import mujoco  # noqa: PLC0415
 
     robot_cameras = [[camera.name for camera in binding.layout.cameras] for binding in sim.bindings]
-    names = [*robot_cameras[0][:1], "overview", *robot_cameras[0][1:]]
+    names = [*robot_cameras[0][:1], OVERVIEW_CAMERA, CHASE_CAMERA, *robot_cameras[0][1:]]
     names += [name for cameras in robot_cameras[1:] for name in cameras]
     return [
         CameraConfig(name=name)
@@ -175,4 +202,4 @@ def default_cameras(sim: Sim) -> list[CameraConfig]:
     ]
 
 
-__all__ = ["Sim", "default_cameras", "joint_names_before_load", "load_sim", "resolve_scene"]
+__all__ = ["Sim", "default_cameras", "joint_names_before_load", "load_sim", "place_home", "resolve_scene"]

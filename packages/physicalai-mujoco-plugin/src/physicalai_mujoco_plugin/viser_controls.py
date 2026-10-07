@@ -44,6 +44,7 @@ from physicalai_mujoco_plugin.http_server import (
     SetSeedCommand,
     SetStudioRecordingCommand,
     ShutdownCommand,
+    StopReplayCommand,
     SwitchSceneCommand,
 )
 from physicalai_mujoco_plugin.studio_recorder import DEFAULT_TASK, MAX_EPISODES, MAX_TASK_CHARS, RecordingOptions
@@ -52,6 +53,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
     from physicalai_mujoco_plugin.autopilot import AutopilotMode
+    from physicalai_mujoco_plugin.floating import BaseStatus
     from physicalai_mujoco_plugin.http_server import FrameBuffer, SimCommand
     from physicalai_mujoco_plugin.studio_recorder import KeepPolicy
 
@@ -309,6 +311,15 @@ class PanelState:
     """Autopilot availability, mode and phase (see ``Autopilot.status``)."""
     studio: Mapping[str, Any] = field(default_factory=dict)
     """Automatic Studio recording status (see ``AutoRecorder.status``)."""
+    profile: str = ""
+    """Robot profile name (``so101``, ``unitree_g1``); empty hides the Robot folder."""
+    tier: str = ""
+    units: tuple[str, ...] = ()
+    """Public unit of each channel, in action order."""
+    bases: tuple[BaseStatus, ...] = ()
+    """Floating-base readouts: height, tilt, hold and fall (empty for fixed bases)."""
+    replay: Mapping[str, Any] = field(default_factory=dict)
+    """Replay status (see ``Replay.status``); ``{"active": False}`` without a replay."""
 
 
 @dataclass
@@ -324,7 +335,9 @@ class _Handles:
     belt_speed: Any = None
     episode_status: Any = None
     performance: Any = None
+    robot: Any = None
     autopilot_mode: Any = None
+    replay: Any = None
     studio_toggle: Any = None
     studio_status: Any = None
     drag_toggle: Any = None
@@ -382,6 +395,23 @@ def _performance_markdown(timing: Mapping[str, Any]) -> str:
     return "  \n".join(lines)
 
 
+def _robot_markdown(state: PanelState) -> str:
+    """Describe the robot for the panel (SVC-3).
+
+    Returns:
+        Markdown with the profile, tier, unit counts, and each floating base's height, tilt and hold.
+    """
+    counts: dict[str, int] = {}
+    for unit in state.units:
+        counts[unit] = counts.get(unit, 0) + 1
+    units = ", ".join(f"{unit} ({count})" for unit, count in counts.items()) or "-"
+    lines = [f"**Profile:** {state.profile} ({state.tier})", f"**Units:** {units}"]
+    for base in state.bases:
+        hold = "fallen" if base.fallen else ("held" if base.held else "free")
+        lines.append(f"**{base.prefix}base:** height {base.height:.2f} m, tilt {base.tilt_deg:.0f} deg, {hold}")
+    return "  \n".join(lines)
+
+
 def _is_conveyor(episode: Mapping[str, Any]) -> bool:
     return episode.get("kind") == "conveyor"
 
@@ -426,6 +456,26 @@ def _autopilot_markdown(autopilot: Mapping[str, Any]) -> str:
     phase = autopilot.get("phase") or "idle"
     target = autopilot.get("target")
     return f"**Autopilot:** {phase}" + (f" ({target})" if target else "")
+
+
+def _refresh_replay(handles: tuple[Any, ...] | None, replay: Mapping[str, Any]) -> None:
+    """Show the replay status and Stop Replay button only while a replay runs."""
+    if handles is None:
+        return
+    active = bool(replay.get("active"))
+    for handle in handles:
+        handle.visible = active
+    handles[0].content = _replay_markdown(replay)
+
+
+def _replay_markdown(replay: Mapping[str, Any]) -> str:
+    if not replay.get("active"):
+        return "**Replay:** off"
+    frames = int(replay.get("frames", 0))
+    frame = int(replay.get("frame", 0)) + 1
+    if replay.get("finished"):
+        return f"**Replay:** finished, holding frame {frames}/{frames}; stop it to resume the simulation"
+    return f"**Replay:** frame {frame}/{frames} at {float(replay.get('fps', 0.0)):g} fps; actions are ignored"
 
 
 def _studio_markdown(studio: Mapping[str, Any]) -> str:
@@ -515,6 +565,9 @@ class SimControlPanel:
             self._drags.clear()
         self._next_status = self._next_objects = self._next_preview = 0.0
         self._build_scene_controls(state)
+        if state.profile:
+            with self._server.gui.add_folder("Robot"):
+                self._handles.robot = self._server.gui.add_markdown(_robot_markdown(state))
         self._build_performance(state)
         self._build_seed_controls(state)
         if state.episode.get("enabled"):
@@ -620,7 +673,9 @@ class SimControlPanel:
                     if scene_id is not None and scene_id != state.scene_id:
                         self._submit(SwitchSceneCommand(scene_id=scene_id))
 
-            reset_button = gui.add_button("Reset Scene", icon=self._viser.Icon.REFRESH)
+            # With a floating base, the reset also puts the robot back on its feet and holds it (DRV-8).
+            reset_label = "Reset" if state.bases else "Reset Scene"
+            reset_button = gui.add_button(reset_label, icon=self._viser.Icon.REFRESH)
 
             @reset_button.on_click
             def _on_reset(_: object) -> None:
@@ -631,6 +686,17 @@ class SimControlPanel:
             @home_button.on_click
             def _on_home(_: object) -> None:
                 self._submit(HomeCommand())
+
+            active = bool(state.replay.get("active"))
+            replay_status = gui.add_markdown(_replay_markdown(state.replay))
+            replay_status.visible = active
+            stop_replay = gui.add_button("Stop Replay", icon=self._viser.Icon.PLAYER_STOP)
+            stop_replay.visible = active
+            handles.replay = (replay_status, stop_replay)
+
+            @stop_replay.on_click
+            def _on_stop_replay(_: object) -> None:
+                self._submit(StopReplayCommand())
 
     def _build_seed_controls(self, state: PanelState) -> None:
         gui = self._server.gui
@@ -943,6 +1009,9 @@ class SimControlPanel:
         handles = self._handles
         if handles.performance is not None:
             handles.performance.content = _performance_markdown(state.timing)
+        if handles.robot is not None:
+            handles.robot.content = _robot_markdown(state)
+        _refresh_replay(handles.replay, state.replay)
         if handles.autopilot_mode is not None:
             mode, status = handles.autopilot_mode
             mode.value = AUTOPILOT_LABELS.get(state.autopilot.get("mode", "off"), "Off")
