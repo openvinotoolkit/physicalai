@@ -272,6 +272,11 @@ class ViewerService:
         server = None
         try:
             server = viser.ViserServer(host=self.host, port=self.port, verbose=False)
+            # viser binds the next free port when the requested one is taken; publish the bound one.
+            bound_port = server.get_port()
+            if bound_port != self.port:
+                logger.warning("Port {} is taken; the 3D viewer listens on port {}", self.port, bound_port)
+                self.port = bound_port
             self.server = server
             if self.theme == "studio":
                 server.gui.configure_theme(dark_mode=True, brand_color=STUDIO_BRAND_COLOR, show_share_button=False)

@@ -720,12 +720,13 @@ def _ready_addresses(
     http_port: int,
     viewer_url: str | None,
 ) -> dict[str, object]:
-    """Return the ``ready`` event's addresses and working cameras, or exit without the HTTP server.
+    """Return the ``ready`` event's addresses and working cameras, or exit without the HTTP server or viewer.
 
     The owner decides whether the viewer started and which cameras render, so with HTTP both come
     from the owner's server. A requested HTTP server that does not answer for this owner (the port
     was taken, or it failed to start) is an error: Studio could neither control the simulation nor
-    show its cameras.
+    show its cameras. So is a requested browser viewer that did not start (viser failed to import,
+    bind or build its scene): Studio embeds it.
 
     Args:
         args: The ``start`` arguments.
@@ -744,6 +745,12 @@ def _ready_addresses(
     root = _http_json(host, http_port, "/")
     if root is None or root.get("service") != owner_name:
         logger.error("The camera/control HTTP server of '{}' is not answering at {}:{}", owner_name, host, http_port)
+        sys.exit(1)
+    if viewer_url is not None and root.get("viewer_url") is None:
+        logger.error(
+            "The browser viewer of '{}' did not start; the simulation's log says why. Pass --no-gui to run without it",
+            owner_name,
+        )
         sys.exit(1)
     status.phase("cameras")
     return {
