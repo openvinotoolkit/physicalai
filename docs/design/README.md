@@ -10,7 +10,7 @@ Architecture and design documents for the physical‑AI runtime.
 - **[Architecture](./architecture/architecture.md)** — physicalai runtime architecture and CLI
 - **[Packaging Strategy](./packaging/physical-ai-two-repo-options.md)** — two‑repo, two‑distribution plan
 - **[Modular Packages In One Repo](./packaging/modular-packages-in-one-repo.md)** — how to publish reusable packages without an early repo split
-- **[Robot Integration Packaging](./packaging/robot-integrations.md)** — every robot ships as a plugin, installed through `physicalai` extras and released from one release PR (proposed)
+- **[Robot Integration Packaging](./packaging/robot-integrations.md)** — distributing every robot integration as a separate plugin package
 
 ---
 
