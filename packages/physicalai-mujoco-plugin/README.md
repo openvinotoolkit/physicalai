@@ -285,7 +285,7 @@ With `--status-json` or `--exit-with-parent`, `start` only runs a simulation it 
 
 The browser viewer has no `X-Frame-Options` or `Content-Security-Policy` header, so a page can embed `viewer_url` in an iframe.
 
-Studio gets this command line from the catalog: every simulated follower's `simulation` field (a [`SimulationLaunch`](../physicalai-studio-plugin/README.md#simulationlaunch)) lists the scenes that entry runs in, with the profile's default scene preselected, and builds `python -m physicalai_mujoco_plugin start --profile <profile> [--bimanual] --scene <scene> --name=<owner name> --status-json --exit-with-parent --http-port 0 --viser-port 0 --viewer-theme studio [--seed <n>]` in Studio's own Python. Building it loads no robot model and downloads nothing; the `fetch` phase does that.
+Studio gets this command line from the catalog: every simulated follower's `simulation` field (a [`SimulationLaunch`](../physicalai-studio-plugin/README.md#simulationlaunch)) lists the scenes that entry runs in, with the profile's default scene preselected, labels the entry with its arm count and tier, and builds `python -m physicalai_mujoco_plugin start --profile <profile> [--bimanual] --scene <scene> --name=<payload name> --status-json --exit-with-parent --http-port 0 --viser-port 0 --viewer-theme studio [--seed <n>]` in Studio's own Python. Building it loads no robot model and downloads nothing; the `fetch` phase does that.
 
 ## Joint units
 

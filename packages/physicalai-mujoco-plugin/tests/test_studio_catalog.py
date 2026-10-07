@@ -8,7 +8,7 @@ import numpy as np
 from physicalai.config import Config
 from physicalai.robot.errors import RobotNotConnectedError, RobotProtocolMismatch, RobotTransportError
 from physicalai.robot.transport import RobotOwnerConfig, SharedRobot
-from physicalai_studio_plugin import SimulationLaunch, SimulationScene
+from physicalai_studio_plugin import SimulationScene
 
 from physicalai_mujoco_plugin.virtual_leader import MuJoCoVirtualLeader
 from physicalai_mujoco_plugin.constants import (
@@ -27,6 +27,7 @@ from physicalai_mujoco_plugin.studio_catalog import (
     MuJoCoSO101BimanualPayload,
     MuJoCoSO101Payload,
     _definitions,
+    _payload_model,
     _SharedMuJoCoRobot,
     list_catalog_entries,
     register_physicalai_studio_plugin,
@@ -644,7 +645,7 @@ class TestSimulationLaunch:
         [
             ("MuJoCo_SO101_Follower", None, []),
             ("MuJoCo_WidowXAI_Bimanual_Follower", 7, ["--bimanual"]),
-            ("MuJoCo_UnitreeGo2_Follower", SimulationLaunch.max_seed, []),
+            ("MuJoCo_UnitreeGo2_Follower", MAX_SEED, []),
         ],
     )
     def test_argv_starts_a_supervised_simulation_that_start_parses(
@@ -655,7 +656,9 @@ class TestSimulationLaunch:
         entry = {entry.type: entry for entry in list_catalog_entries()}[entry_type]
         launch = entry.simulation_launch()
         assert launch is not None
-        argv = launch.argv(launch.default_scene, "-studio sim", seed)
+        payload = _payload_model(entry)(name="-studio sim")
+        assert launch.owner_name(payload) == "-studio sim"
+        argv = launch.argv(launch.default_scene, payload, seed)
         assert argv[:6] == [sys.executable, "-m", "physicalai_mujoco_plugin", "start", "--profile", entry.profile.name]
         assert argv[6 : 6 + len(extra)] == extra
         args = cli._build_parser().parse_args(argv[3:])  # noqa: SLF001
@@ -670,7 +673,24 @@ class TestSimulationLaunch:
         assert args.viewer_theme == "studio"
 
     def test_the_seed_range_matches_post_seed(self) -> None:
-        assert SimulationLaunch.max_seed == MAX_SEED
+        launch = SO101_ENTRY.simulation_launch()
+        assert launch is not None
+        assert launch.max_seed == MAX_SEED
+        with pytest.raises(ValueError, match="seed must be an integer from 0 to 4294967295"):
+            launch.argv("yahtzee", MuJoCoSO101Payload(), MAX_SEED + 1)
+
+    def test_the_owner_name_is_the_payloads_name_even_from_a_raw_payload(self) -> None:
+        launch = {d.type: d for d in _definitions()}["MuJoCo_SO101_Bimanual_Follower"].simulation
+        assert launch is not None
+        assert launch.owner_name(MuJoCoSO101BimanualPayload()) == DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME
+        assert launch.owner_name({"name": "sim-2"}) == "sim-2"  # type: ignore[arg-type]
+
+    def test_labels_give_the_arm_count_and_tier(self) -> None:
+        labels = {d.type: d.simulation.labels for d in _definitions() if d.simulation is not None}
+        assert labels["MuJoCo_SO101_Follower"] == ("1 arm", "twin")
+        assert labels["MuJoCo_WidowXAI_Bimanual_Follower"] == ("2 arms (bimanual)", "twin")
+        assert labels["MuJoCo_ALOHA_Follower"] == ("2 arms", "dataset")
+        assert labels["MuJoCo_UnitreeG1_Follower"] == ("floating base", "experimental")
 
     def test_the_module_runs_with_python_dash_m(self) -> None:
         import subprocess  # noqa: PLC0415
