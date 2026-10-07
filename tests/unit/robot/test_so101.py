@@ -270,9 +270,10 @@ class TestSO101Lifecycle:
         assert all(v == 1 for v in final_torque_values)
 
     def test_leader_disables_torque(self, mock_sdk: MagicMock) -> None:
-        """Leader role disables torque on connect."""
+        """Leader role starts with torque disabled."""
         robot = _create_robot(mock_sdk, role="leader")
         robot.connect()
+        assert robot._torque_enabled is False  # noqa: SLF001
 
         # Filter to torque writes only (address 40 = TORQUE_ENABLE)
         calls = mock_sdk.PacketHandler.return_value.write1ByteTxRx.call_args_list
@@ -420,13 +421,81 @@ class TestSO101Action:
 
         mock_sdk.GroupSyncWrite.return_value.txPacket.assert_called_once()
 
-    def test_send_action_leader_raises(self, mock_sdk: MagicMock) -> None:
-        """Leader raises RuntimeError on send_action()."""
+    def test_send_action_leader_raises_while_torque_is_off(self, mock_sdk: MagicMock) -> None:
+        """Leader motion is rejected unless torque has been explicitly enabled."""
         robot = _create_robot(mock_sdk, role="leader")
         robot.connect()
 
-        with pytest.raises(RuntimeError, match="Cannot send actions to a leader arm"):
+        with pytest.raises(RuntimeError, match="torque is disabled"):
             robot.send_action(np.zeros(6, dtype=np.float32))
+
+    def test_leader_can_move_only_between_torque_enable_and_disable(self, mock_sdk: MagicMock) -> None:
+        robot = _create_robot(mock_sdk, role="leader")
+        robot.connect()
+        action = np.zeros(6, dtype=np.float32)
+
+        robot.set_torque(enabled=True)
+        assert robot._torque_enabled is True  # noqa: SLF001
+        robot.send_action(action)
+        mock_sdk.GroupSyncWrite.return_value.txPacket.assert_called_once()
+
+        robot.set_torque(enabled=False)
+        assert robot._torque_enabled is False  # noqa: SLF001
+        with pytest.raises(RuntimeError, match="torque is disabled"):
+            robot.send_action(action)
+
+    @pytest.mark.parametrize(
+        ("write_result", "expected_error"),
+        [((2, 0), "communication result 2"), ((0, 4), "servo error 4")],
+    )
+    def test_torque_write_failure_is_reported_and_does_not_enable_software_state(
+        self,
+        mock_sdk: MagicMock,
+        write_result: tuple[int, int],
+        expected_error: str,
+    ) -> None:
+        robot = _create_robot(mock_sdk, role="leader")
+        robot.connect()
+        mock_sdk.PacketHandler.return_value.write1ByteTxRx.side_effect = [(0, 0), write_result, *[(0, 0)] * 6]
+
+        with pytest.raises(ConnectionError, match=expected_error):
+            robot.set_torque(enabled=True)
+
+        assert robot._torque_enabled is False  # noqa: SLF001
+        torque_writes = [
+            call for call in mock_sdk.PacketHandler.return_value.write1ByteTxRx.call_args_list if call.args[2] == 40
+        ]
+        assert [call.args[3] for call in torque_writes[-6:]] == [0] * 6
+        with pytest.raises(RuntimeError, match="torque is disabled"):
+            robot.send_action(np.zeros(6, dtype=np.float32))
+
+    def test_torque_disable_attempts_every_servo_and_locks_out_leader_motion(self, mock_sdk: MagicMock) -> None:
+        robot = _create_robot(mock_sdk, role="leader")
+        robot.connect()
+        robot.set_torque(enabled=True)
+        mock_sdk.PacketHandler.return_value.write1ByteTxRx.side_effect = [(0, 4), *[(0, 0)] * 5]
+
+        with pytest.raises(ConnectionError, match="servo error 4"):
+            robot.set_torque(enabled=False)
+
+        torque_writes = [
+            call for call in mock_sdk.PacketHandler.return_value.write1ByteTxRx.call_args_list if call.args[2] == 40
+        ]
+        assert [call.args[3] for call in torque_writes[-6:]] == [0] * 6
+        assert robot._torque_enabled is False  # noqa: SLF001
+        with pytest.raises(RuntimeError, match="torque is disabled"):
+            robot.send_action(np.zeros(6, dtype=np.float32))
+
+    def test_leader_disconnect_disables_torque_after_explicit_enable(self, mock_sdk: MagicMock) -> None:
+        robot = _create_robot(mock_sdk, role="leader")
+        robot.connect()
+        robot.set_torque(enabled=True)
+        robot.disconnect()
+
+        assert robot._torque_enabled is False  # noqa: SLF001
+        calls = mock_sdk.PacketHandler.return_value.write1ByteTxRx.call_args_list
+        torque_writes = [call for call in calls if call.args[2] == 40]
+        assert [call.args[3] for call in torque_writes[-6:]] == [0] * 6
 
     def test_send_action_wrong_shape_raises(self, mock_sdk: MagicMock) -> None:
         """ValueError on wrong action shape."""

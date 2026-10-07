@@ -4,8 +4,9 @@
 """Wire format for the robot Zenoh transport.
 
 Zenoh moves opaque bytes; this module defines the msgpack record schemas
-for the ``/state``, ``/action``, and ``/metadata`` keys. Numpy arrays are
-encoded with dtype and shape so they round-trip exactly. Images are
+for the ``/state``, ``/action``, ``/metadata``, and checked ``/torque``
+request/reply keys. Numpy arrays are encoded with dtype and shape so they
+round-trip exactly. Images are
 intentionally excluded from ``/state`` — frames go through the capture
 transport (``SharedCamera``), not this one.
 """
@@ -26,9 +27,11 @@ never receives commands it might misinterpret.
 
 Bump this constant in the same change that introduces a backward-
 incompatible ``/state``, ``/action``, or ``/metadata`` payload, required-
-field, or semantic change. Do **not** bump it for additive optional
-fields, internal refactors, robot-driver changes, or package releases that
-preserve wire compatibility.
+field, or semantic change, or changes the ``/torque`` request/reply
+semantics. The torque endpoint is additive and optional, so an older owner
+can continue serving existing clients. Do **not** bump it for additive
+optional fields, internal refactors, robot-driver changes, or package
+releases that preserve wire compatibility.
 """
 _MAX_PAYLOAD_BYTES = 1024 * 1024
 """Upper bound on a single encoded record.
@@ -216,6 +219,77 @@ def decode_action(data: bytes) -> tuple[np.ndarray, float, float]:
     """
     record = _unpack_payload(data)
     return record["action"], record["goal_time"], record["ts"]
+
+
+def encode_torque_request(*, enabled: bool) -> bytes:
+    """Encode a checked torque-enable request.
+
+    Args:
+        enabled: Whether the owner should enable torque.
+
+    Returns:
+        The encoded request payload.
+
+    Raises:
+        TypeError: If *enabled* is not a boolean.
+    """
+    if not isinstance(enabled, bool):
+        msg = f"enabled must be a bool, got {type(enabled).__name__}"
+        raise TypeError(msg)
+    return _pack_payload({"enabled": enabled})
+
+
+def decode_torque_request(data: bytes) -> bool:
+    """Decode and validate a checked torque-enable request.
+
+    Args:
+        data: Encoded request payload.
+
+    Returns:
+        Whether the owner should enable torque.
+
+    Raises:
+        TypeError: If the payload does not contain a boolean ``enabled`` field.
+    """
+    record = _unpack_payload(data)
+    enabled = record.get("enabled")
+    if not isinstance(enabled, bool):
+        msg = "torque request must contain a boolean 'enabled' field"
+        raise TypeError(msg)
+    return enabled
+
+
+def encode_torque_response(error: str | None = None) -> bytes:
+    """Encode a torque-control result; ``None`` means the owner applied it.
+
+    Args:
+        error: Error message from the owner, or ``None`` on success.
+
+    Returns:
+        The encoded response payload.
+    """
+    return _pack_payload({"ok": error is None, "error": error})
+
+
+def decode_torque_response(data: bytes) -> str | None:
+    """Decode a torque-control result, returning its error message if failed.
+
+    Args:
+        data: Encoded response payload.
+
+    Returns:
+        The owner's error message, or ``None`` on success.
+
+    Raises:
+        ValueError: If the response payload is malformed.
+    """
+    record = _unpack_payload(data)
+    ok = record.get("ok")
+    error = record.get("error")
+    if not isinstance(ok, bool) or (ok and error is not None) or (not ok and not isinstance(error, str)):
+        msg = "malformed torque-control response"
+        raise ValueError(msg)
+    return error
 
 
 def encode_metadata(metadata: dict[str, Any]) -> bytes:
