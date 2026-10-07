@@ -808,6 +808,19 @@ class TestStatusJson:
         launch.http_stop.assert_called_once_with("127.0.0.1", 8080, "my-sim", 1234)
         launch.shared.disconnect.assert_called_once_with()
 
+    def test_a_requested_viewer_that_did_not_start_is_an_error_and_stops_the_owner(self) -> None:
+        """Studio embeds the viewer; the owner publishes no viewer URL when viser failed to start."""
+        launch = _launch(["--status-json"], root={**ROOT, "viewer_url": None})
+        assert launch.exit_code == 1
+        assert "browser viewer of 'my-sim' did not start" in str(launch.events[-1]["message"])
+        assert "ready" not in [event["event"] for event in launch.events]
+        launch.http_stop.assert_called_once_with("127.0.0.1", 8080, "my-sim", 1234)
+
+    def test_without_a_requested_viewer_none_is_expected(self) -> None:
+        launch = _launch(["--status-json", "--no-gui"], root={**ROOT, "viewer_url": None})
+        assert launch.events[-1]["event"] == "ready"
+        assert launch.events[-1]["viewer_url"] is None
+
     def test_a_bind_all_host_is_reached_and_reported_on_loopback(self) -> None:
         launch = _launch(["--status-json", "--no-gui", "--http-host", "0.0.0.0"])  # noqa: S104
         assert launch.events[-1]["http_url"] == "http://127.0.0.1:8080"

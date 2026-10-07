@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import queue
+import socket
 import sys
 import threading
 from unittest.mock import MagicMock, patch
@@ -83,7 +84,7 @@ class TestViewerLaunch:
 
     def test_configured_host_is_used(self, model_data) -> None:
         with (
-            patch("viser.ViserServer", return_value=MagicMock()) as server_factory,
+            patch("viser.ViserServer", return_value=MagicMock(**{"get_port.return_value": 9090})) as server_factory,
             patch("mjviser.ViserMujocoScene", return_value=MagicMock()),
         ):
             viewer = _viewer(host="0.0.0.0")  # noqa: S104
@@ -106,6 +107,43 @@ class TestViewerLaunch:
         server.stop.assert_called_once()
         assert viewer.server is None
         assert not viewer.active
+
+
+    def test_a_taken_port_publishes_the_port_viser_bound(self, model_data) -> None:
+        """viser moves to the next free port instead of failing; the URL must name the bound one."""
+        with socket.socket() as taken:
+            taken.bind(("127.0.0.1", 0))
+            taken.listen()
+            port = taken.getsockname()[1]
+            viewer = _viewer(port=port)
+            try:
+                # A real viser server binds; only the scene and panel content are stubbed.
+                with (
+                    patch("mjviser.ViserMujocoScene", return_value=MagicMock()),
+                    patch("physicalai_mujoco_plugin.viser_controls.SimControlPanel"),
+                ):
+                    assert viewer.open(*model_data) is True
+                assert viewer.port != port
+                assert viewer.url == f"http://127.0.0.1:{viewer.port}"
+                with socket.create_connection(("127.0.0.1", viewer.port), timeout=5.0):
+                    pass
+            finally:
+                viewer.close()
+
+    def test_a_real_scene_build_failure_leaves_no_viewer_and_frees_the_port(self, model_data) -> None:
+        """The owner then publishes no viewer URL, which a supervised ``start`` reports as an error."""
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        viewer = _viewer(port=port)
+        with (
+            patch("mjviser.ViserMujocoScene", side_effect=RuntimeError("boom")),
+            patch.object(sys, "platform", "darwin"),  # no native fallback
+        ):
+            assert viewer.open(*model_data) is False
+        assert viewer.url is None
+        with socket.socket() as rebind:
+            rebind.bind(("127.0.0.1", port))
 
 
 class TestViewerRebuild:
