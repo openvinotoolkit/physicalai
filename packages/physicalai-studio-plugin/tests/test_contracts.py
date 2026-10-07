@@ -15,6 +15,8 @@ from physicalai_studio_plugin import (
     RobotProbe,
     RobotZeroCalibration,
     SerialPortInfo,
+    SimulationLaunch,
+    SimulationScene,
     robot_field_ui,
     robot_payload_ui,
     validate_robot_payload_ui,
@@ -159,6 +161,97 @@ def test_zero_calibration_rejects_invalid_values(instructions: str, zero_toleran
         RobotZeroCalibration(
             instructions=instructions, set_zero=_noop_calibration_step, zero_tolerance_deg=zero_tolerance_deg
         )
+
+
+_SCENES = (
+    SimulationScene(id="pick", display_name="Pick & Place", description="One block and a target"),
+    SimulationScene(id="fold", display_name="Fold"),
+)
+
+
+def _sim_argv(*, scene: str, owner_name: str, seed: int | None) -> list[str]:
+    argv = ["sim", "start", "--scene", scene, f"--name={owner_name}"]
+    return argv if seed is None else [*argv, "--seed", str(seed)]
+
+
+def test_definition_defaults_to_no_simulation() -> None:
+    definition = RobotCatalogDefinition(type="Test_Follower", display_name="Test Follower", role="follower")
+
+    assert definition.simulation is None
+
+
+def test_definition_accepts_a_simulation_launch() -> None:
+    launch = SimulationLaunch(scenes=_SCENES, default_scene="fold", build_argv=_sim_argv)
+    definition = RobotCatalogDefinition(
+        type="Sim_Follower", display_name="Sim Follower", role="follower", simulation=launch
+    )
+
+    assert definition.simulation is launch
+    assert [scene.id for scene in launch.scenes] == ["pick", "fold"]
+    assert launch.scenes[1].description == ""
+
+
+def test_simulation_launch_builds_the_argv_for_a_scene_owner_and_seed() -> None:
+    launch = SimulationLaunch(scenes=_SCENES, default_scene="pick", build_argv=_sim_argv)
+
+    assert launch.argv("fold", "sim-1") == ["sim", "start", "--scene", "fold", "--name=sim-1"]
+    assert launch.argv("pick", "sim-1", seed=SimulationLaunch.max_seed)[-2:] == ["--seed", "4294967295"]
+    assert launch.argv("pick", "sim-1", seed=0)[-1] == "0"
+
+
+@pytest.mark.parametrize(
+    ("scenes", "default_scene", "message"),
+    [
+        ((), "pick", "scenes must not be empty"),
+        ((*_SCENES, SimulationScene(id="pick", display_name="Again")), "pick", r"duplicates \['pick'\]"),
+        (_SCENES, "stack", "default_scene 'stack' is not one of the scenes"),
+    ],
+)
+def test_simulation_launch_rejects_invalid_scenes(
+    scenes: tuple[SimulationScene, ...], default_scene: str, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        SimulationLaunch(scenes=scenes, default_scene=default_scene, build_argv=_sim_argv)
+
+
+@pytest.mark.parametrize(
+    ("scene_id", "display_name", "message"),
+    [(" ", "Pick", "scene id must not be empty"), ("pick", "", "scene 'pick' needs a display_name")],
+)
+def test_simulation_scene_rejects_blank_names(scene_id: str, display_name: str, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        SimulationScene(id=scene_id, display_name=display_name)
+
+
+@pytest.mark.parametrize(
+    ("scene", "owner_name", "seed", "message"),
+    [
+        ("stack", "sim-1", None, "Unknown scene 'stack'"),
+        ("pick", " ", None, "owner_name must not be empty"),
+        ("pick", "sim-1", -1, "seed must be an integer from 0 to 4294967295"),
+        ("pick", "sim-1", 2**32, "seed must be an integer from 0 to 4294967295"),
+        ("pick", "sim-1", True, "seed must be an integer"),
+        ("pick", "sim-1", 1.5, "seed must be an integer"),
+    ],
+)
+def test_simulation_launch_argv_rejects_invalid_requests(
+    scene: str, owner_name: str, seed: Any, message: str
+) -> None:
+    launch = SimulationLaunch(scenes=_SCENES, default_scene="pick", build_argv=_sim_argv)
+
+    with pytest.raises(ValueError, match=message):
+        launch.argv(scene, owner_name, seed)
+
+
+def test_simulation_launch_rejects_an_empty_argv() -> None:
+    def no_argv(*, scene: str, owner_name: str, seed: int | None) -> list[str]:
+        _ = scene, owner_name, seed
+        return []
+
+    launch = SimulationLaunch(scenes=_SCENES, default_scene="pick", build_argv=no_argv)
+
+    with pytest.raises(ValueError, match="no command line"):
+        launch.argv("pick", "sim-1")
 
 
 def test_generic_payload_linked_to_probe() -> None:

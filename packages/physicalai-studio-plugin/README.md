@@ -175,6 +175,7 @@ class RobotCatalogDefinition(Generic[_PayloadT]):
     adapter_options: RobotAdapterOptions = field(default_factory=RobotAdapterOptions)
     probe: RobotProbe[_PayloadT] | None = None
     zero_calibration: RobotZeroCalibration | None = None
+    simulation: SimulationLaunch | None = None
 ```
 
 | Field              | Description                                                                                         |
@@ -188,6 +189,7 @@ class RobotCatalogDefinition(Generic[_PayloadT]):
 | `adapter_options`  | Controls velocity, timing, and effort-forwarding behavior.                                          |
 | `probe`            | Optional [`RobotProbe[_PayloadT]`](#robotprobe) for device interaction.                             |
 | `zero_calibration` | Optional [`RobotZeroCalibration`](#robotzerocalibration) for Studio's guided zero-pose calibration. |
+| `simulation`       | Optional [`SimulationLaunch`](#simulationlaunch) that Studio uses to start a simulated robot.       |
 
 ### `RobotAdapterOptions`
 
@@ -243,6 +245,56 @@ zero_calibration = RobotZeroCalibration[MyRobot](
     instructions="Move the arm to its rest pose and close the gripper.",
     release=_release,
     set_zero=_set_zero,
+)
+```
+
+### `SimulationLaunch`
+
+```python
+@dataclass(frozen=True)
+class SimulationScene:
+    id: str
+    display_name: str
+    description: str = ""
+
+
+class SimulationArgvBuilder(Protocol):
+    def __call__(self, *, scene: str, owner_name: str, seed: int | None) -> Sequence[str]: ...
+
+
+@dataclass(frozen=True)
+class SimulationLaunch:
+    max_seed: ClassVar[int] = 2**32 - 1
+    scenes: tuple[SimulationScene, ...]
+    default_scene: str
+    build_argv: SimulationArgvBuilder
+
+    def argv(self, scene: str, owner_name: str, seed: int | None = None) -> list[str]: ...
+```
+
+For simulated robot types whose `robot_builder` attaches to a running simulation. When a robot type sets `simulation`, Studio can start that simulation itself: it shows `scenes` in their order, preselects `default_scene`, and runs `argv(scene, owner_name, seed)` as a child process. `owner_name` is the name the simulation publishes its robot under, the one the robot's payload attaches to. `seed` is `None` for random scene layouts, or a fixed seed from `0` to `SimulationLaunch.max_seed`. `SimulationLaunch` rejects an empty `scenes`, duplicate scene ids and a `default_scene` that is not one of them; `argv` rejects an unknown scene, a blank owner name and an out-of-range seed with `ValueError`.
+
+The command line must follow this process contract:
+
+- **stdin** is a pipe that Studio keeps open and never writes to. The simulation stops when stdin reaches end of file, which also happens when Studio exits or crashes.
+- **stdout** carries one JSON object per line, flushed after each line; logs go to stderr. Studio reads these events:
+  - `{"event": "phase", "phase": "<name>"}` while the simulation starts, shown as progress; a phase may add fields such as download `bytes` and `total`.
+  - `{"event": "ready", ...}` once the robot can be attached to, with `name` (the owner name), `http_url` (the simulation's HTTP server, or `null`), `viewer_url` (its browser viewer, or `null`) and `cameras` (the camera names it streams). Other fields are allowed.
+  - `{"event": "error", "message": "<text>"}` when starting fails; Studio shows `message`.
+- The process **exits with a non-zero code** when it fails.
+
+The MuJoCo plugin is the first implementation; its `start --status-json` events are described in [Start from another program](../physicalai-mujoco-plugin/README.md#start-from-another-program).
+
+```python
+def _start_argv(*, scene: str, owner_name: str, seed: int | None) -> list[str]:
+    argv = [sys.executable, "-m", "my_sim", "start", "--scene", scene, f"--name={owner_name}"]
+    return argv if seed is None else [*argv, "--seed", str(seed)]
+
+
+simulation = SimulationLaunch(
+    scenes=(SimulationScene(id="pick_place", display_name="Pick & Place", description="One block and a target"),),
+    default_scene="pick_place",
+    build_argv=_start_argv,
 )
 ```
 

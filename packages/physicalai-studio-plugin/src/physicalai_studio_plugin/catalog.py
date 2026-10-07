@@ -18,6 +18,7 @@ from .factory import CatalogRobotFactory
 if TYPE_CHECKING:
     from .assets import RobotAsset
     from .probe import RobotProbe
+    from .simulation import SimulationLaunch
     from .zero_calibration import RobotZeroCalibration
 
 
@@ -82,6 +83,8 @@ class RobotCatalogDefinition(Generic[_PayloadT]):
     adapter_options: RobotAdapterOptions = field(default_factory=RobotAdapterOptions)
     probe: RobotProbe[_PayloadT] | None = None
     zero_calibration: RobotZeroCalibration[Any] | None = None
+    simulation: SimulationLaunch | None = None
+    """How Studio starts the simulation a simulated robot type attaches to; ``None`` for real robots."""
 
 
 class RobotCatalogRegistry(Protocol):
