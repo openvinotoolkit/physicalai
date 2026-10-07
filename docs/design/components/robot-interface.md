@@ -209,7 +209,7 @@ def connect(robot):
 Adding a new robot is straightforward. Implement the four methods:
 
 ```python
-# physicalai/robot/so100.py
+# so100.py, in a robot plugin package
 import time
 import numpy as np
 
@@ -670,11 +670,11 @@ src/physicalai/
 │   ├── __init__.py              # Public API exports
 │   ├── protocol.py              # Robot Protocol definition
 │   ├── utils.py                 # connect() context manager
-│   ├── testing.py               # check_robot_conformance()
-│   ├── so100.py                 # SO-100 implementation
-│   └── ...                      # Other concrete implementations
+│   └── testing.py               # check_robot_conformance()
 └── ...
 ```
+
+Concrete robot drivers ship as separate plugin packages, not inside `physicalai`. See [Robot Integration Packaging](../packaging/robot-integrations.md).
 
 ---
 
@@ -688,12 +688,12 @@ dependencies = [
 ]
 ```
 
-The core interface requires only numpy. Concrete robot implementations may have additional dependencies (e.g., `pyserial` for serial communication), installed as optional extras:
+The core interface requires only numpy. Concrete robot drivers ship as plugin packages with their own dependencies (e.g., `pyserial` for serial communication), and `physicalai` extras install them:
 
 ```bash
 pip install physicalai                    # Core (no robot hardware support)
-pip install physicalai[so100]             # SO-100 support
-pip install physicalai[robots]            # All supported robots
+pip install physicalai[so100]             # SO-100 plugin
+pip install physicalai[robots]            # All first-party robot plugins
 ```
 
 ---
@@ -703,7 +703,7 @@ pip install physicalai[robots]            # All supported robots
 | Component        | Library | Application |
 | ---------------- | :-----: | :---------: |
 | Robot Protocol   |    ✓    |   imports   |
-| Concrete robots  |    ✓    |   imports   |
+| Robot plugins    |    ✓    |   imports   |
 | Inference loop   |    ✓    |    uses     |
 | Teleoperation    |         |      ✓      |
 | Recording/upload |         |      ✓      |
@@ -763,7 +763,7 @@ class UR5e:
 | Concurrency         | Synchronous protocol, threads allowed internally                                   |
 | Validation          | Policy manifest is source of truth, validated on first observation                 |
 | Frequency control   | Runtime episode loop, target from manifest                                         |
-| Built-in robots     | `physicalai` ships concrete implementations for supported hardware                 |
+| Robot drivers       | Separate plugin packages, installed through `physicalai` extras                    |
 | Third-party robots  | Implement the four methods, no imports from `physicalai` required                  |
 
 ---

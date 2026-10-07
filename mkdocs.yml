@@ -82,3 +82,4 @@ nav:
       - Packaging:
           - Two Repo Options: design/packaging/physical-ai-two-repo-options.md
           - Modular Packages in One Repo: design/packaging/modular-packages-in-one-repo.md
+          - Robot Integration Packaging: design/packaging/robot-integrations.md
