@@ -25,6 +25,7 @@ from physicalai_mujoco_plugin.http_server import (
 )
 from physicalai_mujoco_plugin.profiles.so101 import SO101_JOINT_RANGES
 from physicalai_mujoco_plugin.robot import MuJoCoObservation, MuJoCoRobot
+from physicalai_mujoco_plugin.scene_registry import get_scene
 from physicalai_mujoco_plugin.scene_watch import SceneXmlWatcher
 from physicalai_mujoco_plugin.sim import default_cameras
 from physicalai_mujoco_plugin.viewer import ViewerService
@@ -147,8 +148,52 @@ class TestConstruction:
         assert robot.joint_names == list(SO101_JOINT_ORDER)  # before connect, without a download
         assert robot.device_ids == ()
 
-    def test_a_two_arm_scene_prefixes_the_names(self) -> None:
-        assert MuJoCoRobot(scene="garment_fold").joint_names == list(BIMANUAL_SO101_JOINT_ORDER)
+    def test_bimanual_prefixes_the_names_in_any_tabletop_scene(self) -> None:
+        for scene in ("single_pick_place", "yahtzee", "conveyor_sort", "garment_fold"):
+            assert MuJoCoRobot(scene=scene, bimanual=True).joint_names == list(BIMANUAL_SO101_JOINT_ORDER)
+        assert MuJoCoRobot(scene="garment_fold").joint_names == list(SO101_JOINT_ORDER)
+
+    @pytest.mark.parametrize(
+        ("profile", "scene", "message"),
+        [
+            ("aloha", None, "has 2 arms already"),
+            ("unitree_go2", None, "one floating-base robot"),
+        ],
+    )
+    def test_bimanual_is_refused_where_it_cannot_work(self, profile: str, scene: str | None, message: str) -> None:
+        with pytest.raises(ValueError, match=message):
+            MuJoCoRobot(profile, scene=scene, bimanual=True)
+
+    @pytest.mark.parametrize(("profile", "message"), [("aloha", "has 2 arms already"), ("unitree_g1", "floating base")])
+    @pytest.mark.parametrize("bimanual", [True, False])
+    def test_a_custom_two_mount_model_refuses_single_robot_profiles(
+        self, profile: str, message: str, *, bimanual: bool
+    ) -> None:
+        """ALOHA (two arms in one model) and floating bases run one robot, also on a custom model's mounts."""
+        two_mounts = str(get_scene("garment_fold").scene_xml_path)
+        with pytest.raises(ValueError, match=message):
+            MuJoCoRobot(profile, model_path=two_mounts, bimanual=bimanual)
+
+    def test_bimanual_needs_a_custom_model_with_two_mounts(self, tmp_path) -> None:
+        one = tmp_path / "one.xml"
+        one.write_text('<mujoco><worldbody><frame name="robot_mount"/></worldbody></mujoco>')
+        with pytest.raises(ValueError, match="left_robot_mount and right_robot_mount; it has robot_mount"):
+            MuJoCoRobot(model_path=str(one), bimanual=True)
+        other = tmp_path / "other.xml"
+        other.write_text(
+            '<mujoco><worldbody><frame name="a_robot_mount"/><frame name="b_robot_mount" pos="0 0.3 0"/>'
+            "</worldbody></mujoco>"
+        )
+        with pytest.raises(ValueError, match="it has a_robot_mount, b_robot_mount"):
+            MuJoCoRobot(model_path=str(other), bimanual=True)
+        two = tmp_path / "two.xml"
+        two.write_text(
+            '<mujoco><worldbody><frame name="left_robot_mount"/><frame name="right_robot_mount" pos="0 0.3 0"/>'
+            "</worldbody></mujoco>"
+        )
+        assert MuJoCoRobot(model_path=str(two), bimanual=True).joint_names == list(BIMANUAL_SO101_JOINT_ORDER)
+        # Without the flag, the custom model's mount frames still decide.
+        assert MuJoCoRobot(model_path=str(two)).joint_names == list(BIMANUAL_SO101_JOINT_ORDER)
 
     def test_exports_only_the_supplied_arguments(self) -> None:
         robot = MuJoCoRobot("so101", scene="yahtzee", substeps=3, enable_viewer=True)
@@ -490,12 +535,14 @@ class TestStatus:
         assert status["scene"] == "single_pick_place"
         assert status["profile"] == "so101"
         assert "garment_fold" in status["scenes"]
-        assert "garment_fold" not in status["compatible_scenes"]
+        assert "floor_flat" not in status["compatible_scenes"]
         assert status["objects"] == []
         assert status["cameras"] == [
             {"name": "overview", "width": 640, "height": 480, "fps": 30, "rendering": False, "source": None},
         ]
-        assert MuJoCoRobot(scene="garment_fold")._http_status()["compatible_scenes"] == ["garment_fold"]  # noqa: SLF001
+        tabletop = ["conveyor_sort", "garment_fold", "single_pick_place", "yahtzee"]
+        assert status["compatible_scenes"] == tabletop
+        assert MuJoCoRobot(scene="garment_fold", bimanual=True)._http_status()["compatible_scenes"] == tabletop  # noqa: SLF001
 
     def test_status_after_connect(self, robot) -> None:
         status = robot._http_status()  # noqa: SLF001
@@ -544,10 +591,10 @@ class TestSceneSwitching:
             finally:
                 robot.disconnect()
 
-    def test_a_different_arm_count_is_rejected_before_loading(self, robot) -> None:
+    def test_an_unsupported_scene_is_rejected_before_loading(self, robot) -> None:
         model = robot._model  # noqa: SLF001
         with patch("physicalai_mujoco_plugin.compose.compose_scene") as compose:
-            assert robot._switch_to_scene("garment_fold") is False  # noqa: SLF001
+            assert robot._switch_to_scene("floor_flat") is False  # noqa: SLF001
 
         compose.assert_not_called()
         assert robot._model is model  # noqa: SLF001
@@ -642,7 +689,8 @@ class TestSceneSwitching:
         with patch.object(robot, "_switch_to_scene") as switch:
             robot._check_pending_scene_switch()  # noqa: SLF001
 
-        switch.assert_not_called()  # garment_fold is the only two-arm scene
+        # Every tabletop scene runs two arms; the next one after garment_fold wraps around.
+        switch.assert_called_once_with("single_pick_place")
         robot.disconnect()
 
 
@@ -702,7 +750,7 @@ class TestDefaultCameras:
         assert [config.name for config in default_cameras(robot._sim)] == ["wrist", "overview"]  # noqa: SLF001
 
     def test_bimanual_wrists_around_the_overview(self) -> None:
-        robot = MuJoCoRobot(scene="garment_fold", cameras=[])
+        robot = MuJoCoRobot(scene="garment_fold", bimanual=True, cameras=[])
         robot.connect()
         try:
             names = [config.name for config in default_cameras(robot._sim)]  # noqa: SLF001

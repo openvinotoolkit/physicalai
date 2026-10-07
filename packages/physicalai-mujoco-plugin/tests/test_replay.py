@@ -374,7 +374,7 @@ def test_positions_at_the_ends_of_the_normalized_range_replay_unchanged() -> Non
 
 
 def test_a_frame_one_robot_cannot_show_stops_the_whole_replay_before_anything_moves() -> None:
-    robot = MuJoCoRobot("so101", scene="garment_fold", cameras=[])
+    robot = MuJoCoRobot("so101", scene="garment_fold", bimanual=True, cameras=[])
     robot.connect()
     try:
         before = robot._data.qpos.copy()  # noqa: SLF001

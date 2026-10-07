@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import numpy as np
 from physicalai.config import Config
-from physicalai.robot.errors import RobotNotConnectedError
+from physicalai.robot.errors import RobotNotConnectedError, RobotProtocolMismatch, RobotTransportError
 from physicalai.robot.transport import RobotOwnerConfig, SharedRobot
 
 from physicalai_mujoco_plugin.virtual_leader import MuJoCoVirtualLeader
@@ -255,6 +255,115 @@ class TestSharedRobotLifecycle:
         shared.disconnect.assert_called_once()
 
 
+class TestNotRunningError:
+    """P2: a follower whose simulation is not running says which one and how to start it."""
+
+    START = "Start it with: uv run physicalai-mujoco start --profile trossen_wxai --bimanual"
+
+    def _robot(self, error: Exception) -> _SharedMuJoCoRobot:
+        shared = MagicMock(spec=SharedRobot)
+        shared.name = "mujoco-trossen_wxai-bimanual-follow"
+        shared.connect.side_effect = error
+        return _SharedMuJoCoRobot(shared, ("joint_0",), self.START)
+
+    def test_no_owner_names_the_simulation_and_its_start_command(self) -> None:
+        missing = RobotTransportError(
+            "no owner found for 'mujoco-trossen_wxai-bimanual-follow' (attach-only mode: robot config not provided)"
+        )
+        with pytest.raises(RobotTransportError) as raised:
+            self._robot(missing).connect()
+
+        assert type(raised.value) is RobotTransportError
+        assert str(raised.value) == (
+            f"No MuJoCo simulation named 'mujoco-trossen_wxai-bimanual-follow' is running. {self.START}"
+        )
+        assert raised.value.__cause__ is missing
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            RobotTransportError("no state received from owner of 'x' within 5.0s"),
+            RobotProtocolMismatch("no owner found for 'x' speaks another protocol"),
+            TimeoutError("zenoh"),
+        ],
+    )
+    def test_other_errors_pass_through(self, error: Exception) -> None:
+        with pytest.raises(type(error)) as raised:
+            self._robot(error).connect()
+        assert raised.value is error
+
+    @pytest.mark.parametrize(
+        ("entry_type", "name", "http_url", "hint"),
+        [
+            (
+                "MuJoCo_SO101_Follower",
+                DEFAULT_MUJOCO_OWNER_NAME,
+                "http://127.0.0.1:8080",
+                "Start it with: uv run physicalai-mujoco start --profile so101",
+            ),
+            (
+                "MuJoCo_WidowXAI_Bimanual_Follower",
+                "mujoco-trossen_wxai-bimanual-follow",
+                "http://localhost:8123/",
+                "Start it with: uv run physicalai-mujoco start --profile trossen_wxai --bimanual --http-port 8123",
+            ),
+            (
+                "MuJoCo_Koch_Follower",
+                "my koch",
+                "http://[::1]:8080",
+                "Start it with: uv run physicalai-mujoco start --profile koch --name='my koch'",
+            ),
+            (
+                "MuJoCo_Koch_Follower",
+                "-sim",
+                "http://127.0.0.1:8080",
+                "Start it with: uv run physicalai-mujoco start --profile koch --name=-sim",
+            ),
+            (
+                "MuJoCo_SO101_Follower",
+                DEFAULT_MUJOCO_OWNER_NAME,
+                "http://10.0.0.5:8081",
+                "Start it on 10.0.0.5 with: uv run physicalai-mujoco start --profile so101 "
+                "--http-host 10.0.0.5 --http-port 8081 --allow-remote",
+            ),
+            (
+                "MuJoCo_SO101_Follower",
+                DEFAULT_MUJOCO_OWNER_NAME,
+                "http://127.0.0.1:notaport",
+                "Start it with: uv run physicalai-mujoco start --profile so101",
+            ),
+        ],
+    )
+    def test_start_hint_follows_the_entry_and_its_payload(
+        self, entry_type: str, name: str, http_url: str, hint: str
+    ) -> None:
+        entry = {entry.type: entry for entry in list_catalog_entries()}[entry_type]
+        assert entry.start_hint(name, http_url) == hint
+
+    @pytest.mark.parametrize("name", ["-sim", "--profile", "my koch", "it's"])
+    def test_the_start_command_parses_back_to_the_payload(self, name: str) -> None:
+        """The CLI must read the suggested command as the follower's name and port, whatever the name."""
+        import shlex
+
+        from physicalai_mujoco_plugin import __main__ as cli
+
+        entry = {entry.type: entry for entry in list_catalog_entries()}["MuJoCo_Koch_Follower"]
+        hint = entry.start_hint(name, "http://127.0.0.1:8123")
+        argv = shlex.split(hint.removeprefix("Start it with: "))
+        assert argv[:3] == ["uv", "run", "physicalai-mujoco"]
+        args = cli._build_parser().parse_args(argv[3:])
+        assert (args.profile, args.name, args.http_port, args.bimanual) == ("koch", name, 8123, False)
+
+    @pytest.mark.anyio
+    async def test_builder_passes_the_payloads_start_hint(self) -> None:
+        definition = {d.type: d for d in _definitions()}["MuJoCo_WidowXAI_Bimanual_Follower"]
+        robot = await definition.robot_builder(MagicMock(payload={"http_url": "http://127.0.0.1:8123"}), MagicMock())
+
+        hint = f"{self.START} --http-port 8123"
+        assert robot._start_hint == hint  # noqa: SLF001
+        assert Config.from_instance(robot)["init_args"]["start_hint"] == hint
+
+
 class TestProbe:
     @pytest.mark.anyio
     async def test_discover(self) -> None:
@@ -372,6 +481,7 @@ class TestGeneratedEntries:
             ("MuJoCo_WidowXAI_Follower", "mujoco-trossen_wxai-follow"),
             ("MuJoCo_WidowXAI_Bimanual_Follower", "mujoco-trossen_wxai-bimanual-follow"),
             ("MuJoCo_reBotB601_Follower", "mujoco-rebot_b601-follow"),
+            ("MuJoCo_reBotB601_Bimanual_Follower", "mujoco-rebot_b601-bimanual-follow"),
             ("MuJoCo_UniversalRobotsUR5e_Follower", "mujoco-ur5e-follow"),
             ("MuJoCo_ALOHA_Follower", "mujoco-aloha-follow"),
             ("MuJoCo_SOARM100_Follower", "mujoco-so_arm100-follow"),
@@ -436,17 +546,15 @@ class TestGeneratedEntries:
         for name in ("MuJoCo_WidowXAI_Bimanual_Follower", "MuJoCo_reBotB601_Follower", "MuJoCo_UnitreeG1_Follower"):
             assert definitions[name].asset is None
 
-    def test_two_robot_entries_use_the_scenes_prefixes(self) -> None:
-        import mujoco  # noqa: PLC0415
-
-        from physicalai_mujoco_plugin.compose import anchor_prefixes  # noqa: PLC0415
-        from physicalai_mujoco_plugin.scene_registry import list_scenes  # noqa: PLC0415
+    def test_only_twins_get_a_bimanual_entry(self) -> None:
+        """D2: two-arm entries for the robots with real bimanual leaders; other arms run two from the CLI only."""
+        from physicalai_mujoco_plugin.scene_registry import arm_prefixes  # noqa: PLC0415
         from physicalai_mujoco_plugin.studio_catalog import BIMANUAL_PREFIXES  # noqa: PLC0415
 
-        for scene in list_scenes().values():
-            prefixes = anchor_prefixes(mujoco.MjSpec.from_file(str(scene.scene_xml_path)))
-            assert len(prefixes) == scene.num_arms
-            assert prefixes == (BIMANUAL_PREFIXES if scene.num_arms == 2 else ("",))
+        bimanual = [entry.profile.name for entry in list_catalog_entries() if entry.bimanual]
+        assert bimanual == ["so101", "trossen_wxai", "rebot_b601"]
+        assert {PROFILES[name].tier for name in bimanual} == {"twin"}
+        assert BIMANUAL_PREFIXES == arm_prefixes(2)
 
     @pytest.mark.anyio
     async def test_probe_checks_for_the_entrys_joints(self) -> None:

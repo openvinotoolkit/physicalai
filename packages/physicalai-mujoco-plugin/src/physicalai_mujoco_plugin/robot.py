@@ -85,6 +85,7 @@ class MuJoCoRobot(OperatorControls):
         profile: str = "so101",
         *,
         scene: str | None = None,
+        bimanual: bool = False,
         model_path: str | None = None,
         unit: DefaultUnit | None = None,
         torque_mode: TorqueMode = "pd",
@@ -105,6 +106,9 @@ class MuJoCoRobot(OperatorControls):
         Args:
             profile: Robot profile (``so101``, ``ur5e``) or any MuJoCo Menagerie model name.
             scene: Registered scene id; ``None`` uses ``model_path``, else the profile's default scene.
+            bimanual: Two arms (``left_``, ``right_``) in the scene instead of one; every tabletop
+                scene runs either. With ``model_path``, the XML's mount frames decide the arm count,
+                and ``bimanual`` requires two of them.
             model_path: Scene XML to load instead of the registered scene's. Its ``robot_mount``
                 frames get the profile's robot; an XML without them is used as is.
             unit: ``normalized`` or ``degrees``; ``None`` uses the profile's default.
@@ -123,7 +127,8 @@ class MuJoCoRobot(OperatorControls):
             seed: Fixed seed for scene resets; ``None`` randomizes.
 
         Raises:
-            ValueError: If ``unit``, ``torque_mode``, ``rate_hz`` or ``substeps`` is invalid.
+            ValueError: If ``unit``, ``torque_mode``, ``rate_hz`` or ``substeps`` is invalid, or the
+                scene, the profile or ``model_path`` cannot run the requested arm count.
         """
         if unit is not None and unit not in get_args(DefaultUnit):
             msg = f"Unsupported unit {unit!r}; expected one of {get_args(DefaultUnit)}"
@@ -135,10 +140,11 @@ class MuJoCoRobot(OperatorControls):
             msg = f"rate_hz must be positive and substeps at least 1, got {rate_hz!r} and {substeps!r}"
             raise ValueError(msg)
         self._recipe: dict[str, object] = {
-            "profile": profile, "scene": scene, "model_path": model_path, "unit": unit, "torque_mode": torque_mode,
-            "substeps": substeps, "rate_hz": rate_hz, "cameras": cameras, "enable_viewer": enable_viewer,
-            "viser_host": viser_host, "viser_port": viser_port, "http_host": http_host, "http_port": http_port,
-            "owner_name": owner_name, "studio_url": studio_url, "seed": seed,
+            "profile": profile, "scene": scene, "bimanual": bimanual, "model_path": model_path, "unit": unit,
+            "torque_mode": torque_mode, "substeps": substeps, "rate_hz": rate_hz, "cameras": cameras,
+            "enable_viewer": enable_viewer, "viser_host": viser_host, "viser_port": viser_port,
+            "http_host": http_host, "http_port": http_port, "owner_name": owner_name, "studio_url": studio_url,
+            "seed": seed,
         }  # fmt: skip
         """Constructor arguments, for pickling (``__getstate__``)."""
         self._profile: RobotProfile = get_profile(profile)
@@ -165,10 +171,12 @@ class MuJoCoRobot(OperatorControls):
         self._commands: queue.Queue[SimCommand] = queue.Queue()
         self._sim: Sim | None = None
         self._scene_config = self._initial_scene = resolve_scene(self._profile, scene, model_path)
+        self._arms = _arm_count(self._profile, self._scene_config, model_path, bimanual=bimanual)
+        """Number of arms to lay registered scenes out for; ``None`` until a custom model is loaded."""
         self._area = (
             SpawnArea()
             if self._scene_config is None
-            else SpawnArea.from_scene(self._scene_config.for_profile(self._profile))
+            else SpawnArea.from_scene(self._scene_config.for_profile(self._profile, self._arms or 1))
         )
         self._objects = SceneObjects(self._area, self._state_lock)
         self._cameras = CameraService(self._camera_arg or [])
@@ -206,7 +214,7 @@ class MuJoCoRobot(OperatorControls):
         if self._sim is not None:
             return self._sim.joint_names
         if self._names is None:
-            self._names = joint_names_before_load(self._profile, self._xml_path(self._scene_config))
+            self._names = joint_names_before_load(self._profile, self._xml_path(self._scene_config), self._arms)
         return list(self._names)
 
     @property
@@ -425,6 +433,8 @@ class MuJoCoRobot(OperatorControls):
         """
         # Scene switches keep the robot count: the transport advertised the joint names once.
         robots = len(self._sim.bindings) if self._sim is not None else None
+        # A custom model's mount frames decide its arm count; registered scenes are laid out for it.
+        custom = self._model_path is not None and scene is self._initial_scene
         return load_sim(
             xml_path,
             scene,
@@ -433,6 +443,7 @@ class MuJoCoRobot(OperatorControls):
             torque_mode=self._torque_mode,
             rng=self._rng,
             reseed=self._reseed_if_fixed,
+            arms=None if custom else self._robot_count(),
             robots=robots,
         )
 
@@ -452,12 +463,13 @@ class MuJoCoRobot(OperatorControls):
         from physicalai_mujoco_plugin.scene_watch import SceneXmlWatcher  # noqa: PLC0415
 
         sim = self._sim
+        if sim.scene is not None:  # type: ignore[union-attr]
+            self._area = SpawnArea.from_scene(sim.scene.for_profile(self._profile, len(sim.bindings)))  # type: ignore[union-attr]
+            self._objects.area = self._area
         grippers = [f"{binding.prefix}gripper" for binding in sim.bindings]  # type: ignore[union-attr]
         self._objects.bind(sim.model, follow_bodies=grippers)  # type: ignore[union-attr]
         self._init_episode_auto_reset()
-        scene = sim.scene  # type: ignore[union-attr]
-        layout = scene.layout_for(self._profile) if scene is not None else None
-        self._watcher = SceneXmlWatcher(sim.xml_path, layout)  # type: ignore[union-attr]
+        self._watcher = SceneXmlWatcher(sim.xml_path, sim.layout)  # type: ignore[union-attr]
         self._objects.publish(sim.data)  # type: ignore[union-attr]
 
     def _switch_to_scene(self, scene_id: str) -> bool:
@@ -471,7 +483,7 @@ class MuJoCoRobot(OperatorControls):
 
         scene = get_scene(scene_id)
         arms = self._robot_count()
-        if not scene.supports(self._profile) or (arms is not None and scene.num_arms != arms):
+        if scene_id not in self._compatible_scenes():
             logger.error(
                 "Scene '{}' does not support {} with {} robot(s); keeping scene '{}'",
                 scene_id,
@@ -519,8 +531,6 @@ class MuJoCoRobot(OperatorControls):
                 self._replay = None
             self._sim = sim
             self._scene_config = scene
-            self._area = SpawnArea.from_scene(scene.for_profile(self._profile))
-            self._objects.area = self._area
             self._last_sim_time = None
             self._base_status = sim.bases.status()
             self._bind_scene()
@@ -565,14 +575,14 @@ class MuJoCoRobot(OperatorControls):
         return list_scenes_for(self._profile, arms)
 
     def _robot_count(self) -> int | None:
-        """Return the number of attached robots: the running scene's, else the configured scene's.
+        """Return the number of attached robots: the running scene's, else the configured arm count.
 
         Returns:
             The robot count, or ``None`` for a custom model that is not loaded yet.
         """
         if self._sim is not None:
             return len(self._sim.bindings)
-        return self._scene_config.num_arms if self._scene_config is not None else None
+        return self._arms
 
     def _key_callback(self, key: int) -> None:
         if key in {ord("n"), ord("N")}:
@@ -696,6 +706,30 @@ class MuJoCoRobot(OperatorControls):
                 self._viewer.native_sync()
             current = float(self._sim.data.time)  # type: ignore[union-attr]
         self._last_sim_time = current
+
+
+def _arm_count(
+    profile: RobotProfile, scene: SceneConfig | None, model_path: str | None, *, bimanual: bool
+) -> int | None:
+    """Return the number of arms a new robot lays its scene out for.
+
+    The checks raise ``ValueError`` when the scene or the profile cannot run that many arms
+    (``check_arm_count``), or a custom model's mount frames do not fit the profile or ``bimanual``
+    (``check_model_mounts``).
+
+    Returns:
+        2 with ``bimanual``, else 1; ``None`` for a custom ``model_path``, whose mount frames decide.
+    """
+    from physicalai_mujoco_plugin.scene_registry import check_arm_count, check_model_mounts  # noqa: PLC0415
+
+    if model_path is None:
+        arms = 2 if bimanual else 1
+        check_arm_count(scene, profile, arms)  # type: ignore[arg-type]
+        return arms
+    from physicalai_mujoco_plugin.compose import mount_prefixes  # noqa: PLC0415
+
+    check_model_mounts(profile, mount_prefixes(model_path), bimanual=bimanual)
+    return None
 
 
 __all__ = ["MuJoCoObservation", "MuJoCoRobot"]

@@ -78,6 +78,15 @@ class OverviewRig:
 
 
 @dataclass(frozen=True)
+class MountPose:
+    """Where a scene puts one robot mount frame, in world coordinates."""
+
+    pos: tuple[float, float, float]
+    quat: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
+    """Orientation (``wxyz``): the arm faces the frame's +x axis."""
+
+
+@dataclass(frozen=True)
 class SceneLayout:
     """How a scene is laid out for one robot (SCN-6): scaled with its reach, its overview rig placed."""
 
@@ -85,6 +94,9 @@ class SceneLayout:
     """Factor for the positions of the scene's top-level bodies, about the robot mount at the origin."""
     overview_rig: OverviewRig | None = None
     """Where the overview camera's rig goes after scaling; ``None`` leaves it scaled."""
+    mounts: tuple[tuple[str, MountPose], ...] | None = None
+    """The robot mounts by prefix, replacing the scene's ``robot_mount`` frames after scaling, for an arm
+    count the scene file does not lay out; ``None`` keeps the scene's frames."""
 
 
 @dataclass(frozen=True)
@@ -226,6 +238,17 @@ def scene_anchors(spec: mujoco.MjSpec) -> tuple[tuple[str, AnchorKind], ...]:
 def anchor_prefixes(spec: mujoco.MjSpec) -> tuple[str, ...]:
     """Return the robot prefixes of the scene's anchor frames, in document order."""
     return tuple(prefix for prefix, _ in scene_anchors(spec))
+
+
+def mount_prefixes(xml_path: str | Path) -> tuple[str, ...]:
+    """Return the robot prefixes of a scene XML's ``robot_mount`` frames, in document order, without compiling it.
+
+    Returns:
+        One prefix per mount frame; spawn frames are left out.
+    """
+    import mujoco  # noqa: PLC0415
+
+    return tuple(prefix for prefix, kind in scene_anchors(mujoco.MjSpec.from_file(str(xml_path))) if kind == "mount")
 
 
 def scene_needs_robot(xml_path: str | Path) -> bool:
@@ -438,12 +461,13 @@ def apply_layout(scene: mujoco.MjSpec, layout: SceneLayout) -> None:
 
     Scaling moves the scene's top-level bodies away from the robot mount (SCN-6, CAM-4). Only body
     positions change: a target keeps its size, and the overview camera's rig moves back along its
-    line of sight, so it frames the scaled layout as it framed the original.
+    line of sight, so it frames the scaled layout as it framed the original. Then the layout's mounts,
+    if any, replace the scene's robot mount frames.
 
     Raises:
         ValueError: If the layout scales the scene and a robot mount frame is not at the origin,
-            which the scaling is about, or it places an overview rig and the scene has no
-            ``overview`` camera.
+            which the scaling is about, it places mounts and a mount frame is not a top-level frame,
+            or it places an overview rig and the scene has no ``overview`` camera.
     """
     import mujoco  # noqa: PLC0415
 
@@ -456,6 +480,8 @@ def apply_layout(scene: mujoco.MjSpec, layout: SceneLayout) -> None:
                 raise ValueError(msg)
         for body in scene.worldbody.bodies:
             body.pos = np.asarray(body.pos) * layout.scale
+    if layout.mounts is not None:
+        _place_mounts(scene, layout.mounts)
     rig = layout.overview_rig
     if rig is None:
         return
@@ -470,6 +496,32 @@ def apply_layout(scene: mujoco.MjSpec, layout: SceneLayout) -> None:
     if rig.quat is not None:
         body.quat = list(rig.quat)
         body.alt.type = mujoco.mjtOrientation.mjORIENTATION_QUAT
+
+
+def _place_mounts(scene: mujoco.MjSpec, mounts: tuple[tuple[str, MountPose], ...]) -> None:
+    """Replace the scene's ``robot_mount`` frames with one top-level frame per mount, in order.
+
+    The scene's frames are renamed and moved, and more are added as needed. MjSpec cannot delete a
+    frame (MuJoCo 3.14), so a frame left over loses its name and anchors nothing.
+
+    Raises:
+        ValueError: If a mount frame is nested in a body: mount poses are world poses.
+    """
+    import mujoco  # noqa: PLC0415
+
+    frames = [frame for frame in scene.frames if frame.name.endswith(ROBOT_MOUNT_FRAME)]
+    for frame in frames:
+        if frame.parent.name != "world":
+            msg = f"Cannot place {frame.name!r}: a scene laid out for another arm count needs top-level mount frames"
+            raise ValueError(msg)
+    for index, (prefix, pose) in enumerate(mounts):
+        frame = frames[index] if index < len(frames) else scene.worldbody.add_frame()
+        frame.name = f"{prefix}{ROBOT_MOUNT_FRAME}"
+        frame.pos = list(pose.pos)
+        frame.quat = list(pose.quat)
+        frame.alt.type = mujoco.mjtOrientation.mjORIENTATION_QUAT
+    for frame in frames[len(mounts) :]:
+        frame.name = ""
 
 
 def model_prefixes(layout: DerivedLayout, profile: RobotProfile) -> tuple[str, ...]:
@@ -613,6 +665,7 @@ __all__ = [
     "ROBOT_SPAWN_FRAME",
     "AnchorKind",
     "ComposedScene",
+    "MountPose",
     "OverviewRig",
     "RobotBinding",
     "SceneLayout",
@@ -626,6 +679,7 @@ __all__ = [
     "load_robot_spec",
     "load_scene_model",
     "model_prefixes",
+    "mount_prefixes",
     "robot_layout",
     "scene_anchors",
     "scene_needs_robot",

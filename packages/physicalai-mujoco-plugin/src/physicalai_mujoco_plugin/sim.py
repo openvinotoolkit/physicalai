@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     import numpy as np
 
     from physicalai_mujoco_plugin.channels import TorqueMode
-    from physicalai_mujoco_plugin.compose import RobotBinding
+    from physicalai_mujoco_plugin.compose import RobotBinding, SceneLayout
     from physicalai_mujoco_plugin.profiles import DefaultUnit, RobotProfile
     from physicalai_mujoco_plugin.scene_registry import ResetFn, SceneConfig
 
@@ -45,6 +45,22 @@ class Sim:
     on_reset: ResetFn | None
     bases: FloatingBases
     """The floating-base robots, for observations, base holds and falls."""
+    layout: SceneLayout | None = None
+    """The layout the scene was composed with; ``None`` when it compiled as written."""
+
+    @property
+    def robot_roots(self) -> tuple[int, ...]:
+        """Root body of each robot, the body attached to the world, in anchor order without repeats."""
+        roots = []
+        for binding in self.bindings:
+            layout = binding.layout
+            if layout.base is not None:
+                roots.append(int(layout.base.body_id))
+                continue
+            joint = next((channel.joint_id for channel in layout.channels if channel.joint_id is not None), None)
+            if joint is not None:
+                roots.append(int(self.model.body_rootid[self.model.jnt_bodyid[joint]]))
+        return tuple(dict.fromkeys(roots))
 
     @property
     def joint_names(self) -> list[str]:
@@ -95,6 +111,7 @@ def load_sim(
     torque_mode: TorqueMode,
     rng: np.random.Generator,
     reseed: Callable[[], None],
+    arms: int | None = None,
     robots: int | None = None,
 ) -> Sim:
     """Compose a scene, put its robots at their home pose, bind their channels and run the scene reset.
@@ -107,6 +124,8 @@ def load_sim(
         torque_mode: How torque actuators are driven.
         rng: Generator for the scene reset.
         reseed: Called before the scene reset, so a fixed seed repeats it.
+        arms: Number of arms to lay the scene out for; ``None`` keeps the XML's mount frames (a
+            custom model).
         robots: Required number of robots; ``None`` accepts any.
 
     Returns:
@@ -120,7 +139,8 @@ def load_sim(
     from physicalai_mujoco_plugin.compose import compose_scene  # noqa: PLC0415
     from physicalai_mujoco_plugin.scene_registry import get_reset_fn  # noqa: PLC0415
 
-    composed = compose_scene(xml_path, profile, scene_layout=scene.layout_for(profile) if scene is not None else None)
+    layout = scene.layout_for(profile, arms) if scene is not None else None
+    composed = compose_scene(xml_path, profile, scene_layout=layout)
     if robots is not None and len(composed.robots) != robots:
         msg = f"{xml_path} attaches {len(composed.robots)} robot(s), but this simulation drives {robots}"
         raise ValueError(msg)
@@ -133,11 +153,12 @@ def load_sim(
         ArmChannels(model, data, binding.layout, profile, prefix=binding.prefix, unit=unit, torque_mode=torque_mode)
         for binding in composed.robots
     )
-    on_reset = get_reset_fn(scene.scene_id, profile) if scene is not None else None
+    on_reset = get_reset_fn(scene.scene_id, profile, len(composed.robots)) if scene is not None else None
     if on_reset is not None:
         reseed()
         on_reset(model, data, rng)
-    return Sim(xml_path, scene, model, data, composed.robots, channels, on_reset, FloatingBases(data, composed.robots))
+    bases = FloatingBases(data, composed.robots)
+    return Sim(xml_path, scene, model, data, composed.robots, channels, on_reset, bases, layout)
 
 
 def place_home(model: object, data: object, binding: RobotBinding) -> None:
@@ -161,8 +182,13 @@ def place_home(model: object, data: object, binding: RobotBinding) -> None:
         data.qvel[base.dof_adr : base.dof_adr + 6] = 0.0
 
 
-def joint_names_before_load(profile: RobotProfile, xml_path: Path) -> list[str]:
+def joint_names_before_load(profile: RobotProfile, xml_path: Path, arms: int | None = None) -> list[str]:
     """Derive the public names from the profile and the scene's anchors, without composing it (DRV-6).
+
+    Args:
+        profile: Robot profile attached at every anchor.
+        xml_path: Scene XML.
+        arms: Number of arms the scene is laid out for; ``None`` keeps the XML's anchor frames.
 
     Returns:
         The names the loaded simulation will have.
@@ -171,9 +197,12 @@ def joint_names_before_load(profile: RobotProfile, xml_path: Path) -> list[str]:
 
     from physicalai_mujoco_plugin.compose import anchor_prefixes, model_prefixes, robot_layout  # noqa: PLC0415
     from physicalai_mujoco_plugin.profiles.derive import derive_profile  # noqa: PLC0415
+    from physicalai_mujoco_plugin.scene_registry import arm_prefixes  # noqa: PLC0415
 
     spec = mujoco.MjSpec.from_file(str(xml_path))
     prefixes = anchor_prefixes(spec)
+    if prefixes and arms is not None:
+        prefixes = arm_prefixes(arms)
     if not prefixes:
         # A robot-complete model: one robot per name prefix of the profile's channels, as compose_scene binds it.
         layout = derive_profile(spec.compile())

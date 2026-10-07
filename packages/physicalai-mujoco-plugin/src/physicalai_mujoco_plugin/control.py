@@ -345,7 +345,8 @@ class OperatorControls:
         import mujoco  # noqa: PLC0415
 
         sim = self._sim
-        scene_home = dict(self._scene_config.home_qpos) if self._scene_config is not None else {}
+        scene = self._scene_config
+        scene_home = dict(scene.home_pose(len(sim.bindings))) if scene is not None else {}  # type: ignore[union-attr]
         for binding, channels in zip(sim.bindings, sim.channels, strict=True):  # type: ignore[union-attr]
             home = {joint: values[0] for joint, values in binding.layout.home_qpos.items() if len(values) == 1}
             home.update({joint: value for joint, value in scene_home.items() if joint in home})
@@ -395,7 +396,13 @@ class OperatorControls:
         from physicalai_mujoco_plugin.episode_auto_reset import EpisodeAutoReset  # noqa: PLC0415
 
         model = self._sim.model  # type: ignore[union-attr]
-        helper = self._automation.attach_scene(model, rng=self._rng, active=self._auto_reset_active)  # type: ignore[union-attr]
+        helper = self._automation.attach_scene(  # type: ignore[union-attr]
+            model,
+            rng=self._rng,
+            active=self._auto_reset_active,
+            robots=len(self._sim.bindings),  # type: ignore[union-attr]
+            robot_roots=self._sim.robot_roots,  # type: ignore[union-attr]
+        )
         if helper is None:
             area = self._area
             helper = EpisodeAutoReset.maybe_create(

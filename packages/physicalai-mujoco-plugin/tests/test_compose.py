@@ -28,7 +28,14 @@ from physicalai_mujoco_plugin.compose import (
     scene_needs_robot,
 )
 from physicalai_mujoco_plugin.profiles import SO101_PROFILE, RobotProfile, get_profile
-from physicalai_mujoco_plugin.scene_registry import get_scene, list_scenes, list_scenes_for, list_scenes_for_arms
+from physicalai_mujoco_plugin.scene_registry import (
+    arm_prefixes,
+    get_scene,
+    list_scenes,
+    list_scenes_for,
+    list_scenes_for_arms,
+    supported_arm_counts,
+)
 from physicalai_mujoco_plugin.sim import place_home
 
 
@@ -99,16 +106,89 @@ def test_composed_scenes_have_no_keyframes(scene_id: str) -> None:
 def test_every_scene_mounts_one_arm_per_declared_arm(scene_id: str) -> None:
     scene = get_scene(scene_id)
     prefixes = anchor_prefixes(mujoco.MjSpec.from_file(str(scene.scene_xml_path)))
-    assert prefixes == (("left_", "right_") if scene.num_arms == 2 else ("",))
+    assert prefixes == arm_prefixes(scene.written_arms)
 
 
 @pytest.mark.parametrize("scene_id", list(list_scenes()))
 def test_declared_anchors_match_the_scene_xml(scene_id: str) -> None:
-    """SCN-4: ``SceneConfig.anchors`` and ``num_arms`` agree with the frames in the scene file."""
+    """SCN-4: ``SceneConfig.anchors`` and ``written_arms`` agree with the frames in the scene file."""
     scene = get_scene(scene_id)
     anchors = scene_anchors(mujoco.MjSpec.from_file(str(scene.scene_xml_path)))
     assert {kind for _, kind in anchors} == {scene.anchors}
-    assert len(anchors) == scene.num_arms
+    assert len(anchors) == scene.written_arms
+    assert scene.written_arms in scene.arm_counts
+
+
+@pytest.mark.parametrize("scene_id", list(list_scenes()))
+def test_every_arm_count_has_a_layout(scene_id: str) -> None:
+    """P1: an arm count the file does not lay out is pinned, or derived from a single mount at the origin facing +x."""
+    scene = get_scene(scene_id)
+    spec = mujoco.MjSpec.from_file(str(scene.scene_xml_path))  # keeps the frames alive
+    frames = [frame for frame in spec.frames if frame.name.endswith(ROBOT_MOUNT_FRAME)]
+    for arms in scene.arm_counts:
+        if arms == scene.written_arms or arms in dict(scene.mounts):
+            continue
+        assert (arms, len(frames)) == (2, 1), f"{scene_id} cannot derive {arms} arms"
+        np.testing.assert_array_equal(frames[0].pos, [0.0, 0.0, 0.0])
+        np.testing.assert_array_equal(frames[0].quat, [1.0, 0.0, 0.0, 0.0])
+        assert frames[0].alt.type == mujoco.mjtOrientation.mjORIENTATION_QUAT
+        assert frames[0].parent.name == "world"
+    for arms, poses in scene.mounts:
+        assert arms != scene.written_arms and len(poses) == arms
+
+
+@pytest.mark.parametrize(("scene_id", "arms"), [(scene_id, arms) for scene_id in list_scenes_for(SO101_PROFILE) for arms in (1, 2)])
+def test_scenes_attach_the_arms_at_their_layout(scene_id: str, arms: int) -> None:
+    """P1: each arm's base sits where the layout puts its mount, with the prefixes of its arm count."""
+    scene = get_scene(scene_id)
+    model = scene.load_model(SO101_PROFILE, arms)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    layout = scene.layout_for(SO101_PROFILE, arms)
+    if layout is None:  # the file's own mount frames
+        spec = mujoco.MjSpec.from_file(str(scene.scene_xml_path))  # keeps the frames alive
+        frames = {frame.name: frame for frame in spec.frames}
+        poses = [(prefix, frames[f"{prefix}{ROBOT_MOUNT_FRAME}"]) for prefix in arm_prefixes(arms)]
+        expected = [(prefix, frame.pos, frame.quat) for prefix, frame in poses]
+    else:
+        expected = [(prefix, pose.pos, pose.quat) for prefix, pose in layout.mounts]
+    assert [prefix for prefix, _, _ in expected] == list(arm_prefixes(arms))
+    for prefix, pos, quat in expected:
+        np.testing.assert_allclose(data.xpos[model.body(f"{prefix}base").id], pos, atol=1e-12)
+        np.testing.assert_allclose(data.xquat[model.body(f"{prefix}base").id], quat, atol=1e-12)
+    names = {model.actuator(i).name for i in range(model.nu)} & set(BIMANUAL_SO101_JOINT_ORDER + SO101_JOINT_ORDER)
+    assert names == set(BIMANUAL_SO101_JOINT_ORDER if arms == 2 else SO101_JOINT_ORDER)
+
+
+def test_derived_two_arm_layouts() -> None:
+    """P1: side by side at the mount's edge, or across the spawn centre; separation and centre scale with reach."""
+    scene = get_scene("single_pick_place")
+    trossen = get_profile("trossen_wxai")
+    scale = scene.layout_scale(trossen)
+
+    side = dict(scene.mount_poses(trossen, 2))
+    assert side["left_"].pos == pytest.approx((0.0, 0.1 * scale, 0.0))
+    assert side["right_"].pos == pytest.approx((0.0, -0.1 * scale, 0.0))
+    assert side["left_"].quat == side["right_"].quat == (1.0, 0.0, 0.0, 0.0)
+    assert scene.for_profile(trossen, 2).spawn_center == pytest.approx((0.2 * scale, 0.0))
+
+    across = dict(dataclasses.replace(scene, two_arm_style="across").mount_poses(trossen, 2))
+    assert across["left_"].pos == pytest.approx((0.2 * scale, 0.1 * scale, 0.0))
+    assert across["right_"].pos == pytest.approx((0.2 * scale, -0.1 * scale, 0.0))
+    np.testing.assert_allclose(across["left_"].quat, [0.5**0.5, 0.0, 0.0, -(0.5**0.5)])  # faces -y
+    np.testing.assert_allclose(across["right_"].quat, [0.5**0.5, 0.0, 0.0, 0.5**0.5])  # faces +y
+
+    assert dict(scene.mount_poses(get_profile("ur5e"), 2))["left_"].pos == pytest.approx((0.0, 0.325, 0.0))
+    with pytest.raises(ValueError, match="no layout for 3"):
+        scene.mount_poses(SO101_PROFILE, 3)
+
+
+def test_a_layout_for_one_arm_unnames_the_files_second_mount() -> None:
+    """MjSpec cannot delete a frame: garment_fold's one-arm layout renames the left mount and unnames the right."""
+    scene = get_scene("garment_fold")
+    spec = compose_scene_spec(scene.scene_xml_path, SO101_PROFILE, scene_layout=scene.layout_for(SO101_PROFILE, 1))
+    assert anchor_prefixes(spec) == ("",)
+    assert sum(1 for frame in spec.frames if frame.name == "") >= 1
 
 
 @pytest.mark.parametrize("scene_id", list(list_scenes()))
@@ -135,9 +215,9 @@ def test_scene_options_win_over_the_robot_options(scene_id: str) -> None:
     np.testing.assert_array_equal(opt.gravity, scene_option.gravity)
 
 
-@pytest.mark.parametrize("scene_id", list(list_scenes_for_arms(1)))
+@pytest.mark.parametrize("scene_id", [scene_id for scene_id in list_scenes_for_arms(1) if scene_id != "garment_fold"])
 def test_single_arm_scenes_attach_the_arm_at_the_world_origin(scene_id: str) -> None:
-    model = get_scene(scene_id).load_model()
+    model = get_scene(scene_id).load_model(arms=1)
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
 
@@ -150,7 +230,7 @@ def test_single_arm_scenes_attach_the_arm_at_the_world_origin(scene_id: str) -> 
 
 
 def test_bimanual_scene_prefixes_every_arm_name() -> None:
-    model = get_scene("garment_fold").load_model()
+    model = get_scene("garment_fold").load_model(arms=2)
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
 
@@ -188,7 +268,7 @@ def test_bimanual_arms_get_their_own_default_classes() -> None:
 def test_normalized_units_span_the_earlier_joint_ranges(
     scene_id: str, joint_ranges: np.ndarray
 ) -> None:
-    robot = MuJoCoRobot(scene=scene_id, cameras=[])
+    robot = MuJoCoRobot(scene=scene_id, bimanual=len(joint_ranges) == 12, cameras=[])
     robot.connect()
     try:
         ranges = [channel.range for channels in robot._sim.channels for channel in channels.channels]
@@ -357,23 +437,32 @@ def _robot_geometry_points(model: mujoco.MjModel, data: mujoco.MjData, bodies: s
     return np.concatenate(points)
 
 
-@pytest.mark.parametrize("name", get_scene("single_pick_place").robots)
-def test_overview_frames_the_arm_at_home_the_spawn_arc_and_the_target(name: str) -> None:
-    """CAM-4: in the reach-scaled single_pick_place, the 640x480 overview shows the whole arm and the work area.
+@pytest.mark.parametrize(
+    ("name", "arms"),
+    [
+        (name, arms)
+        for arms in (1, 2)
+        for name in get_scene("single_pick_place").robots
+        if arms in supported_arm_counts(get_profile(name))
+    ],
+)
+def test_overview_frames_the_arm_at_home_the_spawn_arc_and_the_target(name: str, arms: int) -> None:
+    """CAM-4: in the reach-scaled single_pick_place, the 640x480 overview shows every arm and the work area.
 
-    Projects the arm's visible geometry at home (mesh vertices, primitive bounding boxes), the spawn
+    Projects the arms' visible geometry at home (mesh vertices, primitive bounding boxes), the spawn
     arc and the target through the camera's intrinsics; nothing is rendered.
     """
     scene = get_scene("single_pick_place")
     profile = get_profile(name)
-    composed = compose_scene(scene.scene_xml_path, profile, scene_layout=scene.layout_for(profile))
+    composed = compose_scene(scene.scene_xml_path, profile, scene_layout=scene.layout_for(profile, arms))
+    assert len(composed.robots) == arms
     model, data = composed.model, mujoco.MjData(composed.model)
     for binding in composed.robots:
         place_home(model, data, binding)
     mujoco.mj_forward(model, data)
     scene_bodies = {body.name for body in mujoco.MjSpec.from_file(str(scene.scene_xml_path)).bodies}
     robot = {i for i in range(1, model.nbody) if model.body(i).name not in scene_bodies}
-    laid_out = scene.for_profile(profile)
+    laid_out = scene.for_profile(profile, arms)
     half = np.radians(laid_out.spawn_angle_half_deg)
     arc = [
         np.array([*(np.asarray(laid_out.spawn_center) + r * np.array([np.cos(a), np.sin(a)])), 0.02])

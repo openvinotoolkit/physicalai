@@ -34,6 +34,8 @@ class Autopilot:
         """Start switched off, with no scene bound."""
         self._mode: AutopilotMode = "off"
         self._demo: ConveyorDemonstrator | None = None
+        self._unavailable: str | None = None
+        """Why a conveyor scene has no autopilot, for the viewer and ``POST /autopilot``."""
 
     @property
     def available(self) -> bool:
@@ -50,11 +52,20 @@ class Autopilot:
         """Whether the demonstrator writes the actuators, so client actions must be ignored."""
         return self.mode == "drive"
 
-    def bind(self, model: object | None, conveyor: ConveyorSort | None) -> None:
-        """Attach to a freshly loaded scene, switched off; scenes without a conveyor have no autopilot."""
+    def bind(self, model: object | None, conveyor: ConveyorSort | None, *, robots: int = 1) -> None:
+        """Attach to a freshly loaded scene, switched off.
+
+        Scenes without a conveyor have no autopilot, and neither has a conveyor with several arms:
+        the demonstrator drives one SO-101.
+        """
         self._mode = "off"  # a mode chosen for an earlier scene must not come back with this one
+        self._unavailable = None
         if model is None or conveyor is None:
             self._demo = None
+            return
+        if robots != 1:
+            self._demo = None
+            self._unavailable = f"The conveyor autopilot drives one SO-101 arm; this simulation has {robots} arms."
             return
         from physicalai_mujoco_plugin.conveyor_demo import ConveyorDemonstrator  # noqa: PLC0415
 
@@ -94,6 +105,7 @@ class Autopilot:
         target = demo.target if demo is not None and self.mode != "off" else None
         return {
             "available": demo is not None,
+            "unavailable_reason": self._unavailable,
             "mode": self.mode,
             "phase": demo.phase if demo is not None and self.mode != "off" else None,
             "target": target.name if target is not None else None,

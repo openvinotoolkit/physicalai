@@ -759,6 +759,9 @@ class SimControlPanel:
         self._handles.episode_status = status
         if state.autopilot.get("available"):
             self._build_autopilot_controls(state)
+        elif state.autopilot.get("unavailable_reason"):
+            with gui.add_folder("Autopilot"):
+                gui.add_markdown(f"Off: {state.autopilot['unavailable_reason']}")
 
         @running.on_update
         def _on_running(event: object) -> None:

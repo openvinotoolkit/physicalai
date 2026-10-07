@@ -4,8 +4,9 @@
 """PhysicalAI Studio catalog registration for the simulated robots.
 
 One follower entry is generated per supported profile (tiers ``twin``, ``dataset`` and
-``experimental``) and arm layout (STU-1): one robot, and two (``left_``, ``right_``) when a
-two-robot scene lists the profile. Its type is ``MuJoCo_<Profile>_Follower``, with ``Bimanual_``
+``experimental``) and arm layout (STU-1): one robot, and for twins two (``left_``, ``right_``),
+which every tabletop scene runs. Dataset and experimental arms run two arms from the CLI only
+(``physicalai-mujoco start --bimanual``). Its type is ``MuJoCo_<Profile>_Follower``, with ``Bimanual_``
 before ``Follower`` for two robots, where ``<Profile>`` is the profile's display name without
 spaces and punctuation; ``MuJoCo_SO101_Follower`` and ``MuJoCo_SO101_Bimanual_Follower`` keep
 their types and payloads. Twins whose real robot has a Studio URDF reuse it (STU-2); the other
@@ -20,9 +21,11 @@ from __future__ import annotations
 
 import asyncio
 import re
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from loguru import logger
 from physicalai_studio_plugin import (
@@ -39,6 +42,7 @@ from physicalai_studio_plugin import (
 from pydantic import BaseModel, Field, create_model
 
 from physicalai.config import export_config
+from physicalai.robot.errors import RobotTransportError
 from physicalai.robot.transport import SharedRobot
 from physicalai_mujoco_plugin._urdf import get_urdf_path
 from physicalai_mujoco_plugin.constants import (
@@ -48,7 +52,7 @@ from physicalai_mujoco_plugin.constants import (
 )
 from physicalai_mujoco_plugin.profiles import PROFILES, SO101_PROFILE, RobotProfile
 from physicalai_mujoco_plugin.profiles.trossen_wxai import TROSSEN_WXAI_PROFILE
-from physicalai_mujoco_plugin.scene_registry import get_scene, list_scenes_naming
+from physicalai_mujoco_plugin.scene_registry import BIMANUAL_PREFIXES, supported_arm_counts
 from physicalai_mujoco_plugin.virtual_leader import DEFAULT_HTTP_PORT, MuJoCoVirtualLeader
 
 if TYPE_CHECKING:
@@ -66,10 +70,14 @@ if TYPE_CHECKING:
 
 CATALOG_TIERS = ("twin", "dataset", "experimental")
 """Profile tiers that get Studio entries; ``unsupported`` models get none."""
-BIMANUAL_PREFIXES = ("left_", "right_")
-"""Robot prefixes of every registered two-robot scene."""
+BIMANUAL_TIERS = ("twin",)
+"""Profile tiers that also get a two-arm entry: the robots with real bimanual leaders."""
 DEFAULT_HTTP_URL = f"http://127.0.0.1:{DEFAULT_HTTP_PORT}"
 """The owner's camera and control server under ``physicalai-mujoco start``'s defaults."""
+_LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+"""Hosts of a payload ``http_url`` that mean the simulation runs on Studio's machine."""
+_NO_OWNER_ERROR = "no owner found for "
+"""Start of the message an attach-only ``SharedRobot.connect`` raises when no owner has the name."""
 
 _MUJOCO_SO101_TO_URDF: dict[str, list[str]] = {
     "shoulder_pan.pos": ["shoulder_pan"],
@@ -210,6 +218,34 @@ class CatalogEntry:
         """Default owner name, as ``physicalai-mujoco start`` publishes it (CLI-3)."""
         return default_owner_name(self.profile.name, len(self.prefixes))
 
+    def start_hint(self, owner_name: str, http_url: str = DEFAULT_HTTP_URL) -> str:
+        """Return how to start the simulation that a follower of this entry attaches to (P2).
+
+        Args:
+            owner_name: The payload's owner name; ``--name`` is added when it is not the default.
+            http_url: The payload's HTTP address: a local port other than the default adds
+                ``--http-port``, and another host adds ``--http-host`` and ``--allow-remote`` and
+                says where to run it. An address without a host is left out.
+
+        Returns:
+            ``Start it with: uv run physicalai-mujoco start --profile <profile> ...``.
+        """
+        command = f"uv run physicalai-mujoco start --profile {self.profile.name}"
+        if self.bimanual:
+            command += " --bimanual"
+        if owner_name != self.owner_name:
+            # One token, so a name that starts with "-" is not taken for an option.
+            command += f" --name={shlex.quote(owner_name)}"
+        try:
+            url = urlsplit(http_url)
+            host, port = url.hostname, url.port or (443 if url.scheme == "https" else 80)
+        except ValueError:
+            host, port = None, DEFAULT_HTTP_PORT
+        if host is None or host in _LOCAL_HOSTS:
+            return f"Start it with: {command}" + (f" --http-port {port}" if port != DEFAULT_HTTP_PORT else "")
+        command += f" --http-host {shlex.quote(host)} --http-port {port} --allow-remote"
+        return f"Start it on {host} with: {command}"
+
     def joint_names(self) -> tuple[str, ...]:
         """Return the public joint names an owner of this entry has.
 
@@ -230,24 +266,19 @@ class CatalogEntry:
 def list_catalog_entries() -> tuple[CatalogEntry, ...]:
     """Return one entry per supported profile and arm layout, in registry order (STU-1).
 
-    A profile gets a single-robot entry when its default scene attaches one robot or a scene
-    lists it for one, and a bimanual entry when a two-robot scene lists it.
+    Every profile in :data:`CATALOG_TIERS` gets a single-robot entry; those in
+    :data:`BIMANUAL_TIERS` that can run two arms also get a bimanual one.
 
     Returns:
-        The entries of every profile in :data:`CATALOG_TIERS`.
+        The entries, each profile's single-robot entry first.
     """
     entries = []
     for profile in PROFILES.values():
         if profile.tier not in CATALOG_TIERS:
             continue
-        counts = {scene.num_arms for scene in list_scenes_naming(profile.name).values()}
-        if profile.default_scene is not None:
-            counts.add(get_scene(profile.default_scene).num_arms)
-        entries.extend(
-            CatalogEntry(profile, ("",) if count == 1 else BIMANUAL_PREFIXES)
-            for count in sorted(counts)
-            if count in {1, len(BIMANUAL_PREFIXES)}
-        )
+        entries.append(CatalogEntry(profile, ("",)))
+        if profile.tier in BIMANUAL_TIERS and len(BIMANUAL_PREFIXES) in supported_arm_counts(profile):
+            entries.append(CatalogEntry(profile, BIMANUAL_PREFIXES))
     return tuple(entries)
 
 
@@ -427,9 +458,20 @@ class _SharedMuJoCoRobot:
     pass through unchanged, including a floating base's longer ``state``.
     """
 
-    def __init__(self, shared_robot: SharedRobot, joint_names: list[str] | tuple[str, ...]) -> None:
+    def __init__(
+        self, shared_robot: SharedRobot, joint_names: list[str] | tuple[str, ...], start_hint: str = ""
+    ) -> None:
+        """Wrap an attach-only shared robot.
+
+        Args:
+            shared_robot: Attaches to the simulation owner.
+            joint_names: The catalog entry's joint names.
+            start_hint: How to start the simulation (:meth:`CatalogEntry.start_hint`), given when no
+                owner is running.
+        """
         self._shared_robot = shared_robot
         self.joint_names = list(joint_names)
+        self._start_hint = start_hint
 
     @property
     def device_ids(self) -> tuple[str, ...]:
@@ -437,7 +479,21 @@ class _SharedMuJoCoRobot:
         return ()
 
     def connect(self) -> None:
-        self._shared_robot.connect()
+        """Attach to the running simulation owner.
+
+        Raises:
+            RobotTransportError: If no owner has the name: the message names it and says how to
+                start it, so Studio can show it as is. Other transport errors pass through unchanged.
+        """
+        try:
+            self._shared_robot.connect()
+        except RobotTransportError as exc:
+            if type(exc) is not RobotTransportError or not str(exc).startswith(_NO_OWNER_ERROR):
+                raise
+            msg = f"No MuJoCo simulation named {self._shared_robot.name!r} is running."
+            if self._start_hint:
+                msg += f" {self._start_hint}"
+            raise RobotTransportError(msg) from exc
 
     def disconnect(self) -> None:
         self._shared_robot.disconnect()
@@ -476,7 +532,7 @@ def _mujoco_robot_builder(
             allow_remote=validated.allow_remote,
             connect_timeout=validated.connect_timeout,
         )
-        return _SharedMuJoCoRobot(shared, joint_names)
+        return _SharedMuJoCoRobot(shared, joint_names, entry.start_hint(validated.name, validated.http_url))
 
     return build
 

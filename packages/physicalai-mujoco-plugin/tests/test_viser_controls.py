@@ -317,6 +317,19 @@ class TestSeedControls:
 
 
 class TestEpisodeControls:
+    def test_a_conveyor_without_its_autopilot_says_why(self) -> None:
+        """P1: two arms on the conveyor keep the belt controls; the autopilot shows its reason instead."""
+        reason = "The conveyor autopilot drives one SO-101 arm; this simulation has 2 arms."
+        state = make_state(
+            episode={"enabled": True, "kind": "conveyor", "active": True, "belt_speed": 0.05},
+            autopilot={"available": False, "unavailable_reason": reason, "mode": "off"},
+        )
+        _, server, _ = build_panel(state)
+        assert "Belt speed (cm/s)" in server.gui.handles
+        assert "Autopilot" in server.gui.folders
+        assert "Autopilot" not in server.gui.handles  # no mode dropdown
+        assert server.gui.handles["markdown"].content == f"Off: {reason}"
+
     def test_hidden_when_the_scene_has_no_auto_reset(self) -> None:
         _, server, _ = build_panel(make_state(episode={"enabled": False}))
         assert "Episode" not in server.gui.folders
