@@ -4,6 +4,7 @@ import contextlib
 import sys
 import threading
 import types
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
@@ -31,6 +32,8 @@ from physicalai_mujoco_plugin.viewer import ViewerService
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+RENDERING_AVAILABLE = "physicalai_mujoco_plugin.robot.offscreen_rendering_available"
+"""Patched in tests that stream default cameras: CI runners have no OpenGL, and tests never render."""
 RANGES = np.array([(low, high) for _name, low, high in SO101_JOINT_RANGES])
 """The SO-101 profile's pinned joint ranges (radians), in SO101_JOINT_ORDER."""
 GRIPPER = np.array([name.endswith("gripper") for name in SO101_JOINT_ORDER])
@@ -89,6 +92,11 @@ class _NativeViewer:
 
     def close(self) -> None:
         pass
+
+
+def sources(robot: MuJoCoRobot) -> list[tuple[str, str | None]]:
+    """The streamed cameras and where each comes from, as ``GET /health`` reports them."""
+    return [(camera["name"], camera["source"]) for camera in robot._http_status()["cameras"]]  # noqa: SLF001
 
 
 def _write_model(tmp_path, *, bimanual: bool = False, **arm) -> str:
@@ -484,7 +492,9 @@ class TestStatus:
         assert "garment_fold" in status["scenes"]
         assert "garment_fold" not in status["compatible_scenes"]
         assert status["objects"] == []
-        assert status["cameras"] == [{"name": "overview", "width": 640, "height": 480, "fps": 30, "rendering": False}]
+        assert status["cameras"] == [
+            {"name": "overview", "width": 640, "height": 480, "fps": 30, "rendering": False, "source": None},
+        ]
         assert MuJoCoRobot(scene="garment_fold")._http_status()["compatible_scenes"] == ["garment_fold"]  # noqa: SLF001
 
     def test_status_after_connect(self, robot) -> None:
@@ -523,12 +533,13 @@ class TestSceneSwitching:
 
     def test_default_cameras_follow_the_new_scene(self, model_path) -> None:
         robot = MuJoCoRobot("so101", model_path=model_path, substeps=1)
-        with patch("mujoco.Renderer"):
+        with patch("mujoco.Renderer"), patch(RENDERING_AVAILABLE, return_value=True):
             robot.connect()
             try:
-                assert [config.name for config in robot._cameras.configs] == ["overview"]  # noqa: SLF001
+                # The test arm's wrist camera is generated; the SO-101's in the registered scene is the profile's.
+                assert sources(robot) == [("wrist", "default"), ("overview", "scene")]
                 assert robot._switch_to_scene("single_pick_place")  # noqa: SLF001
-                assert [config.name for config in robot._cameras.configs] == ["wrist", "overview"]  # noqa: SLF001
+                assert sources(robot) == [("wrist", "override"), ("overview", "scene")]
                 assert set(robot._cameras.frame_buffers) == {"wrist", "overview"}  # noqa: SLF001
             finally:
                 robot.disconnect()
@@ -687,7 +698,8 @@ class TestDefaultCameras:
     """Camera selection only: tests never open a real renderer (CI runners have no OpenGL)."""
 
     def test_robot_cameras_then_overview(self, robot) -> None:
-        assert [config.name for config in default_cameras(robot._sim)] == ["overview"]  # noqa: SLF001
+        # The test arm has no camera of its own: it gets a generated wrist camera, like a Menagerie arm (CAM-2).
+        assert [config.name for config in default_cameras(robot._sim)] == ["wrist", "overview"]  # noqa: SLF001
 
     def test_bimanual_wrists_around_the_overview(self) -> None:
         robot = MuJoCoRobot(scene="garment_fold", cameras=[])
@@ -698,12 +710,44 @@ class TestDefaultCameras:
             robot.disconnect()
         assert names == ["left_wrist", "overview", "right_wrist"]
 
+    def test_a_bimanual_model_gives_each_arm_its_wrist(self, bimanual_path) -> None:
+        """A robot-complete two-arm model resolves cameras per arm, with prefixed names (CAM-3, CAM-6)."""
+        robot = so101(bimanual_path)
+        robot.connect()
+        try:
+            sim = robot._sim  # noqa: SLF001
+            per_arm = [(binding.prefix, [(c.name, c.body, c.source) for c in binding.layout.cameras]) for binding in sim.bindings]
+            names = [config.name for config in default_cameras(sim)]
+        finally:
+            robot.disconnect()
+        assert per_arm == [
+            ("left_", [("left_wrist", "left_link4", "default")]),
+            ("right_", [("right_wrist", "right_link4", "default")]),
+        ]
+        assert names == ["left_wrist", "overview", "right_wrist"]
+
+    def test_a_bimanual_model_keeps_each_arm_s_sensor_camera(self, tmp_path) -> None:
+        """An arm with a camera of its own keeps it; the other arm still gets a default."""
+        path = tmp_path / "bimanual.xml"
+        xml = Path(_write_model(tmp_path, bimanual=True)).read_text()
+        path.write_text(xml.replace('<joint name="left_elbow_flex"', '<camera name="left_cam"/><joint name="left_elbow_flex"'))
+        robot = so101(str(path))
+        robot.connect()
+        try:
+            sim = robot._sim  # noqa: SLF001
+            per_arm = [[(c.name, c.source) for c in binding.layout.cameras] for binding in sim.bindings]
+            names = [config.name for config in default_cameras(sim)]
+        finally:
+            robot.disconnect()
+        assert per_arm == [[("left_cam", "model")], [("right_wrist", "default")]]
+        assert names == ["left_cam", "overview", "right_wrist"]
+
     def test_none_streams_the_defaults(self, model_path) -> None:
         robot = MuJoCoRobot("so101", model_path=model_path)
-        with patch("mujoco.Renderer"):
+        with patch("mujoco.Renderer"), patch(RENDERING_AVAILABLE, return_value=True):
             robot.connect()
             try:
-                assert [config.name for config in robot._cameras.configs] == ["overview"]  # noqa: SLF001
+                assert [config.name for config in robot._cameras.configs] == ["wrist", "overview"]  # noqa: SLF001
             finally:
                 robot.disconnect()
 

@@ -69,8 +69,11 @@ class ViewerService:
 
     @property
     def url(self) -> str | None:
-        """The viser page, when viser runs."""
-        return f"http://{self.host}:{self.port}" if self.server is not None else None
+        """The viser page, when viser runs; an IPv6 host is bracketed."""
+        if self.server is None:
+            return None
+        host = f"[{self.host}]" if ":" in self.host and not self.host.startswith("[") else self.host
+        return f"http://{host}:{self.port}"
 
     def open(self, model: object, data: object) -> bool:
         """Open viser, or the native viewer where viser is unavailable (not on macOS).

@@ -17,6 +17,14 @@ from physicalai_mujoco_plugin.robot import MuJoCoRobot
 from physicalai_mujoco_plugin.sim import default_cameras
 
 UR5E_JOINTS = ["shoulder_pan", "shoulder_lift", "elbow", "wrist_1", "wrist_2", "wrist_3"]
+# LeRobot's joint names: lerobot/aloha_sim_insertion_human (ALOHA); lerobot/svla_so100_pickplace and
+# danaaubakirova/koch_test (SO-100, Koch; there with the arm prefix ``main_``).
+ALOHA_JOINTS = [
+    f"{side}_{joint}"
+    for side in ("left", "right")
+    for joint in ("waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate", "gripper")
+]
+SO_ARM_JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
 
 
 @pytest.mark.requires_download
@@ -41,7 +49,33 @@ def test_ur5e_runs_in_single_pick_place() -> None:
         for _ in range(100):
             observation = robot.get_observation()
         np.testing.assert_allclose(observation.joint_positions, target, atol=1.0)
-        assert [camera.name for camera in default_cameras(robot._sim)] == ["overview"]  # noqa: SLF001 - UR5e has none
+        # The UR5e has no camera of its own; it gets a generated wrist camera (CAM-3).
+        assert [camera.name for camera in default_cameras(robot._sim)] == ["wrist", "overview"]  # noqa: SLF001
+    finally:
+        robot.disconnect()
+
+
+@pytest.mark.parametrize(("profile", "joints"), [("aloha", ALOHA_JOINTS), ("so_arm100", SO_ARM_JOINTS), ("koch", SO_ARM_JOINTS)])
+def test_dataset_arms_use_their_lerobot_joint_names(profile: str, joints: list[str]) -> None:
+    """Spec issue 4: rename channels only where LeRobot datasets name the joints (no download before connect)."""
+    assert MuJoCoRobot(profile=profile, cameras=[]).joint_names == joints
+
+
+@pytest.mark.requires_download
+def test_aloha_is_one_robot_with_both_arms_and_their_wrist_cameras() -> None:
+    """Menagerie's ALOHA model keeps its arm spacing, so it attaches whole at single_pick_place's one mount."""
+    robot = MuJoCoRobot(profile="aloha", scene="single_pick_place", cameras=[])
+    robot.connect()
+    try:
+        observation = robot.get_observation()
+        assert robot.joint_names == ALOHA_JOINTS
+        assert observation.state.shape == (14,)
+        assert robot._http_status()["units"] == ["degrees"] * 6 + ["metres"] + ["degrees"] * 6 + ["metres"]  # noqa: SLF001
+        assert [camera.name for camera in default_cameras(robot._sim)] == [  # noqa: SLF001
+            "wrist_cam_left",
+            "overview",
+            "wrist_cam_right",
+        ]
     finally:
         robot.disconnect()
 

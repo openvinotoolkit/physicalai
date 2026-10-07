@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import subprocess  # noqa: S404 - runs this interpreter on a fixed script, never user input
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -26,6 +28,80 @@ from physicalai_mujoco_plugin.camera_thread import CameraThread, RateMeter
 
 if TYPE_CHECKING:
     from physicalai_mujoco_plugin.http_server import FrameBuffer
+
+GL_PROBE_TIMEOUT_S = 10.0
+"""How long the rendering probe may take; a host without a usable GL backend can hang instead of failing."""
+_GL_PROBE = """
+import mujoco
+with mujoco.Renderer(mujoco.MjModel.from_xml_string("<mujoco/>"), 8, 8) as renderer:
+    renderer.render()
+"""
+
+
+class RenderingProbe:
+    """Tell whether MuJoCo can render here; :data:`offscreen_rendering_available` is the shared instance.
+
+    Creating a GL context on a headless host without ``MUJOCO_GL=egl`` or ``osmesa`` can hang
+    rather than fail, so a child process with a timeout tries it; the child inherits
+    ``MUJOCO_GL``. Success is remembered for the process. A failure is not: the next call probes
+    again, so a host that gains a GL backend gets its cameras back on the next connect or scene
+    switch. One warning covers each run of failures.
+    """
+
+    def __init__(self) -> None:
+        """Start with no probe result."""
+        self.available = False
+        self.warned = False
+
+    def __call__(self) -> bool:
+        """Probe unless an earlier probe succeeded.
+
+        Returns:
+            ``True`` when a child process rendered a frame, now or earlier.
+        """
+        if self.available:
+            return True
+        reason = self._probe()
+        if reason is None:
+            self.available = True
+            self.warned = False
+            return True
+        if not self.warned:
+            self.warned = True
+            logger.warning(
+                "Simulated cameras are disabled: MuJoCo cannot render here ({}). "
+                "On a headless host, set MUJOCO_GL=egl or MUJOCO_GL=osmesa.",
+                reason,
+            )
+        return False
+
+    @staticmethod
+    def _probe() -> str | None:
+        """Render one frame in a child process.
+
+        Returns:
+            ``None`` on success, else why it failed.
+        """
+        try:
+            result = subprocess.run(  # noqa: S603
+                [sys.executable, "-c", _GL_PROBE],
+                capture_output=True,
+                text=True,
+                timeout=GL_PROBE_TIMEOUT_S,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return f"creating an OpenGL context took longer than {GL_PROBE_TIMEOUT_S:.0f} s"
+        except OSError as exc:
+            return str(exc)
+        if result.returncode == 0:
+            return None
+        lines = result.stderr.strip().splitlines()
+        return lines[-1] if lines else f"the probe exited with code {result.returncode}"
+
+
+offscreen_rendering_available = RenderingProbe()
+"""Whether MuJoCo can render in this process; call it before creating default camera streams."""
 
 
 @dataclass(frozen=True)
@@ -234,4 +310,4 @@ class CameraService:
                 renderer.close()
 
 
-__all__ = ["CameraConfig", "CameraService"]
+__all__ = ["GL_PROBE_TIMEOUT_S", "CameraConfig", "CameraService", "RenderingProbe", "offscreen_rendering_available"]

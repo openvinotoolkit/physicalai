@@ -5,15 +5,23 @@
 
 from __future__ import annotations
 
+import dataclasses
+import re
+from math import degrees
+from pathlib import Path
+from uuid import uuid4
+
 import mujoco
 import numpy as np
 import pytest
 
-from physicalai_mujoco_plugin.channels import ArmChannels
+from physicalai_mujoco_plugin import compose
+from physicalai_mujoco_plugin.channels import REPLAY_MODEL_LIMIT, ArmChannels
 from physicalai_mujoco_plugin.compose import _rename
 from physicalai_mujoco_plugin.profiles import (
     SO101_PROFILE,
     ChannelOverride,
+    EndEffector,
     PDOverride,
     RobotProfile,
     get_profile,
@@ -21,7 +29,7 @@ from physicalai_mujoco_plugin.profiles import (
     validate_profile,
 )
 from physicalai_mujoco_plugin.profiles.derive import derive_profile
-from physicalai_mujoco_plugin.scene_registry import list_scenes_for
+from physicalai_mujoco_plugin.scene_registry import get_scene, list_scenes_for
 
 _MJCF = """<mujoco model="derive-test">
   <compiler angle="radian"/>
@@ -90,9 +98,10 @@ def test_derive_classifies_actuators_and_finds_robot_metadata() -> None:
     assert [c.unit for c in layout.channels] == ["degrees", "metres", "metres", "metres", "degrees"]
     assert [c.joint for c in layout.channels] == ["hinge", "slide", "slide", None, "hinge"]
     assert layout.channels[0].range == (-1.0, 1.0)
-    assert (layout.floating_base_joint, layout.base_body) == ("root", "base")
-    assert layout.home_qpos["hinge"] == (0.25,)
-    assert layout.home_qpos["root"] == (0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0)
+    assert (layout.base.joint, layout.base.body) == ("root", "base")
+    assert (layout.base.qpos_adr, layout.base.dof_adr) == (0, 0)
+    assert layout.base.home == (0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0)
+    assert layout.home_qpos == {"hinge": (0.25,), "slide": (0.01,)}  # the base's pose is in layout.base
     assert layout.home_ctrl["hinge_pos"] == 0.25
     assert [sensor.name for sensor in layout.sensors] == ["hinge_sensor"]
     assert [(camera.name, camera.body) for camera in layout.cameras] == [("wrist_cam", "shoulder")]
@@ -107,17 +116,84 @@ def test_without_a_keyframe_home_is_qpos0_held_by_the_position_actuators() -> No
 
 
 def test_registry_has_hand_written_profiles_and_any_menagerie_model() -> None:
-    assert [profile.name for profile in list_profiles()] == ["so101", "ur5e"]
-    profile = get_profile("unitree_go2")
-    assert (profile.name, profile.menagerie_model, profile.tier) == ("unitree_go2", "unitree_go2", "unsupported")
+    assert [profile.name for profile in list_profiles()] == [
+        "so101",
+        "trossen_wxai",
+        "rebot_b601",
+        "ur5e",
+        "aloha",
+        "so_arm100",
+        "koch",
+        "piper",
+        "franka_fr3",
+        "franka_panda",
+        "xarm7",
+        "kinova_gen3",
+        "unitree_g1",
+        "unitree_go2",
+        "boston_dynamics_spot",
+    ]
+    assert {get_profile(name).tier for name in ("unitree_g1", "unitree_go2", "boston_dynamics_spot")} == {
+        "experimental"
+    }
+    profile = get_profile("unitree_go1")
+    assert (profile.name, profile.menagerie_model, profile.tier) == ("unitree_go1", "unitree_go1", "unsupported")
     with pytest.raises(KeyError, match="Unknown robot profile"):
         get_profile("not-a-menagerie-model")
 
 
-def test_scenes_list_the_profiles_they_support() -> None:
+def test_dataset_tier_arms_run_in_single_pick_place() -> None:
+    dataset = [profile for profile in list_profiles() if profile.tier == "dataset"]
+
+    assert [profile.name for profile in dataset] == [
+        "ur5e",
+        "aloha",
+        "so_arm100",
+        "koch",
+        "piper",
+        "franka_fr3",
+        "franka_panda",
+        "xarm7",
+        "kinova_gen3",
+    ]
+    for profile in dataset:
+        validate_profile(profile)
+        assert profile.default_scene == "single_pick_place"
+        assert get_scene("single_pick_place").supports(profile)
+
+
+@pytest.mark.requires_download
+def test_scenes_list_the_profiles_they_support(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert set(list_scenes_for(get_profile("ur5e"))) == {"single_pick_place"}
     assert set(list_scenes_for(SO101_PROFILE, 2)) == {"garment_fold"}
-    assert list_scenes_for(get_profile("unitree_go2")) == {}
+    # Floor scenes take any floating-base robot, and only those (SCN-5); the unregistered robot is inline.
+    assert set(list_scenes_for(get_profile("unitree_go2"))) == {"floor_flat"}
+    robot = tmp_path / "floating.xml"
+    robot.write_text(_MJCF)
+    monkeypatch.setattr(compose, "fetch_profile", lambda _profile: robot)
+    floating = RobotProfile(name=f"inline-floating-{uuid4().hex}", display_name="Floating", menagerie_model="inline")
+    assert set(list_scenes_for(floating)) == {"floor_flat"}
+    assert "floor_flat" not in list_scenes_for(SO101_PROFILE)
+
+
+def test_derive_finds_a_floating_base_driven_through_a_site() -> None:
+    """Drones act through site transmissions; their root free joint is still the floating base (PRF-3)."""
+    xml = """<mujoco><worldbody><body name="drone" pos="0 0 1"><freejoint/>
+      <geom type="box" size="0.1 0.1 0.02" mass="1"/><site name="rotor"/></body>
+      <body name="crate" pos="1 0 0"><freejoint name="crate"/><geom type="box" size="0.1 0.1 0.1"/></body></worldbody>
+      <actuator><motor name="thrust" site="rotor" gear="0 0 1 0 0 0"/></actuator></mujoco>"""
+    layout = derive_profile(_model(xml))
+
+    assert (layout.base.body, layout.base.joint) == ("drone", "")
+    assert layout.base.home == (0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0)
+    assert layout.home_qpos == {"crate": (1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0)}
+
+
+def test_derive_leaves_unactuated_free_bodies_alone() -> None:
+    xml = """<mujoco><worldbody><body name="arm"><joint name="j" axis="0 0 1"/><geom size="0.05"/></body>
+      <body name="cube" pos="1 0 0"><freejoint/><geom type="box" size="0.1 0.1 0.1"/></body></worldbody>
+      <actuator><position name="j" joint="j" kp="1"/></actuator></mujoco>"""
+    assert derive_profile(_model(xml)).base is None
 
 
 def test_so101_profile_pins_the_earlier_ranges() -> None:
@@ -148,6 +224,45 @@ def test_so101_profile_pins_the_earlier_ranges() -> None:
 def test_validation_rejects_inconsistent_overrides(channels: tuple[ChannelOverride, ...], message: str) -> None:
     with pytest.raises(ValueError, match=message):
         validate_profile(_profile(*channels))
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"end_effectors": (EndEffector(),)}, "exactly one of a site or a body"),
+        ({"end_effectors": (EndEffector(site="tcp", body="hand"),)}, "exactly one of a site or a body"),
+        ({"end_effectors": (EndEffector(body="hand", pos=(0.0, float("nan"), 0.1)),)}, "invalid position"),
+        ({"end_effectors": (EndEffector(site="tcp", axis=(0.0, 0.0, 0.0)),)}, "invalid approach axis"),
+        ({"reach": 0.0}, "invalid reach"),
+        ({"reach": float("inf")}, "invalid reach"),
+    ],
+)
+def test_validation_rejects_invalid_end_effectors_and_reach(fields: dict[str, object], message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        validate_profile(_profile(**fields))
+
+
+@pytest.mark.requires_download
+@pytest.mark.parametrize(("name", "base"), [("koch", "base_link"), ("so_arm100", "Base")])
+def test_turned_dataset_arms_face_x_with_their_joints_unchanged(name: str, base: str) -> None:
+    """The Koch and SO-ARM100 turn about their base only: dataset joint names, ranges and zero pose stay."""
+    profile = get_profile(name)
+    turned = compose.load_robot_spec(profile).compile()
+    original = compose.load_robot_spec(dataclasses.replace(profile, customize=None)).compile()
+    tips = []
+    for model in (turned, original):
+        data = mujoco.MjData(model)
+        mujoco.mj_kinematics(model, data)
+        effector = profile.end_effectors[0]
+        tips.append(data.xpos[model.body(effector.body).id][:2] - data.xpos[model.body(base).id][:2])
+
+    assert [turned.joint(i).name for i in range(turned.njnt)] == [original.joint(i).name for i in range(original.njnt)]
+    np.testing.assert_array_equal(turned.jnt_range, original.jnt_range)
+    np.testing.assert_array_equal(turned.qpos0, original.qpos0)
+    # At the zero pose the arm now points along +x; Menagerie's points along -x (Koch) or -y (SO-ARM100).
+    turned_heading, original_heading = (tip[0] / np.linalg.norm(tip) for tip in tips)
+    assert turned_heading > 0.9  # noqa: PLR2004
+    assert original_heading < 0.1  # noqa: PLR2004
 
 
 def test_normalized_read_write_and_action_validation() -> None:
@@ -225,6 +340,49 @@ def test_placing_a_group_homes_every_member() -> None:
 
     np.testing.assert_allclose(data.qpos, [0.02, -0.02])
     np.testing.assert_allclose(data.ctrl, [0.02, -0.02])
+
+
+def test_setting_positions_moves_the_joints_but_keeps_the_targets() -> None:
+    joint_channels = (
+        ChannelOverride("hinge_pos", ("hinge_pos",)),
+        ChannelOverride("slide_vel", ("slide_vel",)),
+        ChannelOverride("hinge_raw", ("hinge_raw",)),
+    )
+    model, data, channels = _bound(profile=_profile(*joint_channels))
+    targets = channels.model_targets()
+    data.qvel[model.joint("slide").dofadr[0]] = 0.3
+    # Past the hinge's range of 1 rad: recorded positions replay unclipped.
+    positions = np.asarray([np.degrees(1.2), 0.05, 1.2])
+
+    channels.set_positions(positions)
+    mujoco.mj_forward(model, data)
+
+    assert channels.unpositionable == ()
+    np.testing.assert_allclose(channels.read_positions(), positions)
+    np.testing.assert_array_equal(channels.model_targets(), targets)
+    assert data.qvel[model.joint("slide").dofadr[0]] == 0.0
+
+
+def test_tendon_channels_cannot_be_placed() -> None:
+    model, data, channels = _bound()
+    qpos = data.qpos.copy()
+
+    assert channels.unpositionable == ("tendon_pos",)
+    with pytest.raises(ValueError, match=r"\['tendon_pos'\] drive no hinge or slide joint directly"):
+        channels.set_positions(np.zeros(len(channels)))
+    np.testing.assert_array_equal(data.qpos, qpos)
+
+
+def test_setting_positions_moves_every_group_member() -> None:
+    xml = """<mujoco><compiler angle="radian"/><worldbody><body><joint name="a" type="slide" range="0 0.1"/>
+    <geom size="0.01"/><body><joint name="b" type="slide" range="-0.1 0"/><geom size="0.01"/></body></body></worldbody>
+    <actuator><position name="a" joint="a" kp="10"/><position name="b" joint="b" kp="10"/></actuator></mujoco>"""
+    _, data, channels = _bound(xml, _profile(ChannelOverride("gripper", ("a", "b"), member_scales=(-1.0,))))
+
+    channels.set_positions(np.asarray([0.03]))
+
+    np.testing.assert_allclose(data.qpos, [0.03, -0.03])
+    np.testing.assert_allclose(channels.read_positions(), [0.03])
 
 
 def test_pd_targets_clip_to_the_joint_range() -> None:
@@ -413,3 +571,166 @@ def test_renames_update_tendon_sensor_equality_and_exclusion_references(tmp_path
     assert spec.compile().nu == 1
     with pytest.raises(ValueError, match="Cannot rename 'missing'"):
         _rename(spec, "missing", "x", tmp_path)
+
+
+def test_replay_refuses_normalized_positions_it_would_clamp() -> None:
+    _, data, channels = _bound(_TORQUE_ARM, unit="normalized")
+    qpos = data.qpos.copy()
+
+    with pytest.raises(ValueError, match=r"frame 0: hinge = 150.0 is outside its normalized range"):
+        channels.set_positions(np.asarray([150.0]))
+    np.testing.assert_array_equal(data.qpos, qpos)
+    for value in (-100.0, 100.0):
+        channels.set_positions(np.asarray([value]))
+        np.testing.assert_allclose(channels.read_positions(), [value])
+
+
+def test_replay_refuses_a_joint_beyond_the_model_limit() -> None:
+    _, data, channels = _bound(_TORQUE_ARM, unit="degrees")
+    limit = degrees(REPLAY_MODEL_LIMIT)
+
+    channels.set_positions(np.asarray([limit * (1 - 1e-12)]))
+    for value in (limit * (1 + 1e-9), 1e40, -1e40):
+        with pytest.raises(ValueError, match=re.escape(f"puts hinge beyond {REPLAY_MODEL_LIMIT:g} model units")):
+            channels.set_positions(np.asarray([value]))
+
+
+def _show(channels: ArmChannels, data: mujoco.MjData, value: float | np.ndarray) -> np.ndarray:
+    """Place one frame of public values, then read every channel back as the float32 observation does."""
+    channels.set_positions(np.atleast_1d(np.asarray(value, dtype=np.float64)))
+    assert np.isfinite(data.qpos).all()
+    return channels.read_positions().astype(np.float32)
+
+
+@pytest.mark.parametrize(
+    ("override", "unit"),
+    [
+        # The extremes a profile may use: the observation still tells the whole range apart.
+        (ChannelOverride("hinge", ("hinge",), scale=1e4, offset=1e7), "normalized"),
+        (ChannelOverride("hinge", ("hinge",), scale=-1e-3, offset=1.0), "normalized"),
+        (ChannelOverride("hinge", ("hinge",), scale=1e-3, offset=-1.0), "degrees"),
+        (ChannelOverride("hinge", ("hinge",), scale=-1e4), "degrees"),
+    ],
+)
+def test_validated_scales_keep_replayed_positions_distinct(override: ChannelOverride, unit: str) -> None:
+    validate_profile(_profile(override))
+    _, data, channels = _bound(_TORQUE_ARM, _profile(override), unit=unit)
+    # Joint range -2..2 rad: the ends and the middle in public units, as the robot reports them.
+    ends = []
+    for qpos in (-2.0, 0.0, 2.0):
+        data.qpos[0] = qpos
+        ends.append(channels.read_positions()[0])
+
+    shown = [float(_show(channels, data, value)[0]) for value in ends]
+
+    assert len(set(shown)) == 3  # float32 observations still tell them apart
+    np.testing.assert_allclose(shown, ends, rtol=1e-6, atol=1e-6 * abs(override.scale))
+
+
+def test_every_frame_is_checked_before_any_joint_moves() -> None:
+    xml = """<mujoco><compiler angle="radian"/><worldbody><body><joint name="a" type="slide"/>
+    <geom size="0.01"/><body><joint name="b" type="slide"/><geom size="0.01"/></body></body></worldbody>
+    <actuator><position name="a" joint="a" kp="10"/><position name="b" joint="b" kp="10"/></actuator></mujoco>"""
+    profile = _profile(ChannelOverride("gripper", ("a", "b"), member_scales=(-1e3,)))
+    validate_profile(profile)
+    _, data, channels = _bound(xml, profile, unit="metres")
+    edge = REPLAY_MODEL_LIMIT / 1e3
+
+    placements = channels.replay_placements(np.asarray([[edge], [np.nextafter(edge, 0.0)]]))
+    assert [member.joint for member, _ in placements] == ["a", "b"]
+    channels.set_positions(np.asarray([edge]))
+    np.testing.assert_allclose(data.qpos, [edge, -REPLAY_MODEL_LIMIT])
+    qpos = data.qpos.copy()
+    with pytest.raises(ValueError, match=r"frame 1: gripper = .* puts b beyond"):
+        channels.replay_placements(np.asarray([[0.0], [np.nextafter(edge, np.inf)]]))
+    with pytest.raises(ValueError, match="puts b beyond"):
+        channels.set_positions(np.asarray([np.nextafter(edge, np.inf)]))
+    np.testing.assert_array_equal(data.qpos, qpos)  # nothing moved, not even the first finger
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        (ChannelOverride("hinge", ("hinge",), scale=4e36), r"\|scale\| <= 10000"),
+        (ChannelOverride("hinge", ("hinge",), scale=1e-290), r"0.001 <= \|scale\|"),
+        (ChannelOverride("hinge", ("hinge",), scale=1e-3, offset=2.0), r"\|offset\| <= 1000 \* \|scale\|"),
+        (ChannelOverride("hinge", ("hinge",), offset=1e30), r"\|offset\| <= 1000 \* \|scale\|"),
+        (ChannelOverride("g", ("a", "b"), member_scales=(1e308,)), r"\|member scale\| <= 1000"),
+        (ChannelOverride("g", ("a", "b"), member_scales=(0.0,)), r"0.001 <= \|member scale\|"),
+    ],
+)
+def test_profiles_keep_unit_conversions_within_float32(override: ChannelOverride, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        validate_profile(_profile(override))
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        ChannelOverride("hinge", ("hinge",), scale=1e-3, offset=1.0),  # smallest scale, largest offset for it
+        ChannelOverride("hinge", ("hinge",), scale=-1e-3, offset=-1.0),
+        ChannelOverride("hinge", ("hinge",), scale=1e4, offset=1e7),
+        ChannelOverride("hinge", ("hinge",)),
+    ],
+)
+def test_recorded_float32_ends_of_a_normalized_range_replay(override: ChannelOverride) -> None:
+    validate_profile(_profile(override))
+    _, data, channels = _bound(_TORQUE_ARM, _profile(override), unit="normalized")
+    for end in (-2.0, 2.0):  # the joint range
+        data.qpos[0] = end
+        recorded = channels.read_positions().astype(np.float32)  # as MuJoCoRobot observes it
+
+        shown = _show(channels, data, float(recorded[0]))
+
+        np.testing.assert_array_equal(shown, recorded)
+        assert data.qpos[0] == pytest.approx(end)
+    low, high = (override.offset + override.scale * end for end in (-100.0, 100.0))
+    for value in (high + 0.01 * (high - low), low - 0.01 * (high - low)):  # 1 % past either end
+        with pytest.raises(ValueError, match="is outside its normalized range"):
+            channels.set_positions(np.asarray([value]))
+
+
+def test_channels_sharing_a_joint_must_agree() -> None:
+    xml = """<mujoco><compiler angle="radian"/><worldbody><body><joint name="hinge" range="-1 1"/>
+    <geom size="0.01"/></body></worldbody><actuator><position name="motor_a" joint="hinge" kp="10"/>
+    <position name="motor_b" joint="hinge" kp="10"/></actuator></mujoco>"""
+    _, data, channels = _bound(xml, unit="normalized")
+    qpos = data.qpos.copy()
+
+    with pytest.raises(ValueError, match="frame 0: motor_a and motor_b place joint hinge at different positions"):
+        channels.set_positions(np.asarray([0.0, 100.0]))
+    np.testing.assert_array_equal(data.qpos, qpos)
+    channels.set_positions(np.asarray([50.0, 50.0]))  # what a recording of this robot contains
+    np.testing.assert_allclose(channels.read_positions(), [50.0, 50.0])
+
+
+_SHARED_HINGE = """<mujoco><compiler angle="radian"/><worldbody><body><joint name="hinge" range="{low} {high}"/>
+    <geom size="0.01"/></body></worldbody><actuator><position name="motor_a" joint="hinge" kp="10"/>
+    <position name="motor_b" joint="hinge" kp="10"/></actuator></mujoco>"""
+
+
+@pytest.mark.parametrize("qpos", [-0.9, 0.01, 0.1, 0.2, 0.4, 0.5, 0.99])
+def test_a_recording_of_channels_in_different_units_on_one_joint_replays(qpos: float) -> None:
+    profile = _profile(
+        ChannelOverride("norm", ("motor_a",), unit="normalized"), ChannelOverride("deg", ("motor_b",), unit="degrees")
+    )
+    validate_profile(profile)
+    _, data, channels = _bound(_SHARED_HINGE.format(low=-1, high=1), profile)
+    data.qpos[0] = qpos
+    recorded = channels.read_positions().astype(np.float32)  # as MuJoCoRobot observes it
+    data.qpos[0] = 0.0
+
+    shown = _show(channels, data, recorded)
+
+    np.testing.assert_array_equal(shown, recorded)
+
+
+def test_a_small_but_visible_disagreement_on_a_shared_joint_is_refused() -> None:
+    # A 0.1 mrad range: 0 and 0.001 normalized are 5e-10 rad apart, yet observably different.
+    _, data, channels = _bound(_SHARED_HINGE.format(low=0.9999, high=1.0), unit="normalized")
+    qpos = data.qpos.copy()
+
+    with pytest.raises(ValueError, match="frame 0: motor_a and motor_b place joint hinge at different positions"):
+        channels.set_positions(np.asarray([0.0, 0.001]))
+    np.testing.assert_array_equal(data.qpos, qpos)
+    channels.set_positions(np.asarray([0.001, 0.001]))

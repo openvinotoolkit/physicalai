@@ -6,6 +6,12 @@
 The viewer and HTTP threads only enqueue a ``SimCommand``; :meth:`OperatorControls._drain_commands`
 applies them on the sim thread at the start of the next tick. Readouts for those threads
 (``_http_status``, ``_panel_state``) are snapshots taken under ``_state_lock``.
+
+A replay (``POST /replay``) sets the robot's joints from recorded positions on each tick instead
+of stepping physics, and ignores actions. ``POST /replay/stop`` restores the physics state from
+before the replay, so the simulation continues as if the replay never ran. A reset, home or object
+pose command ends the replay the same way before it applies; a scene switch drops it with the old
+model.
 """
 
 # MuJoCo model/data attributes are supplied by the C extension at runtime.
@@ -26,11 +32,14 @@ if TYPE_CHECKING:
     from physicalai_mujoco_plugin.camera_thread import RateMeter
     from physicalai_mujoco_plugin.cameras import CameraService
     from physicalai_mujoco_plugin.conveyor_automation import ConveyorAutomation
-    from physicalai_mujoco_plugin.http_server import HttpServer, SimCommand
+    from physicalai_mujoco_plugin.floating import BaseStatus
+    from physicalai_mujoco_plugin.http_server import HttpServer, ReplayCommand, SimCommand
     from physicalai_mujoco_plugin.profiles import RobotProfile
+    from physicalai_mujoco_plugin.replay import Replay
     from physicalai_mujoco_plugin.scene_objects import SceneObjects, SpawnArea
     from physicalai_mujoco_plugin.scene_registry import SceneConfig
     from physicalai_mujoco_plugin.sim import Sim
+    from physicalai_mujoco_plugin.viewer import ViewerService
     from physicalai_mujoco_plugin.viser_controls import PanelState
 
 
@@ -75,6 +84,9 @@ class OperatorControls:
     _http_host: str
     _http_port: int
     _owner_name: str
+    _base_status: tuple[BaseStatus, ...]
+    _viewer: ViewerService | None
+    _replay: Replay | None
 
     @property
     def joint_names(self) -> list[str]:
@@ -120,10 +132,12 @@ class OperatorControls:
     def _handle_command(self, command: SimCommand) -> None:
         from physicalai_mujoco_plugin import http_server as cmd  # noqa: PLC0415
 
+        if self._handle_replay_command(command):
+            return
         sim = self._sim
         if isinstance(command, cmd.ResetCommand):
-            logger.info("Scene reset requested")
-            self._run_scene_reset()
+            logger.info("Reset requested")
+            self._reset()
         elif isinstance(command, cmd.SwitchSceneCommand):
             logger.info("Scene switch requested: {}", command.scene_id)
             try:
@@ -152,6 +166,34 @@ class OperatorControls:
             logger.info("Shutdown requested")
             _signal_owner_shutdown()
 
+    def _reset(self) -> None:
+        """Restore the start state without changing the scene (DRV-8; ``reset()``, ``POST /reset``).
+
+        Floating-base robots go back to their home pose, at rest, and their base holds are armed
+        again; then the scene's reset runs. Fixed-base robots keep the scene reset's handling
+        (SO-101 parity), so only scenes that set an arm pose move them.
+        """
+        import mujoco  # noqa: PLC0415
+
+        from physicalai_mujoco_plugin.sim import place_home  # noqa: PLC0415
+
+        sim = self._sim
+        if sim is not None and sim.bases:
+            floating = [
+                (binding, channels)
+                for binding, channels in zip(sim.bindings, sim.channels, strict=True)
+                if binding.layout.base is not None
+            ]
+            for binding, _ in floating:
+                place_home(sim.model, sim.data, binding)
+            mujoco.mj_forward(sim.model, sim.data)
+            for _, channels in floating:
+                channels.hold_current()
+            sim.bases.arm_holds()
+            self._base_status = sim.bases.status()
+            logger.info("Floating bases back at their start pose and held")
+        self._run_scene_reset()
+
     def _run_scene_reset(self) -> None:
         """Randomize the current scene without letting a failure stop the loop.
 
@@ -172,6 +214,131 @@ class OperatorControls:
         if self._episode_auto_reset is not None:
             self._episode_auto_reset.notify_manual_reset()
         self._automation.reset()  # type: ignore[union-attr]
+
+    def _handle_replay_command(self, command: SimCommand) -> bool:
+        """Start or stop a replay, and end it before a command that edits the physics state.
+
+        Returns:
+            Whether *command* was a replay command, with nothing left to do.
+        """
+        from physicalai_mujoco_plugin import http_server as cmd  # noqa: PLC0415
+
+        if isinstance(command, cmd.ReplayCommand):
+            self._start_replay(command)
+            return True
+        if isinstance(command, cmd.StopReplayCommand):
+            self._stop_replay()
+            return True
+        if isinstance(command, (cmd.ResetCommand, cmd.HomeCommand, cmd.SetObjectPoseCommand)):
+            # These edit the live physics state, which the replay's end would overwrite.
+            self._stop_replay()
+        return False
+
+    def _start_replay(self, command: ReplayCommand) -> None:
+        """Start playing *command*'s frames; a replay already running is replaced.
+
+        Raises:
+            ValueError: If the frames do not have one value per joint, or one cannot be shown
+                unchanged (see :meth:`ArmChannels.replay_placements`).
+        """
+        import mujoco  # noqa: PLC0415
+
+        from physicalai_mujoco_plugin.replay import Replay  # noqa: PLC0415
+
+        sim = self._sim
+        count = sum(len(channels) for channels in sim.channels)  # type: ignore[union-attr]
+        if command.joint_positions.shape[1:] != (count,) or not len(command.joint_positions):
+            msg = f"Replay frames have shape {command.joint_positions.shape}; expected (frames >= 1, {count})"
+            raise ValueError(msg)
+        # Every frame of every robot is checked before the first one is shown, so no frame can fail
+        # half-way through placing the robots.
+        self._replay_preflight(command.joint_positions)
+        if self._replay is not None:
+            # Keep the state from before the first replay; the current one is a replayed frame.
+            saved = self._replay.saved_state
+        else:
+            spec = mujoco.mjtState.mjSTATE_INTEGRATION
+            saved = np.empty(mujoco.mj_stateSize(sim.model, spec))  # type: ignore[union-attr]
+            mujoco.mj_getState(sim.model, sim.data, saved, spec)  # type: ignore[union-attr]
+        with self._state_lock:
+            self._replay = Replay(command.joint_positions, command.fps, saved)
+        logger.info(
+            "Replaying {} frames at {:g} fps; actions are ignored until the replay is stopped",
+            len(command.joint_positions),
+            command.fps,
+        )
+
+    def _stop_replay(self) -> None:
+        """End the replay, if any, and restore the physics state from before it."""
+        import mujoco  # noqa: PLC0415
+
+        replay = self._replay
+        if replay is None:
+            return
+        sim = self._sim
+        mujoco.mj_setState(sim.model, sim.data, replay.saved_state, mujoco.mjtState.mjSTATE_INTEGRATION)  # type: ignore[union-attr]
+        mujoco.mj_forward(sim.model, sim.data)  # type: ignore[union-attr]
+        with self._state_lock:
+            self._replay = None
+        logger.info("Replay stopped; the simulation continues from where it was before the replay")
+
+    def _show_replay_frame(self, control_dt: float) -> None:
+        """Set the joints to the replay's current frame, without stepping physics."""
+        import mujoco  # noqa: PLC0415
+
+        sim = self._sim
+        row = self._replay.next_frame(control_dt)  # type: ignore[union-attr]
+        start = 0
+        for channels in sim.channels:  # type: ignore[union-attr]
+            channels.set_positions(row[start : start + len(channels)])
+            start += len(channels)
+        mujoco.mj_forward(sim.model, sim.data)  # type: ignore[union-attr]
+
+    def _unreplayable_joints(self) -> list[str]:
+        """Return the public channels a replay cannot place (tendon or site transmissions).
+
+        Returns:
+            Their names; empty when every channel can be replayed or nothing is loaded.
+        """
+        sim = self._sim
+        return [name for channels in sim.channels for name in channels.unpositionable] if sim is not None else []
+
+    def _replay_preflight(self, frames: np.ndarray) -> None:
+        """Check that every robot can show every replay frame unchanged.
+
+        Raises:
+            ValueError: Naming the first joint and frame that cannot be shown, or a shape mismatch.
+        """
+        sim = self._sim
+        if sim is None:
+            msg = "The simulation is not connected"
+            raise ValueError(msg)
+        count = sum(len(channels) for channels in sim.channels)
+        if frames.ndim != 2 or frames.shape[1] != count:  # noqa: PLR2004
+            msg = f"Replay frames have shape {frames.shape}; expected (frames, {count})"
+            raise ValueError(msg)
+        start = 0
+        for channels in sim.channels:
+            channels.replay_placements(frames[:, start : start + len(channels)])
+            start += len(channels)
+
+    def _replay_problem(self, frames: np.ndarray) -> str | None:
+        """Check replay frames for ``POST /replay``: the same check the sim thread runs before playing.
+
+        It reads only the channel conversions, which never change while a scene is loaded.
+
+        Returns:
+            Why the frames cannot be replayed, or ``None``.
+        """
+        try:
+            self._replay_preflight(frames)
+        except ValueError as exc:
+            return str(exc)
+        return None
+
+    def _replay_status(self) -> dict[str, object]:
+        status = self._replay.status() if self._replay is not None else {"active": False}
+        return {**status, "unsupported_joints": self._unreplayable_joints()}
 
     def _go_home(self) -> None:
         """Place every robot at the scene's home pose (else the profile's) and hold it there."""
@@ -261,6 +428,7 @@ class OperatorControls:
             buffers=self._cameras.frame_buffers,
             commands=self._commands,
             get_status=self._http_status,
+            check_replay=self._replay_problem,
             get_leader=self._automation.leader_snapshot,  # type: ignore[union-attr]
         )
         server = HttpServer(app, self._http_host, self._http_port)
@@ -307,17 +475,23 @@ class OperatorControls:
         compatible = sorted(self._compatible_scenes())
         with self._state_lock:
             sim = self._sim
+            sources = sim.camera_sources() if sim is not None else {}
             return {
                 "connected": sim is not None,
                 "profile": self._profile.name,
                 "tier": self._profile.tier,
                 "joint_names": self.joint_names if sim is not None else [],
                 "units": [unit for channels in sim.channels for unit in channels.units] if sim is not None else [],
+                "floating_base": bool(sim.bases) if sim is not None else False,
+                "fallen": any(base.fallen for base in self._base_status),
+                "bases": [base.as_dict() for base in self._base_status],
+                "viewer_url": self._viewer.url if self._viewer is not None else None,
                 "scene": self._current_scene_id,
                 "scenes": sorted(list_scenes()),
                 "compatible_scenes": compatible,
                 "seed": self._seed,
                 "episode": self._episode_status(self._episode_auto_reset),
+                "replay": self._replay_status(),
                 "timing": self._timing_status(),
                 **(self._automation.status() if self._automation is not None else {}),
                 "objects": [
@@ -331,6 +505,8 @@ class OperatorControls:
                         "height": config.height,
                         "fps": config.fps,
                         "rendering": config.name in rendering,
+                        # override, model or default for robot cameras (CAM-3), scene otherwise.
+                        "source": sources.get(config.name),
                     }
                     for config in self._cameras.configs
                 ],
@@ -340,13 +516,14 @@ class OperatorControls:
         """Snapshot the state rendered by the viewer's Simulation panel.
 
         Returns:
-            The current scene, compatible scenes, seed, episode status, object poses and cameras.
+            The current scene, compatible scenes, seed, episode status, object poses, cameras, and
+            the robot's profile, tier, units and floating bases.
         """
         from physicalai_mujoco_plugin.viser_controls import PanelState  # noqa: PLC0415
 
         scenes = self._compatible_scenes()
         with self._state_lock:
-            model = self._model
+            model, sim = self._model, self._sim
             return PanelState(
                 scene_id=self._current_scene_id,
                 scene_options=tuple((scene_id, scene.display_name) for scene_id, scene in scenes.items()),
@@ -360,6 +537,11 @@ class OperatorControls:
                 view_center=tuple(float(v) for v in model.stat.center) if model is not None else (0.0, 0.0, 0.0),  # type: ignore[arg-type]
                 view_extent=float(model.stat.extent) if model is not None else 1.0,
                 timing=self._timing_status(),
+                profile=self._profile.name,
+                tier=self._profile.tier,
+                units=tuple(unit for channels in sim.channels for unit in channels.units) if sim is not None else (),
+                bases=self._base_status,
+                replay=self._replay_status(),
                 **(self._automation.status() if self._automation is not None else {}),
             )
 

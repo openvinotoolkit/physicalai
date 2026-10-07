@@ -239,7 +239,7 @@ enabled = false
 enabled = false
 
 [tool.pytest.ini_options]
-addopts = ["--strict-markers", "--strict-config", "--showlocals", "-ra", "-m", "not ov_smoke"]
+addopts = ["--strict-markers", "--strict-config", "--showlocals", "-ra", "-m", "not ov_smoke and not mujoco_smoke"]
 testpaths = "tests"
 pythonpath = ["src", "tests/fuzz/harnesses"]
 # Prevent pytest from walking into the fuzz harness tree.
@@ -251,6 +251,7 @@ markers = [
     "v4l2: marks tests requiring V4L2 mocking (Linux only)",
     "transport: marks tests requiring iceoryx2",
     "ov_smoke: OpenVINO smoke tests — three-stage contract (load, tokenizer, predict) against published HF exports",
+    "mujoco_smoke: MuJoCo smoke matrix and reachability checks over every supported robot profile (deselected by default; run with -m mujoco_smoke)",
 ]
 
 [tool.coverage.report]

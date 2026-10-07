@@ -33,6 +33,12 @@ if TYPE_CHECKING:
 TorqueMode = Literal["pd", "raw"]
 """``pd``: torque actuators track position targets through a software PD. ``raw``: actions are ``ctrl``."""
 
+NORMALIZED_ROUNDING = 1e-9
+"""Fraction of a ``normalized`` range a replayed value may round past its ends, on top of two float32
+steps of the public value (then clamped back)."""
+REPLAY_MODEL_LIMIT = 1e6
+"""Largest joint position (radians or metres) a replay places; recordings never come near it, and it
+keeps every member joint finite under any profile scale."""
 VELOCITY_TRACKING_GAIN = 10.0
 """Most velocity a velocity actuator is commanded per unit of position error, in 1/s (a ~0.1 s time constant).
 
@@ -120,6 +126,11 @@ class ArmChannels:
         self._prefix = prefix
         self.channels = _bind(layout, profile, prefix, unit or profile.default_unit, torque_mode)
         self.names = tuple(channel.name for channel in self.channels)
+        self.unpositionable = tuple(
+            channel.name for channel in self.channels if any(member.qpos_adr is None for member in channel.members)
+        )
+        """Channels with an actuator that drives no hinge or slide joint directly (tendon, site), which
+        :meth:`set_positions` cannot place: their position has no unique joint configuration."""
         # Position targets of the channels driven here (PD torque, velocity), in model units.
         self._tracked_targets = np.array([self._read_model(channel) for channel in self.channels], dtype=np.float64)
         self._pd_rows = self._pd_gains() if torque_mode == "pd" else ()
@@ -249,6 +260,99 @@ class ArmChannels:
             first = channel.first
             if first.joint is not None and first.joint in qpos:
                 self._write_model(index, channel, float(data.qpos[first.qpos_adr]), clamp=True)
+
+    def hold_current(self) -> None:
+        """Make the channels driven here (PD torque, velocity) hold their current positions, after a direct pose set."""
+        self._tracked_targets = np.array([self._read_model(channel) for channel in self.channels], dtype=np.float64)
+
+    def replay_placements(self, positions: np.ndarray) -> list[tuple[DerivedChannel, np.ndarray]]:
+        """Convert public replay frames to the joint position of every channel member (replay).
+
+        A frame is accepted only if the robot can show it unchanged: a ``normalized`` value inside
+        its public range (outside it would be clamped), and every member joint finite and within
+        :data:`REPLAY_MODEL_LIMIT` model units. Nothing is clipped otherwise, so recorded positions
+        that pressed past a joint limit replay as recorded. :meth:`set_positions` writes exactly
+        these values, so a frame accepted here is placed without error.
+
+        Args:
+            positions: Public positions, shape ``(frames, len(self))``.
+
+        Returns:
+            One ``(member, qpos per frame)`` pair per member of every channel, in channel order.
+
+        Raises:
+            ValueError: If a channel is in :attr:`unpositionable`, or naming the first frame and
+                channel that cannot be shown unchanged.
+        """
+        if self.unpositionable:
+            msg = f"Channels {list(self.unpositionable)} drive no hinge or slide joint directly; they cannot be placed"
+            raise ValueError(msg)
+        frames = np.asarray(positions, dtype=np.float64)
+        if frames.ndim != 2 or frames.shape[1] != len(self.channels):  # noqa: PLR2004
+            msg = f"Expected replay positions of shape (frames, {len(self.channels)}), got {frames.shape}"
+            raise ValueError(msg)
+        entries: list[tuple[int, int, DerivedChannel, np.ndarray]] = []
+        for index, channel in enumerate(self.channels):
+            model = _replay_model(frames, index, channel)
+            for position, member in enumerate(channel.members):
+                scale = 1.0 if position == 0 or not channel.member_scales else channel.member_scales[position - 1]
+                qpos = model * scale
+                beyond = ~(np.abs(qpos) <= REPLAY_MODEL_LIMIT)  # also catches NaN
+                _refuse(
+                    frames, index, beyond, channel, f"puts {member.joint} beyond {REPLAY_MODEL_LIMIT:g} model units"
+                )
+                entries.append((index, position, member, qpos))
+        return self._reconcile_shared_joints(frames, entries)
+
+    def _reconcile_shared_joints(
+        self, frames: np.ndarray, entries: list[tuple[int, int, DerivedChannel, np.ndarray]]
+    ) -> list[tuple[DerivedChannel, np.ndarray]]:
+        """Pick one position per joint that every channel reading it reproduces, frame by frame.
+
+        Channels sharing a joint (two actuators on one hinge) each report it in their own unit, so a
+        recorded frame holds the same position rounded differently. A candidate position is accepted
+        when each channel that reads the joint (its first member) shows it as its requested value,
+        within two float32 steps; group members after the first are written but never read.
+
+        Returns:
+            One ``(member, qpos per frame)`` pair per member, every member of a joint at the same value.
+
+        Raises:
+            ValueError: Naming the first frame and joint no position reproduces.
+        """
+        by_joint: dict[int, list[tuple[int, int, DerivedChannel, np.ndarray]]] = {}
+        for entry in entries:
+            by_joint.setdefault(entry[2].qpos_adr, []).append(entry)  # type: ignore[arg-type]
+        chosen: dict[int, np.ndarray] = {}
+        for address, shared in by_joint.items():
+            if len(shared) == 1:
+                continue
+            readers = [(index, member) for index, position, member, _ in shared if position == 0]
+            pick, found = shared[0][3].copy(), np.zeros(len(frames), dtype=bool)
+            for *_, candidate in shared:
+                shows = np.ones(len(frames), dtype=bool)
+                for index, _member in readers:
+                    shows &= _shows(self.channels[index], candidate, frames[:, index])
+                pick = np.where(shows & ~found, candidate, pick)
+                found |= shows
+            rows = np.flatnonzero(~found)
+            if len(rows):
+                names = " and ".join(self.channels[index].name for index, *_ in shared)
+                msg = f"frame {int(rows[0])}: {names} place joint {shared[0][2].joint} at different positions"
+                raise ValueError(msg)
+            chosen[address] = pick
+        return [(member, chosen.get(member.qpos_adr, qpos)) for _, _, member, qpos in entries]  # type: ignore[arg-type]
+
+    def set_positions(self, positions: np.ndarray) -> None:
+        """Teleport the channels' joints to one frame of public positions at rest, keeping their targets.
+
+        A frame :meth:`replay_placements` refuses raises its ``ValueError``, and nothing is moved.
+        """
+        placements = self.replay_placements(np.asarray(positions, dtype=np.float64)[None, :])
+        data = self.data
+        for member, qpos in placements:
+            data.qpos[member.qpos_adr] = qpos[0]
+            data.qvel[member.dof_adr] = 0.0
 
     def apply_pd(self) -> None:
         """Update the ``ctrl`` of the channels driven here; call before every physics step.
@@ -428,6 +532,68 @@ class ArmChannels:
                 continue
             gains.append((index, member, kp, kd, gain))
         return tuple(gains)
+
+
+def _replay_model(frames: np.ndarray, index: int, channel: Channel) -> np.ndarray:
+    """Convert column *index* of public replay frames to the channel's model positions.
+
+    A ``normalized`` value outside its range by more than rounding raises ``ValueError``.
+
+    Returns:
+        The model position per frame.
+    """
+    public = frames[:, index]
+    value = public if channel.identity else (public - channel.offset) / channel.scale
+    if channel.unit == "normalized":
+        lower, upper = channel.range  # type: ignore[misc]
+        public_low, public_high = channel.public_range
+        fraction = (value - public_low) / (public_high - public_low)
+        # A recorded end of the range may lie a hair outside it: observations are float32,
+        # and scale and offset round too. Allow two float32 steps at the public ends.
+        ends = [_affine(channel, end) for end in channel.public_range]
+        step = 2.0 * float(np.spacing(np.float32(max(abs(end) for end in ends))))
+        slack = NORMALIZED_ROUNDING + step / abs(ends[1] - ends[0])
+        inside = (fraction >= -slack) & (fraction <= 1.0 + slack)
+        _refuse(frames, index, ~inside, channel, "is outside its normalized range")
+        model = lower + np.clip(fraction, 0.0, 1.0) * (upper - lower)
+    elif channel.unit == "degrees" and channel.hinge:
+        model = np.radians(value)
+    else:
+        model = value
+    return model
+
+
+def _shows(channel: Channel, qpos: np.ndarray, requested: np.ndarray) -> np.ndarray:
+    """Return, per frame, whether *channel* reads *qpos* (its first member's) as *requested* in float32.
+
+    Returns:
+        A boolean per frame: within two float32 steps of the requested value.
+    """
+    value = qpos
+    if channel.unit == "normalized":
+        lower, upper = channel.range  # type: ignore[misc]
+        public_low, public_high = channel.public_range
+        value = public_low + np.clip((qpos - lower) / (upper - lower), 0.0, 1.0) * (public_high - public_low)
+    elif channel.unit == "degrees" and channel.hinge:
+        value = np.degrees(qpos)
+    if not channel.identity:
+        value = channel.offset + channel.scale * value
+    shown, wanted = value.astype(np.float32), requested.astype(np.float32)
+    step = np.spacing(np.maximum(np.abs(shown), np.abs(wanted)))
+    return np.abs(shown.astype(np.float64) - wanted.astype(np.float64)) <= 2.0 * step
+
+
+def _refuse(frames: np.ndarray, index: int, bad: np.ndarray, channel: Channel, reason: str) -> None:
+    """Raise for the first frame where *bad* is set, naming its value and *reason*.
+
+    Raises:
+        ValueError: If any entry of *bad* is set.
+    """
+    rows = np.flatnonzero(bad)
+    if len(rows):
+        row = int(rows[0])
+        msg = f"frame {row}: {channel.name} = {frames[row, index]} {reason} ({len(rows)} frames)"
+        raise ValueError(msg)
 
 
 def _affine(channel: Channel, value: float) -> float:
