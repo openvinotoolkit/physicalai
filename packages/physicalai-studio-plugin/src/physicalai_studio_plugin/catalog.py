@@ -83,7 +83,7 @@ class RobotCatalogDefinition(Generic[_PayloadT]):
     adapter_options: RobotAdapterOptions = field(default_factory=RobotAdapterOptions)
     probe: RobotProbe[_PayloadT] | None = None
     zero_calibration: RobotZeroCalibration[Any] | None = None
-    simulation: SimulationLaunch | None = None
+    simulation: SimulationLaunch[_PayloadT] | None = None
     """How Studio starts the simulation a simulated robot type attaches to; ``None`` for real robots."""
 
 

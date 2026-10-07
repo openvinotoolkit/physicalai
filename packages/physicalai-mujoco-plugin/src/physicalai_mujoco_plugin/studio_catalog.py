@@ -52,6 +52,7 @@ from physicalai_mujoco_plugin._urdf import get_urdf_path
 from physicalai_mujoco_plugin.constants import (
     DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME,
     DEFAULT_MUJOCO_OWNER_NAME,
+    MAX_SEED,
     default_owner_name,
 )
 from physicalai_mujoco_plugin.profiles import PROFILES, SO101_PROFILE, RobotProfile
@@ -306,11 +307,37 @@ class CatalogEntry:
             argv += ["--seed", str(seed)]
         return argv
 
-    def simulation_launch(self) -> SimulationLaunch | None:
+    def payload_owner_name(self, payload: MuJoCoRobotPayload) -> str:
+        """Return the owner a robot of this entry built from *payload* attaches to: its ``name``.
+
+        Returns:
+            The payload's owner name; a raw payload is validated with the entry's payload model first.
+        """
+        payload_model = _payload_model(self)
+        validated = payload if isinstance(payload, payload_model) else payload_model.model_validate(payload)
+        return validated.name
+
+    def launch_labels(self) -> tuple[str, ...]:
+        """Return the start dialog's chips: the arm count (or ``floating base``), then the profile's tier.
+
+        Returns:
+            For example ``("2 arms (bimanual)", "twin")`` or ``("floating base", "experimental")``.
+        """
+        arms = len(self.profile.end_effectors)
+        if self.bimanual:
+            body = "2 arms (bimanual)"
+        elif self.profile.default_scene is not None and get_scene(self.profile.default_scene).anchors == "spawn":
+            body = "floating base"
+        else:
+            body = f"{arms} arms" if arms > 1 else "1 arm"
+        return (body, self.profile.tier)
+
+    def simulation_launch(self) -> SimulationLaunch[MuJoCoRobotPayload] | None:
         """Return how Studio starts this entry's simulation, or ``None`` for a profile without a default scene.
 
         Returns:
-            The entry's scenes, its profile's default scene, and :meth:`start_argv`.
+            The entry's scenes, its profile's default scene, the payload's ``name`` as the owner name,
+            :meth:`start_argv`, ``start --seed``'s range and :meth:`launch_labels`.
         """
         if self.profile.default_scene is None:
             return None
@@ -318,7 +345,14 @@ class CatalogEntry:
             SimulationScene(id=scene.scene_id, display_name=scene.display_name, description=scene.description)
             for scene in map(get_scene, self.scene_ids())
         )
-        return SimulationLaunch(scenes=scenes, default_scene=self.profile.default_scene, build_argv=self.start_argv)
+        return SimulationLaunch[MuJoCoRobotPayload](
+            scenes=scenes,
+            default_scene=self.profile.default_scene,
+            payload_owner_name=self.payload_owner_name,
+            build_argv=self.start_argv,
+            max_seed=MAX_SEED,
+            labels=self.launch_labels(),
+        )
 
     def joint_names(self) -> tuple[str, ...]:
         """Return the public joint names an owner of this entry has.

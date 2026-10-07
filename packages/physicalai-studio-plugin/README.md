@@ -263,16 +263,25 @@ class SimulationArgvBuilder(Protocol):
 
 
 @dataclass(frozen=True)
-class SimulationLaunch:
-    max_seed: ClassVar[int] = 2**32 - 1
+class SimulationLaunch(Generic[_PayloadT]):
     scenes: tuple[SimulationScene, ...]
     default_scene: str
+    payload_owner_name: Callable[[_PayloadT], str]
     build_argv: SimulationArgvBuilder
+    max_seed: int | None = None
+    labels: tuple[str, ...] = ()
 
-    def argv(self, scene: str, owner_name: str, seed: int | None = None) -> list[str]: ...
+    def owner_name(self, payload: _PayloadT) -> str: ...
+    def argv(self, scene: str, payload: _PayloadT, seed: int | None = None) -> list[str]: ...
 ```
 
-For simulated robot types whose `robot_builder` attaches to a running simulation. When a robot type sets `simulation`, Studio can start that simulation itself: it shows `scenes` in their order, preselects `default_scene`, and runs `argv(scene, owner_name, seed)` as a child process. `owner_name` is the name the simulation publishes its robot under, the one the robot's payload attaches to. `seed` is `None` for random scene layouts, or a fixed seed from `0` to `SimulationLaunch.max_seed`. `SimulationLaunch` rejects an empty `scenes`, duplicate scene ids and a `default_scene` that is not one of them; `argv` rejects an unknown scene, a blank owner name and an out-of-range seed with `ValueError`.
+For simulated robot types whose `robot_builder` attaches to a running simulation. Parameterize it with the payload model, like the definition. When a robot type sets `simulation`, Studio can start that simulation itself:
+
+- The start dialog shows `labels` (short facts such as the arm count) as chips and `scenes` in their order, with `default_scene` preselected.
+- Studio runs `argv(scene, payload, seed)` for the robot's payload as a child process. `payload_owner_name` maps the payload to the name the robot attaches to; `build_argv` gets that name, and `owner_name(payload)` returns it so Studio can check `ready.name`.
+- `seed` is `None` for random scene layouts, or a fixed seed from `0` to `max_seed`. With `max_seed=None` the simulation takes no seed and Studio offers none.
+
+`SimulationLaunch` rejects an empty `scenes`, duplicate scene ids, a `default_scene` that is not one of them, a negative `max_seed` and blank labels; `argv` rejects an unknown scene, a blank owner name and an out-of-range seed with `ValueError`.
 
 The command line must follow this process contract:
 
@@ -286,15 +295,22 @@ The command line must follow this process contract:
 The MuJoCo plugin is the first implementation; its `start --status-json` events are described in [Start from another program](../physicalai-mujoco-plugin/README.md#start-from-another-program).
 
 ```python
+class MySimPayload(BaseModel):
+    sim_id: str = "1"
+
+
 def _start_argv(*, scene: str, owner_name: str, seed: int | None) -> list[str]:
     argv = [sys.executable, "-m", "my_sim", "start", "--scene", scene, f"--name={owner_name}"]
     return argv if seed is None else [*argv, "--seed", str(seed)]
 
 
-simulation = SimulationLaunch(
+simulation = SimulationLaunch[MySimPayload](
     scenes=(SimulationScene(id="pick_place", display_name="Pick & Place", description="One block and a target"),),
     default_scene="pick_place",
+    payload_owner_name=lambda payload: f"my-sim-{payload.sim_id}",
     build_argv=_start_argv,
+    max_seed=2**32 - 1,
+    labels=("1 arm",),
 )
 ```
 
