@@ -494,6 +494,8 @@ def _follower_definition(entry: CatalogEntry) -> RobotCatalogDefinition:
             external_effort_gain=None,
         ),
         probe=MuJoCoRobotProbe(entry),
+        # A simulated joint's zero is the model's zero; there is no motor offset to store.
+        zero_calibration=None,
     )
 
 
@@ -518,6 +520,7 @@ def _definitions() -> list[RobotCatalogDefinition]:
             external_effort_gain=None,
         ),
         probe=MuJoCoVirtualLeaderProbe(),
+        zero_calibration=None,
     )
     return [*so101, leader, *others]
 

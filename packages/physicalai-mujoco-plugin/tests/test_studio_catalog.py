@@ -395,6 +395,14 @@ class TestGeneratedEntries:
         assert supported == single
         assert {"aloha", "so_arm100", "koch", "piper", "franka_fr3", "franka_panda", "xarm7", "kinova_gen3"} <= single
 
+    def test_no_entry_offers_zero_calibration(self) -> None:
+        """Simulated joints have no motor offset, so Studio must not offer the guided zero-pose step.
+
+        It would call ``release``/``set_zero`` on the driver, which ``MuJoCoRobot`` doesn't have; this
+        also covers the reBot B601 twin, whose real driver has the step.
+        """
+        assert [d.type for d in _definitions() if d.zero_calibration is not None] == []
+
     def test_display_names_mark_experimental_entries(self) -> None:
         names = {entry.type: entry.display_name for entry in list_catalog_entries()}
         assert names["MuJoCo_WidowXAI_Bimanual_Follower"] == "MuJoCo WidowX AI Bimanual Follower"
