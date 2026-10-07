@@ -16,7 +16,7 @@ import numpy as np
 from loguru import logger
 
 from physicalai_mujoco_plugin._urdf import get_urdf_path
-from physicalai_mujoco_plugin.compose import OverviewRig, SceneLayout, load_scene_model, robot_layout
+from physicalai_mujoco_plugin.compose import MountPose, OverviewRig, SceneLayout, load_scene_model, robot_layout
 from physicalai_mujoco_plugin.conveyor import park_items, pool_item_names
 from physicalai_mujoco_plugin.profiles import SO101_PROFILE
 from physicalai_mujoco_plugin.spawn import (
@@ -33,6 +33,31 @@ if TYPE_CHECKING:
     from physicalai_mujoco_plugin.profiles import RobotProfile
 
 ResetFn = Callable[[object, object, np.random.Generator], None]
+
+BIMANUAL_PREFIXES = ("left_", "right_")
+"""Robot prefixes of two arms, left then right as seen facing the workspace from behind the arms."""
+
+TwoArmStyle = Literal["side_by_side", "across"]
+"""How a scene with one mount derives two: next to each other, or facing each other across the workspace."""
+
+
+def arm_prefixes(arms: int) -> tuple[str, ...]:
+    """Return the robot prefixes of *arms* arms: ``("",)`` for one, :data:`BIMANUAL_PREFIXES` for two.
+
+    Raises:
+        ValueError: For any other count.
+    """
+    if arms == 1:
+        return ("",)
+    if arms == len(BIMANUAL_PREFIXES):
+        return BIMANUAL_PREFIXES
+    msg = f"A simulation runs one or two arms, not {arms}"
+    raise ValueError(msg)
+
+
+def _yaw_quat(degrees: float) -> tuple[float, float, float, float]:
+    half = np.radians(degrees) / 2
+    return (float(np.cos(half)), 0.0, 0.0, float(np.sin(half)))
 
 
 @dataclass(frozen=True)
@@ -55,10 +80,31 @@ class SceneConfig:
     """Profiles the scene supports; ``"*"`` accepts any profile whose base type fits ``anchors``."""
     anchors: Literal["mount", "spawn"] = "mount"
     """Anchor frames of the XML: ``robot_mount`` (fixed bases) or ``robot_spawn`` (floating bases)."""
-    num_arms: int = 1
-    """Number of robots the scene attaches: one per anchor frame."""
+    written_arms: int = 1
+    """Number of robots the scene file attaches as written: one per anchor frame."""
+    arm_counts: tuple[int, ...] = (1, 2)
+    """Arm counts the scene supports. The file's anchor frames lay out ``written_arms``; another count
+    takes its ``mounts``, else two arms are derived from the file's single mount (``two_arm_style``)."""
+    two_arm_style: TwoArmStyle = "side_by_side"
+    """How two arms stand when derived from the single mount, which must be at the origin facing +x.
+
+    ``side_by_side``: both at the mount's table edge, facing +x like the single arm, ``left_`` at +y.
+    ``across``: facing each other across the two-arm spawn centre along y, ``left_`` at +y facing -y.
+    """
+    two_arm_separation: float = 0.20
+    """Distance between two derived mounts in metres, for the SO-101; it scales with reach like the layout."""
+    two_arm_separations: tuple[tuple[str, float], ...] = ()
+    """Per profile: the distance between two derived mounts after scaling, for arms whose home pose
+    reaches sideways into the other arm."""
+    two_arm_spawn_center: tuple[float, float] | None = None
+    """The spawn arc's centre with two arms, before scaling; ``None`` keeps the one-arm centre."""
+    mounts: tuple[tuple[int, tuple[MountPose, ...]], ...] = ()
+    """Pinned mount poses per arm count, for counts other than ``written_arms``; they replace the
+    derived two-arm layout. Prefixes follow :func:`arm_prefixes`."""
     home_qpos: tuple[tuple[str, float], ...] = ()
-    """Home joint positions in radians; unlisted arm joints use the model default."""
+    """Home joint positions of each arm in radians, without the arm's prefix; unlisted joints use the model default."""
+    pinned_home_qpos: tuple[tuple[int, tuple[tuple[str, float], ...]], ...] = ()
+    """Per arm count: home joint positions by full (prefixed) name, replacing ``home_qpos`` for that count."""
     auto_reset_on_fall: bool = False
     """Reset when a floating base has fallen (DRV-9); off so a policy can see its fall."""
     layout: Literal["fixed", "reach"] = "fixed"
@@ -115,25 +161,63 @@ class SceneConfig:
             raise ValueError(msg)
         return profile.reach / SO101_PROFILE.reach
 
-    def layout_for(self, profile: RobotProfile) -> SceneLayout | None:
-        """Return how to lay this scene out for *profile*, for :func:`~physicalai_mujoco_plugin.compose.compose_scene`.
+    def layout_for(self, profile: RobotProfile, arms: int | None = None) -> SceneLayout | None:
+        """Return how to lay this scene out for *arms* arms of *profile*, for :func:`~.compose.compose_scene`.
+
+        Args:
+            profile: The robot profile.
+            arms: Number of arms; ``None`` keeps the scene file's mount frames (a custom model).
 
         Returns:
-            ``None`` when the scene compiles as written (a fixed layout, the SO-101).
+            ``None`` when the scene compiles as written (a fixed layout or the SO-101, at the file's
+            arm count).
         """
         scale = self.layout_scale(profile)
+        # One rig per profile frames either arm count (tests/test_compose.py checks both).
         rig = dict(self.profile_overview_rigs).get(profile.name)
-        if scale == 1.0 and rig is None:  # noqa: RUF069 - layout_scale returns exactly 1.0 for the SO-101
+        mounts = None if arms is None or arms == self.written_arms else self.mount_poses(profile, arms)
+        if scale == 1.0 and rig is None and mounts is None:  # noqa: RUF069 - layout_scale returns exactly 1.0 for the SO-101
             return None
-        return SceneLayout(scale=scale, overview_rig=rig)
+        return SceneLayout(scale=scale, overview_rig=rig, mounts=mounts)
 
-    def for_profile(self, profile: RobotProfile) -> SceneConfig:
-        """Return this scene laid out for *profile*: its spawn centre and radii scaled with its reach.
+    def mount_poses(self, profile: RobotProfile, arms: int) -> tuple[tuple[str, MountPose], ...]:
+        """Return where *arms* arms of *profile* stand, by prefix: pinned (``mounts``), else derived.
+
+        Returns:
+            One pose per arm, in :func:`arm_prefixes` order.
+
+        Raises:
+            ValueError: If the scene neither pins nor derives a layout for *arms* arms.
+        """
+        pinned = dict(self.mounts).get(arms)
+        if pinned is not None:
+            return tuple(zip(arm_prefixes(arms), pinned, strict=True))
+        if arms != 2 or self.written_arms != 1:  # noqa: PLR2004
+            msg = f"Scene {self.scene_id!r} has no layout for {arms} arm(s)"
+            raise ValueError(msg)
+        separation = dict(self.two_arm_separations).get(
+            profile.name, self.two_arm_separation * self.layout_scale(profile)
+        )
+        half = separation / 2
+        if self.two_arm_style == "side_by_side":
+            poses = (MountPose((0.0, half, 0.0)), MountPose((0.0, -half, 0.0)))
+        else:
+            x, y = self.for_profile(profile, arms).spawn_center
+            poses = (MountPose((x, y + half, 0.0), _yaw_quat(-90.0)), MountPose((x, y - half, 0.0), _yaw_quat(90.0)))
+        return tuple(zip(BIMANUAL_PREFIXES, poses, strict=True))
+
+    def for_profile(self, profile: RobotProfile, arms: int = 1) -> SceneConfig:
+        """Return this scene laid out for *arms* arms of *profile*: its spawn centre and radii scaled with its reach.
+
+        With two arms, the spawn arc's centre is ``two_arm_spawn_center`` when the scene sets one;
+        either centre lies between the arms of a derived layout.
 
         Returns:
             This scene itself when nothing changes (a fixed layout, the SO-101), else a copy.
         """
         center = dict(self.profile_spawn_centers).get(profile.name, self.spawn_center)
+        if arms == 2 and self.two_arm_spawn_center is not None:  # noqa: PLR2004
+            center = self.two_arm_spawn_center
         scale = self.layout_scale(profile)
         if scale == 1.0 and center == self.spawn_center:  # noqa: RUF069 - exactly 1.0, see layout_scale
             return self
@@ -144,15 +228,35 @@ class SceneConfig:
             spawn_max_r=self.spawn_max_r * scale,
         )
 
-    def load_model(self, profile: RobotProfile = SO101_PROFILE) -> mujoco.MjModel:
-        """Compile this scene with the profile's robot attached at the scene's mount frames.
+    def home_pose(self, arms: int = 1) -> tuple[tuple[str, float], ...]:
+        """Return the scene's home pose for *arms* arms, by full joint name.
+
+        Returns:
+            ``pinned_home_qpos`` for that count, else ``home_qpos`` for each arm with its prefix.
+        """
+        pinned = dict(self.pinned_home_qpos).get(arms)
+        if pinned is not None:
+            return pinned
+        return tuple((f"{prefix}{joint}", value) for prefix in arm_prefixes(arms) for joint, value in self.home_qpos)
+
+    def load_model(self, profile: RobotProfile = SO101_PROFILE, arms: int | None = None) -> mujoco.MjModel:
+        """Compile this scene with *arms* arms of the profile's robot; ``None`` uses the file's mount frames.
 
         Returns:
             The compiled model, laid out for the profile.
         """
-        return load_scene_model(self.scene_xml_path, profile, scene_layout=self.layout_for(profile))
+        return load_scene_model(self.scene_xml_path, profile, scene_layout=self.layout_for(profile, arms))
 
 
+# One arm reaches over the garment from the far end of the table.
+_GARMENT_FOLD_ARM_HOME: tuple[tuple[str, float], ...] = (
+    ("shoulder_pan", 0.0),
+    ("shoulder_lift", 0.3),
+    ("elbow_flex", 0.8),
+    ("wrist_flex", 0.3),
+)
+
+# Two arms at the table's corners face each other; each pans toward the garment.
 _GARMENT_FOLD_HOME: tuple[tuple[str, float], ...] = (
     ("left_shoulder_pan", -1.1),
     ("left_shoulder_lift", 0.3),
@@ -232,10 +336,22 @@ def _set_arm_pose(model: object, data: object, pose: tuple[tuple[str, float], ..
             data.ctrl[aid] = val
 
 
-def _garment_fold_reset(model: object, data: object, rng: np.random.Generator) -> None:  # noqa: ARG001
-    import mujoco  # noqa: PLC0415
+def _garment_fold_reset(home: tuple[tuple[str, float], ...]) -> ResetFn:
+    """Build the garment reset: the arms at *home*, the garment flat.
 
-    _set_arm_pose(model, data, _GARMENT_FOLD_HOME)
+    Returns:
+        A reset callback for the scene.
+    """
+
+    def reset(model: object, data: object, rng: np.random.Generator) -> None:  # noqa: ARG001
+        _set_arm_pose(model, data, home)
+        _flatten_garment(model, data)
+
+    return reset
+
+
+def _flatten_garment(model: object, data: object) -> None:
+    import mujoco  # noqa: PLC0415
 
     # pyrefly: ignore [missing-attribute]
     if model.nflex > 0:
@@ -306,10 +422,19 @@ def _yahtzee_reset(model: object, data: object, rng: np.random.Generator) -> Non
     mujoco.mj_forward(model, data)
 
 
-def _conveyor_sort_reset(model: object, data: object, rng: np.random.Generator) -> None:  # noqa: ARG001
-    # The belt feed (conveyor.ConveyorSort) randomizes each item as it enters.
-    _set_arm_pose(model, data, _CONVEYOR_SORT_HOME)
-    park_items(model, data)
+def _conveyor_sort_reset(home: tuple[tuple[str, float], ...]) -> ResetFn:
+    """Build the conveyor reset: the arms at *home*, every item parked.
+
+    Returns:
+        A reset callback for the scene.
+    """
+
+    def reset(model: object, data: object, rng: np.random.Generator) -> None:  # noqa: ARG001
+        # The belt feed (conveyor.ConveyorSort) randomizes each item as it enters.
+        _set_arm_pose(model, data, home)
+        park_items(model, data)
+
+    return reset
 
 
 # ---------------------------------------------------------------------------
@@ -333,6 +458,11 @@ _SCENES: dict[str, SceneConfig] = {
         layout="reach",
         # ALOHA's arms sit at x = -0.47 and +0.47 facing each other: its arc spans x = 0.
         profile_spawn_centers=(("aloha", (-0.086, -0.01)),),
+        # Two arms stand 10 cm to either side: 2 cm closer, the arc's far edge stays within 15 degrees
+        # of straight down for both (tests/test_reach.py).
+        two_arm_spawn_center=(0.20, 0.0),
+        # The UR5e's home pose reaches 54 cm sideways (+y) from its base, into the other arm.
+        two_arm_separations=(("ur5e", 0.65),),
         # Pulled back along the line of sight until every arm's home pose, its geometry included,
         # is in frame (tests/test_compose.py); ALOHA's camera looks across the table along +y, with
         # the left arm on the left of the image. The SO-101, SO-ARM100 and Kinova fit as scaled.
@@ -382,6 +512,8 @@ _SCENES: dict[str, SceneConfig] = {
         description="Sort items off a moving belt by color; cracked or purple items go to reject",
         scene_xml_relpath="scenes/conveyor_sort/scene.xml",
         free_joints=tuple(f"{name}:joint" for name in pool_item_names()),
+        # Two arms stand 6 cm behind the single arm's mount, clear of the bins on either side.
+        mounts=((2, (MountPose((-0.06, 0.10, 0.0)), MountPose((-0.06, -0.10, 0.0)))),),
         home_qpos=_CONVEYOR_SORT_HOME,
     ),
     "garment_fold": SceneConfig(
@@ -389,8 +521,12 @@ _SCENES: dict[str, SceneConfig] = {
         display_name="Garment Fold",
         description="Fold a flexible garment lying flat on a table",
         scene_xml_relpath="scenes/garment_fold/scene.xml",
-        num_arms=2,
-        home_qpos=_GARMENT_FOLD_HOME,
+        written_arms=2,
+        # The file pins two arms at the near corners of the table, facing each other. One arm faces the
+        # garment from the far end, toward the overview camera, which sees it whole there.
+        mounts=((1, (MountPose((0.30, 0.02, 0.40), _yaw_quat(180.0)),)),),
+        home_qpos=_GARMENT_FOLD_ARM_HOME,
+        pinned_home_qpos=((2, _GARMENT_FOLD_HOME),),
         robots=("so101", "trossen_wxai"),
     ),
     "floor_flat": SceneConfig(
@@ -400,17 +536,19 @@ _SCENES: dict[str, SceneConfig] = {
         scene_xml_relpath="scenes/floor_flat/scene.xml",
         robots="*",
         anchors="spawn",
+        arm_counts=(1,),
     ),
 }
 
 _FREEJOINT_SPAWN_SCENES = ("single_pick_place",)
 """Scenes whose reset respawns their free objects in the spawn arc laid out for the robot."""
 
-_RESET_FUNCTIONS: dict[str, ResetFn] = {
-    "yahtzee": _yahtzee_reset,
-    "conveyor_sort": _conveyor_sort_reset,
-    "garment_fold": _garment_fold_reset,
+_RESET_FUNCTIONS: dict[str, Callable[[SceneConfig, int], ResetFn]] = {
+    "yahtzee": lambda _scene, _arms: _yahtzee_reset,
+    "conveyor_sort": lambda scene, arms: _conveyor_sort_reset(scene.home_pose(arms)),
+    "garment_fold": lambda scene, arms: _garment_fold_reset(scene.home_pose(arms)),
 }
+"""Reset builders by scene id, for the scene and its number of arms."""
 
 
 def get_scene(scene_id: str) -> SceneConfig:
@@ -431,15 +569,17 @@ def list_scenes() -> dict[str, SceneConfig]:
 
 
 def list_scenes_for_arms(num_arms: int) -> dict[str, SceneConfig]:
-    """Return the scenes whose model provides exactly `num_arms` SO-101 arms."""
+    """Return the scenes that run `num_arms` SO-101 arms."""
     return list_scenes_for(SO101_PROFILE, num_arms)
 
 
-def get_reset_fn(scene_id: str, profile: RobotProfile = SO101_PROFILE) -> ResetFn | None:
-    """Return the reset callback for `scene_id` with *profile*'s robot, if one is registered."""
+def get_reset_fn(scene_id: str, profile: RobotProfile = SO101_PROFILE, arms: int = 1) -> ResetFn | None:
+    """Return the reset callback for `scene_id` with *arms* of *profile*'s robot, if one is registered."""
+    scene = get_scene(scene_id)
     if scene_id in _FREEJOINT_SPAWN_SCENES:
-        return _freejoint_spawn_reset(get_scene(scene_id).for_profile(profile))
-    return _RESET_FUNCTIONS.get(scene_id)
+        return _freejoint_spawn_reset(scene.for_profile(profile, arms))
+    build = _RESET_FUNCTIONS.get(scene_id)
+    return build(scene, arms) if build is not None else None
 
 
 def list_scenes_naming(profile_name: str) -> dict[str, SceneConfig]:
@@ -456,22 +596,84 @@ def list_scenes_naming(profile_name: str) -> dict[str, SceneConfig]:
     }
 
 
-def bimanual_scene_id(profile_name: str) -> str | None:
-    """Return the first two-robot scene that lists *profile_name*, which ``start --bimanual`` picks.
+def supported_arm_counts(profile: RobotProfile) -> tuple[int, ...]:
+    """Return how many copies of *profile*'s robot one simulation can run, without loading its model.
 
     Returns:
-        The scene id, or ``None`` when no two-robot scene lists the profile.
+        ``(1,)`` for a model that has several arms already (ALOHA, which lists one end effector per
+        arm) and for floating-base robots (a default scene with spawn anchors), else ``(1, 2)``.
     """
-    return next(
-        (scene_id for scene_id, scene in list_scenes_naming(profile_name).items() if scene.num_arms == 2),  # noqa: PLR2004
-        None,
-    )
+    return (1,) if _single_robot_reason(profile) is not None else (1, 2)
+
+
+def _single_robot_reason(profile: RobotProfile) -> str | None:
+    """Return why *profile* runs one robot per simulation, without loading its model.
+
+    Returns:
+        The reason for a model that has several arms already (ALOHA) or a floating-base robot
+        (a default scene with spawn anchors), else ``None``.
+    """
+    if len(profile.end_effectors) > 1:
+        return f"The {profile.display_name} model has {len(profile.end_effectors)} arms already and runs alone"
+    if profile.default_scene is not None and get_scene(profile.default_scene).anchors == "spawn":
+        return f"The {profile.display_name} has a floating base; a simulation holds one floating-base robot"
+    return None
+
+
+def check_arm_count(scene: SceneConfig, profile: RobotProfile, arms: int) -> None:
+    """Check that *scene* can run *arms* arms of *profile*.
+
+    Raises:
+        ValueError: If the profile's model has several arms already, the scene or the profile is for
+            floating-base robots, or the scene does not support the count.
+    """
+    if arms == 1:
+        return
+    reason = _single_robot_reason(profile)
+    if reason is not None:
+        msg = f"{reason}; run it without bimanual"
+        raise ValueError(msg)
+    if scene.anchors == "spawn":
+        msg = (
+            f"Scene {scene.scene_id!r} holds one floating-base robot; two arms need a tabletop scene "
+            "and a fixed-base arm"
+        )
+        raise ValueError(msg)
+    if arms not in scene.arm_counts:
+        msg = f"Scene {scene.scene_id!r} runs {' or '.join(map(str, scene.arm_counts))} arm(s), not {arms}"
+        raise ValueError(msg)
+
+
+def check_model_mounts(profile: RobotProfile, mounts: tuple[str, ...], *, bimanual: bool) -> None:
+    """Check that a custom model's ``robot_mount`` frames can take *profile* (``model_path``, ``--model``).
+
+    Args:
+        profile: The robot profile attached at every mount.
+        mounts: The model's mount prefixes, in document order.
+        bimanual: Whether two arms were requested; the frames must then be exactly
+            ``left_robot_mount`` and ``right_robot_mount``.
+
+    Raises:
+        ValueError: If several mounts or ``bimanual`` meet a profile that runs one robot (ALOHA, a
+            floating base), or ``bimanual`` meets other mount frames.
+    """
+    if bimanual or len(mounts) > 1:
+        reason = _single_robot_reason(profile)
+        if reason is not None:
+            msg = f"{reason} (the model has {len(mounts)} robot_mount frame(s))"
+            raise ValueError(msg)
+    if bimanual and mounts != BIMANUAL_PREFIXES:
+        found = ", ".join(f"{prefix}robot_mount" for prefix in mounts) or "none"
+        msg = f"bimanual needs a model whose mount frames are left_robot_mount and right_robot_mount; it has {found}"
+        raise ValueError(msg)
 
 
 def list_scenes_for(profile: RobotProfile, num_arms: int | None = None) -> dict[str, SceneConfig]:
-    """Return the scenes that support *profile*, optionally only those with *num_arms* robots (SCN-5)."""
+    """Return the scenes that support *profile*, optionally only those that run *num_arms* of its robot (SCN-5)."""
+    if num_arms is not None and num_arms not in supported_arm_counts(profile):
+        return {}
     return {
         scene_id: scene
         for scene_id, scene in _SCENES.items()
-        if scene.supports(profile) and (num_arms is None or scene.num_arms == num_arms)
+        if scene.supports(profile) and (num_arms is None or num_arms in scene.arm_counts)
     }

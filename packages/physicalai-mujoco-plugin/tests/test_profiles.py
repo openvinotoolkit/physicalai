@@ -165,7 +165,10 @@ def test_dataset_tier_arms_run_in_single_pick_place() -> None:
 @pytest.mark.requires_download
 def test_scenes_list_the_profiles_they_support(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert set(list_scenes_for(get_profile("ur5e"))) == {"single_pick_place"}
-    assert set(list_scenes_for(SO101_PROFILE, 2)) == {"garment_fold"}
+    assert set(list_scenes_for(SO101_PROFILE, 2)) == {"single_pick_place", "yahtzee", "conveyor_sort", "garment_fold"}
+    assert set(list_scenes_for(get_profile("trossen_wxai"), 2)) == {"single_pick_place", "garment_fold"}
+    assert list_scenes_for(get_profile("aloha"), 2) == {}
+    assert list_scenes_for(get_profile("unitree_go2"), 2) == {}
     # Floor scenes take any floating-base robot, and only those (SCN-5); the unregistered robot is inline.
     assert set(list_scenes_for(get_profile("unitree_go2"))) == {"floor_flat"}
     robot = tmp_path / "floating.xml"

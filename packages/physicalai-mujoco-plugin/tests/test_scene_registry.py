@@ -139,22 +139,56 @@ class TestSceneSpawnConfig:
 
 
 class TestArmCompatibility:
-    def test_only_garment_fold_is_bimanual(self) -> None:
-        assert {scene_id for scene_id, scene in list_scenes().items() if scene.num_arms == 2} == {"garment_fold"}
+    def test_only_garment_fold_is_written_for_two_arms(self) -> None:
+        assert {scene_id for scene_id, scene in list_scenes().items() if scene.written_arms == 2} == {"garment_fold"}
 
-    def test_scenes_by_arm_count_partition_the_registry(self) -> None:
+    def test_every_tabletop_scene_runs_one_or_two_arms(self) -> None:
         single, bimanual = list_scenes_for_arms(1), list_scenes_for_arms(2)
-        assert "garment_fold" in bimanual
-        assert "garment_fold" not in single
         # Floor scenes spawn floating-base robots, never SO-101 arms.
-        assert set(single) | set(bimanual) == set(list_scenes()) - {"floor_flat"}
+        assert set(single) == set(bimanual) == set(list_scenes()) - {"floor_flat"}
+        assert get_scene("floor_flat").arm_counts == (1,)
         assert list_scenes_for_arms(3) == {}
 
-    def test_garment_fold_home_matches_its_reset_pose(self) -> None:
-        home = dict(get_scene("garment_fold").home_qpos)
-        assert home["left_shoulder_pan"] == pytest.approx(-1.1)
-        assert home["right_shoulder_pan"] == pytest.approx(1.1)
-        assert get_scene("single_pick_place").home_qpos == ()
+    def test_garment_fold_pins_its_two_arm_home_and_has_a_one_arm_home(self) -> None:
+        scene = get_scene("garment_fold")
+        two = dict(scene.home_pose(2))
+        assert two["left_shoulder_pan"] == pytest.approx(-1.1)
+        assert two["right_shoulder_pan"] == pytest.approx(1.1)
+        assert dict(scene.home_pose(1)) == {
+            "shoulder_pan": 0.0,
+            "shoulder_lift": 0.3,
+            "elbow_flex": 0.8,
+            "wrist_flex": 0.3,
+        }
+        assert get_scene("single_pick_place").home_pose(2) == ()
+
+    def test_a_shared_home_applies_to_each_arm(self) -> None:
+        scene = get_scene("conveyor_sort")
+        assert scene.home_pose(1) == scene.home_qpos
+        two = scene.home_pose(2)
+        assert two == tuple((f"{p}{joint}", value) for p in ("left_", "right_") for joint, value in scene.home_qpos)
+
+    def test_arm_prefixes(self) -> None:
+        assert scene_registry.arm_prefixes(1) == ("",)
+        assert scene_registry.arm_prefixes(2) == scene_registry.BIMANUAL_PREFIXES == ("left_", "right_")
+        with pytest.raises(ValueError, match="not 3"):
+            scene_registry.arm_prefixes(3)
+
+    @pytest.mark.parametrize(
+        ("profile", "scene_id", "message"),
+        [
+            ("aloha", "single_pick_place", "has 2 arms already"),
+            ("unitree_go2", "floor_flat", "one floating-base robot"),
+        ],
+    )
+    def test_bimanual_is_refused_where_it_cannot_work(self, profile: str, scene_id: str, message: str) -> None:
+        with pytest.raises(ValueError, match=message):
+            scene_registry.check_arm_count(get_scene(scene_id), get_profile(profile), 2)
+        scene_registry.check_arm_count(get_scene(scene_id), get_profile(profile), 1)
+
+    def test_supported_arm_counts(self) -> None:
+        counts = {name: scene_registry.supported_arm_counts(get_profile(name)) for name in ("so101", "koch", "aloha", "unitree_g1")}
+        assert counts == {"so101": (1, 2), "koch": (1, 2), "aloha": (1,), "unitree_g1": (1,)}
 
 
 class TestGarmentFoldReset:
@@ -192,7 +226,7 @@ class TestGarmentFoldReset:
             data.qvel = qvel
             data.ctrl = ctrl
 
-            fn = get_reset_fn("garment_fold")
+            fn = get_reset_fn("garment_fold", SO101_PROFILE, 2)
             assert fn is not None
             fn(model, data, np.random.default_rng(0))
 

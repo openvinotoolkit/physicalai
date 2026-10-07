@@ -698,3 +698,46 @@ class TestMenagerieRobots:
         assert abs(view[1]) < 1e-6
         hits = _view(model, data, "head")
         assert hits.count(model.geom("floor").id) / len(hits) > 0.5
+
+
+def _tabletop_cases() -> list[tuple[str, int]]:
+    """Every supported fixed-base profile with each arm count it runs (P7); floating bases have floor scenes only."""
+    from physicalai_mujoco_plugin.profiles import list_profiles  # noqa: PLC0415
+    from physicalai_mujoco_plugin.scene_registry import supported_arm_counts  # noqa: PLC0415
+
+    return [
+        (profile.name, arms)
+        for profile in list_profiles()
+        if profile.tier != "unsupported" and profile.default_scene not in {None, "floor_flat"}
+        for arms in supported_arm_counts(profile)
+    ]
+
+
+@pytest.mark.parametrize(("name", "arms"), _tabletop_cases())
+def test_default_cameras_are_the_same_in_every_tabletop_scene(name: str, arms: int) -> None:
+    """P7: a dataset's camera features depend only on profile and arm count: the robot cameras and ``overview``.
+
+    Switching scenes must never change them; floor scenes, which add ``chase``, are for floating bases only.
+    """
+    from physicalai_mujoco_plugin.scene_registry import list_scenes_for  # noqa: PLC0415
+    from physicalai_mujoco_plugin.sim import load_sim  # noqa: PLC0415
+
+    profile = get_profile(name)
+    scenes = {scene_id: scene for scene_id, scene in list_scenes_for(profile, arms).items() if scene.anchors == "mount"}
+    assert scenes, f"{name} runs {arms} arm(s) in no tabletop scene"
+    names = {}
+    for scene_id, scene in scenes.items():
+        sim = load_sim(
+            scene.scene_xml_path,
+            scene,
+            profile,
+            unit=profile.default_unit,
+            torque_mode="pd",
+            rng=np.random.default_rng(0),
+            reseed=lambda: None,
+            arms=arms,
+        )
+        robot_cameras = {camera.name for binding in sim.bindings for camera in binding.layout.cameras}
+        names[scene_id] = [config.name for config in default_cameras(sim)]
+        assert set(names[scene_id]) == robot_cameras | {"overview"}, scene_id
+    assert len({tuple(cameras) for cameras in names.values()}) == 1, names

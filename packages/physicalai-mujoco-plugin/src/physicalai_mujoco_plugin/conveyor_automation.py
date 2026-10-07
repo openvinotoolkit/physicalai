@@ -90,18 +90,36 @@ class ConveyorAutomation:
     # Scene lifecycle
     # ------------------------------------------------------------------
 
-    def attach_scene(self, model: object | None, *, rng: np.random.Generator, active: bool) -> ConveyorSort | None:
+    def attach_scene(
+        self,
+        model: object | None,
+        *,
+        rng: np.random.Generator,
+        active: bool,
+        robots: int = 1,
+        robot_roots: tuple[int, ...] | None = None,
+    ) -> ConveyorSort | None:
         """Build the conveyor controller for a freshly loaded scene.
+
+        Args:
+            model: The loaded model, or ``None`` when nothing is loaded.
+            rng: Generator for the belt feed.
+            active: Whether the belt and its episodes start running.
+            robots: Number of arms in the scene; the autopilot drives a single one.
+            robot_roots: Root body of every arm, for the held-item test; ``None`` takes a single
+                unprefixed SO-101.
 
         Returns:
             The controller, or ``None`` for scenes without a belt.
         """
         conveyor = None
         if model is not None:
-            conveyor = ConveyorSort.maybe_create(model, rng=rng, belt_speed=self.belt_speed, active=active)
+            conveyor = ConveyorSort.maybe_create(
+                model, rng=rng, belt_speed=self.belt_speed, active=active, robot_roots=robot_roots
+            )
         self._conveyor = conveyor
         self._holds_feed = False  # a new conveyor starts unheld
-        self.autopilot.bind(model, conveyor)
+        self.autopilot.bind(model, conveyor, robots=robots)
         if conveyor is None and self.recorder.phase != "off":
             self.recorder.disable("Automatic recording needs the conveyor scene.")
         elif conveyor is not None:

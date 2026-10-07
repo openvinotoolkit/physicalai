@@ -565,7 +565,9 @@ def _add_scene_routes(
         if scene_id not in status["scenes"]:
             raise HTTPException(status_code=404, detail=f"Unknown scene {scene_id!r}")
         if scene_id not in _compatible_scenes(status):
-            raise HTTPException(status_code=409, detail=f"Scene {scene_id!r} does not fit this robot's arm count")
+            raise HTTPException(
+                status_code=409, detail=f"Scene {scene_id!r} does not support this robot at its arm count"
+            )
         commands.put(SwitchSceneCommand(scene_id=scene_id))
         return {"status": "queued", "scene": scene_id}
 
@@ -746,8 +748,10 @@ def _add_automation_routes(
 
     @app.post("/autopilot")
     def autopilot(request: AutopilotRequest) -> dict[str, Any]:
-        if not get_status().get("autopilot", {}).get("available", False):
-            raise HTTPException(status_code=409, detail="The current scene has no autopilot")
+        autopilot_status = get_status().get("autopilot", {})
+        if not autopilot_status.get("available", False):
+            detail = autopilot_status.get("unavailable_reason") or "The current scene has no autopilot"
+            raise HTTPException(status_code=409, detail=detail)
         commands.put(SetAutopilotCommand(mode=request.mode))
         return {"status": "queued", "mode": request.mode}
 

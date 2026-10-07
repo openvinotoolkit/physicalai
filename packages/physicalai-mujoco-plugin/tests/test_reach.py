@@ -15,7 +15,9 @@ toward the spawn area, that the end effector reaches within 5 mm and 15 degrees.
 it for every arm and checks the stored value to 1 cm, so the stored values cannot rot.
 
 Robot-complete models with several arms (ALOHA) check each sample point with the arm whose base is
-nearest, so each arm covers its own side of the spawn area.
+nearest, so each arm covers its own side of the spawn area. Two copies of a one-arm profile
+(``bimanual``, laid out side by side) check the points on the arc's axis, where the arms hand over,
+with both arms, and the other points with the nearest arm; their reach is measured with one arm.
 
 The test is deselected by default (marker ``mujoco_smoke``) and renders nothing. Run this file as a
 script to print the measured reaches and the errors at every sample point::
@@ -39,7 +41,7 @@ import pytest
 
 from physicalai_mujoco_plugin.compose import compose_scene
 from physicalai_mujoco_plugin.profiles import get_profile
-from physicalai_mujoco_plugin.scene_registry import list_scenes
+from physicalai_mujoco_plugin.scene_registry import list_scenes, supported_arm_counts
 from physicalai_mujoco_plugin.spawn import FREEJOINT_SPAWN_Z
 
 if TYPE_CHECKING:
@@ -119,13 +121,21 @@ def reach_scene(profile: RobotProfile) -> SceneConfig:
     return next(scene for scene in list_scenes().values() if scene.layout == "reach" and profile.name in scene.robots)
 
 
-def build_arms(scene: SceneConfig, profile: RobotProfile, rng: np.random.Generator) -> list[Arm]:
-    """Compose *scene* for *profile* and return one :class:`Arm` per robot and end effector.
+def reach_cases() -> list[tuple[str, int]]:
+    """Return every reach profile with one arm, then those that also run two, with two."""
+    names = reach_profiles()
+    return [(name, 1) for name in names] + [
+        (name, 2) for name in names if 2 in supported_arm_counts(get_profile(name))  # noqa: PLR2004
+    ]
+
+
+def build_arms(scene: SceneConfig, profile: RobotProfile, rng: np.random.Generator, arms: int = 1) -> list[Arm]:
+    """Compose *scene* with *arms* of *profile*'s robot and return one :class:`Arm` per robot and end effector.
 
     Returns:
         The arms, in anchor order and then the profile's end-effector order.
     """
-    composed = compose_scene(scene.scene_xml_path, profile, scene_layout=scene.layout_for(profile))
+    composed = compose_scene(scene.scene_xml_path, profile, scene_layout=scene.layout_for(profile, arms))
     model = composed.model
     data = mujoco.MjData(model)
     arms = []
@@ -314,34 +324,39 @@ class ReachReport:
     """Per sample point: its label, the arm that checked it, the position error and the tilt."""
 
 
-def check_profile(name: str) -> ReachReport:
-    """Measure one profile's reach and solve every sample point of its scaled spawn arc.
+AXIS_POINTS = ("inner", "middle", "outer")
+"""Sample points on the spawn arc's axis, between two side-by-side arms: both must reach them."""
+
+
+def check_profile(name: str, arms: int = 1) -> ReachReport:
+    """Measure one profile's reach and solve every sample point of its scaled spawn arc with *arms* arms.
 
     Returns:
-        The measurements.
+        The measurements; with two arms, no reach (it is the one-arm measurement).
     """
     profile = get_profile(name)
     scene = reach_scene(profile)
-    laid_out = scene.for_profile(profile)
-    arms = build_arms(scene, profile, np.random.default_rng(0))
+    laid_out = scene.for_profile(profile, arms)
+    built = build_arms(scene, profile, np.random.default_rng(0), arms)
     points = spawn_points(laid_out)
     assert profile.reach is not None
-    reaches = [(arm.name, measure_reach(arm, points["middle"], profile.reach)) for arm in arms]
+    reaches = [] if arms > 1 else [(arm.name, measure_reach(arm, points["middle"], profile.reach)) for arm in built]
     solved = []
     for label, point in points.items():
-        arm = min(arms, key=lambda candidate: float(np.linalg.norm(point[:2] - candidate.base_xy)))
-        error, tilt = solve(arm, point, good_tilt_deg=GOOD_TILT_DEG)
-        solved.append((label, arm.name, error, tilt))
+        nearest = min(built, key=lambda candidate: float(np.linalg.norm(point[:2] - candidate.base_xy)))
+        for arm in built if arms > 1 and label in AXIS_POINTS else [nearest]:
+            error, tilt = solve(arm, point, good_tilt_deg=GOOD_TILT_DEG)
+            solved.append((label, f"{arm.name}@{arm.base_xy.round(3).tolist()}", error, tilt))
     return ReachReport(reaches, solved)
 
 
-@pytest.mark.parametrize("name", reach_profiles())
-def test_arm_reaches_its_scaled_spawn_area_from_above(name: str) -> None:
+@pytest.mark.parametrize(("name", "arms"), reach_cases())
+def test_arm_reaches_its_scaled_spawn_area_from_above(name: str, arms: int) -> None:
     profile = get_profile(name)
     assert profile.end_effectors, f"{name} lists no end effector"
     assert profile.reach is not None, f"{name} has no reach"
 
-    report = check_profile(name)
+    report = check_profile(name, arms)
 
     for arm, measured in report.reaches:
         assert abs(measured - profile.reach) <= REACH_TOLERANCE, (
@@ -353,13 +368,15 @@ def test_arm_reaches_its_scaled_spawn_area_from_above(name: str) -> None:
 
 
 def _main(names: list[str]) -> None:
-    for name in names or reach_profiles():
-        report = check_profile(name)
+    for name, arms in reach_cases():
+        if names and name not in names:
+            continue
+        report = check_profile(name, arms)
         stored = get_profile(name).reach
         reaches = ", ".join(f"{arm} {measured:.3f}" for arm, measured in report.reaches)
-        print(f"{name}: reach stored {stored:.3f}, measured {reaches}")  # noqa: T201
+        print(f"{name} ({arms} arm(s)): reach stored {stored:.3f}, measured {reaches or '-'}")  # noqa: T201
         for label, arm, error, tilt in report.points:
-            print(f"    {label:7s} {arm:18s} {error * 1000:6.2f} mm {tilt:5.1f} deg")  # noqa: T201
+            print(f"    {label:7s} {arm:32s} {error * 1000:6.2f} mm {tilt:5.1f} deg")  # noqa: T201
 
 
 if __name__ == "__main__":

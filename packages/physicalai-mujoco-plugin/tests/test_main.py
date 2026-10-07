@@ -106,8 +106,9 @@ class TestPidOwnerName:
         [
             ("--profile ur5e", "mujoco-ur5e-follow"),
             ("--profile=ur5e", "mujoco-ur5e-follow"),
-            ("--scene garment_fold", DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME),
-            ("--scene=garment_fold", DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME),
+            ("--scene garment_fold", DEFAULT_MUJOCO_OWNER_NAME),
+            ("--scene=garment_fold --bimanual", DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME),
+            ("--scene conveyor_sort --bimanual", DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME),
             ("--profile ur5e --scene no_such_scene", "mujoco-ur5e-follow"),
             ("--profile no_such_model", "mujoco-no_such_model-follow"),
             ("--profile trossen_wxai --bimanual", "mujoco-trossen_wxai-bimanual-follow"),
@@ -354,6 +355,14 @@ class TestRobotModelFetch:
             cli.main()
         assert [call.args[0] for call in fetch.call_args_list] == list(profiles)
 
+    def test_profiles_list_the_arm_counts(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with patch.object(cli.sys, "argv", ["physicalai-mujoco", "profiles"]):
+            cli.main()
+        rows = {line.split()[0]: line.split()[2:4] for line in capsys.readouterr().out.splitlines()[1:] if line}
+        assert rows["so101"] == ["1,", "2"]
+        assert rows["koch"] == ["1,", "2"]
+        assert rows["aloha"][0] == rows["unitree_go2"][0] == "1"
+
     def test_prefetch_exits_on_failure(self) -> None:
         with (
             patch.object(cli.sys, "argv", ["physicalai-mujoco", "prefetch"]),
@@ -391,26 +400,70 @@ class TestStartRecipe:
         assert (recipe["profile"], recipe["scene"], recipe["name"]) == ("so101", "single_pick_place", "mujoco-so101-follow")
         assert recipe["cameras"] is None  # the robot's cameras, then the overview
 
-    def test_bimanual_flag_picks_the_two_arm_scene_and_name(self) -> None:
+    def test_bimanual_flag_keeps_the_default_scene_and_takes_the_bimanual_name(self) -> None:
         recipe = self._recipe(["--bimanual", "--no-gui", "--no-cameras"])
-        assert (recipe["scene"], recipe["name"]) == ("garment_fold", "mujoco-so101-bimanual-follow")
+        assert (recipe["scene"], recipe["bimanual"], recipe["name"]) == (
+            "single_pick_place",
+            True,
+            "mujoco-so101-bimanual-follow",
+        )
         assert recipe["cameras"] == []
 
-    def test_bimanual_flag_picks_the_profiles_two_arm_scene(self) -> None:
-        recipe = self._recipe(["--profile", "trossen_wxai", "--bimanual", "--no-gui"])
-        assert (recipe["profile"], recipe["scene"], recipe["name"]) == (
-            "trossen_wxai",
-            "garment_fold",
-            "mujoco-trossen_wxai-bimanual-follow",
-        )
+    @pytest.mark.parametrize(
+        ("profile", "scene"),
+        [("trossen_wxai", "single_pick_place"), ("rebot_b601", "single_pick_place"), ("so101", "conveyor_sort")],
+    )
+    def test_bimanual_runs_in_any_tabletop_scene(self, profile: str, scene: str) -> None:
+        recipe = self._recipe(["--profile", profile, "--scene", scene, "--bimanual", "--no-gui"])
+        assert (recipe["scene"], recipe["bimanual"], recipe["name"]) == (scene, True, f"mujoco-{profile}-bimanual-follow")
 
-    def test_bimanual_flag_without_a_two_arm_scene_exits(self) -> None:
+    @pytest.mark.parametrize("profile", ["aloha", "unitree_go2"])
+    def test_bimanual_is_refused_for_two_arm_models_and_floating_bases(self, profile: str) -> None:
         with pytest.raises(SystemExit) as exit_info:
-            self._recipe(["--profile", "rebot_b601", "--bimanual", "--no-gui"])
+            self._recipe(["--profile", profile, "--bimanual", "--no-gui"])
         assert exit_info.value.code == 1
 
-    def test_two_arm_scene_gets_the_bimanual_name(self) -> None:
-        assert self._recipe(["--scene", "garment_fold", "--no-gui"])["name"] == "mujoco-so101-bimanual-follow"
+    def test_garment_fold_runs_one_arm_without_bimanual(self) -> None:
+        recipe = self._recipe(["--scene", "garment_fold", "--no-gui"])
+        assert (recipe.get("bimanual", False), recipe["name"]) == (False, "mujoco-so101-follow")
+
+    def test_a_custom_model_with_two_mounts_is_bimanual(self) -> None:
+        from physicalai_mujoco_plugin.scene_registry import get_scene  # noqa: PLC0415
+
+        recipe = self._recipe(["--model", str(get_scene("garment_fold").scene_xml_path), "--no-gui"])
+        assert recipe["name"] == "mujoco-so101-bimanual-follow"
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["--profile", "aloha"],
+            ["--profile", "aloha", "--bimanual"],
+            ["--profile", "unitree_g1", "--bimanual"],
+        ],
+    )
+    def test_a_two_mount_model_refuses_single_robot_profiles(self, argv: list[str]) -> None:
+        from physicalai_mujoco_plugin.scene_registry import get_scene  # noqa: PLC0415
+
+        with pytest.raises(SystemExit) as exit_info:
+            self._recipe([*argv, "--model", str(get_scene("garment_fold").scene_xml_path), "--no-gui"])
+        assert exit_info.value.code == 1
+
+    def test_bimanual_needs_the_left_and_right_mount_frames(self, tmp_path) -> None:
+        model = tmp_path / "other.xml"
+        model.write_text(
+            '<mujoco><worldbody><frame name="a_robot_mount"/><frame name="b_robot_mount" pos="0 0.3 0"/>'
+            "</worldbody></mujoco>"
+        )
+        with pytest.raises(SystemExit) as exit_info:
+            self._recipe(["--model", str(model), "--bimanual", "--no-gui"])
+        assert exit_info.value.code == 1
+
+    def test_bimanual_with_a_one_mount_model_exits(self) -> None:
+        from physicalai_mujoco_plugin.scene_registry import get_scene  # noqa: PLC0415
+
+        with pytest.raises(SystemExit) as exit_info:
+            self._recipe(["--model", str(get_scene("yahtzee").scene_xml_path), "--bimanual", "--no-gui"])
+        assert exit_info.value.code == 1
 
     def test_other_profiles_get_their_own_name(self) -> None:
         recipe = self._recipe(["--profile", "ur5e", "--no-gui"])

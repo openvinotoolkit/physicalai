@@ -27,7 +27,7 @@ from physicalai_mujoco_plugin.profiles import get_profile, validate_profile
 from physicalai_mujoco_plugin.profiles.rebot_b601 import REBOT_B601_GRIPPER_SCALE, REBOT_B601_PROFILE
 from physicalai_mujoco_plugin.profiles.trossen_wxai import TROSSEN_WXAI_PROFILE
 from physicalai_mujoco_plugin.robot import MuJoCoRobot
-from physicalai_mujoco_plugin.scene_registry import bimanual_scene_id, get_scene, list_scenes_naming
+from physicalai_mujoco_plugin.scene_registry import get_scene, list_scenes_naming, supported_arm_counts
 
 WXAI_NAMES = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_yaw", "wrist_roll", "gripper")
 
@@ -103,8 +103,8 @@ class TestProfiles:
     def test_scenes_list_the_twins(self) -> None:
         assert set(list_scenes_naming("trossen_wxai")) == {"single_pick_place", "garment_fold"}
         assert set(list_scenes_naming("rebot_b601")) == {"single_pick_place"}
-        assert bimanual_scene_id("so101") == bimanual_scene_id("trossen_wxai") == "garment_fold"
-        assert bimanual_scene_id("rebot_b601") is None
+        for name in ("so101", "trossen_wxai", "rebot_b601"):
+            assert supported_arm_counts(get_profile(name)) == (1, 2)
 
 
 @pytest.mark.requires_download
@@ -216,7 +216,7 @@ class TestWidowXParity:
     def test_bimanual_matches_the_real_bimanual_driver(self) -> None:
         trossen = pytest.importorskip("physicalai.robot.trossen", reason="needs trossen-arm")
         real = trossen.BimanualWidowXAI(_real_widowx(), _real_widowx())
-        robot = MuJoCoRobot("trossen_wxai", scene="garment_fold", cameras=[])
+        robot = MuJoCoRobot("trossen_wxai", scene="garment_fold", bimanual=True, cameras=[])
         assert robot.joint_names == list(real.joint_names)
         robot.connect()
         try:

@@ -5,7 +5,7 @@
 
 Usage:
 
-    physicalai-mujoco start [--profile so101] [--scene <id>] [options]
+    physicalai-mujoco start [--profile so101] [--scene <id>] [--bimanual] [options]
     physicalai-mujoco profiles
     physicalai-mujoco prefetch
 
@@ -38,7 +38,7 @@ from physicalai_mujoco_plugin.constants import (
     DEFAULT_MUJOCO_OWNER_NAME,
     default_owner_name,
 )
-from physicalai_mujoco_plugin.profiles import PROFILES, RobotProfile, get_profile, list_profiles
+from physicalai_mujoco_plugin.profiles import RobotProfile, get_profile, list_profiles
 from physicalai_mujoco_plugin.studio_recorder import DEFAULT_STUDIO_URL, validate_studio_url
 
 _CLI_NAME = "physicalai-mujoco"
@@ -73,7 +73,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Zenoh robot name (default: mujoco-<profile>-follow, or mujoco-<profile>-bimanual-follow "
-            f"for two-arm scenes; {DEFAULT_MUJOCO_OWNER_NAME} for the SO-101)"
+            f"with two arms; {DEFAULT_MUJOCO_OWNER_NAME} for the SO-101)"
         ),
     )
     start.add_argument(
@@ -102,8 +102,8 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
-            "Deprecated: use --scene with a two-arm scene. Picks the profile's first two-arm scene "
-            "(garment_fold for the SO-101 and the WidowX AI)"
+            "Two arms in the chosen scene (any tabletop scene), named left_* and right_*. With --model, "
+            "the XML needs left_robot_mount and right_robot_mount frames"
         ),
     )
     start.add_argument(
@@ -186,7 +186,8 @@ def _build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MUJOCO_OWNER_NAME,
         help=(
             "Zenoh robot name to stop when the HTTP endpoint is unreachable "
-            f"(default: {DEFAULT_MUJOCO_OWNER_NAME}; pass {DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME} for --bimanual runs)"
+            f"(default: {DEFAULT_MUJOCO_OWNER_NAME}; pass {DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME} for --bimanual runs, "
+            "mujoco-<profile>-[bimanual-]follow for other profiles)"
         ),
     )
     stop.add_argument(
@@ -208,30 +209,31 @@ def _build_parser() -> argparse.ArgumentParser:
 def _resolve_scene(args: argparse.Namespace, profile: RobotProfile) -> tuple[str | None, int]:
     """Return the scene id the driver will load and its number of robots, or exit with the reason.
 
+    The arm count is 2 with ``--bimanual``, else 1; a custom ``--model``'s mount frames decide its own,
+    and ``--bimanual`` requires exactly ``left_robot_mount`` and ``right_robot_mount``.
+
     Returns:
         The scene id (``None`` for a custom ``--model`` without ``--scene``) and the robot count.
     """
-    from physicalai_mujoco_plugin.scene_registry import bimanual_scene_id, get_scene  # noqa: PLC0415
+    from physicalai_mujoco_plugin.compose import mount_prefixes  # noqa: PLC0415
+    from physicalai_mujoco_plugin.scene_registry import check_arm_count, check_model_mounts, get_scene  # noqa: PLC0415
 
     scene_id = args.scene
-    if scene_id is None and args.bimanual:
-        scene_id = bimanual_scene_id(profile.name)
-        if scene_id is None:
-            logger.error("No two-arm scene supports the {} profile; pass --scene", profile.name)
-            sys.exit(1)
+    num_arms = None
     if args.model is not None:
         path = Path(args.model).resolve()
         if not path.exists():
             logger.error("Model file not found: {}", path)
             sys.exit(1)
         args.model = str(path)
+        try:
+            check_model_mounts(profile, mount_prefixes(path), bimanual=args.bimanual)
+        except ValueError as exc:
+            logger.error("{}: {}", path, exc)
+            sys.exit(1)
+        num_arms = _xml_robot_count(path)
         if scene_id is None:
-            import mujoco  # noqa: PLC0415
-
-            from physicalai_mujoco_plugin.compose import anchor_prefixes  # noqa: PLC0415
-
-            spec = mujoco.MjSpec.from_file(args.model)  # pyrefly: ignore [missing-attribute]
-            return None, max(1, len(anchor_prefixes(spec)))
+            return None, num_arms
     scene_id = scene_id or profile.default_scene
     if scene_id is None:
         logger.error("Profile {} has no default scene; pass --scene or --model", profile.name)
@@ -244,7 +246,28 @@ def _resolve_scene(args: argparse.Namespace, profile: RobotProfile) -> tuple[str
     if not scene.supports(profile):
         logger.error("Scene {} does not support the {} profile", scene_id, profile.name)
         sys.exit(1)
-    return scene_id, scene.num_arms
+    if num_arms is None:
+        num_arms = 2 if args.bimanual else 1
+        try:
+            check_arm_count(scene, profile, num_arms)
+        except ValueError as exc:
+            logger.error("{}", exc)
+            sys.exit(1)
+    return scene_id, num_arms
+
+
+def _xml_robot_count(path: str | Path) -> int:
+    """Return how many robots a ``--model`` XML attaches: its anchor frames, at least one.
+
+    Returns:
+        The number of anchor frames, or 1 for a robot-complete model without any.
+    """
+    import mujoco  # noqa: PLC0415
+
+    from physicalai_mujoco_plugin.compose import anchor_prefixes  # noqa: PLC0415
+
+    spec = mujoco.MjSpec.from_file(str(path))  # pyrefly: ignore [missing-attribute]
+    return max(1, len(anchor_prefixes(spec)))
 
 
 def _resolve_owner_name(args: argparse.Namespace, profile: str = "so101", num_arms: int | None = None) -> str:
@@ -297,6 +320,7 @@ def _start(args: argparse.Namespace) -> None:
     robot = MuJoCoRobot(
         profile.name,
         scene=scene_id,
+        bimanual=args.bimanual,
         model_path=args.model,
         unit=args.unit,
         substeps=args.substeps,
@@ -527,13 +551,14 @@ def _pid_command_line(pid: int) -> str | None:
 def _pid_owner_name(pid: int) -> str | None:
     """Return the zenoh owner name a ``start`` process at *pid* resolves to.
 
-    Parses ``--name``, ``--profile``, ``--scene``, ``--model`` and
-    ``--bimanual`` out of the process's own command line and resolves them
-    through :func:`_resolve_owner_name`, as ``start`` does, so the pgrep
-    fallback in :func:`_stop` can filter matches down to the requested owner
-    instead of killing every ``start`` process on the machine. A custom
-    ``--model`` without ``--scene`` counts its mount frames, as ``start``
-    does (:func:`_model_robot_count`).
+    Parses ``--name``, ``--profile``, ``--model`` and ``--bimanual`` out of
+    the process's own command line and resolves them through
+    :func:`_resolve_owner_name`, as ``start`` does, so the pgrep fallback in
+    :func:`_stop` can filter matches down to the requested owner instead of
+    killing every ``start`` process on the machine. The arm count is 2 with
+    ``--bimanual``, else 1, whatever the scene; a custom ``--model`` without
+    ``--bimanual`` counts its mount frames instead, as ``start`` does
+    (:func:`_model_robot_count`).
 
     Returns:
         The resolved owner name, or ``None`` when the command line for *pid*
@@ -551,23 +576,9 @@ def _pid_owner_name(pid: int) -> str | None:
     if "--name" in values:
         return values["--name"]
     profile = values.get("--profile", "so101")
-    scene_id = values.get("--scene")
-    if scene_id is None and bimanual:
-        from physicalai_mujoco_plugin.scene_registry import bimanual_scene_id  # noqa: PLC0415
-
-        scene_id = bimanual_scene_id(profile)
-    if scene_id is None and "--model" not in values:
-        registered = PROFILES.get(profile)
-        scene_id = registered.default_scene if registered is not None else None
-    num_arms = None
-    if scene_id is not None:
-        from physicalai_mujoco_plugin.scene_registry import get_scene  # noqa: PLC0415
-
-        try:
-            num_arms = get_scene(scene_id).num_arms
-        except KeyError:
-            num_arms = None
-    elif "--model" in values:
+    num_arms = 2 if bimanual else 1
+    # ``start --model --bimanual`` runs only with two mount frames, so only a model without the flag is counted.
+    if "--model" in values and not bimanual:
         num_arms = _model_robot_count(pid, values["--model"])
         if num_arms is None:
             return None  # unknown arm count: never match, so stop cannot signal the wrong owner
@@ -575,7 +586,7 @@ def _pid_owner_name(pid: int) -> str | None:
 
 
 def _start_flag_values(tokens: list[str]) -> dict[str, str]:
-    """Return the ``--name``/``--profile``/``--scene``/``--model`` values of a ``start`` command line.
+    """Return the ``--name``/``--profile``/``--model`` values of a ``start`` command line.
 
     Returns:
         The flags present, in both ``--flag value`` and ``--flag=value`` forms, mapped to their values.
@@ -583,7 +594,7 @@ def _start_flag_values(tokens: list[str]) -> dict[str, str]:
     values: dict[str, str] = {}
     for i, arg in enumerate(tokens):
         flag, has_value, value = arg.partition("=")
-        if flag in {"--name", "--profile", "--scene", "--model"}:
+        if flag in {"--name", "--profile", "--model"}:
             if has_value:
                 values[flag] = value
             elif i + 1 < len(tokens):
@@ -635,12 +646,7 @@ def _model_robot_count(pid: int, model: str) -> int | None:
             return None
         path = cwd / path
     try:
-        import mujoco  # noqa: PLC0415
-
-        from physicalai_mujoco_plugin.compose import anchor_prefixes  # noqa: PLC0415
-
-        spec = mujoco.MjSpec.from_file(str(path))  # pyrefly: ignore [missing-attribute]
-        return max(1, len(anchor_prefixes(spec)))
+        return _xml_robot_count(path)
     except Exception:  # noqa: BLE001 - any unreadable model means "unknown", never a match
         return None
 
@@ -739,12 +745,16 @@ def _prefetch() -> None:
 
 def _profiles() -> None:
     """Print the hand-written profiles; any other Menagerie model name loads as an unsupported profile."""
-    sys.stdout.write(f"{'PROFILE':<22} {'TIER':<12} {'MENAGERIE MODEL':<24} NAME\n")
+    from physicalai_mujoco_plugin.scene_registry import supported_arm_counts  # noqa: PLC0415
+
+    sys.stdout.write(f"{'PROFILE':<22} {'TIER':<12} {'ARMS':<6} {'MENAGERIE MODEL':<24} NAME\n")
     for profile in list_profiles():
+        arms = ", ".join(map(str, supported_arm_counts(profile)))
         sys.stdout.write(
-            f"{profile.name:<22} {profile.tier:<12} {profile.menagerie_model:<24} {profile.display_name}\n"
+            f"{profile.name:<22} {profile.tier:<12} {arms:<6} {profile.menagerie_model:<24} {profile.display_name}\n"
         )
     sys.stdout.write(
+        "ARMS: 2 runs two arms with start --bimanual, in any tabletop scene. "
         "Any other MuJoCo Menagerie model name loads as an unsupported profile, outside CI and Studio. "
         'Tendon or site torque actuators need MuJoCoRobot(torque_mode="raw").\n'
     )
