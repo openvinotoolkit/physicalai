@@ -234,6 +234,7 @@ Common options:
 - `--bimanual`: two arms in the chosen scene (any tabletop scene), named `left_…` and `right_…`, under `mujoco-<profile>-bimanual-follow`
 - `--model <path>`: scene XML to load instead of the registered scene's. Its `robot_mount` frames get the profile's robot and decide the arm count (`--bimanual` needs `left_robot_mount` and `right_robot_mount`); an XML without them is used as is
 - `--scene <name>`: scene name (`single_pick_place`, `yahtzee`, `conveyor_sort` or `garment_fold`). Default comes from the selected profile
+- `--seed <0..4294967295>`: fixed seed for scene resets, so object layouts repeat, as with **Fixed seed** in the viewer or `POST /seed` (default: random layouts)
 - `--no-gui`: disable all viewers
 - `--viser-port <port>`: browser viewer port (default `9090`; `0` picks a free port)
 - `--viser-host <host>`: browser viewer bind host (default `127.0.0.1`; use `0.0.0.0` to expose it remotely)
@@ -283,6 +284,8 @@ With `--status-json` or `--exit-with-parent`, `start` only runs a simulation it 
 `--exit-with-parent` makes `start` read stdin and shut down at end of file, as on `SIGTERM`. A parent keeps the write end of a pipe to `start`'s stdin open and never writes to it; when the parent exits or crashes, the operating system closes the pipe (macOS and Linux). The owner process watches `start` too, from the moment it starts loading, and shuts down if `start` itself is killed. Don't use `--exit-with-parent` with stdin at `/dev/null`: that is end of file at once.
 
 The browser viewer has no `X-Frame-Options` or `Content-Security-Policy` header, so a page can embed `viewer_url` in an iframe.
+
+Studio gets this command line from the catalog: every simulated follower's `simulation` field (a [`SimulationLaunch`](../physicalai-studio-plugin/README.md#simulationlaunch)) lists the scenes that entry runs in, with the profile's default scene preselected, and builds `python -m physicalai_mujoco_plugin start --profile <profile> [--bimanual] --scene <scene> --name=<owner name> --status-json --exit-with-parent --http-port 0 --viser-port 0 --viewer-theme studio [--seed <n>]` in Studio's own Python. Building it loads no robot model and downloads nothing; the `fetch` phase does that.
 
 ## Joint units
 

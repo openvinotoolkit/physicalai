@@ -1048,6 +1048,20 @@ class TestPorts:
         assert cli._local_url(url_host, 80) == f"http://{expected}:80"  # noqa: SLF001
 
 
+class TestSeed:
+    """``start --seed`` fixes the reset seed, in the range ``POST /seed`` accepts."""
+
+    @pytest.mark.parametrize(("argv", "seed"), [([], None), (["--seed", "0"], 0), (["--seed", "4294967295"], 2**32 - 1)])
+    def test_the_seed_reaches_the_robot(self, argv: list[str], seed: int | None) -> None:
+        assert _launch(argv).init_args["seed"] == seed
+
+    @pytest.mark.parametrize("value", ["-1", "4294967296", "1.5", "random"])
+    def test_out_of_range_seeds_are_rejected(self, value: str) -> None:
+        with pytest.raises(SystemExit) as exit_info:
+            cli._build_parser().parse_args(["start", "--seed", value])
+        assert exit_info.value.code == 2
+
+
 class TestExitWithParent:
     """``--exit-with-parent``: stdin EOF stops the sim, and the owner follows ``start`` (P5)."""
 

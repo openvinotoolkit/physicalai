@@ -11,7 +11,8 @@ before ``Follower`` for two robots, where ``<Profile>`` is the profile's display
 spaces and punctuation; ``MuJoCo_SO101_Follower`` and ``MuJoCo_SO101_Bimanual_Follower`` keep
 their types and payloads. Twins whose real robot has a Studio URDF reuse it (STU-2); the other
 entries have no asset and rely on the owner's viewer (``GET /viewer``, STU-3). The SO-101 virtual
-leader stays SO-101 specific (STU-6).
+leader stays SO-101 specific (STU-6). Every follower entry's ``simulation`` tells Studio how to start
+its simulation: the scenes it runs in and the ``start`` command line (P3).
 
 Importing this module neither imports MuJoCo nor downloads a model: the joint names of a profile
 without channel overrides are derived from its model only when an entry is probed or built.
@@ -22,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import re
 import shlex
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -37,6 +39,8 @@ from physicalai_studio_plugin import (
     RobotCatalogDefinition,
     RobotProbe,
     SerialPortInfo,
+    SimulationLaunch,
+    SimulationScene,
     robot_field_ui,
 )
 from pydantic import BaseModel, Field, create_model
@@ -52,7 +56,13 @@ from physicalai_mujoco_plugin.constants import (
 )
 from physicalai_mujoco_plugin.profiles import PROFILES, SO101_PROFILE, RobotProfile
 from physicalai_mujoco_plugin.profiles.trossen_wxai import TROSSEN_WXAI_PROFILE
-from physicalai_mujoco_plugin.scene_registry import BIMANUAL_PREFIXES, supported_arm_counts
+from physicalai_mujoco_plugin.scene_registry import (
+    BIMANUAL_PREFIXES,
+    get_scene,
+    list_scenes,
+    list_scenes_naming,
+    supported_arm_counts,
+)
 from physicalai_mujoco_plugin.virtual_leader import DEFAULT_HTTP_PORT, MuJoCoVirtualLeader
 
 if TYPE_CHECKING:
@@ -245,6 +255,70 @@ class CatalogEntry:
             return f"Start it with: {command}" + (f" --http-port {port}" if port != DEFAULT_HTTP_PORT else "")
         command += f" --http-host {shlex.quote(host)} --http-port {port} --allow-remote"
         return f"Start it on {host} with: {command}"
+
+    def scene_ids(self) -> tuple[str, ...]:
+        """Return the scenes a simulation of this entry can start in, without loading a model (P3).
+
+        Returns:
+            The scenes that list the profile and run the entry's arm count, and the profile's default
+            scene (``floor_flat`` for floating bases), in registry order.
+        """
+        arms = len(self.prefixes)
+        offered = {
+            scene_id for scene_id, scene in list_scenes_naming(self.profile.name).items() if arms in scene.arm_counts
+        }
+        if self.profile.default_scene is not None:
+            offered.add(self.profile.default_scene)
+        return tuple(scene_id for scene_id in list_scenes() if scene_id in offered)
+
+    def start_argv(self, *, scene: str, owner_name: str, seed: int | None) -> list[str]:
+        """Return the command line that Studio runs to start and supervise this entry's simulation (P3).
+
+        ``python -m physicalai_mujoco_plugin start`` in Studio's interpreter, with JSON startup events,
+        shutdown on stdin end of file, free ports and the viewer theme for embedding (P4-P6).
+
+        Args:
+            scene: One of :meth:`scene_ids`; :meth:`SimulationLaunch.argv` checks it.
+            owner_name: The payload's owner name, passed as one ``--name=`` token.
+            seed: Fixed reset seed (``start --seed``), or ``None`` for random layouts.
+
+        Returns:
+            The argv, ``sys.executable`` first.
+        """
+        argv = [sys.executable, "-m", "physicalai_mujoco_plugin", "start", "--profile", self.profile.name]
+        if self.bimanual:
+            argv.append("--bimanual")
+        argv += [
+            "--scene",
+            scene,
+            # One token, so a name that starts with "-" is not taken for an option.
+            f"--name={owner_name}",
+            "--status-json",
+            "--exit-with-parent",
+            "--http-port",
+            "0",
+            "--viser-port",
+            "0",
+            "--viewer-theme",
+            "studio",
+        ]
+        if seed is not None:
+            argv += ["--seed", str(seed)]
+        return argv
+
+    def simulation_launch(self) -> SimulationLaunch | None:
+        """Return how Studio starts this entry's simulation, or ``None`` for a profile without a default scene.
+
+        Returns:
+            The entry's scenes, its profile's default scene, and :meth:`start_argv`.
+        """
+        if self.profile.default_scene is None:
+            return None
+        scenes = tuple(
+            SimulationScene(id=scene.scene_id, display_name=scene.display_name, description=scene.description)
+            for scene in map(get_scene, self.scene_ids())
+        )
+        return SimulationLaunch(scenes=scenes, default_scene=self.profile.default_scene, build_argv=self.start_argv)
 
     def joint_names(self) -> tuple[str, ...]:
         """Return the public joint names an owner of this entry has.
@@ -552,6 +626,7 @@ def _follower_definition(entry: CatalogEntry) -> RobotCatalogDefinition:
         probe=MuJoCoRobotProbe(entry),
         # A simulated joint's zero is the model's zero; there is no motor offset to store.
         zero_calibration=None,
+        simulation=entry.simulation_launch(),
     )
 
 

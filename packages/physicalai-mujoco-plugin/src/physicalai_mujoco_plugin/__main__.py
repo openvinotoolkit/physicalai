@@ -40,6 +40,7 @@ from physicalai_mujoco_plugin.compose import fetch_profile, scene_needs_robot
 from physicalai_mujoco_plugin.constants import (
     DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME,
     DEFAULT_MUJOCO_OWNER_NAME,
+    MAX_SEED,
     default_owner_name,
 )
 from physicalai_mujoco_plugin.profiles import RobotProfile, get_profile, list_profiles
@@ -85,6 +86,25 @@ def _port_number(value: str) -> int:
         msg = f"expected a port from 0 to {_MAX_PORT} (0 picks a free one), got {value!r}"
         raise argparse.ArgumentTypeError(msg)
     return port
+
+
+def _seed_number(value: str) -> int:
+    """Parse a reset seed for ``argparse``, in the range ``POST /seed`` accepts.
+
+    Returns:
+        The seed.
+
+    Raises:
+        argparse.ArgumentTypeError: If *value* is not an integer from 0 to :data:`MAX_SEED`.
+    """
+    try:
+        seed = int(value)
+    except ValueError:
+        seed = -1
+    if not 0 <= seed <= MAX_SEED:
+        msg = f"expected a seed from 0 to {MAX_SEED}, got {value!r}"
+        raise argparse.ArgumentTypeError(msg)
+    return seed
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -154,6 +174,12 @@ def _build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Scene id (default: the profile's default scene, single_pick_place for the SO-101)",
+    )
+    start.add_argument(
+        "--seed",
+        type=_seed_number,
+        default=None,
+        help=f"Fixed seed for scene resets, from 0 to {MAX_SEED}, so object layouts repeat (default: random)",
     )
     start.add_argument(
         "--allow-remote",
@@ -491,6 +517,7 @@ def _run_start(args: argparse.Namespace, status: _StatusWriter) -> None:  # noqa
         unit=args.unit,
         substeps=args.substeps,
         rate_hz=args.rate_hz,
+        seed=args.seed,
         # None streams the robot cameras and `overview`: wrist, overview (and right_wrist).
         cameras=[] if args.no_cameras else None,
         enable_viewer=viewer_enabled,
