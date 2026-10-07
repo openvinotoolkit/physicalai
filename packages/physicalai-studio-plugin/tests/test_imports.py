@@ -15,6 +15,9 @@ def test_imports() -> None:
         RobotUiCalibrationItem,
         RobotZeroCalibration,
         SerialPortInfo,
+        SimulationArgvBuilder,
+        SimulationLaunch,
+        SimulationScene,
         shared_robot_name,
     )
 
@@ -31,6 +34,9 @@ def test_imports() -> None:
         RobotUiCalibrationItem,
         RobotZeroCalibration,
         SerialPortInfo,
+        SimulationArgvBuilder,
+        SimulationLaunch,
+        SimulationScene,
         shared_robot_name,
     )
-    assert len(exports) == 13
+    assert len(exports) == 16
