@@ -11,6 +11,7 @@ Architecture and design documents for the physical‑AI runtime.
 - **[Packaging Strategy](./packaging/physical-ai-two-repo-options.md)** — two‑repo, two‑distribution plan
 - **[Modular Packages In One Repo](./packaging/modular-packages-in-one-repo.md)** — how to publish reusable packages without an early repo split
 - **[Robot Integration Packaging](./packaging/robot-integrations.md)** — distributing every robot integration as a separate plugin package
+- **[Repository Consolidation](./packaging/repository-consolidation.md)** — developing the runtime, training library, Studio and plugins in one repository
 
 ---
 
@@ -57,7 +58,8 @@ docs/design/
 └── packaging/
     ├── physical-ai-two-repo-options.md
     ├── modular-packages-in-one-repo.md
-    └── robot-integrations.md
+    ├── robot-integrations.md
+    └── repository-consolidation.md
 ```
 
 ---
