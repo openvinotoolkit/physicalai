@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import functools
-import subprocess  # noqa: S404 - runs this interpreter on a fixed script, never user input
+import subprocess  # noqa: S404 - runs this interpreter on a fixed script, never user input  # nosec B404
 import sys
 import threading
 import time
@@ -83,7 +83,7 @@ class RenderingProbe:
             ``None`` on success, else why it failed.
         """
         try:
-            result = subprocess.run(  # noqa: S603
+            result = subprocess.run(  # noqa: S603 - fixed argv: this interpreter and a constant script  # nosec B603
                 [sys.executable, "-c", _GL_PROBE],
                 capture_output=True,
                 text=True,

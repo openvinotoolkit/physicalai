@@ -55,7 +55,7 @@ _MAX_PORT = 65535
 _CAMERA_START_TIMEOUT_S = 15.0
 """Longest ``start --status-json`` waits for every camera's first frame before ``ready``."""
 _STARTUP_POLL_S = 0.05
-_LOOPBACK_FOR_WILDCARD = {"0.0.0.0": "127.0.0.1", "::": "::1"}  # noqa: S104 - mapped, not bound
+_LOOPBACK_FOR_WILDCARD = {"0.0.0.0": "127.0.0.1", "::": "::1"}  # noqa: S104 - mapped, not bound  # nosec B104
 """Bind-all hosts, and the loopback address ``start`` connects to and reports instead."""
 
 _STATUS_JSON_HELP = """\
