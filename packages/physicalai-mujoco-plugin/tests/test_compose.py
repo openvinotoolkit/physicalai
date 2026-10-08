@@ -4,6 +4,7 @@
 # pyrefly: ignore-errors [missing-attribute]
 
 import dataclasses
+import os
 import warnings
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from physicalai_mujoco_plugin.constants import BIMANUAL_SO101_JOINT_ORDER, SO101
 from physicalai_mujoco_plugin.robot import MuJoCoRobot
 from physicalai_mujoco_plugin.compose import (
     ROBOT_MOUNT_FRAME,
+    SceneLayout,
     anchor_prefixes,
     compose_scene,
     compose_scene_spec,
@@ -665,6 +667,67 @@ def test_relayout_moves_the_overview_rig_to_the_other_style_and_back(name: str) 
     watcher.apply(model, data)
     for moved, expected in zip(camera_pose(model), as_composed, strict=True):
         np.testing.assert_allclose(moved, expected, atol=1e-12)
+
+
+def _copy_scene(tmp_path: Path, scene_id: str) -> Path:
+    """Copy a scene that needs only ``scene_common.xml`` next to it, so a test can edit its XML."""
+    scenes = get_urdf_path() / "scenes"
+    (tmp_path / scene_id).mkdir()
+    (tmp_path / "scene_common.xml").write_text((scenes / "scene_common.xml").read_text())
+    path = tmp_path / scene_id / "scene.xml"
+    path.write_text((scenes / scene_id / "scene.xml").read_text())
+    return path
+
+
+def _assert_aimed(model: mujoco.MjModel, aim: object) -> None:
+    """Assert that the model's overview camera stands at ``aim.eye`` and looks at ``aim.target``, level."""
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    camera = model.camera("overview").id
+    axes = data.cam_xmat[camera].reshape(3, 3)
+    sight = np.asarray(aim.target) - np.asarray(aim.eye)  # type: ignore[attr-defined]
+    np.testing.assert_allclose(data.cam_xpos[camera], aim.eye, atol=1e-9)  # type: ignore[attr-defined]
+    np.testing.assert_allclose(-axes[:, 2], sight / np.linalg.norm(sight), atol=1e-9)
+    assert abs(axes[2, 0]) < 1e-9, "the image is level"
+
+
+def test_a_live_tilt_edit_keeps_the_front_overview_aimed(tmp_path: Path) -> None:
+    """Editing the tilt body or the camera while ``front`` is on re-aims the rig at the same point."""
+    from physicalai_mujoco_plugin.scene_watch import SceneXmlWatcher  # noqa: PLC0415
+
+    xml = _copy_scene(tmp_path, "single_pick_place")
+    scene = get_scene("single_pick_place")
+    layout = scene.layout_for(SO101_PROFILE, 1, "front")
+    aim = layout.overview_rig.aim  # type: ignore[union-attr]
+    model = compose_scene(xml, SO101_PROFILE, scene_layout=layout).model
+    tilt = model.body("overview_camera_tilt").id
+    tilt_before = model.body_quat[tilt].copy()
+    watcher = SceneXmlWatcher(xml, layout)
+
+    xml.write_text(xml.read_text().replace('name="overview_camera_tilt" euler="1.00 0 0"', 'name="overview_camera_tilt" euler="0.70 0.1 0"'))
+    os.utime(xml, ns=(xml.stat().st_atime_ns, xml.stat().st_mtime_ns + 10**9))
+    watcher._next_check = 0.0  # noqa: SLF001
+    assert watcher.changed()
+    watcher.apply(model, mujoco.MjData(model))
+
+    assert not np.allclose(model.body_quat[tilt], tilt_before), "the edit reached the tilt body"
+    _assert_aimed(model, aim)
+
+
+def test_aiming_reads_a_saved_edit_of_the_camera_in_its_rig(tmp_path: Path) -> None:
+    """The camera's pose within its rig is cached per file and file time, so a saved edit is aimed with."""
+    from physicalai_mujoco_plugin.compose import CameraAim, aim_overview_rig  # noqa: PLC0415
+
+    xml = _copy_scene(tmp_path, "single_pick_place")
+    aim = CameraAim(eye=(0.8, 0.0, 0.6), target=(0.22, 0.0, 0.0))
+    before = aim_overview_rig(xml, aim.eye, aim.target)
+    xml.write_text(xml.read_text().replace('euler="0 0 3.141592653589793" fovy="58"', 'euler="0.2 0 3.141592653589793" fovy="58"'))
+    os.utime(xml, ns=(xml.stat().st_atime_ns, xml.stat().st_mtime_ns + 10**9))
+
+    after = aim_overview_rig(xml, aim.eye, aim.target)
+
+    assert after.quat != before.quat
+    _assert_aimed(load_scene_model(xml, SO101_PROFILE, scene_layout=SceneLayout(overview_rig=after)), aim)
 
 
 @pytest.mark.parametrize("name", ["so101", "franka_fr3", "ur5e", "aloha"])

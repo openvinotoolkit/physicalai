@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 from loguru import logger
 
+from physicalai_mujoco_plugin.compose import reaim_overview_rig
+
 if TYPE_CHECKING:
     from physicalai_mujoco_plugin.compose import SceneLayout
 
@@ -94,6 +96,7 @@ class SceneXmlWatcher:
         self._mtimes = self._snapshot()  # before reading: a save during the edit shows up next check
         try:
             self._apply_camera_edits(model, data)
+            self._keep_aim(model, data)
         except Exception as exc:  # noqa: BLE001 - a half-typed edit must not stop the control loop
             logger.warning("Scene XML camera edit not applied: {}", exc)
         # The edit may have added or removed an <include>; re-walk next poll.
@@ -137,6 +140,16 @@ class SceneXmlWatcher:
             except OSError:
                 continue
         return mtimes
+
+    def _keep_aim(self, model: object, data: object) -> None:
+        """Re-aim an aimed rig (the ``front`` overview) after the edit, so a tilt or camera edit keeps its target."""
+        import mujoco  # noqa: PLC0415
+
+        rig = self._layout.overview_rig if self._layout is not None else None
+        if rig is None or rig.aim is None:
+            return
+        reaim_overview_rig(model, data, rig.aim)  # type: ignore[arg-type]
+        mujoco.mj_forward(model, data)  # pyrefly: ignore [missing-attribute]
 
     def _place_rig(self, model: object, body_id: int, *, moved: bool) -> bool:
         """Lay the overview rig out as compose did: scale an edited position, then apply the override.
