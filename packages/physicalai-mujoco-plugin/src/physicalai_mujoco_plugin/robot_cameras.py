@@ -10,12 +10,13 @@ A robot's cameras come from the first source that defines them (CAM-2):
    (``track*``, ``perspective``, ``side``, ...);
 3. one generated default (CAM-3), placed from the model's geometry at the home pose:
 
-   - ``wrist`` (fixed base): on the gripper's parent body, or on the last arm link without a
-     gripper. The tool axis runs from that body to its tip site (``pinch``, ``tcp``,
-     ``attachment``, ...), else along the body's +z to its furthest geometry. The camera sits
-     4 cm behind the tip, 2 cm clear of that body's and its parent link's geometry on their
-     narrowest side, and looks 10 cm past the tip with the tool at the bottom of the image.
-     ``fovy`` 75 degrees.
+   - ``wrist`` (fixed base): with the profile's end effector (``RobotProfile.end_effectors``), on
+     its body (a site's body), with its tool point and approach axis. Without one, on the
+     gripper's parent body, or on the last arm link without a gripper; the tool axis then runs
+     from that body to its tip site (``pinch``, ``tcp``, ``attachment``, ...), else along the
+     body's +z to its furthest geometry. The camera sits 4 cm behind the tip, 2 cm clear of that
+     body's and its parent link's geometry on their narrowest side across the axis, and looks
+     10 cm past the tip with the tool at the bottom of the image. ``fovy`` 75 degrees.
    - ``head`` (floating base with a ``head`` or ``neck`` body): 8 cm ahead of that body along the
      root's +x (1 cm ahead of a larger head's geometry), looking along +x, pitched down
      20 degrees. ``fovy`` 80 degrees.
@@ -226,6 +227,10 @@ def _generated_camera(
             data.qpos[address : address + len(values)] = values
     mujoco.mj_kinematics(model, data)
     if layout.base is None:
+        tool = _profile_tool(model, data, profile, prefix)
+        if tool is not None:
+            body, axis, tip = tool
+            return _wrist_camera(model, data, body, (axis, tip))
         body = _end_effector_body(model, layout, profile, prefix)
         return None if body is None else _wrist_camera(model, data, body)
     if not layout.base.body.startswith(prefix):
@@ -318,6 +323,35 @@ def follow_with_chase_camera(spec: mujoco.MjSpec, model: mujoco.MjModel, root_bo
     return True
 
 
+def _profile_tool(
+    model: mujoco.MjModel, data: mujoco.MjData, profile: RobotProfile, prefix: str
+) -> tuple[int, np.ndarray, np.ndarray] | None:
+    """Return the body, approach axis and tool point of the profile's end effector, in that body's frame.
+
+    Returns:
+        ``None`` unless the profile lists exactly one end effector (several belong to a model with
+        several arms) and the model has its site or body with *prefix*.
+    """
+    import mujoco  # noqa: PLC0415
+
+    if len(profile.end_effectors) != 1:
+        return None
+    effector = profile.end_effectors[0]
+    axis = np.asarray(effector.axis, dtype=np.float64) / np.linalg.norm(effector.axis)
+    if effector.site is not None:
+        site = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, f"{prefix}{effector.site}")
+        if site < 0:
+            return None
+        body = int(model.site_bodyid[site])
+        rotation = data.xmat[body].reshape(3, 3)
+        tip = rotation.T @ (data.site_xpos[site] - data.xpos[body])
+        return body, rotation.T @ data.site_xmat[site].reshape(3, 3) @ axis, tip
+    body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"{prefix}{effector.body}")
+    if body < 0:
+        return None
+    return int(body), axis, np.asarray(effector.pos, dtype=np.float64)
+
+
 def _end_effector_body(model: mujoco.MjModel, layout: DerivedLayout, profile: RobotProfile, prefix: str) -> int | None:
     """Return the gripper joint's parent body, else the last arm joint's body, of the robot with *prefix*.
 
@@ -354,14 +388,29 @@ def _robot_channels(
     ]
 
 
-def _wrist_camera(model: mujoco.MjModel, data: mujoco.MjData, body: int) -> CameraSpec:
+def _wrist_camera(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    body: int,
+    tool: tuple[np.ndarray, np.ndarray] | None = None,
+) -> CameraSpec:
+    """Place the wrist camera on *body*, along *tool* (unit axis, tip in the body frame) or a derived one.
+
+    Returns:
+        The camera, in *body*'s frame.
+    """
     subtree = set(_subtree(model, body))
     origin, rotation = data.xpos[body], data.xmat[body].reshape(3, 3)
     points = _geometry_points(model, data, subtree, origin, rotation)
     # The parent link counts for the side too: the camera must not sit inside the arm behind the wrist.
     parent = int(model.body_parentid[body])
     beside = np.concatenate([points, _geometry_points(model, data, {parent} - {0}, origin, rotation)])
-    axis, tip = _tool_axis(model, data, subtree, points, origin, rotation)
+    if tool is None:
+        axis, tip = _tool_axis(model, data, subtree, points, origin, rotation)
+    else:
+        axis, tip = tool
+        # Measure the sides from the tool axis, which need not pass through the body's origin.
+        beside -= tip - (tip @ axis) * axis
     # The narrowest side across the tool axis keeps the camera clear of fingers that open sideways.
     first = np.eye(3)[int(np.argmin(np.abs(axis)))]
     first -= (first @ axis) * axis
