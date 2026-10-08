@@ -17,9 +17,14 @@ How the mapping is derived:
 - Menagerie's DevArm has the link origins and frames of the B601-RS URDF, so both share one zero
   pose: the folded rest pose in which the RS arm is zero-calibrated. Every offset is therefore 0.
 - #360's ``00-arm-rs_asm-v3_joint_frame.urdf``, which Studio previews the real arm with, has the
-  same joint axes and limits as Menagerie (joint1 +z, joint2 -z with range -pi..0, joint3 to
-  joint6 +z), so every arm joint maps one to one (``scale`` 1). Menagerie's ranges agree with
-  #360's limits in sign: shoulder_lift and elbow_flex go negative from the fold.
+  same joint axes as Menagerie (joint1 +z, joint2 -z, joint3 to joint6 +z), so every arm joint
+  maps one to one (``scale`` 1); both go negative from the fold on shoulder_lift and elbow_flex.
+- The driver clips actions to its public limits (``REBOT_B601_RS_JOINT_LIMITS_DEG`` in #360),
+  which are tighter than Menagerie's ranges on shoulder_pan (145 vs 160 degrees), shoulder_lift
+  (-170 vs -180), wrist_flex (-90..80 vs -103..97) and wrist_roll (90 vs 180). Each channel's
+  ``range`` is the overlap of the two, so the simulation stops where the real arm stops. The one
+  exception is elbow_flex: the driver allows -200 degrees, the model only -180 (its geometry), so
+  the simulation stops 20 degrees short there.
 - Menagerie's two fingers slide 0..0.05 m each from closed to open, coupled 1:1. #360's URDF
   drives them from a ``gripper_drive`` joint of -270 degrees (open) to 0, with the first finger at
   0.05 m when fully open. The gripper channel drives both fingers and reports
@@ -36,10 +41,28 @@ symmetric in the model and assumed (``link6`` +x); check it on the arm with the 
 
 from __future__ import annotations
 
+from math import radians
+
 from physicalai_mujoco_plugin.profiles._types import CameraSpec, ChannelOverride, EndEffector, RobotProfile
 
 REBOT_B601_GRIPPER_SCALE = -270.0 / 0.05
 """Driver gripper degrees (#360's frame: -270 open, 0 closed) per metre of finger travel. Provisional."""
+
+REBOT_B601_JOINT_RANGES_DEG: dict[str, tuple[float, float] | None] = {
+    "shoulder_pan": (-145.0, 145.0),
+    "shoulder_lift": (-170.0, 0.0),
+    "elbow_flex": None,  # the model's -180..0; the driver allows -200
+    "wrist_flex": (-90.0, 80.0),
+    "wrist_yaw": None,  # the model's -89.95..89.95; the driver allows -90..90
+    "wrist_roll": (-90.0, 90.0),
+}
+"""Arm joint ranges in the driver's public degrees: #360's limits where tighter than Menagerie's, else ``None``."""
+
+
+def _range(name: str) -> tuple[float, float] | None:
+    limits = REBOT_B601_JOINT_RANGES_DEG[name]
+    return None if limits is None else (radians(limits[0]), radians(limits[1]))
+
 
 REBOT_B601_WRIST_CAMERA = CameraSpec(
     name="wrist",
@@ -62,12 +85,12 @@ REBOT_B601_PROFILE = RobotProfile(
     # Names and order of REBOT_B601_RS_JOINT_ORDER, in #360's frame; provisional (see the module docstring).
     provisional=True,
     channels=(
-        ChannelOverride(name="shoulder_pan", actuators=("joint1",)),
-        ChannelOverride(name="shoulder_lift", actuators=("joint2",)),
-        ChannelOverride(name="elbow_flex", actuators=("joint3",)),
-        ChannelOverride(name="wrist_flex", actuators=("joint4",)),
-        ChannelOverride(name="wrist_yaw", actuators=("joint5",)),
-        ChannelOverride(name="wrist_roll", actuators=("joint6",)),
+        ChannelOverride(name="shoulder_pan", actuators=("joint1",), range=_range("shoulder_pan")),
+        ChannelOverride(name="shoulder_lift", actuators=("joint2",), range=_range("shoulder_lift")),
+        ChannelOverride(name="elbow_flex", actuators=("joint3",), range=_range("elbow_flex")),
+        ChannelOverride(name="wrist_flex", actuators=("joint4",), range=_range("wrist_flex")),
+        ChannelOverride(name="wrist_yaw", actuators=("joint5",), range=_range("wrist_yaw")),
+        ChannelOverride(name="wrist_roll", actuators=("joint6",), range=_range("wrist_roll")),
         # Both fingers, so neither actuator fights the model's finger equality. Like every RS
         # channel, the driver reports the gripper in degrees (-270 open to 0 closed), so the unit
         # is pinned to degrees: the slide's metres stay unconverted and the scale turns them into
@@ -88,4 +111,4 @@ REBOT_B601_PROFILE = RobotProfile(
     reach=0.544,
 )
 
-__all__ = ["REBOT_B601_GRIPPER_SCALE", "REBOT_B601_PROFILE", "REBOT_B601_WRIST_CAMERA"]
+__all__ = ["REBOT_B601_GRIPPER_SCALE", "REBOT_B601_JOINT_RANGES_DEG", "REBOT_B601_PROFILE", "REBOT_B601_WRIST_CAMERA"]
