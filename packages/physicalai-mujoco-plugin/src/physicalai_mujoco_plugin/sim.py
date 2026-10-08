@@ -51,16 +51,7 @@ class Sim:
     @property
     def robot_roots(self) -> tuple[int, ...]:
         """Root body of each robot, the body attached to the world, in anchor order without repeats."""
-        roots = []
-        for binding in self.bindings:
-            layout = binding.layout
-            if layout.base is not None:
-                roots.append(int(layout.base.body_id))
-                continue
-            joint = next((channel.joint_id for channel in layout.channels if channel.joint_id is not None), None)
-            if joint is not None:
-                roots.append(int(self.model.body_rootid[self.model.jnt_bodyid[joint]]))
-        return tuple(dict.fromkeys(roots))
+        return robot_roots(self.model, self.bindings)
 
     @property
     def joint_names(self) -> list[str]:
@@ -76,6 +67,29 @@ class Sim:
         robot = {camera.name: camera.source for binding in self.bindings for camera in binding.layout.cameras}
         names = (self.model.camera(i).name for i in range(self.model.ncam))
         return {name: robot.get(name, "scene") for name in names}
+
+
+def robot_roots(model: object, bindings: tuple[RobotBinding, ...]) -> tuple[int, ...]:
+    """Return the bodies attached to the world that carry each robot, in anchor order without repeats.
+
+    A fixed-base robot can hang from several such bodies (ALOHA's two arms in one model): every
+    channel's joint contributes its root.
+
+    Returns:
+        The body ids.
+    """
+    roots = []
+    for binding in bindings:
+        layout = binding.layout
+        if layout.base is not None:
+            roots.append(int(layout.base.body_id))
+            continue
+        roots += [
+            int(model.body_rootid[model.jnt_bodyid[channel.joint_id]])
+            for channel in layout.channels
+            if channel.joint_id is not None
+        ]
+    return tuple(dict.fromkeys(roots))
 
 
 def resolve_scene(profile: RobotProfile, scene_id: str | None, model_path: str | None) -> SceneConfig | None:
@@ -153,7 +167,11 @@ def load_sim(
         ArmChannels(model, data, binding.layout, profile, prefix=binding.prefix, unit=unit, torque_mode=torque_mode)
         for binding in composed.robots
     )
-    on_reset = get_reset_fn(scene.scene_id, profile, len(composed.robots)) if scene is not None else None
+    on_reset = (
+        get_reset_fn(scene.scene_id, profile, len(composed.robots), robot_roots(model, composed.robots))
+        if scene is not None
+        else None
+    )
     if on_reset is not None:
         reseed()
         on_reset(model, data, rng)
@@ -231,4 +249,12 @@ def default_cameras(sim: Sim) -> list[CameraConfig]:
     ]
 
 
-__all__ = ["Sim", "default_cameras", "joint_names_before_load", "load_sim", "place_home", "resolve_scene"]
+__all__ = [
+    "Sim",
+    "default_cameras",
+    "joint_names_before_load",
+    "load_sim",
+    "place_home",
+    "resolve_scene",
+    "robot_roots",
+]

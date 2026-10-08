@@ -335,6 +335,8 @@ ALOHA attaches as Menagerie's two-arm model at the scene's single mount, so both
 
 With two arms side by side (`--bimanual`), the arc moves 2 cm closer (`SceneConfig.two_arm_spawn_center`) and the separation scales like the rest of the layout. The UR5e, whose home pose reaches 54 cm sideways, stands 65 cm apart (`SceneConfig.two_arm_separations`). The framing test covers both arm counts.
 
+A reset never spawns the block (or, in `yahtzee`, drops a die) under a low part of an arm: it takes every arm where it stands at that moment, projects each robot geom whose lowest point is within 10 cm of the table (scaled with the layout) onto the table, and draws again any position closer to that footprint than the object's horizontal radius plus 1 cm. After 200 draws it keeps the one farthest from the footprint. Parts higher up, such as a forearm reaching over the spawn area, do not count. At home this only moves the SO-ARM100's block, whose jaws hang 7 cm above the middle of its arc.
+
 Two profile fields drive this:
 
 - `RobotProfile.end_effectors`: each arm's tool frame, as a model site (`EndEffector(site="attachment_site")`) or a point in a body (`EndEffector(body="hand", pos=(0, 0, 0.110))`), and its approach `axis`, the direction in that frame that points out of the gripper or flange. Menagerie's tool sites are used where they exist; the SO-ARM100, Koch, PiPER, Panda and reBot B601 use the point between their finger tips. The arms without a gripper (UR5e, FR3, Kinova Gen3) use their flange.
