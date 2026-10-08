@@ -528,10 +528,7 @@ def _run_start(args: argparse.Namespace, status: _StatusWriter) -> None:  # noqa
     xml_path = args.model if args.model is not None else get_scene(scene_id).scene_xml_path  # type: ignore[arg-type]
     status.phase("fetch")
     _fetch_robot_models(xml_path, profile, status.download if status.enabled else None)
-    if shutdown.is_set():
-        # Still a failed start: the events end with `error` (not silence) and the exit code is 1.
-        logger.error("The parent process exited before the simulation started")
-        sys.exit(1)
+    _exit_if_cancelled(shutdown)
     if supervised:
         _require_unused_name(owner_name)
 
@@ -600,8 +597,11 @@ def _run_start(args: argparse.Namespace, status: _StatusWriter) -> None:  # noqa
         if supervised and not spawned:
             logger.error("Owner '{}' was not started by this command; leaving it running", owner_name)
             sys.exit(1)
+        _exit_if_cancelled(shutdown)
         if status.enabled:
             viewer_url = _local_url(args.viser_host, viser_port) if viewer_enabled else None
+            addresses = _ready_addresses(args, status, owner_name, http_port, viewer_url)
+            _exit_if_cancelled(shutdown)
             status.emit(
                 "ready",
                 name=owner_name,
@@ -610,7 +610,7 @@ def _run_start(args: argparse.Namespace, status: _StatusWriter) -> None:  # noqa
                 scene=scene_id,
                 arms=num_arms,
                 overview_style=args.overview,
-                **_ready_addresses(args, status, owner_name, http_port, viewer_url),
+                **addresses,
             )
         _wait_for_owner_shutdown(shutdown, owner_name, owner_pid)
     except KeyboardInterrupt:
@@ -669,6 +669,17 @@ def _require_unused_name(owner_name: str) -> None:
             owner_name,
             pid,
         )
+        sys.exit(1)
+
+
+def _exit_if_cancelled(shutdown: threading.Event) -> None:
+    """Exit with code 1 when a shutdown (stdin end of file, a signal) arrived before ``ready``.
+
+    A start cancelled before it was ready has failed: its events end with ``error``, not ``ready``,
+    and after the owner was spawned the caller's cleanup stops it.
+    """
+    if shutdown.is_set():
+        logger.error("The simulation was stopped before it was ready (its parent process exited or it got a signal)")
         sys.exit(1)
 
 
@@ -1105,6 +1116,8 @@ def _pid_owner_name(pid: int) -> str | None:
         tokens = shlex.split(command_line)
     except ValueError:
         return None
+    if not _is_start_command(tokens):
+        return None  # the pattern only appeared in some other command's text (a shell -c, pytest -k)
     values = _start_flag_values(tokens)
     bimanual = "--bimanual" in tokens
     if "--name" in values:
@@ -1117,6 +1130,35 @@ def _pid_owner_name(pid: int) -> str | None:
         if num_arms is None:
             return None  # unknown arm count: never match, so stop cannot signal the wrong owner
     return _resolve_owner_name(argparse.Namespace(name=None, bimanual=bimanual), profile, num_arms)
+
+
+_LAUNCHER_TOKENS = frozenset({"uv", "run", "uvx"})
+"""Words that may run the CLI: ``uv run physicalai-mujoco start``."""
+
+
+def _is_start_command(tokens: list[str]) -> bool:
+    """Return whether *tokens* are a ``start`` invocation itself, not text that mentions one.
+
+    Accepted: the console script (``[python] .../physicalai-mujoco start ...``, also under
+    ``uv run``) and the module (``python -m physicalai_mujoco_plugin start ...``, which Studio
+    runs). Before them may only come a Python interpreter, ``uv`` or ``run``; so ``bash -c '...'``,
+    ``pytest -k '...'`` and the like never count.
+
+    Returns:
+        ``True`` for a ``start`` command line.
+    """
+    if "start" not in tokens:
+        return False
+    head = tokens[: tokens.index("start")]
+    if head[-1:] and Path(head[-1]).name == _CLI_NAME:
+        launcher = head[:-1]
+    elif head[-2:] == ["-m", "physicalai_mujoco_plugin"]:
+        launcher = head[:-2]
+        if not launcher:
+            return False
+    else:
+        return False
+    return all(Path(token).name.startswith("python") or token in _LAUNCHER_TOKENS for token in launcher)
 
 
 def _start_flag_values(tokens: list[str]) -> dict[str, str]:
