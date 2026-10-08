@@ -476,7 +476,7 @@ class MuJoCoRobot(OperatorControls):
         # Scene switches keep the robot count: the transport advertised the joint names once.
         robots = len(self._sim.bindings) if self._sim is not None else None
         # A custom model's mount frames decide its arm count; registered scenes are laid out for it.
-        custom = self._model_path is not None and scene is self._initial_scene
+        custom = self._is_custom_xml(xml_path)
         return load_sim(
             xml_path,
             scene,
