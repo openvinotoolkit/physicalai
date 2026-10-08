@@ -16,7 +16,16 @@ import numpy as np
 from loguru import logger
 
 from physicalai_mujoco_plugin._urdf import get_urdf_path
-from physicalai_mujoco_plugin.compose import MountPose, OverviewRig, SceneLayout, load_scene_model, robot_layout
+from physicalai_mujoco_plugin.compose import (
+    MountPose,
+    OverviewRig,
+    OverviewStyle,
+    SceneLayout,
+    aim_overview_rig,
+    load_scene_model,
+    mount_positions,
+    robot_layout,
+)
 from physicalai_mujoco_plugin.conveyor import park_items, pool_item_names
 from physicalai_mujoco_plugin.profiles import SO101_PROFILE
 from physicalai_mujoco_plugin.spawn import (
@@ -43,6 +52,9 @@ ResetFn = Callable[[object, object, np.random.Generator], None]
 BIMANUAL_PREFIXES = ("left_", "right_")
 """Robot prefixes of two arms, left then right as seen facing the workspace from behind the arms."""
 
+_MIN_FRONT_DIRECTION = 1e-3
+"""Shortest offset, in metres, from the robots' mounts to the aim point that tells which way they face."""
+
 TwoArmStyle = Literal["side_by_side", "across"]
 """How a scene with one mount derives two: next to each other, or facing each other across the workspace."""
 
@@ -64,6 +76,24 @@ def arm_prefixes(arms: int) -> tuple[str, ...]:
 def _yaw_quat(degrees: float) -> tuple[float, float, float, float]:
     half = np.radians(degrees) / 2
     return (float(np.cos(half)), 0.0, 0.0, float(np.sin(half)))
+
+
+@dataclass(frozen=True)
+class FrontView:
+    """Where a scene's ``front`` overview camera stands: across the work area from the robots, facing them.
+
+    The camera looks at the aim point from the side away from the robots (the direction from the
+    centre of their mounts to the aim point), ``elevation_deg`` above the table. Distance and aim
+    point grow with the profile's reach like the scene's layout.
+    """
+
+    distance: float
+    """Metres from the aim point to the camera, for the SO-101."""
+    aim: tuple[float, float, float] | None = None
+    """The point the camera looks at, for the SO-101; ``None`` takes the spawn arc's centre on the floor
+    (between the arms with two)."""
+    elevation_deg: float = 45.0
+    """How far the line of sight points down from level."""
 
 
 @dataclass(frozen=True)
@@ -126,6 +156,14 @@ class SceneConfig:
     profile_overview_rigs: tuple[tuple[str, OverviewRig], ...] = ()
     """Per profile: the overview rig's pose after scaling, for arms whose home pose the scaled
     camera does not frame (an elbow folded behind the base, ALOHA's second arm)."""
+    front_view: FrontView | None = None
+    """The ``front`` overview style's camera placement; ``None``: the scene offers only its own (``shoulder``)."""
+    profile_front_distances: tuple[tuple[str, float], ...] = ()
+    """Per profile: the ``front`` camera's distance from its aim point after scaling, for arms whose
+    home pose the scaled distance does not frame."""
+    profile_front_directions: tuple[tuple[str, tuple[float, float]], ...] = ()
+    """Per profile: the horizontal direction from the robot toward the ``front`` camera, for robots
+    whose mount does not show which way they face (ALOHA's two arms face each other across it)."""
 
     @property
     def scene_xml_path(self) -> Path:
@@ -167,24 +205,90 @@ class SceneConfig:
             raise ValueError(msg)
         return profile.reach / SO101_PROFILE.reach
 
-    def layout_for(self, profile: RobotProfile, arms: int | None = None) -> SceneLayout | None:
+    @property
+    def overview_styles(self) -> tuple[OverviewStyle, ...]:
+        """The ``overview`` camera styles this scene offers: ``shoulder`` (as written), and ``front`` if it has one."""
+        return ("shoulder", "front") if self.front_view is not None else ("shoulder",)
+
+    def layout_for(
+        self, profile: RobotProfile, arms: int | None = None, overview: OverviewStyle = "shoulder"
+    ) -> SceneLayout | None:
         """Return how to lay this scene out for *arms* arms of *profile*, for :func:`~.compose.compose_scene`.
 
         Args:
             profile: The robot profile.
             arms: Number of arms; ``None`` keeps the scene file's mount frames (a custom model).
+            overview: Where the ``overview`` camera stands (:data:`~.compose.OverviewStyle`).
 
         Returns:
             ``None`` when the scene compiles as written (a fixed layout or the SO-101, at the file's
-            arm count).
+            arm count, with the ``shoulder`` overview). A ``front`` overview the scene does not
+            offer raises ``ValueError`` (:meth:`front_overview_rig`).
         """
         scale = self.layout_scale(profile)
-        # One rig per profile frames either arm count (tests/test_compose.py checks both).
-        rig = dict(self.profile_overview_rigs).get(profile.name)
         mounts = None if arms is None or arms == self.written_arms else self.mount_poses(profile, arms)
+        if overview == "front":
+            rig = self.front_overview_rig(profile, arms, mounts)
+        else:
+            # One rig per profile frames either arm count (tests/test_compose.py checks both).
+            rig = dict(self.profile_overview_rigs).get(profile.name)
         if scale == 1.0 and rig is None and mounts is None:  # noqa: RUF069 - layout_scale returns exactly 1.0 for the SO-101
             return None
         return SceneLayout(scale=scale, overview_rig=rig, mounts=mounts)
+
+    def front_overview_rig(
+        self,
+        profile: RobotProfile,
+        arms: int | None = None,
+        mounts: tuple[tuple[str, MountPose], ...] | None = None,
+    ) -> OverviewRig:
+        """Return the overview rig pose of the ``front`` style for *arms* arms of *profile* (:class:`FrontView`).
+
+        Args:
+            profile: The robot profile.
+            arms: Number of arms; ``None`` takes the scene file's.
+            mounts: The mounts of :meth:`layout_for` for that count; ``None`` uses the file's frames.
+
+        Returns:
+            The rig's world pose, after scaling.
+
+        Raises:
+            ValueError: If the scene has no ``front`` overview, or nothing tells which way the robots face.
+        """
+        view = self.front_view
+        if view is None:
+            msg = f"Scene {self.scene_id!r} has no front overview camera; it keeps its own cameras"
+            raise ValueError(msg)
+        scale = self.layout_scale(profile)
+        if view.aim is None:
+            x, y = self.for_profile(profile, arms or self.written_arms).spawn_center
+            aim = np.array([x, y, 0.0])
+        else:
+            aim = np.asarray(view.aim) * scale
+        direction = dict(self.profile_front_directions).get(profile.name)
+        if direction is None:
+            if mounts is not None:
+                stands = np.array([pose.pos for _, pose in mounts])
+            else:
+                stands = np.asarray(mount_positions(self.scene_xml_path)) * scale
+            direction = aim[:2] - stands[:, :2].mean(axis=0)
+        horizontal = np.asarray(direction, dtype=np.float64)
+        length = float(np.linalg.norm(horizontal))
+        if length < _MIN_FRONT_DIRECTION:
+            msg = (
+                f"Scene {self.scene_id!r} cannot tell which way the {profile.display_name} faces for a front "
+                "overview: its mounts surround the aim point; set profile_front_directions"
+            )
+            raise ValueError(msg)
+        distance = dict(self.profile_front_distances).get(profile.name, view.distance * scale)
+        elevation = np.radians(view.elevation_deg)
+        offset = np.array([*(horizontal / length * np.cos(elevation)), np.sin(elevation)]) * distance
+        eye = aim + offset
+        return aim_overview_rig(
+            self.scene_xml_path,
+            (float(eye[0]), float(eye[1]), float(eye[2])),
+            (float(aim[0]), float(aim[1]), float(aim[2])),
+        )
 
     def mount_poses(self, profile: RobotProfile, arms: int) -> tuple[tuple[str, MountPose], ...]:
         """Return where *arms* arms of *profile* stand, by prefix: pinned (``mounts``), else derived.
@@ -245,13 +349,15 @@ class SceneConfig:
             return pinned
         return tuple((f"{prefix}{joint}", value) for prefix in arm_prefixes(arms) for joint, value in self.home_qpos)
 
-    def load_model(self, profile: RobotProfile = SO101_PROFILE, arms: int | None = None) -> mujoco.MjModel:
+    def load_model(
+        self, profile: RobotProfile = SO101_PROFILE, arms: int | None = None, overview: OverviewStyle = "shoulder"
+    ) -> mujoco.MjModel:
         """Compile this scene with *arms* arms of the profile's robot; ``None`` uses the file's mount frames.
 
         Returns:
-            The compiled model, laid out for the profile.
+            The compiled model, laid out for the profile, with the *overview* camera style.
         """
-        return load_scene_model(self.scene_xml_path, profile, scene_layout=self.layout_for(profile, arms))
+        return load_scene_model(self.scene_xml_path, profile, scene_layout=self.layout_for(profile, arms, overview))
 
 
 # One arm reaches over the garment from the far end of the table.
@@ -517,6 +623,12 @@ _SCENES: dict[str, SceneConfig] = {
             ("franka_panda", OverviewRig(pos=(-0.323, 0.231, 1.994))),
             ("xarm7", OverviewRig(pos=(-0.228, 0.212, 1.723))),
         ),
+        # Far enough for the tallest home poses (Franka, xArm, Kinova, ALOHA); the WidowX AI's upright
+        # forearm needs more (tests/test_compose.py).
+        front_view=FrontView(distance=0.85),
+        profile_front_distances=(("trossen_wxai", 1.62),),
+        # ALOHA's teleoperator sits at -y, where its shoulder camera stands; front faces its arms from +y.
+        profile_front_directions=(("aloha", (0.0, 1.0)),),
         robots=(
             "so101",
             "trossen_wxai",
@@ -545,6 +657,7 @@ _SCENES: dict[str, SceneConfig] = {
         spawn_angle_half_deg=160.0,
         block_min_sep=0.018,
         target_min_sep=0.02,
+        front_view=FrontView(distance=0.8),
     ),
     "conveyor_sort": SceneConfig(
         scene_id="conveyor_sort",
@@ -555,6 +668,8 @@ _SCENES: dict[str, SceneConfig] = {
         # Two arms stand 6 cm behind the single arm's mount, clear of the bins on either side.
         mounts=((2, (MountPose((-0.06, 0.10, 0.0)), MountPose((-0.06, -0.10, 0.0)))),),
         home_qpos=_CONVEYOR_SORT_HOME,
+        # The pick zone on the belt.
+        front_view=FrontView(distance=0.75, aim=(0.25, 0.0, 0.06)),
     ),
     "garment_fold": SceneConfig(
         scene_id="garment_fold",
@@ -568,6 +683,9 @@ _SCENES: dict[str, SceneConfig] = {
         home_qpos=_GARMENT_FOLD_ARM_HOME,
         pinned_home_qpos=((2, _GARMENT_FOLD_HOME),),
         robots=("so101", "trossen_wxai"),
+        # The garment's centre on the table top.
+        front_view=FrontView(distance=0.9, aim=(0.0, 0.02, 0.32)),
+        profile_front_distances=(("trossen_wxai", 1.75),),
     ),
     "floor_flat": SceneConfig(
         scene_id="floor_flat",

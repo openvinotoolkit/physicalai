@@ -36,7 +36,7 @@ from loguru import logger
 
 from physicalai.config import Config
 from physicalai.robot.transport import SharedRobot
-from physicalai_mujoco_plugin.compose import fetch_profile, scene_needs_robot
+from physicalai_mujoco_plugin.compose import OverviewStyle, fetch_profile, scene_needs_robot
 from physicalai_mujoco_plugin.constants import (
     DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME,
     DEFAULT_MUJOCO_OWNER_NAME,
@@ -65,7 +65,8 @@ Print startup events as JSON, one object per line on stdout (logs stay on stderr
 {"event": "phase", "phase": "connect"} before the owner process starts;
 {"event": "phase", "phase": "load"} while the owner loads the scene, viewer and servers;
 {"event": "phase", "phase": "cameras"} while it waits for each camera's first frame; then
-{"event": "ready", "name", "pid", "profile", "scene", "arms", "http_url", "viewer_url", "cameras"},
+{"event": "ready", "name", "pid", "profile", "scene", "arms", "overview_style", "http_url", "viewer_url",
+"cameras"},
 or {"event": "error", "message"} and a non-zero exit. Requires a name no running simulation uses"""
 
 
@@ -180,6 +181,16 @@ def _build_parser() -> argparse.ArgumentParser:
         type=_seed_number,
         default=None,
         help=f"Fixed seed for scene resets, from 0 to {MAX_SEED}, so object layouts repeat (default: random)",
+    )
+    start.add_argument(
+        "--overview",
+        choices=get_args(OverviewStyle),
+        default="shoulder",
+        help=(
+            "Where a tabletop scene's overview camera stands: shoulder, high behind the robot (BridgeData's "
+            "over-the-shoulder view), or front, across the table facing the robots (robosuite/LIBERO agentview). "
+            "Not saved: the viewer and POST /overview switch it while the simulation runs (default: shoulder)"
+        ),
     )
     start.add_argument(
         "--allow-remote",
@@ -345,6 +356,20 @@ def _resolve_scene(args: argparse.Namespace, profile: RobotProfile) -> tuple[str
     return scene_id, num_arms
 
 
+def _check_overview(args: argparse.Namespace, scene_id: str | None) -> None:
+    """Exit with the reason when the scene cannot place its overview camera in the ``--overview`` style."""
+    from physicalai_mujoco_plugin.scene_registry import get_scene  # noqa: PLC0415
+
+    if args.overview == "shoulder":
+        return
+    if args.model is not None or scene_id is None:
+        logger.error("--overview {} needs a registered tabletop scene; a --model keeps its own camera", args.overview)
+        sys.exit(1)
+    if args.overview not in get_scene(scene_id).overview_styles:
+        logger.error("Scene {} has no {} overview camera; it keeps its own cameras", scene_id, args.overview)
+        sys.exit(1)
+
+
 def _xml_robot_count(path: str | Path) -> int:
     """Return how many robots a ``--model`` XML attaches: its anchor frames, at least one.
 
@@ -496,6 +521,7 @@ def _run_start(args: argparse.Namespace, status: _StatusWriter) -> None:  # noqa
 
     profile = _profile_or_exit(args.profile)
     scene_id, num_arms = _resolve_scene(args, profile)
+    _check_overview(args, scene_id)
     owner_name = _resolve_owner_name(args, profile.name, num_arms)
     xml_path = args.model if args.model is not None else get_scene(scene_id).scene_xml_path  # type: ignore[arg-type]
     status.phase("fetch")
@@ -520,6 +546,7 @@ def _run_start(args: argparse.Namespace, status: _StatusWriter) -> None:  # noqa
         seed=args.seed,
         # None streams the robot cameras and `overview`: wrist, overview (and right_wrist).
         cameras=[] if args.no_cameras else None,
+        overview=args.overview,
         enable_viewer=viewer_enabled,
         viser_host=args.viser_host,
         viser_port=viser_port,
@@ -579,6 +606,7 @@ def _run_start(args: argparse.Namespace, status: _StatusWriter) -> None:  # noqa
                 profile=profile.name,
                 scene=scene_id,
                 arms=num_arms,
+                overview_style=args.overview,
                 **_ready_addresses(args, status, owner_name, http_port, viewer_url),
             )
         _wait_for_owner_shutdown(shutdown, owner_name, owner_pid)

@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     import numpy as np
 
     from physicalai_mujoco_plugin.channels import TorqueMode
-    from physicalai_mujoco_plugin.compose import RobotBinding, SceneLayout
+    from physicalai_mujoco_plugin.compose import OverviewStyle, RobotBinding, SceneLayout
     from physicalai_mujoco_plugin.profiles import DefaultUnit, RobotProfile
     from physicalai_mujoco_plugin.scene_registry import ResetFn, SceneConfig
 
@@ -127,6 +127,7 @@ def load_sim(
     reseed: Callable[[], None],
     arms: int | None = None,
     robots: int | None = None,
+    overview: OverviewStyle = "shoulder",
 ) -> Sim:
     """Compose a scene, put its robots at their home pose, bind their channels and run the scene reset.
 
@@ -141,19 +142,21 @@ def load_sim(
         arms: Number of arms to lay the scene out for; ``None`` keeps the XML's mount frames (a
             custom model).
         robots: Required number of robots; ``None`` accepts any.
+        overview: Where the scene's ``overview`` camera stands (:data:`~.compose.OverviewStyle`).
 
     Returns:
         The new simulation.
 
     Raises:
-        ValueError: If the scene attaches a different number of robots, or the profile does not bind.
+        ValueError: If the scene attaches a different number of robots, the profile does not bind,
+            or the scene has no ``front`` overview and *overview* asks for it.
     """
     import mujoco  # noqa: PLC0415
 
     from physicalai_mujoco_plugin.compose import compose_scene  # noqa: PLC0415
     from physicalai_mujoco_plugin.scene_registry import get_reset_fn  # noqa: PLC0415
 
-    layout = scene.layout_for(profile, arms) if scene is not None else None
+    layout = scene.layout_for(profile, arms, overview) if scene is not None else None
     composed = compose_scene(xml_path, profile, scene_layout=layout)
     if robots is not None and len(composed.robots) != robots:
         msg = f"{xml_path} attaches {len(composed.robots)} robot(s), but this simulation drives {robots}"
