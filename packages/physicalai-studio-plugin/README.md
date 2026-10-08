@@ -290,7 +290,9 @@ The command line must follow this process contract:
   - `{"event": "phase", "phase": "<name>"}` while the simulation starts, shown as progress; a phase may add fields such as download `bytes` and `total`.
   - `{"event": "ready", ...}` once the robot can be attached to, with `name` (the owner name), `http_url` (the simulation's HTTP server, or `null`), `viewer_url` (its browser viewer, or `null`) and `cameras` (the camera names it streams). Other fields are allowed.
   - `{"event": "error", "message": "<text>"}` when starting fails; Studio shows `message`.
+- Every run ends its events with exactly one `ready` or one `error`, including a run whose parent went away before it was ready.
 - The process **exits with a non-zero code** when it fails.
+- **Studio uses the addresses from `ready`, not the payload's.** A simulation may pick free ports (the MuJoCo plugin's argv asks for them), so after `ready` Studio copies `http_url` and `viewer_url` onto the robot's payload (or otherwise uses them for cameras and the embedded viewer). The payload's defaults, such as the MuJoCo payload's `http_url` of `http://127.0.0.1:8080`, describe a simulation started by hand.
 
 The MuJoCo plugin is the first implementation; its `start --status-json` events are described in [Start from another program](../physicalai-mujoco-plugin/README.md#start-from-another-program).
 

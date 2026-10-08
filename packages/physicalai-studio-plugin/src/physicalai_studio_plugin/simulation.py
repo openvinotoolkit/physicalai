@@ -71,7 +71,11 @@ class SimulationLaunch(Generic[_PayloadT]):
       file, which also happens when Studio exits or crashes;
     - stdout carries one JSON object per line: ``{"event": "phase", "phase": ...}`` while it starts,
       then ``{"event": "ready", "name", "http_url", "viewer_url", "cameras", ...}``, or
-      ``{"event": "error", "message"}``; ``ready.name`` is :meth:`owner_name` of the payload;
+      ``{"event": "error", "message"}``; every run ends with exactly one ``ready`` or ``error``;
+      ``ready.name`` is :meth:`owner_name` of the payload;
+    - Studio uses ``ready.http_url`` and ``ready.viewer_url``, not the payload's addresses: the
+      simulation may pick free ports, so Studio copies them onto the robot's payload (or otherwise
+      uses them for cameras and the embedded viewer) after ``ready``;
     - the process exits with a non-zero code when it fails.
 
     Parameterize it with the robot type's payload model, like ``RobotCatalogDefinition``.
