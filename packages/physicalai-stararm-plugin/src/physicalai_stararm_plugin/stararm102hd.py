@@ -12,7 +12,10 @@ import numpy as np
 
 from physicalai.config import export_config
 from physicalai_stararm_plugin._stararm102 import _StarArm102, _StarArm102Observation
-from physicalai_stararm_plugin.constants import STAR_ARM_102_B601_FOLLOWER_RANGES_DEG
+from physicalai_stararm_plugin.constants import (
+    STAR_ARM_102_B601_FOLLOWER_DIRECTIONS,
+    STAR_ARM_102_B601_FOLLOWER_RANGES_DEG,
+)
 
 
 @dataclass
@@ -52,9 +55,9 @@ class StarArm102HDLeader(_StarArm102):
             zero_on_connect: Store the current servo positions as their origins when connecting.
             control_mode: ``"passive"`` for read-only guidance or ``"assist"`` to accept commands.
             command_interval_ms: Minimum duration passed to servo position commands.
-            follower_profile: Optional follower whose reachable ranges constrain observations. The
-                ``"b601"`` profile clips the gripper to 45 degrees without changing signs or units;
-                ``None`` preserves native Star Arm ranges.
+            follower_profile: Optional follower frame for observations and assist actions. The
+                ``"b601"`` profile applies LeRobot's per-joint directions, scales the gripper by
+                ``-6``, and clips to B601 limits; ``None`` preserves native Star Arm values.
 
         Raises:
             ValueError: If the baud rate, command interval, control mode, or follower profile is invalid.
@@ -109,16 +112,25 @@ class StarArm102HDLeader(_StarArm102):
         profiled = positions.copy()
         if self._follower_profile == "b601":
             for i, name in enumerate(self.JOINT_ORDER):
-                follower_range = STAR_ARM_102_B601_FOLLOWER_RANGES_DEG.get(name)
-                if follower_range is not None:
-                    profiled[i] = float(np.clip(profiled[i], *follower_range))
+                direction = STAR_ARM_102_B601_FOLLOWER_DIRECTIONS[name]
+                follower_range = STAR_ARM_102_B601_FOLLOWER_RANGES_DEG[name]
+                profiled[i] = float(np.clip(profiled[i] * direction, *follower_range))
         return profiled
 
     def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None:
         """Optionally command the HD leader in assist mode."""
         if self._control_mode != "assist":
             return
-        self._send_action_internal(action, goal_time=goal_time)
+        action_arr = np.asarray(action, dtype=np.float32)
+        if self._follower_profile == "b601" and action_arr.shape == (self.NUM_JOINTS,):
+            action_arr = np.asarray(
+                [
+                    action_arr[i] / STAR_ARM_102_B601_FOLLOWER_DIRECTIONS[name]
+                    for i, name in enumerate(self.JOINT_ORDER)
+                ],
+                dtype=np.float32,
+            )
+        self._send_action_internal(action_arr, goal_time=goal_time)
 
     def hold_position(self, *, goal_time: float = 0.2) -> None:
         """Capture the native pose and command the HD leader to hold it.

@@ -19,7 +19,7 @@ sys.modules.setdefault("motorbridge_smart_servo", _mock_smart_servo)
 
 _MOCK_SERVO_ANGLES = (0.0, 10.0, -10.0, 30.0, 40.0, 50.0, 60.0)
 _EXPECTED_NATIVE_POSITIONS = _MOCK_SERVO_ANGLES
-_EXPECTED_B601_POSITIONS = (*_MOCK_SERVO_ANGLES[:-1], 45.0)
+_EXPECTED_B601_POSITIONS = (0.0, -10.0, -10.0, 30.0, 40.0, -50.0, -270.0)
 
 
 class _ServoFactoryFn:
@@ -191,7 +191,7 @@ class TestStarArm102HDLeaderObservation:
         assert "raw_positions" in obs.sensor_data
         assert "reliable" in obs.sensor_data
 
-    def test_b601_profile_only_clips_gripper_without_transforming_frame(self, mock_smart_servo: MagicMock) -> None:
+    def test_b601_profile_transforms_and_clips_to_lerobot_frame(self, mock_smart_servo: MagicMock) -> None:
         robot = _create_robot(mock_smart_servo, follower_profile="b601")
         robot.connect()
 
@@ -302,6 +302,16 @@ class TestStarArm102HDLeaderObservation:
 
         assert bus.set_angle.call_count == 7
         assert bus.set_angle.call_args_list[0] == call(0, 1.0, multi_turn=True, interval_ms=100)
+
+    def test_send_action_inverts_b601_profile_in_assist_mode(self, mock_smart_servo: MagicMock) -> None:
+        robot = _create_robot(mock_smart_servo, control_mode="assist", follower_profile="b601")
+        robot.connect()
+        bus = mock_smart_servo.FashionStarServo.return_value
+
+        robot.send_action(np.asarray(_EXPECTED_B601_POSITIONS, dtype=np.float32))
+
+        expected_native = (0.0, 10.0, -10.0, 30.0, 40.0, 50.0, 45.0)
+        assert [item.args[1] for item in bus.set_angle.call_args_list] == list(expected_native)
 
     def test_hold_and_release(self, mock_smart_servo: MagicMock) -> None:
         robot = _create_robot(mock_smart_servo, control_mode="assist")
