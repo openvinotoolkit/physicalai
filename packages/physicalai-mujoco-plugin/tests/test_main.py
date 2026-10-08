@@ -604,6 +604,37 @@ class TestStop:
 
         kill.assert_called_once_with(222, signal.SIGTERM)
 
+    def test_pgrep_fallback_stops_a_studio_launched_start(self) -> None:
+        """Studio runs ``python -m physicalai_mujoco_plugin start``; one pid matching both patterns is signalled once."""
+        command = (
+            f"{sys.executable} -m physicalai_mujoco_plugin start --profile trossen_wxai --bimanual"
+            " --scene single_pick_place --name=studio-sim --status-json --exit-with-parent"
+        )
+        with (
+            patch.object(cli, "_owner_pid", return_value=None),
+            patch.object(cli, "_http_owner_name", return_value=None),
+            patch.object(cli, "_request_http_shutdown", return_value=False),
+            patch.object(cli, "_matching_pids", side_effect=lambda pattern: [333] if "plugin" in pattern else []),
+            patch.object(cli, "_pid_command_line", return_value=command),
+            patch("os.kill") as kill,
+        ):
+            cli._stop(self._args(name="studio-sim"))  # noqa: SLF001
+
+        kill.assert_called_once_with(333, signal.SIGTERM)
+
+    def test_a_pid_matching_both_patterns_is_signalled_once(self) -> None:
+        with (
+            patch.object(cli, "_owner_pid", return_value=None),
+            patch.object(cli, "_http_owner_name", return_value=None),
+            patch.object(cli, "_request_http_shutdown", return_value=False),
+            patch.object(cli, "_matching_pids", return_value=[444]),
+            patch.object(cli, "_pid_owner_name", return_value=DEFAULT_MUJOCO_OWNER_NAME),
+            patch("os.kill") as kill,
+        ):
+            cli._stop(self._args())  # noqa: SLF001
+
+        kill.assert_called_once_with(444, signal.SIGTERM)
+
     def test_only_start_invocations_are_matched(self) -> None:
         patterns = []
 
@@ -620,7 +651,7 @@ class TestStop:
         ):
             cli._stop(self._args())  # noqa: SLF001
 
-        assert patterns == ["physicalai-mujoco start"]
+        assert patterns == ["physicalai-mujoco start", "physicalai_mujoco_plugin start"]
         assert all("_owner_worker" not in pattern for pattern in patterns)
         kill.assert_not_called()
 
@@ -724,7 +755,7 @@ def _launch(  # noqa: PLR0913
         stack.enter_context(
             patch.object(cli, "_owner_pid", side_effect=lambda _name: owner_pid if launch.connected else existing_pid)
         )
-        stack.enter_context(patch.object(cli, "_spawned_by_this_process", return_value=spawned))
+        stack.enter_context(patch.object(cli, "_spawned_owner", return_value=spawned))
         launch.http_json = stack.enter_context(
             patch.object(cli, "_http_json", side_effect=lambda _host, _port, path: responses[path])
         )
@@ -899,16 +930,12 @@ class TestNameCollision:
         assert launch.exit_code is None
         launch.factory.assert_called_once()
 
-    def test_only_a_running_child_counts_as_spawned_by_this_process(self) -> None:
-        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])  # noqa: S603
-        try:
-            assert cli._spawned_by_this_process(child.pid) is True  # noqa: SLF001
-            # The owner of a simulation another command started is no child of this process.
-            assert cli._spawned_by_this_process(os.getppid()) is False  # noqa: SLF001
-        finally:
-            child.kill()
-            child.wait()
-        assert cli._spawned_by_this_process(child.pid) is False  # noqa: SLF001
+    def test_only_a_connect_that_spawned_the_owner_counts_as_spawned(self) -> None:
+        """``SharedRobot`` keeps an owner handle only when its connect spawned the owner (any platform)."""
+        attacher = cli.SharedRobot(name="mujoco-spawn-flag-test")
+        assert cli._spawned_owner(attacher) is False  # noqa: SLF001
+        attacher._owner = object()  # noqa: SLF001 - what connect() keeps after winning the spawn
+        assert cli._spawned_owner(attacher) is True  # noqa: SLF001
 
 
 class TestCameraReadiness:
@@ -1114,8 +1141,13 @@ class TestExitWithParent:
 
     def test_eof_during_the_download_starts_no_owner(self) -> None:
         with patch.object(cli, "_shut_down_on_stdin_eof", side_effect=lambda shutdown: shutdown.set()):
-            launch = _launch(["--no-gui", "--exit-with-parent"])
+            launch = _launch(["--no-gui", "--exit-with-parent", "--status-json"])
         launch.factory.assert_not_called()
+        assert launch.exit_code == 1
+        assert launch.events[-1] == {
+            "event": "error", "message": "The parent process exited before the simulation started",
+        }  # fmt: skip
+        assert [event["event"] for event in launch.events].count("error") == 1
 
     def test_viewer_theme_reaches_the_driver(self) -> None:
         assert _launch(["--viewer-theme", "studio"]).init_args["viewer_theme"] == "studio"
