@@ -22,6 +22,7 @@ from physicalai_mujoco_plugin.http_server import (
     ResetCommand,
     SetAutoResetCommand,
     SetObjectPoseCommand,
+    SetOverviewCommand,
     SetSeedCommand,
     ShutdownCommand,
     StopReplayCommand,
@@ -30,6 +31,7 @@ from physicalai_mujoco_plugin.http_server import (
 from physicalai_mujoco_plugin.viser_controls import (
     CUSTOM_MODEL_LABEL,
     NO_FOLLOW_LABEL,
+    OVERVIEW_HINT,
     CameraFollow,
     CameraView,
     FollowStep,
@@ -85,8 +87,16 @@ class FakeGui:
         self.folders.append(label)
         return contextlib.nullcontext()
 
-    def add_dropdown(self, label: str, *, options: list[str], initial_value: str, hint: str | None = None) -> FakeHandle:
-        return self._add(label, FakeHandle(label, initial_value, options=options, hint=hint))
+    def add_dropdown(
+        self,
+        label: str,
+        *,
+        options: list[str],
+        initial_value: str,
+        hint: str | None = None,
+        disabled: bool = False,
+    ) -> FakeHandle:
+        return self._add(label, FakeHandle(label, initial_value, options=options, hint=hint, disabled=disabled))
 
     def add_button(self, label: str, **kwargs: Any) -> FakeHandle:  # noqa: ANN401
         return self._add(label, FakeHandle(label, **kwargs))
@@ -254,6 +264,46 @@ class TestSceneControls:
         assert status.content.startswith("**Replay:** finished, holding frame 90/90")
         panel.refresh(make_state(replay={"active": False}), now=3.0)
         assert (status.visible, stop.visible) == (False, False)
+
+
+class TestOverviewControl:
+    """The Scene folder's "Overview camera" dropdown (``shoulder``/``front``)."""
+
+    BOTH: ClassVar[tuple[str, ...]] = ("shoulder", "front")
+
+    def test_offers_the_scenes_styles_with_a_hint(self) -> None:
+        _, server, _ = build_panel(make_state(overview_styles=self.BOTH))
+        dropdown = server.gui.handles["Overview camera"]
+        assert (dropdown.options, dropdown.value, dropdown.disabled) == (("Shoulder", "Front"), "Shoulder", False)
+        assert dropdown.kwargs["hint"] == OVERVIEW_HINT
+        assert "keep one view per dataset" in OVERVIEW_HINT
+
+    def test_choosing_a_style_enqueues_the_switch(self) -> None:
+        _, server, commands = build_panel(make_state(overview_styles=self.BOTH))
+        server.gui.handles["Overview camera"].fire("Front")
+        server.gui.handles["Overview camera"].fire("Shoulder", client=None)  # a server-side sync
+        assert commands == [SetOverviewCommand(style="front")]
+
+    def test_no_switch_where_the_scene_has_one_style(self) -> None:
+        _, server, _ = build_panel(make_state(overview_styles=("shoulder",)))
+        assert "Overview camera" not in server.gui.handles
+
+    def test_disabled_while_studio_records_and_follows_the_style(self) -> None:
+        panel, server, _ = build_panel(make_state(overview_styles=self.BOTH))
+        dropdown = server.gui.handles["Overview camera"]
+        state = make_state(overview_styles=self.BOTH, overview_style="front", overview_locked="recording")
+        panel.refresh(state, now=1.0)
+        assert (dropdown.value, dropdown.disabled) == ("Front", True)
+        panel.refresh(dataclasses.replace(state, overview_locked=None), now=2.0)
+        assert dropdown.disabled is False
+
+    def test_starts_disabled_while_studio_records(self) -> None:
+        _, server, _ = build_panel(make_state(overview_styles=self.BOTH, overview_locked="recording"))
+        assert server.gui.handles["Overview camera"].disabled is True
+
+    def test_the_robot_folder_shows_the_style(self) -> None:
+        panel, _, _ = build_panel(make_state(profile="so101", tier="twin", overview_style="front"))
+        assert "**Overview camera:** front" in panel._handles.robot.content  # noqa: SLF001
 
 
 class TestRobotStatus:

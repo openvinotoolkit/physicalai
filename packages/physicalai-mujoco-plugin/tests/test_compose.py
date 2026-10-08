@@ -437,31 +437,50 @@ def _robot_geometry_points(model: mujoco.MjModel, data: mujoco.MjData, bodies: s
     return np.concatenate(points)
 
 
+def _assert_in_overview(model: mujoco.MjModel, data: mujoco.MjData, points: np.ndarray, what: str) -> None:
+    """Assert that *points* project into the 640x480 overview with :data:`OVERVIEW_MARGIN_PX` to spare."""
+    camera = model.camera("overview").id
+    focal = 240 / np.tan(np.radians(model.cam_fovy[camera]) / 2)
+    local = (points - data.cam_xpos[camera]) @ data.cam_xmat[camera].reshape(3, 3)
+    assert np.all(local[:, 2] < 0), f"{what}: part of the arm or the work area is behind the overview camera"
+    u, v = 320 + focal * local[:, 0] / -local[:, 2], 240 - focal * local[:, 1] / -local[:, 2]
+    margin = OVERVIEW_MARGIN_PX
+    assert margin <= u.min() and u.max() <= 640 - margin, f"{what}: x spans {u.min():.0f}..{u.max():.0f} px"
+    assert margin <= v.min() and v.max() <= 480 - margin, f"{what}: y spans {v.min():.0f}..{v.max():.0f} px"
+
+
+def _robot_bodies(model: mujoco.MjModel, scene_xml: Path) -> set[int]:
+    """Return the bodies the composed robots brought: every body the scene file does not name."""
+    scene_bodies = {body.name for body in mujoco.MjSpec.from_file(str(scene_xml)).bodies}
+    return {i for i in range(1, model.nbody) if model.body(i).name not in scene_bodies}
+
+
 @pytest.mark.parametrize(
-    ("name", "arms"),
+    ("name", "arms", "style"),
     [
-        (name, arms)
+        (name, arms, style)
+        for style in ("shoulder", "front")
         for arms in (1, 2)
         for name in get_scene("single_pick_place").robots
         if arms in supported_arm_counts(get_profile(name))
     ],
 )
-def test_overview_frames_the_arm_at_home_the_spawn_arc_and_the_target(name: str, arms: int) -> None:
+def test_overview_frames_the_arm_at_home_the_spawn_arc_and_the_target(name: str, arms: int, style: str) -> None:
     """CAM-4: in the reach-scaled single_pick_place, the 640x480 overview shows every arm and the work area.
 
     Projects the arms' visible geometry at home (mesh vertices, primitive bounding boxes), the spawn
-    arc and the target through the camera's intrinsics; nothing is rendered.
+    arc and the target through the camera's intrinsics; nothing is rendered. Both overview styles.
     """
     scene = get_scene("single_pick_place")
     profile = get_profile(name)
-    composed = compose_scene(scene.scene_xml_path, profile, scene_layout=scene.layout_for(profile, arms))
+    layout = scene.layout_for(profile, arms, style)  # type: ignore[arg-type]
+    composed = compose_scene(scene.scene_xml_path, profile, scene_layout=layout)
     assert len(composed.robots) == arms
     model, data = composed.model, mujoco.MjData(composed.model)
     for binding in composed.robots:
         place_home(model, data, binding)
     mujoco.mj_forward(model, data)
-    scene_bodies = {body.name for body in mujoco.MjSpec.from_file(str(scene.scene_xml_path)).bodies}
-    robot = {i for i in range(1, model.nbody) if model.body(i).name not in scene_bodies}
+    robot = _robot_bodies(model, scene.scene_xml_path)
     laid_out = scene.for_profile(profile, arms)
     half = np.radians(laid_out.spawn_angle_half_deg)
     arc = [
@@ -470,15 +489,88 @@ def test_overview_frames_the_arm_at_home_the_spawn_arc_and_the_target(name: str,
         for a in (-half, 0.0, half)
     ]
     points = np.vstack([_robot_geometry_points(model, data, robot), *arc, data.body("target").xpos])
-    camera = model.camera("overview").id
-    focal = 240 / np.tan(np.radians(model.cam_fovy[camera]) / 2)
+    _assert_in_overview(model, data, points, f"{name} ({style})")
 
-    local = (points - data.cam_xpos[camera]) @ data.cam_xmat[camera].reshape(3, 3)
-    assert np.all(local[:, 2] < 0), f"{name}: part of the arm or the work area is behind the overview camera"
-    u, v = 320 + focal * local[:, 0] / -local[:, 2], 240 - focal * local[:, 1] / -local[:, 2]
-    margin = OVERVIEW_MARGIN_PX
-    assert margin <= u.min() and u.max() <= 640 - margin, f"{name}: x spans {u.min():.0f}..{u.max():.0f} px"
-    assert margin <= v.min() and v.max() <= 480 - margin, f"{name}: y spans {v.min():.0f}..{v.max():.0f} px"
+
+_FRONT_SCENES = [
+    (scene_id, name, arms)
+    for scene_id, scene in list_scenes().items()
+    if scene_id != "single_pick_place" and scene.front_view is not None
+    for name in scene.robots
+    for arms in scene.arm_counts
+    if arms in supported_arm_counts(get_profile(name))
+]
+
+
+@pytest.mark.parametrize(("scene_id", "name", "arms"), _FRONT_SCENES)
+def test_front_overview_frames_the_arms_at_home_and_the_aim_point(scene_id: str, name: str, arms: int) -> None:
+    """The ``front`` overview of the other tabletop scenes shows every arm at the scene's home pose and its aim point."""
+    scene = get_scene(scene_id)
+    profile = get_profile(name)
+    composed = compose_scene(scene.scene_xml_path, profile, scene_layout=scene.layout_for(profile, arms, "front"))
+    model, data = composed.model, mujoco.MjData(composed.model)
+    for binding in composed.robots:
+        place_home(model, data, binding)
+    for joint, value in scene.home_pose(arms):  # SO-101 joint names; other arms keep their own home
+        if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint) >= 0:
+            data.joint(joint).qpos[0] = value
+    mujoco.mj_forward(model, data)
+    aim = np.asarray(scene.front_view.aim or (*scene.for_profile(profile, arms).spawn_center, 0.0))  # type: ignore[union-attr]
+
+    points = np.vstack([_robot_geometry_points(model, data, _robot_bodies(model, scene.scene_xml_path)), aim])
+    _assert_in_overview(model, data, points, f"{name} in {scene_id} with {arms} arm(s)")
+
+
+@pytest.mark.parametrize(
+    ("scene_id", "name", "arms"),
+    [("single_pick_place", "so101", 1), ("single_pick_place", "so101", 2), ("single_pick_place", "ur5e", 1)]
+    + [case for case in _FRONT_SCENES if case[1] == "so101"],
+)
+def test_front_overview_faces_the_robots_from_45_degrees_up(scene_id: str, name: str, arms: int) -> None:
+    """``front`` (robosuite/LIBERO ``agentview``): across the aim point from the arms' mounts, looking at it 45 degrees down."""
+    scene = get_scene(scene_id)
+    profile = get_profile(name)
+    layout = scene.layout_for(profile, arms, "front")
+    model = compose_scene(scene.scene_xml_path, profile, scene_layout=layout).model
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    camera = model.camera("overview").id
+    forward = -data.cam_xmat[camera].reshape(3, 3)[:, 2]
+    right = data.cam_xmat[camera].reshape(3, 3)[:, 0]
+    view = scene.front_view
+    scale = scene.layout_scale(profile)
+    aim = np.asarray(view.aim) * scale if view.aim else np.array([*scene.for_profile(profile, arms).spawn_center, 0.0])  # type: ignore[union-attr]
+    mounts = [pose.pos for _, pose in layout.mounts] if layout.mounts else [(0.0, 0.0, 0.0)]  # type: ignore[union-attr]
+    if scene_id == "garment_fold" and arms == 2:  # noqa: PLR2004 - the file's own two mounts
+        mounts = [(-0.23, -0.25, 0.40), (0.23, -0.25, 0.40)]
+
+    to_aim = aim - data.cam_xpos[camera]
+    np.testing.assert_allclose(forward, to_aim / np.linalg.norm(to_aim), atol=1e-9)
+    np.testing.assert_allclose(np.degrees(np.arcsin(-forward[2])), 45.0, atol=1e-6)
+    assert abs(right[2]) < 1e-9, "the image is level"
+    away = aim[:2] - np.mean(mounts, axis=0)[:2]
+    assert np.dot(data.cam_xpos[camera][:2] - aim[:2], away) > 0, "the camera stands across the aim point from the arms"
+    distance = dict(scene.profile_front_distances).get(name, view.distance * scale)  # type: ignore[union-attr]
+    np.testing.assert_allclose(np.linalg.norm(to_aim), distance, atol=1e-9)
+
+
+def test_the_so101_shoulder_overview_is_the_scene_as_written() -> None:
+    """``shoulder`` is the default and adds nothing for the SO-101, so its datasets keep their view bit for bit."""
+    scene = get_scene("single_pick_place")
+    assert scene.layout_for(SO101_PROFILE, 1) is None
+    assert scene.layout_for(SO101_PROFILE, 1, "shoulder") is None
+    front = scene.layout_for(SO101_PROFILE, 1, "front")
+    assert front is not None
+    assert front.overview_rig is not None
+    assert (front.scale, front.mounts) == (1.0, None)
+
+
+def test_floor_flat_has_no_front_overview() -> None:
+    scene = get_scene("floor_flat")
+    assert scene.overview_styles == ("shoulder",)
+    with pytest.raises(ValueError, match="'floor_flat' has no front overview camera"):
+        scene.layout_for(get_profile("unitree_go2"), 1, "front")
+    assert all(get_scene(scene_id).overview_styles == ("shoulder", "front") for scene_id in list_scenes_for_arms(1))
 
 
 def test_robot_roots_lists_every_arm_tree_of_one_robot() -> None:
@@ -490,6 +582,40 @@ def test_robot_roots_lists_every_arm_tree_of_one_robot() -> None:
     roots = robot_roots(composed.model, composed.robots)
 
     assert [composed.model.body(root).name for root in roots] == ["left/base_link", "right/base_link"]
+
+
+@pytest.mark.parametrize("name", ["so101", "franka_fr3", "aloha"])
+def test_relayout_moves_the_overview_rig_to_the_other_style_and_back(name: str) -> None:
+    """A live overview switch: the watcher re-applies the scene XML with the other style's rig, at once."""
+    from physicalai_mujoco_plugin.scene_watch import SceneXmlWatcher  # noqa: PLC0415
+
+    scene = get_scene("single_pick_place")
+    profile = get_profile(name)
+    shoulder, front = scene.layout_for(profile), scene.layout_for(profile, overview="front")
+    model = compose_scene(scene.scene_xml_path, profile, scene_layout=shoulder).model
+    front_model = compose_scene(scene.scene_xml_path, profile, scene_layout=front).model
+    data = mujoco.MjData(model)
+    camera = model.camera("overview").id
+    watcher = SceneXmlWatcher(scene.scene_xml_path, shoulder)
+    assert not watcher.changed()
+
+    def camera_pose(m: mujoco.MjModel) -> tuple[np.ndarray, np.ndarray]:
+        d = mujoco.MjData(m)
+        mujoco.mj_forward(m, d)
+        return d.cam_xpos[camera].copy(), d.cam_xmat[camera].copy()
+
+    as_composed = camera_pose(model)
+    watcher.relayout(front)
+    assert watcher.changed()
+    watcher.apply(model, data)
+    assert not watcher.changed()
+    for moved, expected in zip(camera_pose(model), camera_pose(front_model), strict=True):
+        np.testing.assert_allclose(moved, expected, atol=1e-12)
+
+    watcher.relayout(shoulder)
+    watcher.apply(model, data)
+    for moved, expected in zip(camera_pose(model), as_composed, strict=True):
+        np.testing.assert_allclose(moved, expected, atol=1e-12)
 
 
 @pytest.mark.parametrize("name", ["so101", "franka_fr3", "ur5e", "aloha"])

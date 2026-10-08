@@ -26,6 +26,7 @@ from physicalai_mujoco_plugin.http_server import (
     SetAutoResetCommand,
     SetBeltSpeedCommand,
     SetObjectPoseCommand,
+    SetOverviewCommand,
     SetSeedCommand,
     SetStudioRecordingCommand,
     ShutdownCommand,
@@ -55,6 +56,9 @@ def app_context(frame: np.ndarray) -> dict:
         "scenes": ["garment_fold", "single_pick_place", "yahtzee"],
         "compatible_scenes": ["single_pick_place", "yahtzee"],
         "seed": None,
+        "overview_style": "shoulder",
+        "overview_styles": ["shoulder", "front"],
+        "overview_locked": None,
         "episode": {"enabled": True, "active": True, "phase": "idle"},
         "objects": [{"joint": "block1:joint", "position": [0.2, 0.0, 0.02], "wxyz": [1.0, 0.0, 0.0, 0.0]}],
         "cameras": [
@@ -271,6 +275,33 @@ class TestAppEndpoints:
 
     def test_belt_speed_conflicts_without_a_belt(self, client: TestClient, app_context: dict) -> None:
         assert client.post("/conveyor/belt-speed", json={"speed": 0.02}).status_code == 409
+        assert app_context["commands"].empty()
+
+    def test_overview_enqueues_the_style(self, client: TestClient, app_context: dict) -> None:
+        response = client.post("/overview", json={"style": "front"})
+        assert (response.status_code, response.json()) == (200, {"status": "queued", "style": "front"})
+        assert app_context["commands"].get_nowait() == SetOverviewCommand(style="front")
+
+    @pytest.mark.parametrize("body", [{}, {"style": "top"}, {"style": "FRONT"}, {"style": "front", "fov": 60}])
+    def test_overview_rejects_anything_but_a_style(self, client: TestClient, app_context: dict, body: dict) -> None:
+        assert client.post("/overview", json=body).status_code == 422
+        assert app_context["commands"].empty()
+
+    def test_overview_conflicts_while_studio_records(self, client: TestClient, app_context: dict) -> None:
+        app_context["status"]["overview_locked"] = "Automatic Studio recording is on"
+        response = client.post("/overview", json={"style": "front"})
+        assert (response.status_code, response.json()["detail"]) == (409, "Automatic Studio recording is on")
+        assert app_context["commands"].empty()
+        # Asking for the style already in place changes nothing, so it is not refused.
+        assert client.post("/overview", json={"style": "shoulder"}).status_code == 200
+
+    def test_overview_conflicts_where_the_scene_has_no_such_style(
+        self, client: TestClient, app_context: dict
+    ) -> None:
+        app_context["status"]["overview_styles"] = ["shoulder"]
+        response = client.post("/overview", json={"style": "front"})
+        assert response.status_code == 409
+        assert "no front overview camera" in response.json()["detail"]
         assert app_context["commands"].empty()
 
     def test_objects_lists_free_objects(self, client: TestClient) -> None:
