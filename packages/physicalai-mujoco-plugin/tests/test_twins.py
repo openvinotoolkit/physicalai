@@ -114,6 +114,30 @@ class TestProfiles:
         assert [channel.scale for channel in REBOT_B601_PROFILE.channels[:-1]] == [1.0] * 6
         assert {channel.offset for channel in REBOT_B601_PROFILE.channels} == {0.0}
         assert gripper.scale == pytest.approx(-270.0 / 0.05)
+        # The arm stops where #360's driver clips: the tighter of its limits and Menagerie's ranges.
+        ranges = {channel.name: channel.range for channel in REBOT_B601_PROFILE.channels[:-1]}
+        assert ranges["shoulder_pan"] == pytest.approx(np.radians((-145.0, 145.0)))
+        assert ranges["shoulder_lift"] == pytest.approx(np.radians((-170.0, 0.0)))
+        assert ranges["wrist_flex"] == pytest.approx(np.radians((-90.0, 80.0)))
+        assert ranges["wrist_roll"] == pytest.approx(np.radians((-90.0, 90.0)))
+        assert ranges["elbow_flex"] is None
+        assert ranges["wrist_yaw"] is None
+
+    def test_rebot_b601_joint_ranges_are_the_overlap_of_the_model_and_the_rs_drivers_limits(self) -> None:
+        constants = _rs_constants_in_the_lerobot_frame()
+        model = mujoco.MjModel.from_xml_path(str(fetch_profile(REBOT_B601_PROFILE)))
+        for channel in REBOT_B601_PROFILE.channels[:-1]:
+            (joint,) = channel.actuators
+            driver = np.radians(constants.REBOT_B601_RS_JOINT_LIMITS_DEG[channel.name])
+            model_range = model.joint(joint).range
+            overlap = (max(driver[0], model_range[0]), min(driver[1], model_range[1]))
+            expected = None if np.allclose(overlap, model_range) else overlap
+            if expected is None:
+                assert channel.range is None, channel.name
+            else:
+                np.testing.assert_allclose(channel.range, expected, err_msg=channel.name)
+        # Documented gap: the driver's elbow goes to -200 degrees, the model's geometry to -180.
+        assert constants.REBOT_B601_RS_JOINT_LIMITS_DEG["elbow_flex"][0] < np.degrees(model.joint("joint3").range[0])
 
     def test_rebot_b601_gripper_spans_the_rs_drivers_limits(self) -> None:
         constants = _rs_constants_in_the_lerobot_frame()
@@ -160,6 +184,18 @@ class TestRebotMapping:
             data = robot._sim.data  # noqa: SLF001
             for finger in ("joint_left", "joint_right"):
                 assert data.joint(finger).qpos[0] == pytest.approx(0.05, abs=1e-3)  # -270 = fully open
+        finally:
+            robot.disconnect()
+
+    def test_actions_past_the_drivers_limits_stop_at_them(self) -> None:
+        robot = MuJoCoRobot("rebot_b601", scene="single_pick_place", cameras=[])
+        robot.connect()
+        try:
+            robot.send_action(np.array([150.0, -30.0, -40.0, 0.0, 0.0, 120.0, 0.0], dtype=np.float32))
+            for _ in range(150):
+                observation = robot.get_observation()
+            assert observation.joint_positions[0] == pytest.approx(145.0, abs=1.0)  # driver clips pan at 145
+            assert observation.joint_positions[5] == pytest.approx(90.0, abs=1.0)  # and roll at 90
         finally:
             robot.disconnect()
 
