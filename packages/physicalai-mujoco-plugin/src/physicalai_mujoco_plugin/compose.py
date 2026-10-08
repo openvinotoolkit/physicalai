@@ -82,12 +82,23 @@ class RobotBinding:
 
 
 @dataclass(frozen=True)
+class CameraAim:
+    """Where an aimed camera stands and the point it looks at, in world coordinates."""
+
+    eye: tuple[float, float, float]
+    target: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
 class OverviewRig:
     """A pose for the top-level body that carries a scene's ``overview`` camera, in world coordinates."""
 
     pos: tuple[float, float, float]
     quat: tuple[float, float, float, float] | None = None
     """Orientation (``wxyz``); ``None`` keeps the scene's."""
+    aim: CameraAim | None = None
+    """For a rig placed by :func:`aim_overview_rig`: where the camera stands and what it looks at. A live
+    edit of the camera's pose within the rig re-aims the rig (:func:`reaim_overview_rig`)."""
 
 
 @dataclass(frozen=True)
@@ -556,16 +567,59 @@ def aim_overview_rig(
     The image stays upright: its horizontal axis is level. The camera keeps its pose within the rig
     (the tilt body and the camera's own orientation in the scene file).
 
+    A scene without an ``overview`` camera on a rig body, or a camera that would look straight up
+    or down, raises ``ValueError``.
+
     Returns:
-        The rig's world position and orientation.
+        The rig's world position and orientation, and the aim it was placed for.
+    """
+    path = Path(xml_path).resolve()
+    # Keyed by the file's time too: a saved edit of the camera within its rig is read again.
+    rotation_in_rig, offset_in_rig = _overview_camera_in_rig(str(path), path.stat().st_mtime_ns)
+    aim = CameraAim(eye=eye, target=target)
+    position, quat = _rig_pose_for_aim(rotation_in_rig, offset_in_rig, aim)
+    return OverviewRig(
+        pos=tuple(float(v) for v in position),  # type: ignore[arg-type]
+        quat=tuple(float(v) for v in quat),  # type: ignore[arg-type]
+        aim=aim,
+    )
+
+
+def reaim_overview_rig(model: mujoco.MjModel, data: mujoco.MjData, aim: CameraAim) -> None:
+    """Move a compiled model's overview rig so its camera stands at ``aim.eye`` and looks at ``aim.target``.
+
+    Uses the camera's current pose within the rig, so a live edit of the tilt body or of the camera
+    keeps the camera aimed. Writes ``model.body_pos`` and ``model.body_quat`` of the rig and runs
+    kinematics on *data*; no other thread may use the model meanwhile.
 
     Raises:
-        ValueError: If the scene has no ``overview`` camera on a rig body, or the camera would look
-            straight up or down.
+        ValueError: If the model has no ``overview`` camera on a rig body.
     """
     import mujoco  # noqa: PLC0415
 
-    rotation_in_rig, offset_in_rig = _overview_camera_in_rig(str(Path(xml_path).resolve()))
+    camera = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, OVERVIEW_CAMERA)
+    if camera < 0 or model.cam_bodyid[camera] == 0:
+        msg = f"The model has no {OVERVIEW_CAMERA!r} camera on a rig body to aim"
+        raise ValueError(msg)
+    mujoco.mj_kinematics(model, data)
+    mujoco.mj_camlight(model, data)
+    rig, rotation_in_rig, offset_in_rig = _camera_in_rig(data, model, camera)
+    position, quat = _rig_pose_for_aim(rotation_in_rig, offset_in_rig, aim)
+    model.body_pos[rig] = position
+    model.body_quat[rig] = quat
+
+
+def _rig_pose_for_aim(
+    rotation_in_rig: np.ndarray, offset_in_rig: np.ndarray, aim: CameraAim
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the rig position and ``wxyz`` orientation that put its camera at ``aim.eye``, looking at ``aim.target``.
+
+    Raises:
+        ValueError: If the camera would look at its own position, or straight up or down.
+    """
+    import mujoco  # noqa: PLC0415
+
+    eye, target = aim.eye, aim.target
     forward = np.asarray(target, dtype=np.float64) - np.asarray(eye, dtype=np.float64)
     forward /= max(float(np.linalg.norm(forward)), _MIN_AIM_NORM)
     right = np.cross(forward, (0.0, 0.0, 1.0))
@@ -580,18 +634,15 @@ def aim_overview_rig(
     quat = np.zeros(4)
     mujoco.mju_mat2Quat(quat, rig.ravel())
     position = np.asarray(eye, dtype=np.float64) - rig @ offset_in_rig
-    return OverviewRig(
-        pos=tuple(float(v) for v in position),  # type: ignore[arg-type]
-        quat=tuple(float(v) for v in quat),  # type: ignore[arg-type]
-    )
+    return position, quat
 
 
 @lru_cache(maxsize=16)
-def _overview_camera_in_rig(xml_path: str) -> tuple[np.ndarray, np.ndarray]:
+def _overview_camera_in_rig(xml_path: str, mtime_ns: int) -> tuple[np.ndarray, np.ndarray]:  # noqa: ARG001 - cache key
     """Return the ``overview`` camera's orientation and position in its rig's frame, from the scene as written.
 
     Returns:
-        The 3x3 rotation and the offset; the scene compiles once per path.
+        The 3x3 rotation and the offset; the scene compiles once per path and file time.
 
     Raises:
         ValueError: If the scene has no ``overview`` camera, or the camera hangs from the world body.
@@ -605,23 +656,40 @@ def _overview_camera_in_rig(xml_path: str) -> tuple[np.ndarray, np.ndarray]:
         raise ValueError(msg)
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
+    _, rotation, offset = _camera_in_rig(data, model, camera)
+    return rotation, offset
+
+
+def _camera_in_rig(data: mujoco.MjData, model: mujoco.MjModel, camera: int) -> tuple[int, np.ndarray, np.ndarray]:
+    """Return a camera's rig (the top-level body it hangs from) and its orientation and position in the rig's frame.
+
+    Reads the poses of *data*, which must be up to date for *model*.
+
+    Returns:
+        The rig body id, the 3x3 rotation and the offset.
+    """
     rig = int(model.body_rootid[model.cam_bodyid[camera]])
     rig_rotation = data.xmat[rig].reshape(3, 3)
     rotation = rig_rotation.T @ data.cam_xmat[camera].reshape(3, 3)
     offset = rig_rotation.T @ (data.cam_xpos[camera] - data.xpos[rig])
-    return rotation, offset
+    return rig, rotation, offset
 
 
-@lru_cache(maxsize=16)
 def mount_positions(xml_path: str | Path) -> tuple[tuple[float, float, float], ...]:
     """Return where a scene XML's top-level ``robot_mount`` frames stand, in document order, without compiling it.
 
     Returns:
         One world position per top-level mount frame.
     """
+    path = Path(xml_path).resolve()
+    return _mount_positions(str(path), path.stat().st_mtime_ns)
+
+
+@lru_cache(maxsize=16)
+def _mount_positions(xml_path: str, mtime_ns: int) -> tuple[tuple[float, float, float], ...]:  # noqa: ARG001 - cache key
     import mujoco  # noqa: PLC0415
 
-    spec = mujoco.MjSpec.from_file(str(xml_path))
+    spec = mujoco.MjSpec.from_file(xml_path)
     return tuple(
         (float(frame.pos[0]), float(frame.pos[1]), float(frame.pos[2]))
         for frame in spec.frames
@@ -769,6 +837,7 @@ __all__ = [
     "ROBOT_MOUNT_FRAME",
     "ROBOT_SPAWN_FRAME",
     "AnchorKind",
+    "CameraAim",
     "ComposedScene",
     "MountPose",
     "OverviewRig",
@@ -788,6 +857,7 @@ __all__ = [
     "model_prefixes",
     "mount_positions",
     "mount_prefixes",
+    "reaim_overview_rig",
     "robot_layout",
     "scene_anchors",
     "scene_needs_robot",
