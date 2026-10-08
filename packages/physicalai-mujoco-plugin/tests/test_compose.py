@@ -36,7 +36,7 @@ from physicalai_mujoco_plugin.scene_registry import (
     list_scenes_for_arms,
     supported_arm_counts,
 )
-from physicalai_mujoco_plugin.sim import place_home
+from physicalai_mujoco_plugin.sim import place_home, robot_roots
 
 
 def _scene_profile(scene_id: str) -> RobotProfile:
@@ -479,6 +479,17 @@ def test_overview_frames_the_arm_at_home_the_spawn_arc_and_the_target(name: str,
     margin = OVERVIEW_MARGIN_PX
     assert margin <= u.min() and u.max() <= 640 - margin, f"{name}: x spans {u.min():.0f}..{u.max():.0f} px"
     assert margin <= v.min() and v.max() <= 480 - margin, f"{name}: y spans {v.min():.0f}..{v.max():.0f} px"
+
+
+def test_robot_roots_lists_every_arm_tree_of_one_robot() -> None:
+    """ALOHA's two arms hang from the world separately in one model: spawn resets avoid both."""
+    scene = get_scene("single_pick_place")
+    profile = get_profile("aloha")
+    composed = compose_scene(scene.scene_xml_path, profile, scene_layout=scene.layout_for(profile))
+
+    roots = robot_roots(composed.model, composed.robots)
+
+    assert [composed.model.body(root).name for root in roots] == ["left/base_link", "right/base_link"]
 
 
 @pytest.mark.parametrize("name", ["so101", "franka_fr3", "ur5e", "aloha"])

@@ -20,8 +20,14 @@ from physicalai_mujoco_plugin.compose import MountPose, OverviewRig, SceneLayout
 from physicalai_mujoco_plugin.conveyor import park_items, pool_item_names
 from physicalai_mujoco_plugin.profiles import SO101_PROFILE
 from physicalai_mujoco_plugin.spawn import (
+    ARM_CLEARANCE,
+    ARM_FOOTPRINT_HEIGHT,
+    SPAWN_ATTEMPTS,
+    arm_footprint,
+    object_radius,
     place_freejoint,
     read_body_xy,
+    sample_clear_position,
     sample_scene_positions,
 )
 
@@ -284,14 +290,19 @@ _CONVEYOR_SORT_HOME: tuple[tuple[str, float], ...] = (
 # ---------------------------------------------------------------------------
 
 
-def _freejoint_spawn_reset(scene: SceneConfig) -> ResetFn:
-    """Build a reset that respawns a scene's free objects clear of its target.
+def _freejoint_spawn_reset(
+    scene: SceneConfig, robot_roots: tuple[int, ...] = (), footprint_height: float = ARM_FOOTPRINT_HEIGHT
+) -> ResetFn:
+    """Build a reset that respawns a scene's free objects clear of its target and of the arms.
 
     The target body itself is left where it is; only the freejoints listed in
     the scene's ``free_joints`` are randomized, using that scene's spawn arc.
 
     Args:
         scene: The scene, laid out for its robot (:meth:`SceneConfig.for_profile`).
+        robot_roots: Root body of every robot, whose footprint at reset time the objects avoid
+            (:func:`~physicalai_mujoco_plugin.spawn.arm_footprint`); empty ignores the robots.
+        footprint_height: Robot geoms higher above the table than this leave the footprint.
 
     Returns:
         A reset callback for the scene.
@@ -302,7 +313,11 @@ def _freejoint_spawn_reset(scene: SceneConfig) -> ResetFn:
 
         target_body = scene.target_bodies[0] if scene.target_bodies else ""
         target_xy = read_body_xy(model, data, target_body, scene.spawn_center)
-        positions = sample_scene_positions(scene, len(scene.free_joints), rng=rng, target_xy=target_xy)
+        footprint = arm_footprint(model, data, robot_roots, footprint_height)
+        padding = object_radius(model, scene.free_joints) + ARM_CLEARANCE if footprint is not None else 0.0
+        positions = sample_scene_positions(
+            scene, len(scene.free_joints), rng=rng, target_xy=target_xy, footprint=footprint, padding=padding
+        )
 
         for joint_name, xy in zip(scene.free_joints, positions, strict=True):
             place_freejoint(model, data, joint_name, xy, rng)
@@ -371,13 +386,41 @@ def _flatten_garment(model: object, data: object) -> None:
     mujoco.mj_forward(model, data)
 
 
-def _yahtzee_reset(model: object, data: object, rng: np.random.Generator) -> None:  # noqa: PLR0914
+def _yahtzee_reset(robot_roots: tuple[int, ...] = ()) -> ResetFn:
+    """Build the dice reset: each die dropped around the cup, outside the arms' footprint at reset time.
+
+    Args:
+        robot_roots: Root body of every robot, whose footprint the dice's drop points avoid; empty
+            ignores the robots.
+
+    Returns:
+        A reset callback for the scene.
+    """
+
+    def reset(model: object, data: object, rng: np.random.Generator) -> None:
+        _drop_dice(model, data, rng, robot_roots)
+
+    return reset
+
+
+def _drop_dice(  # noqa: PLR0914
+    model: object, data: object, rng: np.random.Generator, robot_roots: tuple[int, ...]
+) -> None:
     import mujoco  # noqa: PLC0415
 
     die_joints = [f"die{i}:joint" for i in range(1, 7)]
 
     cx, cy = 0.30, 0.0
     cup_jitter = 0.005
+    footprint = arm_footprint(model, data, robot_roots)
+    padding = object_radius(model, tuple(die_joints)) + ARM_CLEARANCE if footprint is not None else 0.0
+
+    def draw() -> tuple[float, float]:
+        r = float(rng.uniform(0.06, 0.18))
+        theta = float(rng.uniform(0.0, 2.0 * np.pi))
+        x = cx + float(rng.uniform(-cup_jitter, cup_jitter)) + r * float(np.cos(theta))
+        y = cy + float(rng.uniform(-cup_jitter, cup_jitter)) + r * float(np.sin(theta))
+        return x, y
 
     for joint_name in die_joints:
         # pyrefly: ignore [missing-attribute]
@@ -389,10 +432,7 @@ def _yahtzee_reset(model: object, data: object, rng: np.random.Generator) -> Non
         # pyrefly: ignore [missing-attribute]
         dof_adr = int(model.jnt_dofadr[jid])
 
-        r = float(rng.uniform(0.06, 0.18))
-        theta = float(rng.uniform(0.0, 2.0 * np.pi))
-        x = cx + float(rng.uniform(-cup_jitter, cup_jitter)) + r * float(np.cos(theta))
-        y = cy + float(rng.uniform(-cup_jitter, cup_jitter)) + r * float(np.sin(theta))
+        x, y = sample_clear_position(draw, footprint=footprint, padding=padding, attempts=SPAWN_ATTEMPTS)
 
         yaw = float(rng.uniform(0.0, 2.0 * np.pi))
         tilt = float(rng.uniform(-0.3, 0.3))
@@ -543,12 +583,12 @@ _SCENES: dict[str, SceneConfig] = {
 _FREEJOINT_SPAWN_SCENES = ("single_pick_place",)
 """Scenes whose reset respawns their free objects in the spawn arc laid out for the robot."""
 
-_RESET_FUNCTIONS: dict[str, Callable[[SceneConfig, int], ResetFn]] = {
-    "yahtzee": lambda _scene, _arms: _yahtzee_reset,
-    "conveyor_sort": lambda scene, arms: _conveyor_sort_reset(scene.home_pose(arms)),
-    "garment_fold": lambda scene, arms: _garment_fold_reset(scene.home_pose(arms)),
+_RESET_FUNCTIONS: dict[str, Callable[[SceneConfig, int, tuple[int, ...]], ResetFn]] = {
+    "yahtzee": lambda _scene, _arms, roots: _yahtzee_reset(roots),
+    "conveyor_sort": lambda scene, arms, _roots: _conveyor_sort_reset(scene.home_pose(arms)),
+    "garment_fold": lambda scene, arms, _roots: _garment_fold_reset(scene.home_pose(arms)),
 }
-"""Reset builders by scene id, for the scene and its number of arms."""
+"""Reset builders by scene id, for the scene, its number of arms and the root body of every robot."""
 
 
 def get_scene(scene_id: str) -> SceneConfig:
@@ -573,13 +613,27 @@ def list_scenes_for_arms(num_arms: int) -> dict[str, SceneConfig]:
     return list_scenes_for(SO101_PROFILE, num_arms)
 
 
-def get_reset_fn(scene_id: str, profile: RobotProfile = SO101_PROFILE, arms: int = 1) -> ResetFn | None:
-    """Return the reset callback for `scene_id` with *arms* of *profile*'s robot, if one is registered."""
+def get_reset_fn(
+    scene_id: str,
+    profile: RobotProfile = SO101_PROFILE,
+    arms: int = 1,
+    robot_roots: tuple[int, ...] = (),
+) -> ResetFn | None:
+    """Return the reset callback for `scene_id` with *arms* of *profile*'s robot, if one is registered.
+
+    Args:
+        scene_id: The scene.
+        profile: The robot profile, for the scene's layout.
+        arms: The number of arms.
+        robot_roots: Root body of every robot in the compiled scene (``Sim.robot_roots``): resets that
+            spawn objects keep them out of these robots' footprint. Empty ignores the robots.
+    """
     scene = get_scene(scene_id)
     if scene_id in _FREEJOINT_SPAWN_SCENES:
-        return _freejoint_spawn_reset(scene.for_profile(profile, arms))
+        height = ARM_FOOTPRINT_HEIGHT * scene.layout_scale(profile)
+        return _freejoint_spawn_reset(scene.for_profile(profile, arms), robot_roots, height)
     build = _RESET_FUNCTIONS.get(scene_id)
-    return build(scene, arms) if build is not None else None
+    return build(scene, arms, robot_roots) if build is not None else None
 
 
 def list_scenes_naming(profile_name: str) -> dict[str, SceneConfig]:
