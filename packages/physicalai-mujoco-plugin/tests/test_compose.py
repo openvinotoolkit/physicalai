@@ -37,6 +37,7 @@ from physicalai_mujoco_plugin.scene_registry import (
     supported_arm_counts,
 )
 from physicalai_mujoco_plugin.sim import place_home, robot_roots
+from physicalai_mujoco_plugin.spawn import FREEJOINT_SPAWN_Z
 
 
 def _scene_profile(scene_id: str) -> RobotProfile:
@@ -492,6 +493,53 @@ def test_overview_frames_the_arm_at_home_the_spawn_arc_and_the_target(name: str,
     _assert_in_overview(model, data, points, f"{name} ({style})")
 
 
+@pytest.mark.parametrize(
+    ("name", "arms"),
+    [
+        (name, arms)
+        for arms in (1, 2)
+        for name in get_scene("single_pick_place").robots
+        if arms in supported_arm_counts(get_profile(name))
+    ],
+)
+def test_front_overview_sees_the_target_and_every_spawn_point_past_the_arms(name: str, arms: int) -> None:
+    """``front`` faces the arms, so their home pose hides neither a spawned block's top nor the target disc.
+
+    The shoulder overview looks over the arms and loses the block behind a hovering gripper for many
+    of them; here every line of sight from the camera to a grid of spawn points and to the disc
+    misses the robots' visible geoms (groups 0-2, what renders).
+    """
+    scene = get_scene("single_pick_place")
+    profile = get_profile(name)
+    composed = compose_scene(scene.scene_xml_path, profile, scene_layout=scene.layout_for(profile, arms, "front"))
+    model, data = composed.model, mujoco.MjData(composed.model)
+    for binding in composed.robots:
+        place_home(model, data, binding)
+    for joint in scene.free_joints:  # out of every line of sight
+        data.joint(joint).qpos[:3] = (100.0, 100.0, -10.0)
+    mujoco.mj_forward(model, data)
+    laid_out = scene.for_profile(profile, arms)
+    half = np.radians(laid_out.spawn_angle_half_deg)
+    block_top = FREEJOINT_SPAWN_Z + 0.02
+    spawns = [
+        (*(np.asarray(laid_out.spawn_center) + r * np.array([np.cos(a), np.sin(a)])), block_top)
+        for r in np.linspace(laid_out.spawn_min_r, laid_out.spawn_max_r, 4)
+        for a in np.linspace(-half, half, 7)
+    ]
+    target, disc = data.body("target").xpos, 0.045
+    discs = [target + (x, y, 0.002) for x in (-disc, 0.0, disc) for y in (-disc, 0.0, disc) if x * x + y * y <= disc**2]
+    camera = model.camera("overview").id
+    origin = data.cam_xpos[camera]
+    robot = np.isin(model.body_rootid[model.geom_bodyid], robot_roots(model, composed.robots))
+    hit = np.zeros(1, dtype=np.int32)
+    hidden = []
+    for point in [*map(np.asarray, spawns), *discs]:
+        fraction = mujoco.mj_ray(model, data, origin, point - origin, np.array([1, 1, 1, 0, 0, 0], np.uint8), 1, -1, hit)
+        if 0 <= fraction < 1 and hit[0] >= 0 and robot[hit[0]]:
+            hidden.append(np.round(point, 3).tolist())
+    assert not hidden, f"{name} with {arms} arm(s) hides {hidden} from the front overview"
+
+
 _FRONT_SCENES = [
     (scene_id, name, arms)
     for scene_id, scene in list_scenes().items()
@@ -550,7 +598,8 @@ def test_front_overview_faces_the_robots_from_45_degrees_up(scene_id: str, name:
     assert abs(right[2]) < 1e-9, "the image is level"
     away = aim[:2] - np.mean(mounts, axis=0)[:2]
     assert np.dot(data.cam_xpos[camera][:2] - aim[:2], away) > 0, "the camera stands across the aim point from the arms"
-    distance = dict(scene.profile_front_distances).get(name, view.distance * scale)  # type: ignore[union-attr]
+    override = dict(scene.profile_front_overrides).get(name)
+    distance = override.distance if override is not None else view.distance * scale  # type: ignore[union-attr]
     np.testing.assert_allclose(np.linalg.norm(to_aim), distance, atol=1e-9)
 
 

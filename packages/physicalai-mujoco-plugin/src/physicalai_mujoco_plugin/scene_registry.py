@@ -97,6 +97,22 @@ class FrontView:
 
 
 @dataclass(frozen=True)
+class FrontOverride:
+    """One profile's changes to a scene's :class:`FrontView`; ``None`` keeps the derived value.
+
+    For arms whose home pose the derived pose does not frame, or hides the work area from.
+    """
+
+    distance: float | None = None
+    """Metres from the aim point to the camera, after scaling."""
+    direction: tuple[float, float] | None = None
+    """Horizontal direction from the robot toward the camera, for robots whose mounts do not show
+    which way they face (ALOHA's two arms face each other across its single mount)."""
+    elevation_deg: float | None = None
+    """How far the line of sight points down from level."""
+
+
+@dataclass(frozen=True)
 class SceneConfig:
     """Metadata and reset configuration for a simulation scene."""
 
@@ -158,12 +174,8 @@ class SceneConfig:
     camera does not frame (an elbow folded behind the base, ALOHA's second arm)."""
     front_view: FrontView | None = None
     """The ``front`` overview style's camera placement; ``None``: the scene offers only its own (``shoulder``)."""
-    profile_front_distances: tuple[tuple[str, float], ...] = ()
-    """Per profile: the ``front`` camera's distance from its aim point after scaling, for arms whose
-    home pose the scaled distance does not frame."""
-    profile_front_directions: tuple[tuple[str, tuple[float, float]], ...] = ()
-    """Per profile: the horizontal direction from the robot toward the ``front`` camera, for robots
-    whose mount does not show which way they face (ALOHA's two arms face each other across it)."""
+    profile_front_overrides: tuple[tuple[str, FrontOverride], ...] = ()
+    """Per profile: changes to the derived ``front`` camera pose (:class:`FrontOverride`)."""
 
     @property
     def scene_xml_path(self) -> Path:
@@ -265,7 +277,8 @@ class SceneConfig:
             aim = np.array([x, y, 0.0])
         else:
             aim = np.asarray(view.aim) * scale
-        direction = dict(self.profile_front_directions).get(profile.name)
+        override = dict(self.profile_front_overrides).get(profile.name, FrontOverride())
+        direction = override.direction
         if direction is None:
             if mounts is not None:
                 stands = np.array([pose.pos for _, pose in mounts])
@@ -277,11 +290,11 @@ class SceneConfig:
         if length < _MIN_FRONT_DIRECTION:
             msg = (
                 f"Scene {self.scene_id!r} cannot tell which way the {profile.display_name} faces for a front "
-                "overview: its mounts surround the aim point; set profile_front_directions"
+                "overview: its mounts surround the aim point; set a profile_front_overrides direction"
             )
             raise ValueError(msg)
-        distance = dict(self.profile_front_distances).get(profile.name, view.distance * scale)
-        elevation = np.radians(view.elevation_deg)
+        distance = override.distance if override.distance is not None else view.distance * scale
+        elevation = np.radians(override.elevation_deg if override.elevation_deg is not None else view.elevation_deg)
         offset = np.array([*(horizontal / length * np.cos(elevation)), np.sin(elevation)]) * distance
         eye = aim + offset
         return aim_overview_rig(
@@ -623,12 +636,15 @@ _SCENES: dict[str, SceneConfig] = {
             ("franka_panda", OverviewRig(pos=(-0.323, 0.231, 1.994))),
             ("xarm7", OverviewRig(pos=(-0.228, 0.212, 1.723))),
         ),
-        # Far enough for the tallest home poses (Franka, xArm, Kinova, ALOHA); the WidowX AI's upright
+        # Far enough for the tallest home poses (Franka, xArm, Kinova); the WidowX AI's upright
         # forearm needs more (tests/test_compose.py).
         front_view=FrontView(distance=0.85),
-        profile_front_distances=(("trossen_wxai", 1.62),),
-        # ALOHA's teleoperator sits at -y, where its shoulder camera stands; front faces its arms from +y.
-        profile_front_directions=(("aloha", (0.0, 1.0)),),
+        profile_front_overrides=(
+            ("trossen_wxai", FrontOverride(distance=1.62)),
+            # ALOHA's teleoperator sits at -y, where its shoulder camera stands; front faces its arms
+            # from +y, steeper and farther so the target behind the far gripper stays in view.
+            ("aloha", FrontOverride(distance=1.6, direction=(0.0, 1.0), elevation_deg=55.0)),
+        ),
         robots=(
             "so101",
             "trossen_wxai",
@@ -685,7 +701,7 @@ _SCENES: dict[str, SceneConfig] = {
         robots=("so101", "trossen_wxai"),
         # The garment's centre on the table top.
         front_view=FrontView(distance=0.9, aim=(0.0, 0.02, 0.32)),
-        profile_front_distances=(("trossen_wxai", 1.75),),
+        profile_front_overrides=(("trossen_wxai", FrontOverride(distance=1.75)),),
     ),
     "floor_flat": SceneConfig(
         scene_id="floor_flat",
