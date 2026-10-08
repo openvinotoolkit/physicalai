@@ -1,27 +1,29 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""reBot B601 profile: Menagerie's ``seeed_rebot_devarm`` in the joint frame of ``ReBotB601RS``.
+"""reBot B601 profile: Menagerie's ``seeed_rebot_devarm`` in the LeRobot-style joint frame of ``ReBotB601RS``.
 
-PROVISIONAL: the signs, zero offsets and gripper scale below are derived from the B601 plugin's
-URDFs and driver constants, not measured on hardware (design open issue 16.1). Until a read-only
-comparison on a real arm confirms them, recorded data is not guaranteed to match the real arm.
+PROVISIONAL, for two reasons:
+
+- The frame is the one PR #360 introduces (issue #343): every RS direction -1, the gripper -270
+  (open) to 0 (closed) in degrees, no x6 scaling. Until #360 merges, the B601 plugin on ``main``
+  still uses the previous frame (directions +1, +1, -1, -1, -1, +1, gripper /6, 0..45), so this
+  profile and that driver disagree in sign on shoulder_pan, shoulder_lift and wrist_roll and in
+  the gripper's sign and scale. Data recorded in either frame does not carry over to the other.
+- No real arm has confirmed the mapping yet (design open issue 16.1).
 
 How the mapping is derived:
 
-- Menagerie's DevArm has the link origins and frames of the B601-RS URDF
-  (``rebot-b601-rs/urdf/00-arm-rs_asm-v3.urdf``), so both share one zero pose: the folded rest
-  pose in which the RS arm is zero-calibrated. Every offset is therefore 0.
-- ``ReBotB601RS`` reports ``motor / REBOT_B601_RS_JOINT_DIRECTIONS``. Its joint frame is the one
-  of the plugin's ``00-arm-rs_asm-v3_joint_frame.urdf``, which Studio previews the real arm with.
-  A joint whose axis there is opposite to Menagerie's gets ``scale=-1``: ``joint1`` and
-  ``joint6`` (URDF axis -z, Menagerie +z) and ``joint2`` (URDF +z with range 0..pi, Menagerie -z
-  with range -pi..0). ``joint3`` to ``joint5`` share their axis.
-- The gripper motor turns 0..270 degrees from closed (zero) to open, and the driver divides by
-  its direction 6, so it reports 0..45. Menagerie's two fingers slide 0..0.05 m each from closed
-  to open, coupled 1:1. The gripper channel drives both fingers and reports ``900 * finger``
-  metres in the driver's degrees (0.05 m -> 45), velocities likewise, assuming the full motor
-  stroke spans the full finger stroke.
+- Menagerie's DevArm has the link origins and frames of the B601-RS URDF, so both share one zero
+  pose: the folded rest pose in which the RS arm is zero-calibrated. Every offset is therefore 0.
+- #360's ``00-arm-rs_asm-v3_joint_frame.urdf``, which Studio previews the real arm with, has the
+  same joint axes and limits as Menagerie (joint1 +z, joint2 -z with range -pi..0, joint3 to
+  joint6 +z), so every arm joint maps one to one (``scale`` 1). Menagerie's ranges agree with
+  #360's limits in sign: shoulder_lift and elbow_flex go negative from the fold.
+- Menagerie's two fingers slide 0..0.05 m each from closed to open, coupled 1:1. #360's URDF
+  drives them from a ``gripper_drive`` joint of -270 degrees (open) to 0, with the first finger at
+  0.05 m when fully open. The gripper channel drives both fingers and reports
+  ``-5400 * finger`` metres in the driver's degrees (0.05 m -> -270), velocities likewise.
 
 The wrist camera is an Intel RealSense D405 on Seeed's printed mount (reBot-DevArm
 ``hardware/reBot_B601_DM/3D_Printed_Parts/D405_305_Mount.step``). Its clamp (57.3 mm bore) sits on
@@ -36,8 +38,8 @@ from __future__ import annotations
 
 from physicalai_mujoco_plugin.profiles._types import CameraSpec, ChannelOverride, EndEffector, RobotProfile
 
-REBOT_B601_GRIPPER_SCALE = 45.0 / 0.05
-"""Driver gripper degrees (``ReBotB601RS``: motor degrees / 6) per metre of finger travel. Provisional."""
+REBOT_B601_GRIPPER_SCALE = -270.0 / 0.05
+"""Driver gripper degrees (#360's frame: -270 open, 0 closed) per metre of finger travel. Provisional."""
 
 REBOT_B601_WRIST_CAMERA = CameraSpec(
     name="wrist",
@@ -57,17 +59,18 @@ REBOT_B601_PROFILE = RobotProfile(
     menagerie_model="seeed_rebot_devarm",
     menagerie_entry="seeed_rebot_devarm",
     tier="twin",
-    # Names and order of REBOT_B601_RS_JOINT_ORDER; signs provisional (see the module docstring).
+    # Names and order of REBOT_B601_RS_JOINT_ORDER, in #360's frame; provisional (see the module docstring).
+    provisional=True,
     channels=(
-        ChannelOverride(name="shoulder_pan", actuators=("joint1",), scale=-1.0),
-        ChannelOverride(name="shoulder_lift", actuators=("joint2",), scale=-1.0),
+        ChannelOverride(name="shoulder_pan", actuators=("joint1",)),
+        ChannelOverride(name="shoulder_lift", actuators=("joint2",)),
         ChannelOverride(name="elbow_flex", actuators=("joint3",)),
         ChannelOverride(name="wrist_flex", actuators=("joint4",)),
         ChannelOverride(name="wrist_yaw", actuators=("joint5",)),
-        ChannelOverride(name="wrist_roll", actuators=("joint6",), scale=-1.0),
+        ChannelOverride(name="wrist_roll", actuators=("joint6",)),
         # Both fingers, so neither actuator fights the model's finger equality. Like every RS
-        # channel, the driver reports the gripper in degrees (motor degrees / 6), so the unit is
-        # pinned to degrees: the slide's metres stay unconverted and the scale turns them into
+        # channel, the driver reports the gripper in degrees (-270 open to 0 closed), so the unit
+        # is pinned to degrees: the slide's metres stay unconverted and the scale turns them into
         # driver degrees, also under unit="normalized".
         ChannelOverride(
             name="gripper",

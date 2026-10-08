@@ -111,6 +111,8 @@ class RobotProfile:
     menagerie_entry: str | None = None
     """Robot-only entry point of the Menagerie model; ``None`` uses the model's default."""
     tier: ProfileTier = "unsupported"
+    provisional: bool = False
+    """The mapping onto the real robot's driver is not established yet; Studio entries say so."""
     channels: tuple[ChannelOverride, ...] = ()
     """Public layout in order; empty means one derived channel per actuator."""
     default_unit: DefaultUnit = "degrees"
@@ -155,7 +157,7 @@ def _validate_factors(where: str, channel: ChannelOverride) -> None:
         msg = f"{where} has an invalid scale, offset or member scale"
         raise ValueError(msg)
     # Unit conversions stay well inside float32 observations: degrees, metres and driver units
-    # differ by a few orders of magnitude at most (a driver's 900 per metre is the largest so far),
+    # differ by a few orders of magnitude at most (the reBot driver's 5400 degrees per metre is the largest so far),
     # and an offset must not swamp the scaled value in float32.
     if not MIN_CHANNEL_SCALE <= abs(channel.scale) <= MAX_CHANNEL_SCALE:
         msg = f"{where} needs {MIN_CHANNEL_SCALE:g} <= |scale| <= {MAX_CHANNEL_SCALE:g}"
