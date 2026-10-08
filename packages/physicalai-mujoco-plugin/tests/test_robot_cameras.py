@@ -43,7 +43,7 @@ from physicalai_mujoco_plugin.profiles import (
 from physicalai_mujoco_plugin.profiles.derive import derive_profile
 from physicalai_mujoco_plugin.profiles.so101 import SO101_WRIST_CAMERA
 from physicalai_mujoco_plugin.robot import MuJoCoRobot
-from physicalai_mujoco_plugin.robot_cameras import _look_quat, add_cameras, is_sensor_camera, resolve_cameras
+from physicalai_mujoco_plugin.robot_cameras import _look_quat, _subtree, add_cameras, is_sensor_camera, resolve_cameras
 from physicalai_mujoco_plugin.scene_registry import SceneConfig
 from physicalai_mujoco_plugin.sim import default_cameras
 
@@ -158,6 +158,31 @@ def _check_wrist_along_tool(model: object, data: object, effector: EndEffector) 
     up = data.cam_xmat[model.camera("wrist").id].reshape(3, 3)[:, 1]
     assert up @ (offset - (offset @ axis) * axis) > 0
     return float(np.degrees(np.arccos(np.clip(forward @ axis, -1.0, 1.0)))), float(np.linalg.norm(offset))
+
+
+def _check_tool_in_view(model: object, data: object, effector: EndEffector) -> None:
+    """Check that the wrist camera sits outside its gripper and sees the tool in the lower part of the image.
+
+    The camera's body and everything below it (fingers, flange) is "the gripper": the camera's
+    origin lies outside every one of their geoms' bounding boxes, the tool point projects on the
+    image's vertical centre line in its lower half, and some pixel rays hit the gripper.
+    """
+    camera = model.camera("wrist").id
+    position = data.cam_xpos[camera]
+    gripper = set(_subtree(model, int(model.cam_bodyid[camera])))
+    for geom in range(model.ngeom):
+        if int(model.geom_bodyid[geom]) not in gripper:
+            continue
+        local = data.geom_xmat[geom].reshape(3, 3).T @ (position - data.geom_xpos[geom]) - model.geom_aabb[geom, :3]
+        assert np.any(np.abs(local) > model.geom_aabb[geom, 3:]), f"camera inside geom {model.geom(geom).name!r}"
+    tip, _ = _tool(model, data, effector)
+    x, y, z = data.cam_xmat[camera].reshape(3, 3).T @ (tip - position)
+    half_height = np.tan(np.radians(model.cam_fovy[camera]) / 2)
+    assert z < 0
+    assert abs(x / -z) / (half_height * 4 / 3) < 0.05
+    assert -0.9 < y / -z / half_height < -0.5
+    hits = _view(model, data, "wrist")
+    assert any(hit >= 0 and int(model.geom_bodyid[hit]) in gripper for hit in hits)
 
 
 class TestSources:
@@ -730,6 +755,17 @@ class TestMenagerieRobots:
         assert (camera.name, camera.body, camera.source) == ("wrist", body, "default")
         assert angle < max_angle
         assert distance < 0.13
+        # At home, then with every limited joint mid-range (fingers half open, the arm elsewhere).
+        for joint, values in robot_layout(profile).home_qpos.items():
+            if joint:
+                address = model.joint(joint).qposadr[0]
+                data.qpos[address : address + len(values)] = values
+        mujoco.mj_forward(model, data)
+        _check_tool_in_view(model, data, profile.end_effectors[0])
+        limited = np.flatnonzero(model.jnt_limited)
+        data.qpos[model.jnt_qposadr[limited]] = model.jnt_range[limited].mean(axis=1)
+        mujoco.mj_forward(model, data)
+        _check_tool_in_view(model, data, profile.end_effectors[0])
 
     @pytest.mark.parametrize("name", ["so101", "trossen_wxai", "rebot_b601"])
     def test_profile_wrist_cameras_are_untouched_by_the_end_effector(self, name: str) -> None:
