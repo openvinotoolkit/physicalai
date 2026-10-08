@@ -35,6 +35,7 @@ from physicalai_mujoco_plugin.profiles import (
     SO101_PROFILE,
     CameraSpec,
     ChannelOverride,
+    EndEffector,
     RobotProfile,
     get_profile,
     validate_profile,
@@ -127,6 +128,38 @@ def _forward(model: object, data: object, camera: str) -> np.ndarray:
     return -data.cam_xmat[model.camera(camera).id].reshape(3, 3)[:, 2]
 
 
+def _tool(model: object, data: object, effector: EndEffector) -> tuple[np.ndarray, np.ndarray]:
+    """Return an end effector's tool point and unit approach axis in the world."""
+    axis = np.asarray(effector.axis, dtype=float) / np.linalg.norm(effector.axis)
+    if effector.site is not None:
+        site = model.site(effector.site).id
+        return data.site_xpos[site].copy(), data.site_xmat[site].reshape(3, 3) @ axis
+    body = model.body(effector.body).id
+    rotation = data.xmat[body].reshape(3, 3)
+    return data.xpos[body] + rotation @ np.asarray(effector.pos), rotation @ axis
+
+
+def _check_wrist_along_tool(model: object, data: object, effector: EndEffector) -> tuple[float, float]:
+    """Check the wrist camera's place on the tool axis: 4 cm behind the tool point, aimed 10 cm past it.
+
+    Returns:
+        The angle between the optical axis and the approach axis in degrees, and the camera's
+        distance from the tool point in metres.
+    """
+    tip, axis = _tool(model, data, effector)
+    position = data.cam_xpos[model.camera("wrist").id]
+    forward = _forward(model, data, "wrist")
+    aim = tip + 0.10 * axis - position
+    offset = position - tip
+    assert offset @ axis == pytest.approx(-0.04, abs=1e-6)
+    assert np.linalg.norm(np.cross(forward, aim / np.linalg.norm(aim))) < 1e-6
+    assert forward @ aim > 0
+    # The tool is in the lower half of the image: the camera's up points away from the tool axis.
+    up = data.cam_xmat[model.camera("wrist").id].reshape(3, 3)[:, 1]
+    assert up @ (offset - (offset @ axis) * axis) > 0
+    return float(np.degrees(np.arccos(np.clip(forward @ axis, -1.0, 1.0)))), float(np.linalg.norm(offset))
+
+
 class TestSources:
     """CAM-2: the profile's override, else the model's sensor cameras, else a generated default."""
 
@@ -189,6 +222,28 @@ class TestGeneratedDefaults:
 
         assert (camera.name, camera.body) == ("wrist", "hand")
         assert {"hand", "world"} <= _bodies_hit(model, hits)
+
+    @pytest.mark.parametrize(
+        ("effector", "side"),
+        [
+            # Beside the hand's 6 cm half-width across the axis, plus 2 cm.
+            (EndEffector(body="hand", pos=(0.06, 0.0, 0.03), axis=(1.0, 0.0, 0.0)), 0.08),
+            # The axis passes beyond the finger's tip (hand z 0.12): 2 cm clear of the axis is clear of the hand.
+            (EndEffector(site="pinch", axis=(1.0, 0.0, 0.0)), 0.02),
+        ],
+    )
+    def test_a_profile_end_effector_sets_the_wrist_cameras_tool_axis(self, effector: EndEffector, side: float) -> None:
+        """The profile's measured tool point and axis win over the derived ones (the pinch site's +z)."""
+        xml = _ARM.format(gripper=_GRIPPER, gripper_actuator=_GRIPPER_ACTUATOR)
+
+        (camera,) = _layout_cameras(xml, replace(INLINE, end_effectors=(effector,)))
+        model, data = _with_cameras(xml, (camera,))
+        angle, distance = _check_wrist_along_tool(model, data, effector)
+
+        assert (camera.name, camera.body, camera.source, camera.fovy) == ("wrist", "hand", "default", 75.0)
+        # Aiming 14 cm ahead along the axis from *side* beside it.
+        assert angle == pytest.approx(np.degrees(np.arctan2(side, 0.14)), abs=1e-6)
+        assert distance == pytest.approx(np.hypot(0.04, side), abs=1e-6)
 
     @pytest.mark.parametrize(("radius", "ahead"), [(0.05, 0.08), (0.12, 0.13)])
     def test_a_floating_base_with_a_head_gets_a_head_camera(self, radius: float, ahead: float) -> None:
@@ -643,6 +698,53 @@ class TestMenagerieRobots:
         bodies = _bodies_hit(model, hits)
         assert "wrist_3_link" in bodies
         assert bodies - {"wrist_3_link"}
+
+    @pytest.mark.parametrize(
+        ("name", "body", "max_angle"),
+        [
+            ("koch", "gripper_static_finger", 25.0),
+            ("piper", "link6", 25.0),
+            ("so_arm100", "Fixed_Jaw", 25.0),
+            ("ur5e", "wrist_3_link", 30.0),
+            ("franka_fr3", "fr3_link7", 40.0),
+            ("franka_panda", "hand", 35.0),
+            ("xarm7", "xarm_gripper_base_link", 25.0),
+        ],
+    )
+    def test_a_generated_wrist_camera_looks_along_the_end_effectors_approach_axis(
+        self, name: str, body: str, max_angle: float
+    ) -> None:
+        """Aimed 10 cm past the tool point from 4 cm behind it, beside the end effector's body.
+
+        The angle to the approach axis is the side offset's: the camera clears the arm's widest
+        part beside the tool (the FR3's sixth link most).
+        """
+        profile = get_profile(name)
+        (camera,) = robot_layout(profile).cameras
+        model = load_robot_spec(profile).compile()
+        data = mujoco.MjData(model)
+        mujoco.mj_forward(model, data)
+
+        angle, distance = _check_wrist_along_tool(model, data, profile.end_effectors[0])
+
+        assert (camera.name, camera.body, camera.source) == ("wrist", body, "default")
+        assert angle < max_angle
+        assert distance < 0.13
+
+    @pytest.mark.parametrize("name", ["so101", "trossen_wxai", "rebot_b601"])
+    def test_profile_wrist_cameras_are_untouched_by_the_end_effector(self, name: str) -> None:
+        profile = get_profile(name)
+
+        assert profile.end_effectors
+        assert robot_layout(profile).cameras == profile.cameras
+
+    def test_aloha_publishes_its_own_wrist_cameras(self) -> None:
+        cameras = robot_layout(get_profile("aloha")).cameras
+
+        assert [(camera.name, camera.source) for camera in cameras] == [
+            ("wrist_cam_left", "model"),
+            ("wrist_cam_right", "model"),
+        ]
 
     def test_kinova_gen3_publishes_its_own_wrist_camera(self) -> None:
         cameras = robot_layout(get_profile("kinova_gen3")).cameras
