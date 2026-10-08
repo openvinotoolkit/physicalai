@@ -22,6 +22,14 @@ from _helpers import make_float_array, make_stats_dict
 
 _MODES = ["mean_std", "min_max", "quantiles", "identity"]
 _EPS = 1e-8
+_VALUE_BOUND = 1e6
+_VALUE_STEP = 2.0**-10
+
+
+def _bound_finite(array: np.ndarray) -> np.ndarray:
+    """Clip and quantize finite values so float32 intermediates cannot overflow; keep nan/inf."""
+    bounded = np.round(np.clip(array, -_VALUE_BOUND, _VALUE_BOUND) / _VALUE_STEP) * _VALUE_STEP
+    return np.where(np.isfinite(array), bounded, array).astype(np.float32)
 
 
 def _make_compatible_array(
@@ -75,8 +83,9 @@ def test_one_input(data: bytes) -> None:
 
     stat_dim = fdp.ConsumeIntInRange(1, 16)
     stats = make_stats_dict(fdp, feature_name, stat_dim=stat_dim, mode=mode)
+    stats[feature_name] = {key: _bound_finite(value) for key, value in stats[feature_name].items()}
 
-    arr = _make_compatible_array(fdp, stat_dim)
+    arr = _bound_finite(_make_compatible_array(fdp, stat_dim))
     other_key = "passthrough_feature"
     if feature_name == other_key:
         other_key = "passthrough_feature.other"

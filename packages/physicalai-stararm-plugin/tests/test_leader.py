@@ -4,7 +4,7 @@ import sys
 from importlib import import_module
 from importlib.machinery import ModuleSpec
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, call
 
 import numpy as np
 import pytest
@@ -51,7 +51,7 @@ def _make_mock_smart_servo() -> MagicMock:
 
 
 @pytest.fixture
-def mock_smart_servo() -> Generator[MagicMock]:
+def mock_smart_servo(monkeypatch: pytest.MonkeyPatch) -> Generator[MagicMock]:
     module = _make_mock_smart_servo()
     sys.modules.pop("physicalai_stararm_plugin.stararm102hd", None)
     sys.modules.pop("physicalai_stararm_plugin.stararm102ld", None)
@@ -61,10 +61,15 @@ def mock_smart_servo() -> Generator[MagicMock]:
         del cast("_StararmPackageModule", pkg).stararm102hd
     if pkg is not None and hasattr(pkg, "stararm102ld"):
         del cast("_StararmPackageModule", pkg).stararm102ld
-    with patch.dict(sys.modules, {"motorbridge_smart_servo": module}):
-        import_module("physicalai_stararm_plugin.stararm102hd")
-        import_module("physicalai_stararm_plugin.stararm102ld")
-        yield module
+    # setitem restores only this key; patch.dict(sys.modules) would also drop
+    # every module imported during the test (e.g. loguru, multiprocessing).
+    monkeypatch.setitem(sys.modules, "motorbridge_smart_servo", module)
+    import_module("physicalai_stararm_plugin.stararm102hd")
+    import_module("physicalai_stararm_plugin.stararm102ld")
+    yield module
+    sys.modules.pop("physicalai_stararm_plugin.stararm102hd", None)
+    sys.modules.pop("physicalai_stararm_plugin.stararm102ld", None)
+    sys.modules.pop("physicalai_stararm_plugin", None)
 
 
 def _create_robot(mock_smart_servo: MagicMock, **kwargs: Any) -> Any:

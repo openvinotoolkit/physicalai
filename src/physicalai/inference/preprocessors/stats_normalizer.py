@@ -181,11 +181,6 @@ def _normalize(
 ) -> np.ndarray:
     """Apply forward normalization to a single tensor.
 
-    The arithmetic runs in float64 and the result is cast back to the dtype the
-    expression would produce in the input precision. Intermediates such as
-    ``x - q01`` can then not overflow float32 when the normalized value itself
-    is representable.
-
     Returns:
         Normalized array.
 
@@ -199,9 +194,7 @@ def _normalize(
         if not np.all(np.isfinite(mean)) or not np.all(np.isfinite(std)):
             msg = "mean_std stats contain NaN or Inf — the model artifact may be corrupted"
             raise ValueError(msg)
-        out_dtype = np.result_type(tensor, mean, std, 1.0)
-        x, mean, std = _as_float64(tensor, mean, std)
-        transformed = ((x - mean) / (std + _EPS)).astype(out_dtype, copy=False)
+        transformed = (tensor - mean) / (std + _EPS)
 
     elif mode == "min_max":
         min_val = stats["min"]
@@ -209,10 +202,8 @@ def _normalize(
         if not np.all(np.isfinite(min_val)) or not np.all(np.isfinite(max_val)):
             msg = "min_max stats contain NaN or Inf — the model artifact may be corrupted"
             raise ValueError(msg)
-        out_dtype = np.result_type(tensor, min_val, max_val, 1.0)
-        x, min_val, max_val = _as_float64(tensor, min_val, max_val)
         denom = max_val - min_val + _EPS
-        transformed = (2.0 * (x - min_val) / denom - 1.0).astype(out_dtype, copy=False)
+        transformed = 2.0 * (tensor - min_val) / denom - 1.0
 
     elif mode == "quantiles":
         q01 = stats["q01"]
@@ -220,20 +211,9 @@ def _normalize(
         if not np.all(np.isfinite(q01)) or not np.all(np.isfinite(q99)):
             msg = "quantiles stats contain NaN or Inf — the model artifact may be corrupted"
             raise ValueError(msg)
-        out_dtype = np.result_type(tensor, q01, q99, 1.0)
-        x, q01, q99 = _as_float64(tensor, q01, q99)
         denom = q99 - q01
         denom = np.where(denom == 0, _EPS, denom)
-        transformed = (2.0 * (x - q01) / denom - 1.0).astype(out_dtype, copy=False)
+        transformed = 2.0 * (tensor - q01) / denom - 1.0
 
     mask = stats.get("mask")
     return np.where(mask.astype(np.bool_), transformed, tensor) if mask is not None else transformed
-
-
-def _as_float64(*arrays: np.ndarray) -> tuple[np.ndarray, ...]:
-    """Return *arrays* as float64 so intermediate values cannot overflow float32.
-
-    Returns:
-        The inputs converted to ``np.float64``.
-    """
-    return tuple(np.asarray(array, dtype=np.float64) for array in arrays)

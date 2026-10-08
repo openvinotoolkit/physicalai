@@ -59,16 +59,20 @@ def _make_mock_motorbridge() -> MagicMock:
 
 
 @pytest.fixture
-def mock_motorbridge() -> Generator[MagicMock]:
+def mock_motorbridge(monkeypatch: pytest.MonkeyPatch) -> Generator[MagicMock]:
     module = _make_mock_motorbridge()
     sys.modules.pop("physicalai_rebot_b601_plugin.rs", None)
     sys.modules.pop("physicalai_rebot_b601_plugin", None)
     pkg = sys.modules.get("physicalai_rebot_b601_plugin")
     if pkg is not None and hasattr(pkg, "rs"):
         del cast("_RebotPackageModule", pkg).rs
-    with patch.dict(sys.modules, {"motorbridge": module}):
-        import_module("physicalai_rebot_b601_plugin.rs")
-        yield module
+    # setitem restores only this key; patch.dict(sys.modules) would also drop
+    # every module imported during the test (e.g. loguru, multiprocessing).
+    monkeypatch.setitem(sys.modules, "motorbridge", module)
+    import_module("physicalai_rebot_b601_plugin.rs")
+    yield module
+    sys.modules.pop("physicalai_rebot_b601_plugin.rs", None)
+    sys.modules.pop("physicalai_rebot_b601_plugin", None)
 
 
 def _create_robot(mock_motorbridge: MagicMock, **kwargs: Any) -> Any:

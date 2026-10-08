@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from importlib import import_module
 from importlib.machinery import ModuleSpec
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, call
 
 import numpy as np
 import pytest
@@ -62,16 +62,20 @@ def _make_mock_motorbridge() -> MagicMock:
 
 
 @pytest.fixture
-def mock_motorbridge() -> Generator[MagicMock]:
+def mock_motorbridge(monkeypatch: pytest.MonkeyPatch) -> Generator[MagicMock]:
     module = _make_mock_motorbridge()
     sys.modules.pop("physicalai_rebot_b601_plugin.dm", None)
     sys.modules.pop("physicalai_rebot_b601_plugin", None)
     pkg = sys.modules.get("physicalai_rebot_b601_plugin")
     if pkg is not None and hasattr(pkg, "dm"):
         del cast("_RebotPackageModule", pkg).dm
-    with patch.dict(sys.modules, {"motorbridge": module}):
-        import_module("physicalai_rebot_b601_plugin.dm")
-        yield module
+    # setitem restores only this key; patch.dict(sys.modules) would also drop
+    # every module imported during the test (e.g. loguru, multiprocessing).
+    monkeypatch.setitem(sys.modules, "motorbridge", module)
+    import_module("physicalai_rebot_b601_plugin.dm")
+    yield module
+    sys.modules.pop("physicalai_rebot_b601_plugin.dm", None)
+    sys.modules.pop("physicalai_rebot_b601_plugin", None)
 
 
 def _create_robot(mock_motorbridge: MagicMock, **kwargs: Any) -> Any:
