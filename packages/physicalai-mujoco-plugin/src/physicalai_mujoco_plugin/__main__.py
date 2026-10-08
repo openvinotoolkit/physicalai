@@ -52,6 +52,8 @@ if TYPE_CHECKING:
 
 _CLI_NAME = "physicalai-mujoco"
 _MAX_PORT = 65535
+_START_PATTERNS = (f"{_CLI_NAME} start", "physicalai_mujoco_plugin start")
+"""Command-line patterns of a ``start`` process: the console script and the ``-m`` module form."""
 _CAMERA_START_TIMEOUT_S = 15.0
 """Longest ``start --status-json`` waits for every camera's first frame before ``ready``."""
 _STARTUP_POLL_S = 0.05
@@ -527,8 +529,9 @@ def _run_start(args: argparse.Namespace, status: _StatusWriter) -> None:  # noqa
     status.phase("fetch")
     _fetch_robot_models(xml_path, profile, status.download if status.enabled else None)
     if shutdown.is_set():
-        logger.info("The parent process exited before the simulation started")
-        return
+        # Still a failed start: the events end with `error` (not silence) and the exit code is 1.
+        logger.error("The parent process exited before the simulation started")
+        sys.exit(1)
     if supervised:
         _require_unused_name(owner_name)
 
@@ -575,7 +578,7 @@ def _run_start(args: argparse.Namespace, status: _StatusWriter) -> None:  # noqa
     owner_pid = _owner_pid(owner_name)
     # SharedRobot.connect attaches to an owner that already uses the name instead of spawning one
     # (a race past _require_unused_name); a supervised start must never stop such an owner.
-    spawned = owner_pid is not None and _spawned_by_this_process(owner_pid)
+    spawned = owner_pid is not None and _spawned_owner(shared)
     may_stop_owner = spawned or not supervised
     logger.info(
         "MuJoCo {} running (scene={}, rate={} Hz)",
@@ -669,20 +672,17 @@ def _require_unused_name(owner_name: str) -> None:
         sys.exit(1)
 
 
-def _spawned_by_this_process(pid: int) -> bool:
-    """Return whether *pid* is a running child of this process: an owner this ``start`` spawned.
+def _spawned_owner(shared: SharedRobot) -> bool:
+    """Return whether *shared*'s ``connect()`` spawned the owner, rather than attaching to a running one.
+
+    ``SharedRobot`` keeps the owner handle only when its own connect won the spawn; an attacher,
+    including one that lost a spawn race past :func:`_require_unused_name`, has none. Unlike
+    ``waitpid`` on the owner's pid, this works on every platform.
 
     Returns:
-        ``True`` for a running child; ``False`` for any other process, or a child that exited.
+        ``True`` if this process started the owner.
     """
-    wnohang = getattr(os, "WNOHANG", None)
-    if wnohang is None:
-        return True  # Windows has no waitpid; the name check before connecting is the only guard
-    try:
-        child, _status = os.waitpid(pid, wnohang)
-    except ChildProcessError:
-        return False
-    return child == 0
+    return getattr(shared, "_owner", None) is not None
 
 
 @contextlib.contextmanager
@@ -1257,8 +1257,11 @@ def _stop(args: argparse.Namespace) -> None:
     # the ones whose own `--name`/`--bimanual` args resolve to this name.
     # Never this `stop` command or another plugin's owner worker, which
     # shares the same module path on the command line. This only runs once
-    # both name-based and HTTP-based lookups have failed.
-    for pid in _matching_pids(f"{_CLI_NAME} start"):
+    # both name-based and HTTP-based lookups have failed. Both launch forms
+    # count: the console script, and `python -m physicalai_mujoco_plugin start`,
+    # which Studio runs (SimulationLaunch argv).
+    candidates = [pid for pattern in _START_PATTERNS for pid in _matching_pids(pattern)]
+    for pid in dict.fromkeys(candidates):
         if _pid_owner_name(pid) != args.name:
             continue
         stopped = _terminate(pid, f"{_CLI_NAME} start") or stopped
