@@ -284,12 +284,15 @@ class OperatorControls:
 
         Floating-base robots go back to their home pose, at rest, and their base holds are armed
         again; then the scene's reset runs. Fixed-base robots keep the scene reset's handling
-        (SO-101 parity), so only scenes that set an arm pose move them.
+        (SO-101 parity), so only scenes that set an arm pose move them. A running replay ends
+        first, restoring the physics state from before it, so the next tick does not put the joints
+        back on its trajectory (``reset()`` does not go through the command queue).
         """
         import mujoco  # noqa: PLC0415
 
         from physicalai_mujoco_plugin.sim import place_home  # noqa: PLC0415
 
+        self._stop_replay()
         sim = self._sim
         if sim is not None and sim.bases:
             floating = [
