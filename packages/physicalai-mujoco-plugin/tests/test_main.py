@@ -7,6 +7,7 @@ import http.server
 import io
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -60,6 +61,43 @@ class TestHttpOwnerName:
         connection.getresponse.return_value = response
         with patch("physicalai_mujoco_plugin.__main__.http.client.HTTPConnection", return_value=connection):
             assert cli._http_owner_name("127.0.0.1", 8080) is None  # noqa: SLF001
+
+
+class TestIsStartCommand:
+    """Only a ``start`` invocation itself may be signalled by ``stop``'s pgrep fallback."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "physicalai-mujoco start --profile so101",
+            "/repo/.venv/bin/python3 /repo/.venv/bin/physicalai-mujoco start",
+            "uv run physicalai-mujoco start --bimanual",
+            "/usr/bin/python3.13 -m physicalai_mujoco_plugin start --profile trossen_wxai --name=studio-sim",
+            "uv run python -m physicalai_mujoco_plugin start",
+        ],
+    )
+    def test_start_invocations_count(self, command: str) -> None:
+        assert cli._is_start_command(shlex.split(command))  # noqa: SLF001
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "bash -c 'sleep 30; python -m physicalai_mujoco_plugin start'",
+            "python -m pytest -k 'physicalai_mujoco_plugin start'",
+            "python -c 'import physicalai_mujoco_plugin' physicalai_mujoco_plugin start",
+            "physicalai-mujoco stop --name start",
+            "-m physicalai_mujoco_plugin start",
+            "vim notes/physicalai-mujoco start.txt",
+            "python -m physicalai.robot.transport._owner_worker",
+        ],
+    )
+    def test_other_commands_that_mention_it_do_not(self, command: str) -> None:
+        assert not cli._is_start_command(shlex.split(command))  # noqa: SLF001
+
+    def test_a_shell_mentioning_start_resolves_to_no_owner(self) -> None:
+        command = "bash -c 'sleep 30; python -m physicalai_mujoco_plugin start'"
+        with patch.object(cli, "_pid_command_line", return_value=command):
+            assert cli._pid_owner_name(4321) is None  # noqa: SLF001
 
 
 class TestPidOwnerName:
@@ -772,6 +810,7 @@ def _launch(  # noqa: PLR0913
     return launch
 
 
+CANCELLED = "The simulation was stopped before it was ready (its parent process exited or it got a signal)"
 PHASES = [
     {"event": "phase", "phase": "fetch"},
     {"event": "phase", "phase": "connect"},
@@ -1145,9 +1184,36 @@ class TestExitWithParent:
         launch.factory.assert_not_called()
         assert launch.exit_code == 1
         assert launch.events[-1] == {
-            "event": "error", "message": "The parent process exited before the simulation started",
+            "event": "error", "message": CANCELLED,
         }  # fmt: skip
         assert [event["event"] for event in launch.events].count("error") == 1
+
+    def test_eof_while_the_owner_starts_is_an_error_and_stops_it(self) -> None:
+        shutdowns: list[threading.Event] = []
+        with patch.object(cli, "_shut_down_on_stdin_eof", side_effect=shutdowns.append):
+            launch = _launch(["--exit-with-parent", "--status-json"], on_connect=lambda: shutdowns[0].set())
+        assert launch.exit_code == 1
+        assert [event["event"] for event in launch.events][-1] == "error"
+        assert "ready" not in [event["event"] for event in launch.events]
+        assert launch.events[-1]["message"] == CANCELLED
+        assert launch.http_stop.called or launch.signal_stop.called  # the spawned owner is stopped
+
+    def test_eof_while_waiting_for_cameras_is_an_error_and_stops_the_owner(self) -> None:
+        shutdowns: list[threading.Event] = []
+
+        def cameras(*_args: object, **_kwargs: object) -> list[str]:
+            shutdowns[0].set()
+            return ["wrist"]
+
+        with (
+            patch.object(cli, "_shut_down_on_stdin_eof", side_effect=shutdowns.append),
+            patch.object(cli, "_working_cameras", side_effect=cameras),
+        ):
+            launch = _launch(["--exit-with-parent", "--status-json"])
+        assert launch.exit_code == 1
+        assert [event["event"] for event in launch.events] == [*(e["event"] for e in PHASES), "error"]
+        assert launch.events[-1]["message"] == CANCELLED
+        assert launch.http_stop.called or launch.signal_stop.called
 
     def test_viewer_theme_reaches_the_driver(self) -> None:
         assert _launch(["--viewer-theme", "studio"]).init_args["viewer_theme"] == "studio"
