@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import mujoco
 import numpy as np
 import pytest
+from fastapi.testclient import TestClient
 from physicalai.config import Config
 
 from physicalai_mujoco_plugin import control
@@ -21,6 +22,7 @@ from physicalai_mujoco_plugin.http_server import (
     ResetCommand,
     SetAutoResetCommand,
     SetObjectPoseCommand,
+    SetOverviewCommand,
     SetSeedCommand,
     ShutdownCommand,
     SwitchSceneCommand,
@@ -226,6 +228,8 @@ class TestConstruction:
             ({"substeps": 0}, "substeps at least 1"),
             ({"scene": "conveyor_sort", "profile": "ur5e"}, "does not support"),
             ({"viewer_theme": "neon"}, "Unsupported viewer_theme"),
+            ({"overview": "top"}, "Unsupported overview 'top'"),
+            ({"profile": "unitree_go2", "overview": "front"}, "Scene 'floor_flat' has no front overview camera"),
             ({"exit_with_pid": 0}, "exit_with_pid must be a process ID"),
             ({"exit_with_pid": -1}, "exit_with_pid must be a process ID"),
         ],
@@ -676,6 +680,118 @@ class TestStatus:
 
         robot._episode_auto_reset = None  # noqa: SLF001
         assert robot._http_status()["episode"] == {"enabled": False}  # noqa: SLF001
+
+
+def _overview_pose(robot: MuJoCoRobot) -> tuple[np.ndarray, np.ndarray]:
+    """Return the overview camera's world position and orientation matrix."""
+    model, data = robot._model, robot._data  # noqa: SLF001
+    camera = model.camera("overview").id
+    return data.cam_xpos[camera].copy(), data.cam_xmat[camera].copy()
+
+
+def _composed_overview_pose(scene_id: str, style: str) -> tuple[np.ndarray, np.ndarray]:
+    """Return the overview camera's pose in the SO-101's single-arm *scene_id* composed with *style*."""
+    model = get_scene(scene_id).load_model(overview=style)  # type: ignore[arg-type]
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    camera = model.camera("overview").id
+    return data.cam_xpos[camera].copy(), data.cam_xmat[camera].copy()
+
+
+def _assert_pose(actual: tuple[np.ndarray, np.ndarray], expected: tuple[np.ndarray, np.ndarray]) -> None:
+    for got, want in zip(actual, expected, strict=True):
+        np.testing.assert_allclose(got, want, atol=1e-12)
+
+
+class TestOverviewStyle:
+    """``overview``: the shoulder or front camera, chosen at start and switched while running."""
+
+    @pytest.fixture
+    def scene_robot(self) -> Iterator[MuJoCoRobot]:
+        robot = MuJoCoRobot("so101", scene="single_pick_place", substeps=1, cameras=[])
+        robot.connect()
+        yield robot
+        robot.disconnect()
+
+    def test_the_start_option_places_the_camera_and_survives_pickling(self) -> None:
+        robot = MuJoCoRobot("so101", scene="single_pick_place", overview="front", substeps=1, cameras=[])
+        assert robot.__getstate__()["overview"] == "front"
+        assert Config.from_instance(robot).instantiate()._overview == "front"  # noqa: SLF001
+        restored = MuJoCoRobot.__new__(MuJoCoRobot)
+        restored.__setstate__(robot.__getstate__())
+        assert restored._overview == "front"  # noqa: SLF001
+        robot.connect()
+        try:
+            _assert_pose(_overview_pose(robot), _composed_overview_pose("single_pick_place", "front"))
+            assert robot._http_status()["overview_style"] == "front"  # noqa: SLF001
+        finally:
+            robot.disconnect()
+
+    def test_a_custom_model_keeps_its_own_camera(self, model_path) -> None:
+        with pytest.raises(ValueError, match="A custom model keeps its own overview camera"):
+            so101(model_path, overview="front")
+        robot = so101(model_path)
+        robot.connect()
+        try:
+            status = robot._http_status()  # noqa: SLF001
+            assert (status["overview_style"], status["overview_styles"]) == ("shoulder", ["shoulder"])
+            assert robot._set_overview("front") is False  # noqa: SLF001
+            assert robot._overview == "shoulder"  # noqa: SLF001
+        finally:
+            robot.disconnect()
+
+    def test_a_live_switch_moves_only_the_camera_and_back(self, scene_robot: MuJoCoRobot) -> None:
+        robot = scene_robot
+        shoulder = _overview_pose(robot)
+        joints = robot._data.qpos.copy()  # noqa: SLF001
+        assert robot._http_status()["overview_styles"] == ["shoulder", "front"]  # noqa: SLF001
+
+        robot._commands.put(SetOverviewCommand(style="front"))  # noqa: SLF001
+        robot.get_observation()
+
+        _assert_pose(_overview_pose(robot), _composed_overview_pose("single_pick_place", "front"))
+        assert robot._http_status()["overview_style"] == "front"  # noqa: SLF001
+        assert robot._panel_state().overview_style == "front"  # noqa: SLF001
+        np.testing.assert_allclose(robot._data.qpos, joints, atol=1e-3)  # noqa: SLF001 - one physics step
+
+        robot._commands.put(SetOverviewCommand(style="shoulder"))  # noqa: SLF001
+        robot.get_observation()
+        _assert_pose(_overview_pose(robot), shoulder)
+
+    def test_a_scene_switch_keeps_the_style(self, scene_robot: MuJoCoRobot) -> None:
+        robot = scene_robot
+        assert robot._set_overview("front")  # noqa: SLF001
+        assert robot._switch_to_scene("yahtzee")  # noqa: SLF001
+        robot.get_observation()
+
+        _assert_pose(_overview_pose(robot), _composed_overview_pose("yahtzee", "front"))
+        assert robot._http_status()["overview_style"] == "front"  # noqa: SLF001
+
+    def test_refused_while_studio_records(self, scene_robot: MuJoCoRobot) -> None:
+        from physicalai_mujoco_plugin.http_server import build_app  # noqa: PLC0415
+
+        robot = scene_robot
+        shoulder = _overview_pose(robot)
+        robot._automation.recorder._phase = "recording"  # noqa: SLF001
+        status = robot._http_status()  # noqa: SLF001
+        assert "Automatic Studio recording is on" in status["overview_locked"]
+        assert robot._panel_state().overview_locked == status["overview_locked"]  # noqa: SLF001
+        app = build_app(
+            service_name="sim", buffers={}, commands=robot._commands, get_status=robot._http_status  # noqa: SLF001
+        )
+
+        response = TestClient(app).post("/overview", json={"style": "front"})
+        assert (response.status_code, response.json()["detail"]) == (409, status["overview_locked"])
+        assert robot._commands.empty()  # noqa: SLF001
+        # A switch that raced the recording's start is refused on the sim thread too.
+        robot._commands.put(SetOverviewCommand(style="front"))  # noqa: SLF001
+        robot.get_observation()
+        assert robot._overview == "shoulder"  # noqa: SLF001
+        _assert_pose(_overview_pose(robot), shoulder)
+
+        robot._automation.recorder._phase = "done"  # noqa: SLF001
+        assert robot._http_status()["overview_locked"] is None  # noqa: SLF001
+        assert TestClient(app).post("/overview", json={"style": "front"}).status_code == 200
 
 
 class TestSceneSwitching:
