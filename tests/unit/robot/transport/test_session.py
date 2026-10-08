@@ -106,7 +106,7 @@ class TestSessionConfig:
 
 @requires_zenoh
 def test_subscriber_reaches_an_owner_that_starts_listening_later() -> None:
-    """A subscriber opened before its owner listens must reach it within a fraction of a second.
+    """A subscriber opened before its owner listens must reach it before Zenoh's default retry would.
 
     With Zenoh's default connect backoff (1 s, 2 s, 4 s, ...) an owner that starts listening
     between two retries stays unreachable for up to seconds, so ``SharedRobot.connect`` could
@@ -116,7 +116,7 @@ def test_subscriber_reaches_an_owner_that_starts_listening_later() -> None:
     subscriber = open_session(name)
     owner = None
     try:
-        time.sleep(1.2)  # past Zenoh's default first retry, into its 2 s period
+        time.sleep(3.2)  # past Zenoh's default 1 s and 2 s retries, into its 4 s period
         owner = open_session(name, listen=True)
         key = f"test/{name}/ping"
         queryable = owner.declare_queryable(key, lambda query: query.reply(key, b"pong"))
@@ -130,7 +130,9 @@ def test_subscriber_reaches_an_owner_that_starts_listening_later() -> None:
         elapsed = time.monotonic() - start
         queryable.undeclare()
         assert reply is not None
-        assert elapsed < 1.0, f"first reply after {elapsed:.2f}s"
+        # Worst case with the fast retry: one 500 ms retry period plus one empty 0.5 s get.
+        # Zenoh's default backoff would not retry again for seconds.
+        assert elapsed < 2.0, f"first reply after {elapsed:.2f}s"
     finally:
         subscriber.close()
         if owner is not None:
