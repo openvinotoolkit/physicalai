@@ -49,12 +49,12 @@ def make_callback(_patch_rerun: Any, mock_rerun: MagicMock) -> Any:
     return _factory
 
 
-def _lifecycle_start(session_id: str = "sess-1", fps: int = 30) -> LifecycleEvent:
+def _lifecycle_start(session_id: str = "sess-1", fps: int = 30, multiplier: int = 1) -> LifecycleEvent:
     return LifecycleEvent(
         session_id=session_id,
         timestamp=1000.0,
         event="start",
-        metadata={"fps": fps, "cameras": []},
+        metadata={"fps": fps, "interpolation_multiplier": multiplier, "cameras": []},
     )
 
 
@@ -287,6 +287,20 @@ class TestRerunCallbackInference:
         mock_rerun.send_columns.assert_called_once()
         call_args = mock_rerun.send_columns.call_args
         assert call_args.args[0] == "robot/predicted"
+
+    @pytest.mark.parametrize(("multiplier", "expected"), [(1, [11, 12, 13]), (3, [13, 16, 19])])
+    def test_prediction_steps_strided_by_multiplier(
+        self, make_callback: Any, mock_rerun: MagicMock, multiplier: int, expected: list[int]
+    ) -> None:
+        cb = make_callback()
+        cb.on_lifecycle(_lifecycle_start(fps=30, multiplier=multiplier))
+        cb.on_tick(_tick(step=10))
+
+        cb.on_inference(_inference(horizon=3, dof=2))
+
+        step_col = mock_rerun.send_columns.call_args.kwargs["indexes"][0]
+        assert step_col[1] == ("step",)
+        np.testing.assert_array_equal(step_col[2]["sequence"], expected)
 
     def test_inference_logs_queue_spike(self, make_callback: Any, mock_rerun: MagicMock) -> None:
         cb = make_callback()
