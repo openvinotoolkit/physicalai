@@ -47,18 +47,18 @@ REBOT_B601_DM_JOINT_LIMITS_DEG: Final = {
     "elbow_flex": (-200.0, 0.0),
     "wrist_flex": (-80.0, 90.0),
     "wrist_yaw": (-90.0, 90.0),
-    "wrist_roll": (-90.0, 90.0),
+    "wrist_roll": (-130.0, 130.0),
     "gripper": (-270.0, 0.0),
 }
 
 REBOT_B601_DM_JOINT_DIRECTIONS: Final = {
-    "shoulder_pan": -1.0,
-    "shoulder_lift": -1.0,
+    "shoulder_pan": 1.0,
+    "shoulder_lift": 1.0,
     "elbow_flex": 1.0,
     "wrist_flex": 1.0,
     "wrist_yaw": 1.0,
-    "wrist_roll": -1.0,
-    "gripper": -6.0,
+    "wrist_roll": 1.0,
+    "gripper": 1.0,
 }
 
 REBOT_B601_DM_POS_VEL_DEG_S: Final = (250.0, 250.0, 250.0, 200.0, 200.0, 200.0, 200.0)
@@ -114,22 +114,22 @@ REBOT_B601_RS_GRIPPER_MAX_TORQUE_NM: Final = 14.0
 
 REBOT_B601_RS_JOINT_LIMITS_DEG: Final = {
     "shoulder_pan": (-145.0, 145.0),
-    "shoulder_lift": (-0.0, 170.0),
-    "elbow_flex": (-0.0, 200.0),
-    "wrist_flex": (-80.0, 90.0),
+    "shoulder_lift": (-170.0, 0.0),
+    "elbow_flex": (-200.0, 0.0),
+    "wrist_flex": (-90.0, 80.0),
     "wrist_yaw": (-90.0, 90.0),
-    "wrist_roll": (-90.0, 90.0),
-    "gripper": (-0.0, 270.0),
+    "wrist_roll": (-130.0, 130.0),
+    "gripper": (-270.0, 0.0),
 }
 
 REBOT_B601_RS_JOINT_DIRECTIONS: Final = {
-    "shoulder_pan": 1.0,
-    "shoulder_lift": 1.0,
+    "shoulder_pan": -1.0,
+    "shoulder_lift": -1.0,
     "elbow_flex": -1.0,
     "wrist_flex": -1.0,
     "wrist_yaw": -1.0,
-    "wrist_roll": 1.0,
-    "gripper": 6.0,
+    "wrist_roll": -1.0,
+    "gripper": -1.0,
 }
 
 REBOT_B601_RS_MIT_KP: Final = {

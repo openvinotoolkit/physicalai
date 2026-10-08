@@ -247,7 +247,7 @@ class TestReBotB601DMAction:
         action = np.array([200.0, 170.0, -500.0, -45.0, -100.0, 100.0, 100.0], dtype=np.float32)
         robot.send_action(action)
 
-        expected_targets = (-145.0, -170.0, -200.0, -45.0, -90.0, -90.0, -270.0)
+        expected_targets = (145.0, 0.0, -200.0, -45.0, -90.0, 100.0, 0.0)
         for i, (motor, target) in enumerate(zip(motors, expected_targets, strict=True)):
             name = robot.joint_names[i]
             motor.send_mit.assert_called_once_with(
@@ -267,10 +267,7 @@ class TestReBotB601DMAction:
         # Set each motor 10 degrees from its mapped target.
         for motor in motors:
             motor.get_state.return_value = _MotorState(pos=0.0)
-        action = np.array(
-            [-10.0, 10.0, -10.0, 10.0, 10.0, -10.0, 10.0 / 6.0],
-            dtype=np.float32,
-        )
+        action = np.full(7, -10.0, dtype=np.float32)
         robot.send_action(action, goal_time=0.2)
 
         velocity = math.radians(50.0)
@@ -321,9 +318,9 @@ class TestReBotB601DMAction:
         action = np.array([200.0, 170.0, -200.0, 45.0, 90.0, 90.0, 0.0], dtype=np.float32)
         robot.send_action(action)
 
-        # shoulder_pan present=10, mapped target=-145, limited to a 5-degree step -> 5
+        # shoulder_pan present=10, target=150, limited to a 5-degree public-frame step -> 15
         motors[0].send_mit.assert_called_once_with(
-            math.radians(5.0),
+            math.radians(15.0),
             0.0,
             REBOT_B601_DM_MIT_KP["shoulder_pan"],
             REBOT_B601_DM_MIT_KD["shoulder_pan"],
@@ -359,14 +356,31 @@ class TestReBotB601DMAction:
         with pytest.raises(ValueError, match=gain_name):
             _create_robot(mock_motorbridge, **{gain_name: gain})
 
-    @pytest.mark.parametrize("max_relative_target", [0.0, -1.0, math.inf, math.nan])
+    @pytest.mark.parametrize("max_relative_target", [0.0, -2.0, math.inf, math.nan])
     def test_invalid_max_relative_target_raises(
         self,
         mock_motorbridge: MagicMock,
         max_relative_target: float,
     ) -> None:
-        with pytest.raises(ValueError, match="max_relative_target must be a finite positive value"):
+        with pytest.raises(ValueError, match="max_relative_target must be -1, None, or a finite positive value"):
             _create_robot(mock_motorbridge, max_relative_target=max_relative_target)
+
+    def test_minus_one_disables_max_relative_target(self, mock_motorbridge: MagicMock) -> None:
+        robot = _create_robot(mock_motorbridge, max_relative_target=-1.0)
+
+        assert robot.max_relative_target is None
+
+    def test_set_zero_position_disables_torque_and_zeroes_every_motor(self, mock_motorbridge: MagicMock) -> None:
+        robot = _create_robot(mock_motorbridge)
+        robot.connect()
+        controller = mock_motorbridge.Controller.from_dm_serial.return_value
+        controller.reset_mock()
+
+        robot.set_zero_position()
+
+        controller.disable_all.assert_called_once()
+        for motor in controller.mock_motors:
+            motor.set_zero_position.assert_called_once()
 
     @pytest.mark.parametrize("goal_time", [0.0, -0.1, math.inf, math.nan])
     def test_send_action_rejects_non_positive_goal_time(

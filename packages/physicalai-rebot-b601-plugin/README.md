@@ -12,6 +12,15 @@ Third-party Seeed reBot B601 robot arm plugin for [PhysicalAI](https://github.co
 - Optional Star Arm leader → follower teleoperation
 - Bundled URDFs for gravity compensation and kinematics
 
+DM and RS expose the same LeRobot-compatible public joint frame. DM motor
+directions are `+1` and RS motor directions are `-1`; the public gripper range is
+`-270..0` degrees with no additional magnitude conversion in either follower.
+Commands are clipped to Seeed's motor-family hardware limits without changing
+that shared dataset frame.
+Both variants support an optional public-frame `max_relative_target`; `None` or
+the Studio value `-1` disables the limit. RS remains MIT-controlled by default,
+matching LeRobot's RS defaults, which do not provide POS_VEL velocity settings.
+
 ## Hardware
 
 | Class         | Arm              | Motors                        | Protocol                     |
@@ -80,8 +89,8 @@ uv run physicalai run --config packages/physicalai-rebot-b601-plugin/examples/ru
 
 ## Zero-pose calibration
 
-`ReBotB601RS.set_zero_position()` disables torque and stores the arm's current pose as zero on
-every motor. Physical AI Studio runs it from its calibration step when you add a B601-RS follower:
+`set_zero_position()` on either B601 variant disables torque and stores the arm's current pose as zero on
+every motor. Physical AI Studio runs it from its calibration step when you add a B601 follower:
 move the arm into its folded rest pose with the gripper closed, then set zero.
 
 ## URDF Models
