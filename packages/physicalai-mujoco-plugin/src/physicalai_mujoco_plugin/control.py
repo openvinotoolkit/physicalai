@@ -24,6 +24,7 @@ import os
 import queue
 import sys
 import threading
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -164,8 +165,20 @@ class OperatorControls:
         return scene.overview_styles
 
     def _custom_model_loaded(self) -> bool:
-        """Return whether the scene XML is the custom ``model_path``, not a registered scene's file."""
-        return self._model_path is not None and self._scene_config is self._initial_scene
+        """Return whether the running scene XML is the custom ``model_path``, not a registered scene's file.
+
+        Before connect, the constructor's scene loads ``model_path``. A switch away and back to that
+        scene's id loads its registered XML, so a connected robot checks the XML it runs.
+        """
+        if self._model_path is None:
+            return False
+        if self._sim is None:
+            return self._scene_config is self._initial_scene
+        return self._is_custom_xml(self._sim.xml_path)
+
+    def _is_custom_xml(self, xml_path: str | Path) -> bool:
+        """Return whether *xml_path* is the custom ``model_path``."""
+        return self._model_path is not None and Path(xml_path).resolve() == Path(self._model_path).resolve()
 
     def _overview_lock(self) -> str | None:
         """Return why the overview camera must not move now: automatic Studio recording is on.

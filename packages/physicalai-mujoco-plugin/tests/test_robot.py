@@ -740,6 +740,27 @@ class TestOverviewStyle:
         finally:
             robot.disconnect()
 
+    def test_the_custom_models_scene_offers_front_once_its_registered_xml_runs(self, tmp_path) -> None:
+        """``model_path`` replaces the start scene's XML only; switched back to by id, that scene is registered."""
+        custom = tmp_path / "custom.xml"
+        custom.write_text('<mujoco><worldbody><frame name="robot_mount"/></worldbody></mujoco>')
+        robot = MuJoCoRobot("so101", scene="single_pick_place", model_path=str(custom), substeps=1, cameras=[])
+        robot.connect()
+        try:
+            assert robot._http_status()["overview_styles"] == ["shoulder"]  # noqa: SLF001
+            assert robot._switch_to_scene("yahtzee")  # noqa: SLF001
+            assert robot._set_overview("front")  # noqa: SLF001
+            assert robot._switch_to_scene("single_pick_place")  # noqa: SLF001
+            robot.get_observation()
+
+            status = robot._http_status()  # noqa: SLF001
+            assert (status["overview_style"], status["overview_styles"]) == ("front", ["shoulder", "front"])
+            _assert_pose(_overview_pose(robot), _composed_overview_pose("single_pick_place", "front"))
+            assert robot._set_overview("shoulder")  # noqa: SLF001
+            assert robot._set_overview("front")  # noqa: SLF001
+        finally:
+            robot.disconnect()
+
     def test_a_live_switch_moves_only_the_camera_and_back(self, scene_robot: MuJoCoRobot) -> None:
         robot = scene_robot
         shoulder = _overview_pose(robot)
