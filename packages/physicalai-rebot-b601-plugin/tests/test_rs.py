@@ -277,7 +277,7 @@ class TestReBotB601RSAction:
         motors[2].send_mit.assert_called_once_with(math.radians(200.0), 0.0, 150.0, 10.0, 0.0)
         motors[3].send_mit.assert_called_once_with(math.radians(45.0), 0.0, 50.0, 5.0, 0.0)
         motors[4].send_mit.assert_called_once_with(math.radians(90.0), 0.0, 50.0, 4.0, 0.0)
-        motors[5].send_mit.assert_called_once_with(math.radians(-100.0), 0.0, 50.0, 4.0, 0.0)
+        motors[5].send_mit.assert_called_once_with(math.radians(-90.0), 0.0, 50.0, 4.0, 0.0)
         # The gripper has not moved yet, so it counts as stalled and uses the hold limit.
         gripper_tau = motors[6].send_mit.call_args.args[4]
         assert gripper_tau == pytest.approx(1.0)

@@ -15,8 +15,7 @@ Third-party Seeed reBot B601 robot arm plugin for [PhysicalAI](https://github.co
 DM and RS expose the same LeRobot-compatible public joint frame. DM motor
 directions are `+1` and RS motor directions are `-1`; the public gripper range is
 `-270..0` degrees with no additional magnitude conversion in either follower.
-Commands are clipped to Seeed's motor-family hardware limits without changing
-that shared dataset frame.
+Commands use LeRobot's DM and RS soft limits in the same public frame.
 Both variants support an optional public-frame `max_relative_target`; `None` or
 the Studio value `-1` disables the limit. RS remains MIT-controlled by default,
 matching LeRobot's RS defaults, which do not provide POS_VEL velocity settings.

@@ -238,6 +238,19 @@ class TestReBotB601DMObservation:
 
 
 class TestReBotB601DMAction:
+    def test_echoing_observation_holds_current_pose(self, mock_motorbridge: MagicMock) -> None:
+        robot = _create_robot(mock_motorbridge, control_mode="mit", gripper_control_mode="mit")
+        robot.connect()
+        motors = list(mock_motorbridge.Controller.from_dm_serial.return_value.mock_motors)
+        motor_degrees = [-20.0, -30.0, -40.0, 10.0, -20.0, 15.0, -60.0]
+        for motor, degrees in zip(motors, motor_degrees, strict=True):
+            motor.get_state.return_value = _MotorState(pos=math.radians(degrees))
+
+        robot.send_action(robot.get_observation().joint_positions)
+
+        for motor, degrees in zip(motors, motor_degrees, strict=True):
+            assert motor.send_mit.call_args.args[0] == pytest.approx(math.radians(degrees), abs=1e-5)
+
     def test_send_action_mit_maps_clips_and_sends(self, mock_motorbridge: MagicMock) -> None:
         robot = _create_robot(mock_motorbridge, control_mode="mit", gripper_control_mode="mit")
         robot.connect()
@@ -247,7 +260,7 @@ class TestReBotB601DMAction:
         action = np.array([200.0, 170.0, -500.0, -45.0, -100.0, 100.0, 100.0], dtype=np.float32)
         robot.send_action(action)
 
-        expected_targets = (145.0, 0.0, -200.0, -45.0, -90.0, 100.0, 0.0)
+        expected_targets = (150.0, 1.0, -200.0, -45.0, -90.0, 90.0, 0.0)
         for i, (motor, target) in enumerate(zip(motors, expected_targets, strict=True)):
             name = robot.joint_names[i]
             motor.send_mit.assert_called_once_with(
