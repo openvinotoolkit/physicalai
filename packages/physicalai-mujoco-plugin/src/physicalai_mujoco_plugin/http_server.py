@@ -8,7 +8,7 @@ The simulation thread renders camera frames into per-camera
 reads the latest frame per client and encodes it as JPEG. Streams wait
 for new frames on the event loop (:meth:`FrameBuffer.async_waiter`), so a
 client costs a task rather than a pooled thread. Control requests (reset,
-scene switch, home, seed, auto-reset, belt speed, object pose, replay, shutdown) are enqueued
+scene switch, home, seed, auto-reset, belt speed, object pose, overview camera, replay, shutdown) are enqueued
 onto a command queue that the simulation thread drains, so MuJoCo
 *stepping* only ever happens on the simulation thread; the status callback
 passed to :func:`build_app` runs on the HTTP thread and is responsible for
@@ -36,6 +36,7 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, ValidationError, field_validator, model_validator
 from starlette.concurrency import run_in_threadpool
 
+from physicalai_mujoco_plugin.compose import OverviewStyle  # noqa: TC001 - pydantic reads it at runtime
 from physicalai_mujoco_plugin.constants import MAX_SEED
 from physicalai_mujoco_plugin.studio_recorder import DEFAULT_TASK, MAX_EPISODES, MAX_TASK_CHARS, RecordingOptions
 
@@ -84,6 +85,13 @@ class ShutdownCommand:
 @dataclass(frozen=True)
 class HomeCommand:
     """Move the arm joints to the current scene's home pose."""
+
+
+@dataclass(frozen=True)
+class SetOverviewCommand:
+    """Move the scene's ``overview`` camera to another style's pose (``shoulder`` or ``front``)."""
+
+    style: OverviewStyle
 
 
 @dataclass(frozen=True)
@@ -156,6 +164,7 @@ SimCommand = (
     | SwitchSceneCommand
     | ShutdownCommand
     | HomeCommand
+    | SetOverviewCommand
     | SetSeedCommand
     | SetAutoResetCommand
     | SetBeltSpeedCommand
@@ -200,6 +209,14 @@ class StudioRecordingRequest(BaseModel):
             msg = "task must not be blank"
             raise ValueError(msg)
         return task
+
+
+class OverviewRequest(BaseModel):
+    """Body for ``POST /overview``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    style: OverviewStyle
 
 
 class SeedRequest(BaseModel):
@@ -412,6 +429,9 @@ def build_app(
             (free-object poses), ``cameras`` (per-camera config),
             ``viewer_url`` (the viser page, served at ``GET /viewer``), and
             for floating bases ``floating_base``, ``fallen`` and ``bases``;
+            ``POST /overview`` reads ``overview_style``, ``overview_styles``
+            (the styles the scene offers) and ``overview_locked`` (why the
+            camera must not move now, or ``None``);
             ``POST /replay`` also reads ``joint_names``, ``profile`` and
             ``replay.unsupported_joints``.
         get_leader: Returns the virtual leader pose served at ``GET /leader``
@@ -446,6 +466,7 @@ def build_app(
                 "switch_scene": "POST /scenes/{scene_id}",
                 "reset": "POST /reset",
                 "home": "POST /home",
+                "overview": "POST /overview",
                 "seed": "POST /seed",
                 "auto_reset": "POST /episode/auto-reset",
                 "belt_speed": "POST /conveyor/belt-speed",
@@ -591,6 +612,19 @@ def _add_sim_control_routes(
     def home() -> dict[str, Any]:
         commands.put(HomeCommand())
         return {"status": "queued"}
+
+    @app.post("/overview")
+    def overview(request: OverviewRequest) -> dict[str, Any]:
+        status = get_status()
+        if request.style != status.get("overview_style"):
+            locked = status.get("overview_locked")
+            if locked:
+                raise HTTPException(status_code=409, detail=locked)
+            if request.style not in status.get("overview_styles", ()):
+                detail = f"The current scene has no {request.style} overview camera; it keeps its own cameras"
+                raise HTTPException(status_code=409, detail=detail)
+        commands.put(SetOverviewCommand(style=request.style))
+        return {"status": "queued", "style": request.style}
 
     @app.post("/seed")
     def seed(request: SeedRequest) -> dict[str, Any]:

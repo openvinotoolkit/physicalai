@@ -31,6 +31,7 @@ from physicalai.config import export_config
 from physicalai_mujoco_plugin.camera_thread import RateMeter
 from physicalai_mujoco_plugin.cameras import CameraConfig, CameraService, offscreen_rendering_available
 from physicalai_mujoco_plugin.channels import TorqueMode
+from physicalai_mujoco_plugin.compose import OverviewStyle
 from physicalai_mujoco_plugin.control import OperatorControls
 from physicalai_mujoco_plugin.profiles import DefaultUnit, RobotProfile, get_profile
 from physicalai_mujoco_plugin.scene_objects import SceneObjects, SpawnArea
@@ -93,6 +94,7 @@ class MuJoCoRobot(OperatorControls):
         substeps: int | None = None,
         rate_hz: float = 50.0,
         cameras: list[CameraConfig | dict] | None = None,
+        overview: OverviewStyle = "shoulder",
         enable_viewer: bool = False,
         viser_host: str = "127.0.0.1",
         viser_port: int = 9090,
@@ -120,6 +122,10 @@ class MuJoCoRobot(OperatorControls):
             rate_hz: The owner's control rate, used to derive ``substeps``.
             cameras: Camera streams; ``None`` streams the robot cameras and the scene's ``overview``
                 (and ``chase``), or nothing where MuJoCo cannot render.
+            overview: Where a tabletop scene's ``overview`` camera stands: ``shoulder`` (the scene's
+                own pose, behind the robot) or ``front`` (across the work area, facing the robots).
+                The viewer and ``POST /overview`` switch it while the simulation runs; scene
+                switches keep it. A custom ``model_path`` keeps its own camera.
             enable_viewer: Open the viser viewer (or the native viewer where viser is unavailable).
             viser_host: viser bind address.
             viser_port: viser port.
@@ -135,9 +141,10 @@ class MuJoCoRobot(OperatorControls):
                 ``physicalai-mujoco start --exit-with-parent`` passes its own PID.
 
         Raises:
-            ValueError: If ``unit``, ``torque_mode``, ``rate_hz``, ``substeps``, ``viewer_theme`` or
-                ``exit_with_pid`` is invalid, or the scene, the profile or ``model_path`` cannot run
-                the requested arm count.
+            ValueError: If ``unit``, ``torque_mode``, ``rate_hz``, ``substeps``, ``overview``,
+                ``viewer_theme`` or ``exit_with_pid`` is invalid, the scene, the profile or
+                ``model_path`` cannot run the requested arm count, or the scene has no ``front``
+                overview and ``overview`` asks for it.
         """
         if unit is not None and unit not in get_args(DefaultUnit):
             msg = f"Unsupported unit {unit!r}; expected one of {get_args(DefaultUnit)}"
@@ -148,6 +155,9 @@ class MuJoCoRobot(OperatorControls):
         if not rate_hz > 0 or (substeps is not None and substeps < 1):
             msg = f"rate_hz must be positive and substeps at least 1, got {rate_hz!r} and {substeps!r}"
             raise ValueError(msg)
+        if overview not in get_args(OverviewStyle):
+            msg = f"Unsupported overview {overview!r}; expected one of {get_args(OverviewStyle)}"
+            raise ValueError(msg)
         if viewer_theme not in get_args(ViewerTheme):
             msg = f"Unsupported viewer_theme {viewer_theme!r}; expected one of {get_args(ViewerTheme)}"
             raise ValueError(msg)
@@ -157,7 +167,7 @@ class MuJoCoRobot(OperatorControls):
         self._recipe: dict[str, object] = {
             "profile": profile, "scene": scene, "bimanual": bimanual, "model_path": model_path, "unit": unit,
             "torque_mode": torque_mode, "substeps": substeps, "rate_hz": rate_hz, "cameras": cameras,
-            "enable_viewer": enable_viewer, "viser_host": viser_host, "viser_port": viser_port,
+            "overview": overview, "enable_viewer": enable_viewer, "viser_host": viser_host, "viser_port": viser_port,
             "viewer_theme": viewer_theme, "http_host": http_host, "http_port": http_port, "owner_name": owner_name,
             "studio_url": studio_url, "seed": seed, "exit_with_pid": exit_with_pid,
         }  # fmt: skip
@@ -216,6 +226,12 @@ class MuJoCoRobot(OperatorControls):
         self._replay: Replay | None = None
         self._exit_with_pid = exit_with_pid
         self._process_watch: threading.Event | None = None
+        self._overview: OverviewStyle = "shoulder"
+        """Where the ``overview`` camera stands: the start option until the viewer or HTTP switch it."""
+        problem = self._overview_problem(overview)
+        if problem is not None:
+            raise ValueError(problem)
+        self._overview = overview
 
     # ------------------------------------------------------------------
     # Robot protocol
@@ -471,6 +487,7 @@ class MuJoCoRobot(OperatorControls):
             reseed=self._reseed_if_fixed,
             arms=None if custom else self._robot_count(),
             robots=robots,
+            overview=self._overview,
         )
 
     @staticmethod
@@ -573,6 +590,35 @@ class MuJoCoRobot(OperatorControls):
             sim.model.ngeom,
             sim.model.njnt,
         )
+        return True
+
+    def _set_overview(self, style: OverviewStyle) -> bool:
+        """Move the ``overview`` camera to *style*'s pose, keeping everything else (``POST /overview``).
+
+        The rig moves the way a live scene XML edit moves it (:meth:`_apply_scene_edit`), in this
+        tick; later scene switches lay their camera out in the same style.
+
+        Returns:
+            ``True`` when *style* is in place or will be this tick, ``False`` when it was refused
+            (:meth:`_overview_problem`).
+        """
+        problem = self._overview_problem(style)
+        if problem is not None:
+            logger.warning("Overview camera not switched: {}", problem)
+            return False
+        if style == self._overview:
+            return True
+        sim = self._sim
+        layout = None
+        if sim is not None and sim.scene is not None:
+            layout = sim.scene.layout_for(self._profile, len(sim.bindings), style)
+        with self._state_lock:
+            self._overview = style
+            if sim is not None:
+                sim.layout = layout
+        if self._watcher is not None:
+            self._watcher.relayout(layout)
+        logger.info("Overview camera: {}", style)
         return True
 
     def _check_pending_scene_switch(self) -> None:

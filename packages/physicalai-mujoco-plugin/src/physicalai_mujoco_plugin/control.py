@@ -32,6 +32,7 @@ from loguru import logger
 if TYPE_CHECKING:
     from physicalai_mujoco_plugin.camera_thread import RateMeter
     from physicalai_mujoco_plugin.cameras import CameraService
+    from physicalai_mujoco_plugin.compose import OverviewStyle
     from physicalai_mujoco_plugin.conveyor_automation import ConveyorAutomation
     from physicalai_mujoco_plugin.floating import BaseStatus
     from physicalai_mujoco_plugin.http_server import HttpServer, ReplayCommand, SimCommand
@@ -118,6 +119,9 @@ class OperatorControls:
     _replay: Replay | None
     _exit_with_pid: int | None
     _process_watch: threading.Event | None
+    _overview: OverviewStyle
+    _model_path: str | None
+    _initial_scene: SceneConfig | None
 
     @property
     def joint_names(self) -> list[str]:
@@ -144,6 +148,57 @@ class OperatorControls:
         """Install another scene; implemented by the driver."""
         raise NotImplementedError
 
+    def _set_overview(self, style: OverviewStyle) -> bool:
+        """Move the overview camera; implemented by the driver."""
+        raise NotImplementedError
+
+    def _overview_styles(self) -> tuple[OverviewStyle, ...]:
+        """Return the ``overview`` camera styles of the current scene: only ``shoulder`` for a custom model.
+
+        Returns:
+            The styles, ``shoulder`` first.
+        """
+        scene = self._scene_config
+        if scene is None or self._custom_model_loaded():
+            return ("shoulder",)
+        return scene.overview_styles
+
+    def _custom_model_loaded(self) -> bool:
+        """Return whether the scene XML is the custom ``model_path``, not a registered scene's file."""
+        return self._model_path is not None and self._scene_config is self._initial_scene
+
+    def _overview_lock(self) -> str | None:
+        """Return why the overview camera must not move now: automatic Studio recording is on.
+
+        Returns:
+            The reason, or ``None``.
+        """
+        if self._automation is not None and self._automation.recorder.active:
+            return (
+                "Automatic Studio recording is on, and a dataset keeps the view it was recorded with; "
+                "switch recording off to move the overview camera"
+            )
+        return None
+
+    def _overview_problem(self, style: str) -> str | None:
+        """Return why the overview camera cannot switch to *style* now.
+
+        Returns:
+            The reason, or ``None`` when *style* is the current style or the switch may run.
+        """
+        if style == self._overview:
+            return None
+        lock = self._overview_lock()
+        if lock is not None:
+            return lock
+        if style not in self._overview_styles():
+            if self._scene_config is None or self._custom_model_loaded():
+                return (
+                    f"A custom model keeps its own overview camera; the {style} style needs a registered tabletop scene"
+                )
+            return f"Scene {self._current_scene_id!r} has no {style} overview camera; it keeps its own cameras"
+        return None
+
     def _submit_command(self, command: SimCommand) -> None:
         """Queue a command for the sim thread; ``disconnect()`` replaces the queue."""
         self._commands.put(command)
@@ -163,7 +218,7 @@ class OperatorControls:
     def _handle_command(self, command: SimCommand) -> None:
         from physicalai_mujoco_plugin import http_server as cmd  # noqa: PLC0415
 
-        if self._handle_replay_command(command):
+        if self._handle_replay_command(command) or self._handle_setting_command(command):
             return
         sim = self._sim
         if isinstance(command, cmd.ResetCommand):
@@ -179,12 +234,6 @@ class OperatorControls:
                 logger.warning("Scene switch failed: {}", exc)
         elif isinstance(command, cmd.HomeCommand):
             self._go_home()
-        elif isinstance(command, cmd.SetSeedCommand):
-            self._set_seed(command.seed)
-        elif isinstance(command, cmd.SetAutoResetCommand):
-            self._set_auto_reset(enabled=command.enabled, dwell_s=command.dwell_s)
-        elif isinstance(command, cmd.SetBeltSpeedCommand):
-            self._set_belt_speed(command.speed)
         elif isinstance(command, cmd.SetAutopilotCommand):
             self._automation.set_autopilot(command.mode)  # type: ignore[union-attr]
         elif isinstance(command, cmd.SetStudioRecordingCommand):
@@ -196,6 +245,26 @@ class OperatorControls:
         elif isinstance(command, cmd.ShutdownCommand):
             logger.info("Shutdown requested")
             _signal_owner_shutdown()
+
+    def _handle_setting_command(self, command: SimCommand) -> bool:
+        """Apply a command that changes a setting: the seed, auto-reset, belt speed or overview camera.
+
+        Returns:
+            Whether *command* was one of them.
+        """
+        from physicalai_mujoco_plugin import http_server as cmd  # noqa: PLC0415
+
+        if isinstance(command, cmd.SetSeedCommand):
+            self._set_seed(command.seed)
+        elif isinstance(command, cmd.SetAutoResetCommand):
+            self._set_auto_reset(enabled=command.enabled, dwell_s=command.dwell_s)
+        elif isinstance(command, cmd.SetBeltSpeedCommand):
+            self._set_belt_speed(command.speed)
+        elif isinstance(command, cmd.SetOverviewCommand):
+            self._set_overview(command.style)
+        else:
+            return False
+        return True
 
     def _reset(self) -> None:
         """Restore the start state without changing the scene (DRV-8; ``reset()``, ``POST /reset``).
@@ -558,6 +627,9 @@ class OperatorControls:
                 "scene": self._current_scene_id,
                 "scenes": sorted(list_scenes()),
                 "compatible_scenes": compatible,
+                "overview_style": self._overview,
+                "overview_styles": list(self._overview_styles()),
+                "overview_locked": self._overview_lock(),
                 "seed": self._seed,
                 "episode": self._episode_status(self._episode_auto_reset),
                 "replay": self._replay_status(),
@@ -614,6 +686,9 @@ class OperatorControls:
                 units=tuple(unit for channels in sim.channels for unit in channels.units) if sim is not None else (),
                 bases=self._base_status,
                 replay=self._replay_status(),
+                overview_style=self._overview,
+                overview_styles=self._overview_styles(),
+                overview_locked=self._overview_lock(),
                 **(self._automation.status() if self._automation is not None else {}),
             )
 

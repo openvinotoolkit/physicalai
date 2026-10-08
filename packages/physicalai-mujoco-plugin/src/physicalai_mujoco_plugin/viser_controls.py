@@ -41,6 +41,7 @@ from physicalai_mujoco_plugin.http_server import (
     SetAutoResetCommand,
     SetBeltSpeedCommand,
     SetObjectPoseCommand,
+    SetOverviewCommand,
     SetSeedCommand,
     SetStudioRecordingCommand,
     ShutdownCommand,
@@ -53,6 +54,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
     from physicalai_mujoco_plugin.autopilot import AutopilotMode
+    from physicalai_mujoco_plugin.compose import OverviewStyle
     from physicalai_mujoco_plugin.floating import BaseStatus
     from physicalai_mujoco_plugin.http_server import FrameBuffer, SimCommand
     from physicalai_mujoco_plugin.studio_recorder import KeepPolicy
@@ -320,6 +322,12 @@ class PanelState:
     """Floating-base readouts: height, tilt, hold and fall (empty for fixed bases)."""
     replay: Mapping[str, Any] = field(default_factory=dict)
     """Replay status (see ``Replay.status``); ``{"active": False}`` without a replay."""
+    overview_style: OverviewStyle = "shoulder"
+    """Where the ``overview`` camera stands."""
+    overview_styles: tuple[OverviewStyle, ...] = ("shoulder",)
+    """The overview styles the scene offers; with one, the panel offers no switch."""
+    overview_locked: str | None = None
+    """Why the overview camera must not move now (automatic Studio recording), or ``None``."""
 
 
 @dataclass
@@ -328,6 +336,7 @@ class _Handles:
 
     scene_dropdown: Any = None
     scene_by_label: dict[str, str] = field(default_factory=dict)
+    overview_dropdown: Any = None
     fixed_seed: Any = None
     seed_number: Any = None
     auto_reset: Any = None
@@ -346,6 +355,14 @@ class _Handles:
     previews: dict[str, Any] = field(default_factory=dict)
     preview_seq: dict[str, int] = field(default_factory=dict)
     follow_dropdown: Any = None
+
+
+OVERVIEW_LABELS: dict[OverviewStyle, str] = {"shoulder": "Shoulder", "front": "Front"}
+_OVERVIEW_BY_LABEL: dict[str, OverviewStyle] = {label: style for style, label in OVERVIEW_LABELS.items()}
+OVERVIEW_HINT = (
+    "Moves the overview camera. Datasets and policies expect the view they were recorded with: "
+    "don't switch during a recording, and keep one view per dataset."
+)
 
 
 def _is_server_event(event: object) -> bool:
@@ -405,7 +422,11 @@ def _robot_markdown(state: PanelState) -> str:
     for unit in state.units:
         counts[unit] = counts.get(unit, 0) + 1
     units = ", ".join(f"{unit} ({count})" for unit, count in counts.items()) or "-"
-    lines = [f"**Profile:** {state.profile} ({state.tier})", f"**Units:** {units}"]
+    lines = [
+        f"**Profile:** {state.profile} ({state.tier})",
+        f"**Units:** {units}",
+        f"**Overview camera:** {state.overview_style}",
+    ]
     for base in state.bases:
         hold = "fallen" if base.fallen else ("held" if base.held else "free")
         lines.append(f"**{base.prefix}base:** height {base.height:.2f} m, tilt {base.tilt_deg:.0f} deg, {hold}")
@@ -690,6 +711,9 @@ class SimControlPanel:
                     if scene_id is not None and scene_id != state.scene_id:
                         self._submit(SwitchSceneCommand(scene_id=scene_id))
 
+            if len(state.overview_styles) > 1:
+                self._build_overview_dropdown(state)
+
             # With a floating base, the reset also puts the robot back on its feet and holds it (DRV-8).
             reset_label = "Reset" if state.bases else "Reset Scene"
             reset_button = gui.add_button(reset_label, icon=self._viser.Icon.REFRESH)
@@ -714,6 +738,24 @@ class SimControlPanel:
             @stop_replay.on_click
             def _on_stop_replay(_: object) -> None:
                 self._submit(StopReplayCommand())
+
+    def _build_overview_dropdown(self, state: PanelState) -> None:
+        overview = self._server.gui.add_dropdown(
+            "Overview camera",
+            options=tuple(OVERVIEW_LABELS[style] for style in state.overview_styles),
+            initial_value=OVERVIEW_LABELS[state.overview_style],
+            disabled=state.overview_locked is not None,
+            hint=OVERVIEW_HINT,
+        )
+        self._handles.overview_dropdown = overview
+
+        @overview.on_update
+        def _on_overview(event: object) -> None:
+            if _is_server_event(event):
+                return
+            style = _OVERVIEW_BY_LABEL.get(str(overview.value))
+            if style is not None:
+                self._submit(SetOverviewCommand(style=style))
 
     def _build_seed_controls(self, state: PanelState) -> None:
         gui = self._server.gui
@@ -1043,6 +1085,9 @@ class SimControlPanel:
             label = _scene_label(state)
             if label in handles.scene_dropdown.options:
                 handles.scene_dropdown.value = label
+        if handles.overview_dropdown is not None:
+            handles.overview_dropdown.value = OVERVIEW_LABELS[state.overview_style]
+            handles.overview_dropdown.disabled = state.overview_locked is not None
         if handles.fixed_seed is not None:
             handles.fixed_seed.value = state.seed is not None
             handles.seed_number.disabled = state.seed is None

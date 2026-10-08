@@ -4,7 +4,8 @@
 """Live camera edits: apply ``overview``/``wrist`` camera and camera-rig changes saved to the scene XML.
 
 A development aid for placing cameras: edit the scene XML while the simulation runs, and the
-camera moves within about a second, without recompiling the model.
+camera moves within about a second, without recompiling the model. Switching the ``overview``
+camera's style (``shoulder``, ``front``) takes the same path with the new layout's rig pose.
 """
 
 # MuJoCo model/data attributes are supplied by the C extension at runtime.
@@ -43,7 +44,17 @@ class SceneXmlWatcher:
                 scaled and overridden the same way, so an edit keeps the robot's framing.
         """
         self._layout = layout
+        self._relayout = False
         self.reset(xml_path)
+
+    def relayout(self, layout: SceneLayout | None) -> None:
+        """Place the overview rig for *layout* from now on, as for an ``overview`` style switch.
+
+        The next `changed` returns ``True`` at once, so the control loop re-applies the scene
+        XML's camera poses, with the new layout's rig, as it applies an edit.
+        """
+        self._layout = layout
+        self._relayout = True
 
     def reset(self, xml_path: str | Path) -> None:
         """Watch *xml_path* from now on: re-walk its include graph and re-baseline the file times."""
@@ -61,9 +72,11 @@ class SceneXmlWatcher:
         """Return whether a watched file changed since the last `apply`; checks at most once a second.
 
         Returns:
-            ``True`` at every check until `apply` runs; call `apply` then, with nothing else
-            reading the model, or defer it to a later check.
+            ``True`` at every check until `apply` runs, and at once after `relayout`; call `apply`
+            then, with nothing else reading the model, or defer it to a later check.
         """
+        if self._relayout:
+            return True
         now = time.monotonic()
         if now < self._next_check:
             return False
@@ -76,7 +89,8 @@ class SceneXmlWatcher:
         This mutates the model, so no other thread may be using it (MuJoCo shares a model between
         threads only while it is read-only): stop the camera thread first.
         """
-        logger.info("Scene XML changed, updating camera")
+        logger.info("Placing the overview camera" if self._relayout else "Scene XML changed, updating camera")
+        self._relayout = False
         self._mtimes = self._snapshot()  # before reading: a save during the edit shows up next check
         try:
             self._apply_camera_edits(model, data)

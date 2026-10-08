@@ -25,6 +25,7 @@ derived from the whole model.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from itertools import starmap
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -55,6 +56,16 @@ ROBOT_SPAWN_FRAME = "robot_spawn"
 """Suffix of the scene frames that mark a floating-base robot's start pose."""
 BASE_HOLD_EQUALITY = "mujoco_base_hold_"
 """Name of the weld that holds a spawned robot's base, followed by the robot's prefix (SCN-8)."""
+_MIN_AIM_NORM = 1e-9
+"""Shortest line of sight, and level image axis, an aimed overview camera may have."""
+
+OverviewStyle = Literal["shoulder", "front"]
+"""Where a tabletop scene's ``overview`` camera stands.
+
+``shoulder``: high behind the robot base, looking over it at the work area, like BridgeData's
+over-the-shoulder camera; the scene file's pose. ``front``: across the work area, facing the robots
+from about 45 degrees above the table, like robosuite's and LIBERO's ``agentview``.
+"""
 
 AnchorKind = Literal["mount", "spawn"]
 """``mount``: a fixed base (``robot_mount`` frames). ``spawn``: a floating base (``robot_spawn`` frames)."""
@@ -537,6 +548,87 @@ def _place_mounts(scene: mujoco.MjSpec, mounts: tuple[tuple[str, MountPose], ...
         frame.name = ""
 
 
+def aim_overview_rig(
+    xml_path: str | Path, eye: tuple[float, float, float], target: tuple[float, float, float]
+) -> OverviewRig:
+    """Return the overview rig pose that puts the scene's ``overview`` camera at *eye*, looking at *target*.
+
+    The image stays upright: its horizontal axis is level. The camera keeps its pose within the rig
+    (the tilt body and the camera's own orientation in the scene file).
+
+    Returns:
+        The rig's world position and orientation.
+
+    Raises:
+        ValueError: If the scene has no ``overview`` camera on a rig body, or the camera would look
+            straight up or down.
+    """
+    import mujoco  # noqa: PLC0415
+
+    rotation_in_rig, offset_in_rig = _overview_camera_in_rig(str(Path(xml_path).resolve()))
+    forward = np.asarray(target, dtype=np.float64) - np.asarray(eye, dtype=np.float64)
+    forward /= max(float(np.linalg.norm(forward)), _MIN_AIM_NORM)
+    right = np.cross(forward, (0.0, 0.0, 1.0))
+    if np.linalg.norm(right) < _MIN_AIM_NORM:
+        msg = "The overview camera must look at a point away from it, and not straight up or down"
+        raise ValueError(msg)
+    back = -forward
+    right /= np.linalg.norm(right)
+    # A MuJoCo camera looks along its -z axis, with +x right and +y up in the image.
+    camera = np.column_stack((right, np.cross(back, right), back))
+    rig = camera @ rotation_in_rig.T
+    quat = np.zeros(4)
+    mujoco.mju_mat2Quat(quat, rig.ravel())
+    position = np.asarray(eye, dtype=np.float64) - rig @ offset_in_rig
+    return OverviewRig(
+        pos=tuple(float(v) for v in position),  # type: ignore[arg-type]
+        quat=tuple(float(v) for v in quat),  # type: ignore[arg-type]
+    )
+
+
+@lru_cache(maxsize=16)
+def _overview_camera_in_rig(xml_path: str) -> tuple[np.ndarray, np.ndarray]:
+    """Return the ``overview`` camera's orientation and position in its rig's frame, from the scene as written.
+
+    Returns:
+        The 3x3 rotation and the offset; the scene compiles once per path.
+
+    Raises:
+        ValueError: If the scene has no ``overview`` camera, or the camera hangs from the world body.
+    """
+    import mujoco  # noqa: PLC0415
+
+    model = mujoco.MjSpec.from_file(xml_path).compile()
+    camera = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, OVERVIEW_CAMERA)
+    if camera < 0 or model.cam_bodyid[camera] == 0:
+        msg = f"{xml_path} has no {OVERVIEW_CAMERA!r} camera on a rig body to place"
+        raise ValueError(msg)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    rig = int(model.body_rootid[model.cam_bodyid[camera]])
+    rig_rotation = data.xmat[rig].reshape(3, 3)
+    rotation = rig_rotation.T @ data.cam_xmat[camera].reshape(3, 3)
+    offset = rig_rotation.T @ (data.cam_xpos[camera] - data.xpos[rig])
+    return rotation, offset
+
+
+@lru_cache(maxsize=16)
+def mount_positions(xml_path: str | Path) -> tuple[tuple[float, float, float], ...]:
+    """Return where a scene XML's top-level ``robot_mount`` frames stand, in document order, without compiling it.
+
+    Returns:
+        One world position per top-level mount frame.
+    """
+    import mujoco  # noqa: PLC0415
+
+    spec = mujoco.MjSpec.from_file(str(xml_path))
+    return tuple(
+        (float(frame.pos[0]), float(frame.pos[1]), float(frame.pos[2]))
+        for frame in spec.frames
+        if frame.name.endswith(ROBOT_MOUNT_FRAME) and frame.parent.name == "world"
+    )
+
+
 def model_prefixes(layout: DerivedLayout, profile: RobotProfile) -> tuple[str, ...]:
     """Find the robots of a model that defines its own: the prefixes of the profile's first actuator.
 
@@ -680,8 +772,10 @@ __all__ = [
     "ComposedScene",
     "MountPose",
     "OverviewRig",
+    "OverviewStyle",
     "RobotBinding",
     "SceneLayout",
+    "aim_overview_rig",
     "anchor_prefixes",
     "apply_layout",
     "attach_robot",
@@ -692,6 +786,7 @@ __all__ = [
     "load_robot_spec",
     "load_scene_model",
     "model_prefixes",
+    "mount_positions",
     "mount_prefixes",
     "robot_layout",
     "scene_anchors",

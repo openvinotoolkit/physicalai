@@ -763,12 +763,18 @@ class TestStatusJson:
                 "profile": "so101",
                 "scene": "single_pick_place",
                 "arms": 1,
+                "overview_style": "shoulder",
                 "http_url": "http://127.0.0.1:8080",
                 "viewer_url": "http://127.0.0.1:9090",
                 "cameras": ["wrist", "overview"],
             },
         ]
-        assert list(events[-1]) == ["event", "name", "pid", "profile", "scene", "arms", "http_url", "viewer_url", "cameras"]
+        assert list(events[-1]) == [
+            "event", "name", "pid", "profile", "scene", "arms", "overview_style", "http_url", "viewer_url", "cameras",
+        ]  # fmt: skip
+
+    def test_ready_reports_the_overview_style(self) -> None:
+        assert _launch(["--status-json", "--no-gui", "--overview", "front"]).events[-1]["overview_style"] == "front"
 
     def test_load_is_announced_while_the_owner_loads(self) -> None:
         """The owner takes its name, then loads; ``load`` must not wait for ``connect`` to return."""
@@ -1114,6 +1120,26 @@ class TestExitWithParent:
     def test_viewer_theme_reaches_the_driver(self) -> None:
         assert _launch(["--viewer-theme", "studio"]).init_args["viewer_theme"] == "studio"
         assert _launch([]).init_args["viewer_theme"] == "default"
+
+    def test_overview_reaches_the_driver(self) -> None:
+        assert _launch(["--overview", "front"]).init_args["overview"] == "front"
+        assert _launch([]).init_args["overview"] == "shoulder"
+
+    @pytest.mark.parametrize(
+        ("argv", "message"),
+        [
+            (["--profile", "unitree_go2"], "Scene floor_flat has no front overview camera"),
+            (["--model", "MODEL"], "needs a registered tabletop scene"),
+        ],
+    )
+    def test_front_overview_needs_a_tabletop_scene(self, argv: list[str], message: str, tmp_path: Path) -> None:
+        model = tmp_path / "model.xml"
+        model.write_text('<mujoco><worldbody><frame name="robot_mount"/></worldbody></mujoco>')
+        argv = [str(model) if arg == "MODEL" else arg for arg in argv]
+        launch = _launch(["--status-json", *argv, "--overview", "front"])
+        assert launch.exit_code == 1
+        assert not launch.connected
+        assert message in str(launch.events[-1]["message"])
 
 
 class TestHeadlessGl:
