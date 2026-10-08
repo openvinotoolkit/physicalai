@@ -56,7 +56,7 @@ MAX_DWELL_S = 120.0
 MAX_OBJECT_COORD_M = 2.0
 """Bound on each world coordinate accepted for an object pose."""
 _MIN_QUAT_NORM = 1e-6
-_WILDCARD_HOSTS = frozenset({"0.0.0.0", "::"})  # noqa: S104 - matched, not bound
+_WILDCARD_HOSTS = frozenset({"0.0.0.0", "::"})  # noqa: S104 - matched, not bound  # nosec B104
 MAX_REPLAY_FRAMES = 36_000
 """Most frames ``POST /replay`` accepts: 20 minutes at 30 fps."""
 MAX_REPLAY_FPS = 1000.0
