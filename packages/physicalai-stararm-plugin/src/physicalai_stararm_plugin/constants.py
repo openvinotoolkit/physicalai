@@ -36,3 +36,9 @@ STAR_ARM_102_JOINT_RANGES_DEG: Final = {
     "wrist_roll": (-90.0, 90.0),
     "gripper": (-0.0, 270.0),
 }
+
+# The reBot B601 gripper has 270 degrees of motor travel behind a 6:1
+# reduction, so its public PhysicalAI joint frame can only reach 45 degrees.
+STAR_ARM_102_B601_FOLLOWER_RANGES_DEG: Final = {
+    "gripper": (0.0, 45.0),
+}
