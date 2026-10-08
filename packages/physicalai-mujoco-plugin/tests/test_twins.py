@@ -13,7 +13,7 @@ dependency (``trossen-arm``, ``motorbridge``) is not installed.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
 
 import mujoco
@@ -75,6 +75,18 @@ def _real_rebot(positions: np.ndarray | None = None, velocities: np.ndarray | No
     return robot
 
 
+def _rs_constants_in_the_lerobot_frame() -> ModuleType:
+    """Return the B601 plugin's constants, or skip unless they use #360's LeRobot-style RS frame.
+
+    The profile follows #360 (every RS direction -1, gripper -270..0). The plugin on ``main``
+    before #360 has the previous frame, which this profile deliberately does not match.
+    """
+    constants = pytest.importorskip("physicalai_rebot_b601_plugin.constants", reason="needs the reBot B601 plugin")
+    if set(constants.REBOT_B601_RS_JOINT_DIRECTIONS.values()) != {-1.0}:
+        pytest.skip("the installed reBot B601 plugin predates #360's LeRobot-style RS joint frame")
+    return constants
+
+
 class TestProfiles:
     def test_widowx_ai_uses_the_real_drivers_names_and_units(self) -> None:
         assert get_profile("trossen_wxai") is TROSSEN_WXAI_PROFILE
@@ -93,12 +105,20 @@ class TestProfiles:
         constants = pytest.importorskip("physicalai_rebot_b601_plugin.constants", reason="needs the reBot B601 plugin")
         assert get_profile("rebot_b601") is REBOT_B601_PROFILE
         validate_profile(REBOT_B601_PROFILE)
+        assert REBOT_B601_PROFILE.provisional
         assert _names(REBOT_B601_PROFILE) == constants.REBOT_B601_RS_JOINT_ORDER
         gripper = REBOT_B601_PROFILE.channels[-1]
         assert (gripper.actuators, gripper.unit, gripper.member_scales) == (("joint_left", "joint_right"), "degrees", (1.0,))
-        # The driver's 0..270 motor degrees over its direction 6, across Menagerie's 0..0.05 m finger stroke.
-        motor_open = constants.REBOT_B601_RS_JOINT_LIMITS_DEG["gripper"][1]
-        assert gripper.scale == pytest.approx(motor_open / constants.REBOT_B601_RS_JOINT_DIRECTIONS["gripper"] / 0.05)
+        # #360's frame: the arm joints are Menagerie's one to one, the gripper -270 (open) to 0 (closed)
+        # across Menagerie's 0..0.05 m finger stroke.
+        assert [channel.scale for channel in REBOT_B601_PROFILE.channels[:-1]] == [1.0] * 6
+        assert {channel.offset for channel in REBOT_B601_PROFILE.channels} == {0.0}
+        assert gripper.scale == pytest.approx(-270.0 / 0.05)
+
+    def test_rebot_b601_gripper_spans_the_rs_drivers_limits(self) -> None:
+        constants = _rs_constants_in_the_lerobot_frame()
+        lower, upper = constants.REBOT_B601_RS_JOINT_LIMITS_DEG["gripper"]
+        assert (REBOT_B601_GRIPPER_SCALE * 0.05, 0.0) == pytest.approx((lower, upper))
 
     def test_scenes_list_the_twins(self) -> None:
         assert set(list_scenes_naming("trossen_wxai")) == {"single_pick_place", "garment_fold"}
@@ -109,36 +129,37 @@ class TestProfiles:
 
 @pytest.mark.requires_download
 class TestRebotMapping:
-    """The provisional reBot mapping follows the B601 plugin's joint-frame URDF; not verified on hardware."""
+    """The provisional reBot mapping follows #360's joint-frame URDF; not verified on hardware."""
 
     def test_signs_follow_the_joint_frame_urdf(self) -> None:
+        _rs_constants_in_the_lerobot_frame()
         urdf = pytest.importorskip("physicalai_rebot_b601_plugin", reason="needs the reBot B601 plugin").get_urdf_path()
         root = ElementTree.parse(urdf / "rebot-b601-rs/urdf/00-arm-rs_asm-v3_joint_frame.urdf").getroot()
-        urdf_axes = {
-            joint.get("name"): np.array([float(v) for v in joint.find("axis").get("xyz").split()])
-            for joint in root.iter("joint")
-            if joint.get("type") == "revolute"
-        }
+        joints = {joint.get("name"): joint for joint in root.iter("joint")}
         model = mujoco.MjModel.from_xml_path(str(fetch_profile(REBOT_B601_PROFILE)))
         for channel in REBOT_B601_PROFILE.channels[:-1]:
             (joint,) = channel.actuators
+            urdf_axis = np.array([float(v) for v in joints[joint].find("axis").get("xyz").split()])
             # Same link frames (the zero pose), so only the axis direction can differ.
-            assert channel.scale == float(np.sign(model.joint(joint).axis @ urdf_axes[joint])), channel.name
+            assert channel.scale == float(np.sign(model.joint(joint).axis @ urdf_axis)), channel.name
             assert channel.offset == 0.0
+        # The URDF drives the first finger from gripper_drive (radians): finger = multiplier * drive.
+        multiplier = float(joints["gripper_joint1"].find("mimic").get("multiplier"))
+        assert REBOT_B601_GRIPPER_SCALE == pytest.approx(np.degrees(1.0 / multiplier), rel=1e-6)
 
     def test_gripper_drives_both_fingers_in_driver_units(self) -> None:
         robot = MuJoCoRobot("rebot_b601", scene="single_pick_place", cameras=[])
         robot.connect()
         try:
             np.testing.assert_allclose(robot.get_observation().joint_positions, 0.0, atol=0.5)  # zero = folded rest pose
-            target = np.array([20.0, 30.0, -40.0, 10.0, 0.0, 0.0, 45.0], dtype=np.float32)
+            target = np.array([20.0, -30.0, -40.0, 10.0, 0.0, 0.0, -270.0], dtype=np.float32)
             robot.send_action(target)
             for _ in range(100):
                 observation = robot.get_observation()
             np.testing.assert_allclose(observation.joint_positions, target, atol=1.0)
             data = robot._sim.data  # noqa: SLF001
             for finger in ("joint_left", "joint_right"):
-                assert data.joint(finger).qpos[0] == pytest.approx(45.0 / REBOT_B601_GRIPPER_SCALE, abs=1e-3)
+                assert data.joint(finger).qpos[0] == pytest.approx(0.05, abs=1e-3)  # -270 = fully open
         finally:
             robot.disconnect()
 
@@ -146,15 +167,15 @@ class TestRebotMapping:
         robot = MuJoCoRobot("rebot_b601", scene="single_pick_place", cameras=[])
         robot.connect()
         try:
-            robot.send_action(np.array([0, 0, 0, 0, 0, 0, 45.0], dtype=np.float32))
-            observation = robot.get_observation()  # one tick: mid-stroke, still moving
+            robot.send_action(np.array([0, 0, 0, 0, 0, 0, -270.0], dtype=np.float32))
+            observation = robot.get_observation()  # one tick: mid-stroke, still opening
             finger = robot._sim.data.joint("joint_left")  # noqa: SLF001
             gripper, speed = observation.joint_positions[-1], observation.sensor_data["velocities"][-1]
-            assert 0.5 < gripper < 45.0
+            assert -270.0 < gripper < -0.5
             assert gripper == pytest.approx(REBOT_B601_GRIPPER_SCALE * finger.qpos[0], rel=1e-5)
             assert speed == pytest.approx(REBOT_B601_GRIPPER_SCALE * finger.qvel[0], rel=1e-5)
-            assert speed > 0.1
-            # The real driver reads the same values from motors at 6x those degrees (motor 0..270).
+            assert speed < -0.1
+            # The real driver reads the same values from motors at its direction times those degrees.
             real = _real_rebot(observation.joint_positions, observation.sensor_data["velocities"])
             real_observation = real.get_observation()
             np.testing.assert_allclose(real_observation.joint_positions, observation.joint_positions, rtol=1e-5, atol=1e-4)

@@ -220,9 +220,11 @@ class CatalogEntry:
 
     @property
     def display_name(self) -> str:
-        """Catalog display name, e.g. ``MuJoCo SO-101 Bimanual Follower``; experimental entries say so."""
+        """Catalog display name, e.g. ``MuJoCo SO-101 Bimanual Follower``; experimental and provisional ones say so."""
         name = f"MuJoCo {self.profile.display_name} {'Bimanual ' if self.bimanual else ''}Follower"
-        return f"{name} (experimental)" if self.profile.tier == "experimental" else name
+        if self.profile.tier == "experimental":
+            return f"{name} (experimental)"
+        return f"{name} (provisional)" if self.profile.provisional else name
 
     @property
     def owner_name(self) -> str:
@@ -318,10 +320,11 @@ class CatalogEntry:
         return validated.name
 
     def launch_labels(self) -> tuple[str, ...]:
-        """Return the start dialog's chips: the arm count (or ``floating base``), then the profile's tier.
+        """Return the start dialog's chips: the arm count (or ``floating base``), the tier, then ``provisional``.
 
         Returns:
-            For example ``("2 arms (bimanual)", "twin")`` or ``("floating base", "experimental")``.
+            For example ``("2 arms (bimanual)", "twin")``, ``("1 arm", "twin", "provisional")`` or
+            ``("floating base", "experimental")``.
         """
         arms = len(self.profile.end_effectors)
         if self.bimanual:
@@ -330,7 +333,7 @@ class CatalogEntry:
             body = "floating base"
         else:
             body = f"{arms} arms" if arms > 1 else "1 arm"
-        return (body, self.profile.tier)
+        return (body, self.profile.tier, *(("provisional",) if self.profile.provisional else ()))
 
     def simulation_launch(self) -> SimulationLaunch[MuJoCoRobotPayload] | None:
         """Return how Studio starts this entry's simulation, or ``None`` for a profile without a default scene.

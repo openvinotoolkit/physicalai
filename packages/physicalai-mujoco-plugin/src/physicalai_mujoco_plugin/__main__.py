@@ -1285,7 +1285,8 @@ def _profiles() -> None:
     for profile in list_profiles():
         arms = ", ".join(map(str, supported_arm_counts(profile)))
         sys.stdout.write(
-            f"{profile.name:<22} {profile.tier:<12} {arms:<6} {profile.menagerie_model:<24} {profile.display_name}\n"
+            f"{profile.name:<22} {profile.tier:<12} {arms:<6} {profile.menagerie_model:<24} {profile.display_name}"
+            f"{' (provisional)' if profile.provisional else ''}\n"
         )
     sys.stdout.write(
         "ARMS: 2 runs two arms with start --bimanual, in any tabletop scene. "
