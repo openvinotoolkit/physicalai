@@ -166,6 +166,24 @@ def test_reset_and_home_end_the_replay_first(robot, command, handler: str) -> No
     assert robot._replay is None  # noqa: SLF001
 
 
+def test_the_python_reset_ends_the_replay_before_the_scene_reset(robot) -> None:
+    frames = np.tile(robot.get_observation().joint_positions + 5.0, (3, 1))
+    before = _state(robot)
+    robot._submit_command(ReplayCommand(joint_positions=frames, fps=30.0))  # noqa: SLF001
+    robot.get_observation()
+    seen: list[tuple[np.ndarray, object]] = []
+
+    with patch.object(robot, "_run_scene_reset", side_effect=lambda: seen.append((_state(robot), robot._replay))):  # noqa: SLF001
+        robot.reset()
+
+    state, replay = seen[0]
+    np.testing.assert_array_equal(state, before)
+    assert replay is None
+    robot._substeps = 0  # noqa: SLF001 - no physics, so only a replay frame could move the joints
+    robot.get_observation()
+    np.testing.assert_array_equal(_state(robot), before)
+
+
 def test_a_scene_switch_drops_the_replay(robot) -> None:
     frames = np.tile(robot.get_observation().joint_positions, (3, 1))
     robot._submit_command(ReplayCommand(joint_positions=frames, fps=30.0))  # noqa: SLF001
