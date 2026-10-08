@@ -264,7 +264,11 @@ class ReplayRequest(BaseModel):
     joint_positions: Annotated[list[list[FiniteFloat]], Field(min_length=1, max_length=MAX_REPLAY_FRAMES)]
     fps: Annotated[FiniteFloat, Field(gt=0.0, le=MAX_REPLAY_FPS)]
     base: Any = None
-    """Floating-base poses per frame; no robot of this driver has a floating base yet, so it must be null."""
+    """Floating-base poses per frame. Must be null: replaying a free joint is not supported yet.
+
+    A floating-base robot still replays its joints; its base stays where it is, because physics
+    does not step during a replay.
+    """
 
 
 @dataclass(frozen=True)
