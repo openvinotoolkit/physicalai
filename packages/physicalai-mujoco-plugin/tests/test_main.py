@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -65,10 +66,56 @@ class TestPidOwnerName:
         with patch("subprocess.run", return_value=self._ps_output(cmdline)):
             assert cli._pid_owner_name(1234) == DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME  # noqa: SLF001
 
-    def test_single_arm_default_without_explicit_name(self) -> None:
-        cmdline = "physicalai-mujoco start --model x.xml"
+    @pytest.mark.parametrize(
+        ("scene_id", "expected"),
+        [("single_pick_place", DEFAULT_MUJOCO_OWNER_NAME), ("garment_fold", DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME)],
+    )
+    def test_a_custom_model_counts_its_mount_frames_like_start(self, scene_id: str, expected: str) -> None:
+        """``start --model`` takes its arm count from the XML, so the stop fallback must too."""
+        from physicalai_mujoco_plugin.scene_registry import get_scene  # noqa: PLC0415
+
+        cmdline = f"physicalai-mujoco start --model {get_scene(scene_id).scene_xml_path}"
         with patch("subprocess.run", return_value=self._ps_output(cmdline)):
-            assert cli._pid_owner_name(1234) == DEFAULT_MUJOCO_OWNER_NAME  # noqa: SLF001
+            assert cli._pid_owner_name(1234) == expected  # noqa: SLF001
+
+    @pytest.mark.parametrize("model", ["/no/such/scene.xml", "relative/scene.xml"])
+    def test_a_custom_model_with_an_unknown_arm_count_matches_no_owner(self, model: str) -> None:
+        cmdline = f"physicalai-mujoco start --model {model}"
+        with (
+            patch("subprocess.run", return_value=self._ps_output(cmdline)),
+            patch.object(cli, "_pid_cwd", return_value=None),
+        ):
+            assert cli._pid_owner_name(1234) is None  # noqa: SLF001
+
+    def test_a_relative_custom_model_resolves_in_the_start_directory(self) -> None:
+        from physicalai_mujoco_plugin.scene_registry import get_scene  # noqa: PLC0415
+
+        scene_xml = get_scene("garment_fold").scene_xml_path
+        cmdline = f"physicalai-mujoco start --model {scene_xml.parent.name}/{scene_xml.name}"
+        with (
+            patch("subprocess.run", return_value=self._ps_output(cmdline)),
+            patch.object(cli, "_pid_cwd", return_value=scene_xml.parent.parent),
+        ):
+            assert cli._pid_owner_name(1234) == DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME  # noqa: SLF001
+
+    def test_pid_cwd_reads_this_process(self) -> None:
+        assert cli._pid_cwd(os.getpid()) == Path.cwd().resolve()  # noqa: SLF001
+
+    @pytest.mark.parametrize(
+        ("arguments", "expected"),
+        [
+            ("--profile ur5e", "mujoco-ur5e-follow"),
+            ("--profile=ur5e", "mujoco-ur5e-follow"),
+            ("--scene garment_fold", DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME),
+            ("--scene=garment_fold", DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME),
+            ("--profile ur5e --scene no_such_scene", "mujoco-ur5e-follow"),
+            ("--profile no_such_model", "mujoco-no_such_model-follow"),
+        ],
+    )
+    def test_profile_and_scene_resolve_like_start(self, arguments: str, expected: str) -> None:
+        cmdline = f"physicalai-mujoco start {arguments}"
+        with patch("subprocess.run", return_value=self._ps_output(cmdline)):
+            assert cli._pid_owner_name(1234) == expected  # noqa: SLF001
 
     def test_unreadable_command_line_returns_none(self) -> None:
         with patch("subprocess.run", side_effect=FileNotFoundError):
@@ -266,19 +313,21 @@ class TestRobotModelFetch:
             shutdown.set()
 
         with (
-            patch.object(cli.SO101_PROFILE.__class__, "fetch", lambda _self: calls.append("fetch")),
-            patch.object(cli.SharedRobot, "from_config", side_effect=lambda *_a, **_k: calls.append("owner") or MagicMock()),
+            patch.object(cli, "fetch_profile", lambda profile: calls.append(f"fetch {profile.name}")),
+            patch.object(
+                cli.SharedRobot, "from_config", side_effect=lambda *_a, **_k: calls.append("owner") or MagicMock()
+            ),
             patch.object(cli, "_owner_pid", return_value=None),
             patch.object(cli, "_wait_for_owner_shutdown", side_effect=wait),
             patch.object(cli.signal, "signal"),
         ):
             cli._start(args)
-        assert calls == ["fetch", "owner"]
+        assert calls == ["fetch so101", "owner"]
 
     def test_start_exits_without_an_owner_when_the_fetch_fails(self) -> None:
         args = cli._build_parser().parse_args(["start", "--no-cameras", "--no-gui"])
         with (
-            patch.object(cli.SO101_PROFILE.__class__, "fetch", side_effect=RuntimeError("offline")),
+            patch.object(cli, "fetch_profile", side_effect=RuntimeError("offline")),
             patch.object(cli.SharedRobot, "from_config") as factory,
             pytest.raises(SystemExit) as exit_info,
         ):
@@ -289,29 +338,85 @@ class TestRobotModelFetch:
     def test_custom_model_without_mounts_skips_the_fetch(self, tmp_path) -> None:
         path = tmp_path / "custom.xml"
         path.write_text("<mujoco><worldbody/></mujoco>")
-        with patch.object(cli.SO101_PROFILE.__class__, "fetch") as fetch:
-            cli._fetch_robot_models(str(path))  # noqa: SLF001
+        with patch.object(cli, "fetch_profile") as fetch:
+            cli._fetch_robot_models(str(path), cli.get_profile("so101"))  # noqa: SLF001
         fetch.assert_not_called()
 
-    def test_prefetch_fetches_every_profile(self) -> None:
+    def test_prefetch_fetches_every_registered_profile(self) -> None:
+        profiles = (cli.get_profile("so101"), cli.get_profile("ur5e"))
         with (
             patch.object(cli.sys, "argv", ["physicalai-mujoco", "prefetch"]),
-            patch.object(cli.SO101_PROFILE.__class__, "fetch", autospec=True) as fetch,
+            patch.object(cli, "list_profiles", return_value=profiles),
+            patch.object(cli, "fetch_profile", return_value="cached.xml") as fetch,
         ):
             cli.main()
-        assert [call.args[0] for call in fetch.call_args_list] == list(cli.PROFILES)
+        assert [call.args[0] for call in fetch.call_args_list] == list(profiles)
 
     def test_prefetch_exits_on_failure(self) -> None:
         with (
             patch.object(cli.sys, "argv", ["physicalai-mujoco", "prefetch"]),
-            patch.object(cli.SO101_PROFILE.__class__, "fetch", side_effect=RuntimeError("offline")),
+            patch.object(cli, "fetch_profile", side_effect=RuntimeError("offline")),
             pytest.raises(SystemExit) as exit_info,
         ):
             cli.main()
         assert exit_info.value.code == 1
 
 
+class TestStartRecipe:
+    @staticmethod
+    def _recipe(argv: list[str]) -> dict[str, object]:
+        args = cli._build_parser().parse_args(["start", *argv])
+        configs = []
+
+        def factory(config, **kwargs):
+            configs.append((config, kwargs))
+            return MagicMock()
+
+        with (
+            patch.object(cli, "fetch_profile"),
+            patch.object(cli.SharedRobot, "from_config", side_effect=factory),
+            patch.object(cli, "_owner_pid", return_value=None),
+            patch.object(cli, "_wait_for_owner_shutdown"),
+            patch.object(cli.signal, "signal"),
+        ):
+            cli._start(args)
+        config, kwargs = configs[0]
+        return {"class_path": config["class_path"], **config["init_args"], "name": kwargs["name"]}
+
+    def test_default_is_the_so101_in_single_pick_place(self) -> None:
+        recipe = self._recipe(["--no-gui"])
+        assert recipe["class_path"] == "physicalai_mujoco_plugin.robot.MuJoCoRobot"
+        assert (recipe["profile"], recipe["scene"], recipe["name"]) == ("so101", "single_pick_place", "mujoco-so101-follow")
+        assert recipe["cameras"] is None  # the robot's cameras, then the overview
+
+    def test_bimanual_flag_picks_the_two_arm_scene_and_name(self) -> None:
+        recipe = self._recipe(["--bimanual", "--no-gui", "--no-cameras"])
+        assert (recipe["scene"], recipe["name"]) == ("garment_fold", "mujoco-so101-bimanual-follow")
+        assert recipe["cameras"] == []
+
+    def test_two_arm_scene_gets_the_bimanual_name(self) -> None:
+        assert self._recipe(["--scene", "garment_fold", "--no-gui"])["name"] == "mujoco-so101-bimanual-follow"
+
+    def test_other_profiles_get_their_own_name(self) -> None:
+        recipe = self._recipe(["--profile", "ur5e", "--no-gui"])
+        assert (recipe["profile"], recipe["scene"], recipe["name"]) == ("ur5e", "single_pick_place", "mujoco-ur5e-follow")
+
+    @pytest.mark.parametrize(
+        "argv",
+        [["--profile", "no_such_robot"], ["--scene", "nope"], ["--profile", "ur5e", "--scene", "conveyor_sort"]],
+    )
+    def test_bad_profile_or_scene_exits(self, argv: list[str]) -> None:
+        with pytest.raises(SystemExit) as exit_info:
+            self._recipe(argv)
+        assert exit_info.value.code == 1
+
+
 class TestResolveOwnerName:
+    def test_other_profiles(self) -> None:
+        args = argparse.Namespace(name=None, bimanual=False)
+        assert cli._resolve_owner_name(args, "ur5e", 1) == "mujoco-ur5e-follow"  # noqa: SLF001
+        assert cli._resolve_owner_name(args, "ur5e", 2) == "mujoco-ur5e-bimanual-follow"  # noqa: SLF001
+
     def test_single_arm_default(self) -> None:
         args = argparse.Namespace(name=None, bimanual=False)
         assert cli._resolve_owner_name(args) == DEFAULT_MUJOCO_OWNER_NAME  # noqa: SLF001

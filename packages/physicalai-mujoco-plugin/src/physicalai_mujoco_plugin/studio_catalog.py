@@ -242,8 +242,8 @@ async def _build_virtual_leader(
     return MuJoCoVirtualLeader(http_port=validated.http_port)
 
 
-@export_config(class_path="physicalai_mujoco_plugin.studio_catalog._SharedSO101Robot")
-class _SharedSO101Robot:
+@export_config(class_path="physicalai_mujoco_plugin.studio_catalog._SharedMuJoCoRobot")
+class _SharedMuJoCoRobot:
     def __init__(self, shared_robot: SharedRobot, joint_names: list[str] | tuple[str, ...]) -> None:
         self._shared_robot = shared_robot
         self.joint_names = list(joint_names)
@@ -293,7 +293,7 @@ def _mujoco_robot_builder(
             allow_remote=validated.allow_remote,
             connect_timeout=validated.connect_timeout,
         )
-        return _SharedSO101Robot(shared, joint_order)
+        return _SharedMuJoCoRobot(shared, joint_order)
 
     return build
 

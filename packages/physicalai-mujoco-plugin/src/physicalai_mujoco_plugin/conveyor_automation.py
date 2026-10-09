@@ -4,7 +4,7 @@
 """Conveyor-scene automation that the simulation loop runs once per control tick.
 
 One object owns everything the conveyor scene adds on top of plain
-simulation, so ``MuJoCoSO101`` only forwards to it:
+simulation, so ``MuJoCoRobot`` only forwards to it:
 
 - the conveyor controller for the current scene, and the belt speed remembered
   across scene switches;

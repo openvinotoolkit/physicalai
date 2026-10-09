@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Scene definitions and reset behavior for the MuJoCo SO-101 simulation."""
+"""Scene definitions and reset behavior for the MuJoCo simulation."""
 
 # MuJoCo model/data attributes are supplied by the C extension at runtime.
 # pyrefly: ignore-errors [missing-attribute]
@@ -10,14 +10,15 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 from loguru import logger
 
 from physicalai_mujoco_plugin._urdf import get_urdf_path
+from physicalai_mujoco_plugin.compose import load_scene_model
 from physicalai_mujoco_plugin.conveyor import park_items, pool_item_names
-from physicalai_mujoco_plugin.robot_profile import load_scene_model
+from physicalai_mujoco_plugin.profiles import SO101_PROFILE
 from physicalai_mujoco_plugin.spawn import (
     place_freejoint,
     read_body_xy,
@@ -28,6 +29,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     import mujoco
+
+    from physicalai_mujoco_plugin.profiles import RobotProfile
 
 ResetFn = Callable[[object, object, np.random.Generator], None]
 
@@ -48,8 +51,10 @@ class SceneConfig:
     spawn_angle_half_deg: float = 50.0
     block_min_sep: float = 0.09
     target_min_sep: float = 0.11
+    robots: tuple[str, ...] | Literal["*"] = ("so101",)
+    """Profiles the scene supports; ``"*"`` accepts any fixed-base profile."""
     num_arms: int = 1
-    """Number of SO-101 arms the scene attaches: one per ``{prefix}robot_mount`` frame."""
+    """Number of robots the scene attaches: one per ``{prefix}robot_mount`` frame."""
     home_qpos: tuple[tuple[str, float], ...] = ()
     """Home joint positions in radians; unlisted arm joints use the model default."""
 
@@ -58,13 +63,21 @@ class SceneConfig:
         """Absolute path to this scene's XML model."""
         return get_urdf_path() / self.scene_xml_relpath
 
-    def load_model(self) -> mujoco.MjModel:
-        """Compile this scene with its SO-101 arms attached at the scene's mount frames.
+    def supports(self, profile: RobotProfile) -> bool:
+        """Return whether *profile* may run in this scene.
+
+        Returns:
+            ``True`` if the scene lists the profile or accepts any.
+        """
+        return self.robots == "*" or profile.name in self.robots
+
+    def load_model(self, profile: RobotProfile = SO101_PROFILE) -> mujoco.MjModel:
+        """Compile this scene with the profile's robot attached at the scene's mount frames.
 
         Returns:
             The compiled model.
         """
-        return load_scene_model(self.scene_xml_path)
+        return load_scene_model(self.scene_xml_path, profile)
 
 
 _GARMENT_FOLD_HOME: tuple[tuple[str, float], ...] = (
@@ -242,6 +255,7 @@ _SCENES: dict[str, SceneConfig] = {
         spawn_max_r=0.14,
         spawn_angle_half_deg=50.0,
         target_min_sep=0.11,
+        robots=("so101", "ur5e"),
     ),
     "yahtzee": SceneConfig(
         scene_id="yahtzee",
@@ -308,3 +322,12 @@ def list_scenes_for_arms(num_arms: int) -> dict[str, SceneConfig]:
 def get_reset_fn(scene_id: str) -> ResetFn | None:
     """Return the reset callback for `scene_id`, if one is registered."""
     return _RESET_FUNCTIONS.get(scene_id)
+
+
+def list_scenes_for(profile: RobotProfile, num_arms: int | None = None) -> dict[str, SceneConfig]:
+    """Return the scenes that support *profile*, optionally only those with *num_arms* robots (SCN-5)."""
+    return {
+        scene_id: scene
+        for scene_id, scene in _SCENES.items()
+        if scene.supports(profile) and (num_arms is None or scene.num_arms == num_arms)
+    }

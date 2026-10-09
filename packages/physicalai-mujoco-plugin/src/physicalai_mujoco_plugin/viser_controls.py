@@ -304,7 +304,7 @@ class PanelState:
     view_extent: float = 1.0
     """Model size, used for the default camera distance."""
     timing: Mapping[str, Any] = field(default_factory=dict)
-    """Real-time factor, control rate and camera frame rates (see ``MuJoCoSO101._timing_status``)."""
+    """Real-time factor, control rate and camera frame rates (see ``OperatorControls._timing_status``)."""
     autopilot: Mapping[str, Any] = field(default_factory=dict)
     """Autopilot availability, mode and phase (see ``Autopilot.status``)."""
     studio: Mapping[str, Any] = field(default_factory=dict)

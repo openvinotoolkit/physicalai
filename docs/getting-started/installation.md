@@ -18,7 +18,7 @@ pip install "physicalai[capture]"  # all camera backends + IPC transport
 First-party plugins from this repository are separate packages. Install one through its `plugin-` extra:
 
 ```bash
-pip install "physicalai[plugin-mujoco]"          # simulated SO-101 (MuJoCo)
+pip install "physicalai[plugin-mujoco]"          # simulated robots (MuJoCo)
 pip install "physicalai[plugin-bimanual-so101]"  # bimanual SO-101
 pip install "physicalai[plugin-rebot-b601]"      # Seeed reBot B601
 pip install "physicalai[plugin-stararm]"         # Fashion Star Arm 102

@@ -1,4 +1,4 @@
-"""Robot profile and scene composition: robot-free scenes with SO-101 arms attached at mount frames."""
+"""Scene composition: robot-free scenes with the profile's robot attached at mount frames."""
 
 # MuJoCo's bindings are supplied by the C extension at runtime.
 # pyrefly: ignore-errors [missing-attribute]
@@ -13,15 +13,19 @@ import pytest
 
 from physicalai_mujoco_plugin._urdf import get_urdf_path
 from physicalai_mujoco_plugin.constants import BIMANUAL_SO101_JOINT_ORDER, SO101_JOINT_ORDER
-from physicalai_mujoco_plugin.mujoco_robot import BiMuJoCoSO101, MuJoCoSO101
-from physicalai_mujoco_plugin.robot_profile import (
+from physicalai_mujoco_plugin.robot import MuJoCoRobot
+from physicalai_mujoco_plugin.compose import (
     ROBOT_MOUNT_FRAME,
-    SO101_PROFILE,
+    anchor_prefixes,
+    compose_scene,
     compose_scene_spec,
+    fetch_profile,
+    load_robot_spec,
     load_scene_model,
-    robot_mount_prefixes,
+    robot_layout,
     scene_needs_robot,
 )
+from physicalai_mujoco_plugin.profiles import SO101_PROFILE
 from physicalai_mujoco_plugin.scene_registry import get_scene, list_scenes, list_scenes_for_arms
 
 # Joint ranges (radians) of the plugin's SO-101 model before it moved to MuJoCo Menagerie's.
@@ -40,23 +44,22 @@ def test_profile_names_the_menagerie_so101() -> None:
     robot = mujoco_menagerie.get(SO101_PROFILE.menagerie_model)
     assert SO101_PROFILE.menagerie_entry in robot.entry_names
     assert robot.license == "Apache-2.0"
-    assert SO101_PROFILE.joint_order == SO101_JOINT_ORDER
-    assert tuple(name for name, _, _ in SO101_PROFILE.joint_ranges) == SO101_JOINT_ORDER
+    assert tuple(channel.name for channel in SO101_PROFILE.channels) == SO101_JOINT_ORDER
 
 
 def test_robot_spec_keeps_the_public_names_and_units() -> None:
-    model = SO101_PROFILE.load_spec().compile()
+    model = load_robot_spec(SO101_PROFILE).compile()
 
     assert tuple(model.joint(i).name for i in range(model.njnt)) == SO101_JOINT_ORDER
     assert tuple(model.actuator(i).name for i in range(model.nu)) == SO101_JOINT_ORDER
-    assert [model.camera(i).name for i in range(model.ncam)] == [SO101_PROFILE.wrist_camera]
+    assert [model.camera(i).name for i in range(model.ncam)] == ["wrist"]
     np.testing.assert_array_equal(model.jnt_range, EARLIER_SO101_JOINT_RANGES)
     np.testing.assert_array_equal(model.actuator_forcerange, np.tile([-3.35, 3.35], (6, 1)))
 
 
 def test_robot_spec_collides_through_the_earlier_primitives_only() -> None:
     """Grasp contacts come from the same 26 primitives as before; visual geoms never collide."""
-    model = SO101_PROFILE.load_spec().compile()
+    model = load_robot_spec(SO101_PROFILE).compile()
     collidable = [g for g in range(model.ngeom) if model.geom_contype[g] or model.geom_conaffinity[g]]
 
     assert len(collidable) == 26
@@ -87,7 +90,7 @@ def test_composed_scenes_have_no_keyframes(scene_id: str) -> None:
 @pytest.mark.parametrize("scene_id", list(list_scenes()))
 def test_every_scene_mounts_one_arm_per_declared_arm(scene_id: str) -> None:
     scene = get_scene(scene_id)
-    prefixes = robot_mount_prefixes(mujoco.MjSpec.from_file(str(scene.scene_xml_path)))
+    prefixes = anchor_prefixes(mujoco.MjSpec.from_file(str(scene.scene_xml_path)))
     assert prefixes == (("left_", "right_") if scene.num_arms == 2 else ("",))
 
 
@@ -158,20 +161,23 @@ def test_bimanual_arms_get_their_own_default_classes() -> None:
 
 
 @pytest.mark.parametrize(
-    ("robot_cls", "scene_id", "joint_ranges"),
+    ("scene_id", "joint_ranges"),
     [
-        (MuJoCoSO101, "single_pick_place", EARLIER_SO101_JOINT_RANGES),
-        (MuJoCoSO101, "conveyor_sort", EARLIER_SO101_JOINT_RANGES),
-        (BiMuJoCoSO101, "garment_fold", np.vstack([EARLIER_SO101_JOINT_RANGES] * 2)),
+        ("single_pick_place", EARLIER_SO101_JOINT_RANGES),
+        ("conveyor_sort", EARLIER_SO101_JOINT_RANGES),
+        ("garment_fold", np.vstack([EARLIER_SO101_JOINT_RANGES] * 2)),
     ],
 )
 def test_normalized_units_span_the_earlier_joint_ranges(
-    robot_cls: type[MuJoCoSO101], scene_id: str, joint_ranges: np.ndarray
+    scene_id: str, joint_ranges: np.ndarray
 ) -> None:
-    robot = robot_cls(model_path=str(get_scene(scene_id).scene_xml_path))
+    robot = MuJoCoRobot(scene=scene_id, cameras=[])
     robot.connect()
     try:
-        np.testing.assert_array_equal(robot._joint_limits, joint_ranges)
+        ranges = [channel.range for channels in robot._sim.channels for channel in channels.channels]
+        np.testing.assert_array_equal(ranges, joint_ranges)
+        model = robot._model
+        np.testing.assert_array_equal([model.joint(name).range for name in robot.joint_names], joint_ranges)
     finally:
         robot.disconnect()
 
@@ -180,7 +186,7 @@ def test_xml_without_mount_frames_compiles_unchanged(tmp_path: Path) -> None:
     xml = """<mujoco><worldbody><body name="arm"><joint name="hinge"/><geom size="0.1"/></body></worldbody></mujoco>"""
     path = tmp_path / "custom.xml"
     path.write_text(xml)
-    assert robot_mount_prefixes(mujoco.MjSpec.from_file(str(path))) == ()
+    assert anchor_prefixes(mujoco.MjSpec.from_file(str(path))) == ()
     model = load_scene_model(path)
     assert (model.nbody, model.njnt, model.nu) == (2, 1, 0)
 
@@ -200,20 +206,22 @@ def test_missing_download_explains_how_to_get_the_model(monkeypatch: pytest.Monk
 
     monkeypatch.setattr(mujoco_menagerie.Robot, "path", fail)
     with pytest.raises(RuntimeError, match=r"physicalai-mujoco prefetch.*MENAGERIE_ROOT"):
-        SO101_PROFILE.fetch()
+        fetch_profile(SO101_PROFILE)
     with pytest.raises(RuntimeError, match="robotstudio_so101"):
-        SO101_PROFILE.load_spec()
+        load_robot_spec(SO101_PROFILE)
 
 
 def test_missing_menagerie_root_model_is_reported(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("MENAGERIE_ROOT", str(tmp_path))
     with pytest.raises(RuntimeError, match="not found under MENAGERIE_ROOT"):
-        SO101_PROFILE.fetch()
+        fetch_profile(SO101_PROFILE)
 
 
-def test_fetch_returns_the_model_directory() -> None:
+def test_fetch_returns_the_entry_file() -> None:
     entry = mujoco_menagerie.get(SO101_PROFILE.menagerie_model).entry(SO101_PROFILE.menagerie_entry)
-    assert (SO101_PROFILE.fetch() / entry.file).is_file()
+    path = fetch_profile(SO101_PROFILE)
+    assert path.is_file()
+    assert path.name == entry.file.split("/")[-1]
 
 
 @pytest.mark.parametrize("scene_id", sorted(list_scenes()))
@@ -225,3 +233,57 @@ def test_xml_without_mount_frames_needs_no_robot(tmp_path: Path) -> None:
     path = tmp_path / "custom.xml"
     path.write_text("<mujoco><worldbody/></mujoco>")
     assert not scene_needs_robot(path)
+
+
+def test_spawn_anchors_are_not_supported_yet(tmp_path: Path) -> None:
+    path = tmp_path / "floor.xml"
+    path.write_text('<mujoco><worldbody><frame name="robot_spawn"/></worldbody></mujoco>')
+    with pytest.raises(ValueError, match="robot_spawn"):
+        anchor_prefixes(mujoco.MjSpec.from_file(str(path)))
+
+
+def test_composed_layout_is_bound_to_each_anchor() -> None:
+    composed = compose_scene(get_scene("garment_fold").scene_xml_path, SO101_PROFILE)
+    model = composed.model
+
+    assert [binding.prefix for binding in composed.robots] == ["left_", "right_"]
+    for binding in composed.robots:
+        layout = binding.layout
+        assert layout.joint_names == tuple(f"{binding.prefix}{name}" for name in SO101_JOINT_ORDER)
+        for channel in layout.channels:
+            assert model.actuator(channel.actuator_id).name == channel.actuator
+            assert model.joint(channel.joint_id).name == channel.joint
+            assert model.jnt_qposadr[channel.joint_id] == channel.qpos_adr
+        assert [camera.name for camera in layout.cameras] == [f"{binding.prefix}wrist"]
+        assert set(layout.home_qpos) == {f"{binding.prefix}{name}" for name in SO101_JOINT_ORDER}
+
+
+def test_a_joint_and_its_differently_named_actuator_are_one_robot() -> None:
+    from physicalai_mujoco_plugin.compose import model_prefixes
+    from physicalai_mujoco_plugin.profiles.derive import derive_profile
+
+    xml = "<mujoco><worldbody><body><joint name='shoulder_pan'/><geom size='0.1'/></body></worldbody>"
+    xml += "<actuator><position name='motor_shoulder_pan' joint='shoulder_pan'/></actuator></mujoco>"
+    layout = derive_profile(mujoco.MjModel.from_xml_string(xml))
+    assert model_prefixes(layout, SO101_PROFILE) == ("",)
+
+
+def test_robot_layout_is_cached_per_profile() -> None:
+    assert robot_layout(SO101_PROFILE) is robot_layout(SO101_PROFILE)
+
+
+def test_floating_base_robots_are_not_attached_at_mount_frames(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from physicalai_mujoco_plugin import compose
+    from physicalai_mujoco_plugin.profiles import RobotProfile
+
+    robot_xml = """<mujoco><worldbody><body name="base"><freejoint name="root"/><geom size="0.1"/>
+    <body name="leg"><joint name="hinge"/><geom size="0.05"/></body></body></worldbody>
+    <actuator><position name="hinge" joint="hinge" kp="10"/></actuator></mujoco>"""
+    monkeypatch.setattr(compose, "load_robot_spec", lambda _profile: mujoco.MjSpec.from_string(robot_xml))
+    monkeypatch.setattr(compose, "_LAYOUTS", {})
+    path = tmp_path / "table.xml"
+    path.write_text(f'<mujoco><worldbody><frame name="{ROBOT_MOUNT_FRAME}"/></worldbody></mujoco>')
+    profile = RobotProfile(name="floating", display_name="Floating", menagerie_model="inline")
+
+    with pytest.raises(ValueError, match=r"'floating' has a floating base \('root'\).*robot_spawn"):
+        compose_scene_spec(path, profile)
