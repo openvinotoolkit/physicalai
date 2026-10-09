@@ -60,6 +60,23 @@ def _validate_per_joint_gains(gains: dict[str, float], name: str) -> None:
             raise ValueError(msg)
 
 
+def _normalize_max_relative_target(value: float | None) -> float | None:
+    """Normalize the disabled sentinel and validate an optional step limit.
+
+    Returns:
+        ``None`` when disabled, otherwise the positive finite limit.
+
+    Raises:
+        ValueError: If the value is neither ``-1``, ``None``, nor finite and positive.
+    """
+    if value is None:
+        return None
+    if not math.isfinite(value) or value < -1.0 or -1.0 < value <= 0.0:
+        msg = f"max_relative_target must be -1, None, or a finite positive value, got {value!r}"
+        raise ValueError(msg)
+    return None if value <= -1.0 else value
+
+
 if TYPE_CHECKING:
     from motorbridge import Motor, MotorState
 
@@ -106,6 +123,13 @@ class ReBotB601DM:
 
     JOINT_ORDER: ClassVar[list[str]] = list(REBOT_B601_DM_JOINT_ORDER)
     NUM_JOINTS: ClassVar[int] = len(JOINT_ORDER)
+    DEVICE_PREFIX: ClassVar[str] = "rebot-dm"
+    MOTOR_IDS: ClassVar = REBOT_B601_DM_MOTOR_IDS
+    MOTOR_MODELS: ClassVar = REBOT_B601_DM_MOTOR_MODELS
+    JOINT_DIRECTIONS: ClassVar = REBOT_B601_DM_JOINT_DIRECTIONS
+    JOINT_LIMITS_DEG: ClassVar = REBOT_B601_DM_JOINT_LIMITS_DEG
+    OBSERVATION_CLASS: ClassVar = ReBotB601DMObservation
+    VALID_CAN_ADAPTERS: ClassVar = VALID_CAN_ADAPTERS
 
     def __init__(
         self,
@@ -148,8 +172,8 @@ class ReBotB601DM:
         if role not in VALID_ROLES:
             msg = f"Invalid role {role!r}. ReBotB601DM currently supports only {sorted(VALID_ROLES)}."
             raise ValueError(msg)
-        if can_adapter not in VALID_CAN_ADAPTERS:
-            msg = f"Invalid can_adapter {can_adapter!r}. Must be one of {sorted(VALID_CAN_ADAPTERS)}."
+        if can_adapter not in self.VALID_CAN_ADAPTERS:
+            msg = f"Invalid can_adapter {can_adapter!r}. Must be one of {sorted(self.VALID_CAN_ADAPTERS)}."
             raise ValueError(msg)
         if dm_serial_baud <= 0:
             msg = f"dm_serial_baud must be a positive integer, got {dm_serial_baud!r}"
@@ -171,9 +195,7 @@ class ReBotB601DM:
             elif not math.isfinite(gain) or gain < 0.0:
                 msg = f"{name} must be a non-negative finite value, got {gain!r}"
                 raise ValueError(msg)
-        if max_relative_target is not None and (not math.isfinite(max_relative_target) or max_relative_target <= 0.0):
-            msg = f"max_relative_target must be a finite positive value, got {max_relative_target!r}"
-            raise ValueError(msg)
+        max_relative_target = _normalize_max_relative_target(max_relative_target)
 
         self._port = port
         self._can_adapter = can_adapter
@@ -197,7 +219,7 @@ class ReBotB601DM:
     @property
     def device_ids(self) -> tuple[str, ...]:
         """Configured CAN transport identity without opening it."""
-        return (f"rebot-dm:{self._can_adapter}:{self._port}",)
+        return (f"{self.DEVICE_PREFIX}:{self._can_adapter}:{self._port}",)
 
     @property
     def port(self) -> str:
@@ -260,7 +282,7 @@ class ReBotB601DM:
                 self._cleanup_connection()
             raise
 
-        logger.info(f"ReBotB601DM connected on {self.port} (adapter={self.can_adapter})")
+        logger.info(f"{self.__class__.__name__} connected on {self.port} (adapter={self.can_adapter})")
 
     def _open_controller(self) -> Controller:
         if self.can_adapter == "damiao":
@@ -270,8 +292,8 @@ class ReBotB601DM:
     def _register_motors(self, controller: Controller) -> dict[str, Motor]:
         motors: dict[str, Motor] = {}
         for name in self.JOINT_ORDER:
-            motor_id, feedback_id = REBOT_B601_DM_MOTOR_IDS[name]
-            motors[name] = controller.add_damiao_motor(motor_id, feedback_id, REBOT_B601_DM_MOTOR_MODELS[name])
+            motor_id, feedback_id = self.MOTOR_IDS[name]
+            motors[name] = controller.add_damiao_motor(motor_id, feedback_id, self.MOTOR_MODELS[name])
         return motors
 
     def disconnect(self) -> None:
@@ -284,7 +306,7 @@ class ReBotB601DM:
         finally:
             self._cleanup_connection()
 
-        logger.info(f"ReBotB601DM disconnected from {self.port}")
+        logger.info(f"{self.__class__.__name__} disconnected from {self.port}")
 
     def _disconnect_motors(self) -> None:
         if self.disable_torque_on_disconnect and self._controller is not None:
@@ -301,6 +323,7 @@ class ReBotB601DM:
         controller = self._controller
         self._controller = None
         self._motors = {}
+        self._reset_control_state()
         if controller is not None:
             with contextlib.suppress(Exception):
                 controller.close()
@@ -333,6 +356,17 @@ class ReBotB601DM:
     def configure_position_control(self) -> None:
         """Reconfigure all motors to their position-control modes."""
         self._configure_motors()
+
+    def set_zero_position(self) -> None:
+        """Disable torque and store the current pose as zero on every motor."""
+        controller = self._require_controller()
+        controller.disable_all()
+        for motor in self._motors.values():
+            motor.set_zero_position()
+        self._reset_control_state()
+
+    def _reset_control_state(self) -> None:
+        """Reset variant-specific controller state after reconnecting or zeroing."""
 
     def _read_motor_states(self) -> list[MotorState]:
         if not self.is_connected():
@@ -374,15 +408,16 @@ class ReBotB601DM:
         rotor_temperatures = np.empty(self.NUM_JOINTS, dtype=np.float32)
         status_codes = np.empty(self.NUM_JOINTS, dtype=np.int32)
 
-        for i, state in enumerate(states):
-            positions[i] = math.degrees(float(state.pos))
-            velocities[i] = math.degrees(float(state.vel))
+        for i, (name, state) in enumerate(zip(self.JOINT_ORDER, states, strict=True)):
+            direction = self.JOINT_DIRECTIONS[name]
+            positions[i] = math.degrees(float(state.pos)) / direction
+            velocities[i] = math.degrees(float(state.vel)) / direction
             torques[i] = float(state.torq)
             mos_temperatures[i] = float(state.t_mos)
             rotor_temperatures[i] = float(state.t_rotor)
             status_codes[i] = int(state.status_code)
 
-        return ReBotB601DMObservation(
+        return self.OBSERVATION_CLASS(
             joint_positions=positions,
             timestamp=time.monotonic(),
             sensor_data={
@@ -429,34 +464,37 @@ class ReBotB601DM:
         present_deg: list[float] | None = None
         if max_relative_target is not None:
             states = self._read_motor_states()
-            present_deg = [math.degrees(float(s.pos)) for s in states]
+            present_deg = [
+                self._motor_to_public_position(name, math.degrees(float(state.pos)))
+                for name, state in zip(self.JOINT_ORDER, states, strict=True)
+            ]
 
         for i, name in enumerate(self.JOINT_ORDER):
-            target_deg = self._map_and_clip_action(name, float(action[i]))
+            target_public_deg = self._clip_public_action(name, float(action[i]))
             if present_deg is not None and max_relative_target is not None:
-                delta = target_deg - present_deg[i]
+                delta = target_public_deg - present_deg[i]
                 if abs(delta) > max_relative_target:
-                    limited = present_deg[i] + math.copysign(max_relative_target, delta)
-                    min_deg, max_deg = REBOT_B601_DM_JOINT_LIMITS_DEG[name]
-                    target_deg = float(np.clip(limited, min_deg, max_deg))
+                    target_public_deg = present_deg[i] + math.copysign(max_relative_target, delta)
+            target_deg = self._public_to_motor_position(name, target_public_deg)
             target_rad = math.radians(target_deg)
-            motor = self._motors[name]
+            self._send_joint(name, target_rad, goal_time)
 
-            if name == "gripper":
-                if self._gripper_control_mode == "mit":
-                    motor.send_mit(target_rad, 0.0, self._mit_gain(name, "kp"), self._mit_gain(name, "kd"), 0.0)
-                    continue
-                velocity_rad_s = self._pos_vel_velocity_rad_s(name, target_rad, goal_time)
-                motor.send_force_pos(target_rad, velocity_rad_s, self._force_pos_torque_ratio)
-                continue
-
-            if self._control_mode == "mit":
+    def _send_joint(self, name: str, target_rad: float, goal_time: float) -> None:
+        motor = self._motors[name]
+        if name == "gripper":
+            if self._gripper_control_mode == "mit":
                 motor.send_mit(target_rad, 0.0, self._mit_gain(name, "kp"), self._mit_gain(name, "kd"), 0.0)
-            else:
-                velocity_rad_s = self._pos_vel_velocity_rad_s(name, target_rad, goal_time)
-                motor.send_pos_vel(target_rad, velocity_rad_s)
+                return
+            velocity_rad_s = self._pos_vel_velocity_rad_s(name, target_rad, goal_time)
+            motor.send_force_pos(target_rad, velocity_rad_s, self._force_pos_torque_ratio)
+            return
+        if self._control_mode == "mit":
+            motor.send_mit(target_rad, 0.0, self._mit_gain(name, "kp"), self._mit_gain(name, "kd"), 0.0)
+        else:
+            velocity_rad_s = self._pos_vel_velocity_rad_s(name, target_rad, goal_time)
+            motor.send_pos_vel(target_rad, velocity_rad_s)
 
-    def _mit_gain(self, name: str, which: str) -> float:
+    def _mit_gain(self, name: str, which: Literal["kp", "kd"]) -> float:
         """Resolve the MIT gain for a joint from the configured value or defaults.
 
         Args:
@@ -493,8 +531,12 @@ class ReBotB601DM:
             return max_velocity_rad_s
         return min(max_velocity_rad_s, abs(target_rad - float(state.pos)) / goal_time)
 
-    @staticmethod
-    def _map_and_clip_action(name: str, action_deg: float) -> float:
-        mapped = action_deg * REBOT_B601_DM_JOINT_DIRECTIONS[name]
-        min_deg, max_deg = REBOT_B601_DM_JOINT_LIMITS_DEG[name]
-        return float(np.clip(mapped, min_deg, max_deg))
+    def _clip_public_action(self, name: str, action_deg: float) -> float:
+        min_deg, max_deg = self.JOINT_LIMITS_DEG[name]
+        return float(np.clip(action_deg, min_deg, max_deg))
+
+    def _public_to_motor_position(self, name: str, position_deg: float) -> float:
+        return position_deg * self.JOINT_DIRECTIONS[name]
+
+    def _motor_to_public_position(self, name: str, position_deg: float) -> float:
+        return position_deg / self.JOINT_DIRECTIONS[name]

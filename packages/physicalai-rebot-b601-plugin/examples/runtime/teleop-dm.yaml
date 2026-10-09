@@ -27,5 +27,6 @@ runtime:
         init_args:
           port: /dev/ttyUSB0 # CHANGE_ME: leader arm serial port
           baudrate: 1000000
+          follower_profile: b601
 
   fps: 30.0
