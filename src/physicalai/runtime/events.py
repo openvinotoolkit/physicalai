@@ -57,6 +57,8 @@ class InferenceEvent:
     latency_s: float
     offset: int
     chunk: np.ndarray
+    server_latency_s: float | None = None
+    server_queue_s: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -15,7 +15,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from ._ids import derive_endpoint_port
+from physicalai.transport._zenoh import endpoint_for_key, open_zenoh_session
+
+from ._ids import robot_prefix
 
 
 def open_session(name: str | None = None, *, listen: bool = False, allow_remote: bool = False) -> Any:  # noqa: ANN401
@@ -48,18 +50,20 @@ def open_session(name: str | None = None, *, listen: bool = False, allow_remote:
     Returns:
         The open Zenoh session.
     """
-    import zenoh  # noqa: PLC0415
-
-    config = zenoh.Config()
-    config.insert_json5("mode", '"peer"')
-    if not allow_remote:
-        config.insert_json5("scouting/multicast/enabled", "false")
-        config.insert_json5("scouting/gossip/enabled", "false")
+    connect_endpoints: list[str] | None = None
+    listen_endpoints: list[str] | None = None
     if name is not None:
-        port = derive_endpoint_port(name)
         if listen:
             bind_host = "0.0.0.0" if allow_remote else "127.0.0.1"  # noqa: S104  # nosec B104: explicit remote opt-in
-            config.insert_json5("listen/endpoints", f'["tcp/{bind_host}:{port}"]')
+            listen_endpoints = [endpoint_for_key(robot_prefix(name), bind_host)]
+            connect_endpoints = []
         else:
-            config.insert_json5("connect/endpoints", f'["tcp/127.0.0.1:{port}"]')
-    return zenoh.open(config)
+            connect_endpoints = [endpoint_for_key(robot_prefix(name), "127.0.0.1")]
+            listen_endpoints = []
+    return open_zenoh_session(
+        mode="peer",
+        connect_endpoints=connect_endpoints,
+        listen_endpoints=listen_endpoints,
+        multicast_enabled=allow_remote,
+        gossip_enabled=allow_remote,
+    )

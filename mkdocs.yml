@@ -29,6 +29,7 @@ nav:
       - Overview: how-to/README.md
       - Runtime:
           - Run a Policy on a Robot: how-to/runtime/run-policy-on-robot.md
+          - Run Inference Remotely: how-to/runtime/run-inference-remotely.md
           - Use Execution Modes: how-to/runtime/use-execution-modes.md
           - Add Runtime Callbacks: how-to/runtime/add-runtime-callbacks.md
           - Share a Robot Across Processes: how-to/runtime/share-a-robot.md

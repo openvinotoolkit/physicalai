@@ -299,6 +299,9 @@ class AsyncExecution(Execution):
                             self._running_inference = False
                             continue
                     actions = self._model.predict_action_chunk(obs)
+                    timing = getattr(self._model, "last_timing", None)
+                    server_latency = getattr(timing, "server_compute_s", None)
+                    server_queue = getattr(timing, "server_queue_s", None)
                     latency = time.perf_counter() - t0
 
                 if stop_event.is_set():
@@ -328,6 +331,8 @@ class AsyncExecution(Execution):
                             latency_s=latency,
                             offset=offset,
                             chunk=actions,
+                            server_latency_s=server_latency,
+                            server_queue_s=server_queue,
                         )
                     )
 

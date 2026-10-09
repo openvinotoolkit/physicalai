@@ -196,6 +196,9 @@ class PolicySource(ActionSource):
                 self._execution.stop()
             finally:
                 self._connected = False
+                close_model = getattr(type(self._model), "close", None)
+                if close_model is not None:
+                    close_model(self._model)
 
     def _to_model_input(self, robot_obs: RobotObservation, camera_frames: Mapping[str, Frame]) -> dict[str, Any]:
         """Assemble model input dict from observation and camera frames.

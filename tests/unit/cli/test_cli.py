@@ -526,8 +526,8 @@ class TestMainDispatch:
         assert exit_code == 0
         assert "fast help for pytest fit" in capsys.readouterr().out
 
-    def test_builtins_contain_run_and_robot_only(self) -> None:
-        assert list(main_module._BUILTINS) == ["run", "robot"]  # noqa: SLF001
+    def test_builtins_contain_inference_run_and_robot(self) -> None:
+        assert list(main_module._BUILTINS) == ["inference", "run", "robot"]  # noqa: SLF001
 
     def test_unknown_subcommand_errors(self) -> None:
         with pytest.raises(SystemExit) as exc:
