@@ -5,7 +5,7 @@ from typing import Any, ClassVar, Literal
 
 import numpy as np
 import pytest
-from physicalai.robot.so101 import SO101, SO101Calibration
+from physicalai_so101_plugin import SO101, SO101Calibration
 
 from physicalai_bimanual_so101_plugin.constants import (
     BIMANUAL_SO101_JOINT_ORDER,
@@ -37,7 +37,7 @@ _SAMPLE_CALIBRATION: dict[str, Any] = {
 
 
 class _StubSO101(SO101):
-    """Minimal stub for physicalai.robot.so101.SO101."""
+    """Minimal stub for physicalai_so101_plugin.SO101."""
 
     JOINT_ORDER: ClassVar[list[str]] = [
         "shoulder_pan",

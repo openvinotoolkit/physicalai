@@ -7,27 +7,13 @@
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
-from typing import Any, cast
-from unittest.mock import MagicMock, patch
+from typing import Any
 
 import pytest
 
 from physicalai.config import Config
 from physicalai.robot import Robot
-
-# SO101 imports scservo_sdk at module load; keep unit tests hardware-free.
-sys.modules.setdefault("scservo_sdk", MagicMock())
-
-SAMPLE_CALIBRATION: dict[str, Any] = {
-    "shoulder_pan": {"id": 1, "drive_mode": 0, "homing_offset": 2048, "range_min": 707, "range_max": 3439},
-    "shoulder_lift": {"id": 2, "drive_mode": 1, "homing_offset": 1024, "range_min": 669, "range_max": 3292},
-    "elbow_flex": {"id": 3, "drive_mode": 0, "homing_offset": 2048, "range_min": 846, "range_max": 3069},
-    "wrist_flex": {"id": 4, "drive_mode": 0, "homing_offset": 2048, "range_min": 956, "range_max": 3311},
-    "wrist_roll": {"id": 5, "drive_mode": 0, "homing_offset": 2048, "range_min": 59, "range_max": 3946},
-    "gripper": {"id": 6, "drive_mode": 0, "homing_offset": 2048, "range_min": 2026, "range_max": 3074},
-}
 
 
 def _assert_construction_round_trip(robot: object) -> dict[str, Any]:
@@ -199,15 +185,12 @@ class TestSharedRobotConfig:
     def test_defining_module_robot_path_round_trips_as_given(self) -> None:
         from physicalai.robot import SharedRobot
 
-        defining = "physicalai.robot.so101.so101.SO101"
+        defining = "physicalai_so101_plugin.SO101"
         robot = SharedRobot(
             "canonical-arm",
             robot={
                 "class_path": defining,
-                "init_args": {
-                    "port": "/dev/ttyUSB0",
-                    "calibration": SAMPLE_CALIBRATION,
-                },
+                "init_args": {"port": "/dev/ttyUSB0"},
             },
         )
         wire = _assert_construction_round_trip(robot)

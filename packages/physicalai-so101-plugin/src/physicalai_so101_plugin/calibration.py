@@ -14,7 +14,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from physicalai.robot.so101.constants import SO101_JOINT_ORDER, TICKS_PER_REVOLUTION
+from physicalai_so101_plugin.constants import SO101_JOINT_ORDER, TICKS_PER_REVOLUTION
 
 
 @dataclass(frozen=True)

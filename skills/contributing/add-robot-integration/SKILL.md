@@ -15,7 +15,7 @@ Robots satisfy the structural `Robot` protocol in `src/physicalai/robot/interfac
 2. **Implement connect lifecycle**: idempotent `connect()`, `disconnect()`, `is_connected()`.
 3. **Observations**: return a type exposing `joint_positions`, `timestamp` (`time.monotonic()`), optional `sensor_data` / `images`; implement `state` property when inference expects more than positions.
 4. **Actions**: `send_action(action, *, goal_time=...)` with `action` shape matching training data conventions; document joint order via `joint_names`.
-5. **Optional extra** in `pyproject.toml` (`physicalai[so101]`, `physicalai[trossen]`); lazy-import vendor SDKs.
+5. **Optional extra** in `pyproject.toml` (`physicalai-so101-plugin`, `physicalai-trossen-plugin`); lazy-import vendor SDKs.
 6. **Export** public class from `physicalai.robot` when user-facing.
 7. **Tests** under `tests/unit/robot/` with mocked hardware.
    - Done when: `uv run pytest tests/unit/robot -k <name>` passes.

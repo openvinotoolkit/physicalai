@@ -1,11 +1,11 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-# ruff: noqa: PLC0415
+# ruff: file-ignore[import-outside-top-level]
 
 """Bimanual SO-101 robot arm plugin for PhysicalAI.
 
-Composes two :class:`physicalai.robot.so101.SO101` arms (left + right) behind the
+Composes two :class:`physicalai_so101_plugin.SO101` arms (left + right) behind the
 ``physicalai.robot.Robot`` protocol.
 """
 

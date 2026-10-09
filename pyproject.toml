@@ -14,6 +14,7 @@ physicalai-bimanual-so101-plugin = { workspace = true }
 physicalai-rebot-b601-plugin = { workspace = true }
 physicalai-stararm-plugin = { workspace = true }
 physicalai-trossen-plugin = { workspace = true }
+physicalai-so101-plugin = { workspace = true }
 
 [project]
 name = "physicalai"
@@ -75,7 +76,6 @@ capture = [
 ur = []
 abb = []
 franka = []
-so101 = ["feetech-servo-sdk"]
 observer-rerun = ["rerun-sdk>=0.22"]
 robots = [
     "physicalai[ur]",
@@ -91,11 +91,12 @@ plugin-mujoco = ["physicalai-mujoco-plugin; python_version >= '3.12'"]
 plugin-bimanual-so101 = ["physicalai-bimanual-so101-plugin; python_version >= '3.12'"]
 plugin-rebot-b601 = ["physicalai-rebot-b601-plugin; python_version >= '3.12'"]
 plugin-stararm = ["physicalai-stararm-plugin; python_version >= '3.12'"]
+plugin-so101 = ["physicalai-so101-plugin; python_version >= '3.12' and python_version < '3.14'"]
 plugin-trossen = ["physicalai-trossen-plugin; python_version >= '3.12' and python_version < '3.14'"]
 trossen = ["physicalai-trossen-plugin; python_version >= '3.12' and python_version < '3.14'"]
 
 [dependency-groups]
-dev = ["pytest", "mypy", "pyrefly", "ruff>=0.15.12", "prek"]
+dev = ["pytest", "mypy", "pyrefly", "ruff>=0.15.12", "prek", "physicalai-so101-plugin"]
 docs = ["mkdocs>=1.6", "mkdocs-material>=9.6"]
 
 [tool.hatch.version]

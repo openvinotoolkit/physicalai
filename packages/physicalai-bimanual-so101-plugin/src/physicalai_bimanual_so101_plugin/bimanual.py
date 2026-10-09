@@ -3,7 +3,7 @@
 
 """Bimanual SO-101 robot arm driver.
 
-Wraps two :class:`physicalai.robot.so101.SO101` instances (left + right) behind the
+Wraps two :class:`physicalai_so101_plugin.SO101` instances (left + right) behind the
 :class:`~physicalai.robot.Robot` protocol, prefixing all joint names with
 ``left_`` / ``right_``.
 """
@@ -24,9 +24,10 @@ from physicalai_bimanual_so101_plugin.constants import (
 )
 
 if TYPE_CHECKING:
+    from physicalai_so101_plugin import SO101
+
     from physicalai.capture.frame import Frame
     from physicalai.robot.interface import RobotObservation
-    from physicalai.robot.so101 import SO101
 
 
 @dataclass
@@ -117,12 +118,12 @@ class BimanualSO101(Robot):
 
         try:
             self._left.disconnect()
-        except Exception as exc:  # noqa: BLE001  # pragma: no cover - defensive against hardware failures
+        except Exception as exc:  # ruff: ignore[blind-except]  # pragma: no cover - defensive against hardware failures
             first_error = exc
 
         try:
             self._right.disconnect()
-        except Exception as exc:  # noqa: BLE001  # pragma: no cover - defensive against hardware failures
+        except Exception as exc:  # ruff: ignore[blind-except]  # pragma: no cover - defensive against hardware failures
             if first_error is None:
                 first_error = exc
 

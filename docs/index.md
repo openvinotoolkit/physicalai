@@ -40,7 +40,7 @@ Python example:
 ```python
 from physicalai.inference import InferenceModel
 from physicalai.runtime import RobotRuntime, PolicySource, SyncExecution
-from physicalai.robot import SO101
+from physicalai_so101_plugin import SO101
 from physicalai.capture import UVCCamera
 
 model = InferenceModel("./exports/act_policy")

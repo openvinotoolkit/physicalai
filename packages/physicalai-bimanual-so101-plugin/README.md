@@ -46,7 +46,7 @@ Bundled SO-101 calibration files (LeRobot format) live under
 Pass them as the `calibration` path when constructing a `SO101`:
 
 ```python
-from physicalai.robot.so101 import SO101, SO101Calibration
+from physicalai_so101_plugin import SO101, SO101Calibration
 
 cal = SO101Calibration.from_path("examples/calibration/follower.json")
 arm = SO101(port="/dev/ttyACM0", calibration=cal, role="follower")
@@ -65,7 +65,7 @@ from physicalai.robot import connect
 from physicalai_bimanual_so101_plugin import BimanualSO101
 
 # Build left and right arms manually
-from physicalai.robot.so101 import SO101, SO101Calibration
+from physicalai_so101_plugin import SO101, SO101Calibration
 
 left_cal = SO101Calibration.from_path("left_calibration.json")
 right_cal = SO101Calibration.from_path("right_calibration.json")
@@ -86,7 +86,7 @@ with connect(robot) as arm:
 ```python
 from physicalai.robot import connect
 from physicalai_bimanual_so101_plugin import BimanualSO101
-from physicalai.robot.so101 import SO101
+from physicalai_so101_plugin import SO101
 
 left = SO101.uncalibrated(port="/dev/ttyACM0", role="follower")
 right = SO101.uncalibrated(port="/dev/ttyACM1", role="follower")
@@ -98,7 +98,7 @@ robot = BimanualSO101(left=left, right=right)
 
 ```python
 from physicalai.robot import connect
-from physicalai.robot.so101 import SO101
+from physicalai_so101_plugin import SO101
 from physicalai_bimanual_so101_plugin import BimanualSO101
 
 left = SO101.uncalibrated(port="/dev/ttyACM0", role="leader")
@@ -120,7 +120,7 @@ the built-in `physicalai.runtime.TeleopSource` with a leader `BimanualSO101`
 in Python:
 
 ```python
-from physicalai.robot.so101 import SO101
+from physicalai_so101_plugin import SO101
 from physicalai.runtime import RobotRuntime, TeleopSource
 from physicalai_bimanual_so101_plugin import BimanualSO101
 

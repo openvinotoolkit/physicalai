@@ -48,17 +48,18 @@ With hardware-specific extras:
 ```bash
 pip install physicalai[realsense]   # Intel RealSense cameras
 pip install physicalai[basler]      # Basler industrial cameras
-pip install physicalai[so101]       # SO-101 robot arm
 ```
 
 With first-party plugins (Python 3.12+):
 
 ```bash
+pip install "physicalai[so101-plugin]"           # SO-101 robot arm and Studio catalog
 pip install "physicalai[trossen-plugin]"         # Trossen WidowX robots
 pip install "physicalai[plugin-mujoco]"          # simulated robots (MuJoCo)
 pip install "physicalai[plugin-bimanual-so101]"  # bimanual SO-101
 pip install "physicalai[plugin-rebot-b601]"      # Seeed reBot B601
 pip install "physicalai[plugin-stararm]"         # Fashion Star Arm 102
+pip install "physicalai[plugin-so101]"           # single-arm SO-101
 ```
 
 ---
@@ -169,20 +170,21 @@ Robots implement a Protocol-based interface. Any class with `connect()`, `discon
 
 More robots ship as first-party plugins. Each plugin README covers setup and usage. Install them with the `plugin-*` extras (see [Installation](#installation)); the LeRobot plugin is installed manually with `pip install physicalai-lerobot-plugin`.
 
-| Plugin                                                                 | Robots                                                                                                               |
-| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Plugin                                                                 | Robots                                                                             |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
 | [MuJoCo](packages/physicalai-mujoco-plugin/README.md)                  | Simulated single-arm and bimanual SO-101 and other MuJoCo Menagerie robots, with a browser viewer and camera streams |
-| [Bimanual SO-101](packages/physicalai-bimanual-so101-plugin/README.md) | Two SO-101 arms as one robot (follower and leader)                                                                   |
-| [reBot B601](packages/physicalai-rebot-b601-plugin/README.md)          | Seeed reBot B601-DM / B601-RS followers                                                                              |
-| [Star Arm](packages/physicalai-stararm-plugin/README.md)               | Fashion Star Arm 102 leaders and a follower                                                                          |
-| [LeRobot](packages/physicalai-lerobot-plugin/README.md)                | Robots and teleoperators from LeRobot configs                                                                        |
+| [SO-101](packages/physicalai-so101-plugin/README.md)                   | Single-arm SO-101 driver, Studio catalog, and URDF assets                           |
+| [Bimanual SO-101](packages/physicalai-bimanual-so101-plugin/README.md) | Two SO-101 arms as one robot (follower and leader)                                 |
+| [reBot B601](packages/physicalai-rebot-b601-plugin/README.md)          | Seeed reBot B601-DM / B601-RS followers                                            |
+| [Star Arm](packages/physicalai-stararm-plugin/README.md)               | Fashion Star Arm 102 leaders and a follower                                        |
+| [LeRobot](packages/physicalai-lerobot-plugin/README.md)                | Robots and teleoperators from LeRobot configs                                      |
 
 To add your own robot to Physical AI Studio, see the [Studio plugin](packages/physicalai-studio-plugin/README.md).
 
 ```python
-from physicalai.robot import SO101
+from physicalai_so101_plugin import SO101
 
-robot = SO101(port="/dev/ttyUSB0")
+robot = SO101(port="/dev/ttyUSB0", calibration="calibration.json")
 robot.connect()
 
 obs = robot.get_observation()
@@ -237,9 +239,10 @@ robot.disconnect()
 <summary><strong>Robot Verification</strong></summary>
 
 ```python
-from physicalai.robot import SO101, verify_robot
+from physicalai_so101_plugin import SO101
+from physicalai.robot import verify_robot
 
-robot = SO101(port="/dev/ttyUSB0")
+robot = SO101(port="/dev/ttyUSB0", calibration="calibration.json")
 verify_robot(robot)  # Interactive joint-by-joint check
 ```
 
@@ -313,7 +316,7 @@ The `RobotRuntime` orchestrates the full control loop: connecting hardware, read
 from physicalai.runtime import RobotRuntime, PolicySource, SyncExecution
 from physicalai.inference import InferenceModel
 from physicalai.capture import UVCCamera, RealSenseCamera
-from physicalai.robot import SO101
+from physicalai_so101_plugin import SO101
 
 runtime = RobotRuntime(
     fps=30,
@@ -343,7 +346,7 @@ runtime.run(duration_s=60)
 # runtime.yaml
 runtime:
   robot:
-    class_path: physicalai.robot.so101.SO101
+    class_path: physicalai_so101_plugin.SO101
     init_args:
       port: /dev/ttyACM0
   action_source:

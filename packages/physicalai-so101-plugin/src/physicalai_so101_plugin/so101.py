@@ -1,6 +1,8 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
+# ruff: file-ignore[too-many-statements-in-try-clause]
+
 """SO-101 robot arm driver.
 
 Concrete implementation of the :class:`~physicalai.robot.Robot`
@@ -8,7 +10,7 @@ protocol for the SO-101 robot arm (6-DOF, Feetech STS3215 servos).
 
 Requires the ``feetech-servo-sdk`` package::
 
-    pip install physicalai[so101]
+    pip install physicalai-so101-plugin
 
 The driver supports two roles:
 
@@ -44,8 +46,8 @@ from scservo_sdk import (
 from physicalai.config import export_config
 from physicalai.robot import Robot
 from physicalai.robot.device_ids import device_id_from_serial_port
-from physicalai.robot.so101.calibration import SO101Calibration
-from physicalai.robot.so101.constants import (
+from physicalai_so101_plugin.calibration import SO101Calibration
+from physicalai_so101_plugin.constants import (
     MAX_SPEED_DEG_S,
     POSITION_MODE,
     PROTOCOL_VERSION,
@@ -94,7 +96,7 @@ class SO101Observation:
         return self.joint_positions
 
 
-@export_config(class_path="physicalai.robot.SO101")
+@export_config(class_path="physicalai_so101_plugin.SO101")
 class SO101(Robot):
     """Driver for the SO-101 robot arm (6-DOF, Feetech STS3215 servos).
 
@@ -386,7 +388,7 @@ class SO101(Robot):
             for servo_id in self.servo_ids.values():
                 if not group_sync_read.addParam(servo_id):
                     msg = f"Failed to add servo {servo_id} to sync read group"
-                    raise ConnectionError(msg)  # noqa: TRY301
+                    raise ConnectionError(msg)  # ruff: ignore[raise-within-try]
 
             group_sync_write = GroupSyncWrite(
                 port_handler,
@@ -460,7 +462,7 @@ class SO101(Robot):
         try:
             if self._torque_on_disconnect:
                 self._hold_position()
-        except Exception:  # noqa: BLE001
+        except Exception:  # ruff: ignore[blind-except]
             logger.exception(
                 "Failed to hold position while disconnecting SO-101; proceeding to close port.",
             )
@@ -468,7 +470,7 @@ class SO101(Robot):
             self._connection = None
             try:
                 conn.port_handler.closePort()
-            except Exception:  # noqa: BLE001
+            except Exception:  # ruff: ignore[blind-except]
                 logger.exception(
                     "Error while closing SO-101 serial port; continuing cleanup.",
                 )
@@ -509,7 +511,7 @@ class SO101(Robot):
             timestamp=time.monotonic(),
         )
 
-    def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None:  # noqa: ARG002
+    def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None:  # ruff: ignore[unused-method-argument]
         """Send joint position commands to all servos.
 
         Args:
@@ -645,7 +647,7 @@ class SO101(Robot):
                 address,
                 value,
             )
-        elif byte_width == 2:  # noqa: PLR2004
+        elif byte_width == 2:  # ruff: ignore[magic-value-comparison]
             comm_result, error = conn.packet_handler.write2ByteTxRx(
                 conn.port_handler,
                 servo_id,

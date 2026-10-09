@@ -10,7 +10,7 @@ Install hardware extras only when you need a specific backend or robot integrati
 
 ```bash
 pip install "physicalai[realsense]"
-pip install "physicalai[so101]"
+pip install "physicalai-so101-plugin"
 pip install "physicalai[robots]"
 pip install "physicalai[capture]"  # all camera backends + IPC transport
 ```

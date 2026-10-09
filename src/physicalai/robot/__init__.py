@@ -8,7 +8,6 @@
 Public API::
 
     from physicalai.robot import Robot, connect, verify_robot
-    from physicalai.robot import SO101            # requires: pip install physicalai[so101]
     from physicalai.robot import SharedRobot      # requires: pip install physicalai[transport]
 """
 
@@ -32,8 +31,8 @@ from physicalai.robot.verify import verify_robot
 if TYPE_CHECKING:
     from physicalai_trossen_plugin import BimanualWidowXAI as BimanualWidowXAI
     from physicalai_trossen_plugin import WidowXAI as WidowXAI
+    from physicalai_so101_plugin import SO101 as SO101
 
-    from physicalai.robot.so101 import SO101 as SO101
     from physicalai.robot.transport import SharedRobot as SharedRobot
 
 __all__ = [
@@ -69,7 +68,7 @@ def __getattr__(name: str) -> object:
         AttributeError: If ``name`` does not match a known lazy-loaded symbol.
     """
     if name == "SO101":
-        from physicalai.robot.so101 import SO101
+        from physicalai_so101_plugin import SO101
 
         return SO101
 
