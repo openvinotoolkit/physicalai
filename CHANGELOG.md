@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/openvinotoolkit/physicalai/compare/v0.3.0...v0.4.0) (2026-10-09)
+
+
+### ✨ Features
+
+* control rate inflation by intermediate actions interpolation ([#311](https://github.com/openvinotoolkit/physicalai/issues/311)) ([78669a0](https://github.com/openvinotoolkit/physicalai/commit/78669a0d80b462718cd67fa3d7a6765080ed2226))
+
 ## [0.3.0](https://github.com/openvinotoolkit/physicalai/compare/v0.2.0...v0.3.0) (2026-10-07)
 
 
