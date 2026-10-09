@@ -5,9 +5,10 @@ from typing import Any, ClassVar, Literal
 
 import numpy as np
 import pytest
+from physicalai.config import Config
 from physicalai_so101_plugin import SO101, SO101Calibration
 
-from physicalai_bimanual_so101_plugin.constants import (
+from physicalai_so101_plugin.bimanual_constants import (
     BIMANUAL_SO101_JOINT_ORDER,
     LEFT_ARM_JOINTS,
     RIGHT_ARM_JOINTS,
@@ -98,7 +99,7 @@ class _StubSO101(SO101):
 
 class TestBimanualSO101Construction:
     def test_construct(self) -> None:
-        from physicalai_bimanual_so101_plugin.bimanual import BimanualSO101
+        from physicalai_so101_plugin.bimanual import BimanualSO101
 
         left = _StubSO101(role="follower")
         right = _StubSO101(role="follower")
@@ -106,7 +107,7 @@ class TestBimanualSO101Construction:
         assert robot.role == "follower"
 
     def test_role_mismatch_raises(self) -> None:
-        from physicalai_bimanual_so101_plugin.bimanual import BimanualSO101
+        from physicalai_so101_plugin.bimanual import BimanualSO101
 
         left = _StubSO101(role="follower")
         right = _StubSO101(role="leader")
@@ -114,7 +115,7 @@ class TestBimanualSO101Construction:
             BimanualSO101(left=left, right=right)
 
     def test_joint_names(self) -> None:
-        from physicalai_bimanual_so101_plugin.bimanual import BimanualSO101
+        from physicalai_so101_plugin.bimanual import BimanualSO101
 
         left = _StubSO101()
         right = _StubSO101()
@@ -128,7 +129,7 @@ class TestBimanualSO101Construction:
             assert name in names
 
     def test_joint_order_and_count(self) -> None:
-        from physicalai_bimanual_so101_plugin.bimanual import BimanualSO101
+        from physicalai_so101_plugin.bimanual import BimanualSO101
 
         left = _StubSO101()
         right = _StubSO101()
@@ -136,8 +137,15 @@ class TestBimanualSO101Construction:
         assert BIMANUAL_SO101_JOINT_ORDER == robot.JOINT_ORDER
         assert robot.NUM_JOINTS == 12
 
+    def test_exports_combined_plugin_recipe(self) -> None:
+        from physicalai_so101_plugin.bimanual import BimanualSO101
+
+        left = SO101(port="/dev/ttyACM0", calibration=_SAMPLE_CALIBRATION)
+        right = SO101(port="/dev/ttyACM1", calibration=_SAMPLE_CALIBRATION)
+        assert Config.from_instance(BimanualSO101(left=left, right=right)).class_path == "physicalai_so101_plugin.BimanualSO101"
+
     def test_device_ids_are_sorted_and_deduplicated(self) -> None:
-        from physicalai_bimanual_so101_plugin.bimanual import BimanualSO101
+        from physicalai_so101_plugin.bimanual import BimanualSO101
 
         left = _StubSO101(port="/dev/ttyACM1", device_ids=("serial:shared", "serial:left"))
         right = _StubSO101(port="/dev/ttyACM0", device_ids=("serial:right", "serial:shared"))
@@ -148,7 +156,7 @@ class TestBimanualSO101Construction:
 
 class TestBimanualSO101Lifecycle:
     def test_connect_disconnect(self) -> None:
-        from physicalai_bimanual_so101_plugin.bimanual import BimanualSO101
+        from physicalai_so101_plugin.bimanual import BimanualSO101
 
         left = _StubSO101()
         right = _StubSO101()
@@ -161,7 +169,7 @@ class TestBimanualSO101Lifecycle:
         assert not robot.is_connected()
 
     def test_connect_right_failure_disconnects_left(self) -> None:
-        from physicalai_bimanual_so101_plugin.bimanual import BimanualSO101
+        from physicalai_so101_plugin.bimanual import BimanualSO101
 
         class _FailingSO101(_StubSO101):
             def __init__(self, *, should_fail: bool = True) -> None:
@@ -184,7 +192,7 @@ class TestBimanualSO101Lifecycle:
         assert not robot.is_connected()
 
     def test_idempotent_connect(self) -> None:
-        from physicalai_bimanual_so101_plugin.bimanual import BimanualSO101
+        from physicalai_so101_plugin.bimanual import BimanualSO101
 
         left = _StubSO101()
         right = _StubSO101()
@@ -194,7 +202,7 @@ class TestBimanualSO101Lifecycle:
         assert robot.is_connected()
 
     def test_idempotent_disconnect(self) -> None:
-        from physicalai_bimanual_so101_plugin.bimanual import BimanualSO101
+        from physicalai_so101_plugin.bimanual import BimanualSO101
 
         left = _StubSO101()
         right = _StubSO101()
@@ -203,7 +211,7 @@ class TestBimanualSO101Lifecycle:
         assert not robot.is_connected()
 
     def test_disconnect_attempts_both_arms_when_left_fails(self) -> None:
-        from physicalai_bimanual_so101_plugin.bimanual import BimanualSO101
+        from physicalai_so101_plugin.bimanual import BimanualSO101
 
         class _FailingDisconnectSO101(_StubSO101):
             def __init__(self, *, should_fail: bool) -> None:
@@ -231,7 +239,7 @@ class TestBimanualSO101Lifecycle:
 
 class TestBimanualSO101Observation:
     def test_get_observation_shape(self) -> None:
-        from physicalai_bimanual_so101_plugin.bimanual import BimanualSO101
+        from physicalai_so101_plugin.bimanual import BimanualSO101
 
         left = _StubSO101()
         right = _StubSO101()
@@ -242,7 +250,7 @@ class TestBimanualSO101Observation:
         assert obs.joint_positions.shape == (12,)
 
     def test_get_observation_concatenates_left_right(self) -> None:
-        from physicalai_bimanual_so101_plugin.bimanual import BimanualSO101
+        from physicalai_so101_plugin.bimanual import BimanualSO101
 
         class _PosStubSO101(_StubSO101):
             def get_observation(self) -> _StubObservation:
@@ -259,7 +267,7 @@ class TestBimanualSO101Observation:
         np.testing.assert_array_equal(obs.joint_positions[6:], 42.0)
 
     def test_state_property(self) -> None:
-        from physicalai_bimanual_so101_plugin.bimanual import BimanualSO101Observation
+        from physicalai_so101_plugin.bimanual import BimanualSO101Observation
 
         obs = BimanualSO101Observation(
             joint_positions=np.zeros(12, dtype=np.float32),
@@ -268,7 +276,7 @@ class TestBimanualSO101Observation:
         np.testing.assert_array_equal(obs.state, obs.joint_positions)
 
     def test_sensor_data_merges_only_shared_keys(self) -> None:
-        from physicalai_bimanual_so101_plugin.bimanual import BimanualSO101
+        from physicalai_so101_plugin.bimanual import BimanualSO101
 
         class _SensorStubSO101(_StubSO101):
             def __init__(self, sensor_data: dict[str, np.ndarray]) -> None:
@@ -309,7 +317,7 @@ class TestBimanualSO101Observation:
 
 class TestBimanualSO101Action:
     def test_send_action(self) -> None:
-        from physicalai_bimanual_so101_plugin.bimanual import BimanualSO101
+        from physicalai_so101_plugin.bimanual import BimanualSO101
 
         class _TrackingStubSO101(_StubSO101):
             def __init__(self) -> None:
@@ -332,7 +340,7 @@ class TestBimanualSO101Action:
         np.testing.assert_array_equal(right.last_action, action[6:])
 
     def test_wrong_shape_raises(self) -> None:
-        from physicalai_bimanual_so101_plugin.bimanual import BimanualSO101
+        from physicalai_so101_plugin.bimanual import BimanualSO101
 
         left = _StubSO101()
         right = _StubSO101()
@@ -343,7 +351,7 @@ class TestBimanualSO101Action:
             robot.send_action(np.zeros(6, dtype=np.float32))
 
     def test_leader_send_action_raises(self) -> None:
-        from physicalai_bimanual_so101_plugin.bimanual import BimanualSO101
+        from physicalai_so101_plugin.bimanual import BimanualSO101
 
         left = _StubSO101(role="leader")
         right = _StubSO101(role="leader")

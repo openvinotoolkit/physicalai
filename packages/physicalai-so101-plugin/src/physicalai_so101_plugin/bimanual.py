@@ -17,17 +17,16 @@ import numpy as np
 
 from physicalai.config import export_config
 from physicalai.robot import Robot
-from physicalai_bimanual_so101_plugin.constants import (
+from physicalai_so101_plugin.bimanual_constants import (
     BIMANUAL_SO101_JOINT_ORDER,
     NUM_BIMANUAL_JOINTS,
     NUM_SINGLE_ARM_JOINTS,
 )
 
 if TYPE_CHECKING:
-    from physicalai_so101_plugin import SO101
-
     from physicalai.capture.frame import Frame
     from physicalai.robot.interface import RobotObservation
+    from physicalai_so101_plugin import SO101
 
 
 @dataclass
@@ -53,7 +52,7 @@ class BimanualSO101Observation:
         return self.joint_positions
 
 
-@export_config(class_path="physicalai_bimanual_so101_plugin.BimanualSO101")
+@export_config(class_path="physicalai_so101_plugin.BimanualSO101")
 class BimanualSO101(Robot):
     """Two-arm SO-101 driver composing a left and right :class:`SO101`.
 

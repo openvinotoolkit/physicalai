@@ -12,12 +12,22 @@ from typing import TYPE_CHECKING
 from physicalai_so101_plugin._urdf import get_urdf_path as get_urdf_path
 
 if TYPE_CHECKING:
+    from physicalai_so101_plugin.bimanual import BimanualSO101 as BimanualSO101
+    from physicalai_so101_plugin.bimanual import BimanualSO101Observation as BimanualSO101Observation
     from physicalai_so101_plugin.calibration import SO101Calibration as SO101Calibration
     from physicalai_so101_plugin.calibration import SO101JointCalibration as SO101JointCalibration
     from physicalai_so101_plugin.so101 import SO101 as SO101
     from physicalai_so101_plugin.so101 import SO101Observation as SO101Observation
 
-__all__ = ["SO101", "SO101Calibration", "SO101JointCalibration", "SO101Observation", "get_urdf_path"]
+__all__ = [
+    "SO101",
+    "BimanualSO101",
+    "BimanualSO101Observation",
+    "SO101Calibration",
+    "SO101JointCalibration",
+    "SO101Observation",
+    "get_urdf_path",
+]
 
 
 def __getattr__(name: str) -> object:
@@ -37,5 +47,9 @@ def __getattr__(name: str) -> object:
         from physicalai_so101_plugin.so101 import SO101, SO101Observation
 
         return {"SO101": SO101, "SO101Observation": SO101Observation}[name]
+    if name in {"BimanualSO101", "BimanualSO101Observation"}:
+        from physicalai_so101_plugin.bimanual import BimanualSO101, BimanualSO101Observation
+
+        return {"BimanualSO101": BimanualSO101, "BimanualSO101Observation": BimanualSO101Observation}[name]
     msg = f"module {__name__!r} has no attribute {name!r}"
     raise AttributeError(msg)

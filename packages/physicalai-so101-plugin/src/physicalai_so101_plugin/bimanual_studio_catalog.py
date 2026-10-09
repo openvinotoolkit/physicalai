@@ -8,7 +8,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from physicalai_so101_plugin import SO101, SO101Calibration, SO101JointCalibration
 from physicalai_studio_plugin import (
     CatalogRobotFactory,
     PayloadContainer,
@@ -24,16 +23,10 @@ from physicalai_studio_plugin import (
 from pydantic import BaseModel, ConfigDict, Field
 from serial.tools import list_ports
 
-import physicalai_bimanual_so101_plugin
-from physicalai_bimanual_so101_plugin import BimanualSO101, get_urdf_path
+from physicalai_so101_plugin import SO101, BimanualSO101, SO101Calibration, SO101JointCalibration, get_urdf_path
 
 if TYPE_CHECKING:
-    from typing import Protocol
-
     from physicalai.robot.interface import Robot as PhysicalAIRobot
-
-    class _RobotCatalogRegistry(Protocol):
-        def register_robot(self, definition: RobotCatalogDefinition) -> None: ...
 
 
 _BIMANUAL_SO101_TO_URDF: dict[str, list[str]] = {
@@ -53,19 +46,20 @@ _BIMANUAL_SO101_TO_URDF: dict[str, list[str]] = {
 
 
 def _get_bimanual_urdf_root() -> Path:
-    configured_root = get_urdf_path()
-    if configured_root.exists():
-        return configured_root
-    plugin_package_root = Path(physicalai_bimanual_so101_plugin.__file__).resolve().parent
-    site_packages_urdf_root = plugin_package_root.parent / "urdf"
-    if site_packages_urdf_root.exists():
-        return site_packages_urdf_root
-    return configured_root
+    """Return the bundled SO-101 asset root for bimanual descriptions."""
+    return get_urdf_path()
 
 
-_BIMANUAL_SO101_ASSET = RobotAsset(
-    urdf_relative_path=Path("so101_dual/so101_dual.urdf"),
-    packages={"so101_dual": Path("so101_dual")},
+_BIMANUAL_SO101_FOLLOWER_ASSET = RobotAsset(
+    urdf_relative_path=Path("so101-follower/so101_bimanual_follower.urdf"),
+    packages={"SO101": Path("so101-follower")},
+    joint_map=_BIMANUAL_SO101_TO_URDF,
+    root_resolver=_get_bimanual_urdf_root,
+)
+
+_BIMANUAL_SO101_LEADER_ASSET = RobotAsset(
+    urdf_relative_path=Path("so101-leader/urdf/so101_bimanual_leader.urdf"),
+    packages={"SO101": Path("so101-leader/urdf")},
     joint_map=_BIMANUAL_SO101_TO_URDF,
     root_resolver=_get_bimanual_urdf_root,
 )
@@ -242,7 +236,8 @@ async def _build_bimanual_leader(
     return await _build_bimanual_driver(robot, factory, role="leader")
 
 
-def _definitions() -> list[RobotCatalogDefinition]:
+def get_bimanual_definitions() -> list[RobotCatalogDefinition]:
+    """Return the bimanual SO-101 catalog definitions."""
     return [
         RobotCatalogDefinition(
             type="BimanualSO101_Follower",
@@ -250,7 +245,7 @@ def _definitions() -> list[RobotCatalogDefinition]:
             role="follower",
             robot_builder=_build_bimanual_follower,
             robot_payload=BimanualSO101Payload,
-            asset=_BIMANUAL_SO101_ASSET,
+            asset=_BIMANUAL_SO101_FOLLOWER_ASSET,
             adapter_options=RobotAdapterOptions(include_velocities=False, external_effort_gain=None),
             probe=_BIMANUAL_PROBE,
         ),
@@ -260,7 +255,7 @@ def _definitions() -> list[RobotCatalogDefinition]:
             role="leader",
             robot_builder=_build_bimanual_leader,
             robot_payload=BimanualSO101Payload,
-            asset=_BIMANUAL_SO101_ASSET,
+            asset=_BIMANUAL_SO101_LEADER_ASSET,
             adapter_options=RobotAdapterOptions(include_velocities=False, external_effort_gain=None),
             probe=_BIMANUAL_PROBE,
         ),
@@ -271,10 +266,6 @@ def _assert_payload_model_resolvable(model: type[BaseModel]) -> None:
     model.model_rebuild(_types_namespace=globals(), raise_errors=True)
 
 
-def register_physicalai_studio_plugin(registry: _RobotCatalogRegistry) -> None:
-    """Register bimanual SO-101 catalog entries with the Studio registry."""
-    for definition in _definitions():
-        payload_model = definition.robot_payload
-        if isinstance(payload_model, type) and issubclass(payload_model, BaseModel):
-            _assert_payload_model_resolvable(payload_model)
-        registry.register_robot(definition)
+def ensure_bimanual_payload_models_resolvable() -> None:
+    """Resolve bimanual payload model annotations before catalog registration."""
+    _assert_payload_model_resolvable(BimanualSO101Payload)

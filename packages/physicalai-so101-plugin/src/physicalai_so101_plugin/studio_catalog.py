@@ -3,7 +3,7 @@
 
 # ruff: file-ignore[undocumented-public-method, f-string-in-exception, import-outside-top-level, no-self-use, raise-vanilla-args, too-many-statements-in-try-clause]
 
-"""Studio catalog plugin for single-arm SO-101 robots."""
+"""Studio catalog plugin for single-arm and bimanual SO-101 robots."""
 
 from __future__ import annotations
 
@@ -120,7 +120,7 @@ _SO101_FOLLOWER_ASSET = RobotAsset(
 
 _SO101_LEADER_ASSET = RobotAsset(
     urdf_relative_path=Path("so101-leader/urdf/so101_leader.urdf"),
-    packages={"SO101": Path("so101-leader")},
+    packages={"SO101": Path("so101-leader/urdf")},
     joint_map=_SO101_TO_URDF,
     root_resolver=get_urdf_path,
 )
@@ -276,6 +276,13 @@ _SO101_PROBE = SO101Probe()
 
 
 def _definitions() -> list[RobotCatalogDefinition]:
+    """Return all SO-101 catalog definitions."""
+    from physicalai_so101_plugin.bimanual_studio_catalog import (
+        ensure_bimanual_payload_models_resolvable,
+        get_bimanual_definitions,
+    )
+
+    ensure_bimanual_payload_models_resolvable()
     return [
         RobotCatalogDefinition(
             type="SO101_Follower",
@@ -297,10 +304,11 @@ def _definitions() -> list[RobotCatalogDefinition]:
             adapter_options=RobotAdapterOptions(goal_time_scale=1.0, external_effort_gain=None),
             probe=_SO101_PROBE,
         ),
+        *get_bimanual_definitions(),
     ]
 
 
 def register_physicalai_studio_plugin(registry: _RobotCatalogRegistry) -> None:
-    """Register SO-101 catalog entries with Physical AI Studio."""
+    """Register all SO-101 catalog entries with Physical AI Studio."""
     for definition in _definitions():
         registry.register_robot(definition)

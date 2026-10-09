@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, cast
+from xml.etree import ElementTree
 
 import pytest
 from pydantic import BaseModel, ValidationError
@@ -34,46 +35,49 @@ class _StubRobot:
 
 class TestRegistration:
     def test_register_plugin(self) -> None:
-        from physicalai_bimanual_so101_plugin.studio_catalog import (
-            register_physicalai_studio_plugin,
-        )
+        from physicalai_so101_plugin.studio_catalog import register_physicalai_studio_plugin
 
         registry = _FakeRegistry()
         register_physicalai_studio_plugin(registry)
-        assert len(registry.definitions) == 2
+        assert {definition.type for definition in registry.definitions} == {
+            "SO101_Follower",
+            "SO101_Leader",
+            "BimanualSO101_Follower",
+            "BimanualSO101_Leader",
+        }
 
     def test_definitions_have_expected_types(self) -> None:
-        from physicalai_bimanual_so101_plugin.studio_catalog import _definitions
+        from physicalai_so101_plugin.bimanual_studio_catalog import _definitions
 
         types = {d.type for d in _definitions()}
         assert types == {"BimanualSO101_Follower", "BimanualSO101_Leader"}
 
     def test_follower_structure(self) -> None:
-        from physicalai_bimanual_so101_plugin.studio_catalog import BimanualSO101Payload, _definitions
+        from physicalai_so101_plugin.bimanual_studio_catalog import BimanualSO101Payload, _definitions
 
         follower = next(d for d in _definitions() if d.type == "BimanualSO101_Follower")
 
         assert follower.display_name == "Bimanual SO-101 Follower"
         assert follower.role == "follower"
         assert follower.asset is not None
-        assert follower.asset.urdf_relative_path == Path("so101_dual/so101_dual.urdf")
+        assert follower.asset.urdf_relative_path == Path("so101-follower/so101_bimanual_follower.urdf")
         assert follower.asset.root_resolver is not None
         assert (follower.asset.root_resolver() / follower.asset.urdf_relative_path).is_file()
         assert callable(follower.robot_builder)
         assert follower.robot_payload is BimanualSO101Payload
         assert follower.probe is not None
-        assert follower.asset.packages == {"so101_dual": Path("so101_dual")}
+        assert follower.asset.packages == {"SO101": Path("so101-follower")}
         assert len(follower.asset.joint_map) == 12
 
     def test_leader_structure(self) -> None:
-        from physicalai_bimanual_so101_plugin.studio_catalog import BimanualSO101Payload, _definitions
+        from physicalai_so101_plugin.bimanual_studio_catalog import BimanualSO101Payload, _definitions
 
         leader = next(d for d in _definitions() if d.type == "BimanualSO101_Leader")
 
         assert leader.display_name == "Bimanual SO-101 Leader"
         assert leader.role == "leader"
         assert leader.asset is not None
-        assert leader.asset.urdf_relative_path == Path("so101_dual/so101_dual.urdf")
+        assert leader.asset.urdf_relative_path == Path("so101-leader/urdf/so101_bimanual_leader.urdf")
         assert leader.asset.root_resolver is not None
         assert (leader.asset.root_resolver() / leader.asset.urdf_relative_path).is_file()
         assert callable(leader.robot_builder)
@@ -82,7 +86,7 @@ class TestRegistration:
 
 class TestPayload:
     def test_payload_defaults(self) -> None:
-        from physicalai_bimanual_so101_plugin.studio_catalog import (
+        from physicalai_so101_plugin.bimanual_studio_catalog import (
             BimanualSO101Payload,
         )
 
@@ -99,7 +103,7 @@ class TestPayload:
         assert payload.right_calibration is None
 
     def test_payload_requires_both_serials(self) -> None:
-        from physicalai_bimanual_so101_plugin.studio_catalog import (
+        from physicalai_so101_plugin.bimanual_studio_catalog import (
             BimanualSO101Payload,
         )
 
@@ -107,7 +111,7 @@ class TestPayload:
             BimanualSO101Payload()
 
     def test_payload_with_calibrations(self) -> None:
-        from physicalai_bimanual_so101_plugin.studio_catalog import (
+        from physicalai_so101_plugin.bimanual_studio_catalog import (
             BimanualSO101Payload,
         )
 
@@ -137,14 +141,14 @@ class TestPayload:
         assert payload.right_calibration["gripper"].id == 12
 
     def test_payload_model_rebuild(self) -> None:
-        from physicalai_bimanual_so101_plugin.studio_catalog import BimanualSO101Payload
+        from physicalai_so101_plugin.bimanual_studio_catalog import BimanualSO101Payload
 
         BimanualSO101Payload.model_rebuild(raise_errors=True)
 
     def test_payload_schema_exposes_two_calibration_upload_controls(self) -> None:
         from physicalai_studio_plugin import validate_robot_payload_ui
 
-        from physicalai_bimanual_so101_plugin.studio_catalog import BimanualSO101Payload
+        from physicalai_so101_plugin.bimanual_studio_catalog import BimanualSO101Payload
 
         validate_robot_payload_ui(BimanualSO101Payload)
         schema = BimanualSO101Payload.model_json_schema()
@@ -168,16 +172,16 @@ class TestPayload:
 
 class TestURDF:
     def test_urdf_path_exists(self) -> None:
-        from physicalai_bimanual_so101_plugin import get_urdf_path
+        from physicalai_so101_plugin import get_urdf_path
 
         path = get_urdf_path()
         assert path.exists()
-        urdf_file = path / "so101_dual" / "so101_dual.urdf"
+        urdf_file = path / "so101-follower" / "so101_bimanual_follower.urdf"
         assert urdf_file.exists(), f"URDF not found at {urdf_file}"
         assert urdf_file.stat().st_size > 0
 
     def test_asset_root_resolver(self) -> None:
-        from physicalai_bimanual_so101_plugin.studio_catalog import (
+        from physicalai_so101_plugin.bimanual_studio_catalog import (
             _get_bimanual_urdf_root,
         )
 
@@ -185,11 +189,29 @@ class TestURDF:
         assert isinstance(root, Path)
         assert root.exists()
 
+    def test_leader_urdf_mounts_both_arms_to_world(self) -> None:
+        from physicalai_so101_plugin.bimanual_studio_catalog import _definitions
+
+        leader = next(definition for definition in _definitions() if definition.type == "BimanualSO101_Leader")
+        assert leader.asset is not None
+        assert leader.asset.root_resolver is not None
+        urdf_path = leader.asset.root_resolver() / leader.asset.urdf_relative_path
+        root = ElementTree.parse(urdf_path).getroot()
+        links = {link.attrib["name"] for link in root.findall("link")}
+
+        for side, offset in (("left", "0 0.2 0"), ("right", "0 -0.2 0")):
+            mount = root.find(f"joint[@name='{side}_mount']")
+            assert mount is not None
+            assert mount.find("parent").attrib["link"] == "world"  # type: ignore[union-attr]
+            assert mount.find("child").attrib["link"] == f"{side}_base_link"  # type: ignore[union-attr]
+            assert mount.find("origin").attrib["xyz"] == offset  # type: ignore[union-attr]
+            assert f"{side}_base_link" in links
+
 
 class TestBuilder:
     @pytest.mark.anyio
     async def test_build_uncalibrated(self) -> None:
-        from physicalai_bimanual_so101_plugin.studio_catalog import (
+        from physicalai_so101_plugin.bimanual_studio_catalog import (
             BimanualSO101Payload,
             _build_bimanual_driver,
         )
@@ -206,7 +228,7 @@ class TestBuilder:
 
     @pytest.mark.anyio
     async def test_build_from_dict(self) -> None:
-        from physicalai_bimanual_so101_plugin.studio_catalog import (
+        from physicalai_so101_plugin.bimanual_studio_catalog import (
             _build_bimanual_driver,
         )
 
@@ -222,7 +244,7 @@ class TestBuilder:
 
     @pytest.mark.anyio
     async def test_build_from_foreign_pydantic_model(self) -> None:
-        from physicalai_bimanual_so101_plugin.studio_catalog import _build_bimanual_driver
+        from physicalai_so101_plugin.bimanual_studio_catalog import _build_bimanual_driver
 
         class _ForeignPayload(BaseModel):
             left_serial_number: str
@@ -234,7 +256,7 @@ class TestBuilder:
 
     @pytest.mark.anyio
     async def test_catalog_builders_enforce_definition_roles(self) -> None:
-        from physicalai_bimanual_so101_plugin.studio_catalog import BimanualSO101Payload, _definitions
+        from physicalai_so101_plugin.bimanual_studio_catalog import BimanualSO101Payload, _definitions
 
         payload = BimanualSO101Payload(
             left_serial_number="SN-L",
@@ -257,7 +279,7 @@ class TestBuilder:
 
     @pytest.mark.anyio
     async def test_build_left_port_not_found(self) -> None:
-        from physicalai_bimanual_so101_plugin.studio_catalog import (
+        from physicalai_so101_plugin.bimanual_studio_catalog import (
             BimanualSO101Payload,
             _build_bimanual_driver,
         )
@@ -273,7 +295,7 @@ class TestBuilder:
 
     @pytest.mark.anyio
     async def test_build_right_port_not_found(self) -> None:
-        from physicalai_bimanual_so101_plugin.studio_catalog import (
+        from physicalai_so101_plugin.bimanual_studio_catalog import (
             BimanualSO101Payload,
             _build_bimanual_driver,
         )
@@ -297,7 +319,7 @@ class TestBuilder:
 
     @pytest.mark.anyio
     async def test_build_mixed_calibration_raises(self) -> None:
-        from physicalai_bimanual_so101_plugin.studio_catalog import (
+        from physicalai_so101_plugin.bimanual_studio_catalog import (
             BimanualSO101Payload,
             _build_bimanual_driver,
         )
@@ -319,7 +341,7 @@ class TestBuilder:
 class TestProbe:
     @pytest.mark.anyio
     async def test_is_online_no_manager(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from physicalai_bimanual_so101_plugin.studio_catalog import (
+        from physicalai_so101_plugin.bimanual_studio_catalog import (
             BimanualSO101Payload,
             BimanualSO101Probe,
         )
@@ -330,7 +352,7 @@ class TestProbe:
                 return []
 
         monkeypatch.setattr(
-            "physicalai_bimanual_so101_plugin.studio_catalog.list_ports",
+            "physicalai_so101_plugin.bimanual_studio_catalog.list_ports",
             _ListPortsStub,
         )
 
@@ -340,7 +362,7 @@ class TestProbe:
         assert result is False
 
     def test_joint_map(self) -> None:
-        from physicalai_bimanual_so101_plugin.studio_catalog import (
+        from physicalai_so101_plugin.bimanual_studio_catalog import (
             _BIMANUAL_SO101_TO_URDF,
         )
 
