@@ -111,9 +111,16 @@ _SO101_TO_URDF = {
     "gripper.pos": ["gripper"],
 }
 
-_SO101_ASSET = RobotAsset(
-    urdf_relative_path=Path("so101_new_calib.urdf"),
-    packages={"SO101": Path()},
+_SO101_FOLLOWER_ASSET = RobotAsset(
+    urdf_relative_path=Path("so101-follower/so101_follower.urdf"),
+    packages={"SO101": Path("so101-follower")},
+    joint_map=_SO101_TO_URDF,
+    root_resolver=get_urdf_path,
+)
+
+_SO101_LEADER_ASSET = RobotAsset(
+    urdf_relative_path=Path("so101-leader/urdf/so101_leader.urdf"),
+    packages={"SO101": Path("so101-leader")},
     joint_map=_SO101_TO_URDF,
     root_resolver=get_urdf_path,
 )
@@ -276,7 +283,7 @@ def _definitions() -> list[RobotCatalogDefinition]:
             role="follower",
             robot_builder=_build_so101_driver,
             robot_payload=SO101RobotPayload,
-            asset=_SO101_ASSET,
+            asset=_SO101_FOLLOWER_ASSET,
             adapter_options=RobotAdapterOptions(goal_time_scale=1.0, external_effort_gain=None),
             probe=_SO101_PROBE,
         ),
@@ -286,7 +293,7 @@ def _definitions() -> list[RobotCatalogDefinition]:
             role="leader",
             robot_builder=_build_so101_driver,
             robot_payload=SO101RobotPayload,
-            asset=_SO101_ASSET,
+            asset=_SO101_LEADER_ASSET,
             adapter_options=RobotAdapterOptions(goal_time_scale=1.0, external_effort_gain=None),
             probe=_SO101_PROBE,
         ),

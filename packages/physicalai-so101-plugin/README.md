@@ -29,7 +29,8 @@ revision `fda892cba81032c46c40976a48c9ceadbf40a9ca`.
 ```python
 from physicalai_so101_plugin import get_urdf_path
 
-urdf_path = get_urdf_path() / "so101_new_calib.urdf"
+follower_urdf = get_urdf_path() / "so101-follower/so101_follower.urdf"
+leader_urdf = get_urdf_path() / "so101-leader/urdf/so101_leader.urdf"
 ```
 
 ## Development

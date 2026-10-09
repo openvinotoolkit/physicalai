@@ -41,14 +41,23 @@ def test_registers_so101_definitions() -> None:
     assert {definition.type for definition in registry.definitions} == {"SO101_Follower", "SO101_Leader"}
 
 
-def test_catalog_asset_resolves_to_bundled_urdf() -> None:
+def test_catalog_assets_resolve_to_bundled_role_specific_urdfs() -> None:
     from physicalai_so101_plugin.studio_catalog import _definitions
 
-    definition = next(definition for definition in _definitions() if definition.type == "SO101_Follower")
-    assert definition.asset is not None
-    assert definition.asset.urdf_relative_path == Path("so101_new_calib.urdf")
-    assert definition.asset.root_resolver is not None
-    assert (definition.asset.root_resolver() / definition.asset.urdf_relative_path).is_file()
+    expected = {
+        "SO101_Follower": (Path("so101-follower/so101_follower.urdf"), Path("so101-follower/assets")),
+        "SO101_Leader": (Path("so101-leader/urdf/so101_leader.urdf"), Path("so101-leader/meshes")),
+    }
+    definitions = {definition.type: definition for definition in _definitions()}
+
+    for robot_type, (urdf_path, mesh_root) in expected.items():
+        asset = definitions[robot_type].asset
+        assert asset is not None
+        assert asset.urdf_relative_path == urdf_path
+        assert asset.root_resolver is not None
+        root = asset.root_resolver()
+        assert (root / asset.urdf_relative_path).is_file()
+        assert (root / mesh_root).is_dir()
 
 
 def test_payload_requires_connection_identifier() -> None:
