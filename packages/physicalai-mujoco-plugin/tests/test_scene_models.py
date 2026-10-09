@@ -23,11 +23,11 @@ from physicalai_mujoco_plugin.scene_registry import get_scene, list_scenes, list
 from physicalai_mujoco_plugin.viser_controls import ObjectPose
 
 
-def make_robot(scene_id: str) -> MuJoCoRobot:
-    return MuJoCoRobot(scene=scene_id, substeps=1, cameras=[])
+def make_robot(scene_id: str, *, bimanual: bool = False) -> MuJoCoRobot:
+    return MuJoCoRobot(scene=scene_id, bimanual=bimanual, substeps=1, cameras=[])
 
 
-@pytest.mark.parametrize("scene_id", list(list_scenes()))
+@pytest.mark.parametrize("scene_id", list(list_scenes_for(SO101_PROFILE)))
 def test_scene_connect_reset_and_reconnect(scene_id: str) -> None:
     robot = instantiate(Config.from_instance(make_robot(scene_id)))
     assert isinstance(robot, Robot)
@@ -77,7 +77,7 @@ def test_failed_switch_reset_preserves_live_scene(monkeypatch: pytest.MonkeyPatc
     def fail(*args: object) -> None:
         raise ValueError("reset failed")
 
-    monkeypatch.setattr("physicalai_mujoco_plugin.scene_registry.get_reset_fn", lambda _: fail)
+    monkeypatch.setattr("physicalai_mujoco_plugin.scene_registry.get_reset_fn", lambda *_: fail)
     try:
         assert robot._switch_to_scene("yahtzee") is False
         assert robot._model is model
@@ -88,23 +88,31 @@ def test_failed_switch_reset_preserves_live_scene(monkeypatch: pytest.MonkeyPatc
 
 
 def test_switching_never_changes_the_number_of_robots() -> None:
-    """The transport advertised the joint names on connect; a scene with another arm count would break them."""
-    robot = make_robot("garment_fold")
+    """The transport advertised the joint names on connect: every scene switch keeps the arm count."""
+    robot = make_robot("garment_fold", bimanual=True)
     robot.connect()
     try:
-        assert robot._switch_to_scene("single_pick_place") is False
-        assert len(robot.joint_names) == 12
+        assert set(robot._compatible_scenes()) == {"single_pick_place", "yahtzee", "conveyor_sort", "garment_fold"}
+        assert robot._switch_to_scene("single_pick_place") is True
+        assert robot.joint_names == list(BIMANUAL_SO101_JOINT_ORDER)
+        assert len(robot._sim.bindings) == 2
+        assert robot._switch_to_scene("garment_fold") is True
+        assert robot.joint_names == list(BIMANUAL_SO101_JOINT_ORDER)
     finally:
         robot.disconnect()
 
 
 def test_simulation_claims_no_devices() -> None:
-    assert make_robot("single_pick_place").device_ids == make_robot("garment_fold").device_ids == ()
+    assert make_robot("single_pick_place").device_ids == make_robot("garment_fold", bimanual=True).device_ids == ()
 
 
-@pytest.mark.parametrize("scene_id", ["single_pick_place", "garment_fold"])
-def test_home_places_arm_joints_and_targets(scene_id: str) -> None:
-    robot = make_robot(scene_id)
+@pytest.mark.parametrize(
+    ("scene_id", "arms"),
+    [("single_pick_place", 1), ("garment_fold", 2), ("garment_fold", 1), ("conveyor_sort", 2)],
+)
+def test_home_places_arm_joints_and_targets(scene_id: str, arms: int) -> None:
+    """The scene's home pose applies to each arm by its prefixed names (P1)."""
+    robot = make_robot(scene_id, bimanual=arms == 2)
     robot.connect()
     try:
         robot.send_action(np.full(len(robot.joint_names), 25.0, dtype=np.float32))
@@ -114,7 +122,9 @@ def test_home_places_arm_joints_and_targets(scene_id: str) -> None:
         robot._commands.put(HomeCommand())
         robot._drain_commands()
 
-        home = dict(get_scene(scene_id).home_qpos)
+        home = dict(get_scene(scene_id).home_pose(arms))
+        assert home or scene_id == "single_pick_place"
+        assert set(home) <= set(robot.joint_names)
         model, data = robot._model, robot._data
         for name in robot.joint_names:
             joint = model.joint(name)
@@ -193,14 +203,16 @@ def test_auto_reset_settings_survive_scene_switches() -> None:
 
 
 def test_compatible_scene_lists_match_real_models() -> None:
-    for scene_id, scene in list_scenes().items():
-        robot = make_robot(scene_id)
-        expected = BIMANUAL_SO101_JOINT_ORDER if scene.num_arms == 2 else SO101_JOINT_ORDER
-        robot.connect()
-        assert robot.joint_names == list(expected), scene_id
-        robot.disconnect()
-        assert scene_id in list_scenes_for_arms(scene.num_arms)
-        assert scene_id in list_scenes_for(SO101_PROFILE, scene.num_arms)
+    for scene_id in list_scenes_for(SO101_PROFILE):
+        for arms in (1, 2):
+            robot = make_robot(scene_id, bimanual=arms == 2)
+            expected = BIMANUAL_SO101_JOINT_ORDER if arms == 2 else SO101_JOINT_ORDER
+            assert robot.joint_names == list(expected), scene_id  # before loading (DRV-6)
+            robot.connect()
+            assert robot.joint_names == list(expected), scene_id
+            robot.disconnect()
+            assert scene_id in list_scenes_for_arms(arms)
+            assert scene_id in list_scenes_for(SO101_PROFILE, arms)
 
 
 @pytest.mark.parametrize(
@@ -209,10 +221,11 @@ def test_compatible_scene_lists_match_real_models() -> None:
         ("single_pick_place", ("block1", "target", "gripper")),
         ("yahtzee", ("die1", "die2", "die3", "die4", "die5", "die6", "gripper")),
         ("garment_fold", ("left_gripper", "right_gripper")),
+        ("single_pick_place", ("block1", "target", "left_gripper", "right_gripper")),
     ],
 )
 def test_viewer_follow_targets(scene_id: str, expected: tuple[str, ...]) -> None:
-    robot = make_robot(scene_id)
+    robot = make_robot(scene_id, bimanual="left_gripper" in expected)
     robot.connect()
     try:
         assert tuple(robot._objects.follow_body_ids) == expected
@@ -255,11 +268,13 @@ def _wrist_camera_pose_in_gripper(model: mujoco.MjModel, camera: str, gripper: s
         *[(scene_id, "wrist", "gripper") for scene_id in list_scenes_for_arms(1)],
         ("garment_fold", "left_wrist", "left_gripper"),
         ("garment_fold", "right_wrist", "right_gripper"),
+        ("yahtzee", "left_wrist", "left_gripper"),
+        ("yahtzee", "right_wrist", "right_gripper"),
     ],
 )
 def test_wrist_cameras_keep_their_pose_on_the_gripper(scene_id: str, camera: str, gripper: str) -> None:
     """Every arm's wrist camera keeps the pose and field of view that trained policies saw."""
-    model = get_scene(scene_id).load_model()
+    model = get_scene(scene_id).load_model(arms=2 if camera.startswith(("left_", "right_")) else 1)
     position, rotation = _wrist_camera_pose_in_gripper(model, camera, gripper)
     expected_rotation = np.zeros(9)
     quat = np.zeros(4)
@@ -295,7 +310,8 @@ def test_wrist_cameras_see_the_jaws_in_the_lower_half(scene_id: str, camera: str
 @pytest.mark.parametrize("scene_id", list(list_scenes()))
 def test_scene_xml_camera_reload_keeps_the_compiled_poses(scene_id: str) -> None:
     """Live XML camera edits are re-applied by hand; unchanged XML must give the compiled poses."""
-    robot = make_robot(scene_id)
+    profile = "so101" if scene_id in list_scenes_for(SO101_PROFILE) else "unitree_go2"
+    robot = MuJoCoRobot(profile, scene=scene_id, substeps=1, cameras=[])
     robot.connect()
     try:
         model, data = robot._model, robot._data
@@ -327,7 +343,7 @@ def _urdf_joint_limits(urdf_name: str) -> dict[str, tuple[float, float]]:
 )
 def test_joint_and_control_ranges_match_the_urdf(scene_id: str, urdf_name: str) -> None:
     """The URDF is the source of truth; normalized units span these ranges."""
-    model = get_scene(scene_id).load_model()
+    model = get_scene(scene_id).load_model(arms=2 if urdf_name.endswith("dual.urdf") else 1)
     limits = _urdf_joint_limits(urdf_name)
 
     for name, (lower, upper) in limits.items():

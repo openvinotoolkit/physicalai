@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import queue
+import socket
 import sys
 import threading
 from unittest.mock import MagicMock, patch
@@ -52,9 +53,38 @@ class TestViewerLaunch:
         finally:
             console.file = original_file
 
+    def test_studio_theme_is_dark_with_studio_accent_and_no_shutdown_button(self, model_data) -> None:
+        server = MagicMock()
+        viewer = ViewerService(
+            host="127.0.0.1", port=9090, submit_command=MagicMock(), panel_state=MagicMock(), theme="studio"
+        )
+        with (
+            patch("viser.ViserServer", return_value=server),
+            patch("mjviser.ViserMujocoScene", return_value=MagicMock()),
+            patch("physicalai_mujoco_plugin.viser_controls.SimControlPanel") as panel,
+        ):
+            assert viewer.open(*model_data) is True
+
+        server.gui.configure_theme.assert_called_once_with(
+            dark_mode=True, brand_color=(0, 199, 253), show_share_button=False
+        )
+        assert panel.call_args.kwargs == {"shutdown_button": False}
+
+    def test_default_theme_keeps_viser_look_and_shutdown_button(self, model_data) -> None:
+        server = MagicMock()
+        with (
+            patch("viser.ViserServer", return_value=server),
+            patch("mjviser.ViserMujocoScene", return_value=MagicMock()),
+            patch("physicalai_mujoco_plugin.viser_controls.SimControlPanel") as panel,
+        ):
+            assert _viewer().open(*model_data) is True
+
+        server.gui.configure_theme.assert_not_called()
+        assert panel.call_args.kwargs == {"shutdown_button": True}
+
     def test_configured_host_is_used(self, model_data) -> None:
         with (
-            patch("viser.ViserServer", return_value=MagicMock()) as server_factory,
+            patch("viser.ViserServer", return_value=MagicMock(**{"get_port.return_value": 9090})) as server_factory,
             patch("mjviser.ViserMujocoScene", return_value=MagicMock()),
         ):
             viewer = _viewer(host="0.0.0.0")  # noqa: S104
@@ -77,6 +107,43 @@ class TestViewerLaunch:
         server.stop.assert_called_once()
         assert viewer.server is None
         assert not viewer.active
+
+
+    def test_a_taken_port_publishes_the_port_viser_bound(self, model_data) -> None:
+        """viser moves to the next free port instead of failing; the URL must name the bound one."""
+        with socket.socket() as taken:
+            taken.bind(("127.0.0.1", 0))
+            taken.listen()
+            port = taken.getsockname()[1]
+            viewer = _viewer(port=port)
+            try:
+                # A real viser server binds; only the scene and panel content are stubbed.
+                with (
+                    patch("mjviser.ViserMujocoScene", return_value=MagicMock()),
+                    patch("physicalai_mujoco_plugin.viser_controls.SimControlPanel"),
+                ):
+                    assert viewer.open(*model_data) is True
+                assert viewer.port != port
+                assert viewer.url == f"http://127.0.0.1:{viewer.port}"
+                with socket.create_connection(("127.0.0.1", viewer.port), timeout=5.0):
+                    pass
+            finally:
+                viewer.close()
+
+    def test_a_real_scene_build_failure_leaves_no_viewer_and_frees_the_port(self, model_data) -> None:
+        """The owner then publishes no viewer URL, which a supervised ``start`` reports as an error."""
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        viewer = _viewer(port=port)
+        with (
+            patch("mjviser.ViserMujocoScene", side_effect=RuntimeError("boom")),
+            patch.object(sys, "platform", "darwin"),  # no native fallback
+        ):
+            assert viewer.open(*model_data) is False
+        assert viewer.url is None
+        with socket.socket() as rebind:
+            rebind.bind(("127.0.0.1", port))
 
 
 class TestViewerRebuild:
@@ -256,6 +323,55 @@ class TestCameraFrames:
                 release.set()
                 service.close()
         renderer.close.assert_called_once()
+
+
+class TestCameraStartup:
+    """Which cameras stream after start, for ``start --status-json``'s ``ready`` (P4 review)."""
+
+    @staticmethod
+    def _wait(condition, timeout_s: float = 5.0) -> bool:
+        deadline = threading.Event()
+        for _ in range(int(timeout_s / 0.01)):
+            if condition():
+                return True
+            deadline.wait(0.01)
+        return condition()
+
+    def test_a_camera_whose_renderer_fails_is_failed_and_the_other_streams(self, model_data) -> None:
+        renderer = MagicMock()
+        renderer.render.return_value = np.zeros((4, 6, 3), dtype=np.uint8)
+
+        def create(_model, height: int, _width: int) -> MagicMock:
+            if height == 48:  # noqa: PLR2004
+                raise OSError("framebuffer too large")
+            return renderer
+
+        service = CameraService([CameraConfig("overview"), CameraConfig("big", width=64, height=48)])
+        with patch("mujoco.Renderer", side_effect=create):
+            assert service.failed() == set()  # nothing set up yet
+            service.start(*model_data)
+            try:
+                assert self._wait(lambda: service.failed() == {"big"} and service.with_frames() == {"overview"})
+            finally:
+                service.close()
+
+    def test_a_camera_thread_that_dies_during_setup_fails_every_camera(self, model_data) -> None:
+        service = CameraService([CameraConfig("overview")])
+        with patch("mujoco.Renderer", side_effect=RuntimeError("an OpenGL platform library has not been loaded")):
+            service.start(*model_data)
+            try:
+                assert self._wait(lambda: service.failed() == {"overview"})
+                assert service.with_frames() == set()
+            finally:
+                service.close()
+
+    def test_a_restart_forgets_the_failures_of_the_previous_model(self, model_data) -> None:
+        service = CameraService([CameraConfig("overview")], render_in_thread=False)
+        with patch("mujoco.Renderer", side_effect=OSError("no GL")):
+            service.start(*model_data)
+        assert service.failed() == {"overview"}
+        service.stop()
+        assert service.failed() == set()
 
 
 class TestSceneXmlWatch:

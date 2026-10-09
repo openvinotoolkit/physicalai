@@ -101,12 +101,43 @@ def test_feed_hold_stops_the_belt_without_touching_the_user_pause(robot: MuJoCoR
 def test_switching_to_a_scene_without_a_belt_turns_the_autopilot_off(robot: MuJoCoRobot) -> None:
     robot._automation.set_autopilot("drive")
     assert robot._switch_to_scene("single_pick_place")
-    assert robot._http_status()["autopilot"] == {"available": False, "mode": "off", "phase": None, "target": None}
+    assert robot._http_status()["autopilot"] == {
+        "available": False,
+        "unavailable_reason": None,
+        "mode": "off",
+        "phase": None,
+        "target": None,
+    }
     robot._automation.set_autopilot("drive")  # ignored: nothing to drive
     assert robot._automation.autopilot.mode == "off"
     assert robot._switch_to_scene("conveyor_sort")
     assert robot._automation.autopilot.mode == "off"  # "drive" does not come back with the belt
     assert not robot._automation.drives_arm
+
+
+def test_two_arms_on_the_conveyor_have_no_autopilot() -> None:
+    """P1: the demonstrator drives one SO-101; with two arms the belt still runs, the autopilot is off with a reason."""
+    from fastapi.testclient import TestClient
+
+    from physicalai_mujoco_plugin.http_server import build_app
+
+    sim = MuJoCoRobot(scene="conveyor_sort", bimanual=True, cameras=[], substeps=10)
+    sim.connect()
+    try:
+        status = sim._http_status()
+        assert status["episode"]["kind"] == "conveyor"
+        reason = status["autopilot"]["unavailable_reason"]
+        assert status["autopilot"]["available"] is False
+        assert "one SO-101 arm" in reason and "2 arms" in reason
+        assert not sim._automation.set_autopilot("drive")
+        assert sim._panel_state().autopilot["unavailable_reason"] == reason
+        sim.get_observation()  # the belt keeps running
+
+        app = build_app(service_name="t", buffers={}, commands=sim._commands, get_status=sim._http_status)
+        response = TestClient(app).post("/autopilot", json={"mode": "drive"})
+        assert (response.status_code, response.json()["detail"]) == (409, reason)
+    finally:
+        sim.disconnect()
 
 
 def test_autopilot_markdown() -> None:

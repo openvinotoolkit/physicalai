@@ -16,7 +16,7 @@ from __future__ import annotations
 import contextlib
 import sys
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 from loguru import logger
@@ -26,6 +26,12 @@ if TYPE_CHECKING:
 
     from physicalai_mujoco_plugin.http_server import SimCommand
     from physicalai_mujoco_plugin.viser_controls import PanelState, SimControlPanel
+
+ViewerTheme = Literal["default", "studio"]
+"""viser's look: ``studio`` is dark with Studio's accent colour and has no Shutdown button."""
+
+STUDIO_BRAND_COLOR = (0, 199, 253)
+"""Physical AI Studio's accent colour, ``#00c7fd``."""
 
 
 class ViewerService:
@@ -39,12 +45,15 @@ class ViewerService:
         submit_command: Callable[[SimCommand], None],
         panel_state: Callable[[], PanelState],
         key_callback: Callable[[int], None] | None = None,
+        theme: ViewerTheme = "default",
     ) -> None:
         """Create a closed viewer.
 
         Args:
             host: viser bind address.
             port: viser port; ``0`` or less disables viser.
+            theme: viser's look; ``studio`` is for a viewer embedded in Studio, which stops the
+                simulation itself, so its panel has no Shutdown button.
             submit_command: Queues a panel command for the sim thread.
             panel_state: Snapshots the state the panel shows.
             key_callback: Native viewer key handler.
@@ -54,6 +63,7 @@ class ViewerService:
         self._submit_command = submit_command
         self._panel_state = panel_state
         self._key_callback = key_callback
+        self.theme: ViewerTheme = theme
         self.server: object | None = None
         self.scene: object | None = None
         self.panel: SimControlPanel | None = None
@@ -69,8 +79,11 @@ class ViewerService:
 
     @property
     def url(self) -> str | None:
-        """The viser page, when viser runs."""
-        return f"http://{self.host}:{self.port}" if self.server is not None else None
+        """The viser page, when viser runs; an IPv6 host is bracketed."""
+        if self.server is None:
+            return None
+        host = f"[{self.host}]" if ":" in self.host and not self.host.startswith("[") else self.host
+        return f"http://{host}:{self.port}"
 
     def open(self, model: object, data: object) -> bool:
         """Open viser, or the native viewer where viser is unavailable (not on macOS).
@@ -209,7 +222,7 @@ class ViewerService:
             msg = "viser server is not running"
             raise RuntimeError(msg)
         if self.panel is None:
-            self.panel = SimControlPanel(server, viser, self._submit_command)
+            self.panel = SimControlPanel(server, viser, self._submit_command, shutdown_button=self.theme != "studio")
 
         self.scene = None
         server.gui.reset()
@@ -259,7 +272,14 @@ class ViewerService:
         server = None
         try:
             server = viser.ViserServer(host=self.host, port=self.port, verbose=False)
+            # viser binds the next free port when the requested one is taken; publish the bound one.
+            bound_port = server.get_port()
+            if bound_port != self.port:
+                logger.warning("Port {} is taken; the 3D viewer listens on port {}", self.port, bound_port)
+                self.port = bound_port
             self.server = server
+            if self.theme == "studio":
+                server.gui.configure_theme(dark_mode=True, brand_color=STUDIO_BRAND_COLOR, show_share_button=False)
             self.build_gui()
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to start viser viewer on port {}: {}", self.port, exc)
@@ -340,4 +360,4 @@ class ViewerService:
                 handle.wxyz = np.asarray(data.xquat[body_id], dtype=np.float64)
 
 
-__all__ = ["ViewerService"]
+__all__ = ["STUDIO_BRAND_COLOR", "ViewerService", "ViewerTheme"]

@@ -1,29 +1,35 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import sys
 import threading
 import types
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import mujoco
 import numpy as np
 import pytest
+from fastapi.testclient import TestClient
 from physicalai.config import Config
 
+from physicalai_mujoco_plugin import control
 from physicalai_mujoco_plugin.constants import BIMANUAL_SO101_JOINT_ORDER, SO101_JOINT_ORDER
 from physicalai_mujoco_plugin.http_server import (
     HomeCommand,
     ResetCommand,
     SetAutoResetCommand,
     SetObjectPoseCommand,
+    SetOverviewCommand,
     SetSeedCommand,
     ShutdownCommand,
     SwitchSceneCommand,
 )
 from physicalai_mujoco_plugin.profiles.so101 import SO101_JOINT_RANGES
 from physicalai_mujoco_plugin.robot import MuJoCoObservation, MuJoCoRobot
+from physicalai_mujoco_plugin.scene_registry import get_scene
 from physicalai_mujoco_plugin.scene_watch import SceneXmlWatcher
 from physicalai_mujoco_plugin.sim import default_cameras
 from physicalai_mujoco_plugin.viewer import ViewerService
@@ -31,6 +37,8 @@ from physicalai_mujoco_plugin.viewer import ViewerService
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+RENDERING_AVAILABLE = "physicalai_mujoco_plugin.robot.offscreen_rendering_available"
+"""Patched in tests that stream default cameras: CI runners have no OpenGL, and tests never render."""
 RANGES = np.array([(low, high) for _name, low, high in SO101_JOINT_RANGES])
 """The SO-101 profile's pinned joint ranges (radians), in SO101_JOINT_ORDER."""
 GRIPPER = np.array([name.endswith("gripper") for name in SO101_JOINT_ORDER])
@@ -91,6 +99,11 @@ class _NativeViewer:
         pass
 
 
+def sources(robot: MuJoCoRobot) -> list[tuple[str, str | None]]:
+    """The streamed cameras and where each comes from, as ``GET /health`` reports them."""
+    return [(camera["name"], camera["source"]) for camera in robot._http_status()["cameras"]]  # noqa: SLF001
+
+
 def _write_model(tmp_path, *, bimanual: bool = False, **arm) -> str:
     """Write a robot-complete scene (no ``robot_mount`` frames), so no Menagerie download is needed."""
     if bimanual:
@@ -139,8 +152,52 @@ class TestConstruction:
         assert robot.joint_names == list(SO101_JOINT_ORDER)  # before connect, without a download
         assert robot.device_ids == ()
 
-    def test_a_two_arm_scene_prefixes_the_names(self) -> None:
-        assert MuJoCoRobot(scene="garment_fold").joint_names == list(BIMANUAL_SO101_JOINT_ORDER)
+    def test_bimanual_prefixes_the_names_in_any_tabletop_scene(self) -> None:
+        for scene in ("single_pick_place", "yahtzee", "conveyor_sort", "garment_fold"):
+            assert MuJoCoRobot(scene=scene, bimanual=True).joint_names == list(BIMANUAL_SO101_JOINT_ORDER)
+        assert MuJoCoRobot(scene="garment_fold").joint_names == list(SO101_JOINT_ORDER)
+
+    @pytest.mark.parametrize(
+        ("profile", "scene", "message"),
+        [
+            ("aloha", None, "has 2 arms already"),
+            ("unitree_go2", None, "one floating-base robot"),
+        ],
+    )
+    def test_bimanual_is_refused_where_it_cannot_work(self, profile: str, scene: str | None, message: str) -> None:
+        with pytest.raises(ValueError, match=message):
+            MuJoCoRobot(profile, scene=scene, bimanual=True)
+
+    @pytest.mark.parametrize(("profile", "message"), [("aloha", "has 2 arms already"), ("unitree_g1", "floating base")])
+    @pytest.mark.parametrize("bimanual", [True, False])
+    def test_a_custom_two_mount_model_refuses_single_robot_profiles(
+        self, profile: str, message: str, *, bimanual: bool
+    ) -> None:
+        """ALOHA (two arms in one model) and floating bases run one robot, also on a custom model's mounts."""
+        two_mounts = str(get_scene("garment_fold").scene_xml_path)
+        with pytest.raises(ValueError, match=message):
+            MuJoCoRobot(profile, model_path=two_mounts, bimanual=bimanual)
+
+    def test_bimanual_needs_a_custom_model_with_two_mounts(self, tmp_path) -> None:
+        one = tmp_path / "one.xml"
+        one.write_text('<mujoco><worldbody><frame name="robot_mount"/></worldbody></mujoco>')
+        with pytest.raises(ValueError, match="left_robot_mount and right_robot_mount; it has robot_mount"):
+            MuJoCoRobot(model_path=str(one), bimanual=True)
+        other = tmp_path / "other.xml"
+        other.write_text(
+            '<mujoco><worldbody><frame name="a_robot_mount"/><frame name="b_robot_mount" pos="0 0.3 0"/>'
+            "</worldbody></mujoco>"
+        )
+        with pytest.raises(ValueError, match="it has a_robot_mount, b_robot_mount"):
+            MuJoCoRobot(model_path=str(other), bimanual=True)
+        two = tmp_path / "two.xml"
+        two.write_text(
+            '<mujoco><worldbody><frame name="left_robot_mount"/><frame name="right_robot_mount" pos="0 0.3 0"/>'
+            "</worldbody></mujoco>"
+        )
+        assert MuJoCoRobot(model_path=str(two), bimanual=True).joint_names == list(BIMANUAL_SO101_JOINT_ORDER)
+        # Without the flag, the custom model's mount frames still decide.
+        assert MuJoCoRobot(model_path=str(two)).joint_names == list(BIMANUAL_SO101_JOINT_ORDER)
 
     def test_exports_only_the_supplied_arguments(self) -> None:
         robot = MuJoCoRobot("so101", scene="yahtzee", substeps=3, enable_viewer=True)
@@ -170,6 +227,11 @@ class TestConstruction:
             ({"rate_hz": 0.0}, "rate_hz must be positive"),
             ({"substeps": 0}, "substeps at least 1"),
             ({"scene": "conveyor_sort", "profile": "ur5e"}, "does not support"),
+            ({"viewer_theme": "neon"}, "Unsupported viewer_theme"),
+            ({"overview": "top"}, "Unsupported overview 'top'"),
+            ({"profile": "unitree_go2", "overview": "front"}, "Scene 'floor_flat' has no front overview camera"),
+            ({"exit_with_pid": 0}, "exit_with_pid must be a process ID"),
+            ({"exit_with_pid": -1}, "exit_with_pid must be a process ID"),
         ],
     )
     def test_rejects_invalid_arguments(self, kwargs: dict[str, object], message: str) -> None:
@@ -185,6 +247,109 @@ class TestConstruction:
         restored.__setstate__(state)
         assert not restored.is_connected()
         assert (restored._substeps, restored._http_port, restored._viser_host) == (3, 9000, "0.0.0.0")  # noqa: SLF001, S104
+
+    def test_viewer_theme_and_exit_with_pid_survive_the_config_round_trip(self) -> None:
+        robot = MuJoCoRobot("so101", viewer_theme="studio", exit_with_pid=4242)
+        restored = Config.from_instance(robot).instantiate()
+
+        assert (restored._viewer_theme, restored._exit_with_pid) == ("studio", 4242)  # noqa: SLF001
+        assert robot.__getstate__()["viewer_theme"] == "studio"
+
+
+class TestProcessWatch:
+    """``exit_with_pid``: the owner shuts down once ``start``, its parent, is gone (P5)."""
+
+    @staticmethod
+    def _exited_pid() -> int:
+        import subprocess  # noqa: PLC0415, S404
+
+        process = subprocess.Popen([sys.executable, "-c", "pass"])  # noqa: S603
+        process.wait()
+        return process.pid
+
+    def test_a_running_parent_is_not_gone(self) -> None:
+        assert control._parent_gone(os.getppid()) is False  # noqa: SLF001
+
+    def test_an_exited_process_is_gone(self) -> None:
+        assert control._parent_gone(self._exited_pid()) is True  # noqa: SLF001
+
+    def test_a_reparented_owner_sees_its_parent_gone_even_while_it_is_an_unreaped_zombie(self) -> None:
+        """A killed ``start`` stays a zombie until reaped, and signal 0 still reaches a zombie."""
+        parent = os.getppid()
+        with patch.object(control.os, "getppid", return_value=1):
+            assert control._parent_gone(parent) is True  # noqa: SLF001
+
+    def test_a_parent_running_as_another_user_is_not_gone(self) -> None:
+        with patch.object(control.os, "kill", side_effect=PermissionError):
+            assert control._parent_gone(os.getppid()) is False  # noqa: SLF001
+
+    def test_the_owner_shuts_down_once_its_parent_is_gone(self, model_path) -> None:
+        shut_down = threading.Event()
+        robot = so101(model_path, exit_with_pid=self._exited_pid())
+        with (
+            patch.object(control, "PROCESS_WATCH_INTERVAL_S", 0.01),
+            patch.object(control, "_signal_owner_shutdown", side_effect=shut_down.set),
+        ):
+            robot.connect()
+            try:
+                assert shut_down.wait(timeout=5.0)
+            finally:
+                robot.disconnect()
+
+    def test_the_watch_runs_before_the_scene_loads(self, model_path) -> None:
+        """A ``start`` killed while the owner loads must be noticed; loading can take seconds."""
+        robot = so101(model_path, exit_with_pid=os.getppid())
+        watching: list[bool] = []
+        load = robot._load  # noqa: SLF001
+
+        def recording_load(*args: object) -> object:
+            watching.append(robot._process_watch is not None)  # noqa: SLF001
+            return load(*args)  # type: ignore[arg-type]
+
+        with patch.object(robot, "_load", side_effect=recording_load):
+            robot.connect()
+        robot.disconnect()
+        assert watching == [True]
+
+    def test_a_failed_load_stops_the_watch(self, model_path) -> None:
+        robot = so101(model_path, exit_with_pid=os.getppid())
+        with patch.object(robot, "_load", side_effect=ValueError("bad scene")), pytest.raises(ValueError):
+            robot.connect()
+        assert robot._process_watch is None  # noqa: SLF001
+
+    def test_the_watch_keeps_quiet_while_the_parent_runs_and_stops_on_disconnect(self, model_path) -> None:
+        robot = so101(model_path, exit_with_pid=os.getppid())
+        with (
+            patch.object(control, "PROCESS_WATCH_INTERVAL_S", 0.01),
+            patch.object(control, "_signal_owner_shutdown") as shutdown,
+        ):
+            robot.connect()
+            watch = robot._process_watch  # noqa: SLF001
+            threading.Event().wait(0.1)
+            robot.disconnect()
+        assert watch is not None
+        assert watch.is_set()
+        assert robot._process_watch is None  # noqa: SLF001
+        shutdown.assert_not_called()
+
+    def test_no_watch_without_exit_with_pid(self, robot) -> None:
+        assert robot._process_watch is None  # noqa: SLF001
+
+    def test_status_reports_a_camera_whose_renderer_failed(self, model_path) -> None:
+        """``start --status-json`` leaves such a camera out of ``ready`` (P4 review)."""
+        robot = so101(model_path, cameras=[{"name": "overview", "width": 64, "height": 48}])
+        with patch("mujoco.Renderer", side_effect=OSError("no GL")):
+            robot.connect()
+            try:
+                deadline = threading.Event()
+                for _ in range(500):
+                    camera = robot._http_status()["cameras"][0]  # noqa: SLF001
+                    if camera["failed"]:
+                        break
+                    deadline.wait(0.01)
+            finally:
+                robot.disconnect()
+        assert (camera["has_frame"], camera["failed"]) == (False, True)
 
 
 class TestConnect:
@@ -482,10 +647,23 @@ class TestStatus:
         assert status["scene"] == "single_pick_place"
         assert status["profile"] == "so101"
         assert "garment_fold" in status["scenes"]
-        assert "garment_fold" not in status["compatible_scenes"]
+        assert "floor_flat" not in status["compatible_scenes"]
         assert status["objects"] == []
-        assert status["cameras"] == [{"name": "overview", "width": 640, "height": 480, "fps": 30, "rendering": False}]
-        assert MuJoCoRobot(scene="garment_fold")._http_status()["compatible_scenes"] == ["garment_fold"]  # noqa: SLF001
+        assert status["cameras"] == [
+            {
+                "name": "overview",
+                "width": 640,
+                "height": 480,
+                "fps": 30,
+                "rendering": False,
+                "has_frame": False,
+                "failed": False,
+                "source": None,
+            },
+        ]
+        tabletop = ["conveyor_sort", "garment_fold", "single_pick_place", "yahtzee"]
+        assert status["compatible_scenes"] == tabletop
+        assert MuJoCoRobot(scene="garment_fold", bimanual=True)._http_status()["compatible_scenes"] == tabletop  # noqa: SLF001
 
     def test_status_after_connect(self, robot) -> None:
         status = robot._http_status()  # noqa: SLF001
@@ -502,6 +680,139 @@ class TestStatus:
 
         robot._episode_auto_reset = None  # noqa: SLF001
         assert robot._http_status()["episode"] == {"enabled": False}  # noqa: SLF001
+
+
+def _overview_pose(robot: MuJoCoRobot) -> tuple[np.ndarray, np.ndarray]:
+    """Return the overview camera's world position and orientation matrix."""
+    model, data = robot._model, robot._data  # noqa: SLF001
+    camera = model.camera("overview").id
+    return data.cam_xpos[camera].copy(), data.cam_xmat[camera].copy()
+
+
+def _composed_overview_pose(scene_id: str, style: str) -> tuple[np.ndarray, np.ndarray]:
+    """Return the overview camera's pose in the SO-101's single-arm *scene_id* composed with *style*."""
+    model = get_scene(scene_id).load_model(overview=style)  # type: ignore[arg-type]
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    camera = model.camera("overview").id
+    return data.cam_xpos[camera].copy(), data.cam_xmat[camera].copy()
+
+
+def _assert_pose(actual: tuple[np.ndarray, np.ndarray], expected: tuple[np.ndarray, np.ndarray]) -> None:
+    for got, want in zip(actual, expected, strict=True):
+        np.testing.assert_allclose(got, want, atol=1e-12)
+
+
+class TestOverviewStyle:
+    """``overview``: the shoulder or front camera, chosen at start and switched while running."""
+
+    @pytest.fixture
+    def scene_robot(self) -> Iterator[MuJoCoRobot]:
+        robot = MuJoCoRobot("so101", scene="single_pick_place", substeps=1, cameras=[])
+        robot.connect()
+        yield robot
+        robot.disconnect()
+
+    def test_the_start_option_places_the_camera_and_survives_pickling(self) -> None:
+        robot = MuJoCoRobot("so101", scene="single_pick_place", overview="front", substeps=1, cameras=[])
+        assert robot.__getstate__()["overview"] == "front"
+        assert Config.from_instance(robot).instantiate()._overview == "front"  # noqa: SLF001
+        restored = MuJoCoRobot.__new__(MuJoCoRobot)
+        restored.__setstate__(robot.__getstate__())
+        assert restored._overview == "front"  # noqa: SLF001
+        robot.connect()
+        try:
+            _assert_pose(_overview_pose(robot), _composed_overview_pose("single_pick_place", "front"))
+            assert robot._http_status()["overview_style"] == "front"  # noqa: SLF001
+        finally:
+            robot.disconnect()
+
+    def test_a_custom_model_keeps_its_own_camera(self, model_path) -> None:
+        with pytest.raises(ValueError, match="A custom model keeps its own overview camera"):
+            so101(model_path, overview="front")
+        robot = so101(model_path)
+        robot.connect()
+        try:
+            status = robot._http_status()  # noqa: SLF001
+            assert (status["overview_style"], status["overview_styles"]) == ("shoulder", ["shoulder"])
+            assert robot._set_overview("front") is False  # noqa: SLF001
+            assert robot._overview == "shoulder"  # noqa: SLF001
+        finally:
+            robot.disconnect()
+
+    def test_the_custom_models_scene_offers_front_once_its_registered_xml_runs(self, tmp_path) -> None:
+        """``model_path`` replaces the start scene's XML only; switched back to by id, that scene is registered."""
+        custom = tmp_path / "custom.xml"
+        custom.write_text('<mujoco><worldbody><frame name="robot_mount"/></worldbody></mujoco>')
+        robot = MuJoCoRobot("so101", scene="single_pick_place", model_path=str(custom), substeps=1, cameras=[])
+        robot.connect()
+        try:
+            assert robot._http_status()["overview_styles"] == ["shoulder"]  # noqa: SLF001
+            assert robot._switch_to_scene("yahtzee")  # noqa: SLF001
+            assert robot._set_overview("front")  # noqa: SLF001
+            assert robot._switch_to_scene("single_pick_place")  # noqa: SLF001
+            robot.get_observation()
+
+            status = robot._http_status()  # noqa: SLF001
+            assert (status["overview_style"], status["overview_styles"]) == ("front", ["shoulder", "front"])
+            _assert_pose(_overview_pose(robot), _composed_overview_pose("single_pick_place", "front"))
+            assert robot._set_overview("shoulder")  # noqa: SLF001
+            assert robot._set_overview("front")  # noqa: SLF001
+        finally:
+            robot.disconnect()
+
+    def test_a_live_switch_moves_only_the_camera_and_back(self, scene_robot: MuJoCoRobot) -> None:
+        robot = scene_robot
+        shoulder = _overview_pose(robot)
+        joints = robot._data.qpos.copy()  # noqa: SLF001
+        assert robot._http_status()["overview_styles"] == ["shoulder", "front"]  # noqa: SLF001
+
+        robot._commands.put(SetOverviewCommand(style="front"))  # noqa: SLF001
+        robot.get_observation()
+
+        _assert_pose(_overview_pose(robot), _composed_overview_pose("single_pick_place", "front"))
+        assert robot._http_status()["overview_style"] == "front"  # noqa: SLF001
+        assert robot._panel_state().overview_style == "front"  # noqa: SLF001
+        np.testing.assert_allclose(robot._data.qpos, joints, atol=1e-3)  # noqa: SLF001 - one physics step
+
+        robot._commands.put(SetOverviewCommand(style="shoulder"))  # noqa: SLF001
+        robot.get_observation()
+        _assert_pose(_overview_pose(robot), shoulder)
+
+    def test_a_scene_switch_keeps_the_style(self, scene_robot: MuJoCoRobot) -> None:
+        robot = scene_robot
+        assert robot._set_overview("front")  # noqa: SLF001
+        assert robot._switch_to_scene("yahtzee")  # noqa: SLF001
+        robot.get_observation()
+
+        _assert_pose(_overview_pose(robot), _composed_overview_pose("yahtzee", "front"))
+        assert robot._http_status()["overview_style"] == "front"  # noqa: SLF001
+
+    def test_refused_while_studio_records(self, scene_robot: MuJoCoRobot) -> None:
+        from physicalai_mujoco_plugin.http_server import build_app  # noqa: PLC0415
+
+        robot = scene_robot
+        shoulder = _overview_pose(robot)
+        robot._automation.recorder._phase = "recording"  # noqa: SLF001
+        status = robot._http_status()  # noqa: SLF001
+        assert "Automatic Studio recording is on" in status["overview_locked"]
+        assert robot._panel_state().overview_locked == status["overview_locked"]  # noqa: SLF001
+        app = build_app(
+            service_name="sim", buffers={}, commands=robot._commands, get_status=robot._http_status  # noqa: SLF001
+        )
+
+        response = TestClient(app).post("/overview", json={"style": "front"})
+        assert (response.status_code, response.json()["detail"]) == (409, status["overview_locked"])
+        assert robot._commands.empty()  # noqa: SLF001
+        # A switch that raced the recording's start is refused on the sim thread too.
+        robot._commands.put(SetOverviewCommand(style="front"))  # noqa: SLF001
+        robot.get_observation()
+        assert robot._overview == "shoulder"  # noqa: SLF001
+        _assert_pose(_overview_pose(robot), shoulder)
+
+        robot._automation.recorder._phase = "done"  # noqa: SLF001
+        assert robot._http_status()["overview_locked"] is None  # noqa: SLF001
+        assert TestClient(app).post("/overview", json={"style": "front"}).status_code == 200
 
 
 class TestSceneSwitching:
@@ -523,20 +834,21 @@ class TestSceneSwitching:
 
     def test_default_cameras_follow_the_new_scene(self, model_path) -> None:
         robot = MuJoCoRobot("so101", model_path=model_path, substeps=1)
-        with patch("mujoco.Renderer"):
+        with patch("mujoco.Renderer"), patch(RENDERING_AVAILABLE, return_value=True):
             robot.connect()
             try:
-                assert [config.name for config in robot._cameras.configs] == ["overview"]  # noqa: SLF001
+                # The test arm's wrist camera is generated; the SO-101's in the registered scene is the profile's.
+                assert sources(robot) == [("wrist", "default"), ("overview", "scene")]
                 assert robot._switch_to_scene("single_pick_place")  # noqa: SLF001
-                assert [config.name for config in robot._cameras.configs] == ["wrist", "overview"]  # noqa: SLF001
+                assert sources(robot) == [("wrist", "override"), ("overview", "scene")]
                 assert set(robot._cameras.frame_buffers) == {"wrist", "overview"}  # noqa: SLF001
             finally:
                 robot.disconnect()
 
-    def test_a_different_arm_count_is_rejected_before_loading(self, robot) -> None:
+    def test_an_unsupported_scene_is_rejected_before_loading(self, robot) -> None:
         model = robot._model  # noqa: SLF001
         with patch("physicalai_mujoco_plugin.compose.compose_scene") as compose:
-            assert robot._switch_to_scene("garment_fold") is False  # noqa: SLF001
+            assert robot._switch_to_scene("floor_flat") is False  # noqa: SLF001
 
         compose.assert_not_called()
         assert robot._model is model  # noqa: SLF001
@@ -631,7 +943,8 @@ class TestSceneSwitching:
         with patch.object(robot, "_switch_to_scene") as switch:
             robot._check_pending_scene_switch()  # noqa: SLF001
 
-        switch.assert_not_called()  # garment_fold is the only two-arm scene
+        # Every tabletop scene runs two arms; the next one after garment_fold wraps around.
+        switch.assert_called_once_with("single_pick_place")
         robot.disconnect()
 
 
@@ -687,10 +1000,11 @@ class TestDefaultCameras:
     """Camera selection only: tests never open a real renderer (CI runners have no OpenGL)."""
 
     def test_robot_cameras_then_overview(self, robot) -> None:
-        assert [config.name for config in default_cameras(robot._sim)] == ["overview"]  # noqa: SLF001
+        # The test arm has no camera of its own: it gets a generated wrist camera, like a Menagerie arm (CAM-2).
+        assert [config.name for config in default_cameras(robot._sim)] == ["wrist", "overview"]  # noqa: SLF001
 
     def test_bimanual_wrists_around_the_overview(self) -> None:
-        robot = MuJoCoRobot(scene="garment_fold", cameras=[])
+        robot = MuJoCoRobot(scene="garment_fold", bimanual=True, cameras=[])
         robot.connect()
         try:
             names = [config.name for config in default_cameras(robot._sim)]  # noqa: SLF001
@@ -698,12 +1012,44 @@ class TestDefaultCameras:
             robot.disconnect()
         assert names == ["left_wrist", "overview", "right_wrist"]
 
+    def test_a_bimanual_model_gives_each_arm_its_wrist(self, bimanual_path) -> None:
+        """A robot-complete two-arm model resolves cameras per arm, with prefixed names (CAM-3, CAM-6)."""
+        robot = so101(bimanual_path)
+        robot.connect()
+        try:
+            sim = robot._sim  # noqa: SLF001
+            per_arm = [(binding.prefix, [(c.name, c.body, c.source) for c in binding.layout.cameras]) for binding in sim.bindings]
+            names = [config.name for config in default_cameras(sim)]
+        finally:
+            robot.disconnect()
+        assert per_arm == [
+            ("left_", [("left_wrist", "left_link4", "default")]),
+            ("right_", [("right_wrist", "right_link4", "default")]),
+        ]
+        assert names == ["left_wrist", "overview", "right_wrist"]
+
+    def test_a_bimanual_model_keeps_each_arm_s_sensor_camera(self, tmp_path) -> None:
+        """An arm with a camera of its own keeps it; the other arm still gets a default."""
+        path = tmp_path / "bimanual.xml"
+        xml = Path(_write_model(tmp_path, bimanual=True)).read_text()
+        path.write_text(xml.replace('<joint name="left_elbow_flex"', '<camera name="left_cam"/><joint name="left_elbow_flex"'))
+        robot = so101(str(path))
+        robot.connect()
+        try:
+            sim = robot._sim  # noqa: SLF001
+            per_arm = [[(c.name, c.source) for c in binding.layout.cameras] for binding in sim.bindings]
+            names = [config.name for config in default_cameras(sim)]
+        finally:
+            robot.disconnect()
+        assert per_arm == [[("left_cam", "model")], [("right_wrist", "default")]]
+        assert names == ["left_cam", "overview", "right_wrist"]
+
     def test_none_streams_the_defaults(self, model_path) -> None:
         robot = MuJoCoRobot("so101", model_path=model_path)
-        with patch("mujoco.Renderer"):
+        with patch("mujoco.Renderer"), patch(RENDERING_AVAILABLE, return_value=True):
             robot.connect()
             try:
-                assert [config.name for config in robot._cameras.configs] == ["overview"]  # noqa: SLF001
+                assert [config.name for config in robot._cameras.configs] == ["wrist", "overview"]  # noqa: SLF001
             finally:
                 robot.disconnect()
 

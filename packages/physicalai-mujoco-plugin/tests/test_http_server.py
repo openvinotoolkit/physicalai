@@ -15,24 +15,29 @@ import pytest
 from fastapi.testclient import TestClient
 
 from physicalai_mujoco_plugin.http_server import (
+    MAX_REPLAY_FRAMES,
     MAX_SEED,
     FrameBuffer,
     HomeCommand,
     HttpServer,
+    ReplayCommand,
     ResetCommand,
     SetAutopilotCommand,
     SetAutoResetCommand,
     SetBeltSpeedCommand,
     SetObjectPoseCommand,
+    SetOverviewCommand,
     SetSeedCommand,
     SetStudioRecordingCommand,
     ShutdownCommand,
+    StopReplayCommand,
     SwitchSceneCommand,
     _mjpeg_stream,
     build_app,
     encode_jpeg,
 )
 from physicalai_mujoco_plugin.studio_recorder import RecordingOptions
+from physicalai_mujoco_plugin.viewer import ViewerService
 
 
 @pytest.fixture
@@ -51,6 +56,9 @@ def app_context(frame: np.ndarray) -> dict:
         "scenes": ["garment_fold", "single_pick_place", "yahtzee"],
         "compatible_scenes": ["single_pick_place", "yahtzee"],
         "seed": None,
+        "overview_style": "shoulder",
+        "overview_styles": ["shoulder", "front"],
+        "overview_locked": None,
         "episode": {"enabled": True, "active": True, "phase": "idle"},
         "objects": [{"joint": "block1:joint", "position": [0.2, 0.0, 0.02], "wxyz": [1.0, 0.0, 0.0, 0.0]}],
         "cameras": [
@@ -132,6 +140,35 @@ class TestAppEndpoints:
         assert body["service"] == "mujoco-so101"
         assert body["cameras"] == ["overview"]
         assert body["scene"] == "single_pick_place"
+
+    def test_root_without_a_viewer(self, client: TestClient) -> None:
+        assert client.get("/").json()["viewer_url"] is None
+        assert client.get("/viewer", follow_redirects=False).status_code == 404
+
+    def test_viewer_redirects_to_the_viser_page(self, client: TestClient, app_context: dict) -> None:
+        app_context["status"]["viewer_url"] = "http://127.0.0.1:9090"
+        assert client.get("/").json()["viewer_url"] == "http://127.0.0.1:9090"
+        response = client.get("/viewer", follow_redirects=False)
+        assert response.status_code == 307
+        assert response.headers["location"] == "http://127.0.0.1:9090"
+
+    @pytest.mark.parametrize("bound", ["0.0.0.0", "::"])
+    def test_viewer_on_every_interface_is_reached_on_the_requested_host(
+        self, app_context: dict, bound: str
+    ) -> None:
+        # The URL the driver publishes: ViewerService.url, with no viser server actually started.
+        viewer = ViewerService(host=bound, port=9090, submit_command=lambda _command: None, panel_state=lambda: None)
+        viewer.server = object()
+        app_context["status"]["viewer_url"] = viewer.url
+        client = TestClient(app_context["app"], base_url="http://sim-host:8080")
+        assert client.get("/").json()["viewer_url"] == "http://sim-host:9090"
+        assert client.get("/viewer", follow_redirects=False).headers["location"] == "http://sim-host:9090"
+
+    def test_ipv6_viewer_url_is_bracketed(self) -> None:
+        viewer = ViewerService(host="::1", port=9090, submit_command=lambda _command: None, panel_state=lambda: None)
+        assert viewer.url is None  # not open
+        viewer.server = object()
+        assert viewer.url == "http://[::1]:9090"
 
     def test_health(self, client: TestClient) -> None:
         response = client.get("/health")
@@ -238,6 +275,33 @@ class TestAppEndpoints:
 
     def test_belt_speed_conflicts_without_a_belt(self, client: TestClient, app_context: dict) -> None:
         assert client.post("/conveyor/belt-speed", json={"speed": 0.02}).status_code == 409
+        assert app_context["commands"].empty()
+
+    def test_overview_enqueues_the_style(self, client: TestClient, app_context: dict) -> None:
+        response = client.post("/overview", json={"style": "front"})
+        assert (response.status_code, response.json()) == (200, {"status": "queued", "style": "front"})
+        assert app_context["commands"].get_nowait() == SetOverviewCommand(style="front")
+
+    @pytest.mark.parametrize("body", [{}, {"style": "top"}, {"style": "FRONT"}, {"style": "front", "fov": 60}])
+    def test_overview_rejects_anything_but_a_style(self, client: TestClient, app_context: dict, body: dict) -> None:
+        assert client.post("/overview", json=body).status_code == 422
+        assert app_context["commands"].empty()
+
+    def test_overview_conflicts_while_studio_records(self, client: TestClient, app_context: dict) -> None:
+        app_context["status"]["overview_locked"] = "Automatic Studio recording is on"
+        response = client.post("/overview", json={"style": "front"})
+        assert (response.status_code, response.json()["detail"]) == (409, "Automatic Studio recording is on")
+        assert app_context["commands"].empty()
+        # Asking for the style already in place changes nothing, so it is not refused.
+        assert client.post("/overview", json={"style": "shoulder"}).status_code == 200
+
+    def test_overview_conflicts_where_the_scene_has_no_such_style(
+        self, client: TestClient, app_context: dict
+    ) -> None:
+        app_context["status"]["overview_styles"] = ["shoulder"]
+        response = client.post("/overview", json={"style": "front"})
+        assert response.status_code == 409
+        assert "no front overview camera" in response.json()["detail"]
         assert app_context["commands"].empty()
 
     def test_objects_lists_free_objects(self, client: TestClient) -> None:
@@ -503,3 +567,141 @@ class TestAutomationRoutes:
         assert leader_app["commands"].get_nowait() == SetStudioRecordingCommand(options=None)
         assert client.post("/studio/recording", json={**body, "task": "  Sort  "}).status_code == 200
         assert leader_app["commands"].get_nowait().options.task == "Sort"  # stored trimmed
+
+
+class TestReplayRoutes:
+    JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex")
+
+    @pytest.fixture
+    def replay_client(self, app_context: dict) -> TestClient:
+        app_context["status"].update(
+            profile="so101",
+            joint_names=list(self.JOINTS),
+            replay={"active": False, "unsupported_joints": []},
+        )
+        return TestClient(self._app(app_context, check=lambda _frames: None))
+
+    @staticmethod
+    def _app(app_context: dict, check):  # noqa: ANN205 - a FastAPI app
+        return build_app(
+            service_name="mujoco-so101",
+            buffers=app_context["buffers"],
+            commands=app_context["commands"],
+            get_status=lambda: app_context["status"],
+            check_replay=check,
+        )
+
+    def test_replay_queues_the_frames(self, replay_client: TestClient, app_context: dict) -> None:
+        response = replay_client.post("/replay", json={"joint_positions": [[1, 2.5, -3], [4, 5, 6]], "fps": 30})
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "queued", "frames": 2, "fps": 30.0, "duration_s": 2 / 30}
+        command = app_context["commands"].get_nowait()
+        assert isinstance(command, ReplayCommand)
+        np.testing.assert_array_equal(command.joint_positions, [[1.0, 2.5, -3.0], [4.0, 5.0, 6.0]])
+        assert command.joint_positions.dtype == np.float64
+        assert command.fps == 30.0
+
+    def test_replay_stop_queues_the_stop(self, replay_client: TestClient, app_context: dict) -> None:
+        assert replay_client.post("/replay/stop").json() == {"status": "queued"}
+        assert isinstance(app_context["commands"].get_nowait(), StopReplayCommand)
+
+    def test_root_lists_the_replay_routes(self, replay_client: TestClient) -> None:
+        endpoints = replay_client.get("/").json()["endpoints"]
+        assert endpoints["replay"] == "POST /replay"
+        assert endpoints["replay_stop"] == "POST /replay/stop"
+
+    @pytest.mark.parametrize(
+        ("body", "message"),
+        [
+            ('{"joint_positions": [], "fps": 30}', "joint_positions: List should have at least 1 item"),
+            ('{"joint_positions": [[1, 2, 3], [1, 2]], "fps": 30}', "joint_positions row 1 has 2 values; expected 3"),
+            ('{"joint_positions": [[1, 2, 3, 4]], "fps": 30}', "row 0 has 4 values; expected 3 (shoulder_pan, "),
+            ('{"joint_positions": [[1, NaN, 3]], "fps": 30}', "joint_positions.0.1: Input should be a finite number"),
+            ('{"joint_positions": [[1, 2, Infinity]], "fps": 30}', "joint_positions.0.2: Input should be a finite"),
+            ('{"joint_positions": [[1, "2", 3]], "fps": 30}', "joint_positions.0.1: Input should be a valid number"),
+            ('{"joint_positions": [[1, true, 3]], "fps": 30}', "joint_positions.0.1: Input should be a valid number"),
+            ('{"joint_positions": [1, 2, 3], "fps": 30}', "joint_positions.0: Input should be a valid array"),
+            ('{"joint_positions": [[1, 2, 3]], "fps": 0}', "fps: Input should be greater than 0"),
+            ('{"joint_positions": [[1, 2, 3]], "fps": -30}', "fps: Input should be greater than 0"),
+            ('{"joint_positions": [[1, 2, 3]], "fps": NaN}', "fps: Input should be a finite number"),
+            ('{"joint_positions": [[1, 2, 3]], "fps": 5000}', "fps: Input should be less than or equal to 1000"),
+            ('{"joint_positions": [[1, 2, 3]]}', "fps: Field required"),
+            ('{"fps": 30}', "joint_positions: Field required"),
+            ('{"joint_positions": [[1, 2, 3]], "fps": 30, "speed": 2}', "speed: Extra inputs are not permitted"),
+            ('{"joint_positions": [[1, 2, 3]], "fps": 30, "base": [[0, 0, 0, 1, 0, 0, 0]]}', "'base' must be null"),
+            ("[[1, 2, 3]]", "body: Input should be an object"),
+            ("{not json", "body: Invalid JSON"),
+        ],
+    )
+    def test_invalid_replay_requests_are_refused(
+        self, replay_client: TestClient, app_context: dict, body: str, message: str
+    ) -> None:
+        response = replay_client.post("/replay", content=body, headers={"content-type": "application/json"})
+
+        assert response.status_code == 400, response.text
+        assert message in response.json()["detail"]
+        assert app_context["commands"].empty()
+
+    def test_too_many_frames_are_refused(self, replay_client: TestClient) -> None:
+        body = {"joint_positions": [[0, 0, 0]] * (MAX_REPLAY_FRAMES + 1), "fps": 30}
+
+        response = replay_client.post("/replay", json=body)
+
+        assert response.status_code == 400
+        assert f"List should have at most {MAX_REPLAY_FRAMES} items" in response.json()["detail"]
+
+    def test_errors_are_capped(self, replay_client: TestClient) -> None:
+        response = replay_client.post("/replay", json={"joint_positions": [["x"]] * 5, "fps": "y"})
+
+        assert response.status_code == 400
+        assert response.json()["detail"].endswith("(and 3 more)")
+
+    def test_an_oversized_body_is_refused_before_parsing(
+        self, replay_client: TestClient, app_context: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("physicalai_mujoco_plugin.http_server.MAX_REPLAY_BODY_BYTES", 64)
+        with patch("physicalai_mujoco_plugin.http_server.ReplayRequest.model_validate_json") as parse:
+            response = replay_client.post("/replay", json={"joint_positions": [[0.0, 0.0, 0.0]] * 10, "fps": 30})
+
+        assert response.status_code == 413
+        parse.assert_not_called()
+        assert app_context["commands"].empty()
+
+    def test_replay_needs_placeable_joints(self, replay_client: TestClient, app_context: dict) -> None:
+        app_context["status"]["replay"] = {"active": False, "unsupported_joints": ["elbow_flex"]}
+
+        response = replay_client.post("/replay", json={"joint_positions": [[1, 2, 3]], "fps": 30})
+
+        assert response.status_code == 409
+        assert response.json()["detail"].startswith("Cannot replay this robot: elbow_flex drive no hinge or slide")
+        assert app_context["commands"].empty()
+
+    def test_replay_asks_the_robot_to_check_the_frames(self, app_context: dict) -> None:
+        checked = []
+
+        def check(frames: np.ndarray) -> str | None:
+            checked.append(frames.copy())
+            return "frame 1: elbow_flex = 9.0 is outside its normalized range (1 frames)" if len(frames) > 1 and frames[1, 2] == 9 else None
+
+        app_context["status"].update(profile="so101", joint_names=list(self.JOINTS))
+        client = TestClient(self._app(app_context, check))
+
+        refused = client.post("/replay", json={"joint_positions": [[1, 2, 3], [4, 5, 9]], "fps": 30})
+        accepted = client.post("/replay", json={"joint_positions": [[1, 2, 3]], "fps": 30})
+
+        assert refused.status_code == 400
+        assert refused.json()["detail"] == (
+            "Cannot replay joint_positions: frame 1: elbow_flex = 9.0 is outside its normalized range (1 frames)"
+        )
+        assert accepted.status_code == 200
+        np.testing.assert_array_equal(checked[0], [[1, 2, 3], [4, 5, 9]])
+        assert app_context["commands"].qsize() == 1
+
+    def test_replay_needs_a_connected_simulation(self, replay_client: TestClient, app_context: dict) -> None:
+        app_context["status"]["connected"] = False
+
+        response = replay_client.post("/replay", json={"joint_positions": [[1, 2, 3]], "fps": 30})
+
+        assert response.status_code == 409
+        assert app_context["commands"].empty()

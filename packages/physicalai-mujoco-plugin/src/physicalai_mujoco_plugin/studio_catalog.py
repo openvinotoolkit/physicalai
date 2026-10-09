@@ -1,13 +1,33 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""PhysicalAI Studio catalog registration for the MuJoCo SO-101 robot."""
+"""PhysicalAI Studio catalog registration for the simulated robots.
+
+One follower entry is generated per supported profile (tiers ``twin``, ``dataset`` and
+``experimental``) and arm layout (STU-1): one robot, and for twins two (``left_``, ``right_``),
+which every tabletop scene runs. Dataset and experimental arms run two arms from the CLI only
+(``physicalai-mujoco start --bimanual``). Its type is ``MuJoCo_<Profile>_Follower``, with ``Bimanual_``
+before ``Follower`` for two robots, where ``<Profile>`` is the profile's display name without
+spaces and punctuation; ``MuJoCo_SO101_Follower`` and ``MuJoCo_SO101_Bimanual_Follower`` keep
+their types and payloads. Twins whose real robot has a Studio URDF reuse it (STU-2); the other
+entries have no asset and rely on the owner's viewer (``GET /viewer``, STU-3). The SO-101 virtual
+leader stays SO-101 specific (STU-6). Every follower entry's ``simulation`` tells Studio how to start
+its simulation: the scenes it runs in and the ``start`` command line (P3).
+
+Importing this module neither imports MuJoCo nor downloads a model: the joint names of a profile
+without channel overrides are derived from its model only when an entry is probed or built.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import re
+import shlex
+import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from loguru import logger
 from physicalai_studio_plugin import (
@@ -19,18 +39,30 @@ from physicalai_studio_plugin import (
     RobotCatalogDefinition,
     RobotProbe,
     SerialPortInfo,
+    SimulationLaunch,
+    SimulationScene,
     robot_field_ui,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 from physicalai.config import export_config
+from physicalai.robot.errors import RobotTransportError
 from physicalai.robot.transport import SharedRobot
 from physicalai_mujoco_plugin._urdf import get_urdf_path
 from physicalai_mujoco_plugin.constants import (
-    BIMANUAL_SO101_JOINT_ORDER,
     DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME,
     DEFAULT_MUJOCO_OWNER_NAME,
-    SO101_JOINT_ORDER,
+    MAX_SEED,
+    default_owner_name,
+)
+from physicalai_mujoco_plugin.profiles import PROFILES, SO101_PROFILE, RobotProfile
+from physicalai_mujoco_plugin.profiles.trossen_wxai import TROSSEN_WXAI_PROFILE
+from physicalai_mujoco_plugin.scene_registry import (
+    BIMANUAL_PREFIXES,
+    get_scene,
+    list_scenes,
+    list_scenes_naming,
+    supported_arm_counts,
 )
 from physicalai_mujoco_plugin.virtual_leader import DEFAULT_HTTP_PORT, MuJoCoVirtualLeader
 
@@ -46,6 +78,17 @@ if TYPE_CHECKING:
     class _RobotCatalogRegistry(Protocol):
         def register_robot(self, definition: RobotCatalogDefinition) -> None: ...
 
+
+CATALOG_TIERS = ("twin", "dataset", "experimental")
+"""Profile tiers that get Studio entries; ``unsupported`` models get none."""
+BIMANUAL_TIERS = ("twin",)
+"""Profile tiers that also get a two-arm entry: the robots with real bimanual leaders."""
+DEFAULT_HTTP_URL = f"http://127.0.0.1:{DEFAULT_HTTP_PORT}"
+"""The owner's camera and control server under ``physicalai-mujoco start``'s defaults."""
+_LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+"""Hosts of a payload ``http_url`` that mean the simulation runs on Studio's machine."""
+_NO_OWNER_ERROR = "no owner found for "
+"""Start of the message an attach-only ``SharedRobot.connect`` raises when no owner has the name."""
 
 _MUJOCO_SO101_TO_URDF: dict[str, list[str]] = {
     "shoulder_pan.pos": ["shoulder_pan"],
@@ -90,9 +133,32 @@ _MUJOCO_SO101_BIMANUAL_ASSET = RobotAsset(
     root_resolver=_get_mujoco_urdf_root,
 )
 
+# Studio's own WidowX AI URDF, the one its real WidowX AI entries use, names Trossen's joints; the
+# gripper opening moves both carriages. No root resolver: the URDF ships with Studio.
+_MUJOCO_WXAI_ASSET = RobotAsset(
+    urdf_relative_path=Path("widowx/urdf/generated/wxai/wxai_follower.urdf"),
+    packages={"trossen_arm_description": Path("widowx")},
+    joint_map={
+        "shoulder_pan.pos": ["joint_0"],
+        "shoulder_lift.pos": ["joint_1"],
+        "elbow_flex.pos": ["joint_2"],
+        "wrist_flex.pos": ["joint_3"],
+        "wrist_yaw.pos": ["joint_4"],
+        "wrist_roll.pos": ["joint_5"],
+        "gripper.pos": ["left_carriage_joint", "right_carriage_joint"],
+    },
+)
 
-class MuJoCoSO101Payload(BaseModel):
-    """Connection settings for a MuJoCo SO-101 simulation owner."""
+_ASSETS: dict[tuple[str, int], RobotAsset] = {
+    (SO101_PROFILE.name, 1): _MUJOCO_SO101_ASSET,
+    (SO101_PROFILE.name, 2): _MUJOCO_SO101_BIMANUAL_ASSET,
+    (TROSSEN_WXAI_PROFILE.name, 1): _MUJOCO_WXAI_ASSET,
+}
+"""Studio URDFs of twin entries by ``(profile, number of robots)`` (STU-2); other entries have none."""
+
+
+class MuJoCoRobotPayload(BaseModel):
+    """Connection settings for a MuJoCo simulation owner."""
 
     name: str = Field(
         default=DEFAULT_MUJOCO_OWNER_NAME,
@@ -108,6 +174,15 @@ class MuJoCoSO101Payload(BaseModel):
         description="Timeout in seconds for connecting to the zenoh owner",
         json_schema_extra=robot_field_ui({"advanced_configuration": True}),
     )
+    http_url: str = Field(  # type: ignore[call-overload]
+        default=DEFAULT_HTTP_URL,
+        description="Address of the simulation's HTTP server (cameras and the 3D viewer at /viewer)",
+        json_schema_extra=robot_field_ui({"advanced_configuration": True}),
+    )
+
+
+class MuJoCoSO101Payload(MuJoCoRobotPayload):
+    """Connection settings for a MuJoCo SO-101 simulation owner."""
 
 
 class MuJoCoSO101BimanualPayload(MuJoCoSO101Payload):
@@ -121,6 +196,236 @@ class MuJoCoSO101BimanualPayload(MuJoCoSO101Payload):
     name: str = Field(
         default=DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME,
         description="Zenoh logical robot name of the running bimanual MuJoCo simulation",
+    )
+
+
+@dataclass(frozen=True)
+class CatalogEntry:
+    """One generated follower entry: a profile attached at one or two scene anchors."""
+
+    profile: RobotProfile
+    prefixes: tuple[str, ...]
+    """Robot prefixes in anchor order: ``("",)``, or :data:`BIMANUAL_PREFIXES`."""
+
+    @property
+    def bimanual(self) -> bool:
+        """Whether the entry drives two robots."""
+        return len(self.prefixes) == 2  # noqa: PLR2004
+
+    @property
+    def type(self) -> str:
+        """Catalog type, e.g. ``MuJoCo_WidowXAI_Follower`` or ``MuJoCo_SO101_Bimanual_Follower``."""
+        token = re.sub(r"[^0-9A-Za-z]", "", self.profile.display_name)
+        return f"MuJoCo_{token}_{'Bimanual_' if self.bimanual else ''}Follower"
+
+    @property
+    def display_name(self) -> str:
+        """Catalog display name, e.g. ``MuJoCo SO-101 Bimanual Follower``; experimental and provisional ones say so."""
+        name = f"MuJoCo {self.profile.display_name} {'Bimanual ' if self.bimanual else ''}Follower"
+        if self.profile.tier == "experimental":
+            return f"{name} (experimental)"
+        return f"{name} (provisional)" if self.profile.provisional else name
+
+    @property
+    def owner_name(self) -> str:
+        """Default owner name, as ``physicalai-mujoco start`` publishes it (CLI-3)."""
+        return default_owner_name(self.profile.name, len(self.prefixes))
+
+    def start_hint(self, owner_name: str, http_url: str = DEFAULT_HTTP_URL) -> str:
+        """Return how to start the simulation that a follower of this entry attaches to (P2).
+
+        Args:
+            owner_name: The payload's owner name; ``--name`` is added when it is not the default.
+            http_url: The payload's HTTP address: a local port other than the default adds
+                ``--http-port``, and another host adds ``--http-host`` and ``--allow-remote`` and
+                says where to run it. An address without a host is left out.
+
+        Returns:
+            ``Start it with: uv run physicalai-mujoco start --profile <profile> ...``.
+        """
+        command = f"uv run physicalai-mujoco start --profile {self.profile.name}"
+        if self.bimanual:
+            command += " --bimanual"
+        if owner_name != self.owner_name:
+            # One token, so a name that starts with "-" is not taken for an option.
+            command += f" --name={shlex.quote(owner_name)}"
+        try:
+            url = urlsplit(http_url)
+            host, port = url.hostname, url.port or (443 if url.scheme == "https" else 80)
+        except ValueError:
+            host, port = None, DEFAULT_HTTP_PORT
+        if host is None or host in _LOCAL_HOSTS:
+            return f"Start it with: {command}" + (f" --http-port {port}" if port != DEFAULT_HTTP_PORT else "")
+        command += f" --http-host {shlex.quote(host)} --http-port {port} --allow-remote"
+        return f"Start it on {host} with: {command}"
+
+    def scene_ids(self) -> tuple[str, ...]:
+        """Return the scenes a simulation of this entry can start in, without loading a model (P3).
+
+        Returns:
+            The scenes that list the profile and run the entry's arm count, and the profile's default
+            scene (``floor_flat`` for floating bases), in registry order.
+        """
+        arms = len(self.prefixes)
+        offered = {
+            scene_id for scene_id, scene in list_scenes_naming(self.profile.name).items() if arms in scene.arm_counts
+        }
+        if self.profile.default_scene is not None:
+            offered.add(self.profile.default_scene)
+        return tuple(scene_id for scene_id in list_scenes() if scene_id in offered)
+
+    def start_argv(self, *, scene: str, owner_name: str, seed: int | None) -> list[str]:
+        """Return the command line that Studio runs to start and supervise this entry's simulation (P3).
+
+        ``python -m physicalai_mujoco_plugin start`` in Studio's interpreter, with JSON startup events,
+        shutdown on stdin end of file, free ports and the viewer theme for embedding (P4-P6).
+
+        Args:
+            scene: One of :meth:`scene_ids`; :meth:`SimulationLaunch.argv` checks it.
+            owner_name: The payload's owner name, passed as one ``--name=`` token.
+            seed: Fixed reset seed (``start --seed``), or ``None`` for random layouts.
+
+        Returns:
+            The argv, ``sys.executable`` first.
+        """
+        argv = [sys.executable, "-m", "physicalai_mujoco_plugin", "start", "--profile", self.profile.name]
+        if self.bimanual:
+            argv.append("--bimanual")
+        argv += [
+            "--scene",
+            scene,
+            # One token, so a name that starts with "-" is not taken for an option.
+            f"--name={owner_name}",
+            "--status-json",
+            "--exit-with-parent",
+            "--http-port",
+            "0",
+            "--viser-port",
+            "0",
+            "--viewer-theme",
+            "studio",
+        ]
+        if seed is not None:
+            argv += ["--seed", str(seed)]
+        return argv
+
+    def payload_owner_name(self, payload: MuJoCoRobotPayload) -> str:
+        """Return the owner a robot of this entry built from *payload* attaches to: its ``name``.
+
+        Returns:
+            The payload's owner name; a raw payload is validated with the entry's payload model first.
+        """
+        payload_model = _payload_model(self)
+        validated = payload if isinstance(payload, payload_model) else payload_model.model_validate(payload)
+        return validated.name
+
+    def launch_labels(self) -> tuple[str, ...]:
+        """Return the start dialog's chips: the arm count (or ``floating base``), the tier, then ``provisional``.
+
+        Returns:
+            For example ``("2 arms (bimanual)", "twin")``, ``("1 arm", "twin", "provisional")`` or
+            ``("floating base", "experimental")``.
+        """
+        arms = len(self.profile.end_effectors)
+        if self.bimanual:
+            body = "2 arms (bimanual)"
+        elif self.profile.default_scene is not None and get_scene(self.profile.default_scene).anchors == "spawn":
+            body = "floating base"
+        else:
+            body = f"{arms} arms" if arms > 1 else "1 arm"
+        return (body, self.profile.tier, *(("provisional",) if self.profile.provisional else ()))
+
+    def simulation_launch(self) -> SimulationLaunch[MuJoCoRobotPayload] | None:
+        """Return how Studio starts this entry's simulation, or ``None`` for a profile without a default scene.
+
+        Returns:
+            The entry's scenes, its profile's default scene, the payload's ``name`` as the owner name,
+            :meth:`start_argv`, ``start --seed``'s range and :meth:`launch_labels`.
+        """
+        if self.profile.default_scene is None:
+            return None
+        scenes = tuple(
+            SimulationScene(id=scene.scene_id, display_name=scene.display_name, description=scene.description)
+            for scene in map(get_scene, self.scene_ids())
+        )
+        return SimulationLaunch[MuJoCoRobotPayload](
+            scenes=scenes,
+            default_scene=self.profile.default_scene,
+            payload_owner_name=self.payload_owner_name,
+            build_argv=self.start_argv,
+            max_seed=MAX_SEED,
+            labels=self.launch_labels(),
+        )
+
+    def joint_names(self) -> tuple[str, ...]:
+        """Return the public joint names an owner of this entry has.
+
+        A profile with channel overrides names them; otherwise they are derived from the robot
+        model, which is compiled (and, on a cold Menagerie cache, downloaded) on the first call.
+
+        Returns:
+            Every robot's names with its prefix, in anchor order.
+        """
+        names = [channel.name for channel in self.profile.channels]
+        if not names:
+            from physicalai_mujoco_plugin.compose import robot_layout  # noqa: PLC0415
+
+            names = list(robot_layout(self.profile).joint_names)
+        return tuple(f"{prefix}{name}" for prefix in self.prefixes for name in names)
+
+
+def list_catalog_entries() -> tuple[CatalogEntry, ...]:
+    """Return one entry per supported profile and arm layout, in registry order (STU-1).
+
+    Every profile in :data:`CATALOG_TIERS` gets a single-robot entry; those in
+    :data:`BIMANUAL_TIERS` that can run two arms also get a bimanual one.
+
+    Returns:
+        The entries, each profile's single-robot entry first.
+    """
+    entries = []
+    for profile in PROFILES.values():
+        if profile.tier not in CATALOG_TIERS:
+            continue
+        entries.append(CatalogEntry(profile, ("",)))
+        if profile.tier in BIMANUAL_TIERS and len(BIMANUAL_PREFIXES) in supported_arm_counts(profile):
+            entries.append(CatalogEntry(profile, BIMANUAL_PREFIXES))
+    return tuple(entries)
+
+
+_PAYLOAD_MODELS: dict[str, type[MuJoCoRobotPayload]] = {
+    "MuJoCo_SO101_Follower": MuJoCoSO101Payload,
+    "MuJoCo_SO101_Bimanual_Follower": MuJoCoSO101BimanualPayload,
+}
+"""Payload models by catalog type; the other entries' are generated once, on first use."""
+
+
+def _payload_model(entry: CatalogEntry) -> type[MuJoCoRobotPayload]:
+    """Return the entry's payload model: today's SO-101 classes, else one whose ``name`` defaults to the entry's owner.
+
+    Returns:
+        A payload model class, the same one on every call.
+    """
+    model = _PAYLOAD_MODELS.get(entry.type)
+    if model is None:
+        model = _PAYLOAD_MODELS[entry.type] = _generated_payload_model(entry)
+    return model
+
+
+def _generated_payload_model(entry: CatalogEntry) -> type[MuJoCoRobotPayload]:
+    model_name = f"{entry.type.removesuffix('_Follower').replace('_', '')}Payload"
+    return create_model(
+        model_name,
+        __base__=MuJoCoRobotPayload,
+        __module__=__name__,
+        __doc__=f"Connection settings for a MuJoCo {entry.profile.display_name} simulation owner.",
+        name=(
+            str,
+            Field(
+                default=entry.owner_name,
+                description=f"Zenoh logical robot name of the running {entry.display_name} simulation",
+            ),
+        ),
     )
 
 
@@ -150,12 +455,26 @@ def _check_zenoh_robot_online(name: str, joint_order: tuple[str, ...]) -> bool:
     return True
 
 
-class MuJoCoSO101Probe(RobotProbe[MuJoCoSO101Payload]):
-    """Discover and query MuJoCo SO-101 simulation owners."""
+def _check_entry_online(name: str, entry: CatalogEntry) -> bool:
+    """Return whether an owner named `name` is reachable and drives the entry's joints.
 
-    def __init__(self, joint_order: tuple[str, ...] = SO101_JOINT_ORDER) -> None:
-        """Probe for owners that drive `joint_order`."""
-        self.joint_order = tuple(joint_order)
+    A profile without channel overrides derives its names from its model; when that fails (no
+    cached model and no download), the entry reports offline.
+    """
+    try:
+        joint_names = entry.joint_names()
+    except (RuntimeError, ValueError) as exc:
+        logger.warning("Cannot check the {} owner {!r}: {}", entry.profile.name, name, exc)
+        return False
+    return _check_zenoh_robot_online(name, joint_names)
+
+
+class MuJoCoRobotProbe(RobotProbe[MuJoCoRobotPayload]):
+    """Discover and query MuJoCo simulation owners of one catalog entry."""
+
+    def __init__(self, entry: CatalogEntry) -> None:
+        """Probe for owners that drive the joints of `entry`."""
+        self.entry = entry
 
     async def discover(self, manager: PortScanner) -> list[SerialPortInfo]:
         """Return robots found by the port scanner."""
@@ -165,7 +484,7 @@ class MuJoCoSO101Probe(RobotProbe[MuJoCoSO101Payload]):
 
     async def identify(
         self,
-        payload: MuJoCoSO101Payload,
+        payload: MuJoCoRobotPayload,
         manager: PortScanner | None = None,
         joint: str | None = None,
     ) -> None:
@@ -174,12 +493,12 @@ class MuJoCoSO101Probe(RobotProbe[MuJoCoSO101Payload]):
 
     async def is_online(
         self,
-        payload: MuJoCoSO101Payload,
+        payload: MuJoCoRobotPayload,
         manager: PortScanner | None = None,
     ) -> bool:
-        """Return whether the configured simulation owner is reachable and drives this robot type's joints."""
+        """Return whether the configured simulation owner is reachable and drives this entry's joints."""
         _ = manager
-        return await asyncio.to_thread(_check_zenoh_robot_online, payload.name, self.joint_order)
+        return await asyncio.to_thread(_check_entry_online, payload.name, self.entry)
 
 
 class MuJoCoVirtualLeaderPayload(BaseModel):
@@ -244,9 +563,26 @@ async def _build_virtual_leader(
 
 @export_config(class_path="physicalai_mujoco_plugin.studio_catalog._SharedMuJoCoRobot")
 class _SharedMuJoCoRobot:
-    def __init__(self, shared_robot: SharedRobot, joint_names: list[str] | tuple[str, ...]) -> None:
+    """A Studio robot attached to a running simulation owner, of any profile and arm layout.
+
+    The joint names are the catalog entry's, so Studio knows them before connecting; observations
+    pass through unchanged, including a floating base's longer ``state``.
+    """
+
+    def __init__(
+        self, shared_robot: SharedRobot, joint_names: list[str] | tuple[str, ...], start_hint: str = ""
+    ) -> None:
+        """Wrap an attach-only shared robot.
+
+        Args:
+            shared_robot: Attaches to the simulation owner.
+            joint_names: The catalog entry's joint names.
+            start_hint: How to start the simulation (:meth:`CatalogEntry.start_hint`), given when no
+                owner is running.
+        """
         self._shared_robot = shared_robot
         self.joint_names = list(joint_names)
+        self._start_hint = start_hint
 
     @property
     def device_ids(self) -> tuple[str, ...]:
@@ -254,7 +590,21 @@ class _SharedMuJoCoRobot:
         return ()
 
     def connect(self) -> None:
-        self._shared_robot.connect()
+        """Attach to the running simulation owner.
+
+        Raises:
+            RobotTransportError: If no owner has the name: the message names it and says how to
+                start it, so Studio can show it as is. Other transport errors pass through unchanged.
+        """
+        try:
+            self._shared_robot.connect()
+        except RobotTransportError as exc:
+            if type(exc) is not RobotTransportError or not str(exc).startswith(_NO_OWNER_ERROR):
+                raise
+            msg = f"No MuJoCo simulation named {self._shared_robot.name!r} is running."
+            if self._start_hint:
+                msg += f" {self._start_hint}"
+            raise RobotTransportError(msg) from exc
 
     def disconnect(self) -> None:
         self._shared_robot.disconnect()
@@ -270,80 +620,74 @@ class _SharedMuJoCoRobot:
 
 
 def _mujoco_robot_builder(
-    payload_model: type[MuJoCoSO101Payload],
-    joint_order: tuple[str, ...],
-) -> Callable[[PayloadContainer[MuJoCoSO101Payload], CatalogRobotFactory], Awaitable[PhysicalAIRobot]]:
-    """Build the catalog builder for one arm count.
+    entry: CatalogEntry,
+) -> Callable[[PayloadContainer[MuJoCoRobotPayload], CatalogRobotFactory], Awaitable[PhysicalAIRobot]]:
+    """Build the catalog builder of one entry.
 
     Returns:
         An async robot builder that attaches to the payload's zenoh owner.
     """
+    payload_model = _payload_model(entry)
 
     async def build(
-        robot: PayloadContainer[MuJoCoSO101Payload],
+        robot: PayloadContainer[MuJoCoRobotPayload],
         factory: CatalogRobotFactory,
     ) -> PhysicalAIRobot:
         _ = factory
-        await asyncio.sleep(0)
         raw = robot.payload
         validated = raw if isinstance(raw, payload_model) else payload_model.model_validate(raw)
+        joint_names = await asyncio.to_thread(entry.joint_names)
 
         shared = SharedRobot.attach(
             name=validated.name,
             allow_remote=validated.allow_remote,
             connect_timeout=validated.connect_timeout,
         )
-        return _SharedMuJoCoRobot(shared, joint_order)
+        return _SharedMuJoCoRobot(shared, joint_names, entry.start_hint(validated.name, validated.http_url))
 
     return build
 
 
-_build_mujoco_robot = _mujoco_robot_builder(MuJoCoSO101Payload, SO101_JOINT_ORDER)
-_build_bimanual_mujoco_robot = _mujoco_robot_builder(MuJoCoSO101BimanualPayload, BIMANUAL_SO101_JOINT_ORDER)
+def _follower_definition(entry: CatalogEntry) -> RobotCatalogDefinition:
+    return RobotCatalogDefinition(
+        type=entry.type,
+        display_name=entry.display_name,
+        role="follower",
+        robot_builder=_mujoco_robot_builder(entry),
+        robot_payload=_payload_model(entry),
+        asset=_ASSETS.get((entry.profile.name, len(entry.prefixes))),
+        adapter_options=RobotAdapterOptions(
+            include_velocities=False,
+            external_effort_gain=None,
+        ),
+        probe=MuJoCoRobotProbe(entry),
+        simulation=entry.simulation_launch(),
+    )
 
 
 def _definitions() -> list[RobotCatalogDefinition]:
-    return [
-        RobotCatalogDefinition(
-            type="MuJoCo_SO101_Follower",
-            display_name="MuJoCo SO-101 Follower",
-            role="follower",
-            robot_builder=_build_mujoco_robot,
-            robot_payload=MuJoCoSO101Payload,
-            asset=_MUJOCO_SO101_ASSET,
-            adapter_options=RobotAdapterOptions(
-                include_velocities=False,
-                external_effort_gain=None,
-            ),
-            probe=MuJoCoSO101Probe(SO101_JOINT_ORDER),
+    """Return the generated follower entries, with the SO-101 virtual leader after the SO-101's.
+
+    Returns:
+        The SO-101 followers, the virtual leader, then every other profile's followers.
+    """
+    entries = list_catalog_entries()
+    so101 = [_follower_definition(entry) for entry in entries if entry.profile is SO101_PROFILE]
+    others = [_follower_definition(entry) for entry in entries if entry.profile is not SO101_PROFILE]
+    leader = RobotCatalogDefinition(
+        type="MuJoCo_SO101_Virtual_Leader",
+        display_name="MuJoCo SO-101 Virtual Leader",
+        role="leader",
+        robot_builder=_build_virtual_leader,
+        robot_payload=MuJoCoVirtualLeaderPayload,
+        asset=_MUJOCO_SO101_ASSET,
+        adapter_options=RobotAdapterOptions(
+            include_velocities=False,
+            external_effort_gain=None,
         ),
-        RobotCatalogDefinition(
-            type="MuJoCo_SO101_Bimanual_Follower",
-            display_name="MuJoCo SO-101 Bimanual Follower",
-            role="follower",
-            robot_builder=_build_bimanual_mujoco_robot,
-            robot_payload=MuJoCoSO101BimanualPayload,
-            asset=_MUJOCO_SO101_BIMANUAL_ASSET,
-            adapter_options=RobotAdapterOptions(
-                include_velocities=False,
-                external_effort_gain=None,
-            ),
-            probe=MuJoCoSO101Probe(BIMANUAL_SO101_JOINT_ORDER),
-        ),
-        RobotCatalogDefinition(
-            type="MuJoCo_SO101_Virtual_Leader",
-            display_name="MuJoCo SO-101 Virtual Leader",
-            role="leader",
-            robot_builder=_build_virtual_leader,
-            robot_payload=MuJoCoVirtualLeaderPayload,
-            asset=_MUJOCO_SO101_ASSET,
-            adapter_options=RobotAdapterOptions(
-                include_velocities=False,
-                external_effort_gain=None,
-            ),
-            probe=MuJoCoVirtualLeaderProbe(),
-        ),
-    ]
+        probe=MuJoCoVirtualLeaderProbe(),
+    )
+    return [*so101, leader, *others]
 
 
 def _assert_payload_model_resolvable(model: type[BaseModel]) -> None:
@@ -351,7 +695,7 @@ def _assert_payload_model_resolvable(model: type[BaseModel]) -> None:
 
 
 def register_physicalai_studio_plugin(registry: _RobotCatalogRegistry) -> None:
-    """Register the MuJoCo SO-101 catalog definition."""
+    """Register the MuJoCo catalog definitions."""
     for definition in _definitions():
         payload_model = definition.robot_payload
         if isinstance(payload_model, type) and issubclass(payload_model, BaseModel):

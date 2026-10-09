@@ -438,6 +438,11 @@ class AutoRecorder:
         """The options of the current (or last) run."""
         return self._options
 
+    @property
+    def active(self) -> bool:
+        """Whether a run is under way: switched on and not yet done, stopped or failed."""
+        return self._phase not in {"off", "done", "stopped", "error"}
+
     def enable(self, options: RecordingOptions) -> None:
         """Start recording episodes with `options`, replacing any previous run."""
         self.disable()

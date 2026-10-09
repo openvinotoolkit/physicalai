@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import subprocess  # noqa: S404 - runs this interpreter on a fixed script, never user input  # nosec B404
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -26,6 +28,80 @@ from physicalai_mujoco_plugin.camera_thread import CameraThread, RateMeter
 
 if TYPE_CHECKING:
     from physicalai_mujoco_plugin.http_server import FrameBuffer
+
+GL_PROBE_TIMEOUT_S = 10.0
+"""How long the rendering probe may take; a host without a usable GL backend can hang instead of failing."""
+_GL_PROBE = """
+import mujoco
+with mujoco.Renderer(mujoco.MjModel.from_xml_string("<mujoco/>"), 8, 8) as renderer:
+    renderer.render()
+"""
+
+
+class RenderingProbe:
+    """Tell whether MuJoCo can render here; :data:`offscreen_rendering_available` is the shared instance.
+
+    Creating a GL context on a headless host without ``MUJOCO_GL=egl`` or ``osmesa`` can hang
+    rather than fail, so a child process with a timeout tries it; the child inherits
+    ``MUJOCO_GL``. Success is remembered for the process. A failure is not: the next call probes
+    again, so a host that gains a GL backend gets its cameras back on the next connect or scene
+    switch. One warning covers each run of failures.
+    """
+
+    def __init__(self) -> None:
+        """Start with no probe result."""
+        self.available = False
+        self.warned = False
+
+    def __call__(self) -> bool:
+        """Probe unless an earlier probe succeeded.
+
+        Returns:
+            ``True`` when a child process rendered a frame, now or earlier.
+        """
+        if self.available:
+            return True
+        reason = self._probe()
+        if reason is None:
+            self.available = True
+            self.warned = False
+            return True
+        if not self.warned:
+            self.warned = True
+            logger.warning(
+                "Simulated cameras are disabled: MuJoCo cannot render here ({}). "
+                "On a headless host, set MUJOCO_GL=egl or MUJOCO_GL=osmesa.",
+                reason,
+            )
+        return False
+
+    @staticmethod
+    def _probe() -> str | None:
+        """Render one frame in a child process.
+
+        Returns:
+            ``None`` on success, else why it failed.
+        """
+        try:
+            result = subprocess.run(  # noqa: S603 - fixed argv: this interpreter and a constant script  # nosec B603
+                [sys.executable, "-c", _GL_PROBE],
+                capture_output=True,
+                text=True,
+                timeout=GL_PROBE_TIMEOUT_S,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return f"creating an OpenGL context took longer than {GL_PROBE_TIMEOUT_S:.0f} s"
+        except OSError as exc:
+            return str(exc)
+        if result.returncode == 0:
+            return None
+        lines = result.stderr.strip().splitlines()
+        return lines[-1] if lines else f"the probe exited with code {result.returncode}"
+
+
+offscreen_rendering_available = RenderingProbe()
+"""Whether MuJoCo can render in this process; call it before creating default camera streams."""
 
 
 @dataclass(frozen=True)
@@ -71,6 +147,8 @@ class CameraService:
         self.meters: dict[str, RateMeter] = {}
         self._lock = threading.RLock()
         self._renderers: dict[str, object] = {}
+        self._set_up: dict[str, object] | None = None
+        """The renderer dict whose setup has finished; its missing cameras have no renderer."""
         self._last_frame_ts: dict[str, float] = {}
         self._thread: CameraThread | None = None
         self._data: object | None = None
@@ -89,6 +167,32 @@ class CameraService:
         """Return the names of the cameras that have a renderer (any thread)."""
         with self._lock:
             return set(self._renderers)
+
+    def with_frames(self) -> set[str]:
+        """Return the names of the configured cameras that have published a frame.
+
+        Returns:
+            Camera names; a camera is listed once its first frame is in its buffer.
+        """
+        return {
+            config.name
+            for config in self.configs
+            if (buffer := self.frame_buffers.get(config.name)) is not None and buffer.snapshot() is not None
+        }
+
+    def failed(self) -> set[str]:
+        """Return the names of the configured cameras that got no renderer.
+
+        Empty while the renderers are still being created; afterwards, the cameras whose renderer
+        could not be created, or every camera once the camera thread stopped on an error.
+
+        Returns:
+            Camera names.
+        """
+        with self._lock:
+            if self._set_up is None or self._set_up is not self._renderers:
+                return set()
+            return {config.name for config in self.configs if config.name not in self._renderers}
 
     def fps(self) -> dict[str, float | None]:
         """Return each camera's frame rate over the last ~2 s."""
@@ -217,13 +321,16 @@ class CameraService:
         import mujoco  # noqa: PLC0415
 
         created: dict[str, object] = {}
-        for config in self.configs:
-            try:
-                created[config.name] = mujoco.Renderer(model, config.height, config.width)
-            except OSError as exc:
-                logger.warning("Camera '{}' renderer unavailable: {}", config.name, exc)
-        with self._lock:
-            renderers.update(created)
+        try:
+            for config in self.configs:
+                try:
+                    created[config.name] = mujoco.Renderer(model, config.height, config.width)
+                except OSError as exc:
+                    logger.warning("Camera '{}' renderer unavailable: {}", config.name, exc)
+        finally:
+            with self._lock:
+                renderers.update(created)
+                self._set_up = renderers
 
     def _close_renderers(self, renderers: dict[str, object]) -> None:
         with self._lock:
@@ -234,4 +341,4 @@ class CameraService:
                 renderer.close()
 
 
-__all__ = ["CameraConfig", "CameraService"]
+__all__ = ["GL_PROBE_TIMEOUT_S", "CameraConfig", "CameraService", "RenderingProbe", "offscreen_rendering_available"]

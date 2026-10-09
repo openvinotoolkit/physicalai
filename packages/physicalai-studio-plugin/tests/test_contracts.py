@@ -15,6 +15,8 @@ from physicalai_studio_plugin import (
     RobotProbe,
     RobotZeroCalibration,
     SerialPortInfo,
+    SimulationLaunch,
+    SimulationScene,
     robot_field_ui,
     robot_payload_ui,
     validate_robot_payload_ui,
@@ -159,6 +161,130 @@ def test_zero_calibration_rejects_invalid_values(instructions: str, zero_toleran
         RobotZeroCalibration(
             instructions=instructions, set_zero=_noop_calibration_step, zero_tolerance_deg=zero_tolerance_deg
         )
+
+
+_SCENES = (
+    SimulationScene(id="pick", display_name="Pick & Place", description="One block and a target"),
+    SimulationScene(id="fold", display_name="Fold"),
+)
+
+
+class SimPayload(BaseModel):
+    """A simulated robot's payload whose owner name is derived, not a ``name`` field."""
+
+    sim_id: str
+    host: str = "127.0.0.1"
+
+
+def _sim_argv(*, scene: str, owner_name: str, seed: int | None) -> list[str]:
+    argv = ["sim", "start", "--scene", scene, f"--name={owner_name}"]
+    return argv if seed is None else [*argv, "--seed", str(seed)]
+
+
+def _launch(**kwargs: Any) -> SimulationLaunch[SimPayload]:
+    options: dict[str, Any] = {
+        "scenes": _SCENES,
+        "default_scene": "pick",
+        "payload_owner_name": lambda payload: f"sim-{payload.sim_id}",
+        "build_argv": _sim_argv,
+        "max_seed": 2**32 - 1,
+    }
+    return SimulationLaunch[SimPayload](**(options | kwargs))
+
+
+def test_definition_defaults_to_no_simulation() -> None:
+    definition = RobotCatalogDefinition(type="Test_Follower", display_name="Test Follower", role="follower")
+
+    assert definition.simulation is None
+
+
+def test_definition_accepts_a_simulation_launch() -> None:
+    launch = _launch(default_scene="fold", labels=("2 arms", "twin"))
+    definition = RobotCatalogDefinition[SimPayload](
+        type="Sim_Follower", display_name="Sim Follower", role="follower", robot_payload=SimPayload, simulation=launch
+    )
+
+    assert definition.simulation is launch
+    assert [scene.id for scene in launch.scenes] == ["pick", "fold"]
+    assert launch.scenes[1].description == ""
+    assert launch.labels == ("2 arms", "twin")
+
+
+def test_simulation_launch_resolves_the_owner_name_from_the_payload() -> None:
+    launch = _launch()
+    payload = SimPayload(sim_id="7")
+
+    assert launch.owner_name(payload) == "sim-7"
+    assert launch.argv("fold", payload) == ["sim", "start", "--scene", "fold", "--name=sim-7"]
+    assert launch.argv("pick", payload, seed=2**32 - 1)[-2:] == ["--seed", "4294967295"]
+    assert launch.argv("pick", payload, seed=0)[-1] == "0"
+
+
+def test_each_launch_has_its_own_seed_range() -> None:
+    small, unseeded = _launch(max_seed=99), _launch(max_seed=None)
+    payload = SimPayload(sim_id="7")
+
+    assert small.argv("pick", payload, seed=99)[-1] == "99"
+    with pytest.raises(ValueError, match="seed must be an integer from 0 to 99, got 100"):
+        small.argv("pick", payload, seed=100)
+    assert _launch().argv("pick", payload, seed=100)[-1] == "100"
+    assert unseeded.argv("pick", payload) == ["sim", "start", "--scene", "pick", "--name=sim-7"]
+    with pytest.raises(ValueError, match="this simulation takes no seed"):
+        unseeded.argv("pick", payload, seed=0)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"scenes": ()}, "scenes must not be empty"),
+        ({"scenes": (*_SCENES, SimulationScene(id="pick", display_name="Again"))}, r"duplicates \['pick'\]"),
+        ({"default_scene": "stack"}, "default_scene 'stack' is not one of the scenes"),
+        ({"max_seed": -1}, "max_seed must be a non-negative integer or None"),
+        ({"max_seed": 1.5}, "max_seed must be a non-negative integer or None"),
+        ({"labels": ("1 arm", " ")}, "labels must not be blank"),
+    ],
+)
+def test_simulation_launch_rejects_invalid_definitions(kwargs: dict[str, Any], message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        _launch(**kwargs)
+
+
+@pytest.mark.parametrize(
+    ("scene_id", "display_name", "message"),
+    [(" ", "Pick", "scene id must not be empty"), ("pick", "", "scene 'pick' needs a display_name")],
+)
+def test_simulation_scene_rejects_blank_names(scene_id: str, display_name: str, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        SimulationScene(id=scene_id, display_name=display_name)
+
+
+@pytest.mark.parametrize(
+    ("scene", "sim_id", "seed", "message"),
+    [
+        ("stack", "7", None, "Unknown scene 'stack'"),
+        ("pick", " ", None, "payload_owner_name returned an empty owner name"),
+        ("pick", "7", -1, "seed must be an integer from 0 to 4294967295"),
+        ("pick", "7", 2**32, "seed must be an integer from 0 to 4294967295"),
+        ("pick", "7", True, "seed must be an integer"),
+        ("pick", "7", 1.5, "seed must be an integer"),
+    ],
+)
+def test_simulation_launch_argv_rejects_invalid_requests(scene: str, sim_id: str, seed: Any, message: str) -> None:
+    launch = _launch(payload_owner_name=lambda payload: payload.sim_id)
+
+    with pytest.raises(ValueError, match=message):
+        launch.argv(scene, SimPayload(sim_id=sim_id), seed)
+
+
+def test_simulation_launch_rejects_an_empty_argv() -> None:
+    def no_argv(*, scene: str, owner_name: str, seed: int | None) -> list[str]:
+        _ = scene, owner_name, seed
+        return []
+
+    launch = _launch(build_argv=no_argv)
+
+    with pytest.raises(ValueError, match="no command line"):
+        launch.argv("pick", SimPayload(sim_id="7"))
 
 
 def test_generic_payload_linked_to_probe() -> None:
