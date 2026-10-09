@@ -17,12 +17,17 @@ _mock_smart_servo = MagicMock()
 _mock_smart_servo.__spec__ = ModuleSpec("motorbridge_smart_servo", None)
 sys.modules.setdefault("motorbridge_smart_servo", _mock_smart_servo)
 
+_MOCK_SERVO_ANGLES = (0.0, 10.0, -10.0, 30.0, 40.0, 50.0, 60.0)
+_EXPECTED_NATIVE_POSITIONS = _MOCK_SERVO_ANGLES
+_EXPECTED_B601_POSITIONS = (0.0, -10.0, -10.0, 30.0, 40.0, -50.0, -270.0)
+
 
 class _ServoFactoryFn:
     servo_angles: list[float]
 
 
 class _StararmPackageModule:
+    _stararm102: object
     stararm102hd: object
     stararm102ld: object
 
@@ -33,7 +38,7 @@ def _make_mock_smart_servo() -> MagicMock:
     module.FashionStarServo.return_value = bus
     bus.ping.return_value = True
 
-    servo_angles = [0.0, 10.0, -10.0, 30.0, 40.0, 50.0, 60.0]
+    servo_angles = list(_MOCK_SERVO_ANGLES)
 
     def sync_monitor_side_effect(servo_ids: list[int]) -> dict[int, MagicMock]:
         monitors = {}
@@ -53,10 +58,13 @@ def _make_mock_smart_servo() -> MagicMock:
 @pytest.fixture
 def mock_smart_servo(monkeypatch: pytest.MonkeyPatch) -> Generator[MagicMock]:
     module = _make_mock_smart_servo()
+    pkg = sys.modules.get("physicalai_stararm_plugin")
+    sys.modules.pop("physicalai_stararm_plugin._stararm102", None)
     sys.modules.pop("physicalai_stararm_plugin.stararm102hd", None)
     sys.modules.pop("physicalai_stararm_plugin.stararm102ld", None)
     sys.modules.pop("physicalai_stararm_plugin", None)
-    pkg = sys.modules.get("physicalai_stararm_plugin")
+    if pkg is not None and hasattr(pkg, "_stararm102"):
+        del cast("_StararmPackageModule", pkg)._stararm102
     if pkg is not None and hasattr(pkg, "stararm102hd"):
         del cast("_StararmPackageModule", pkg).stararm102hd
     if pkg is not None and hasattr(pkg, "stararm102ld"):
@@ -67,6 +75,7 @@ def mock_smart_servo(monkeypatch: pytest.MonkeyPatch) -> Generator[MagicMock]:
     import_module("physicalai_stararm_plugin.stararm102hd")
     import_module("physicalai_stararm_plugin.stararm102ld")
     yield module
+    sys.modules.pop("physicalai_stararm_plugin._stararm102", None)
     sys.modules.pop("physicalai_stararm_plugin.stararm102hd", None)
     sys.modules.pop("physicalai_stararm_plugin.stararm102ld", None)
     sys.modules.pop("physicalai_stararm_plugin", None)
@@ -86,6 +95,7 @@ class TestStarArm102HDLeaderConstruction:
         assert robot.port == "/dev/ttyUSB0"
         assert robot.baudrate == 1_000_000
         assert robot.control_mode == "passive"
+        assert robot.follower_profile is None
         assert robot.joint_names == [
             "shoulder_pan",
             "shoulder_lift",
@@ -107,6 +117,17 @@ class TestStarArm102HDLeaderConstruction:
 
         with pytest.raises(ValueError, match="baudrate"):
             StarArm102HDLeader(baudrate=0)
+
+    def test_invalid_follower_profile_raises(self, mock_smart_servo: MagicMock) -> None:
+        from physicalai_stararm_plugin import StarArm102HDLeader
+
+        with pytest.raises(ValueError, match="follower_profile"):
+            StarArm102HDLeader(follower_profile=cast(Any, "unknown"))
+
+    def test_exports_follower_profile(self, mock_smart_servo: MagicMock) -> None:
+        robot = _create_robot(mock_smart_servo, follower_profile="b601")
+
+        assert Config.from_instance(robot)["init_args"] == {"follower_profile": "b601"}
 
 
 class TestStarArm102HDLeaderLifecycle:
@@ -164,15 +185,30 @@ class TestStarArm102HDLeaderObservation:
         robot.connect()
         obs = robot.get_observation()
 
-        expected = np.array([0, 10, -10, 30, 40, 50, 60], dtype=np.float32)
-        np.testing.assert_allclose(obs.joint_positions, expected)
+        np.testing.assert_allclose(obs.joint_positions, _EXPECTED_NATIVE_POSITIONS)
         assert isinstance(obs.timestamp, float)
         assert obs.sensor_data is not None
         assert "raw_positions" in obs.sensor_data
         assert "reliable" in obs.sensor_data
 
+    def test_b601_profile_transforms_and_clips_to_lerobot_frame(self, mock_smart_servo: MagicMock) -> None:
+        robot = _create_robot(mock_smart_servo, follower_profile="b601")
+        robot.connect()
+
+        obs = robot.get_observation()
+
+        np.testing.assert_allclose(obs.joint_positions, _EXPECTED_B601_POSITIONS)
+
+    def test_no_follower_profile_preserves_native_gripper(self, mock_smart_servo: MagicMock) -> None:
+        robot = _create_robot(mock_smart_servo, follower_profile=None)
+        robot.connect()
+
+        obs = robot.get_observation()
+
+        np.testing.assert_allclose(obs.joint_positions, _EXPECTED_NATIVE_POSITIONS)
+
     def test_observation_reads_all_servos_in_one_sync_command(self, mock_smart_servo: MagicMock) -> None:
-        robot = _create_robot(mock_smart_servo)
+        robot = _create_robot(mock_smart_servo, follower_profile="b601")
         robot.connect()
         robot.get_observation()
 
@@ -238,6 +274,17 @@ class TestStarArm102HDLeaderObservation:
         with pytest.raises(ConnectionError, match="never responded"):
             robot.get_observation()
 
+    def test_observation_read_failure_reuses_profiled_sample(self, mock_smart_servo: MagicMock) -> None:
+        robot = _create_robot(mock_smart_servo, follower_profile="b601")
+        robot.connect()
+        robot.get_observation()
+        mock_smart_servo.FashionStarServo.return_value.sync_monitor.side_effect = OSError("disconnected")
+
+        obs = robot.get_observation()
+
+        np.testing.assert_allclose(obs.joint_positions, _EXPECTED_B601_POSITIONS)
+        np.testing.assert_array_equal(obs.sensor_data["reliable"], np.zeros(7, dtype=np.float32))
+
     def test_send_action_is_noop_in_passive_mode(self, mock_smart_servo: MagicMock) -> None:
         robot = _create_robot(mock_smart_servo)
         robot.connect()
@@ -256,6 +303,16 @@ class TestStarArm102HDLeaderObservation:
         assert bus.set_angle.call_count == 7
         assert bus.set_angle.call_args_list[0] == call(0, 1.0, multi_turn=True, interval_ms=100)
 
+    def test_send_action_inverts_b601_profile_in_assist_mode(self, mock_smart_servo: MagicMock) -> None:
+        robot = _create_robot(mock_smart_servo, control_mode="assist", follower_profile="b601")
+        robot.connect()
+        bus = mock_smart_servo.FashionStarServo.return_value
+
+        robot.send_action(np.asarray(_EXPECTED_B601_POSITIONS, dtype=np.float32))
+
+        expected_native = (0.0, 10.0, -10.0, 30.0, 40.0, 50.0, 45.0)
+        assert [item.args[1] for item in bus.set_angle.call_args_list] == list(expected_native)
+
     def test_hold_and_release(self, mock_smart_servo: MagicMock) -> None:
         robot = _create_robot(mock_smart_servo, control_mode="assist")
         robot.connect()
@@ -264,6 +321,7 @@ class TestStarArm102HDLeaderObservation:
         robot.hold_position(goal_time=0.2)
         assert robot.is_holding is True
         assert bus.set_angle.call_count == 7
+        assert bus.set_angle.call_args_list[-1] == call(6, 60.0, multi_turn=True, interval_ms=200)
 
         robot.release_hold()
         assert robot.is_holding is False
@@ -283,3 +341,14 @@ class TestStarArm102LDLeader:
         robot.connect()
         obs = robot.get_observation()
         assert obs.joint_positions.shape == (7,)
+
+    def test_ld_inherits_hd_and_forwards_profile(self, mock_smart_servo: MagicMock) -> None:
+        from physicalai.robot.interface import Robot
+        from physicalai_stararm_plugin import StarArm102HDLeader, StarArm102LDLeader
+
+        robot = StarArm102LDLeader(follower_profile="b601")
+
+        assert issubclass(StarArm102LDLeader, StarArm102HDLeader)
+        assert isinstance(robot, Robot)
+        assert robot.follower_profile == "b601"
+        assert Config.from_instance(robot)["init_args"] == {"follower_profile": "b601"}
