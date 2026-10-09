@@ -8,6 +8,13 @@
 * **mujoco:** `physicalai-mujoco-so101 start` downloads the robot model before it starts the simulation owner, with a progress bar, so a slow first download no longer fails as an owner startup timeout. The new `physicalai-mujoco-so101 prefetch` command downloads every robot model ahead of time for offline machines.
 * **mujoco:** Studio's MuJoCo follower probes report an owner as online only when it drives that entry's joints, so the single-arm entry no longer attaches to a bimanual simulation or the other way round.
 
+## [0.3.2](https://github.com/openvinotoolkit/physicalai/compare/physicalai-mujoco-plugin-v0.3.1...physicalai-mujoco-plugin-v0.3.2) (2026-10-09)
+
+
+### ♻️ Code Refactoring
+
+* **mujoco:** rename the plugin to physicalai-mujoco-plugin ([#336](https://github.com/openvinotoolkit/physicalai/issues/336)) ([efb9f11](https://github.com/openvinotoolkit/physicalai/commit/efb9f11c6afbf10da4e2f77da29b7917f94d1c35))
+
 ## [0.3.1](https://github.com/MarkRedeman/physicalai-plugins/compare/physicalai-mujoco-so101-plugin-v0.3.0...physicalai-mujoco-so101-plugin-v0.3.1) (2026-09-09)
 
 
