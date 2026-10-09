@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/openvinotoolkit/physicalai/compare/physicalai-stararm-plugin-v0.4.0...physicalai-stararm-plugin-v0.4.1) (2026-10-09)
+
+
+### ✅ Tests
+
+* **plugins:** patch only the mocked sdk in rebot and stararm fixtures ([#345](https://github.com/openvinotoolkit/physicalai/issues/345)) ([01edbf4](https://github.com/openvinotoolkit/physicalai/commit/01edbf4eeb640634d96f0c11c1516677a4a9001b))
+
 ## [0.4.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-stararm-plugin-v0.3.0...physicalai-stararm-plugin-v0.4.0) (2026-10-06)
 
 
