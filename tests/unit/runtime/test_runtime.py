@@ -426,6 +426,32 @@ class TestLowPassFilterCallback:
         with pytest.raises(ValueError, match="alpha"):
             LowPassFilterCallback(alpha=1.1)
 
+    @pytest.mark.parametrize(("event", "reset"), [("start", True), ("obs_error", False), ("shutdown", False)])
+    def test_low_pass_resets_only_on_start(self, event: str, reset: bool) -> None:
+        from physicalai.runtime import LowPassFilterCallback
+
+        cb = LowPassFilterCallback(alpha=0.5)
+        cb.on_action_ready(action=np.array([1.0], dtype=np.float32), step=0)
+
+        cb.on_lifecycle(LifecycleEvent(session_id="s", timestamp=0.0, event=event, metadata={}))
+        res = cb.on_action_ready(action=np.array([0.0], dtype=np.float32), step=0)
+
+        assert np.allclose(res, [0.0] if reset else [0.5])
+
+    def test_low_pass_starts_fresh_on_next_run(self) -> None:
+        from physicalai.runtime import LowPassFilterCallback
+
+        source = FakeActionSource(next_action=np.ones(3, dtype=np.float32))
+        runtime, robot = _stop_runtime(action_source=source, callbacks=[LowPassFilterCallback(alpha=0.2)])
+
+        with _frozen_time():
+            runtime.run(duration_s=0.5)
+            source.next_action = np.zeros(3, dtype=np.float32)
+            robot.send_action.reset_mock()
+            runtime.run(duration_s=0.1)
+
+        np.testing.assert_allclose(robot.send_action.call_args_list[0].args[0], np.zeros(3))
+
 
 class _ConfigFakeRobot:
     """Minimal Robot-protocol stub usable as a YAML ``class_path`` target."""
