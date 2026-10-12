@@ -226,8 +226,8 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=get_args(ViewerTheme),
         default="default",
         help=(
-            "Browser viewer look: studio is dark with Physical AI Studio's accent colour and no Shutdown "
-            "button, for a viewer embedded in Studio, which stops the simulation itself (default: default)"
+            "Browser viewer chrome: studio hides the Share and Shutdown buttons, for a viewer embedded in "
+            "Physical AI Studio, which stops the simulation itself (default: default)"
         ),
     )
     start.add_argument(

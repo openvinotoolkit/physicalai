@@ -129,8 +129,8 @@ class MuJoCoRobot(OperatorControls):
             enable_viewer: Open the viser viewer (or the native viewer where viser is unavailable).
             viser_host: viser bind address.
             viser_port: viser port.
-            viewer_theme: ``studio`` gives viser a dark look with Studio's accent colour and no
-                Shutdown button, for a viewer embedded in Studio, which stops the simulation itself.
+            viewer_theme: ``studio`` hides viser's Share and Shutdown buttons, for a viewer embedded
+                in Studio, which stops the simulation itself.
             http_host: HTTP camera and control server bind address.
             http_port: HTTP port; ``0`` disables the server.
             owner_name: The shared-robot owner name, used to find its Studio session.

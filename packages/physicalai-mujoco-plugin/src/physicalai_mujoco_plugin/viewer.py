@@ -28,10 +28,7 @@ if TYPE_CHECKING:
     from physicalai_mujoco_plugin.viser_controls import PanelState, SimControlPanel
 
 ViewerTheme = Literal["default", "studio"]
-"""viser's look: ``studio`` is dark with Studio's accent colour and has no Shutdown button."""
-
-STUDIO_BRAND_COLOR = (0, 199, 253)
-"""Physical AI Studio's accent colour, ``#00c7fd``."""
+"""viser's chrome: ``studio`` hides the Share and Shutdown buttons; the look stays viser's own."""
 
 
 class ViewerService:
@@ -52,8 +49,8 @@ class ViewerService:
         Args:
             host: viser bind address.
             port: viser port; ``0`` or less disables viser.
-            theme: viser's look; ``studio`` is for a viewer embedded in Studio, which stops the
-                simulation itself, so its panel has no Shutdown button.
+            theme: viser's chrome; ``studio`` is for a viewer embedded in Studio, which stops the
+                simulation itself, so it has no Share or Shutdown button.
             submit_command: Queues a panel command for the sim thread.
             panel_state: Snapshots the state the panel shows.
             key_callback: Native viewer key handler.
@@ -279,7 +276,7 @@ class ViewerService:
                 self.port = bound_port
             self.server = server
             if self.theme == "studio":
-                server.gui.configure_theme(dark_mode=True, brand_color=STUDIO_BRAND_COLOR, show_share_button=False)
+                server.gui.configure_theme(show_share_button=False)
             self.build_gui()
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to start viser viewer on port {}: {}", self.port, exc)
@@ -360,4 +357,4 @@ class ViewerService:
                 handle.wxyz = np.asarray(data.xquat[body_id], dtype=np.float64)
 
 
-__all__ = ["STUDIO_BRAND_COLOR", "ViewerService", "ViewerTheme"]
+__all__ = ["ViewerService", "ViewerTheme"]

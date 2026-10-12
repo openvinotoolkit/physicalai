@@ -53,7 +53,7 @@ class TestViewerLaunch:
         finally:
             console.file = original_file
 
-    def test_studio_theme_is_dark_with_studio_accent_and_no_shutdown_button(self, model_data) -> None:
+    def test_studio_theme_hides_share_and_shutdown_buttons_only(self, model_data) -> None:
         server = MagicMock()
         viewer = ViewerService(
             host="127.0.0.1", port=9090, submit_command=MagicMock(), panel_state=MagicMock(), theme="studio"
@@ -65,9 +65,7 @@ class TestViewerLaunch:
         ):
             assert viewer.open(*model_data) is True
 
-        server.gui.configure_theme.assert_called_once_with(
-            dark_mode=True, brand_color=(0, 199, 253), show_share_button=False
-        )
+        server.gui.configure_theme.assert_called_once_with(show_share_button=False)
         assert panel.call_args.kwargs == {"shutdown_button": False}
 
     def test_default_theme_keeps_viser_look_and_shutdown_button(self, model_data) -> None:
