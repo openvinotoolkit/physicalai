@@ -73,6 +73,10 @@ security model explicitly accepts unless a change crosses that boundary or makes
 12. Network transports must remain local-only by default. The documented, explicitly enabled remote mode and
     its deployment assumptions are accepted behavior, not a finding by themselves. Flag changes that widen
     default exposure, alter peer-identity assumptions, add peer-selected code or path semantics, or weaken
-    payload validation. Preserve fixed payload-size limits before deserialization. If a change alters the
-    trust boundary, update the user security model in the same change. Deserialization of untrusted transport
-    data must comply with rule 6.
+      payload validation. Preserve fixed payload-size limits before deserialization. `physicalai.robot.transport`
+   (Zenoh) applies `/action` payloads to physical hardware **without authentication** and assumes a trusted,
+   isolated robot-cell network. `physicalai.inference.remote` is also **unauthenticated** and binds loopback by
+   default; remote access is intended through SSH tunneling or a Tailscale tailnet protected by ACLs. Direct
+   LAN binding must remain on a trusted, isolated network. If a change alters the trust boundary, update the
+   user security model in the same change. Never add peer-selected code or path semantics without a security
+   review. Deserialization of untrusted transport data must comply with rule 6.

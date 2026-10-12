@@ -13,9 +13,10 @@ owner — see ``_lock.py``.
 
 from __future__ import annotations
 
-import hashlib
 import re
 import socket
+
+from physicalai.transport._zenoh import derive_port
 
 KEY_PREFIX = "physicalai/robot"
 
@@ -24,10 +25,6 @@ _NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 METADATA_WILDCARD = f"{KEY_PREFIX}/*/metadata"
 """Selector enumerating the ``/metadata`` queryable of every reachable robot."""
-
-_PORT_BASE = 20000
-_PORT_RANGE = 40000
-"""Unprivileged range 20000-59999 for the deterministic local rendezvous port."""
 
 
 def validate_name(name: str) -> str:
@@ -104,8 +101,7 @@ def derive_endpoint_port(name: str) -> int:
     Returns:
         A port in ``[20000, 59999]``.
     """
-    digest = hashlib.sha256(robot_prefix(name).encode()).digest()
-    return _PORT_BASE + int.from_bytes(digest[:4], "big") % _PORT_RANGE
+    return derive_port("robot", validate_name(name))
 
 
 def default_host() -> str:

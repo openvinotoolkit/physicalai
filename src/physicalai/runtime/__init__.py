@@ -16,6 +16,10 @@ Public API::
     from physicalai.runtime import ConsoleCallback, JsonlCallback, AsyncCallback, RerunCallback
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from physicalai.runtime.action_sources import ActionSource, PolicySource, TeleopSource
 from physicalai.runtime.callbacks import (
     AsyncCallback,
@@ -38,6 +42,19 @@ from physicalai.runtime.execution import (
 )
 from physicalai.runtime.interpolation import ActionInterpolator, LinearInterpolator
 from physicalai.runtime.smoothers import ChunkSmoother, LerpSmoother, ReplaceSmoother
+
+if TYPE_CHECKING:
+    from physicalai.inference.remote import InferenceServer as InferenceServer
+    from physicalai.inference.remote import RemoteInferenceModel as RemoteInferenceModel
+
+
+def __getattr__(name: str) -> object:
+    if name in {"InferenceServer", "RemoteInferenceModel"}:
+        from physicalai.inference.remote import InferenceServer, RemoteInferenceModel  # noqa: PLC0415
+
+        return {"InferenceServer": InferenceServer, "RemoteInferenceModel": RemoteInferenceModel}[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "ActionInterpolator",
