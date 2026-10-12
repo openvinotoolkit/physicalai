@@ -29,6 +29,7 @@ UNITREE_G1_PROFILE = RobotProfile(
     menagerie_model="unitree_g1",
     menagerie_entry="g1",
     tier="experimental",
+    body="humanoid",
     default_scene="floor_flat",
     cameras=(
         # The G1's head RealSense D435 (Unitree g1_29dof_rev_1_0.urdf, d435_joint on torso_link: xyz
@@ -49,6 +50,7 @@ UNITREE_GO2_PROFILE = RobotProfile(
     menagerie_model="unitree_go2",
     menagerie_entry="go2",
     tier="experimental",
+    body="quadruped",
     default_scene="floor_flat",
 )
 BOSTON_DYNAMICS_SPOT_PROFILE = RobotProfile(
@@ -57,6 +59,7 @@ BOSTON_DYNAMICS_SPOT_PROFILE = RobotProfile(
     menagerie_model="boston_dynamics_spot",
     menagerie_entry="spot",
     tier="experimental",
+    body="quadruped",
     default_scene="floor_flat",
 )
 

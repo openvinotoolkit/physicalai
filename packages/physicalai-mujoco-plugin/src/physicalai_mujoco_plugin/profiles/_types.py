@@ -22,6 +22,8 @@ Unit = Literal["degrees", "metres", "normalized", "raw"]
 DefaultUnit = Literal["normalized", "degrees"]
 """Robot-wide unit choice (``MuJoCoRobot(unit=...)``); channel overrides may pin their own."""
 ProfileTier = Literal["twin", "dataset", "experimental", "unsupported"]
+BodyKind = Literal["humanoid", "quadruped"]
+"""What a floating-base robot is, for the label Studio shows next to its tier."""
 CameraSource = Literal["override", "model", "default"]
 """Where a robot camera comes from: the profile, the model's own sensor camera, or a generated default."""
 
@@ -113,6 +115,8 @@ class RobotProfile:
     tier: ProfileTier = "unsupported"
     provisional: bool = False
     """The mapping onto the real robot's driver is not established yet; Studio entries say so."""
+    body: BodyKind | None = None
+    """What a floating-base robot is (``humanoid``, ``quadruped``); Studio labels its entry with it."""
     channels: tuple[ChannelOverride, ...] = ()
     """Public layout in order; empty means one derived channel per actuator."""
     default_unit: DefaultUnit = "degrees"

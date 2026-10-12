@@ -320,17 +320,18 @@ class CatalogEntry:
         return validated.name
 
     def launch_labels(self) -> tuple[str, ...]:
-        """Return the start dialog's chips: the arm count (or ``floating base``), the tier, then ``provisional``.
+        """Return the start dialog's chips: the arm count (or the body kind), the tier, then ``provisional``.
 
         Returns:
             For example ``("2 arms (bimanual)", "twin")``, ``("1 arm", "twin", "provisional")`` or
-            ``("floating base", "experimental")``.
+            ``("humanoid", "experimental")``; a floating-base profile without a ``body`` says
+            ``mobile robot``.
         """
         arms = len(self.profile.end_effectors)
         if self.bimanual:
             body = "2 arms (bimanual)"
         elif self.profile.default_scene is not None and get_scene(self.profile.default_scene).anchors == "spawn":
-            body = "floating base"
+            body = self.profile.body or "mobile robot"
         else:
             body = f"{arms} arms" if arms > 1 else "1 arm"
         return (body, self.profile.tier, *(("provisional",) if self.profile.provisional else ()))

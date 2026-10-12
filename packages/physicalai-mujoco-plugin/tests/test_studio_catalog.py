@@ -693,7 +693,9 @@ class TestSimulationLaunch:
         assert labels["MuJoCo_SO101_Follower"] == ("1 arm", "twin")
         assert labels["MuJoCo_WidowXAI_Bimanual_Follower"] == ("2 arms (bimanual)", "twin")
         assert labels["MuJoCo_ALOHA_Follower"] == ("2 arms", "dataset")
-        assert labels["MuJoCo_UnitreeG1_Follower"] == ("floating base", "experimental")
+        assert labels["MuJoCo_UnitreeG1_Follower"] == ("humanoid", "experimental")
+        assert labels["MuJoCo_UnitreeGo2_Follower"] == ("quadruped", "experimental")
+        assert labels["MuJoCo_BostonDynamicsSpot_Follower"] == ("quadruped", "experimental")
         # The reBot twin's mapping is provisional (#343/#360, no hardware check yet).
         assert labels["MuJoCo_reBotB601_Follower"] == ("1 arm", "twin", "provisional")
         assert labels["MuJoCo_reBotB601_Bimanual_Follower"] == ("2 arms (bimanual)", "twin", "provisional")
