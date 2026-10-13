@@ -29,7 +29,7 @@ from physicalai_studio_plugin import (
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 import physicalai_franka_plugin
-from physicalai_franka_plugin import BimanualFrankaFR3, FrankaFR3, get_urdf_path
+from physicalai_franka_plugin import BimanualFrankaFR3, BimanualGelloLeader, FrankaFR3, get_urdf_path
 
 if TYPE_CHECKING:
     from typing import Protocol
@@ -200,6 +200,49 @@ class BimanualFrankaFR3Payload(BaseModel):
         return self
 
 
+class BimanualGelloPayload(BaseModel):
+    """Serial and calibration configuration for a bimanual GELLO DUO leader."""
+
+    left_port: str = Field(..., title="Left GELLO port")
+    right_port: str = Field(..., title="Right GELLO port")
+    left_calibration_path: str = Field(..., title="Left calibration JSON")
+    right_calibration_path: str = Field(..., title="Right calibration JSON")
+    baudrate: int = Field(  # pyrefly: ignore[no-matching-overload]
+        default=57_600, json_schema_extra=robot_field_ui({"advanced_configuration": True})
+    )
+    smoothing: float = Field(  # pyrefly: ignore[no-matching-overload]
+        default=0.85, json_schema_extra=robot_field_ui({"advanced_configuration": True})
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra=robot_payload_ui(  # pyrefly: ignore[bad-argument-type]
+            [
+                {
+                    "kind": "connection",
+                    "label": "Left GELLO USB adapter",
+                    "device_discovery": True,
+                    "manual_entry": True,
+                    "bind": {"connection": "left_port"},
+                },
+                {
+                    "kind": "connection",
+                    "label": "Right GELLO USB adapter",
+                    "device_discovery": True,
+                    "manual_entry": True,
+                    "bind": {"connection": "right_port"},
+                },
+            ],
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _require_distinct_ports(self) -> Self:
+        if not self.left_port or not self.right_port or self.left_port == self.right_port:
+            msg = "left_port and right_port must be distinct non-empty serial paths"
+            raise ValueError(msg)
+        return self
+
+
 class FrankaFR3Probe(RobotProbe[FrankaFR3Payload]):
     """Probe implementation for Franka Research 3 control units over the FCI."""
 
@@ -242,6 +285,44 @@ class FrankaFR3Probe(RobotProbe[FrankaFR3Payload]):
 
 
 _FRANKA_FR3_PROBE = FrankaFR3Probe()
+
+
+class BimanualGelloProbe(RobotProbe[BimanualGelloPayload]):
+    """Serial-port probe for GELLO DUO USB Dynamixel adapters."""
+
+    async def discover(self, manager: PortScanner) -> list[SerialPortInfo]:  # ruff: ignore[no-self-use]
+        """Refresh and return available serial adapters.
+
+        Returns:
+            Serial devices currently visible to the Studio scanner.
+        """
+        await manager.find_robots()
+        return manager.robots
+
+    async def identify(
+        self,
+        payload: BimanualGelloPayload,
+        manager: PortScanner | None = None,
+        joint: str | None = None,
+    ) -> None:
+        """GELLO identification is intentionally passive and never moves hardware."""
+        _ = self, payload, manager, joint
+
+    async def is_online(  # ruff: ignore[no-self-use]
+        self, payload: BimanualGelloPayload, manager: PortScanner | None = None
+    ) -> bool:
+        """Report whether both configured serial paths are in the current scan.
+
+        Returns:
+            ``True`` when both paths are present in the scanner result.
+        """
+        if manager is None:
+            return False
+        ports = {port.connection_string for port in manager.robots}
+        return payload.left_port in ports and payload.right_port in ports
+
+
+_GELLO_DUO_PROBE = BimanualGelloProbe()
 
 
 async def _build_franka_fr3_driver(
@@ -289,6 +370,26 @@ async def _build_bimanual_franka_fr3_driver(
     )
 
 
+async def _build_bimanual_gello_driver(
+    robot: PayloadContainer[BimanualGelloPayload],
+    factory: CatalogRobotFactory,
+) -> PhysicalAIRobot:
+    raw = robot.payload
+    if isinstance(raw, BaseModel) and type(raw) is not BimanualGelloPayload:
+        raw = raw.model_dump()
+    validated = raw if isinstance(raw, BimanualGelloPayload) else BimanualGelloPayload.model_validate(raw)
+    left_port = await factory.find_port(SerialPortInfo(connection_string=validated.left_port, serial_number=None))
+    right_port = await factory.find_port(SerialPortInfo(connection_string=validated.right_port, serial_number=None))
+    return BimanualGelloLeader(
+        left_port=left_port or validated.left_port,
+        right_port=right_port or validated.right_port,
+        left_calibration_path=validated.left_calibration_path,
+        right_calibration_path=validated.right_calibration_path,
+        baudrate=validated.baudrate,
+        smoothing=validated.smoothing,
+    )
+
+
 def _definitions() -> list[RobotCatalogDefinition]:
     return [
         RobotCatalogDefinition(
@@ -300,6 +401,16 @@ def _definitions() -> list[RobotCatalogDefinition]:
             asset=_FRANKA_FR3_ASSET,
             adapter_options=RobotAdapterOptions(include_velocities=True, external_effort_gain=None),
             probe=_FRANKA_FR3_PROBE,
+        ),
+        RobotCatalogDefinition(
+            type="Bimanual_GELLO_Leader",
+            display_name="Bimanual GELLO Leader",
+            role="leader",
+            robot_builder=_build_bimanual_gello_driver,
+            robot_payload=BimanualGelloPayload,
+            asset=None,
+            adapter_options=RobotAdapterOptions(include_velocities=False, external_effort_gain=None),
+            probe=_GELLO_DUO_PROBE,
         ),
         RobotCatalogDefinition(
             type="Bimanual_Franka_FR3_Follower",

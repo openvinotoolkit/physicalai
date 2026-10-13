@@ -66,12 +66,23 @@ workspace clear.
 
 ## Gello DUO teleoperation
 
-Use a Gello DUO leader through `physicalai-lerobot-plugin` for the initial
-teleoperation workflow. That plugin dynamically exposes supported LeRobot
-teleoperators to Studio and provides the USB/serial lifecycle and calibration
-support. Select the Gello leader alongside a single or bimanual Franka FR3
-follower. A native Gello serial implementation is intentionally deferred until
-its firmware protocol and calibration format are validated on hardware.
+`BimanualGelloLeader` is a native, passive USB/serial driver for a GELLO DUO.
+It is based on the Apache-2.0
+[`lerobot_teleoperator_gello`](https://github.com/F-Fer/lerobot_ur5e_gello/tree/main/lerobot_teleoperator_gello)
+protocol: each arm uses a U2D2-compatible adapter, six XL330-M288 joints, and
+an XL330-M077 trigger on Dynamixel IDs 1–7. Install its optional dependency:
+
+```bash
+uv add "physicalai-franka-plugin[gello]"
+```
+
+Supply separate calibration JSON files for the left and right buses. They use
+the reference plugin's `joint_offsets`, `gripper_open_position`, and
+`gripper_closed_position` format. Connections never prompt for or overwrite
+calibration; they disable torque and are read-only. The leader emits six joint
+angles in degrees plus a normalized `0..1` trigger per arm, ordered left then
+right. Validate its mapping and gripper-unit conversion against the FR3 setup
+before teleoperating hardware.
 
 ## URDF Model
 

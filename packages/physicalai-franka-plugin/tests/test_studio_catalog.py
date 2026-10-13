@@ -53,7 +53,7 @@ class _FakeRegistry:
 def test_definitions_count() -> None:
     from physicalai_franka_plugin.studio_catalog import _definitions
 
-    assert len(_definitions()) == 2
+    assert len(_definitions()) == 3
 
 
 def test_register_physicalai_studio_plugin() -> None:
@@ -61,7 +61,7 @@ def test_register_physicalai_studio_plugin() -> None:
 
     registry = _FakeRegistry()
     register_physicalai_studio_plugin(registry)
-    assert len(registry.definitions) == 2
+    assert len(registry.definitions) == 3
 
 
 def test_fr3_follower_structure() -> None:
@@ -100,6 +100,16 @@ def test_bimanual_fr3_follower_structure() -> None:
     assert fr3.asset.urdf_relative_path == Path("franka_description/urdf/fr3_bimanual.urdf")
     assert fr3.asset.root_resolver is not None
     assert (fr3.asset.root_resolver() / fr3.asset.urdf_relative_path).is_file()
+
+
+def test_bimanual_gello_leader_structure() -> None:
+    from physicalai_franka_plugin.studio_catalog import _definitions
+
+    gello = next(d for d in _definitions() if d.type == "Bimanual_GELLO_Leader")
+    assert gello.display_name == "Bimanual GELLO Leader"
+    assert gello.role == "leader"
+    assert gello.asset is None
+    assert gello.adapter_options.include_velocities is False
 
 
 def test_fr3_payload_defaults() -> None:

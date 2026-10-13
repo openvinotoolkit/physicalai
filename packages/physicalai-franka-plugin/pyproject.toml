@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 franka = ["pylibfranka>=0.21"]
+gello = ["dynamixel-sdk>=3.8"]
 tests = ["pytest", "pytest-anyio"]
 
 [project.urls]
