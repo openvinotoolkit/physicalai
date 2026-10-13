@@ -66,26 +66,35 @@ workspace clear.
 
 ## Gello DUO teleoperation
 
-`BimanualGelloLeader` is a native, passive USB/serial driver for a GELLO DUO.
-It is based on the Apache-2.0
-[`lerobot_teleoperator_gello`](https://github.com/F-Fer/lerobot_ur5e_gello/tree/main/lerobot_teleoperator_gello)
-protocol: each arm uses a U2D2-compatible adapter, six XL330-M288 joints, and
-an XL330-M077 trigger on Dynamixel IDs 1–7. Install its optional dependency:
+`GelloLeader` and `BimanualGelloLeader` are passive USB/serial drivers for the
+Franka seven-axis GELLO and GELLO Duo. Each arm uses IDs 1–7 for joints and ID
+8 for the trigger. The default calibration matches the preassembled Franka
+GELLO; custom values can be uploaded in Studio’s advanced **Calibration**
+field.
 
-`dynamixel-sdk` is installed with the plugin.
+### Calibrating a GELLO
 
-Supply separate calibration JSON files for the left and right buses. They use
-the reference plugin's `joint_offsets`, `gripper_open_position`, and
-`gripper_closed_position` format. Connections never prompt for or overwrite
-calibration; they disable torque and are read-only. The leader emits six joint
-angles in degrees plus a normalized `0..1` trigger per arm, ordered left then
-right. Validate its mapping and gripper-unit conversion against the FR3 setup
-before teleoperating hardware.
+Use the non-actuating calibration command after self-assembly, motor/flange
+changes, or when the default mapping does not match the physical leader:
 
-Studio includes a bundled `gello_duo` URDF for the bimanual leader. It is a
-mesh-free kinematic visualization assembled from the published six-joint-plus-
-trigger device contract; verify the physical mounting and link geometry before
-using it for collision-sensitive setup.
+```bash
+physicalai-gello-calibrate \
+  --port /dev/serial/by-id/usb-ROBOTIS_OpenRB-150_... \
+  --side left \
+  --output left-gello-calibration.json
+```
+
+For a Duo, run it once per USB adapter using `--side left` and `--side right`.
+The command pings IDs 1–8, disables torque, reads the official reference pose,
+captures released and pressed trigger positions, displays the generated JSON,
+and writes only after confirmation. Upload the result through Studio’s
+calibration control; it is not read from a runtime filesystem path.
+
+It never enables torque or sends a position command. Use `/dev/serial/by-id/`
+paths rather than transient `/dev/ttyACM*` names.
+
+The bundled GELLO visual assets are not collision-certified; verify the physical
+mounting and link geometry before using them for collision-sensitive setup.
 
 ## URDF Model
 

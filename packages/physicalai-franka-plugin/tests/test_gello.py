@@ -9,6 +9,7 @@ import pytest
 from physicalai.robot import Robot
 
 from physicalai_franka_plugin.gello import BimanualGelloLeader, GelloCalibration, GelloLeader
+from physicalai_franka_plugin.gello_calibrate import calculate_calibration
 
 
 class _FakePortHandler:
@@ -51,6 +52,19 @@ def fake_dynamixel() -> object:
 def test_default_calibration_matches_fr3_gello() -> None:
     calibration = GelloCalibration.default()
     assert calibration.joint_signs == (1, -1, 1, -1, 1, 1, 1)
+    assert calibration.gripper_range_rad == (2.0, 3.22)
+
+
+def test_calibration_rounds_offsets_to_motor_flange_increments() -> None:
+    calibration = calculate_calibration(
+        np.array([-1.57, 0.77, 4.94, 0.14, 4.54, 6.21, -2.10]),
+        reference_pose_rad=(-1.57, -0.80, 1.80, -3.00, 1.40, 1.50, -2.10),
+        gripper_closed_rad=2.0,
+        gripper_open_rad=3.22,
+        baudrate=57_600,
+    )
+    assert calibration.joint_signs == (1, -1, 1, -1, 1, 1, 1)
+    assert all(0.0 <= value < 2 * np.pi for value in calibration.assembly_offsets_rad)
     assert calibration.gripper_range_rad == (2.0, 3.22)
 
 

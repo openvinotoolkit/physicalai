@@ -22,6 +22,9 @@ dependencies = [
 franka = ["pylibfranka>=0.21"]
 tests = ["pytest", "pytest-anyio"]
 
+[project.scripts]
+physicalai-gello-calibrate = "physicalai_franka_plugin.gello_calibrate:main"
+
 [project.urls]
 Homepage = "https://github.com/openvinotoolkit/physicalai"
 Repository = "https://github.com/openvinotoolkit/physicalai"
