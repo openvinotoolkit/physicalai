@@ -33,7 +33,6 @@ from physicalai_franka_plugin import (
     BimanualFrankaFR3,
     BimanualGelloLeader,
     FrankaFR3,
-    GelloCalibration,
     GelloLeader,
     get_urdf_path,
 )
@@ -238,11 +237,15 @@ class BimanualGelloPayload(BaseModel):
 
     left_port: str = Field(..., title="Left GELLO port")
     right_port: str = Field(..., title="Right GELLO port")
-    left_calibration: GelloCalibration | None = Field(  # pyrefly: ignore[no-matching-overload]
-        default=None, json_schema_extra=robot_field_ui({"advanced_configuration": True})
+    left_calibration: str | None = Field(  # pyrefly: ignore[no-matching-overload]
+        default=None,
+        description="Optional GELLO calibration JSON. Leave empty to use the preassembled default.",
+        json_schema_extra=robot_field_ui({"advanced_configuration": True}),
     )
-    right_calibration: GelloCalibration | None = Field(  # pyrefly: ignore[no-matching-overload]
-        default=None, json_schema_extra=robot_field_ui({"advanced_configuration": True})
+    right_calibration: str | None = Field(  # pyrefly: ignore[no-matching-overload]
+        default=None,
+        description="Optional GELLO calibration JSON. Leave empty to use the preassembled default.",
+        json_schema_extra=robot_field_ui({"advanced_configuration": True}),
     )
     baudrate: int = Field(  # pyrefly: ignore[no-matching-overload]
         default=57_600, json_schema_extra=robot_field_ui({"advanced_configuration": True})
@@ -268,8 +271,6 @@ class BimanualGelloPayload(BaseModel):
                     "manual_entry": True,
                     "bind": {"connection": "right_port"},
                 },
-                {"kind": "calibration", "name": "left_calibration"},
-                {"kind": "calibration", "name": "right_calibration"},
             ],
         ),
     )
@@ -286,8 +287,10 @@ class GelloPayload(BaseModel):
     """Serial configuration for a preassembled single Franka GELLO leader."""
 
     port: str = Field(..., title="GELLO USB adapter")
-    calibration: GelloCalibration | None = Field(  # pyrefly: ignore[no-matching-overload]
-        default=None, json_schema_extra=robot_field_ui({"advanced_configuration": True})
+    calibration: str | None = Field(  # pyrefly: ignore[no-matching-overload]
+        default=None,
+        description="Optional GELLO calibration JSON. Leave empty to use the preassembled default.",
+        json_schema_extra=robot_field_ui({"advanced_configuration": True}),
     )
     smoothing: float = Field(  # pyrefly: ignore[no-matching-overload]
         default=0.85, json_schema_extra=robot_field_ui({"advanced_configuration": True})
@@ -302,7 +305,6 @@ class GelloPayload(BaseModel):
                     "manual_entry": True,
                     "bind": {"connection": "port"},
                 },
-                {"kind": "calibration", "name": "calibration"},
             ],
         ),
     )

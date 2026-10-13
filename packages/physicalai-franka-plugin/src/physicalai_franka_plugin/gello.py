@@ -1,13 +1,14 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-# ruff: file-ignore[no-self-use, raise-within-try, too-many-statements-in-try-clause, undocumented-public-init, undocumented-public-method]
+# ruff: file-ignore[docstring-missing-exception, docstring-missing-returns, magic-value-comparison, no-self-use, raise-within-try, too-many-statements-in-try-clause, type-check-without-type-error, undocumented-public-init, undocumented-public-method]
 
 """Native drivers for the Franka seven-axis GELLO and GELLO Duo leaders."""
 
 from __future__ import annotations
 
 import importlib
+import json
 import math
 import time
 from dataclasses import dataclass
@@ -48,6 +49,33 @@ class GelloCalibration:
             gripper_range_rad=(2.00, 3.22),
         )
 
+    @classmethod
+    def from_json(cls, value: str) -> GelloCalibration:
+        """Parse a custom calibration JSON string from advanced configuration."""
+        try:
+            data = json.loads(value)
+        except json.JSONDecodeError as exc:
+            msg = "GELLO calibration must be valid JSON"
+            raise ValueError(msg) from exc
+        if not isinstance(data, dict):
+            msg = "GELLO calibration JSON must be an object"
+            raise ValueError(msg)
+        signs = data.get("joint_signs")
+        offsets = data.get("assembly_offsets_rad")
+        gripper_range = data.get("gripper_range_rad")
+        if not isinstance(signs, list) or not isinstance(offsets, list) or not isinstance(gripper_range, list):
+            msg = "GELLO calibration requires joint_signs, assembly_offsets_rad, and gripper_range_rad arrays"
+            raise ValueError(msg)
+        if len(signs) != 7 or len(offsets) != 7 or len(gripper_range) != 2:
+            msg = "GELLO calibration requires 7 joint signs, 7 offsets, and 2 gripper endpoints"
+            raise ValueError(msg)
+        return cls(
+            joint_signs=tuple(int(item) for item in signs),  # type: ignore[arg-type]
+            assembly_offsets_rad=tuple(float(item) for item in offsets),  # type: ignore[arg-type]
+            gripper_range_rad=(float(gripper_range[0]), float(gripper_range[1])),
+            baudrate=int(data.get("baudrate", 57_600)),
+        )
+
 
 @dataclass
 class GelloObservation:
@@ -75,13 +103,16 @@ class GelloLeader:
     JOINT_ORDER: ClassVar[tuple[str, ...]] = (*tuple(f"joint_{index}" for index in range(7)), "gripper")
     _LIMITS_RAD: ClassVar[np.ndarray] = np.array([FR3_JOINT_LIMITS_RAD[f"fr3_joint{index}"] for index in range(1, 8)])
 
-    def __init__(self, port: str, *, calibration: GelloCalibration | None = None, smoothing: float = 0.85) -> None:
+    def __init__(
+        self, port: str, *, calibration: GelloCalibration | str | None = None, smoothing: float = 0.85
+    ) -> None:
         if not port or not 0.0 < smoothing <= 1.0:
             msg = "port must be non-empty and smoothing must be in (0, 1]"
             raise ValueError(msg)
         self._port = port
         self._smoothing = smoothing
-        self._calibration = calibration or GelloCalibration.default()
+        resolved_calibration = GelloCalibration.from_json(calibration) if isinstance(calibration, str) else calibration
+        self._calibration: GelloCalibration = resolved_calibration or GelloCalibration.default()
         self._port_handler: Any = None
         self._packet_handler: Any = None
         self._previous_raw: np.ndarray | None = None
@@ -195,8 +226,8 @@ class BimanualGelloLeader:
         left_port: str,
         right_port: str,
         *,
-        left_calibration: GelloCalibration | None = None,
-        right_calibration: GelloCalibration | None = None,
+        left_calibration: GelloCalibration | str | None = None,
+        right_calibration: GelloCalibration | str | None = None,
         smoothing: float = 0.85,
     ) -> None:
         if not left_port or not right_port or left_port == right_port:

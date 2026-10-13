@@ -49,6 +49,7 @@ include = [
     "src/physicalai_franka_plugin/**",
     "urdf/**",
     "README.md",
+    "calibration.md",
     "pyproject.toml",
     "LICENSE",
 ]

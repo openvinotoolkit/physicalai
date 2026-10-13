@@ -115,15 +115,12 @@ def test_bimanual_gello_leader_structure() -> None:
     assert gello.adapter_options.include_velocities is False
 
 
-def test_gello_payloads_expose_calibration_upload_controls() -> None:
-    from physicalai_studio_plugin import validate_robot_payload_ui
-
+def test_gello_payloads_use_advanced_calibration_json_strings() -> None:
     from physicalai_franka_plugin.studio_catalog import BimanualGelloPayload, GelloPayload
 
-    validate_robot_payload_ui(GelloPayload)
-    validate_robot_payload_ui(BimanualGelloPayload)
-    single_ui = GelloPayload.model_json_schema()["x-physicalai-ui"]
-    bimanual_ui = BimanualGelloPayload.model_json_schema()["x-physicalai-ui"]
+    single_schema = GelloPayload.model_json_schema()
+    bimanual_schema = BimanualGelloPayload.model_json_schema()
+    single_ui = single_schema["x-physicalai-ui"]
     assert {
         "kind": "connection",
         "label": "GELLO USB adapter",
@@ -131,9 +128,9 @@ def test_gello_payloads_expose_calibration_upload_controls() -> None:
         "manual_entry": True,
         "bind": {"connection": "port"},
     } in single_ui
-    assert {"kind": "calibration", "name": "calibration"} in single_ui
-    assert {"kind": "calibration", "name": "left_calibration"} in bimanual_ui
-    assert {"kind": "calibration", "name": "right_calibration"} in bimanual_ui
+    assert {"type": "string"} in single_schema["properties"]["calibration"]["anyOf"]
+    assert {"type": "string"} in bimanual_schema["properties"]["left_calibration"]["anyOf"]
+    assert {"type": "string"} in bimanual_schema["properties"]["right_calibration"]["anyOf"]
 
 
 def test_fr3_payload_defaults() -> None:

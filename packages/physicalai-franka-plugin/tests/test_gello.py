@@ -55,6 +55,13 @@ def test_default_calibration_matches_fr3_gello() -> None:
     assert calibration.gripper_range_rad == (2.0, 3.22)
 
 
+def test_calibration_parses_advanced_json_string() -> None:
+    calibration = GelloCalibration.from_json(
+        '{"joint_signs":[1,-1,1,-1,1,1,1],"assembly_offsets_rad":[0,0,3.142,3.142,3.142,4.712,0],"gripper_range_rad":[2,3.22]}'
+    )
+    assert calibration.joint_signs == (1, -1, 1, -1, 1, 1, 1)
+
+
 def test_calibration_rounds_offsets_to_motor_flange_increments() -> None:
     calibration = calculate_calibration(
         np.array([-1.57, 0.77, 4.94, 0.14, 4.54, 6.21, -2.10]),
