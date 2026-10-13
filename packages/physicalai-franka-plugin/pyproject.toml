@@ -15,11 +15,11 @@ dependencies = [
     "numpy>=1.24",
     "loguru>=0.7",
     "pydantic>=2.0",
+    "dynamixel-sdk>=3.8",
 ]
 
 [project.optional-dependencies]
 franka = ["pylibfranka>=0.21"]
-gello = ["dynamixel-sdk>=3.8"]
 tests = ["pytest", "pytest-anyio"]
 
 [project.urls]

@@ -29,7 +29,14 @@ from physicalai_studio_plugin import (
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 import physicalai_franka_plugin
-from physicalai_franka_plugin import BimanualFrankaFR3, BimanualGelloLeader, FrankaFR3, get_urdf_path
+from physicalai_franka_plugin import (
+    BimanualFrankaFR3,
+    BimanualGelloLeader,
+    FrankaFR3,
+    GelloCalibration,
+    GelloLeader,
+    get_urdf_path,
+)
 
 if TYPE_CHECKING:
     from typing import Protocol
@@ -89,6 +96,32 @@ _BIMANUAL_FRANKA_FR3_ASSET = RobotAsset(
     urdf_relative_path=Path("franka_description/urdf/fr3_bimanual.urdf"),
     packages={"franka_description": Path("franka_description")},
     joint_map=_BIMANUAL_FRANKA_FR3_TO_URDF,
+    root_resolver=_get_franka_urdf_root,
+)
+
+_BIMANUAL_GELLO_TO_URDF: dict[str, list[str]] = {
+    **{f"left_joint_{index}.pos": [f"left_joint_{index}"] for index in range(7)},
+    "left_gripper.pos": ["left_gripper"],
+    **{f"right_joint_{index}.pos": [f"right_joint_{index}"] for index in range(7)},
+    "right_gripper.pos": ["right_gripper"],
+}
+
+_BIMANUAL_GELLO_ASSET = RobotAsset(
+    urdf_relative_path=Path("gello_duo/urdf/gello_duo.urdf"),
+    packages={"gello_duo": Path("gello_duo")},
+    joint_map=_BIMANUAL_GELLO_TO_URDF,
+    root_resolver=_get_franka_urdf_root,
+)
+
+_GELLO_TO_URDF: dict[str, list[str]] = {
+    **{f"joint_{index}.pos": [f"joint_{index}"] for index in range(7)},
+    "gripper.pos": ["gripper"],
+}
+
+_GELLO_ASSET = RobotAsset(
+    urdf_relative_path=Path("gello_fr3/urdf/gello_fr3.urdf"),
+    packages={"gello_fr3": Path("gello_fr3")},
+    joint_map=_GELLO_TO_URDF,
     root_resolver=_get_franka_urdf_root,
 )
 
@@ -205,8 +238,12 @@ class BimanualGelloPayload(BaseModel):
 
     left_port: str = Field(..., title="Left GELLO port")
     right_port: str = Field(..., title="Right GELLO port")
-    left_calibration_path: str = Field(..., title="Left calibration JSON")
-    right_calibration_path: str = Field(..., title="Right calibration JSON")
+    left_calibration: GelloCalibration | None = Field(  # pyrefly: ignore[no-matching-overload]
+        default=None, json_schema_extra=robot_field_ui({"advanced_configuration": True})
+    )
+    right_calibration: GelloCalibration | None = Field(  # pyrefly: ignore[no-matching-overload]
+        default=None, json_schema_extra=robot_field_ui({"advanced_configuration": True})
+    )
     baudrate: int = Field(  # pyrefly: ignore[no-matching-overload]
         default=57_600, json_schema_extra=robot_field_ui({"advanced_configuration": True})
     )
@@ -231,6 +268,8 @@ class BimanualGelloPayload(BaseModel):
                     "manual_entry": True,
                     "bind": {"connection": "right_port"},
                 },
+                {"kind": "calibration", "name": "left_calibration"},
+                {"kind": "calibration", "name": "right_calibration"},
             ],
         ),
     )
@@ -241,6 +280,23 @@ class BimanualGelloPayload(BaseModel):
             msg = "left_port and right_port must be distinct non-empty serial paths"
             raise ValueError(msg)
         return self
+
+
+class GelloPayload(BaseModel):
+    """Serial configuration for a preassembled single Franka GELLO leader."""
+
+    port: str = Field(..., title="GELLO USB adapter")
+    calibration: GelloCalibration | None = Field(  # pyrefly: ignore[no-matching-overload]
+        default=None, json_schema_extra=robot_field_ui({"advanced_configuration": True})
+    )
+    smoothing: float = Field(  # pyrefly: ignore[no-matching-overload]
+        default=0.85, json_schema_extra=robot_field_ui({"advanced_configuration": True})
+    )
+    model_config = ConfigDict(
+        json_schema_extra=robot_payload_ui(  # pyrefly: ignore[bad-argument-type]
+            [{"kind": "calibration", "name": "calibration"}],
+        ),
+    )
 
 
 class FrankaFR3Probe(RobotProbe[FrankaFR3Payload]):
@@ -383,15 +439,31 @@ async def _build_bimanual_gello_driver(
     return BimanualGelloLeader(
         left_port=left_port or validated.left_port,
         right_port=right_port or validated.right_port,
-        left_calibration_path=validated.left_calibration_path,
-        right_calibration_path=validated.right_calibration_path,
-        baudrate=validated.baudrate,
+        left_calibration=validated.left_calibration,
+        right_calibration=validated.right_calibration,
         smoothing=validated.smoothing,
     )
 
 
+async def _build_gello_driver(robot: PayloadContainer[GelloPayload], factory: CatalogRobotFactory) -> PhysicalAIRobot:
+    raw = robot.payload
+    validated = raw if isinstance(raw, GelloPayload) else GelloPayload.model_validate(raw)
+    port = await factory.find_port(SerialPortInfo(connection_string=validated.port, serial_number=None))
+    return GelloLeader(port=port or validated.port, calibration=validated.calibration, smoothing=validated.smoothing)
+
+
 def _definitions() -> list[RobotCatalogDefinition]:
     return [
+        RobotCatalogDefinition(
+            type="GELLO_Leader",
+            display_name="GELLO Leader",
+            role="leader",
+            robot_builder=_build_gello_driver,
+            robot_payload=GelloPayload,
+            asset=_GELLO_ASSET,
+            adapter_options=RobotAdapterOptions(include_velocities=False, external_effort_gain=None),
+            probe=_GELLO_DUO_PROBE,
+        ),
         RobotCatalogDefinition(
             type="Franka_FR3_Follower",
             display_name="Franka FR3 Follower",
@@ -408,7 +480,7 @@ def _definitions() -> list[RobotCatalogDefinition]:
             role="leader",
             robot_builder=_build_bimanual_gello_driver,
             robot_payload=BimanualGelloPayload,
-            asset=None,
+            asset=_BIMANUAL_GELLO_ASSET,
             adapter_options=RobotAdapterOptions(include_velocities=False, external_effort_gain=None),
             probe=_GELLO_DUO_PROBE,
         ),

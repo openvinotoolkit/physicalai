@@ -53,7 +53,7 @@ class _FakeRegistry:
 def test_definitions_count() -> None:
     from physicalai_franka_plugin.studio_catalog import _definitions
 
-    assert len(_definitions()) == 3
+    assert len(_definitions()) == 4
 
 
 def test_register_physicalai_studio_plugin() -> None:
@@ -61,7 +61,7 @@ def test_register_physicalai_studio_plugin() -> None:
 
     registry = _FakeRegistry()
     register_physicalai_studio_plugin(registry)
-    assert len(registry.definitions) == 3
+    assert len(registry.definitions) == 4
 
 
 def test_fr3_follower_structure() -> None:
@@ -108,8 +108,25 @@ def test_bimanual_gello_leader_structure() -> None:
     gello = next(d for d in _definitions() if d.type == "Bimanual_GELLO_Leader")
     assert gello.display_name == "Bimanual GELLO Leader"
     assert gello.role == "leader"
-    assert gello.asset is None
+    assert gello.asset is not None
+    assert gello.asset.urdf_relative_path == Path("gello_duo/urdf/gello_duo.urdf")
+    assert gello.asset.root_resolver is not None
+    assert (gello.asset.root_resolver() / gello.asset.urdf_relative_path).is_file()
     assert gello.adapter_options.include_velocities is False
+
+
+def test_gello_payloads_expose_calibration_upload_controls() -> None:
+    from physicalai_studio_plugin import validate_robot_payload_ui
+
+    from physicalai_franka_plugin.studio_catalog import BimanualGelloPayload, GelloPayload
+
+    validate_robot_payload_ui(GelloPayload)
+    validate_robot_payload_ui(BimanualGelloPayload)
+    single_ui = GelloPayload.model_json_schema()["x-physicalai-ui"]
+    bimanual_ui = BimanualGelloPayload.model_json_schema()["x-physicalai-ui"]
+    assert {"kind": "calibration", "name": "calibration"} in single_ui
+    assert {"kind": "calibration", "name": "left_calibration"} in bimanual_ui
+    assert {"kind": "calibration", "name": "right_calibration"} in bimanual_ui
 
 
 def test_fr3_payload_defaults() -> None:

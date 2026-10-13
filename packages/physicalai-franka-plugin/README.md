@@ -72,9 +72,7 @@ It is based on the Apache-2.0
 protocol: each arm uses a U2D2-compatible adapter, six XL330-M288 joints, and
 an XL330-M077 trigger on Dynamixel IDs 1–7. Install its optional dependency:
 
-```bash
-uv add "physicalai-franka-plugin[gello]"
-```
+`dynamixel-sdk` is installed with the plugin.
 
 Supply separate calibration JSON files for the left and right buses. They use
 the reference plugin's `joint_offsets`, `gripper_open_position`, and
@@ -83,6 +81,11 @@ calibration; they disable torque and are read-only. The leader emits six joint
 angles in degrees plus a normalized `0..1` trigger per arm, ordered left then
 right. Validate its mapping and gripper-unit conversion against the FR3 setup
 before teleoperating hardware.
+
+Studio includes a bundled `gello_duo` URDF for the bimanual leader. It is a
+mesh-free kinematic visualization assembled from the published six-joint-plus-
+trigger device contract; verify the physical mounting and link geometry before
+using it for collision-sensitive setup.
 
 ## URDF Model
 
