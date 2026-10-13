@@ -115,9 +115,7 @@ class GelloLeader:
                 if comm_result != _COMM_SUCCESS or error:
                     msg = f"GELLO motor ID {motor_id} did not respond on {self._port!r}"
                     raise ConnectionError(msg)
-                _result, comm_result, error = packet_handler.write1ByteTxRx(
-                    port_handler, motor_id, _TORQUE_ENABLE_ADDRESS, 0
-                )
+                comm_result, error = packet_handler.write1ByteTxRx(port_handler, motor_id, _TORQUE_ENABLE_ADDRESS, 0)
                 if comm_result != _COMM_SUCCESS or error:
                     msg = f"Could not disable torque for GELLO motor ID {motor_id}"
                     raise ConnectionError(msg)

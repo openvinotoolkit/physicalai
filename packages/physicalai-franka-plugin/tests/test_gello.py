@@ -32,9 +32,9 @@ class _FakePacketHandler:
         _ = port, motor_id
         return 1200, 0, 0
 
-    def write1ByteTxRx(self, port: _FakePortHandler, motor_id: int, address: int, value: int) -> tuple[int, int, int]:  # noqa: N802
+    def write1ByteTxRx(self, port: _FakePortHandler, motor_id: int, address: int, value: int) -> tuple[int, int]:  # noqa: N802
         _ = port, motor_id, address, value
-        return 0, 0, 0
+        return 0, 0
 
     def read4ByteTxRx(self, port: _FakePortHandler, motor_id: int, address: int) -> tuple[int, int, int]:  # noqa: N802
         _ = port, address

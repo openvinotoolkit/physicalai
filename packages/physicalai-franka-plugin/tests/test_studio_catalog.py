@@ -124,6 +124,13 @@ def test_gello_payloads_expose_calibration_upload_controls() -> None:
     validate_robot_payload_ui(BimanualGelloPayload)
     single_ui = GelloPayload.model_json_schema()["x-physicalai-ui"]
     bimanual_ui = BimanualGelloPayload.model_json_schema()["x-physicalai-ui"]
+    assert {
+        "kind": "connection",
+        "label": "GELLO USB adapter",
+        "device_discovery": True,
+        "manual_entry": True,
+        "bind": {"connection": "port"},
+    } in single_ui
     assert {"kind": "calibration", "name": "calibration"} in single_ui
     assert {"kind": "calibration", "name": "left_calibration"} in bimanual_ui
     assert {"kind": "calibration", "name": "right_calibration"} in bimanual_ui

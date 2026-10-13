@@ -294,7 +294,16 @@ class GelloPayload(BaseModel):
     )
     model_config = ConfigDict(
         json_schema_extra=robot_payload_ui(  # pyrefly: ignore[bad-argument-type]
-            [{"kind": "calibration", "name": "calibration"}],
+            [
+                {
+                    "kind": "connection",
+                    "label": "GELLO USB adapter",
+                    "device_discovery": True,
+                    "manual_entry": True,
+                    "bind": {"connection": "port"},
+                },
+                {"kind": "calibration", "name": "calibration"},
+            ],
         ),
     )
 

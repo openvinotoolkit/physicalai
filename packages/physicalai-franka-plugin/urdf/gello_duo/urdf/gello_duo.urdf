@@ -1,0 +1,240 @@
+<?xml version='1.0' encoding='utf-8'?>
+<robot name="gello_duo">
+  <link name="world" />
+  <link name="left_base" />
+  <joint name="left_mount" type="fixed">
+    <origin xyz="0 0.35 0" rpy="0 0 0" />
+    <parent link="world" />
+    <child link="left_base" />
+  </joint>
+  <joint name="left_joint_0" type="revolute">
+    <origin xyz="0 0 0.08" rpy="0 0 0" />
+    <parent link="left_base" />
+    <child link="left_link_0" />
+    <axis xyz="0 0 1" />
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="3" />
+  </joint>
+  <link name="left_link_0">
+    <visual>
+      <geometry>
+        <mesh filename="package://gello_duo/meshes/01_BASE.STL" scale="0.001 0.001 0.001" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="left_joint_1" type="revolute">
+    <origin xyz="0.08 0 0" rpy="0 0 0" />
+    <parent link="left_link_0" />
+    <child link="left_link_1" />
+    <axis xyz="0 1 0" />
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="3" />
+  </joint>
+  <link name="left_link_1">
+    <visual>
+      <geometry>
+        <mesh filename="package://gello_duo/meshes/02_BASE_BEARING.STL" scale="0.001 0.001 0.001" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="left_joint_2" type="revolute">
+    <origin xyz="0.08 0 0" rpy="0 0 0" />
+    <parent link="left_link_1" />
+    <child link="left_link_2" />
+    <axis xyz="0 0 1" />
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="3" />
+  </joint>
+  <link name="left_link_2">
+    <visual>
+      <geometry>
+        <mesh filename="package://gello_duo/meshes/03_A12_CONNECTOR.STL" scale="0.001 0.001 0.001" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="left_joint_3" type="revolute">
+    <origin xyz="0.08 0 0" rpy="0 0 0" />
+    <parent link="left_link_2" />
+    <child link="left_link_3" />
+    <axis xyz="0 1 0" />
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="3" />
+  </joint>
+  <link name="left_link_3">
+    <visual>
+      <geometry>
+        <mesh filename="package://gello_duo/meshes/04_A23_MOTOR_FLANGE.STL" scale="0.001 0.001 0.001" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="left_joint_4" type="revolute">
+    <origin xyz="0.08 0 0" rpy="0 0 0" />
+    <parent link="left_link_3" />
+    <child link="left_link_4" />
+    <axis xyz="0 0 1" />
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="3" />
+  </joint>
+  <link name="left_link_4">
+    <visual>
+      <geometry>
+        <mesh filename="package://gello_duo/meshes/05_A34_CORNER_LINK.STL" scale="0.001 0.001 0.001" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="left_joint_5" type="revolute">
+    <origin xyz="0.08 0 0" rpy="0 0 0" />
+    <parent link="left_link_4" />
+    <child link="left_link_5" />
+    <axis xyz="0 1 0" />
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="3" />
+  </joint>
+  <link name="left_link_5">
+    <visual>
+      <geometry>
+        <mesh filename="package://gello_duo/meshes/06_A45_CORNER_LINK.STL" scale="0.001 0.001 0.001" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="left_joint_6" type="revolute">
+    <origin xyz="0.08 0 0" rpy="0 0 0" />
+    <parent link="left_link_5" />
+    <child link="left_link_6" />
+    <axis xyz="0 0 1" />
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="3" />
+  </joint>
+  <link name="left_link_6">
+    <visual>
+      <geometry>
+        <mesh filename="package://gello_duo/meshes/07_A56_MOTOR_FLANGE.STL" scale="0.001 0.001 0.001" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="left_gripper" type="revolute">
+    <origin xyz="0.08 0 0" rpy="0 0 0" />
+    <parent link="left_link_6" />
+    <child link="left_trigger" />
+    <axis xyz="0 1 0" />
+    <limit lower="0" upper="1.22" effort="1" velocity="3" />
+  </joint>
+  <link name="left_trigger">
+    <visual>
+      <geometry>
+        <mesh filename="package://gello_duo/meshes/21_TRIGGER_FINGER.STL" scale="0.001 0.001 0.001" />
+      </geometry>
+    </visual>
+  </link>
+  <link name="right_base" />
+  <joint name="right_mount" type="fixed">
+    <origin xyz="0 -0.35 0" rpy="0 0 0" />
+    <parent link="world" />
+    <child link="right_base" />
+  </joint>
+  <joint name="right_joint_0" type="revolute">
+    <origin xyz="0 0 0.08" rpy="0 0 0" />
+    <parent link="right_base" />
+    <child link="right_link_0" />
+    <axis xyz="0 0 1" />
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="3" />
+  </joint>
+  <link name="right_link_0">
+    <visual>
+      <geometry>
+        <mesh filename="package://gello_duo/meshes/01_BASE.STL" scale="0.001 0.001 0.001" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="right_joint_1" type="revolute">
+    <origin xyz="0.08 0 0" rpy="0 0 0" />
+    <parent link="right_link_0" />
+    <child link="right_link_1" />
+    <axis xyz="0 1 0" />
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="3" />
+  </joint>
+  <link name="right_link_1">
+    <visual>
+      <geometry>
+        <mesh filename="package://gello_duo/meshes/02_BASE_BEARING.STL" scale="0.001 0.001 0.001" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="right_joint_2" type="revolute">
+    <origin xyz="0.08 0 0" rpy="0 0 0" />
+    <parent link="right_link_1" />
+    <child link="right_link_2" />
+    <axis xyz="0 0 1" />
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="3" />
+  </joint>
+  <link name="right_link_2">
+    <visual>
+      <geometry>
+        <mesh filename="package://gello_duo/meshes/03_A12_CONNECTOR.STL" scale="0.001 0.001 0.001" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="right_joint_3" type="revolute">
+    <origin xyz="0.08 0 0" rpy="0 0 0" />
+    <parent link="right_link_2" />
+    <child link="right_link_3" />
+    <axis xyz="0 1 0" />
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="3" />
+  </joint>
+  <link name="right_link_3">
+    <visual>
+      <geometry>
+        <mesh filename="package://gello_duo/meshes/04_A23_MOTOR_FLANGE.STL" scale="0.001 0.001 0.001" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="right_joint_4" type="revolute">
+    <origin xyz="0.08 0 0" rpy="0 0 0" />
+    <parent link="right_link_3" />
+    <child link="right_link_4" />
+    <axis xyz="0 0 1" />
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="3" />
+  </joint>
+  <link name="right_link_4">
+    <visual>
+      <geometry>
+        <mesh filename="package://gello_duo/meshes/05_A34_CORNER_LINK.STL" scale="0.001 0.001 0.001" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="right_joint_5" type="revolute">
+    <origin xyz="0.08 0 0" rpy="0 0 0" />
+    <parent link="right_link_4" />
+    <child link="right_link_5" />
+    <axis xyz="0 1 0" />
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="3" />
+  </joint>
+  <link name="right_link_5">
+    <visual>
+      <geometry>
+        <mesh filename="package://gello_duo/meshes/06_A45_CORNER_LINK.STL" scale="0.001 0.001 0.001" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="right_joint_6" type="revolute">
+    <origin xyz="0.08 0 0" rpy="0 0 0" />
+    <parent link="right_link_5" />
+    <child link="right_link_6" />
+    <axis xyz="0 0 1" />
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="3" />
+  </joint>
+  <link name="right_link_6">
+    <visual>
+      <geometry>
+        <mesh filename="package://gello_duo/meshes/07_A56_MOTOR_FLANGE.STL" scale="0.001 0.001 0.001" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="right_gripper" type="revolute">
+    <origin xyz="0.08 0 0" rpy="0 0 0" />
+    <parent link="right_link_6" />
+    <child link="right_trigger" />
+    <axis xyz="0 1 0" />
+    <limit lower="0" upper="1.22" effort="1" velocity="3" />
+  </joint>
+  <link name="right_trigger">
+    <visual>
+      <geometry>
+        <mesh filename="package://gello_duo/meshes/21_TRIGGER_FINGER.STL" scale="0.001 0.001 0.001" />
+      </geometry>
+    </visual>
+  </link>
+</robot>
