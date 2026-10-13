@@ -1,0 +1,31 @@
+# Franka FR3 read-joints runtime config.
+#
+# Reads and logs joint positions while holding the current pose. Run from the
+# repo root with:
+#
+#   uv run physicalai run --config packages/physicalai-franka-plugin/examples/runtime/read-joints.yaml
+#
+# Requires a reachable Franka Research 3 control unit with the brakes released
+# and the FCI activated. Control runs through pylibfranka (Python <= 3.12).
+
+runtime:
+  robot:
+    class_path: physicalai_franka_plugin.robot.FrankaFR3
+    init_args:
+      host: 172.16.0.2 # CHANGE_ME: FCI hostname or IP address of the control unit
+      gripper_enabled: false # arm-only; set true to include the Franka Hand gripper
+      realtime_config: kEnforce # kEnforce | kIgnore (kIgnore for testing/development)
+      goal_time: 0.1 # seconds to reach a commanded target
+
+  action_source:
+    class_path: physicalai_franka_plugin.motion.HoldPoseSource
+
+  callbacks:
+    - class_path: physicalai_franka_plugin.motion.JointLogger
+      init_args:
+        throttle_steps: 1
+
+  fps: 10
+
+run:
+  duration_s: 30

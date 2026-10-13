@@ -1,0 +1,29 @@
+# Bimanual Franka FR3 read-joints runtime config.
+#
+# This holds both FR3 arms at their current poses while logging joint positions.
+# Replace both hosts before running on hardware.
+runtime:
+  robot:
+    class_path: physicalai_franka_plugin.BimanualFrankaFR3
+    init_args:
+      left:
+        class_path: physicalai_franka_plugin.FrankaFR3
+        init_args:
+          host: 172.16.0.2 # CHANGE_ME
+          gripper_enabled: false
+          realtime_config: kEnforce
+      right:
+        class_path: physicalai_franka_plugin.FrankaFR3
+        init_args:
+          host: 172.16.0.3 # CHANGE_ME
+          gripper_enabled: false
+          realtime_config: kEnforce
+  action_source:
+    class_path: physicalai_franka_plugin.motion.HoldPoseSource
+  callbacks:
+    - class_path: physicalai_franka_plugin.motion.JointLogger
+      init_args:
+        throttle_steps: 1
+  fps: 10
+run:
+  duration_s: 30

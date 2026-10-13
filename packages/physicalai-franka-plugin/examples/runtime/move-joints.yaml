@@ -1,0 +1,29 @@
+# Franka FR3 sinusoidal motion runtime config (move_joints).
+#
+# Drives every joint through a sine wave as an actuation smoke test. Run from
+# the repo root with:
+#
+#   uv run physicalai run --config packages/physicalai-franka-plugin/examples/runtime/move-joints.yaml
+#
+# Targets are clipped to the FR3 joint limits by the driver, but the arm WILL
+# move — use it in a safe configuration and keep people out of the workspace.
+
+runtime:
+  robot:
+    class_path: physicalai_franka_plugin.robot.FrankaFR3
+    init_args:
+      host: 172.16.0.2 # CHANGE_ME: FCI hostname or IP address of the control unit
+      gripper_enabled: false # arm-only; set true to include the Franka Hand gripper
+      realtime_config: kEnforce # kEnforce | kIgnore (kIgnore for testing/development)
+      goal_time: 0.1 # seconds to reach a commanded target
+
+  action_source:
+    class_path: physicalai_franka_plugin.motion.SineWaveSource
+    init_args:
+      amplitude: 5 # degrees
+      frequency: 0.25 # Hz
+
+  fps: 20
+
+run:
+  duration_s: 10
