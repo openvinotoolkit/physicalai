@@ -169,19 +169,13 @@ Robots implement a Protocol-based interface. Any class with `connect()`, `discon
 
 More robots ship as first-party plugins. Each plugin README covers setup and usage. Install them with the `plugin-*` extras (see [Installation](#installation)); the LeRobot plugin is installed manually with `pip install physicalai-lerobot-plugin`.
 
-| Plugin                                                                 | Robots                                                                             |
-| ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-<<<<<<< HEAD
-| [MuJoCo](packages/physicalai-mujoco-plugin/README.md)                  | Simulated single-arm and bimanual SO-101 and other MuJoCo Menagerie robots, with a browser viewer and camera streams |
-| [SO-101](packages/physicalai-so101-plugin/README.md)                   | Single-arm SO-101 driver, Studio catalog, and URDF assets                           |
-| [Bimanual SO-101](packages/physicalai-bimanual-so101-plugin/README.md) | Two SO-101 arms as one robot (follower and leader)                                 |
-=======
-| [MuJoCo SO-101](packages/physicalai-mujoco-plugin/README.md)           | Simulated single-arm and bimanual SO-101, with a browser viewer and camera streams |
-| [SO-101](packages/physicalai-so101-plugin/README.md)                   | Single-arm and bimanual SO-101 drivers, Studio catalog, and URDF assets            |
->>>>>>> f070388 (feat: merge bimanual SO101 plugin)
-| [reBot B601](packages/physicalai-rebot-b601-plugin/README.md)          | Seeed reBot B601-DM / B601-RS followers                                            |
-| [Star Arm](packages/physicalai-stararm-plugin/README.md)               | Fashion Star Arm 102 leaders and a follower                                        |
-| [LeRobot](packages/physicalai-lerobot-plugin/README.md)                | Robots and teleoperators from LeRobot configs                                      |
+| Plugin                                                        | Robots                                                                                                               |
+| ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| [MuJoCo](packages/physicalai-mujoco-plugin/README.md)         | Simulated single-arm and bimanual SO-101 and other MuJoCo Menagerie robots, with a browser viewer and camera streams |
+| [SO-101](packages/physicalai-so101-plugin/README.md)          | Single-arm and bimanual SO-101 drivers, Studio catalog, and URDF assets                                              |
+| [reBot B601](packages/physicalai-rebot-b601-plugin/README.md) | Seeed reBot B601-DM / B601-RS followers                                                                              |
+| [Star Arm](packages/physicalai-stararm-plugin/README.md)      | Fashion Star Arm 102 leaders and a follower                                                                          |
+| [LeRobot](packages/physicalai-lerobot-plugin/README.md)       | Robots and teleoperators from LeRobot configs                                                                        |
 
 To add your own robot to Physical AI Studio, see the [Studio plugin](packages/physicalai-studio-plugin/README.md).
 

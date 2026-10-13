@@ -1,7 +1,6 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-# ruff: file-ignore[undocumented-public-method, f-string-in-exception, import-outside-top-level, no-self-use, raise-vanilla-args, too-many-statements-in-try-clause]
 
 """Studio catalog plugin for single-arm and bimanual SO-101 robots."""
 
@@ -26,8 +25,13 @@ from physicalai_studio_plugin import (
     robot_payload_ui,
 )
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from serial.tools import list_ports
 
 from physicalai_so101_plugin import SO101, SO101Calibration, SO101JointCalibration, get_urdf_path
+from physicalai_so101_plugin.bimanual_studio_catalog import (
+    ensure_bimanual_payload_models_resolvable,
+    get_bimanual_definitions,
+)
 from physicalai_so101_plugin.constants import TICKS_PER_REVOLUTION
 
 if TYPE_CHECKING:
@@ -129,7 +133,8 @@ _SO101_LEADER_ASSET = RobotAsset(
 async def _build_so101_driver(robot: CatalogRobot[SO101RobotPayload], factory: CatalogRobotFactory) -> SO101:
     payload = robot.payload
     if not isinstance(payload, SO101RobotPayload):
-        raise TypeError(f"Expected SO101RobotPayload, got {type(payload).__name__}")
+        msg = f"Expected SO101RobotPayload, got {type(payload).__name__}"
+        raise TypeError(msg)
     port = await factory.find_port(
         SerialPortInfo(
             connection_string=payload.connection_string or None,
@@ -138,7 +143,8 @@ async def _build_so101_driver(robot: CatalogRobot[SO101RobotPayload], factory: C
     )
     if port is None:
         resource_key = payload.serial_number or payload.connection_string
-        raise ValueError(f"Could not resolve a serial port for {resource_key}")
+        msg = f"Could not resolve a serial port for {resource_key}"
+        raise ValueError(msg)
 
     role = "follower" if robot.type == "SO101_Follower" else "leader"
     if payload.calibration is None:
@@ -223,16 +229,27 @@ def identify_so101_robot_visually(connection_string: str) -> None:
 class SO101Probe(RobotProbe[SO101RobotPayload]):
     """Probe for SO101 robots — serial discovery and gripper identification."""
 
-    async def discover(self, manager: PortScanner) -> list[SerialPortInfo]:
+    @staticmethod
+    async def discover(manager: PortScanner) -> list[SerialPortInfo]:
+        """Refresh and return the serial ports reported by the scanner.
+
+        Returns:
+            Serial ports reported by the scanner after refresh.
+        """
         await manager.find_robots()
         return manager.robots
 
+    @staticmethod
     async def identify(
-        self,
         payload: SO101RobotPayload,
         manager: PortScanner | None,
         joint: str | None = None,
     ) -> None:
+        """Visually identify the configured robot by moving its gripper.
+
+        Raises:
+            ValueError: If no port scanner is available or the robot cannot be found.
+        """
         _ = joint
         if manager is None:
             msg = "PortScanner required for SO101 identification"
@@ -252,15 +269,15 @@ class SO101Probe(RobotProbe[SO101RobotPayload]):
             raise ValueError(msg)
         await asyncio.to_thread(identify_so101_robot_visually, connection_string)
 
-    async def is_online(self, payload: SO101RobotPayload, manager: PortScanner | None = None) -> bool:
+    @staticmethod
+    async def is_online(payload: SO101RobotPayload, manager: PortScanner | None = None) -> bool:
+        """Return whether the configured robot is currently discoverable."""
         serial_port = SerialPortInfo(
             connection_string=payload.connection_string or None,
             serial_number=payload.serial_number or None,
         )
         if manager is not None:
             return await find_so101_port(manager, serial_port) is not None
-
-        from serial.tools import list_ports
 
         discovered = [
             SerialPortInfo(
@@ -277,11 +294,6 @@ _SO101_PROBE = SO101Probe()
 
 def _definitions() -> list[RobotCatalogDefinition]:
     """Return all SO-101 catalog definitions."""
-    from physicalai_so101_plugin.bimanual_studio_catalog import (
-        ensure_bimanual_payload_models_resolvable,
-        get_bimanual_definitions,
-    )
-
     ensure_bimanual_payload_models_resolvable()
     return [
         RobotCatalogDefinition(

@@ -1,12 +1,12 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-# ruff: file-ignore[import-outside-top-level]
 
 """SO-101 robot driver, Studio catalog integration, and bundled URDF assets."""
 
 from __future__ import annotations
 
+from importlib import import_module
 from typing import TYPE_CHECKING
 
 from physicalai_so101_plugin._urdf import get_urdf_path as get_urdf_path
@@ -40,16 +40,10 @@ def __getattr__(name: str) -> object:
         AttributeError: If ``name`` is not exported by this package.
     """
     if name in {"SO101Calibration", "SO101JointCalibration"}:
-        from physicalai_so101_plugin.calibration import SO101Calibration, SO101JointCalibration
-
-        return {"SO101Calibration": SO101Calibration, "SO101JointCalibration": SO101JointCalibration}[name]
+        return getattr(import_module("physicalai_so101_plugin.calibration"), name)
     if name in {"SO101", "SO101Observation"}:
-        from physicalai_so101_plugin.so101 import SO101, SO101Observation
-
-        return {"SO101": SO101, "SO101Observation": SO101Observation}[name]
+        return getattr(import_module("physicalai_so101_plugin.so101"), name)
     if name in {"BimanualSO101", "BimanualSO101Observation"}:
-        from physicalai_so101_plugin.bimanual import BimanualSO101, BimanualSO101Observation
-
-        return {"BimanualSO101": BimanualSO101, "BimanualSO101Observation": BimanualSO101Observation}[name]
+        return getattr(import_module("physicalai_so101_plugin.bimanual"), name)
     msg = f"module {__name__!r} has no attribute {name!r}"
     raise AttributeError(msg)

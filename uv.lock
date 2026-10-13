@@ -5,9 +5,9 @@ requires-python = ">=3.12, <3.14"
 [manifest]
 members = [
     "physicalai",
-    "physicalai-bimanual-so101-plugin",
     "physicalai-mujoco-plugin",
     "physicalai-rebot-b601-plugin",
+    "physicalai-so101-plugin",
     "physicalai-stararm-plugin",
     "physicalai-studio-plugin",
     "physicalai-trossen-plugin",
@@ -1464,14 +1464,14 @@ notebooks = [
 observer-rerun = [
     { name = "rerun-sdk" },
 ]
-plugin-bimanual-so101 = [
-    { name = "physicalai-bimanual-so101-plugin" },
-]
 plugin-mujoco = [
     { name = "physicalai-mujoco-plugin" },
 ]
 plugin-rebot-b601 = [
     { name = "physicalai-rebot-b601-plugin" },
+]
+plugin-so101 = [
+    { name = "physicalai-so101-plugin" },
 ]
 plugin-stararm = [
     { name = "physicalai-stararm-plugin" },
@@ -1484,11 +1484,11 @@ realsense = [
     { name = "pyrealsense2-macosx", marker = "sys_platform == 'darwin'" },
 ]
 robots = [
-    { name = "feetech-servo-sdk" },
+    { name = "physicalai-so101-plugin" },
     { name = "physicalai-trossen-plugin" },
 ]
 so101 = [
-    { name = "feetech-servo-sdk" },
+    { name = "physicalai-so101-plugin" },
 ]
 tests = [
     { name = "mypy" },
@@ -1506,6 +1506,7 @@ trossen = [
 [package.dev-dependencies]
 dev = [
     { name = "mypy" },
+    { name = "physicalai-so101-plugin" },
     { name = "prek" },
     { name = "pyrefly" },
     { name = "pytest" },
@@ -1520,8 +1521,6 @@ docs = [
 requires-dist = [
     { name = "eclipse-zenoh", marker = "extra == 'capture'", specifier = "==1.9.0" },
     { name = "eclipse-zenoh", marker = "extra == 'transport'", specifier = "==1.9.0" },
-    { name = "feetech-servo-sdk", marker = "extra == 'robots'" },
-    { name = "feetech-servo-sdk", marker = "extra == 'so101'" },
     { name = "huggingface-hub", specifier = ">=0.34,<2.0" },
     { name = "iceoryx2", marker = "extra == 'capture'", specifier = "==0.9.0" },
     { name = "iceoryx2", marker = "extra == 'transport'", specifier = "==0.9.0" },
@@ -1541,9 +1540,11 @@ requires-dist = [
     { name = "opencv-python-headless", marker = "extra == 'capture'" },
     { name = "openvino", specifier = ">=2026.4.0" },
     { name = "openvino-tokenizers", specifier = ">=2026.4.0.0" },
-    { name = "physicalai-bimanual-so101-plugin", marker = "python_full_version >= '3.12' and extra == 'plugin-bimanual-so101'", editable = "packages/physicalai-bimanual-so101-plugin" },
     { name = "physicalai-mujoco-plugin", marker = "python_full_version >= '3.12' and extra == 'plugin-mujoco'", editable = "packages/physicalai-mujoco-plugin" },
     { name = "physicalai-rebot-b601-plugin", marker = "python_full_version >= '3.12' and extra == 'plugin-rebot-b601'", editable = "packages/physicalai-rebot-b601-plugin" },
+    { name = "physicalai-so101-plugin", marker = "python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'plugin-so101'", editable = "packages/physicalai-so101-plugin" },
+    { name = "physicalai-so101-plugin", marker = "python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'robots'", editable = "packages/physicalai-so101-plugin" },
+    { name = "physicalai-so101-plugin", marker = "python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'so101'", editable = "packages/physicalai-so101-plugin" },
     { name = "physicalai-stararm-plugin", marker = "python_full_version >= '3.12' and extra == 'plugin-stararm'", editable = "packages/physicalai-stararm-plugin" },
     { name = "physicalai-trossen-plugin", marker = "python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'plugin-trossen'", editable = "packages/physicalai-trossen-plugin" },
     { name = "physicalai-trossen-plugin", marker = "python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'robots'", editable = "packages/physicalai-trossen-plugin" },
@@ -1564,11 +1565,12 @@ requires-dist = [
     { name = "transformers", specifier = ">=5.15.1,<5.16.0" },
     { name = "typing-extensions", specifier = ">=4.5" },
 ]
-provides-extras = ["abb", "basler", "capture", "franka", "genicam", "notebooks", "observer-rerun", "plugin-bimanual-so101", "plugin-mujoco", "plugin-rebot-b601", "plugin-stararm", "plugin-trossen", "realsense", "robots", "so101", "tests", "transport", "trossen", "ur"]
+provides-extras = ["abb", "basler", "capture", "franka", "genicam", "notebooks", "observer-rerun", "plugin-mujoco", "plugin-rebot-b601", "plugin-so101", "plugin-stararm", "plugin-trossen", "realsense", "robots", "so101", "tests", "transport", "trossen", "ur"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "mypy" },
+    { name = "physicalai-so101-plugin", editable = "packages/physicalai-so101-plugin" },
     { name = "prek" },
     { name = "pyrefly" },
     { name = "pytest" },
@@ -1578,37 +1580,6 @@ docs = [
     { name = "mkdocs", specifier = ">=1.6" },
     { name = "mkdocs-material", specifier = ">=9.6" },
 ]
-
-[[package]]
-name = "physicalai-bimanual-so101-plugin"
-source = { editable = "packages/physicalai-bimanual-so101-plugin" }
-dependencies = [
-    { name = "feetech-servo-sdk" },
-    { name = "numpy" },
-    { name = "physicalai" },
-    { name = "physicalai-studio-plugin" },
-    { name = "pydantic" },
-    { name = "pyserial" },
-]
-
-[package.optional-dependencies]
-tests = [
-    { name = "pytest" },
-    { name = "pytest-anyio" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "feetech-servo-sdk", specifier = ">=1.0" },
-    { name = "numpy", specifier = ">=1.24" },
-    { name = "physicalai", editable = "." },
-    { name = "physicalai-studio-plugin", editable = "packages/physicalai-studio-plugin" },
-    { name = "pydantic", specifier = ">=2.0" },
-    { name = "pyserial", specifier = ">=3.5" },
-    { name = "pytest", marker = "extra == 'tests'" },
-    { name = "pytest-anyio", marker = "extra == 'tests'" },
-]
-provides-extras = ["tests"]
 
 [[package]]
 name = "physicalai-mujoco-plugin"
@@ -1683,6 +1654,37 @@ requires-dist = [
     { name = "physicalai-studio-plugin", editable = "packages/physicalai-studio-plugin" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'tests'" },
+]
+provides-extras = ["tests"]
+
+[[package]]
+name = "physicalai-so101-plugin"
+source = { editable = "packages/physicalai-so101-plugin" }
+dependencies = [
+    { name = "feetech-servo-sdk" },
+    { name = "loguru" },
+    { name = "physicalai" },
+    { name = "physicalai-studio-plugin" },
+    { name = "pydantic" },
+    { name = "pyserial" },
+]
+
+[package.optional-dependencies]
+tests = [
+    { name = "pytest" },
+    { name = "pytest-anyio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "feetech-servo-sdk", specifier = ">=1.0" },
+    { name = "loguru", specifier = ">=0.7" },
+    { name = "physicalai", editable = "." },
+    { name = "physicalai-studio-plugin", editable = "packages/physicalai-studio-plugin" },
+    { name = "pydantic", specifier = ">=2.0" },
+    { name = "pyserial", specifier = ">=3.5" },
+    { name = "pytest", marker = "extra == 'tests'" },
+    { name = "pytest-anyio", marker = "extra == 'tests'" },
 ]
 provides-extras = ["tests"]
 

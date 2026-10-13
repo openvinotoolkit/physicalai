@@ -29,9 +29,9 @@ from physicalai.robot.interface import Robot, RobotObservation
 from physicalai.robot.verify import verify_robot
 
 if TYPE_CHECKING:
+    from physicalai_so101_plugin import SO101 as SO101
     from physicalai_trossen_plugin import BimanualWidowXAI as BimanualWidowXAI
     from physicalai_trossen_plugin import WidowXAI as WidowXAI
-    from physicalai_so101_plugin import SO101 as SO101
 
     from physicalai.robot.transport import SharedRobot as SharedRobot
 

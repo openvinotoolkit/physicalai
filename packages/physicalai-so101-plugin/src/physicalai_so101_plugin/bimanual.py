@@ -117,12 +117,12 @@ class BimanualSO101(Robot):
 
         try:
             self._left.disconnect()
-        except Exception as exc:  # ruff: ignore[blind-except]  # pragma: no cover - defensive against hardware failures
+        except (OSError, RuntimeError) as exc:  # pragma: no cover - defensive against hardware failures
             first_error = exc
 
         try:
             self._right.disconnect()
-        except Exception as exc:  # ruff: ignore[blind-except]  # pragma: no cover - defensive against hardware failures
+        except (OSError, RuntimeError) as exc:  # pragma: no cover - defensive against hardware failures
             if first_error is None:
                 first_error = exc
 

@@ -1,7 +1,6 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-# ruff: file-ignore[too-many-statements-in-try-clause]
 
 """SO-101 robot arm driver.
 
@@ -63,6 +62,7 @@ if TYPE_CHECKING:
     from physicalai.robot.interface import RobotObservation
 
 SO101Unit = Literal["ticks", "normalized"]
+_TWO_BYTE_REGISTER = 2
 
 
 @dataclass(frozen=True)
@@ -357,6 +357,8 @@ class SO101(Robot):
         Raises:
             ConnectionError: If the serial port cannot be opened or a servo
                 does not respond to ping.
+            OSError: If serial-port setup fails.
+            RuntimeError: If hardware setup fails after opening the port.
         """
         if self.is_connected():
             return  # already connected
@@ -387,8 +389,7 @@ class SO101(Robot):
             )
             for servo_id in self.servo_ids.values():
                 if not group_sync_read.addParam(servo_id):
-                    msg = f"Failed to add servo {servo_id} to sync read group"
-                    raise ConnectionError(msg)  # ruff: ignore[raise-within-try]
+                    raise self._sync_read_parameter_error(servo_id)
 
             group_sync_write = GroupSyncWrite(
                 port_handler,
@@ -412,7 +413,7 @@ class SO101(Robot):
 
             # Configure torque based on role ------------------------------------
             self._set_torque(enabled=self.role == "follower")
-        except Exception:
+        except (OSError, RuntimeError):
             with contextlib.suppress(Exception):
                 port_handler.closePort()
             self._connection = None
@@ -462,7 +463,7 @@ class SO101(Robot):
         try:
             if self._torque_on_disconnect:
                 self._hold_position()
-        except Exception:  # ruff: ignore[blind-except]
+        except (OSError, RuntimeError):
             logger.exception(
                 "Failed to hold position while disconnecting SO-101; proceeding to close port.",
             )
@@ -470,7 +471,7 @@ class SO101(Robot):
             self._connection = None
             try:
                 conn.port_handler.closePort()
-            except Exception:  # ruff: ignore[blind-except]
+            except (OSError, RuntimeError):
                 logger.exception(
                     "Error while closing SO-101 serial port; continuing cleanup.",
                 )
@@ -511,7 +512,7 @@ class SO101(Robot):
             timestamp=time.monotonic(),
         )
 
-    def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None:  # ruff: ignore[unused-method-argument]
+    def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None:
         """Send joint position commands to all servos.
 
         Args:
@@ -524,6 +525,7 @@ class SO101(Robot):
             RuntimeError: If the robot is in ``"leader"`` role.
             ValueError: If the action shape does not match ``(6,)``.
         """
+        _ = goal_time
         if self.role == "leader":
             msg = "Cannot send actions to a leader arm. Leader arms are read-only for teleoperation."
             raise RuntimeError(msg)
@@ -647,7 +649,7 @@ class SO101(Robot):
                 address,
                 value,
             )
-        elif byte_width == 2:  # ruff: ignore[magic-value-comparison]
+        elif byte_width == _TWO_BYTE_REGISTER:
             comm_result, error = conn.packet_handler.write2ByteTxRx(
                 conn.port_handler,
                 servo_id,
@@ -662,6 +664,15 @@ class SO101(Robot):
             logger.warning(f"Register write failed: addr={address} servo={servo_id} comm={comm_result}")
         if error != 0:
             logger.warning(f"Register write error: addr={address} servo={servo_id} err={error}")
+
+    @staticmethod
+    def _sync_read_parameter_error(servo_id: int) -> ConnectionError:
+        """Build the connection error raised when a servo cannot join the sync-read group.
+
+        Returns:
+            Error describing the rejected servo.
+        """
+        return ConnectionError(f"Failed to add servo {servo_id} to sync read group")
 
     def _ping_servos(self) -> None:
         """Ping every servo and raise on failure.

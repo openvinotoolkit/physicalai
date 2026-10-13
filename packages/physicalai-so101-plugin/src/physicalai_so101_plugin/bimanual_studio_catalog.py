@@ -262,6 +262,15 @@ def get_bimanual_definitions() -> list[RobotCatalogDefinition]:
     ]
 
 
+def _definitions() -> list[RobotCatalogDefinition]:
+    """Return bimanual SO-101 catalog definitions.
+
+    Kept as a compatibility alias for callers that consumed the original
+    bimanual plugin's internal catalog helper.
+    """
+    return get_bimanual_definitions()
+
+
 def _assert_payload_model_resolvable(model: type[BaseModel]) -> None:
     model.model_rebuild(_types_namespace=globals(), raise_errors=True)
 
