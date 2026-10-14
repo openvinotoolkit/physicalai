@@ -293,7 +293,7 @@ class TestSharedRobotConfig:
         assert wire["init_args"]["name"] == "attach-null"
         assert wire["init_args"]["robot"] is None
 
-    def test_live_session_arg_fails_at_to_config(self) -> None:
+    def test_live_session_arg_fails_at_from_instance(self) -> None:
         from physicalai.config import ConfigError
         from physicalai.robot import SharedRobot
 
@@ -334,7 +334,7 @@ class TestSharedRobotConfig:
         wire = _assert_construction_round_trip(robot)
         assert "_session" not in wire["init_args"]
 
-    def test_classmethod_live_session_still_fails_at_to_config(self) -> None:
+    def test_classmethod_live_session_still_fails_at_from_instance(self) -> None:
         from physicalai.config import ConfigError
         from physicalai.robot import SharedRobot
 

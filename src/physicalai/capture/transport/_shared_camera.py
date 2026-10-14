@@ -101,7 +101,7 @@ class SharedCamera(Camera):
     Opted into :func:`~physicalai.config.export_config` as a **construction
     recipe** only (nested ``camera`` Config, ``service_name``,
     ``color_mode``, transport knobs). Publisher / iceoryx2 session / frame
-    state is never part of :func:`~physicalai.config.to_config`.
+    state is never part of :meth:`~physicalai.config.Config.from_instance`.
 
     The publisher subprocess owns the device exclusively. Another connected
     holder of the same hardware will cause open to fail; this API does not

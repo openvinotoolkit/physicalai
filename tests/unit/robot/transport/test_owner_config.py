@@ -38,7 +38,7 @@ class TestNormalizeRobotConfigClassPath:
         with pytest.raises(TypeError, match="@export_config instance"):
             coerce_robot_config_input(object())  # pyrefly: ignore[bad-argument-type]
 
-    def test_coerce_exportable_driver_to_config(self) -> None:
+    def test_coerce_exportable_driver_to_recipe(self) -> None:
         driver = FakeRobot(port="/dev/ttyUSB0")
         recipe = coerce_robot_config_input(driver)
         assert isinstance(recipe, Config)

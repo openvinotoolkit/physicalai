@@ -171,7 +171,7 @@ Use this process to turn temporary corpus files into permanent regression seeds:
      handling. Do not retain a seed merely to reproduce the fixed Hugging Face symlink compatibility case;
      that behavior belongs to its unit test.
    - `fuzz_import_dotted_path`: distinguish arbitrary dotted paths, known-safe module roots, and the no-dot
-     rejection path. Confirm that the harness reaches the same `physicalai.config.importing.import_dotted_path`
+     rejection path. Confirm that the harness reaches the same `physicalai.config.import_dotted_path`
      implementation used by component construction.
    - `fuzz_stats_normalizer`: record the selected normalization mode, compatible array shape, finite versus
      non-finite statistics, passthrough-key behavior, and whether the expected result is normalization or the

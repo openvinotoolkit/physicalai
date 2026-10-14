@@ -9,6 +9,7 @@ from enum import Enum
 from pathlib import Path
 
 import pytest
+import yaml
 from physicalai.config import Config, ConfigError, export_config
 
 
@@ -46,6 +47,9 @@ def test_direct_recipe_round_trip(tmp_path: Path) -> None:
     config.save(path)
     restored = Config.load(path)
 
+    assert config.to_yaml() == path.read_text()
+    assert config.to_yaml() == f"class_path: {__name__}.Target\ninit_args:\n  value: 7\n"
+    assert Config.load(yaml.safe_load(config.to_yaml())).to_dict() == config.to_dict()
     assert restored.to_dict() == config.to_dict()
     assert isinstance(restored.instantiate(), Target)
 
@@ -59,6 +63,8 @@ def test_typed_dataclass_semantics(tmp_path: Path) -> None:
     saved_text = path.read_text()
 
     assert restored == config
+    assert saved_text == config.to_yaml()
+    assert TypedConfig.load(yaml.safe_load(config.to_yaml())) == config
     assert config.to_dict() == {"nested": {"value": 3}, "mode": "FAST", "shape": [2, 4]}
     assert config.to_jsonargparse()["init_args"] == config.to_dict()
     assert "class_path:" in saved_text
@@ -134,8 +140,9 @@ def test_typed_dataclass_dynamic_instantiation() -> None:
 
 def test_typed_dataclass_nested_in_exported_instance() -> None:
     instance = ConfigTarget(TypedConfig(Nested(3), Mode.FAST, (2, 4)))
+    config = Config.from_instance(instance)
 
-    restored = Config.from_instance(instance).instantiate()
+    restored = Config.load(yaml.safe_load(config.to_yaml())).instantiate()
 
     assert isinstance(restored, ConfigTarget)
     assert restored.config == instance.config

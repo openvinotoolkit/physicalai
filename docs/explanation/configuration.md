@@ -28,7 +28,8 @@ live object -> Config.from_instance() -> YAML/JSON -> config.instantiate() -> ne
 ```
 
 `Config.instantiate()` only runs the constructor. Your app still calls methods like
-`connect()` or `run()` when needed.
+`connect()` or `run()` when needed. Use `config.to_yaml()` when you need YAML text
+in memory, or `config.save(path)` to write it to a file.
 
 ## Workflow files (`physicalai run`)
 
