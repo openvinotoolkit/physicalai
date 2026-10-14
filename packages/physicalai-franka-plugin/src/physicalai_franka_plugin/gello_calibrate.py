@@ -16,7 +16,7 @@ from typing import Any
 
 import numpy as np
 
-from physicalai_franka_plugin.gello import GelloCalibration
+from physicalai_franka_plugin.gello import GelloCalibration, present_position_counts
 
 _RAD_PER_COUNT = 2.0 * math.pi / 4095.0
 _PRESENT_POSITION_ADDRESS = 132
@@ -42,11 +42,14 @@ def calculate_calibration(
     if arm_raw_rad.shape != (7,):
         msg = f"Expected seven raw arm positions, got {arm_raw_rad.shape}"
         raise ValueError(msg)
+    if abs(gripper_open_rad - gripper_closed_rad) < 0.1:  # noqa: PLR2004 - stock travel is ~1.2 rad
+        msg = "Trigger open and pressed readings are the same; fully release, then fully press the trigger"
+        raise ValueError(msg)
     signs = np.asarray(_JOINT_SIGNS)
-    offsets = np.mod(
-        np.round((arm_raw_rad * signs - np.asarray(reference_pose_rad)) / (math.pi / 2)) * (math.pi / 2),
-        2 * math.pi,
-    )
+    # Invert the driver's mapping q = (raw - offset) * sign - pi (upstream convention) at q = reference,
+    # rounding to the motor-flange increment of pi/2: offset = sign * (raw * sign - pi - reference).
+    difference = arm_raw_rad * signs - math.pi - np.asarray(reference_pose_rad)
+    offsets = np.mod(signs * np.round(difference / (math.pi / 2)) * (math.pi / 2), 2 * math.pi)
     return GelloCalibration(
         joint_signs=_JOINT_SIGNS,
         assembly_offsets_rad=tuple(float(value) for value in offsets),  # type: ignore[arg-type]
@@ -60,7 +63,7 @@ def _read_rad(packet_handler: Any, port_handler: Any, motor_id: int) -> float:
     if comm_result != _COMM_SUCCESS or error:
         msg = f"Failed to read GELLO motor ID {motor_id}"
         raise ConnectionError(msg)
-    return float(value) * _RAD_PER_COUNT
+    return float(present_position_counts(value)) * _RAD_PER_COUNT
 
 
 def _write_calibration(path: Path, calibration: GelloCalibration, *, force: bool) -> None:
