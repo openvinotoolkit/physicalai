@@ -11,6 +11,7 @@ import importlib
 import json
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -29,6 +30,21 @@ _TORQUE_ENABLE_ADDRESS = 64
 _COMM_SUCCESS = 0
 _NUM_ARM_JOINTS = 7
 _NUM_TOTAL_JOINTS = 8
+_UINT32_SIGN_BIT = 1 << 31
+_MIN_TRIGGER_TRAVEL_RAD = 1e-3
+
+
+def present_position_counts(value: int) -> int:
+    """Interpret Dynamixel Present Position (address 132, 4 bytes) as signed int32.
+
+    The SDK returns the raw unsigned word; XL330s can report negative or multi-turn
+    positions, which would otherwise become ~4.29e9 counts.
+
+    Returns:
+        The position in counts, negative below the motor's zero.
+    """
+    value = int(value) & 0xFFFFFFFF
+    return value - (1 << 32) if value & _UINT32_SIGN_BIT else value
 
 
 @dataclass(frozen=True)
@@ -68,6 +84,9 @@ class GelloCalibration:
             raise ValueError(msg)
         if len(signs) != 7 or len(offsets) != 7 or len(gripper_range) != 2:
             msg = "GELLO calibration requires 7 joint signs, 7 offsets, and 2 gripper endpoints"
+            raise ValueError(msg)
+        if abs(float(gripper_range[1]) - float(gripper_range[0])) < _MIN_TRIGGER_TRAVEL_RAD:
+            msg = "GELLO calibration gripper_range_rad endpoints are equal; recalibrate the trigger (open vs pressed)"
             raise ValueError(msg)
         return cls(
             joint_signs=tuple(int(item) for item in signs),  # type: ignore[arg-type]
@@ -115,6 +134,7 @@ class GelloLeader:
         self._calibration: GelloCalibration = resolved_calibration or GelloCalibration.default()
         self._port_handler: Any = None
         self._packet_handler: Any = None
+        self._sync_read: Any = None
         self._previous_raw: np.ndarray | None = None
         self._previous_positions: np.ndarray | None = None
 
@@ -155,15 +175,33 @@ class GelloLeader:
             raise
         self._port_handler = port_handler
         self._packet_handler = packet_handler
+        self._sync_read = self._make_sync_read(sdk, port_handler, packet_handler)
         raw = self._read_raw_rad()
         self._previous_raw = raw[:_NUM_ARM_JOINTS]
         self._previous_positions = self._normalize_initial(raw[:_NUM_ARM_JOINTS])
+
+    @staticmethod
+    def _make_sync_read(sdk: Any, port_handler: Any, packet_handler: Any) -> Any:  # noqa: ANN401
+        """One GroupSyncRead of Present Position for IDs 1-8: one bus round trip instead of eight.
+
+        Returns:
+            The group reader, or ``None`` when the SDK lacks it (sequential reads then).
+        """
+        group = getattr(sdk, "GroupSyncRead", None)
+        if group is None:
+            return None
+        sync = group(port_handler, packet_handler, _PRESENT_POSITION_ADDRESS, 4)
+        for motor_id in range(1, _NUM_TOTAL_JOINTS + 1):
+            if not sync.addParam(motor_id):
+                return None
+        return sync
 
     def disconnect(self) -> None:
         if self._port_handler is not None:
             self._port_handler.closePort()
         self._port_handler = None
         self._packet_handler = None
+        self._sync_read = None
         self._previous_raw = None
         self._previous_positions = None
 
@@ -174,6 +212,18 @@ class GelloLeader:
         if self._port_handler is None or self._packet_handler is None:
             msg = "GELLO is not connected. Call connect() first."
             raise ConnectionError(msg)
+        if self._sync_read is not None:
+            comm_result = self._sync_read.txRxPacket()
+            if comm_result != _COMM_SUCCESS:
+                msg = f"Failed to read GELLO positions on {self._port!r}"
+                raise ConnectionError(msg)
+            counts = []
+            for motor_id in range(1, _NUM_TOTAL_JOINTS + 1):
+                if not self._sync_read.isAvailable(motor_id, _PRESENT_POSITION_ADDRESS, 4):
+                    msg = f"Failed to read GELLO motor ID {motor_id}"
+                    raise ConnectionError(msg)
+                counts.append(self._sync_read.getData(motor_id, _PRESENT_POSITION_ADDRESS, 4))
+            return np.asarray([present_position_counts(c) * _RAD_PER_COUNT for c in counts], dtype=np.float64)
         values = []
         for motor_id in range(1, _NUM_TOTAL_JOINTS + 1):
             value, comm_result, error = self._packet_handler.read4ByteTxRx(
@@ -182,13 +232,16 @@ class GelloLeader:
             if comm_result != _COMM_SUCCESS or error:
                 msg = f"Failed to read GELLO motor ID {motor_id}"
                 raise ConnectionError(msg)
-            values.append(float(value) * _RAD_PER_COUNT)
-        return np.asarray(values, dtype=np.float32)
+            values.append(float(present_position_counts(value)) * _RAD_PER_COUNT)
+        return np.asarray(values, dtype=np.float64)
 
     def _normalize_initial(self, raw: np.ndarray) -> np.ndarray:
         offsets = np.asarray(self._calibration.assembly_offsets_rad)
         signs = np.asarray(self._calibration.joint_signs)
         midpoint = self._LIMITS_RAD.mean(axis=1)
+        # Upstream franka_gello_state_publisher convention (GelloHardware.normalize_joint_positions):
+        # wrap about the range midpoint WITHOUT re-centring by +pi, i.e. q = (raw - offset) * sign - pi
+        # (mod 2 pi). Franka's factory assembly_offsets assume it, so keep it bit-for-bit.
         return np.mod((raw - offsets) * signs - midpoint, 2 * np.pi) - np.pi + midpoint
 
     def get_observation(self) -> RobotObservation:
@@ -196,16 +249,18 @@ class GelloLeader:
         if self._previous_raw is None or self._previous_positions is None:
             msg = "GELLO has no initial state. Reconnect the leader."
             raise ConnectionError(msg)
-        delta = np.mod(raw[:_NUM_ARM_JOINTS] - self._previous_raw + np.pi, 2 * np.pi) - np.pi
+        # Absolute mapping on every read: each FR3 range spans < 2 pi, so the wrap about its midpoint
+        # is unambiguous. Integrating clamped deltas instead drifts once a joint passes a limit.
         positions = np.clip(
-            self._previous_positions + delta * np.asarray(self._calibration.joint_signs),
-            self._LIMITS_RAD[:, 0],
-            self._LIMITS_RAD[:, 1],
+            self._normalize_initial(raw[:_NUM_ARM_JOINTS]), self._LIMITS_RAD[:, 0], self._LIMITS_RAD[:, 1]
         )
         self._previous_raw = raw[:_NUM_ARM_JOINTS]
         self._previous_positions = positions
         closed, opened = self._calibration.gripper_range_rad
-        trigger = float(np.clip((raw[-1] - closed) / (opened - closed), 0.0, 1.0))
+        # Multi-turn XL330 counts can be whole turns away from the calibrated window: wrap first.
+        middle = (closed + opened) / 2
+        trigger_raw = np.mod(raw[-1] - middle + np.pi, 2 * np.pi) - np.pi + middle
+        trigger = float(np.clip((trigger_raw - closed) / (opened - closed), 0.0, 1.0))
         output = np.concatenate([np.degrees(positions), [trigger]]).astype(np.float32)
         return GelloObservation(
             joint_positions=output, timestamp=time.monotonic(), sensor_data={"raw_positions_rad": raw}
@@ -235,6 +290,7 @@ class BimanualGelloLeader:
             raise ValueError(msg)
         self._left = GelloLeader(left_port, calibration=left_calibration, smoothing=smoothing)
         self._right = GelloLeader(right_port, calibration=right_calibration, smoothing=smoothing)
+        self._pool: ThreadPoolExecutor | None = None
 
     @property
     def joint_names(self) -> list[str]:
@@ -258,13 +314,20 @@ class BimanualGelloLeader:
     def disconnect(self) -> None:
         self._left.disconnect()
         self._right.disconnect()
+        if self._pool is not None:
+            self._pool.shutdown(wait=True)
+            self._pool = None
 
     def is_connected(self) -> bool:
         return self._left.is_connected() and self._right.is_connected()
 
     def get_observation(self) -> RobotObservation:
-        left = self._left.get_observation()
+        # Two independent USB buses: read them concurrently, so a tick costs one bus read, not two.
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="gello")
+        left_future = self._pool.submit(self._left.get_observation)
         right = self._right.get_observation()
+        left = left_future.result()
         if left.sensor_data is None or right.sensor_data is None:
             msg = "GELLO child observations are missing raw encoder readings"
             raise RuntimeError(msg)
