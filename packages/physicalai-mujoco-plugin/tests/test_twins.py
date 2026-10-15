@@ -145,7 +145,7 @@ class TestProfiles:
         assert (REBOT_B601_GRIPPER_SCALE * 0.05, 0.0) == pytest.approx((lower, upper))
 
     def test_scenes_list_the_twins(self) -> None:
-        assert set(list_scenes_naming("trossen_wxai")) == {"single_pick_place", "garment_fold"}
+        assert set(list_scenes_naming("trossen_wxai")) == {"single_pick_place"}
         assert set(list_scenes_naming("rebot_b601")) == {"single_pick_place"}
         for name in ("so101", "trossen_wxai", "rebot_b601"):
             assert supported_arm_counts(get_profile(name)) == (1, 2)
@@ -273,7 +273,7 @@ class TestWidowXParity:
     def test_bimanual_matches_the_real_bimanual_driver(self) -> None:
         trossen = pytest.importorskip("physicalai.robot.trossen", reason="needs trossen-arm")
         real = trossen.BimanualWidowXAI(_real_widowx(), _real_widowx())
-        robot = MuJoCoRobot("trossen_wxai", scene="garment_fold", bimanual=True, cameras=[])
+        robot = MuJoCoRobot("trossen_wxai", scene="single_pick_place", bimanual=True, cameras=[])
         assert robot.joint_names == list(real.joint_names)
         robot.connect()
         try:

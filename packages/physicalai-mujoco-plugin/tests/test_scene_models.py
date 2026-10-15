@@ -89,26 +89,26 @@ def test_failed_switch_reset_preserves_live_scene(monkeypatch: pytest.MonkeyPatc
 
 def test_switching_never_changes_the_number_of_robots() -> None:
     """The transport advertised the joint names on connect: every scene switch keeps the arm count."""
-    robot = make_robot("garment_fold", bimanual=True)
+    robot = make_robot("conveyor_sort", bimanual=True)
     robot.connect()
     try:
-        assert set(robot._compatible_scenes()) == {"single_pick_place", "yahtzee", "conveyor_sort", "garment_fold"}
+        assert set(robot._compatible_scenes()) == {"single_pick_place", "yahtzee", "conveyor_sort"}
         assert robot._switch_to_scene("single_pick_place") is True
         assert robot.joint_names == list(BIMANUAL_SO101_JOINT_ORDER)
         assert len(robot._sim.bindings) == 2
-        assert robot._switch_to_scene("garment_fold") is True
+        assert robot._switch_to_scene("conveyor_sort") is True
         assert robot.joint_names == list(BIMANUAL_SO101_JOINT_ORDER)
     finally:
         robot.disconnect()
 
 
 def test_simulation_claims_no_devices() -> None:
-    assert make_robot("single_pick_place").device_ids == make_robot("garment_fold", bimanual=True).device_ids == ()
+    assert make_robot("single_pick_place").device_ids == make_robot("conveyor_sort", bimanual=True).device_ids == ()
 
 
 @pytest.mark.parametrize(
     ("scene_id", "arms"),
-    [("single_pick_place", 1), ("garment_fold", 2), ("garment_fold", 1), ("conveyor_sort", 2)],
+    [("single_pick_place", 1), ("single_pick_place", 2), ("conveyor_sort", 2)],
 )
 def test_home_places_arm_joints_and_targets(scene_id: str, arms: int) -> None:
     """The scene's home pose applies to each arm by its prefixed names (P1)."""
@@ -220,7 +220,6 @@ def test_compatible_scene_lists_match_real_models() -> None:
     [
         ("single_pick_place", ("block1", "target", "gripper")),
         ("yahtzee", ("die1", "die2", "die3", "die4", "die5", "die6", "gripper")),
-        ("garment_fold", ("left_gripper", "right_gripper")),
         ("single_pick_place", ("block1", "target", "left_gripper", "right_gripper")),
     ],
 )
@@ -266,8 +265,8 @@ def _wrist_camera_pose_in_gripper(model: mujoco.MjModel, camera: str, gripper: s
     ("scene_id", "camera", "gripper"),
     [
         *[(scene_id, "wrist", "gripper") for scene_id in list_scenes_for_arms(1)],
-        ("garment_fold", "left_wrist", "left_gripper"),
-        ("garment_fold", "right_wrist", "right_gripper"),
+        ("single_pick_place", "left_wrist", "left_gripper"),
+        ("single_pick_place", "right_wrist", "right_gripper"),
         ("yahtzee", "left_wrist", "left_gripper"),
         ("yahtzee", "right_wrist", "right_gripper"),
     ],
@@ -289,16 +288,16 @@ def test_wrist_cameras_keep_their_pose_on_the_gripper(scene_id: str, camera: str
 
 
 @pytest.mark.parametrize(
-    ("scene_id", "camera", "tip_site"),
+    ("scene_id", "camera", "tip_site", "arms"),
     [
-        ("single_pick_place", "wrist", "gripperframe"),
-        ("garment_fold", "left_wrist", "left_gripperframe"),
-        ("garment_fold", "right_wrist", "right_gripperframe"),
+        ("single_pick_place", "wrist", "gripperframe", 1),
+        ("single_pick_place", "left_wrist", "left_gripperframe", 2),
+        ("single_pick_place", "right_wrist", "right_gripperframe", 2),
     ],
 )
-def test_wrist_cameras_see_the_jaws_in_the_lower_half(scene_id: str, camera: str, tip_site: str) -> None:
+def test_wrist_cameras_see_the_jaws_in_the_lower_half(scene_id: str, camera: str, tip_site: str, arms: int) -> None:
     """Frames are streamed as MuJoCo renders them, so camera-frame -y is the bottom of the image."""
-    model = get_scene(scene_id).load_model()
+    model = get_scene(scene_id).load_model(arms=arms)
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
     cam = model.camera(camera).id

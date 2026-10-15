@@ -13,7 +13,6 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
-from loguru import logger
 
 from physicalai_mujoco_plugin._urdf import get_urdf_path
 from physicalai_mujoco_plugin.compose import (
@@ -155,8 +154,6 @@ class SceneConfig:
     derived two-arm layout. Prefixes follow :func:`arm_prefixes`."""
     home_qpos: tuple[tuple[str, float], ...] = ()
     """Home joint positions of each arm in radians, without the arm's prefix; unlisted joints use the model default."""
-    pinned_home_qpos: tuple[tuple[int, tuple[tuple[str, float], ...]], ...] = ()
-    """Per arm count: home joint positions by full (prefixed) name, replacing ``home_qpos`` for that count."""
     auto_reset_on_fall: bool = False
     """Reset when a floating base has fallen (DRV-9); off so a policy can see its fall."""
     layout: Literal["fixed", "reach"] = "fixed"
@@ -355,11 +352,8 @@ class SceneConfig:
         """Return the scene's home pose for *arms* arms, by full joint name.
 
         Returns:
-            ``pinned_home_qpos`` for that count, else ``home_qpos`` for each arm with its prefix.
+            ``home_qpos`` for each arm with its prefix.
         """
-        pinned = dict(self.pinned_home_qpos).get(arms)
-        if pinned is not None:
-            return pinned
         return tuple((f"{prefix}{joint}", value) for prefix in arm_prefixes(arms) for joint, value in self.home_qpos)
 
     def load_model(
@@ -372,26 +366,6 @@ class SceneConfig:
         """
         return load_scene_model(self.scene_xml_path, profile, scene_layout=self.layout_for(profile, arms, overview))
 
-
-# One arm reaches over the garment from the far end of the table.
-_GARMENT_FOLD_ARM_HOME: tuple[tuple[str, float], ...] = (
-    ("shoulder_pan", 0.0),
-    ("shoulder_lift", 0.3),
-    ("elbow_flex", 0.8),
-    ("wrist_flex", 0.3),
-)
-
-# Two arms at the table's corners face each other; each pans toward the garment.
-_GARMENT_FOLD_HOME: tuple[tuple[str, float], ...] = (
-    ("left_shoulder_pan", -1.1),
-    ("left_shoulder_lift", 0.3),
-    ("left_elbow_flex", 0.8),
-    ("left_wrist_flex", 0.3),
-    ("right_shoulder_pan", 1.1),
-    ("right_shoulder_lift", 0.3),
-    ("right_elbow_flex", 0.8),
-    ("right_wrist_flex", 0.3),
-)
 
 # Gripper hovering ~8 cm above the near belt rail, angled down at the pick zone.
 _CONVEYOR_SORT_HOME: tuple[tuple[str, float], ...] = (
@@ -468,41 +442,6 @@ def _set_arm_pose(model: object, data: object, pose: tuple[tuple[str, float], ..
         if aid >= 0:
             # pyrefly: ignore [missing-attribute]
             data.ctrl[aid] = val
-
-
-def _garment_fold_reset(home: tuple[tuple[str, float], ...]) -> ResetFn:
-    """Build the garment reset: the arms at *home*, the garment flat.
-
-    Returns:
-        A reset callback for the scene.
-    """
-
-    def reset(model: object, data: object, rng: np.random.Generator) -> None:  # noqa: ARG001
-        _set_arm_pose(model, data, home)
-        _flatten_garment(model, data)
-
-    return reset
-
-
-def _flatten_garment(model: object, data: object) -> None:
-    import mujoco  # noqa: PLC0415
-
-    # pyrefly: ignore [missing-attribute]
-    if model.nflex > 0:
-        # pyrefly: ignore [missing-attribute]
-        first_vertex_body = int(model.flex_vertbodyid[0])
-        vertex_joints = [j for j in range(model.njnt) if int(model.jnt_bodyid[j]) == first_vertex_body]
-        if not vertex_joints:
-            # A pinned first vertex has no DOFs, so there is no flex state to restore.
-            logger.warning("Flex body {} has no joints; skipping garment reset", first_vertex_body)
-        else:
-            flex_qpos_adr = min(int(model.jnt_qposadr[j]) for j in vertex_joints)
-            flex_dof_adr = min(int(model.jnt_dofadr[j]) for j in vertex_joints)
-            data.qpos[flex_qpos_adr : flex_qpos_adr + 3 * model.nflexvert] = model.flex_vert.ravel()
-            data.qvel[flex_dof_adr : flex_dof_adr + 3 * model.nflexvert] = 0.0
-
-    # pyrefly: ignore [missing-attribute]
-    mujoco.mj_forward(model, data)
 
 
 def _yahtzee_reset(robot_roots: tuple[int, ...] = ()) -> ResetFn:
@@ -687,22 +626,6 @@ _SCENES: dict[str, SceneConfig] = {
         # The pick zone on the belt.
         front_view=FrontView(distance=0.75, aim=(0.25, 0.0, 0.06)),
     ),
-    "garment_fold": SceneConfig(
-        scene_id="garment_fold",
-        display_name="Garment Fold",
-        description="Fold a flexible garment lying flat on a table",
-        scene_xml_relpath="scenes/garment_fold/scene.xml",
-        written_arms=2,
-        # The file pins two arms at the near corners of the table, facing each other. One arm faces the
-        # garment from the far end, toward the overview camera, which sees it whole there.
-        mounts=((1, (MountPose((0.30, 0.02, 0.40), _yaw_quat(180.0)),)),),
-        home_qpos=_GARMENT_FOLD_ARM_HOME,
-        pinned_home_qpos=((2, _GARMENT_FOLD_HOME),),
-        robots=("so101", "trossen_wxai"),
-        # The garment's centre on the table top.
-        front_view=FrontView(distance=0.9, aim=(0.0, 0.02, 0.32)),
-        profile_front_overrides=(("trossen_wxai", FrontOverride(distance=1.75)),),
-    ),
     "floor_flat": SceneConfig(
         scene_id="floor_flat",
         display_name="Flat Floor",
@@ -720,7 +643,6 @@ _FREEJOINT_SPAWN_SCENES = ("single_pick_place",)
 _RESET_FUNCTIONS: dict[str, Callable[[SceneConfig, int, tuple[int, ...]], ResetFn]] = {
     "yahtzee": lambda _scene, _arms, roots: _yahtzee_reset(roots),
     "conveyor_sort": lambda scene, arms, _roots: _conveyor_sort_reset(scene.home_pose(arms)),
-    "garment_fold": lambda scene, arms, _roots: _garment_fold_reset(scene.home_pose(arms)),
 }
 """Reset builders by scene id, for the scene, its number of arms and the root body of every robot."""
 

@@ -186,14 +186,6 @@ def test_derived_two_arm_layouts() -> None:
         scene.mount_poses(SO101_PROFILE, 3)
 
 
-def test_a_layout_for_one_arm_unnames_the_files_second_mount() -> None:
-    """MjSpec cannot delete a frame: garment_fold's one-arm layout renames the left mount and unnames the right."""
-    scene = get_scene("garment_fold")
-    spec = compose_scene_spec(scene.scene_xml_path, SO101_PROFILE, scene_layout=scene.layout_for(SO101_PROFILE, 1))
-    assert anchor_prefixes(spec) == ("",)
-    assert sum(1 for frame in spec.frames if frame.name == "") >= 1
-
-
 @pytest.mark.parametrize("scene_id", list(list_scenes()))
 def test_scene_files_hold_no_robot(scene_id: str) -> None:
     model = mujoco.MjModel.from_xml_path(str(get_scene(scene_id).scene_xml_path))
@@ -218,7 +210,7 @@ def test_scene_options_win_over_the_robot_options(scene_id: str) -> None:
     np.testing.assert_array_equal(opt.gravity, scene_option.gravity)
 
 
-@pytest.mark.parametrize("scene_id", [scene_id for scene_id in list_scenes_for_arms(1) if scene_id != "garment_fold"])
+@pytest.mark.parametrize("scene_id", list(list_scenes_for_arms(1)))
 def test_single_arm_scenes_attach_the_arm_at_the_world_origin(scene_id: str) -> None:
     model = get_scene(scene_id).load_model(arms=1)
     data = mujoco.MjData(model)
@@ -233,7 +225,7 @@ def test_single_arm_scenes_attach_the_arm_at_the_world_origin(scene_id: str) -> 
 
 
 def test_bimanual_scene_prefixes_every_arm_name() -> None:
-    model = get_scene("garment_fold").load_model(arms=2)
+    model = get_scene("single_pick_place").load_model(arms=2)
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
 
@@ -245,14 +237,17 @@ def test_bimanual_scene_prefixes_every_arm_name() -> None:
         for name in ("gripper", "camera_mount", "moving_jaw_so101_v1"):
             assert model.body(f"{prefix}{name}").id > 0
         assert model.site(f"{prefix}gripperframe").id >= 0
-    np.testing.assert_allclose(data.xpos[model.body("left_base").id], [-0.23, -0.25, 0.40])
+    np.testing.assert_allclose(data.xpos[model.body("left_base").id], [0.0, 0.1, 0.0])
     np.testing.assert_allclose(data.xquat[model.body("left_base").id], [1.0, 0.0, 0.0, 0.0])
-    np.testing.assert_allclose(data.xpos[model.body("right_base").id], [0.23, -0.25, 0.40])
-    np.testing.assert_allclose(data.xquat[model.body("right_base").id], [0.0, 0.0, 0.0, 1.0])
+    np.testing.assert_allclose(data.xpos[model.body("right_base").id], [0.0, -0.1, 0.0])
+    np.testing.assert_allclose(data.xquat[model.body("right_base").id], [1.0, 0.0, 0.0, 0.0])
 
 
 def test_bimanual_arms_get_their_own_default_classes() -> None:
-    spec = compose_scene_spec(get_scene("garment_fold").scene_xml_path)
+    scene = get_scene("single_pick_place")
+    spec = compose_scene_spec(
+        scene.scene_xml_path, SO101_PROFILE, scene_layout=scene.layout_for(SO101_PROFILE, arms=2)
+    )
     for prefix in ("left_", "right_"):
         for name in ("so101", "sts3215", "visual", "collision", "collision_gripper"):
             assert spec.find_default(f"{prefix}{name}") is not None, f"{prefix}{name}"
@@ -264,8 +259,8 @@ def test_bimanual_arms_get_their_own_default_classes() -> None:
     ("scene_id", "joint_ranges"),
     [
         ("single_pick_place", EARLIER_SO101_JOINT_RANGES),
+        ("single_pick_place", np.vstack([EARLIER_SO101_JOINT_RANGES] * 2)),
         ("conveyor_sort", EARLIER_SO101_JOINT_RANGES),
-        ("garment_fold", np.vstack([EARLIER_SO101_JOINT_RANGES] * 2)),
     ],
 )
 def test_normalized_units_span_the_earlier_joint_ranges(
@@ -355,7 +350,10 @@ def test_a_fixed_base_robot_cannot_spawn() -> None:
 
 
 def test_composed_layout_is_bound_to_each_anchor() -> None:
-    composed = compose_scene(get_scene("garment_fold").scene_xml_path, SO101_PROFILE)
+    scene = get_scene("single_pick_place")
+    composed = compose_scene(
+        scene.scene_xml_path, SO101_PROFILE, scene_layout=scene.layout_for(SO101_PROFILE, arms=2)
+    )
     model = composed.model
 
     assert [binding.prefix for binding in composed.robots] == ["left_", "right_"]
@@ -591,9 +589,6 @@ def test_front_overview_faces_the_robots_from_45_degrees_up(scene_id: str, name:
     scale = scene.layout_scale(profile)
     aim = np.asarray(view.aim) * scale if view.aim else np.array([*scene.for_profile(profile, arms).spawn_center, 0.0])  # type: ignore[union-attr]
     mounts = [pose.pos for _, pose in layout.mounts] if layout.mounts else [(0.0, 0.0, 0.0)]  # type: ignore[union-attr]
-    if scene_id == "garment_fold" and arms == 2:  # noqa: PLR2004 - the file's own two mounts
-        mounts = [(-0.23, -0.25, 0.40), (0.23, -0.25, 0.40)]
-
     to_aim = aim - data.cam_xpos[camera]
     np.testing.assert_allclose(forward, to_aim / np.linalg.norm(to_aim), atol=1e-9)
     np.testing.assert_allclose(np.degrees(np.arcsin(-forward[2])), 45.0, atol=1e-6)

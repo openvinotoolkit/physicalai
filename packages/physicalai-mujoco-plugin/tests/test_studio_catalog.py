@@ -615,12 +615,12 @@ class TestSimulationLaunch:
     def test_followers_offer_the_scenes_for_their_arm_count_and_the_leader_none(self) -> None:
         launches = {d.type: d.simulation for d in _definitions()}
         assert launches.pop("MuJoCo_SO101_Virtual_Leader") is None
-        so101 = ["single_pick_place", "yahtzee", "conveyor_sort", "garment_fold"]
+        so101 = ["single_pick_place", "yahtzee", "conveyor_sort"]
         expected = {
             "MuJoCo_SO101_Follower": so101,
             "MuJoCo_SO101_Bimanual_Follower": so101,
-            "MuJoCo_WidowXAI_Follower": ["single_pick_place", "garment_fold"],
-            "MuJoCo_WidowXAI_Bimanual_Follower": ["single_pick_place", "garment_fold"],
+            "MuJoCo_WidowXAI_Follower": ["single_pick_place"],
+            "MuJoCo_WidowXAI_Bimanual_Follower": ["single_pick_place"],
             **dict.fromkeys(
                 ["MuJoCo_UnitreeG1_Follower", "MuJoCo_UnitreeGo2_Follower", "MuJoCo_BostonDynamicsSpot_Follower"],
                 ["floor_flat"],

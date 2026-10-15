@@ -53,7 +53,7 @@ def app_context(frame: np.ndarray) -> dict:
     status = {
         "connected": True,
         "scene": "single_pick_place",
-        "scenes": ["garment_fold", "single_pick_place", "yahtzee"],
+        "scenes": ["conveyor_sort", "single_pick_place", "yahtzee"],
         "compatible_scenes": ["single_pick_place", "yahtzee"],
         "seed": None,
         "overview_style": "shoulder",
@@ -206,7 +206,7 @@ class TestAppEndpoints:
         assert response.status_code == 200
         assert response.json() == {
             "current": "single_pick_place",
-            "available": ["garment_fold", "single_pick_place", "yahtzee"],
+            "available": ["conveyor_sort", "single_pick_place", "yahtzee"],
             "compatible": ["single_pick_place", "yahtzee"],
         }
 
@@ -221,7 +221,7 @@ class TestAppEndpoints:
         assert client.post("/scenes/nope").status_code == 404
 
     def test_switch_to_incompatible_scene_is_a_conflict(self, client: TestClient, app_context: dict) -> None:
-        assert client.post("/scenes/garment_fold").status_code == 409
+        assert client.post("/scenes/conveyor_sort").status_code == 409
         assert app_context["commands"].empty()
 
     def test_reset_enqueues_command(self, client: TestClient, app_context: dict) -> None:

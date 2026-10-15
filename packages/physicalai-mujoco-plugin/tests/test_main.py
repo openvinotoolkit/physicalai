@@ -31,6 +31,14 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 
+def _write_mount_model(tmp_path: Path, *mounts: str) -> Path:
+    """Write a minimal scene with the given robot-mount frame names."""
+    frames = "".join(f'<frame name="{mount}"/>' for mount in mounts)
+    path = tmp_path / "mounts.xml"
+    path.write_text(f"<mujoco><worldbody>{frames}</worldbody></mujoco>")
+    return path
+
+
 class TestHttpOwnerName:
     @staticmethod
     def _response(body: bytes) -> MagicMock:
@@ -116,14 +124,18 @@ class TestPidOwnerName:
             assert cli._pid_owner_name(1234) == DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME  # noqa: SLF001
 
     @pytest.mark.parametrize(
-        ("scene_id", "expected"),
-        [("single_pick_place", DEFAULT_MUJOCO_OWNER_NAME), ("garment_fold", DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME)],
+        ("mounts", "expected"),
+        [
+            (("robot_mount",), DEFAULT_MUJOCO_OWNER_NAME),
+            (("left_robot_mount", "right_robot_mount"), DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME),
+        ],
     )
-    def test_a_custom_model_counts_its_mount_frames_like_start(self, scene_id: str, expected: str) -> None:
+    def test_a_custom_model_counts_its_mount_frames_like_start(
+        self, tmp_path: Path, mounts: tuple[str, ...], expected: str
+    ) -> None:
         """``start --model`` takes its arm count from the XML, so the stop fallback must too."""
-        from physicalai_mujoco_plugin.scene_registry import get_scene  # noqa: PLC0415
-
-        cmdline = f"physicalai-mujoco start --model {get_scene(scene_id).scene_xml_path}"
+        model = _write_mount_model(tmp_path, *mounts)
+        cmdline = f"physicalai-mujoco start --model {model}"
         with patch("subprocess.run", return_value=self._ps_output(cmdline)):
             assert cli._pid_owner_name(1234) == expected  # noqa: SLF001
 
@@ -136,14 +148,12 @@ class TestPidOwnerName:
         ):
             assert cli._pid_owner_name(1234) is None  # noqa: SLF001
 
-    def test_a_relative_custom_model_resolves_in_the_start_directory(self) -> None:
-        from physicalai_mujoco_plugin.scene_registry import get_scene  # noqa: PLC0415
-
-        scene_xml = get_scene("garment_fold").scene_xml_path
-        cmdline = f"physicalai-mujoco start --model {scene_xml.parent.name}/{scene_xml.name}"
+    def test_a_relative_custom_model_resolves_in_the_start_directory(self, tmp_path: Path) -> None:
+        model = _write_mount_model(tmp_path, "left_robot_mount", "right_robot_mount")
+        cmdline = f"physicalai-mujoco start --model {model.name}"
         with (
             patch("subprocess.run", return_value=self._ps_output(cmdline)),
-            patch.object(cli, "_pid_cwd", return_value=scene_xml.parent.parent),
+            patch.object(cli, "_pid_cwd", return_value=tmp_path),
         ):
             assert cli._pid_owner_name(1234) == DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME  # noqa: SLF001
 
@@ -155,8 +165,8 @@ class TestPidOwnerName:
         [
             ("--profile ur5e", "mujoco-ur5e-follow"),
             ("--profile=ur5e", "mujoco-ur5e-follow"),
-            ("--scene garment_fold", DEFAULT_MUJOCO_OWNER_NAME),
-            ("--scene=garment_fold --bimanual", DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME),
+            ("--scene yahtzee", DEFAULT_MUJOCO_OWNER_NAME),
+            ("--scene=single_pick_place --bimanual", DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME),
             ("--scene conveyor_sort --bimanual", DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME),
             ("--profile ur5e --scene no_such_scene", "mujoco-ur5e-follow"),
             ("--profile no_such_model", "mujoco-no_such_model-follow"),
@@ -472,14 +482,9 @@ class TestStartRecipe:
             self._recipe(["--profile", profile, "--bimanual", "--no-gui"])
         assert exit_info.value.code == 1
 
-    def test_garment_fold_runs_one_arm_without_bimanual(self) -> None:
-        recipe = self._recipe(["--scene", "garment_fold", "--no-gui"])
-        assert (recipe.get("bimanual", False), recipe["name"]) == (False, "mujoco-so101-follow")
-
-    def test_a_custom_model_with_two_mounts_is_bimanual(self) -> None:
-        from physicalai_mujoco_plugin.scene_registry import get_scene  # noqa: PLC0415
-
-        recipe = self._recipe(["--model", str(get_scene("garment_fold").scene_xml_path), "--no-gui"])
+    def test_a_custom_model_with_two_mounts_is_bimanual(self, tmp_path: Path) -> None:
+        model = _write_mount_model(tmp_path, "left_robot_mount", "right_robot_mount")
+        recipe = self._recipe(["--model", str(model), "--no-gui"])
         assert recipe["name"] == "mujoco-so101-bimanual-follow"
 
     @pytest.mark.parametrize(
@@ -490,11 +495,10 @@ class TestStartRecipe:
             ["--profile", "unitree_g1", "--bimanual"],
         ],
     )
-    def test_a_two_mount_model_refuses_single_robot_profiles(self, argv: list[str]) -> None:
-        from physicalai_mujoco_plugin.scene_registry import get_scene  # noqa: PLC0415
-
+    def test_a_two_mount_model_refuses_single_robot_profiles(self, argv: list[str], tmp_path: Path) -> None:
+        model = _write_mount_model(tmp_path, "left_robot_mount", "right_robot_mount")
         with pytest.raises(SystemExit) as exit_info:
-            self._recipe([*argv, "--model", str(get_scene("garment_fold").scene_xml_path), "--no-gui"])
+            self._recipe([*argv, "--model", str(model), "--no-gui"])
         assert exit_info.value.code == 1
 
     def test_bimanual_needs_the_left_and_right_mount_frames(self, tmp_path) -> None:
