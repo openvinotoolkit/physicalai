@@ -12,8 +12,9 @@ import pytest
 
 from physicalai.capture import Frame
 from physicalai.capture.errors import CaptureError
-from physicalai.runtime import PolicySource, RobotRuntime, SyncExecution
+from physicalai.runtime import LifecycleEvent, PolicySource, RobotRuntime, SyncExecution
 from physicalai.runtime.core import (
+    _MAX_FAILURE_S,
     _MAX_OBS_RETRIES,
     _MAX_SEND_RETRIES,
 )
@@ -59,6 +60,7 @@ def _make_runtime(
     model: MagicMock | None = None,
     cameras: dict | None = None,
     fps: float = 10.0,
+    callbacks: tuple = (),
 ) -> RobotRuntime:
     policy_source = PolicySource(model=model or _make_mock_model(), execution=SyncExecution())
     return RobotRuntime(
@@ -66,6 +68,7 @@ def _make_runtime(
         action_source=policy_source,
         fps=fps,
         cameras=cameras or {},
+        callbacks=callbacks,
     )
 
 
@@ -103,20 +106,20 @@ class TestResilientObserve:
         assert result is not None
         assert robot.get_observation.call_count == _MAX_OBS_RETRIES
         assert rt._stale_obs_ticks == 1
-        assert rt._consecutive_error_ticks == 1
 
-    def test_max_consecutive_errors_raises(self) -> None:
+    def test_observation_failing_past_limit_raises(self) -> None:
         robot = _make_mock_robot()
         robot.get_observation.side_effect = ConnectionError("down")
 
         rt = _make_runtime(robot=robot, fps=10.0)
         rt._last_robot_obs = _make_obs()
-        rt._consecutive_error_ticks = rt._max_consecutive_error_ticks - 1
+        rt._last_success["observation"] = 0.0
 
         with patch("physicalai.runtime.core.time") as mock_time:
             mock_time.sleep = MagicMock()
+            mock_time.perf_counter.return_value = _MAX_FAILURE_S
             mock_time.time.return_value = 0.0
-            with pytest.raises(ConnectionError, match="Exceeded max consecutive"):
+            with pytest.raises(ConnectionError, match="Robot observations kept failing"):
                 rt._read_observation()
 
     def test_no_stale_obs_raises_immediately(self) -> None:
@@ -175,6 +178,47 @@ class TestResilientObserveCameras:
             with pytest.raises(CaptureError, match="no device"):
                 rt._read_observation()
 
+    def test_dead_camera_stops_with_connection_lost(self) -> None:
+        stale_frame = Frame(data=np.zeros((4, 4, 3), dtype=np.uint8), timestamp=0.0, sequence=0)
+        camera = MagicMock()
+        camera.read_latest.side_effect = CaptureError("timeout")
+        events: list[LifecycleEvent] = []
+        callback = MagicMock()
+        callback.on_lifecycle.side_effect = events.append
+
+        rt = _make_runtime(cameras={"cam0": camera}, callbacks=(callback,))
+        rt._last_camera_frames["cam0"] = stale_frame
+        rt._last_success["camera:cam0"] = 0.0
+
+        with patch("physicalai.runtime.core.time") as mock_time:
+            mock_time.sleep = MagicMock()
+            mock_time.time.return_value = 0.0
+            mock_time.perf_counter.return_value = _MAX_FAILURE_S - 0.1
+            _robot_obs, camera_frames = rt._read_observation()
+            assert camera_frames["cam0"] is stale_frame
+
+            mock_time.perf_counter.return_value = _MAX_FAILURE_S
+            with pytest.raises(ConnectionError, match="Camera 'cam0' kept failing"):
+                rt._read_observation()
+
+        assert events[-1].event == "connection_lost"
+        assert events[-1].metadata["source"] == "camera:cam0"
+
+    def test_camera_recovering_resets_its_limit(self) -> None:
+        frame = Frame(data=np.zeros((4, 4, 3), dtype=np.uint8), timestamp=0.0, sequence=0)
+        camera = MagicMock()
+        camera.read_latest.side_effect = [CaptureError("timeout"), frame, CaptureError("timeout")]
+
+        rt = _make_runtime(cameras={"cam0": camera})
+        rt._last_camera_frames["cam0"] = frame
+
+        with patch("physicalai.runtime.core.time") as mock_time:
+            mock_time.sleep = MagicMock()
+            mock_time.time.return_value = 0.0
+            for now in (0.0, _MAX_FAILURE_S - 0.1, 2 * _MAX_FAILURE_S - 0.2):
+                mock_time.perf_counter.return_value = now
+                rt._read_observation()
+
 
 class TestResilientSend:
     def test_resilient_send_retries(self) -> None:
@@ -191,7 +235,6 @@ class TestResilientSend:
 
         assert robot.send_action.call_count == 2
         assert rt._transient_errors == 0
-        assert rt._consecutive_error_ticks == 0
 
     def test_resilient_send_all_retries_fail_skips_tick(self) -> None:
         robot = _make_mock_robot()
@@ -202,11 +245,75 @@ class TestResilientSend:
 
         with patch("physicalai.runtime.core.time") as mock_time:
             mock_time.sleep = MagicMock()
+            mock_time.perf_counter.return_value = 0.0
             mock_time.time.return_value = 0.0
             rt._resilient_send(action)
 
         assert robot.send_action.call_count == _MAX_SEND_RETRIES
         assert rt._transient_errors == 1
+
+    def test_send_failing_past_limit_raises(self) -> None:
+        robot = _make_mock_robot()
+        robot.send_action.side_effect = OSError("USB gone")
+
+        rt = _make_runtime(robot=robot)
+        rt._last_success["send"] = 0.0
+
+        with patch("physicalai.runtime.core.time") as mock_time:
+            mock_time.sleep = MagicMock()
+            mock_time.perf_counter.return_value = _MAX_FAILURE_S
+            mock_time.time.return_value = 0.0
+            with pytest.raises(ConnectionError, match="Robot sends kept failing"):
+                rt._resilient_send(np.zeros(3, dtype=np.float32))
+
+
+class TestFailureLimitsPerSource:
+    """A source that keeps working must not hide one that keeps failing."""
+
+    @staticmethod
+    def _tick_until_error(rt: RobotRuntime, seconds: float) -> float:
+        clock = 0.0
+        with patch("physicalai.runtime.core.time") as mock_time:
+            mock_time.sleep = MagicMock()
+            mock_time.time.return_value = 0.0
+            mock_time.perf_counter.side_effect = lambda: clock
+            with pytest.raises(ConnectionError):
+                while clock <= seconds:
+                    rt._read_observation()
+                    rt._resilient_send(np.zeros(3, dtype=np.float32))
+                    clock += 0.25
+        return clock
+
+    def test_failing_reads_stop_the_run_while_sends_succeed(self) -> None:
+        robot = _make_mock_robot()
+        robot.get_observation.side_effect = ConnectionError("no status packet")
+
+        rt = _make_runtime(robot=robot)
+        rt._last_robot_obs = _make_obs()
+
+        stopped_at = self._tick_until_error(rt, seconds=2 * _MAX_FAILURE_S)
+
+        assert stopped_at == _MAX_FAILURE_S
+        assert robot.send_action.call_count > 0
+
+    def test_failing_sends_stop_the_run_while_reads_succeed(self) -> None:
+        robot = _make_mock_robot()
+        robot.send_action.side_effect = OSError("write failed")
+
+        rt = _make_runtime(robot=robot)
+
+        stopped_at = self._tick_until_error(rt, seconds=2 * _MAX_FAILURE_S)
+
+        assert stopped_at == _MAX_FAILURE_S
+        assert rt._stale_obs_ticks == 0
+
+    def test_new_session_forgets_old_failures(self) -> None:
+        rt = _make_runtime()
+        rt._last_success = {"observation": 0.0, "send": 0.0, "camera:cam0": 0.0}
+
+        rt._reset_session()
+
+        assert rt._last_success == {}
 
 
 class TestRunReturnsStepsWithFaults:

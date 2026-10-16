@@ -38,6 +38,8 @@ logger = logging.getLogger(__name__)
 _MAX_OBS_RETRIES = 3
 _MAX_SEND_RETRIES = 2
 _RETRY_BACKOFF_S = 0.001
+# How long robot reads, robot sends or a camera may keep failing before the run stops.
+_MAX_FAILURE_S = 3.0
 _GOAL_TIME_TICKS = 3
 _RETURN_DURATION_S = 2.5
 _RETURN_MAX_TRACKING_ERROR = 0.15
@@ -172,8 +174,9 @@ class RobotRuntime:
         self._run_lock = threading.Lock()
         self._last_robot_obs: RobotObservation | None = None
         self._last_camera_frames: dict[str, Frame] = {}
-        self._consecutive_error_ticks: int = 0
-        self._max_consecutive_error_ticks: int = int(3 * control_fps)
+        # Last success per source ("observation", "send", "camera:<name>"), so one
+        # source recovering never hides another that keeps failing.
+        self._last_success: dict[str, float] = {}
         self._stale_obs_ticks: int = 0
         self._transient_errors: int = 0
         self._session_id: str = ""
@@ -533,7 +536,7 @@ class RobotRuntime:
         self._session_id = uuid.uuid4().hex[:8]
         self._last_robot_obs = None
         self._last_camera_frames = {}
-        self._consecutive_error_ticks = 0
+        self._last_success = {}
         self._stale_obs_ticks = 0
         self._transient_errors = 0
         self._last_tick_stale = False
@@ -582,9 +585,8 @@ class RobotRuntime:
                 msg = "Robot observation failed and no stale observation available"
                 raise ConnectionError(msg) from last_robot_error
 
-            self._consecutive_error_ticks += 1
             self._stale_obs_ticks += 1
-            if self._consecutive_error_ticks >= self._max_consecutive_error_ticks:
+            if self._failing_for("observation") >= _MAX_FAILURE_S:
                 self._bus.emit_lifecycle(
                     LifecycleEvent(
                         session_id=self._session_id,
@@ -593,7 +595,7 @@ class RobotRuntime:
                         metadata={"error": str(last_robot_error)},
                     )
                 )
-                msg = "Exceeded max consecutive robot observation failures"
+                msg = f"Robot observations kept failing for {_MAX_FAILURE_S}s"
                 raise ConnectionError(msg) from last_robot_error
 
             self._bus.emit_lifecycle(
@@ -606,27 +608,41 @@ class RobotRuntime:
             )
             return self._last_robot_obs, True
 
-        self._consecutive_error_ticks = 0
+        self._succeeded("observation")
         self._last_robot_obs = robot_obs
         return robot_obs, False
 
     def _read_cameras_resilient(self) -> dict[str, Frame]:
         camera_frames: dict[str, Frame] = {}
         for name, camera in self._cameras.items():
+            source = f"camera:{name}"
             try:
                 frame = camera.read_latest()
-                camera_frames[name] = frame
-                self._last_camera_frames[name] = frame
             except CaptureError as exc:
                 stale_frame = self._last_camera_frames.get(name)
                 if stale_frame is None:
                     raise
+                if self._failing_for(source) >= _MAX_FAILURE_S:
+                    self._bus.emit_lifecycle(
+                        LifecycleEvent(
+                            session_id=self._session_id,
+                            timestamp=time.time(),
+                            event="connection_lost",
+                            metadata={"error": str(exc), "source": source},
+                        )
+                    )
+                    msg = f"Camera {name!r} kept failing for {_MAX_FAILURE_S}s"
+                    raise ConnectionError(msg) from exc
                 logger.warning(
                     "Camera %s read failed — using stale frame: %s",
                     name,
                     exc,
                 )
                 camera_frames[name] = stale_frame
+            else:
+                camera_frames[name] = frame
+                self._last_camera_frames[name] = frame
+                self._succeeded(source)
         return camera_frames
 
     def _read_observation(self, *, read_cameras: bool = True) -> tuple[RobotObservation, dict[str, Frame]]:
@@ -659,12 +675,11 @@ class RobotRuntime:
                 if attempt + 1 < _MAX_SEND_RETRIES:
                     time.sleep(_RETRY_BACKOFF_S)
             else:
-                self._consecutive_error_ticks = 0
+                self._succeeded("send")
                 return
 
         self._transient_errors += 1
-        self._consecutive_error_ticks += 1
-        if self._consecutive_error_ticks >= self._max_consecutive_error_ticks:
+        if self._failing_for("send") >= _MAX_FAILURE_S:
             self._bus.emit_lifecycle(
                 LifecycleEvent(
                     session_id=self._session_id,
@@ -673,7 +688,7 @@ class RobotRuntime:
                     metadata={"error": str(last_error), "source": "send"},
                 )
             )
-            msg = "Exceeded max consecutive send failures"
+            msg = f"Robot sends kept failing for {_MAX_FAILURE_S}s"
             raise ConnectionError(msg) from last_error
         self._bus.emit_lifecycle(
             LifecycleEvent(
@@ -688,6 +703,14 @@ class RobotRuntime:
             _MAX_SEND_RETRIES,
             last_error,
         )
+
+    def _failing_for(self, source: str) -> float:
+        """Return the seconds since *source* last succeeded, or since it first failed if it never has."""
+        now = time.perf_counter()
+        return now - self._last_success.setdefault(source, now)
+
+    def _succeeded(self, source: str) -> None:
+        self._last_success[source] = time.perf_counter()
 
     def _disconnect_and_log_errors(self) -> None:
         """Release action-source resources, logging rather than raising on failure.
