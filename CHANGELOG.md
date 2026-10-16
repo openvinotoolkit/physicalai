@@ -12,6 +12,33 @@
 
 - Add `Config.to_yaml()` for in-memory YAML serialization.
 
+## [0.4.0](https://github.com/openvinotoolkit/physicalai/compare/v0.3.0...v0.4.0) (2026-10-16)
+
+
+### ✨ Features
+
+* control rate inflation by intermediate actions interpolation ([#311](https://github.com/openvinotoolkit/physicalai/issues/311)) ([78669a0](https://github.com/openvinotoolkit/physicalai/commit/78669a0d80b462718cd67fa3d7a6765080ed2226))
+* **inference:** add deterministic adapter close lifecycle ([#372](https://github.com/openvinotoolkit/physicalai/issues/372)) ([d0f379d](https://github.com/openvinotoolkit/physicalai/commit/d0f379d7a067b0f8e1ca27d1bdcd00e896d4c6df))
+* **mujoco:** simulate any MuJoCo Menagerie robot with MuJoCoRobot ([#337](https://github.com/openvinotoolkit/physicalai/issues/337)) ([53af2a0](https://github.com/openvinotoolkit/physicalai/commit/53af2a0d5ab81c9a816311c70d0cee4f3ad5c84d))
+
+
+### 🐛 Bug Fixes
+
+* **runtime:** reset low pass filter state at the start of each run ([#363](https://github.com/openvinotoolkit/physicalai/issues/363)) ([49d5fd5](https://github.com/openvinotoolkit/physicalai/commit/49d5fd5d6594ee54787bee600a75725d43d62bc9))
+* **transport:** retry a subscriber's owner connection every 100-500 ms ([#357](https://github.com/openvinotoolkit/physicalai/issues/357)) ([51f28b1](https://github.com/openvinotoolkit/physicalai/commit/51f28b1ce476199c13f8b8a41da94daf5e0ad297))
+
+
+### ♻️ Code Refactoring
+
+* **config:** remove deprecated configuration shims ([#244](https://github.com/openvinotoolkit/physicalai/issues/244)) ([9133822](https://github.com/openvinotoolkit/physicalai/commit/91338224c67f0d17f166eb062e3ac9a6762db784))
+* **skills:** separate Runtime using and contributing skills ([#356](https://github.com/openvinotoolkit/physicalai/issues/356)) ([c9f117a](https://github.com/openvinotoolkit/physicalai/commit/c9f117a9ba9b63712bb0692d7fa41867ac5f478e))
+
+
+### 🔧 Chores
+
+* **deps:** lock file maintenance ([#364](https://github.com/openvinotoolkit/physicalai/issues/364)) ([7af1d77](https://github.com/openvinotoolkit/physicalai/commit/7af1d77e5395d6fde7918cf80380d91bcf12335e))
+* **deps:** update github actions ([#371](https://github.com/openvinotoolkit/physicalai/issues/371)) ([747aa97](https://github.com/openvinotoolkit/physicalai/commit/747aa977077998a020833d00f985ca153249cf69))
+
 ## [0.3.0](https://github.com/openvinotoolkit/physicalai/compare/v0.2.0...v0.3.0) (2026-10-07)
 
 
