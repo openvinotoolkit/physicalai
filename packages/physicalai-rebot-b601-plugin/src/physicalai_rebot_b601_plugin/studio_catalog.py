@@ -27,7 +27,7 @@ from physicalai_studio_plugin import (
     robot_field_ui,
     robot_payload_ui,
 )
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 import physicalai_rebot_b601_plugin
 from physicalai_rebot_b601_plugin import ReBotB601DM, ReBotB601RS, get_urdf_path
@@ -53,8 +53,10 @@ _REBOT_B601_DM_TO_URDF: dict[str, list[str]] = {
     "wrist_flex.pos": ["joint4"],
     "wrist_yaw.pos": ["joint5"],
     "wrist_roll.pos": ["joint6"],
-    "gripper.pos": [],
+    "gripper.pos": ["gripper_drive"],
 }
+
+_REBOT_B601_RS_TO_URDF = dict(_REBOT_B601_DM_TO_URDF)
 
 
 def _get_rebot_urdf_root() -> Path:
@@ -80,12 +82,11 @@ _REBOT_B601_DM_ASSET = RobotAsset(
     root_resolver=_get_rebot_urdf_root,
 )
 
-# The RS preview uses a joint-frame copy of the URDF: the original follows the motor frame, so it would
-# mirror elbow_flex, wrist_flex and wrist_yaw (direction -1 in REBOT_B601_RS_JOINT_DIRECTIONS).
+# The RS preview uses a joint-frame copy with every arm-joint axis reversed from the motor frame.
 _REBOT_B601_RS_ASSET = RobotAsset(
     urdf_relative_path=Path("rebot-b601-rs/urdf/00-arm-rs_asm-v3_joint_frame.urdf"),
     packages={"rebot-b601-rs": Path("rebot-b601-rs")},
-    joint_map=_REBOT_B601_DM_TO_URDF,
+    joint_map=_REBOT_B601_RS_TO_URDF,
     root_resolver=_get_rebot_urdf_root,
 )
 
@@ -128,6 +129,14 @@ class ReBotB601DMPayload(BaseModel):
             "position control with a fixed torque ratio."
         ),
     )
+    max_relative_target: float = Field(  # pyrefly: ignore [bad-argument-type, no-matching-overload]
+        default=-1.0,
+        ge=-1.0,
+        allow_inf_nan=False,
+        title="Max step per command (degrees)",
+        description="Largest public-frame move per command. Set to -1 for no limit.",
+        json_schema_extra=robot_field_ui({"advanced_configuration": True}),
+    )
 
     model_config = ConfigDict(
         json_schema_extra=robot_payload_ui(  # pyrefly: ignore[bad-argument-type]
@@ -159,6 +168,15 @@ class ReBotB601DMPayload(BaseModel):
             msg = "At least one of connection_string or serial_number must be provided"
             raise ValueError(msg)
         return self
+
+    @field_validator("max_relative_target")
+    @classmethod
+    def _validate_max_relative_target(cls, value: float) -> float:
+        _ = cls
+        if -1.0 < value <= 0.0:
+            msg = "max_relative_target must be -1 or a finite positive value"
+            raise ValueError(msg)
+        return value
 
 
 class ReBotProbe(RobotProbe[ReBotB601DMPayload]):
@@ -232,6 +250,7 @@ async def _build_rebot_b601_dm_driver(
         force_pos_torque_ratio=validated.force_pos_torque_ratio,
         control_mode=validated.control_mode,
         gripper_control_mode=validated.gripper_control_mode,
+        max_relative_target=validated.max_relative_target,
     )
 
 
@@ -264,13 +283,12 @@ class ReBotB601RSPayload(BaseModel):
         pattern=_SOCKETCAN_INTERFACE_PATTERN,
     )
     max_relative_target: float = Field(
-        default=10.0,
-        gt=0.0,
+        default=-1.0,
+        ge=-1.0,
         allow_inf_nan=False,
         title="Max step per command (degrees)",
         description=(
-            "Largest move, in joint degrees, the arm makes toward a new target in one control step. "
-            "Stops the arm lunging when the leader or a policy jumps."
+            "Largest move, in joint degrees, toward a new target in one control step. Set to -1 for no limit."
         ),
     )
     mit_kp: ReBotB601RSJointGains = Field(  # pyrefly: ignore [bad-argument-type, no-matching-overload]
@@ -316,6 +334,15 @@ class ReBotB601RSPayload(BaseModel):
         description="Torque limit once the gripper stalls, for example on a grasped object.",
         json_schema_extra=robot_field_ui({"advanced_configuration": True}),
     )
+
+    @field_validator("max_relative_target")
+    @classmethod
+    def _validate_max_relative_target(cls, value: float) -> float:
+        _ = cls
+        if -1.0 < value <= 0.0:
+            msg = "max_relative_target must be -1 or a finite positive value"
+            raise ValueError(msg)
+        return value
 
 
 class ReBotRSProbe(RobotProbe[ReBotB601RSPayload]):
@@ -379,21 +406,21 @@ async def _build_rebot_b601_rs_driver(  # noqa: RUF029 - Studio awaits every rob
     )
 
 
-async def _release_rs(robot: ReBotB601RS) -> None:
+async def _release_rebot(robot: ReBotB601DM) -> None:
     await asyncio.to_thread(robot.disable_torque)
 
 
-async def _set_rs_zero(robot: ReBotB601RS) -> None:
+async def _set_rebot_zero(robot: ReBotB601DM) -> None:
     await asyncio.to_thread(robot.set_zero_position)
 
 
-_REBOT_B601_RS_ZERO_CALIBRATION = RobotZeroCalibration[ReBotB601RS](
+_REBOT_B601_ZERO_CALIBRATION = RobotZeroCalibration[ReBotB601DM](
     instructions=(
         "Motor torque is off, so the arm can be moved by hand. Move it into its zero pose: the folded rest "
         "pose it sits in when powered off, with the gripper fully closed. Hold it still, then set zero."
     ),
-    release=_release_rs,
-    set_zero=_set_rs_zero,
+    release=_release_rebot,
+    set_zero=_set_rebot_zero,
 )
 
 
@@ -408,6 +435,7 @@ def _definitions() -> list[RobotCatalogDefinition]:
             asset=_REBOT_B601_DM_ASSET,
             adapter_options=RobotAdapterOptions(include_velocities=True, external_effort_gain=None),
             probe=_REBOT_PROBE,
+            zero_calibration=_REBOT_B601_ZERO_CALIBRATION,
         ),
         RobotCatalogDefinition(
             type="ReBot_B601_RS_Follower",
@@ -418,7 +446,7 @@ def _definitions() -> list[RobotCatalogDefinition]:
             asset=_REBOT_B601_RS_ASSET,
             adapter_options=RobotAdapterOptions(include_velocities=True, external_effort_gain=None),
             probe=_REBOT_RS_PROBE,
-            zero_calibration=_REBOT_B601_RS_ZERO_CALIBRATION,
+            zero_calibration=_REBOT_B601_ZERO_CALIBRATION,
         ),
     ]
 

@@ -131,6 +131,17 @@ def test_rebot_b601_dm_payload_defaults() -> None:
     assert payload.force_pos_torque_ratio == 0.1
     assert payload.control_mode == "pos_vel"
     assert payload.gripper_control_mode == "force_pos"
+    assert payload.max_relative_target == -1.0
+
+
+@pytest.mark.parametrize("max_relative_target", [0.0, -0.5, float("inf")])
+def test_rebot_b601_dm_payload_rejects_invalid_max_relative_target(max_relative_target: float) -> None:
+    from pydantic import ValidationError
+
+    from physicalai_rebot_b601_plugin.studio_catalog import ReBotB601DMPayload
+
+    with pytest.raises(ValidationError):
+        ReBotB601DMPayload(serial_number="DM-001", max_relative_target=max_relative_target)
 
 
 def test_payload_models_rebuild() -> None:
@@ -164,11 +175,11 @@ def test_payload_schemas_configure_serial_connection_picker() -> None:
 async def test_build_rebot_b601_dm_from_pydantic_payload() -> None:
     from physicalai_rebot_b601_plugin.studio_catalog import ReBotB601DMPayload, _build_rebot_b601_dm_driver
 
-    payload = ReBotB601DMPayload(serial_number="DM-001", can_adapter="socketcan")
+    payload = ReBotB601DMPayload(serial_number="DM-001", can_adapter="socketcan", max_relative_target=5.0)
     robot = _StubRobot(payload)
     factory = _StubFactory(port="/dev/ttyACM0")
     driver = await _build_rebot_b601_dm_driver(robot, cast(Any, factory))
-    assert driver is not None
+    assert driver.max_relative_target == 5.0
 
 
 @pytest.mark.anyio
@@ -233,12 +244,12 @@ def test_rebot_b601_rs_payload_defaults_and_ui_schema() -> None:
 
     payload = ReBotB601RSPayload()
     assert payload.connection_string == "can0"
-    assert payload.max_relative_target == 10.0
+    assert payload.max_relative_target == -1.0
     assert payload.mit_kp.model_dump() == REBOT_B601_RS_MIT_KP
     assert payload.mit_kd.model_dump() == REBOT_B601_RS_MIT_KD
     assert (payload.gripper_mit_torque_limit, payload.gripper_mit_hold_torque_limit) == (3.5, 1.0)
     # Robots saved before these settings existed only stored the CAN interface.
-    assert ReBotB601RSPayload.model_validate({"connection_string": "can1"}).max_relative_target == 10.0
+    assert ReBotB601RSPayload.model_validate({"connection_string": "can1"}).max_relative_target == -1.0
     ReBotB601RSPayload.model_rebuild(raise_errors=True)
     validate_robot_payload_ui(ReBotB601RSPayload)
     _assert_no_retired_ui_keys(ReBotB601RSPayload.model_json_schema())
@@ -258,6 +269,7 @@ def test_rebot_b601_rs_payload_rejects_invalid_interface_names(interface: str) -
     "overrides",
     [
         {"max_relative_target": 0.0},
+        {"max_relative_target": -0.5},
         {"max_relative_target": float("inf")},
         {"gripper_mit_torque_limit": -1.0},
         {"gripper_mit_torque_limit": 14.1},
@@ -279,7 +291,7 @@ def test_rs_joint_frame_urdf_reverses_negative_direction_joints() -> None:
     import xml.etree.ElementTree as ET
 
     from physicalai_rebot_b601_plugin.constants import REBOT_B601_RS_JOINT_DIRECTIONS
-    from physicalai_rebot_b601_plugin.studio_catalog import _REBOT_B601_DM_TO_URDF, _get_rebot_urdf_root
+    from physicalai_rebot_b601_plugin.studio_catalog import _REBOT_B601_RS_TO_URDF, _get_rebot_urdf_root
 
     urdf_dir = _get_rebot_urdf_root() / "rebot-b601-rs" / "urdf"
 
@@ -289,9 +301,39 @@ def test_rs_joint_frame_urdf_reverses_negative_direction_joints() -> None:
 
     motor_frame = axes("00-arm-rs_asm-v3.urdf")
     joint_frame = axes("00-arm-rs_asm-v3_joint_frame.urdf")
-    for key, (urdf_joint,) in ((k, v) for k, v in _REBOT_B601_DM_TO_URDF.items() if v):
+    for key, (urdf_joint,) in (
+        (k, v) for k, v in _REBOT_B601_RS_TO_URDF.items() if v and k != "gripper.pos"
+    ):
         direction = REBOT_B601_RS_JOINT_DIRECTIONS[key.removesuffix(".pos")]
         assert joint_frame[urdf_joint] == [direction * v + 0.0 for v in motor_frame[urdf_joint]]
+
+
+def test_dm_gripper_map_drives_both_fingers() -> None:
+    import xml.etree.ElementTree as ET
+
+    from physicalai_rebot_b601_plugin.studio_catalog import _REBOT_B601_DM_TO_URDF, _get_rebot_urdf_root
+
+    urdf = _get_rebot_urdf_root() / "rebot-b601-dm" / "urdf" / "reBot-DevArm_fixend.urdf"
+    root = ET.parse(urdf).getroot()  # noqa: S314 - bundled, trusted URDF
+    joints = {joint.get("name"): joint for joint in root.iter("joint")}
+
+    assert _REBOT_B601_DM_TO_URDF["gripper.pos"] == ["gripper_drive"]
+    assert joints["finger_left"].find("mimic").get("joint") == "gripper_drive"
+    assert joints["finger_right"].find("mimic").get("joint") == "finger_left"
+
+
+def test_rs_gripper_map_drives_both_fingers() -> None:
+    import xml.etree.ElementTree as ET
+
+    from physicalai_rebot_b601_plugin.studio_catalog import _REBOT_B601_RS_TO_URDF, _get_rebot_urdf_root
+
+    urdf = _get_rebot_urdf_root() / "rebot-b601-rs" / "urdf" / "00-arm-rs_asm-v3_joint_frame.urdf"
+    root = ET.parse(urdf).getroot()  # noqa: S314 - bundled, trusted URDF
+    joints = {joint.get("name"): joint for joint in root.iter("joint")}
+
+    assert _REBOT_B601_RS_TO_URDF["gripper.pos"] == ["gripper_drive"]
+    assert joints["gripper_joint1"].find("mimic").get("joint") == "gripper_drive"
+    assert joints["gripper_joint2"].find("mimic").get("joint") == "gripper_drive"
 
 
 @pytest.mark.anyio
@@ -308,7 +350,7 @@ async def test_build_rebot_b601_rs_returns_exportable_socketcan_driver(as_model:
     exported = Config.from_instance(driver)
     assert exported["class_path"].endswith("ReBotB601RS")
     assert exported["init_args"]["port"] == "can1"
-    assert exported["init_args"]["max_relative_target"] == 10.0
+    assert exported["init_args"]["max_relative_target"] == -1.0
     assert exported["init_args"]["gripper_mit_hold_torque_limit"] == 1.0
 
 
@@ -351,13 +393,14 @@ async def test_rs_probe_reports_socketcan_interface_state(tmp_path: Path, monkey
 
 
 @pytest.mark.anyio
-async def test_rs_calibration_releases_torque_then_sets_zero() -> None:
+@pytest.mark.parametrize("robot_type", ["ReBot_B601_DM_Follower", "ReBot_B601_RS_Follower"])
+async def test_rebot_calibration_releases_torque_then_sets_zero(robot_type: str) -> None:
     from unittest.mock import MagicMock
 
     from physicalai_rebot_b601_plugin import ReBotB601RS
     from physicalai_rebot_b601_plugin.studio_catalog import _definitions
 
-    calibration = next(d for d in _definitions() if d.type == "ReBot_B601_RS_Follower").zero_calibration
+    calibration = next(d for d in _definitions() if d.type == robot_type).zero_calibration
     assert calibration is not None
     assert calibration.release is not None
     robot = MagicMock(spec=ReBotB601RS)
@@ -367,10 +410,3 @@ async def test_rs_calibration_releases_torque_then_sets_zero() -> None:
 
     robot.disable_torque.assert_called_once_with()
     robot.set_zero_position.assert_called_once_with()
-
-
-
-def test_dm_follower_has_no_zero_calibration() -> None:
-    from physicalai_rebot_b601_plugin.studio_catalog import _definitions
-
-    assert next(d for d in _definitions() if d.type == "ReBot_B601_DM_Follower").zero_calibration is None
