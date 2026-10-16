@@ -17,7 +17,7 @@ import pytest
 
 pytest.importorskip("trossen_arm", reason="trossen_arm SDK is not installed")
 
-from physicalai.robot.trossen.constants import HOME_POSITION
+from physicalai_trossen_plugin.constants import HOME_POSITION
 
 # ---------------------------------------------------------------------------
 # Helpers: build the mock trossen_arm SDK module
@@ -40,6 +40,7 @@ def _make_mock_trossen_arm() -> MagicMock:
     driver.set_all_external_efforts.return_value = None
 
     module.TrossenArmDriver.return_value = driver
+    module.VectorDouble.side_effect = lambda values: list(values)
 
     module.Model.wxai_v0 = MagicMock(name="Model.wxai_v0")
     module.StandardEndEffector.wxai_v0_follower = MagicMock(name="wxai_v0_follower")
@@ -56,7 +57,7 @@ def mock_trossen_arm() -> Generator[MagicMock, None, None]:
 
     The widowxai module binds ``trossen_arm`` at import time.  If the real
     ``trossen_arm`` package is installed, that binding happens before the test
-    fixture runs (triggered by ``from physicalai.robot.trossen.constants ...``
+    fixture runs (triggered by ``from physicalai_trossen_plugin.constants ...``
     importing ``__init__.py`` which eagerly imports ``widowxai``).  We must
     therefore also patch the module-level name inside ``widowxai`` so that
     ``connect()`` / ``disconnect()`` see the mock, not the real SDK.
@@ -64,14 +65,14 @@ def mock_trossen_arm() -> Generator[MagicMock, None, None]:
     mock_module = _make_mock_trossen_arm()
     with (
         patch.dict("sys.modules", {"trossen_arm": mock_module}),
-        patch("physicalai.robot.trossen.widowxai.trossen_arm", mock_module),
+        patch("physicalai_trossen_plugin.widowxai.trossen_arm", mock_module),
     ):
         yield mock_module
 
 
 def _create_robot(mock_module: MagicMock, role: str = "follower") -> object:
     """Instantiate a WidowXAI and call connect() with the mock SDK active."""
-    from physicalai.robot.trossen import WidowXAI
+    from physicalai_trossen_plugin import WidowXAI
 
     robot = WidowXAI(ip="192.168.1.1", role=role)  # type: ignore[arg-type]
     robot.connect()
@@ -88,7 +89,7 @@ class TestWidowXAIConnect:
 
     def test_device_ids_scheme_qualified_ip(self, mock_trossen_arm: MagicMock) -> None:
         """device_ids is a single scheme-qualified network address."""
-        from physicalai.robot.trossen import WidowXAI
+        from physicalai_trossen_plugin import WidowXAI
 
         robot = WidowXAI(ip="192.168.1.42", role="follower")  # type: ignore[arg-type]
         assert robot.device_ids == ("tcp:192.168.1.42",)
@@ -130,7 +131,7 @@ class TestWidowXAIConnect:
 
     def test_connect_failure_cleans_up(self, mock_trossen_arm: MagicMock) -> None:
         """If configure raises, cleanup is called and driver is reset to None."""
-        from physicalai.robot.trossen import WidowXAI
+        from physicalai_trossen_plugin import WidowXAI
 
         driver = mock_trossen_arm.TrossenArmDriver.return_value
         driver.configure.side_effect = RuntimeError("hardware error")
@@ -194,7 +195,7 @@ class TestWidowXAIIdempotency:
 
     def test_connect_and_disconnect_idempotent(self, mock_trossen_arm: MagicMock) -> None:
         """Double connect creates driver once; disconnect when not connected is a no-op."""
-        from physicalai.robot.trossen import WidowXAI
+        from physicalai_trossen_plugin import WidowXAI
 
         robot = WidowXAI(ip="192.168.1.1", role="follower")
 

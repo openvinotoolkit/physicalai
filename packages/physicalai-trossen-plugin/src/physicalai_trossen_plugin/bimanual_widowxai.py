@@ -9,7 +9,7 @@ Composes two :class:`WidowXAI` arms (left + right) behind the
 
 Usage::
 
-    from physicalai.robot.trossen import WidowXAI, BimanualWidowXAI
+    from physicalai_trossen_plugin import WidowXAI, BimanualWidowXAI
 
     left = WidowXAI(ip="192.168.1.10", role="follower")
     right = WidowXAI(ip="192.168.1.11", role="follower")
@@ -29,7 +29,7 @@ from physicalai.robot import Robot
 if TYPE_CHECKING:
     from physicalai.capture.frame import Frame
     from physicalai.robot.interface import RobotObservation
-    from physicalai.robot.trossen.widowxai import WidowXAI
+    from physicalai_trossen_plugin.widowxai import WidowXAI
 
 
 @dataclass
@@ -57,7 +57,7 @@ class BimanualWidowXAIObservation:
         return self.joint_positions
 
 
-@export_config(class_path="physicalai.robot.BimanualWidowXAI")
+@export_config(class_path="physicalai_trossen_plugin.BimanualWidowXAI")
 class BimanualWidowXAI(Robot):
     """Two-arm WidowX AI driver composing a left and right :class:`WidowXAI`.
 

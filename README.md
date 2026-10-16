@@ -49,12 +49,12 @@ With hardware-specific extras:
 pip install physicalai[realsense]   # Intel RealSense cameras
 pip install physicalai[basler]      # Basler industrial cameras
 pip install physicalai[so101]       # SO-101 robot arm
-pip install physicalai[trossen]     # Trossen WidowX robots
 ```
 
 With first-party plugins (Python 3.12+):
 
 ```bash
+pip install "physicalai[trossen-plugin]"         # Trossen WidowX robots
 pip install "physicalai[plugin-mujoco]"          # simulated robots (MuJoCo)
 pip install "physicalai[plugin-bimanual-so101]"  # bimanual SO-101
 pip install "physicalai[plugin-rebot-b601]"      # Seeed reBot B601
@@ -197,9 +197,9 @@ robot.disconnect()
 <summary><strong>Trossen WidowX-AI</strong></summary>
 
 ```python
-from physicalai.robot import WidowXAI
+from physicalai_trossen_plugin import WidowXAI
 
-robot = WidowXAI()
+robot = WidowXAI(ip="192.168.1.100")
 robot.connect()
 
 obs = robot.get_observation()
@@ -215,9 +215,12 @@ robot.disconnect()
 <summary><strong>Bimanual WidowX-AI</strong></summary>
 
 ```python
-from physicalai.robot import BimanualWidowXAI
+from physicalai_trossen_plugin import BimanualWidowXAI, WidowXAI
 
-robot = BimanualWidowXAI()
+robot = BimanualWidowXAI(
+    left=WidowXAI(ip="192.168.1.100"),
+    right=WidowXAI(ip="192.168.1.101"),
+)
 robot.connect()
 
 obs = robot.get_observation()

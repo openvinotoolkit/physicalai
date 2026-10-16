@@ -1,6 +1,8 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
+# ruff: noqa: BLE001, FBT003
+
 """Trossen WidowX AI robot arm driver.
 
 Concrete implementation of the :class:`~physicalai.robot.Robot`
@@ -8,7 +10,7 @@ protocol for the Trossen WidowX AI robot arm (7-DOF).
 
 Requires the ``trossen-arm`` package::
 
-    pip install physicalai[trossen]
+    pip install physicalai-trossen-plugin
 
 The driver supports two roles:
 
@@ -36,7 +38,7 @@ try:
 except ImportError as e:
     msg = (
         "trossen-arm is required for WidowXAI. Install with: "
-        "pip install 'physicalai[trossen]'. "
+        "pip install physicalai-trossen-plugin. "
         "Note: trossen-arm does not ship wheels for Python 3.14+ yet; "
         "use Python 3.11-3.13 if you need this robot."
     )
@@ -44,7 +46,7 @@ except ImportError as e:
 
 from physicalai.config import export_config
 from physicalai.robot import Robot
-from physicalai.robot.trossen.constants import HOME_POSITION, VALID_ROLES, WIDOWXAI_JOINT_ORDER
+from physicalai_trossen_plugin.constants import HOME_POSITION, VALID_ROLES, WIDOWXAI_JOINT_ORDER
 
 if TYPE_CHECKING:
     from trossen_arm import TrossenArmDriver
@@ -76,7 +78,7 @@ class WidowXAIObservation:
         return self.joint_positions
 
 
-@export_config(class_path="physicalai.robot.WidowXAI")
+@export_config(class_path="physicalai_trossen_plugin.WidowXAI")
 class WidowXAI(Robot):
     """Driver for the Trossen WidowX AI robot arm (7-DOF).
 
@@ -152,17 +154,17 @@ class WidowXAI(Robot):
                 trossen_arm.Model.wxai_v0,
                 end_effector,
                 self._ip,
-                True,  # noqa: FBT003
+                True,
                 timeout=5,
             )
 
             driver.set_all_modes(trossen_arm.Mode.position)
-            driver.set_all_positions(list(HOME_POSITION), 2.0, True)  # noqa: FBT003
+            driver.set_all_positions(trossen_arm.VectorDouble(HOME_POSITION), 2.0, True)
 
             if self._role == "leader":
                 # Zero external efforts before homing (essential for leader)
                 driver.set_all_modes(trossen_arm.Mode.external_effort)
-                driver.set_all_external_efforts(list(HOME_POSITION), 0.0, False)  # noqa: FBT003
+                driver.set_all_external_efforts(trossen_arm.VectorDouble(HOME_POSITION), 0.0, False)
 
         except Exception:
             with contextlib.suppress(Exception):
@@ -181,13 +183,13 @@ class WidowXAI(Robot):
 
         try:
             self._driver.set_all_modes(trossen_arm.Mode.position)
-            self._driver.set_all_positions(list(HOME_POSITION), 2.0, True)  # noqa: FBT003
-        except Exception:  # noqa: BLE001
+            self._driver.set_all_positions(trossen_arm.VectorDouble(HOME_POSITION), 2.0, True)
+        except Exception:
             logger.warning("Failed to home WidowXAI during disconnect; proceeding to cleanup.")
         finally:
             try:
                 self._driver.cleanup()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.warning("Error during WidowXAI cleanup; continuing.")
             self._driver = None
 
@@ -275,7 +277,7 @@ class WidowXAI(Robot):
         present_positions = np.asarray(driver.get_all_positions(), dtype=np.float32)
         safe_action = self._ensure_safe_goal_position(target_radians, present_positions, self.MAX_RELATIVE_TARGET)
 
-        driver.set_all_positions(safe_action.tolist(), goal_time, False)  # noqa: FBT003
+        driver.set_all_positions(trossen_arm.VectorDouble(safe_action.tolist()), goal_time, False)
 
     def is_connected(self) -> bool:
         """Return True when the SDK driver is configured."""
@@ -307,4 +309,6 @@ class WidowXAI(Robot):
         driver = self._require_driver()
 
         driver.set_all_modes(trossen_arm.Mode.external_effort)
-        driver.set_all_external_efforts([-gain * e for e in efforts.tolist()], 0.0, False)  # noqa: FBT003
+        driver.set_all_external_efforts(
+            trossen_arm.VectorDouble([-gain * e for e in efforts.tolist()]), 0.0, blocking=False
+        )
