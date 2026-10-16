@@ -126,7 +126,7 @@ class CompositeRobot(Generic[*RobotTs]):
         for robot in self._robots.values():
             try:
                 robot.disconnect()
-            except Exception as exc:  # ruff: ignore[blind-except] # pragma: no cover - defensive against hardware failures
+            except Exception as exc:  # noqa: BLE001 # pragma: no cover - defensive against hardware failures
                 if first_error is None:
                     first_error = exc
         if first_error is not None:

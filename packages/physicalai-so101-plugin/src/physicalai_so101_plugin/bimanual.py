@@ -42,8 +42,7 @@ class BimanualSO101(BimanualRobot[SO101, SO101]):
             raise ValueError(msg)
         if type(left) is not type(right):
             msg = (
-                f"Both arms must be the same driver type; got left={type(left).__name__}, "
-                f"right={type(right).__name__}."
+                f"Both arms must be the same driver type; got left={type(left).__name__}, right={type(right).__name__}."
             )
             raise ValueError(msg)
         super().__init__(left=left, right=right)
