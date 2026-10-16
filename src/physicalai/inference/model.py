@@ -177,6 +177,7 @@ class InferenceModel:
             callback.on_load(self)
 
         self._action_buffer: deque[np.ndarray] = deque()
+        self._closed = False
 
         logger.info(
             "InferenceModel ready (chunk_size={}, total {:.1f}s)",
@@ -362,6 +363,23 @@ class InferenceModel:
         for callback in self.callbacks:
             callback.on_reset()
 
+    def close(self) -> None:
+        """Release the adapter's resources.
+
+        Notifies callbacks, then closes the adapter. Later calls have no effect.
+        Adapters that run a worker process or hold device memory release it here.
+
+        Examples:
+            >>> with InferenceModel("./exports/act_policy") as policy:
+            ...     action = policy.select_action(obs)
+        """
+        if self._closed:
+            return
+        self._closed = True
+        for callback in self.callbacks:
+            callback.on_close()
+        self.adapter.close()
+
     def __enter__(self) -> Self:
         """Enter the context manager.
 
@@ -371,7 +389,8 @@ class InferenceModel:
         return self
 
     def __exit__(self, *args: object) -> None:
-        """Exit the context manager."""
+        """Close the model when the context manager exits."""
+        self.close()
 
     def _prepare_inputs(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         """Flatten and filter input dict for the adapter.

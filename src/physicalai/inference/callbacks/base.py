@@ -29,6 +29,7 @@ class Callback:
     2. ``on_predict_start`` — before each prediction
     3. ``on_predict_end`` — after each prediction
     4. ``on_reset`` — when ``InferenceModel.reset()`` is called
+    5. ``on_close`` — once, when ``InferenceModel.close()`` is called
 
     The ``on_predict_start`` and ``on_predict_end`` hooks can
     optionally modify the data flowing through the pipeline by
@@ -68,6 +69,9 @@ class Callback:
 
     def on_reset(self) -> None:
         """Called when model state is reset."""
+
+    def on_close(self) -> None:
+        """Called once when the model is closed, before its adapter is released."""
 
     def on_load(self, model: InferenceModel) -> None:
         """Called once after the model finishes loading.

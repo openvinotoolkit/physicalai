@@ -122,6 +122,7 @@ class TestCallbackBase:
         assert cb.on_predict_start({"x": np.array([1.0])}) is None
         assert cb.on_predict_end({"action": np.array([1.0])}) is None
         assert cb.on_reset() is None
+        assert cb.on_close() is None
         model = MagicMock(spec=InferenceModel)
         assert cb.on_load(model) is None
 
