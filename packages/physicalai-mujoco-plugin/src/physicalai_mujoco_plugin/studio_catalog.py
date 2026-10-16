@@ -14,7 +14,6 @@ from physicalai_studio_plugin import (
     CatalogRobotFactory,
     PayloadContainer,
     PortScanner,
-    RobotAdapterOptions,
     RobotAsset,
     RobotCatalogDefinition,
     RobotProbe,
@@ -311,10 +310,6 @@ def _definitions() -> list[RobotCatalogDefinition]:
             robot_builder=_build_mujoco_robot,
             robot_payload=MuJoCoSO101Payload,
             asset=_MUJOCO_SO101_ASSET,
-            adapter_options=RobotAdapterOptions(
-                include_velocities=False,
-                external_effort_gain=None,
-            ),
             probe=MuJoCoSO101Probe(SO101_JOINT_ORDER),
         ),
         RobotCatalogDefinition(
@@ -324,10 +319,6 @@ def _definitions() -> list[RobotCatalogDefinition]:
             robot_builder=_build_bimanual_mujoco_robot,
             robot_payload=MuJoCoSO101BimanualPayload,
             asset=_MUJOCO_SO101_BIMANUAL_ASSET,
-            adapter_options=RobotAdapterOptions(
-                include_velocities=False,
-                external_effort_gain=None,
-            ),
             probe=MuJoCoSO101Probe(BIMANUAL_SO101_JOINT_ORDER),
         ),
         RobotCatalogDefinition(
@@ -337,10 +328,6 @@ def _definitions() -> list[RobotCatalogDefinition]:
             robot_builder=_build_virtual_leader,
             robot_payload=MuJoCoVirtualLeaderPayload,
             asset=_MUJOCO_SO101_ASSET,
-            adapter_options=RobotAdapterOptions(
-                include_velocities=False,
-                external_effort_gain=None,
-            ),
             probe=MuJoCoVirtualLeaderProbe(),
         ),
     ]

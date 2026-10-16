@@ -18,7 +18,6 @@ from physicalai_studio_plugin import (
     CatalogRobotFactory,
     PayloadContainer,
     PortScanner,
-    RobotAdapterOptions,
     RobotAsset,
     RobotCatalogDefinition,
     RobotProbe,
@@ -406,7 +405,6 @@ def _definitions() -> list[RobotCatalogDefinition]:
             robot_builder=_build_rebot_b601_dm_driver,
             robot_payload=ReBotB601DMPayload,
             asset=_REBOT_B601_DM_ASSET,
-            adapter_options=RobotAdapterOptions(include_velocities=True, external_effort_gain=None),
             probe=_REBOT_PROBE,
         ),
         RobotCatalogDefinition(
@@ -416,7 +414,6 @@ def _definitions() -> list[RobotCatalogDefinition]:
             robot_builder=_build_rebot_b601_rs_driver,
             robot_payload=ReBotB601RSPayload,
             asset=_REBOT_B601_RS_ASSET,
-            adapter_options=RobotAdapterOptions(include_velocities=True, external_effort_gain=None),
             probe=_REBOT_RS_PROBE,
             zero_calibration=_REBOT_B601_RS_ZERO_CALIBRATION,
         ),

@@ -24,7 +24,6 @@ from physicalai_studio_plugin import (
     CatalogRobotFactory,
     PayloadContainer,
     PortScanner,
-    RobotAdapterOptions,
     RobotCatalogDefinition,
     RobotFieldUiOptions,
     RobotProbe,
@@ -657,7 +656,6 @@ def _definitions() -> list[RobotCatalogDefinition]:
                     robot_builder=_make_builder(type_str, config_cls, payload_cls, "follower"),
                     robot_payload=payload_cls,
                     asset=None,
-                    adapter_options=RobotAdapterOptions(include_velocities=False, external_effort_gain=None),
                     probe=_LEROBOT_PROBE,
                 ),
             )
@@ -675,7 +673,6 @@ def _definitions() -> list[RobotCatalogDefinition]:
                     robot_builder=_make_teleop_builder(type_str, config_cls, payload_cls, "leader"),
                     robot_payload=payload_cls,
                     asset=None,
-                    adapter_options=RobotAdapterOptions(include_velocities=False, external_effort_gain=None),
                     probe=_LEROBOT_PROBE,
                 ),
             )

@@ -114,9 +114,6 @@ def test_dm_follower_has_robot_builder() -> None:
     dm = next(d for d in _definitions() if d.type == "ReBot_B601_DM_Follower")
     assert callable(dm.robot_builder)
     assert dm.robot_payload is ReBotB601DMPayload
-    assert dm.adapter_options.include_velocities is True
-    assert dm.adapter_options.external_effort_gain is None
-    assert dm.adapter_options.goal_time_scale == 1.0
 
 
 def test_rebot_b601_dm_payload_defaults() -> None:
@@ -220,8 +217,6 @@ def test_rs_follower_structure() -> None:
     assert rs.asset.root_resolver is not None
     assert (rs.asset.root_resolver() / rs.asset.urdf_relative_path).is_file()
     assert rs.probe is not None
-    assert rs.adapter_options.include_velocities is True
-    assert rs.adapter_options.external_effort_gain is None
 
 
 def test_rebot_b601_rs_payload_defaults_and_ui_schema() -> None:

@@ -23,7 +23,12 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class RobotAdapterOptions:
-    """Controls adapter behavior for velocity, timing, and effort handling."""
+    """Deprecated compatibility metadata ignored by current Studio integrations.
+
+    Studio no longer applies velocity, action-timing, force-read, or effort-write
+    behavior from these values. Existing third-party plugin declarations remain
+    accepted so their catalog definitions continue to load.
+    """
 
     include_velocities: bool = False
     goal_time_scale: float = 1.0
@@ -79,7 +84,12 @@ class RobotCatalogDefinition(Generic[_PayloadT]):
     robot_payload: _PayloadModelT | None = None
     asset: RobotAsset | None = None
 
-    adapter_options: RobotAdapterOptions = field(default_factory=RobotAdapterOptions)
+    # Deprecated: Studio ignores this compatibility metadata. New plugins must
+    # not set it; the field remains so existing plugin definitions still load.
+    adapter_options: RobotAdapterOptions = field(
+        default_factory=RobotAdapterOptions,
+        metadata={"deprecated": True},
+    )
     probe: RobotProbe[_PayloadT] | None = None
     zero_calibration: RobotZeroCalibration[Any] | None = None
 

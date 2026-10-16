@@ -92,13 +92,6 @@ class TestDefinitions:
         assert definition.robot_payload is MuJoCoSO101BimanualPayload
         assert definition.probe is not None
 
-    def test_adapter_options(self) -> None:
-        defs = _definitions()
-        definition = defs[0]
-        assert definition.adapter_options.include_velocities is False
-        assert definition.adapter_options.external_effort_gain is None
-        assert definition.adapter_options.goal_time_scale == 1.0
-
     def test_builder_callable(self) -> None:
         defs = _definitions()
         definition = defs[0]

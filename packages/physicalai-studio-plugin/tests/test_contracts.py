@@ -104,6 +104,12 @@ def test_definition_creation() -> None:
     assert definition.probe is probe
 
 
+def test_adapter_options_field_is_deprecated_compatibility_metadata() -> None:
+    field = RobotCatalogDefinition.__dataclass_fields__["adapter_options"]
+
+    assert field.metadata["deprecated"] is True
+
+
 async def _noop_calibration_step(robot: object) -> None:
     _ = robot
 
