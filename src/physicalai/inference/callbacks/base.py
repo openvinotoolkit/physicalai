@@ -70,15 +70,15 @@ class Callback:
     def on_reset(self) -> None:
         """Called when model state is reset."""
 
-    def on_close(self) -> None:
-        """Called once when the model is closed, before its adapter is released."""
-
     def on_load(self, model: InferenceModel) -> None:
         """Called once after the model finishes loading.
 
         Args:
             model: The fully initialised ``InferenceModel`` instance.
         """
+
+    def on_close(self) -> None:
+        """Called once when the model is closed, before its adapter is released."""
 
     def __repr__(self) -> str:
         """Return string representation of the callback."""
