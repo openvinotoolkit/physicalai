@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from physicalai.robot.composite import BimanualRobot, CompositeRobot, CompositeRobotObservation
 from physicalai.robot.connect import connect
 from physicalai.robot.device_ids import device_id_from_serial_port
 from physicalai.robot.errors import (
@@ -36,7 +37,10 @@ if TYPE_CHECKING:
     from physicalai.robot.transport import SharedRobot as SharedRobot
 
 __all__ = [
+    "BimanualRobot",
     "BimanualWidowXAI",
+    "CompositeRobot",
+    "CompositeRobotObservation",
     "Robot",
     "RobotDeviceAlreadyOwned",
     "RobotError",
