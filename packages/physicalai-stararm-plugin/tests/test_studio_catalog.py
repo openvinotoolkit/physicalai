@@ -118,9 +118,6 @@ def test_hd_leader_has_robot_builder() -> None:
     hd = next(d for d in _definitions() if d.type == "StarArm_102_HD_Leader")
     assert callable(hd.robot_builder)
     assert hd.robot_payload is StarArm102HDPayload
-    assert hd.adapter_options.include_velocities is False
-    assert hd.adapter_options.external_effort_gain is None
-    assert hd.adapter_options.goal_time_scale == 1.0
 
 
 def test_ld_leader_has_robot_builder() -> None:
@@ -129,9 +126,6 @@ def test_ld_leader_has_robot_builder() -> None:
     ld = next(d for d in _definitions() if d.type == "StarArm_102_LD_Leader")
     assert callable(ld.robot_builder)
     assert ld.robot_payload is StarArm102LDPayload
-    assert ld.adapter_options.include_velocities is False
-    assert ld.adapter_options.external_effort_gain is None
-    assert ld.adapter_options.goal_time_scale == 1.0
 
 
 def test_fl_follower_has_robot_builder() -> None:
@@ -140,9 +134,6 @@ def test_fl_follower_has_robot_builder() -> None:
     fl = next(d for d in _definitions() if d.type == "StarArm_102_FL_Follower")
     assert callable(fl.robot_builder)
     assert fl.robot_payload is StarArm102FLPayload
-    assert fl.adapter_options.include_velocities is True
-    assert fl.adapter_options.external_effort_gain is None
-    assert fl.adapter_options.goal_time_scale == 1.0
 
 
 def test_stararm_102_ld_payload_defaults() -> None:

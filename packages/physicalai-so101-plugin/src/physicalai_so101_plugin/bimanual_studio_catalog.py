@@ -12,7 +12,6 @@ from physicalai_studio_plugin import (
     CatalogRobotFactory,
     PayloadContainer,
     PortScanner,
-    RobotAdapterOptions,
     RobotAsset,
     RobotCatalogDefinition,
     RobotProbe,
@@ -246,7 +245,6 @@ def get_bimanual_definitions() -> list[RobotCatalogDefinition]:
             robot_builder=_build_bimanual_follower,
             robot_payload=BimanualSO101Payload,
             asset=_BIMANUAL_SO101_FOLLOWER_ASSET,
-            adapter_options=RobotAdapterOptions(include_velocities=False, external_effort_gain=None),
             probe=_BIMANUAL_PROBE,
         ),
         RobotCatalogDefinition(
@@ -256,7 +254,6 @@ def get_bimanual_definitions() -> list[RobotCatalogDefinition]:
             robot_builder=_build_bimanual_leader,
             robot_payload=BimanualSO101Payload,
             asset=_BIMANUAL_SO101_LEADER_ASSET,
-            adapter_options=RobotAdapterOptions(include_velocities=False, external_effort_gain=None),
             probe=_BIMANUAL_PROBE,
         ),
     ]

@@ -34,7 +34,6 @@ from physicalai_studio_plugin import (
     CatalogRobotFactory,
     PayloadContainer,
     PortScanner,
-    RobotAdapterOptions,
     RobotAsset,
     RobotCatalogDefinition,
     RobotProbe,
@@ -657,10 +656,6 @@ def _follower_definition(entry: CatalogEntry) -> RobotCatalogDefinition:
         robot_builder=_mujoco_robot_builder(entry),
         robot_payload=_payload_model(entry),
         asset=_ASSETS.get((entry.profile.name, len(entry.prefixes))),
-        adapter_options=RobotAdapterOptions(
-            include_velocities=False,
-            external_effort_gain=None,
-        ),
         probe=MuJoCoRobotProbe(entry),
         simulation=entry.simulation_launch(),
     )
@@ -682,10 +677,6 @@ def _definitions() -> list[RobotCatalogDefinition]:
         robot_builder=_build_virtual_leader,
         robot_payload=MuJoCoVirtualLeaderPayload,
         asset=_MUJOCO_SO101_ASSET,
-        adapter_options=RobotAdapterOptions(
-            include_velocities=False,
-            external_effort_gain=None,
-        ),
         probe=MuJoCoVirtualLeaderProbe(),
     )
     return [*so101, leader, *others]
