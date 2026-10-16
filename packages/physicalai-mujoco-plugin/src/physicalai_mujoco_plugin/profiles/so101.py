@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from physicalai_mujoco_plugin.profiles._types import ChannelOverride, RobotProfile
+from physicalai_mujoco_plugin.profiles._types import CameraSpec, ChannelOverride, EndEffector, RobotProfile
 
 if TYPE_CHECKING:
     import mujoco
@@ -48,20 +48,30 @@ def _euler_xyz_quat(euler: tuple[float, float, float]) -> np.ndarray:
     return quat
 
 
+SO101_WRIST_CAMERA = CameraSpec(
+    name="wrist",
+    body="camera_mount",
+    pos=(0.0, -0.055, -0.045),
+    # mju_euler2Quat((0.57, 0, pi), "xyz"), written out so the profile imports without MuJoCo.
+    quat=(5.876232855956727e-17, 1.7215928639260485e-17, -0.281157451295294, 0.9596616526574011),
+    fovy=75.0,
+)
+"""The plugin's earlier wrist camera: on the gripper's -y side with a 75 degree field of view.
+
+Policies trained on the earlier model see the same images, so this pose stays bit-identical.
+"""
+
+
 def customize_so101(spec: mujoco.MjSpec) -> None:
     """Match Menagerie's SO-101 to the plugin's earlier SO-101 model, which trained policies expect.
 
-    - The wrist camera keeps its name ``wrist``, its pose on the gripper's -y side, and its 75 degree
-      field of view; its collision boxes stay on that side too.
+    - Menagerie's ``wrist_cam`` is removed; :data:`SO101_WRIST_CAMERA` replaces it. The camera's
+      collision boxes stay on the gripper's -y side, where that camera sits.
     - Menagerie's gripper collision meshes, the extra box on the fixed jaw, and the camera mount's
       visual geoms (mount, PCB, lens) are removed, so grasp contacts and rendered images stay the same.
     - The ``gripperframe`` site keeps its earlier orientation.
     """
-    camera = spec.camera("wrist_cam")
-    camera.name = "wrist"
-    camera.pos = [0.0, -0.055, -0.045]
-    _set_quat(camera, _euler_xyz_quat((0.57, 0.0, np.pi)))
-    camera.fovy = 75.0
+    spec.delete(spec.camera("wrist_cam"))
 
     camera_mount = spec.body("camera_mount")
     for geom in list(camera_mount.geoms):
@@ -101,11 +111,14 @@ SO101_PROFILE = RobotProfile(
         for name, lower, upper in SO101_JOINT_RANGES
     ),
     default_unit="normalized",
-    # The wrist camera is still placed by ``customize``; it becomes a CameraSpec with the camera PR.
+    cameras=(SO101_WRIST_CAMERA,),
     # The plugin's servos have always used 3.35 N m; Menagerie's class default is 2.94.
     actuator_forcerange=(-3.35, 3.35),
     customize=customize_so101,
     default_scene="single_pick_place",
+    # Menagerie's gripper frame, 5 mm behind the finger tips, with +z out of the jaws.
+    end_effectors=(EndEffector(site="gripperframe"),),
+    reach=0.367,
 )
 
-__all__ = ["SO101_JOINT_RANGES", "SO101_PROFILE", "customize_so101"]
+__all__ = ["SO101_JOINT_RANGES", "SO101_PROFILE", "SO101_WRIST_CAMERA", "customize_so101"]

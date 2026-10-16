@@ -8,7 +8,7 @@ The simulation thread renders camera frames into per-camera
 reads the latest frame per client and encodes it as JPEG. Streams wait
 for new frames on the event loop (:meth:`FrameBuffer.async_waiter`), so a
 client costs a task rather than a pooled thread. Control requests (reset,
-scene switch, home, seed, auto-reset, belt speed, object pose, shutdown) are enqueued
+scene switch, home, seed, auto-reset, belt speed, object pose, overview camera, replay, shutdown) are enqueued
 onto a command queue that the simulation thread drains, so MuJoCo
 *stepping* only ever happens on the simulation thread; the status callback
 passed to :func:`build_app` runs on the HTTP thread and is responsible for
@@ -24,22 +24,25 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 import cv2
+import numpy as np
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, ValidationError, field_validator, model_validator
+from starlette.concurrency import run_in_threadpool
 
+from physicalai_mujoco_plugin.compose import OverviewStyle  # noqa: TC001 - pydantic reads it at runtime
+from physicalai_mujoco_plugin.constants import MAX_SEED
 from physicalai_mujoco_plugin.studio_recorder import DEFAULT_TASK, MAX_EPISODES, MAX_TASK_CHARS, RecordingOptions
 
 if TYPE_CHECKING:
     import queue
     from collections.abc import AsyncIterator, Callable, Iterator, Mapping
-
-    import numpy as np
 
     from physicalai_mujoco_plugin.autopilot import AutopilotMode
 
@@ -48,18 +51,23 @@ _FRAME_WAIT_TIMEOUT_S = 1.0
 _SERVER_START_TIMEOUT_S = 5.0
 _SERVER_STOP_TIMEOUT_S = 5.0
 
-MAX_SEED = 2**32 - 1
-"""Largest accepted reset seed (fits a JavaScript number exactly)."""
 MIN_DWELL_S = 0.5
 MAX_DWELL_S = 120.0
 MAX_OBJECT_COORD_M = 2.0
 """Bound on each world coordinate accepted for an object pose."""
 _MIN_QUAT_NORM = 1e-6
+_WILDCARD_HOSTS = frozenset({"0.0.0.0", "::"})  # noqa: S104 - matched, not bound  # nosec B104
+MAX_REPLAY_FRAMES = 36_000
+"""Most frames ``POST /replay`` accepts: 20 minutes at 30 fps."""
+MAX_REPLAY_FPS = 1000.0
+MAX_REPLAY_BODY_BYTES = 16 * 1024 * 1024
+"""Largest ``POST /replay`` body; a longer one is refused before it is parsed."""
+_MAX_REPORTED_ERRORS = 3
 
 
 @dataclass(frozen=True)
 class ResetCommand:
-    """Reset/randomize the current scene."""
+    """Reset without changing the scene (``MuJoCoRobot.reset``): floating bases go home, then the scene randomizes."""
 
 
 @dataclass(frozen=True)
@@ -77,6 +85,13 @@ class ShutdownCommand:
 @dataclass(frozen=True)
 class HomeCommand:
     """Move the arm joints to the current scene's home pose."""
+
+
+@dataclass(frozen=True)
+class SetOverviewCommand:
+    """Move the scene's ``overview`` camera to another style's pose (``shoulder`` or ``front``)."""
+
+    style: OverviewStyle
 
 
 @dataclass(frozen=True)
@@ -130,17 +145,34 @@ class SetStudioRecordingCommand:
     options: RecordingOptions | None
 
 
+@dataclass(frozen=True, eq=False)
+class ReplayCommand:
+    """Play recorded joint positions back kinematically until a :class:`StopReplayCommand`."""
+
+    joint_positions: np.ndarray
+    """``(frames, joints)`` positions in the robot's units, as in its observations."""
+    fps: float
+
+
+@dataclass(frozen=True)
+class StopReplayCommand:
+    """End the replay and restore the physics state from before it."""
+
+
 SimCommand = (
     ResetCommand
     | SwitchSceneCommand
     | ShutdownCommand
     | HomeCommand
+    | SetOverviewCommand
     | SetSeedCommand
     | SetAutoResetCommand
     | SetBeltSpeedCommand
     | SetObjectPoseCommand
     | SetAutopilotCommand
     | SetStudioRecordingCommand
+    | ReplayCommand
+    | StopReplayCommand
 )
 
 MAX_BELT_SPEED = 0.10
@@ -179,6 +211,14 @@ class StudioRecordingRequest(BaseModel):
         return task
 
 
+class OverviewRequest(BaseModel):
+    """Body for ``POST /overview``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    style: OverviewStyle
+
+
 class SeedRequest(BaseModel):
     """Body for ``POST /seed``."""
 
@@ -214,6 +254,21 @@ class ObjectPoseRequest(BaseModel):
             msg = "'wxyz' must be a non-zero quaternion"
             raise ValueError(msg)
         return self
+
+
+class ReplayRequest(BaseModel):
+    """Body for ``POST /replay``: one row of joint positions per frame, in the robot's units."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    joint_positions: Annotated[list[list[FiniteFloat]], Field(min_length=1, max_length=MAX_REPLAY_FRAMES)]
+    fps: Annotated[FiniteFloat, Field(gt=0.0, le=MAX_REPLAY_FPS)]
+    base: Any = None
+    """Floating-base poses per frame. Must be null: replaying a free joint is not supported yet.
+
+    A floating-base robot still replays its joints; its base stays where it is, because physics
+    does not step during a replay.
+    """
 
 
 @dataclass(frozen=True)
@@ -361,6 +416,7 @@ def build_app(
     commands: queue.Queue[SimCommand],
     get_status: Callable[[], dict[str, Any]],
     get_leader: Callable[[], dict[str, Any]] | None = None,
+    check_replay: Callable[[np.ndarray], str | None] | None = None,
     jpeg_quality: int = 85,
 ) -> FastAPI:
     """Build the FastAPI application serving camera streams and control.
@@ -374,9 +430,19 @@ def build_app(
         get_status: Returns the live status dict: ``connected``, ``scene``,
             ``scenes`` (available ids), ``compatible_scenes`` (ids this
             robot can switch to), ``seed``, ``episode``, ``objects``
-            (free-object poses), and ``cameras`` (per-camera config).
+            (free-object poses), ``cameras`` (per-camera config),
+            ``viewer_url`` (the viser page, served at ``GET /viewer``), and
+            for floating bases ``floating_base``, ``fallen`` and ``bases``;
+            ``POST /overview`` reads ``overview_style``, ``overview_styles``
+            (the styles the scene offers) and ``overview_locked`` (why the
+            camera must not move now, or ``None``);
+            ``POST /replay`` also reads ``joint_names``, ``profile`` and
+            ``replay.unsupported_joints``.
         get_leader: Returns the virtual leader pose served at ``GET /leader``
             (see ``ConveyorAutomation.leader_snapshot``); no route without it.
+        check_replay: Checks ``POST /replay`` frames of shape ``(frames, joints)`` against the
+            robot's conversions and returns why they cannot be shown unchanged, or ``None``.
+            Without it, every replay is refused with ``409``.
         jpeg_quality: JPEG quality for streams and snapshots.
 
     Returns:
@@ -391,7 +457,7 @@ def build_app(
         return JSONResponse(status_code=422, content={"detail": detail})
 
     @app.get("/")
-    def root() -> dict[str, Any]:
+    def root(request: Request) -> dict[str, Any]:
         status = get_status()
         return {
             "service": service_name,
@@ -404,27 +470,60 @@ def build_app(
                 "switch_scene": "POST /scenes/{scene_id}",
                 "reset": "POST /reset",
                 "home": "POST /home",
+                "overview": "POST /overview",
                 "seed": "POST /seed",
                 "auto_reset": "POST /episode/auto-reset",
                 "belt_speed": "POST /conveyor/belt-speed",
                 "objects": "/objects",
                 "object_pose": "POST /objects/{joint}/pose",
+                "replay": "POST /replay",
+                "replay_stop": "POST /replay/stop",
                 "shutdown": "POST /shutdown",
+                "viewer": "/viewer",
             },
             "cameras": [camera["name"] for camera in status["cameras"]],
             "scene": status["scene"],
-            **{key: status[key] for key in ("profile", "tier", "joint_names", "units") if key in status},
+            **{
+                key: status[key]
+                for key in ("profile", "tier", "joint_names", "units", "floating_base", "fallen")
+                if key in status
+            },
+            "viewer_url": _viewer_url(status, request),
         }
 
     @app.get("/health")
     def health() -> dict[str, Any]:
         return get_status()
 
+    @app.get("/viewer")
+    def viewer(request: Request) -> RedirectResponse:
+        url = _viewer_url(get_status(), request)
+        if url is None:
+            raise HTTPException(status_code=404, detail="No web viewer is running (start without --no-gui)")
+        return RedirectResponse(url, status_code=307)
+
     _add_camera_routes(app, buffers=buffers, get_status=get_status, jpeg_quality=jpeg_quality)
     _add_scene_routes(app, commands=commands, get_status=get_status)
     _add_sim_control_routes(app, commands=commands, get_status=get_status)
+    _add_replay_routes(app, commands=commands, get_status=get_status, check=check_replay)
     _add_automation_routes(app, commands=commands, get_status=get_status, get_leader=get_leader)
     return app
+
+
+def _viewer_url(status: Mapping[str, Any], request: Request) -> str | None:
+    """Return the viser page as the client can reach it, or ``None`` without a web viewer.
+
+    A viewer bound to every interface (``0.0.0.0``, ``::``) is reached on the host the client
+    used for this server.
+    """
+    url = status.get("viewer_url")
+    if not url:
+        return None
+    parsed = urlsplit(str(url))
+    if parsed.hostname in _WILDCARD_HOSTS and request.url.hostname:
+        host = f"[{request.url.hostname}]" if ":" in request.url.hostname else request.url.hostname
+        return urlunsplit(parsed._replace(netloc=f"{host}:{parsed.port}" if parsed.port else host))
+    return str(url)
 
 
 def _compatible_scenes(status: Mapping[str, Any]) -> list[str]:
@@ -490,7 +589,9 @@ def _add_scene_routes(
         if scene_id not in status["scenes"]:
             raise HTTPException(status_code=404, detail=f"Unknown scene {scene_id!r}")
         if scene_id not in _compatible_scenes(status):
-            raise HTTPException(status_code=409, detail=f"Scene {scene_id!r} does not fit this robot's arm count")
+            raise HTTPException(
+                status_code=409, detail=f"Scene {scene_id!r} does not support this robot at its arm count"
+            )
         commands.put(SwitchSceneCommand(scene_id=scene_id))
         return {"status": "queued", "scene": scene_id}
 
@@ -515,6 +616,19 @@ def _add_sim_control_routes(
     def home() -> dict[str, Any]:
         commands.put(HomeCommand())
         return {"status": "queued"}
+
+    @app.post("/overview")
+    def overview(request: OverviewRequest) -> dict[str, Any]:
+        status = get_status()
+        if request.style != status.get("overview_style"):
+            locked = status.get("overview_locked")
+            if locked:
+                raise HTTPException(status_code=409, detail=locked)
+            if request.style not in status.get("overview_styles", ()):
+                detail = f"The current scene has no {request.style} overview camera; it keeps its own cameras"
+                raise HTTPException(status_code=409, detail=detail)
+        commands.put(SetOverviewCommand(style=request.style))
+        return {"status": "queued", "style": request.style}
 
     @app.post("/seed")
     def seed(request: SeedRequest) -> dict[str, Any]:
@@ -548,6 +662,111 @@ def _add_sim_control_routes(
         return {"status": "queued", "joint": joint}
 
 
+async def _read_body(request: Request, limit: int) -> bytes:
+    """Read a request body of at most *limit* bytes.
+
+    Returns:
+        The body.
+
+    Raises:
+        HTTPException: ``413`` if the body is longer than *limit*.
+    """
+    declared = request.headers.get("content-length", "")
+    oversized = declared.isdigit() and int(declared) > limit
+    body = bytearray()
+    if not oversized:
+        async for chunk in request.stream():
+            body += chunk
+            if len(body) > limit:
+                oversized = True
+                break
+    if oversized:
+        raise HTTPException(status_code=413, detail=f"The request body exceeds {limit} bytes")
+    return bytes(body)
+
+
+def _replay_command(
+    body: bytes, status: Mapping[str, Any], check: Callable[[np.ndarray], str | None] | None
+) -> ReplayCommand:
+    """Validate a ``POST /replay`` body against the running robot.
+
+    Returns:
+        The command for the sim thread.
+
+    Raises:
+        HTTPException: ``400`` for an invalid body, ``409`` when the simulation is not connected or
+            has channels a replay cannot place.
+    """
+    try:
+        request = ReplayRequest.model_validate_json(body)
+    except ValidationError as exc:
+        errors = exc.errors()
+        details = "; ".join(
+            f"{'.'.join(map(str, error['loc'])) or 'body'}: {error['msg']}" for error in errors[:_MAX_REPORTED_ERRORS]
+        )
+        if len(errors) > _MAX_REPORTED_ERRORS:
+            details += f" (and {len(errors) - _MAX_REPORTED_ERRORS} more)"
+        raise HTTPException(status_code=400, detail=f"Invalid replay request: {details}") from exc
+    if not status.get("connected", False):
+        raise HTTPException(status_code=409, detail="The simulation is not connected")
+    if request.base is not None:
+        profile = status.get("profile", "this robot")
+        reason = (
+            "replaying floating-base poses is not supported yet"
+            if status.get("floating_base")
+            else (f"{profile} has no floating base")
+        )
+        raise HTTPException(status_code=400, detail=f"'base' must be null: {reason}")
+    unsupported = list(status.get("replay", {}).get("unsupported_joints", []))
+    if unsupported:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot replay this robot: {', '.join(unsupported)} drive no hinge or slide joint directly "
+                "(tendon or site transmission), so their positions have no unique joint configuration"
+            ),
+        )
+    names = list(status.get("joint_names", []))
+    for index, row in enumerate(request.joint_positions):
+        if len(row) != len(names):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"joint_positions row {index} has {len(row)} values; expected {len(names)} ({', '.join(names)})"
+                ),
+            )
+    positions = np.asarray(request.joint_positions, dtype=np.float64)
+    if check is None:
+        # Fail closed: without the robot's own check the values cannot be validated here.
+        raise HTTPException(status_code=409, detail="This server cannot check replay positions")
+    problem = check(positions)
+    if problem is not None:
+        raise HTTPException(status_code=400, detail=f"Cannot replay joint_positions: {problem}")
+    return ReplayCommand(joint_positions=positions, fps=request.fps)
+
+
+def _add_replay_routes(
+    app: FastAPI,
+    *,
+    commands: queue.Queue[SimCommand],
+    get_status: Callable[[], dict[str, Any]],
+    check: Callable[[np.ndarray], str | None] | None,
+) -> None:
+    @app.post("/replay")
+    async def replay(request: Request) -> dict[str, Any]:
+        body = await _read_body(request, MAX_REPLAY_BODY_BYTES)
+        # Parsing a long trajectory and the status lock would stall the camera streams on the event loop.
+        command = await run_in_threadpool(lambda: _replay_command(body, get_status(), check))
+        commands.put(command)
+        frames = len(command.joint_positions)
+        return {"status": "queued", "frames": frames, "fps": command.fps, "duration_s": frames / command.fps}
+
+    @app.post("/replay/stop")
+    def replay_stop() -> dict[str, Any]:
+        commands.put(StopReplayCommand())
+        return {"status": "queued"}
+
+
 def _add_automation_routes(
     app: FastAPI,
     *,
@@ -566,8 +785,10 @@ def _add_automation_routes(
 
     @app.post("/autopilot")
     def autopilot(request: AutopilotRequest) -> dict[str, Any]:
-        if not get_status().get("autopilot", {}).get("available", False):
-            raise HTTPException(status_code=409, detail="The current scene has no autopilot")
+        autopilot_status = get_status().get("autopilot", {})
+        if not autopilot_status.get("available", False):
+            detail = autopilot_status.get("unavailable_reason") or "The current scene has no autopilot"
+            raise HTTPException(status_code=409, detail=detail)
         commands.put(SetAutopilotCommand(mode=request.mode))
         return {"status": "queued", "mode": request.mode}
 

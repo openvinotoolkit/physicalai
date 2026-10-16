@@ -211,6 +211,57 @@ def test_held_item_is_not_scored_as_a_miss(sim: tuple) -> None:
     assert sum(conveyor.status()["score"].values()) == 0
 
 
+@pytest.mark.parametrize("arms", [1, 2])
+def test_the_held_item_test_covers_every_arm(arms: int) -> None:
+    """P1: every attached arm's bodies count as the robot, so an item in either gripper is held."""
+    robot = MuJoCoRobot(scene="conveyor_sort", bimanual=arms == 2, cameras=[], substeps=1)
+    robot.connect()
+    try:
+        model, conveyor = robot._model, robot._automation.conveyor
+        prefixes = ("left_", "right_") if arms == 2 else ("",)
+        arm_bodies = {i for i in range(model.nbody) if int(model.body_rootid[i]) in robot._sim.robot_roots}
+        assert len(robot._sim.robot_roots) == arms
+        assert set(np.flatnonzero(conveyor._robot_body)) == arm_bodies
+        for prefix in prefixes:
+            assert model.body(f"{prefix}gripper").id in arm_bodies
+            assert model.body(f"{prefix}moving_jaw_so101_v1").id in arm_bodies
+    finally:
+        robot.disconnect()
+
+
+@pytest.mark.parametrize("prefix", ["left_", "right_"])
+def test_an_item_in_either_of_two_grippers_is_not_scored_as_stuck(prefix: str) -> None:
+    """P1: with two arms, an item touching either gripper stays in play; one touching nothing is scored."""
+    robot = MuJoCoRobot(scene="conveyor_sort", bimanual=True, cameras=[], substeps=1)
+    robot.connect()
+    try:
+        model, data, conveyor = robot._model, robot._data, robot._automation.conveyor
+        conveyor.set_active(False)
+        conveyor._config.stuck_s = 0.05
+        held, loose = conveyor._items[0], conveyor._items[1]
+        conveyor._on_belt[held.name] = held
+        conveyor._on_belt[loose.name] = loose
+        jaw = model.body(f"{prefix}moving_jaw_so101_v1").id
+        geom = next(g for g in range(model.ngeom) if model.geom_bodyid[g] == jaw and model.geom_contype[g])
+        mujoco.mj_forward(model, data)
+        in_jaw = data.geom_xpos[geom].copy()
+
+        for _ in range(60):
+            # Pin both off the belt: one inside the jaw, as a closed gripper holds it, one in mid-air.
+            for item, position in ((held, in_jaw), (loose, (0.0, 0.35, 0.3))):
+                data.qpos[item.qpos_adr : item.qpos_adr + 3] = position
+                data.qvel[item.dof_adr : item.dof_adr + 6] = 0.0
+            mujoco.mj_step(model, data)
+            conveyor.update(model, data)
+
+        assert held.body_id in conveyor._bodies_touching_robot(data)
+        assert held.name in conveyor._on_belt
+        assert loose.name not in conveyor._on_belt
+        assert conveyor.status()["score"]["missed"] == 1
+    finally:
+        robot.disconnect()
+
+
 def test_robot_runs_conveyor_and_keeps_belt_speed_across_switches() -> None:
     scene = get_scene("conveyor_sort")
     robot = MuJoCoRobot(scene=scene.scene_id, cameras=[], substeps=1)

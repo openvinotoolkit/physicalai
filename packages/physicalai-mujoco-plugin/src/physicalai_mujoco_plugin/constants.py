@@ -42,6 +42,25 @@ BIMANUAL_NUM_JOINTS: Final = 12
 DEFAULT_MUJOCO_OWNER_NAME: Final = "mujoco-so101-follow"
 DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME: Final = "mujoco-so101-bimanual-follow"
 
+MAX_SEED: Final = 2**32 - 1
+"""Largest accepted reset seed (``start --seed``, ``POST /seed``); it fits a JavaScript number exactly."""
+
+
+def default_owner_name(profile: str, num_arms: int = 1) -> str:
+    """Return the default zenoh owner name of a simulation (CLI-3).
+
+    Args:
+        profile: Robot profile name.
+        num_arms: Number of robots the scene attaches.
+
+    Returns:
+        ``mujoco-<profile>-follow``, with ``-bimanual`` before ``-follow`` for two robots. The
+        SO-101 names (:data:`DEFAULT_MUJOCO_OWNER_NAME`, :data:`DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME`)
+        follow the same rule.
+    """
+    return f"mujoco-{profile}-bimanual-follow" if num_arms == 2 else f"mujoco-{profile}-follow"  # noqa: PLR2004
+
+
 JOINT_LIMITS_DEG: Final = {
     "shoulder_pan": (-110.0, 110.0),
     "shoulder_lift": (-100.0, 100.0),

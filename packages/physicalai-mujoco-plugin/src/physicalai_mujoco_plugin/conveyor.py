@@ -144,6 +144,7 @@ class ConveyorSort:
         belt_actuator: int,
         config: ConveyorConfig,
         rng: np.random.Generator,
+        robot_roots: tuple[int, ...] = (),
     ) -> None:
         """Use `maybe_create` instead; it resolves names to MuJoCo ids."""
         self._model = model
@@ -160,12 +161,11 @@ class ConveyorSort:
         self._on_belt: dict[str, ConveyorItem] = {}
         self._rest_since: dict[str, float] = {}
         self._off_since: dict[str, float] = {}
-        # Arm bodies (everything under the robot's root body) for the in-gripper test.
+        # Arm bodies (everything under each robot's root body) for the in-gripper test.
         geom_body = np.asarray(model.geom_bodyid, dtype=np.int64)
         root = np.asarray(model.body_rootid)
-        base = _robot_root(model)
         self._geom_body = geom_body
-        self._robot_body = (root == base) if base >= 0 else np.zeros(int(model.nbody), dtype=bool)
+        self._robot_body = np.isin(root, np.asarray(robot_roots, dtype=np.int64))
         self._episode = _Episode()
         self._episode_count = 0
         self._last_episode: dict[str, int] | None = None
@@ -189,8 +189,21 @@ class ConveyorSort:
         rng: np.random.Generator,
         belt_speed: float = DEFAULT_BELT_SPEED,
         active: bool = True,
+        robot_roots: tuple[int, ...] | None = None,
     ) -> ConveyorSort | None:
-        """Return a controller when the model has a conveyor belt, else ``None``."""
+        """Return a controller when the model has a conveyor belt, else ``None``.
+
+        Args:
+            model: The compiled scene.
+            rng: Generator for the belt feed.
+            belt_speed: Belt surface speed in m/s.
+            active: Whether the belt and its episodes start running.
+            robot_roots: Root body of every attached arm, whose contacts mark an item as held;
+                ``None`` takes the single SO-101's ``base``.
+
+        Returns:
+            The controller, or ``None`` without a belt, an item pool or a reject bin.
+        """
         import mujoco  # noqa: PLC0415
 
         belt_joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, BELT_JOINT)
@@ -217,6 +230,7 @@ class ConveyorSort:
             belt_actuator=int(belt_actuator),
             config=config,
             rng=rng,
+            robot_roots=_robot_roots(model) if robot_roots is None else robot_roots,
         )
         helper._active = active
         helper._episode.next_spawn_at = 0.0
@@ -531,15 +545,16 @@ def _body_id(model: object, name: str) -> int:
     return int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name))
 
 
-def _robot_root(model: object) -> int:
-    """Id of the arm's root body.
+def _robot_roots(model: object) -> tuple[int, ...]:
+    """Root body of a single unprefixed SO-101, for callers that compile the scene themselves.
 
     Returns:
-        The ``base`` body id, or -1 when the model has no SO-101 arm.
+        The ``base`` body id, or nothing when the model has no such body.
     """
     import mujoco  # noqa: PLC0415
 
-    return int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base"))
+    base = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base"))
+    return (base,) if base >= 0 else ()
 
 
 def _clamp_speed(speed: float) -> float:
