@@ -17,7 +17,7 @@ import pytest
 
 from physicalai.config import Config, ConfigError
 
-# SO101 imports scservo_sdk at module load; keep unit tests hardware-free.
+# FakeRobot imports scservo_sdk at module load; keep unit tests hardware-free.
 # Use setdefault — not patch.dict(sys.modules) — because patch.dict restores by
 # clearing sys.modules and drops modules imported while the patch is active
 # (e.g. jsonargparse ``build_parser``), which poisons later YAML config loads.
@@ -258,7 +258,7 @@ class TestPolicySourceConfig:
 
 class TestTeleopSourceConfig:
     def test_leader_nested_round_trip(self) -> None:
-        from physicalai.robot import SO101
+        from physicalai_so101_plugin import SO101
         from physicalai.runtime import TeleopSource
 
         calibration = {
@@ -274,10 +274,10 @@ class TestTeleopSourceConfig:
         wire = _assert_construction_round_trip(source)
         assert wire["class_path"] == "physicalai.runtime.TeleopSource"
         assert "to_action" not in wire["init_args"]
-        assert wire["init_args"]["leader"]["class_path"] == "physicalai.robot.SO101"
+        assert wire["init_args"]["leader"]["class_path"] == "physicalai_so101_plugin.SO101"
 
     def test_supplied_to_action_fails(self) -> None:
-        from physicalai.robot import SO101
+        from physicalai_so101_plugin import SO101
         from physicalai.runtime import TeleopSource
 
         calibration = {
@@ -410,7 +410,7 @@ _SAMPLE_CALIBRATION: dict[str, Any] = {
 
 
 def _make_so101(*, port: str = "/dev/ttyACM0") -> Any:
-    from physicalai.robot import SO101
+    from physicalai_so101_plugin import SO101
 
     return SO101(port=port, calibration=_SAMPLE_CALIBRATION)
 
@@ -440,7 +440,7 @@ class TestRobotRuntimeConfig:
         wire = _assert_construction_round_trip(runtime)
         assert wire["class_path"] == "physicalai.runtime.RobotRuntime"
         assert wire["init_args"]["fps"] == 30.0
-        assert wire["init_args"]["robot"]["class_path"] == "physicalai.robot.SO101"
+        assert wire["init_args"]["robot"]["class_path"] == "physicalai_so101_plugin.SO101"
         assert wire["init_args"]["action_source"]["class_path"] == "physicalai.runtime.PolicySource"
         assert wire["init_args"]["cameras"]["wrist"]["class_path"] == "physicalai.capture.UVCCamera"
         assert wire["init_args"]["callbacks"][0]["class_path"] == "physicalai.runtime.ConsoleCallback"
@@ -462,7 +462,7 @@ class TestRobotRuntimeConfig:
     ) -> None:
         from physicalai.capture import UVCCamera
         from physicalai.cli.run import build_parser
-        from physicalai.robot import SO101
+        from physicalai_so101_plugin import SO101
         from physicalai.runtime import ConsoleCallback, PolicySource, RobotRuntime
 
         runtime = _make_full_runtime(inference_model)
@@ -491,7 +491,7 @@ class TestRobotRuntimeConfig:
         restored_wire = json.loads(json.dumps(Config.from_instance(restored).to_dict()))
         assert restored_wire["class_path"] == "physicalai.runtime.RobotRuntime"
         assert restored_wire["init_args"]["fps"] == 30.0
-        assert restored_wire["init_args"]["robot"]["class_path"] == "physicalai.robot.SO101"
+        assert restored_wire["init_args"]["robot"]["class_path"] == "physicalai_so101_plugin.SO101"
         assert restored_wire["init_args"]["action_source"]["class_path"] == "physicalai.runtime.PolicySource"
         assert restored_wire["init_args"]["cameras"]["wrist"]["class_path"] == "physicalai.capture.UVCCamera"
         assert restored_wire["init_args"]["callbacks"][0]["class_path"] == "physicalai.runtime.ConsoleCallback"

@@ -115,7 +115,7 @@ class TestMetadataRoundtrip:
         metadata = {
             "protocol_version": ROBOT_TRANSPORT_PROTOCOL_VERSION,
             "name": "left-arm",
-            "robot_class": "physicalai.robot.so101.SO101",
+            "robot_class": "physicalai_so101_plugin.SO101",
             "device_ids": ["serial:ttyUSB0"],
             "host": "myhost",
             "joint_names": ["a", "b"],

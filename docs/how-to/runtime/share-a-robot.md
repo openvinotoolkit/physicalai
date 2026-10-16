@@ -26,7 +26,7 @@ directly to the constructor or exported explicitly:
 ```python
 import numpy as np
 from physicalai.config import Config
-from physicalai.robot import SO101, SharedRobot
+from physicalai_so101_plugin import SO101, SharedRobot
 
 driver = SO101(
     port="/dev/ttyUSB0",

@@ -20,7 +20,7 @@ def build_robot(args: argparse.Namespace) -> Robot:
     """
     driver: Robot
     if args.robot == "so101":
-        from physicalai.robot import SO101
+        from physicalai_so101_plugin import SO101
 
         if not args.port:
             sys.exit("error: --port is required for so101")
@@ -92,7 +92,7 @@ def parse_camera_specs(
 
 def prompt_torque_disable(robot: Robot) -> None:
     """Ask the user whether to disable torque after a run completes (SO101 only)."""
-    from physicalai.robot import SO101
+    from physicalai_so101_plugin import SO101
 
     if not isinstance(robot, SO101):
         print("Torque prompt skipped (not an SO101 robot).")

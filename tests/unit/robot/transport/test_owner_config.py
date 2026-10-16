@@ -47,11 +47,11 @@ class TestNormalizeRobotConfigClassPath:
     def test_string_path_stored_as_given_without_importing(self) -> None:
         # No scservo_sdk mock: a string path is trusted and never imported here,
         # so the owner envelope can be built where the driver is not installed.
-        defining = "physicalai.robot.so101.so101.SO101"
+        defining = "physicalai_so101_plugin.SO101"
         assert normalize_robot_config({"class_path": defining})["class_path"] == defining
 
     def test_public_path_stored_as_given(self) -> None:
-        public = "physicalai.robot.SO101"
+        public = "physicalai_so101_plugin.SO101"
         assert normalize_robot_config({"class_path": public})["class_path"] == public
 
     @pytest.mark.parametrize("class_path", ["   ", "NotDotted"])
@@ -223,7 +223,7 @@ class TestRobotOwnerConfig:
 
     def test_defining_module_path_stored_as_given(self) -> None:
         # No scservo_sdk mock: storing the recipe must not import the driver.
-        defining = "physicalai.robot.so101.so101.SO101"
+        defining = "physicalai_so101_plugin.SO101"
         config = RobotOwnerConfig(
             name="left-arm",
             robot={

@@ -5,7 +5,7 @@
 ```python
 from physicalai.runtime import RobotRuntime, PolicySource, SyncExecution
 from physicalai.inference import InferenceModel
-from physicalai.robot import SO101
+from physicalai_so101_plugin import SO101
 from physicalai.capture import UVCCamera
 
 runtime = RobotRuntime(
