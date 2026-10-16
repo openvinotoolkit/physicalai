@@ -897,6 +897,49 @@ class TestClose:
 
         assert events == ["callback", "adapter"]
 
+    def test_all_resources_are_closed_when_a_callback_fails(
+        self,
+        tmp_path: Path,
+        mock_adapter: MagicMock,
+    ) -> None:
+        events: list[str] = []
+        first = MagicMock()
+        second = MagicMock()
+
+        def fail_callback() -> None:
+            events.append("first")
+            raise RuntimeError("callback cleanup failed")
+
+        first.on_close.side_effect = fail_callback
+        second.on_close.side_effect = lambda: events.append("second")
+        mock_adapter.close.side_effect = lambda: events.append("adapter")
+        model = InferenceModel(_make_export_dir(tmp_path), callbacks=[first, second])
+
+        with pytest.raises(ExceptionGroup, match="Errors occurred while closing") as exc_info:
+            model.close()
+
+        assert events == ["first", "second", "adapter"]
+        assert len(exc_info.value.exceptions) == 1
+        assert str(exc_info.value.exceptions[0]) == "callback cleanup failed"
+        model.close()  # Cleanup is attempted once, even when a hook raises.
+        assert events == ["first", "second", "adapter"]
+
+    def test_adapter_is_closed_when_its_close_hook_fails_after_callbacks(
+        self,
+        tmp_path: Path,
+        mock_adapter: MagicMock,
+    ) -> None:
+        callback = MagicMock()
+        mock_adapter.close.side_effect = RuntimeError("adapter cleanup failed")
+        model = InferenceModel(_make_export_dir(tmp_path), callbacks=[callback])
+
+        with pytest.raises(ExceptionGroup, match="Errors occurred while closing") as exc_info:
+            model.close()
+
+        callback.on_close.assert_called_once_with()
+        assert len(exc_info.value.exceptions) == 1
+        assert str(exc_info.value.exceptions[0]) == "adapter cleanup failed"
+
     def test_context_manager_closes_the_model(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
         with InferenceModel(_make_export_dir(tmp_path)) as model:
             assert isinstance(model, InferenceModel)

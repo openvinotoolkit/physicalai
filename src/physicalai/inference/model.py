@@ -366,8 +366,13 @@ class InferenceModel:
     def close(self) -> None:
         """Release the adapter's resources.
 
-        Notifies callbacks, then closes the adapter. Later calls have no effect.
-        Adapters that run a worker process or hold device memory release it here.
+        Notifies every callback, then closes the adapter, even if a cleanup hook
+        fails. Any cleanup failures are raised together as an ``ExceptionGroup``.
+        Later calls have no effect. Adapters that run a worker process or hold
+        device memory release it here.
+
+        Raises:
+            ExceptionGroup: If one or more callbacks or the adapter fail to close.
 
         Examples:
             >>> with InferenceModel("./exports/act_policy") as policy:
@@ -376,9 +381,19 @@ class InferenceModel:
         if self._closed:
             return
         self._closed = True
+        errors: list[Exception] = []
         for callback in self.callbacks:
-            callback.on_close()
-        self.adapter.close()
+            try:
+                callback.on_close()
+            except Exception as exc:  # noqa: BLE001  # Continue closing resources after a hook failure.
+                errors.append(exc)
+        try:
+            self.adapter.close()
+        except Exception as exc:  # noqa: BLE001  # Continue cleanup before reporting failures.
+            errors.append(exc)
+        if errors:
+            msg = "Errors occurred while closing the inference model"
+            raise ExceptionGroup(msg, errors)
 
     def __enter__(self) -> Self:
         """Enter the context manager.
