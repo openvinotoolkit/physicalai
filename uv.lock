@@ -1477,7 +1477,7 @@ plugin-stararm = [
     { name = "physicalai-stararm-plugin" },
 ]
 plugin-trossen = [
-    { name = "physicalai-trossen-plugin" },
+    { name = "physicalai-trossen-plugin", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
 ]
 realsense = [
     { name = "pyrealsense2", marker = "sys_platform != 'darwin'" },
@@ -1485,7 +1485,7 @@ realsense = [
 ]
 robots = [
     { name = "physicalai-so101-plugin" },
-    { name = "physicalai-trossen-plugin" },
+    { name = "physicalai-trossen-plugin", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
 ]
 so101 = [
     { name = "physicalai-so101-plugin" },
@@ -1500,7 +1500,7 @@ transport = [
     { name = "msgpack" },
 ]
 trossen = [
-    { name = "physicalai-trossen-plugin" },
+    { name = "physicalai-trossen-plugin", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
 ]
 
 [package.dev-dependencies]
@@ -1546,9 +1546,9 @@ requires-dist = [
     { name = "physicalai-so101-plugin", marker = "python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'robots'", editable = "packages/physicalai-so101-plugin" },
     { name = "physicalai-so101-plugin", marker = "python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'so101'", editable = "packages/physicalai-so101-plugin" },
     { name = "physicalai-stararm-plugin", marker = "python_full_version >= '3.12' and extra == 'plugin-stararm'", editable = "packages/physicalai-stararm-plugin" },
-    { name = "physicalai-trossen-plugin", marker = "python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'plugin-trossen'", editable = "packages/physicalai-trossen-plugin" },
-    { name = "physicalai-trossen-plugin", marker = "python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'robots'", editable = "packages/physicalai-trossen-plugin" },
-    { name = "physicalai-trossen-plugin", marker = "python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'trossen'", editable = "packages/physicalai-trossen-plugin" },
+    { name = "physicalai-trossen-plugin", marker = "(python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'darwin' and extra == 'plugin-trossen') or (python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'linux' and extra == 'plugin-trossen')", editable = "packages/physicalai-trossen-plugin" },
+    { name = "physicalai-trossen-plugin", marker = "(python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'darwin' and extra == 'robots') or (python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'linux' and extra == 'robots')", editable = "packages/physicalai-trossen-plugin" },
+    { name = "physicalai-trossen-plugin", marker = "(python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'darwin' and extra == 'trossen') or (python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'linux' and extra == 'trossen')", editable = "packages/physicalai-trossen-plugin" },
     { name = "pydantic", specifier = ">=2.5" },
     { name = "pynokhwa", specifier = "==0.1.4" },
     { name = "pypylon", marker = "extra == 'basler'" },

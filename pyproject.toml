@@ -84,15 +84,17 @@ robots = [
     "physicalai[trossen]",
 ]
 # First-party plugin packages from packages/. They require Python 3.12+, so on
-# 3.11 these extras install nothing. physicalai-lerobot-plugin is left out: it
-# pulls in torch and downgrades shared dependencies such as OpenCV.
+# 3.11 these extras install nothing. The Trossen plugin also requires
+# trossen-arm, which is distributed only for macOS and Linux.
+# physicalai-lerobot-plugin is left out: it pulls in torch and downgrades shared
+# dependencies such as OpenCV.
 plugin-mujoco = ["physicalai-mujoco-plugin; python_version >= '3.12'"]
 plugin-rebot-b601 = ["physicalai-rebot-b601-plugin; python_version >= '3.12'"]
 plugin-stararm = ["physicalai-stararm-plugin; python_version >= '3.12'"]
 plugin-so101 = ["physicalai-so101-plugin; python_version >= '3.12' and python_version < '3.14'"]
 so101 = ["physicalai-so101-plugin; python_version >= '3.12' and python_version < '3.14'"]
-plugin-trossen = ["physicalai-trossen-plugin; python_version >= '3.12' and python_version < '3.14'"]
-trossen = ["physicalai-trossen-plugin; python_version >= '3.12' and python_version < '3.14'"]
+plugin-trossen = ["physicalai-trossen-plugin; python_version >= '3.12' and python_version < '3.14' and (sys_platform == 'darwin' or sys_platform == 'linux')"]
+trossen = ["physicalai-trossen-plugin; python_version >= '3.12' and python_version < '3.14' and (sys_platform == 'darwin' or sys_platform == 'linux')"]
 
 [dependency-groups]
 dev = ["pytest", "mypy", "pyrefly", "ruff>=0.15.12", "prek", "physicalai-so101-plugin"]
