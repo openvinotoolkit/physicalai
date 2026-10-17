@@ -48,6 +48,13 @@ def test_driver_exports_plugin_class_path() -> None:
     }
 
 
+def test_legacy_so101_package_exports_plugin_driver() -> None:
+    from physicalai.robot.so101 import SO101 as LegacySO101
+    from physicalai_so101_plugin import SO101 as PluginSO101
+
+    assert LegacySO101 is PluginSO101
+
+
 def test_calibration_object_encodes_to_dict() -> None:
     """Accept typed calibration objects in exportable SO-101 recipes."""
     from physicalai_so101_plugin import SO101

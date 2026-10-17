@@ -17,7 +17,7 @@ import pytest
 
 from physicalai.config import Config, ConfigError
 
-# FakeRobot imports scservo_sdk at module load; keep unit tests hardware-free.
+# The SO101 plugin imports scservo_sdk at module load; keep unit tests hardware-free.
 # Use setdefault — not patch.dict(sys.modules) — because patch.dict restores by
 # clearing sys.modules and drops modules imported while the patch is active
 # (e.g. jsonargparse ``build_parser``), which poisons later YAML config loads.

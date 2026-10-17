@@ -45,7 +45,7 @@ the leader handle and trigger meshes.
 
 ## Bimanual examples
 
-Calibration examples and a teleoperation recipe are bundled under
+The repository provides calibration examples and a teleoperation recipe under
 [`examples/`](examples/). Run the recipe from the repository root after editing
 the serial ports and calibration paths:
 

@@ -180,6 +180,16 @@ class TestURDF:
         assert urdf_file.exists(), f"URDF not found at {urdf_file}"
         assert urdf_file.stat().st_size > 0
 
+    def test_follower_scene_references_an_existing_model(self) -> None:
+        from physicalai_so101_plugin import get_urdf_path
+
+        scene_path = get_urdf_path() / "so101-follower" / "scene.xml"
+        include = ElementTree.parse(scene_path).find("include")
+        assert include is not None
+        included_file = include.get("file")
+        assert included_file is not None
+        assert (scene_path.parent / included_file).is_file()
+
     def test_asset_root_resolver(self) -> None:
         from physicalai_so101_plugin.bimanual_studio_catalog import (
             _get_bimanual_urdf_root,

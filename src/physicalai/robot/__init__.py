@@ -68,9 +68,9 @@ def __getattr__(name: str) -> object:
         AttributeError: If ``name`` does not match a known lazy-loaded symbol.
     """
     if name == "SO101":
-        from physicalai_so101_plugin import SO101
+        from physicalai.robot.plugins import load_robot_plugin
 
-        return SO101
+        return load_robot_plugin("physicalai_so101_plugin", "so101").SO101
 
     if name == "SharedRobot":
         from physicalai.robot.transport import SharedRobot
@@ -78,9 +78,9 @@ def __getattr__(name: str) -> object:
         return SharedRobot
 
     if name in {"BimanualWidowXAI", "WidowXAI"}:
-        from physicalai_trossen_plugin import BimanualWidowXAI, WidowXAI
+        from physicalai.robot.plugins import load_robot_plugin
 
-        return {"BimanualWidowXAI": BimanualWidowXAI, "WidowXAI": WidowXAI}[name]
+        return getattr(load_robot_plugin("physicalai_trossen_plugin", "trossen"), name)
 
     msg = f"module {__name__!r} has no attribute {name!r}"
     raise AttributeError(msg)

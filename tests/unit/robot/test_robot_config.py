@@ -43,6 +43,26 @@ class TestTrossenCompatibilityAliases:
         assert isinstance(robot, PluginWidowXAI)
         assert Config.from_instance(robot).to_dict()["class_path"] == "physicalai_trossen_plugin.WidowXAI"
 
+    def test_legacy_trossen_package_exports_plugin_driver(self) -> None:
+        pytest.importorskip("trossen_arm", reason="trossen-arm SDK is not installed")
+
+        from physicalai.robot.trossen import WidowXAI as LegacyWidowXAI
+        from physicalai_trossen_plugin import WidowXAI as PluginWidowXAI
+
+        assert LegacyWidowXAI is PluginWidowXAI
+
+
+def test_missing_robot_plugin_names_the_install_extra(monkeypatch: pytest.MonkeyPatch) -> None:
+    import physicalai.robot.plugins as plugins
+
+    def missing_plugin(_: str) -> object:
+        raise ModuleNotFoundError(name="physicalai_so101_plugin")
+
+    monkeypatch.setattr(plugins, "import_module", missing_plugin)
+
+    with pytest.raises(ModuleNotFoundError, match=r"physicalai\[so101\]"):
+        plugins.load_robot_plugin("physicalai_so101_plugin", "so101")
+
 
 # ---------------------------------------------------------------------------
 # SharedRobot (construction recipe only — no session / connection state)
