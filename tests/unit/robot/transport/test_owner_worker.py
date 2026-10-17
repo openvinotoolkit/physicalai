@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import io
 import json
+import queue
 import threading
 import time
 from dataclasses import dataclass, field
@@ -135,6 +136,8 @@ def test_disconnect_failure_upgrades_clean_shutdown(monkeypatch: Any) -> None:  
         state_pub=_StatePublisher(),
         action_sub=_ActionSubscriber(),
         metadata_queryable=SimpleNamespace(undeclare=lambda: None),
+        torque_queryable=SimpleNamespace(undeclare=lambda: None),
+        torque_commands=queue.Queue(),
         session=SimpleNamespace(close=lambda: None),
         locks=SimpleNamespace(release_all=lambda: None),
     )
@@ -159,6 +162,8 @@ def test_ready_failure_still_disconnects(monkeypatch: Any) -> None:  # noqa: ANN
         state_pub=_StatePublisher(),
         action_sub=_ActionSubscriber(),
         metadata_queryable=SimpleNamespace(undeclare=lambda: None),
+        torque_queryable=SimpleNamespace(undeclare=lambda: None),
+        torque_commands=queue.Queue(),
         session=SimpleNamespace(close=lambda: None),
         locks=SimpleNamespace(release_all=lambda: None),
     )

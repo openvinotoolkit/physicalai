@@ -123,3 +123,45 @@ class FakeRobot:
 
     def is_connected(self) -> bool:
         return self._connected
+
+
+@export_config
+class TorqueFakeRobot(FakeRobot):
+    """Fake robot implementing optional checked torque control for transport tests."""
+
+    def __init__(
+        self,
+        port: str = "/dev/fake0",
+        *,
+        device_ids: tuple[str, ...] | None = None,
+        fail_connect: bool = False,
+        fail_observation: bool = False,
+        fail_observation_after: int | None = None,
+        fail_disconnect: bool = False,
+        disconnect_marker: str | None = None,
+        torque_marker: str | None = None,
+        fail_torque: bool = False,
+    ) -> None:
+        super().__init__(
+            port,
+            device_ids=device_ids,
+            fail_connect=fail_connect,
+            fail_observation=fail_observation,
+            fail_observation_after=fail_observation_after,
+            fail_disconnect=fail_disconnect,
+            disconnect_marker=disconnect_marker,
+        )
+        self._torque_marker = torque_marker
+        self._fail_torque = fail_torque
+        self._torque_enabled = False
+
+    def set_torque(self, *, enabled: bool) -> None:
+        if not self._connected:
+            msg = "Robot is not connected. Call connect() first."
+            raise ConnectionError(msg)
+        if self._fail_torque:
+            msg = "fake torque write failure"
+            raise RuntimeError(msg)
+        self._torque_enabled = enabled
+        if self._torque_marker is not None:
+            Path(self._torque_marker).write_text(str(enabled), encoding="utf-8")
