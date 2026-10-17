@@ -52,6 +52,11 @@
       "package-name": "physicalai-mujoco-plugin",
       "changelog-path": "CHANGELOG.md"
     },
+    "packages/physicalai-so101-plugin": {
+      "release-type": "python",
+      "package-name": "physicalai-so101-plugin",
+      "changelog-path": "CHANGELOG.md"
+    },
     "packages/physicalai-trossen-plugin": {
       "release-type": "python",
       "package-name": "physicalai-trossen-plugin",
