@@ -20,7 +20,7 @@ from physicalai.config import export_config
 from physicalai.robot.interface import Robot, RobotObservation
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from physicalai.capture.frame import Frame
 
@@ -98,27 +98,68 @@ class CompositeRobot(Generic[*RobotTs]):
 
     @property
     def joint_names(self) -> list[str]:
-        """Component-prefixed joint names in declared component order."""
-        return [
-            f"{component_name}_{joint_name}"
-            for component_name, robot in self._robots.items()
-            for joint_name in robot.joint_names
-        ]
+        """Component-prefixed joint names in declared component order.
+
+        Raises:
+            ValueError: If two component/joint pairs produce the same prefixed name.
+        """
+        joint_names: list[str] = []
+        seen: dict[str, tuple[str, str]] = {}
+        for component_name, robot in self._robots.items():
+            for joint_name in robot.joint_names:
+                aggregate = f"{component_name}_{joint_name}"
+                previous = seen.get(aggregate)
+                if previous is not None:
+                    previous_component, previous_joint = previous
+                    msg = (
+                        f"Joint name {aggregate!r} comes from both "
+                        f"{previous_component!r} joint {previous_joint!r} and "
+                        f"{component_name!r} joint {joint_name!r}. "
+                        "Prefixed joint names must be unique."
+                    )
+                    raise ValueError(msg)
+                seen[aggregate] = (component_name, joint_name)
+                joint_names.append(aggregate)
+        return joint_names
 
     def connect(self) -> None:
         """Connect every component, rolling back components connected by this call."""
-        connected: list[Robot] = []
+        self._connect_with_rollback()
+
+    def _connect_with_rollback(self) -> list[Callable[[], None]]:
+        """Connect components and return callbacks for connections opened here.
+
+        This private helper lets a containing composite roll back a nested
+        composite without disconnecting any of its components that were already
+        connected before this attempt.
+
+        Returns:
+            Disconnect callbacks for connections opened by this call.
+
+        """
+        rollbacks: list[Callable[[], None]] = []
         try:
             for robot in self._robots.values():
-                was_connected = robot.is_connected()
-                robot.connect()
-                if not was_connected:
-                    connected.append(robot)
+                rollbacks.extend(self._connect_component(robot))
         except Exception:
-            for connected_robot in reversed(connected):
+            for rollback in reversed(rollbacks):
                 with suppress(Exception):
-                    connected_robot.disconnect()
+                    rollback()
             raise
+        return rollbacks
+
+    @staticmethod
+    def _connect_component(robot: Robot) -> list[Callable[[], None]]:
+        """Connect one component and return callbacks for newly opened connections.
+
+        Returns:
+            Disconnect callbacks for connections opened by this call.
+        """
+        if isinstance(robot, CompositeRobot):
+            return robot._connect_with_rollback()  # noqa: SLF001
+        was_connected = robot.is_connected()
+        robot.connect()
+        return [] if was_connected else [robot.disconnect]
 
     def disconnect(self) -> None:
         """Disconnect every component and re-raise the first disconnect failure."""
@@ -185,6 +226,7 @@ class CompositeRobot(Generic[*RobotTs]):
             offset += joint_count
 
 
+@export_config(class_path="physicalai.robot.BimanualRobot")
 class BimanualRobot(CompositeRobot[LeftRobotT, RightRobotT], Generic[LeftRobotT, RightRobotT]):
     """Two named robot components with conventional ``left`` and ``right`` prefixes."""
 

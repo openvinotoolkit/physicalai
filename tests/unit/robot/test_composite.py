@@ -130,6 +130,22 @@ class TestCompositeRobot:
         assert already_connected.is_connected()
         assert already_connected.disconnect_calls == 0
 
+    def test_connect_rollback_preserves_nested_preexisting_connections(self) -> None:
+        left = _Robot("left", [1.0])
+        left.connect()
+        right = _Robot("right", [2.0])
+        nested = BimanualRobot(left=left, right=right)
+        failing = _Robot("failing", [3.0], fail_connect=True)
+        robot = CompositeRobot({"nested": nested, "failing": failing})
+
+        with pytest.raises(ConnectionError, match="failing"):
+            robot.connect()
+
+        assert left.is_connected()
+        assert left.disconnect_calls == 0
+        assert not right.is_connected()
+        assert right.disconnect_calls == 1
+
     def test_disconnect_attempts_every_component(self) -> None:
         failing = _Robot("first", [1.0], fail_disconnect=True)
         other = _Robot("second", [2.0])
@@ -146,6 +162,14 @@ class TestCompositeRobot:
             CompositeRobot({})
         with pytest.raises(ValueError, match="Component names"):
             CompositeRobot({" arm ": _Robot("arm", [1.0])})
+
+    def test_rejects_ambiguous_prefixed_joint_names(self) -> None:
+        robot = CompositeRobot(
+            {"arm": _Robot("left_joint", [1.0]), "arm_left": _Robot("joint", [2.0])}
+        )
+
+        with pytest.raises(ValueError, match="Prefixed joint names must be unique"):
+            _ = robot.joint_names
 
     def test_config_round_trip_preserves_named_components(self) -> None:
         robot = CompositeRobot({"base": FakeRobot("base"), "arm": FakeRobot("arm")})
@@ -180,3 +204,26 @@ class TestBimanualRobot:
         assert robot.left is left
         assert robot.right is right
         assert robot.joint_names == ["left_joint_0", "right_joint_0"]
+
+    def test_config_round_trip_preserves_left_and_right_components(self) -> None:
+        robot = BimanualRobot(left=FakeRobot("left"), right=FakeRobot("right"))
+
+        config = Config.from_instance(robot)
+        restored = config.instantiate()
+
+        assert config.class_path == "physicalai.robot.BimanualRobot"
+        assert isinstance(restored, BimanualRobot)
+        assert restored.joint_names == [
+            "left_joint_0",
+            "left_joint_1",
+            "left_joint_2",
+            "left_joint_3",
+            "left_joint_4",
+            "left_joint_5",
+            "right_joint_0",
+            "right_joint_1",
+            "right_joint_2",
+            "right_joint_3",
+            "right_joint_4",
+            "right_joint_5",
+        ]

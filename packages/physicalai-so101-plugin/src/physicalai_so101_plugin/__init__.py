@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING
 from physicalai_so101_plugin._urdf import get_urdf_path as get_urdf_path
 
 if TYPE_CHECKING:
-    from physicalai_so101_plugin.bimanual import BimanualSO101 as BimanualSO101
-    from physicalai_so101_plugin.bimanual import BimanualSO101Observation as BimanualSO101Observation
+    from physicalai_so101_plugin.bimanual_so101 import BimanualSO101 as BimanualSO101
+    from physicalai_so101_plugin.bimanual_so101 import BimanualSO101Observation as BimanualSO101Observation
     from physicalai_so101_plugin.calibration import SO101Calibration as SO101Calibration
     from physicalai_so101_plugin.calibration import SO101JointCalibration as SO101JointCalibration
     from physicalai_so101_plugin.so101 import SO101 as SO101
@@ -44,6 +44,6 @@ def __getattr__(name: str) -> object:
     if name in {"SO101", "SO101Observation"}:
         return getattr(import_module("physicalai_so101_plugin.so101"), name)
     if name in {"BimanualSO101", "BimanualSO101Observation"}:
-        return getattr(import_module("physicalai_so101_plugin.bimanual"), name)
+        return getattr(import_module("physicalai_so101_plugin.bimanual_so101"), name)
     msg = f"module {__name__!r} has no attribute {name!r}"
     raise AttributeError(msg)
