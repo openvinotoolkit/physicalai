@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
 dependencies = [
-    "physicalai>=0.1.1",
+    "physicalai>=0.4.0",
     "physicalai-studio-plugin>=0.3.0",
     "feetech-servo-sdk>=1.0",
     "loguru>=0.7",
