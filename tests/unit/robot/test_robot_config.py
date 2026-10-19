@@ -64,6 +64,13 @@ def test_missing_robot_plugin_names_the_install_extra(monkeypatch: pytest.Monkey
         plugins.load_robot_plugin("physicalai_so101_plugin", "so101")
 
 
+def test_robot_plugin_rejects_unapproved_module() -> None:
+    import physicalai.robot.plugins as plugins
+
+    with pytest.raises(ValueError, match="Unsupported robot plugin module"):
+        plugins.load_robot_plugin("untrusted.plugin", "so101")
+
+
 # ---------------------------------------------------------------------------
 # SharedRobot (construction recipe only — no session / connection state)
 # ---------------------------------------------------------------------------

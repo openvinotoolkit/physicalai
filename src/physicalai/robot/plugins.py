@@ -12,20 +12,31 @@ if TYPE_CHECKING:
     from types import ModuleType
 
 
+_PLUGIN_PACKAGES = frozenset({"physicalai_so101_plugin", "physicalai_trossen_plugin"})
+
+
 def load_robot_plugin(module_name: str, extra_name: str) -> ModuleType:
-    """Import an optional robot plugin with actionable installation guidance.
+    """Import an approved optional robot plugin with installation guidance.
 
     Args:
-        module_name: Import path for the robot plugin or one of its modules.
+        module_name: Import path for an approved robot plugin or one of its modules.
         extra_name: Root package extra that installs the plugin.
 
     Returns:
         The imported plugin module.
 
     Raises:
+        ValueError: If the plugin module is not approved.
         ModuleNotFoundError: If the requested plugin is not installed.
     """
     try:
+        # Only modules from first-party robot plugin packages are allowed.
+        package_name, _, _ = module_name.partition(".")
+        if package_name not in _PLUGIN_PACKAGES:
+            msg = f"Unsupported robot plugin module: {module_name!r}"
+            raise ValueError(msg)
+        # module_name is constrained to an approved first-party package above.
+        # nosemgrep: python.lang.security.audit.non-literal-import.non-literal-import
         return import_module(module_name)
     except ModuleNotFoundError as error:
         if error.name is None or not module_name.startswith(error.name):
