@@ -20,7 +20,7 @@ the robot simply keeps the last torque for that cycle.
 
 # The whole module operates against the untyped ``pylibfranka`` pybind11
 # binding, so ``Any`` is the honest annotation at that boundary.
-# ruff: file-ignore[any-type]
+# ruff: noqa: ANN401
 
 from __future__ import annotations
 
@@ -219,7 +219,7 @@ def _isolate_process(cpu: int | None) -> None:
         except (OSError, ValueError) as exc:
             logger.warning("Could not pin to CPU {}: {}", cpu, exc)
     with contextlib.suppress(OSError, AttributeError):
-        import ctypes  # ruff: ignore[import-outside-top-level]
+        import ctypes  # ruff: ignore[PLC0415]
 
         libc = ctypes.CDLL(None, use_errno=True)
         if libc.mlockall(1) != 0:  # MCL_CURRENT; fails if `ulimit -l` is below the process size
@@ -236,12 +236,12 @@ def _set_realtime_priority(priority: int) -> None:
         logger.warning("No permission for SCHED_FIFO; the 1 kHz loop may miss packets. Join the 'realtime' group.")
 
 
-def _arm_process(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements] - one inline 1 kHz loop
+def _arm_process(  # ruff: ignore[C901, PLR0912, PLR0914, PLR0915] - one inline 1 kHz loop
     host: str,
     realtime_config: str,
     dynamics_factor: float,
     rt_priority: int,
-    auto_recover: bool,  # ruff: ignore[boolean-type-hint-positional-argument] - Process(args=...) is positional
+    auto_recover: bool,  # ruff: ignore[FBT001] - Process(args=...) is positional
     target_raw: Any,
     state_raw: Any,
     stop: Any,
@@ -282,7 +282,7 @@ def _arm_process(  # ruff: ignore[complex-structure, too-many-branches, too-many
     # last cycles: robot dt, command (7), measured (7: q in impedance, q_d in position mode),
     # wall-clock time since the previous read, torque sent (7; zeros in position mode)
     history = np.full((_HISTORY, 23), np.nan)
-    try:  # ruff: ignore[too-many-statements-in-try-clause] - any FCI error ends the loop and is reported
+    try:  # any FCI error ends the loop and is reported
         # Warm up the tracker's code paths before the 1 kHz deadline starts.
         JerkLimitedTracker(np.zeros(7), np.ones(7), np.ones(7), np.ones(7)).step(np.ones(7), _PERIOD_S)
         robot = pylibfranka.Robot(host, getattr(pylibfranka.RealtimeConfig, realtime_config))
@@ -366,7 +366,7 @@ def _arm_process(  # ruff: ignore[complex-structure, too-many-branches, too-many
             if ticks == 1:
                 ready.set()
         _save_history(host, "last", history, ticks)
-    except Exception as exc:  # ruff: ignore[blind-except] - report any FCI error (reflex, network) to the parent
+    except Exception as exc:  # ruff: ignore[BLE001] - report any FCI error (reflex, network) to the parent
         timing = f" [after {ticks} ticks; longest gap {max_gap_s * 1000:.1f} ms at tick {max_gap_tick}]"
         dump = _save_history(host, "abort", history, ticks)
         if dump is not None:
@@ -392,7 +392,7 @@ def _save_history(host: str, kind: str, history: np.ndarray, ticks: int) -> Path
         The file written, or ``None`` if it could not be written.
     """
     order = np.roll(np.arange(_HISTORY), -(ticks % _HISTORY))
-    path = Path(f"/tmp/franka-{host}-{kind}.npz")  # ruff: ignore[hardcoded-temp-file] - fixed, documented name
+    path = Path(f"/tmp/franka-{host}-{kind}.npz")  # ruff: ignore[S108] - fixed, documented name
     try:
         np.savez(path, history=history[order], ticks=ticks)
     except OSError:
@@ -419,7 +419,7 @@ def _gripper_process(
     try:
         gripper = factory() if factory is not None else importlib.import_module("pylibfranka").Gripper(host)
         width.value = float(gripper.read_once().width)
-    except Exception as exc:  # ruff: ignore[blind-except] - without a hand the arm keeps working
+    except Exception as exc:  # ruff: ignore[BLE001] - without a hand the arm keeps working
         logger.warning("Franka Hand at {} unavailable ({}); continuing arm-only", host, exc)
         return
     open_m = FR3_GRIPPER_WIDTH_RANGE_M[1]
@@ -438,7 +438,7 @@ def _gripper_process(
             else:
                 gripper.move(target, speed_m_s)
             width.value = float(gripper.read_once().width)
-        except Exception as exc:  # ruff: ignore[blind-except] - a gripper fault must not stop the arm
+        except Exception as exc:  # ruff: ignore[BLE001] - a gripper fault must not stop the arm
             logger.warning("Franka Hand {} command failed: {}", host, exc)
 
 

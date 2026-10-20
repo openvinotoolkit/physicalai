@@ -16,7 +16,23 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from _fr3_fakes import START, _fake_pylibfranka, _FakeControl
+
+def _load_fakes():
+    # Loaded by path: CI runs pytest with --import-mode=importlib, which keeps tests/ off sys.path.
+    spec = importlib.util.spec_from_file_location("_fr3_fakes", Path(__file__).with_name("_fr3_fakes.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_fakes = _load_fakes()
+START = _fakes.START
+_fake_pylibfranka = _fakes._fake_pylibfranka
+_FakeControl = _fakes._FakeControl
+
+
 
 
 _EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "gello_teleop.py"

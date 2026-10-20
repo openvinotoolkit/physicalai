@@ -76,7 +76,7 @@ class SineWaveSource:
         self._start_time: float | None = None
         self._baseline: np.ndarray | None = None
 
-    def connect(self, *, bus: _CallbackBus, session_id: str) -> None:  # ruff: ignore[unused-method-argument]
+    def connect(self, *, bus: _CallbackBus, session_id: str) -> None:  # ruff: ignore[ARG002]
         """Reset the sine timer; part of the ``ActionSource`` protocol."""
         self._start_time = time.monotonic()
         self._baseline = None
@@ -84,8 +84,8 @@ class SineWaveSource:
     def update(
         self,
         robot_state: RobotObservation,
-        camera_frames: Mapping[str, Frame],  # ruff: ignore[unused-method-argument]
-        step: int,  # ruff: ignore[unused-method-argument]
+        camera_frames: Mapping[str, Frame],  # ruff: ignore[ARG002]
+        step: int,  # ruff: ignore[ARG002]
     ) -> np.ndarray:
         """Return the sinusoidal action for this tick.
 
@@ -134,11 +134,11 @@ class HoldPoseSource:
     def connect(self, *, bus: _CallbackBus, session_id: str) -> None:
         """No resources to set up; part of the ``ActionSource`` protocol."""
 
-    def update(  # ruff: ignore[no-self-use]
+    def update(  # ruff: ignore[PLR6301]
         self,
         robot_state: RobotObservation,
-        camera_frames: Mapping[str, Frame],  # ruff: ignore[unused-method-argument]
-        step: int,  # ruff: ignore[unused-method-argument]
+        camera_frames: Mapping[str, Frame],  # ruff: ignore[ARG002]
+        step: int,  # ruff: ignore[ARG002]
     ) -> np.ndarray:
         """Return the current joint positions unchanged.
 
@@ -164,7 +164,7 @@ class JointLogger:
         throttle_steps: Print every Nth tick (default ``1`` = every tick).
     """
 
-    def __init__(self, throttle_steps: int = 1) -> None:  # ruff: ignore[undocumented-public-init]
+    def __init__(self, throttle_steps: int = 1) -> None:  # ruff: ignore[D107]
         if throttle_steps <= 0:
             msg = "throttle_steps must be positive"
             raise ValueError(msg)
@@ -175,4 +175,4 @@ class JointLogger:
         if event.step % self._throttle_steps != 0:
             return
         values = "  ".join(f"{v:8.2f}" for v in event.robot_state.joint_positions)
-        print(f"[{event.robot_state.timestamp:13.3f}]  {values}")  # ruff: ignore[print]
+        print(f"[{event.robot_state.timestamp:13.3f}]  {values}")  # ruff: ignore[T201]

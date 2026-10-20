@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-# ruff: file-ignore[import-outside-top-level]
+# ruff: noqa: PLC0415
 
 """Third-party Franka Research 3 robot arm plugin for PhysicalAI.
 

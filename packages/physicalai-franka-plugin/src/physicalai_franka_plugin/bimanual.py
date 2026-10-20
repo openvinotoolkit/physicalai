@@ -107,7 +107,7 @@ class BimanualFrankaFR3:
         for arm in (self._left, self._right):
             try:
                 arm.disconnect()
-            except Exception as exc:  # ruff: ignore[blind-except] - never leave the other arm running
+            except Exception as exc:  # ruff: ignore[BLE001] - never leave the other arm running
                 if first_error is None:
                     first_error = exc
         if first_error is not None:

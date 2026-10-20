@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-# ruff: file-ignore[any-type, docstring-missing-exception, docstring-missing-returns, print]
+# ruff: noqa: ANN401, DOC501, DOC201, T201
 
 """Non-actuating calibration command for Franka GELLO leaders.
 
@@ -57,7 +57,7 @@ def calculate_calibration(
     if arm_raw_rad.shape != (7,):
         msg = f"Expected seven raw arm positions, got {arm_raw_rad.shape}"
         raise ValueError(msg)
-    if abs(gripper_open_rad - gripper_closed_rad) < 0.1:  # ruff: ignore[magic-value-comparison] - stock travel is ~1.2 rad
+    if abs(gripper_open_rad - gripper_closed_rad) < 0.1:  # ruff: ignore[PLR2004] - stock travel is ~1.2 rad
         msg = "Trigger open and pressed readings are the same; fully release, then fully press the trigger"
         raise ValueError(msg)
     signs = np.asarray(_JOINT_SIGNS)
@@ -79,7 +79,7 @@ MIRROR_SIGNS = (-1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0)
 
 def joint_midpoints_rad() -> np.ndarray:
     """Midpoints of the joint ranges the driver wraps GELLO readings around."""
-    return GelloLeader._LIMITS_RAD.mean(axis=1)  # ruff: ignore[private-member-access] - same window as the driver
+    return GelloLeader._LIMITS_RAD.mean(axis=1)  # ruff: ignore[SLF001] - same window as the driver
 
 
 def normalize_raw(arm_raw_rad: np.ndarray, offsets_rad: np.ndarray, signs: np.ndarray) -> np.ndarray:
@@ -109,7 +109,7 @@ def calculate_matched_calibration(
     if np.shape(arm_raw_rad) != (7,) or np.shape(target_rad) != (7,):
         msg = "Expected seven raw positions and seven target angles"
         raise ValueError(msg)
-    if abs(gripper_open_rad - gripper_closed_rad) < 0.1:  # ruff: ignore[magic-value-comparison] - stock travel is ~1.2 rad
+    if abs(gripper_open_rad - gripper_closed_rad) < 0.1:  # ruff: ignore[PLR2004] - stock travel is ~1.2 rad
         msg = "Trigger open and pressed readings are the same; fully release, then fully press the trigger"
         raise ValueError(msg)
     offsets = matching_offsets(arm_raw_rad, target_rad, np.asarray(joint_signs, dtype=float))
@@ -214,7 +214,7 @@ def _match_joints_interactively(
     return arm_raw
 
 
-def main(argv: list[str] | None = None) -> int:  # ruff: ignore[too-many-locals, too-many-statements]
+def main(argv: list[str] | None = None) -> int:  # ruff: ignore[PLR0914, PLR0915]
     """Run interactive, non-actuating GELLO calibration and write Studio-uploadable JSON."""
     parser = argparse.ArgumentParser(
         description="Calibrate a passive Franka GELLO leader without enabling torque or moving a robot."
@@ -280,7 +280,7 @@ def main(argv: list[str] | None = None) -> int:  # ruff: ignore[too-many-locals,
             default = np.asarray(GelloCalibration.default().assembly_offsets_rad)
             change = (np.asarray(calibration.assembly_offsets_rad) - default + math.pi) % (2 * math.pi) - math.pi
             print(f"Offset change from the factory values (deg): {np.round(np.degrees(change), 1).tolist()}")
-            if np.any(np.abs(np.degrees(change)) > 45):  # ruff: ignore[magic-value-comparison] - beyond half a flange step
+            if np.any(np.abs(np.degrees(change)) > 45):  # ruff: ignore[PLR2004] - beyond half a flange step
                 print("WARNING: a joint moved by more than 45 deg: wrong pose, swapped GELLOs or a flipped joint?")
         print(
             json.dumps(

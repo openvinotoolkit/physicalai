@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import gc
+import importlib.util
 import multiprocessing
 import sys
 import threading
@@ -15,7 +16,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from physicalai.config import to_config
+from physicalai.config import Config
 
 from physicalai_franka_plugin import robot as franka
 from physicalai_franka_plugin.constants import (
@@ -28,7 +29,24 @@ from physicalai_franka_plugin.constants import (
 )
 from physicalai_franka_plugin.robot import FrankaFR3
 
-from _fr3_fakes import START, _fake_pylibfranka, _FakeControl, _SlowGripper
+
+def _load_fakes():
+    # Loaded by path: CI runs pytest with --import-mode=importlib, which keeps tests/ off sys.path.
+    spec = importlib.util.spec_from_file_location("_fr3_fakes", Path(__file__).with_name("_fr3_fakes.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_fakes = _load_fakes()
+START = _fakes.START
+_fake_pylibfranka = _fakes._fake_pylibfranka
+_FakeControl = _fakes._FakeControl
+_SlowGripper = _fakes._SlowGripper
+
+
 
 
 class TestFrankaFR3Construction:
@@ -68,7 +86,7 @@ class TestFrankaFR3Construction:
     def test_exports_recipe(self) -> None:
         robot = FrankaFR3("172.16.0.2", gripper_enabled=False)
 
-        assert to_config(robot)["init_args"] == {
+        assert Config.from_instance(robot)["init_args"] == {
             "host": "172.16.0.2",
             "gripper_enabled": False,
         }

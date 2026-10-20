@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-# ruff: file-ignore[docstring-missing-exception, docstring-missing-returns, magic-value-comparison, no-self-use, raise-within-try, too-many-statements-in-try-clause, type-check-without-type-error, undocumented-public-init, undocumented-public-method]
+# ruff: noqa: DOC501, DOC201, PLR2004, PLR6301, TRY301, TRY004, D107, D102
 
 """Native drivers for the Franka seven-axis GELLO and GELLO Duo leaders."""
 

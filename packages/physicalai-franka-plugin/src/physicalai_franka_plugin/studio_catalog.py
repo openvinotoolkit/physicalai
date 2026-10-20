@@ -357,7 +357,7 @@ _FRANKA_FR3_PROBE = FrankaFR3Probe()
 class BimanualGelloProbe(RobotProbe[BimanualGelloPayload]):
     """Serial-port probe for GELLO DUO USB Dynamixel adapters."""
 
-    async def discover(self, manager: PortScanner) -> list[SerialPortInfo]:  # ruff: ignore[no-self-use]
+    async def discover(self, manager: PortScanner) -> list[SerialPortInfo]:  # ruff: ignore[PLR6301]
         """Refresh and return available serial adapters.
 
         Returns:
@@ -375,7 +375,7 @@ class BimanualGelloProbe(RobotProbe[BimanualGelloPayload]):
         """GELLO identification is intentionally passive and never moves hardware."""
         _ = self, payload, manager, joint
 
-    async def is_online(  # ruff: ignore[no-self-use]
+    async def is_online(  # ruff: ignore[PLR6301]
         self, payload: BimanualGelloPayload, manager: PortScanner | None = None
     ) -> bool:
         """Report whether both configured serial paths are in the current scan.
