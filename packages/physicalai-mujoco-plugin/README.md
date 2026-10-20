@@ -19,6 +19,8 @@ Run single-arm or bimanual SO-101 simulations, and other [MuJoCo Menagerie](http
 - Playing back policy/inference outputs in a simulated scene while monitoring robot + camera streams.
 - Developing workflows where Studio, transport, and robot APIs stay identical between sim and real deployments.
 
+To run a trained policy in the `conveyor_sort` scene from a notebook, see the tutorial [`examples/tutorials/run_policy_in_simulation.ipynb`](../../examples/tutorials/run_policy_in_simulation.ipynb).
+
 ## Quick start
 
 Requires Python 3.12 or newer. From the Runtime repository root:
