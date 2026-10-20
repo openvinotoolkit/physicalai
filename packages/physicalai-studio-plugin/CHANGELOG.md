@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-studio-plugin-v0.3.0...physicalai-studio-plugin-v0.4.0) (2026-10-20)
+
+
+### ✨ Features
+
+* **mujoco:** simulate legged robots, twins/bimanual and dataset arms with cameras and replay ([#353](https://github.com/openvinotoolkit/physicalai/issues/353)) ([7961daa](https://github.com/openvinotoolkit/physicalai/commit/7961daa1f04533c13c949e18b301c09b46ba0d0f))
+
+
+### ♻️ Code Refactoring
+
+* **config:** remove deprecated configuration shims ([#244](https://github.com/openvinotoolkit/physicalai/issues/244)) ([9133822](https://github.com/openvinotoolkit/physicalai/commit/91338224c67f0d17f166eb062e3ac9a6762db784))
+
 ## [0.3.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-studio-plugin-v0.2.0...physicalai-studio-plugin-v0.3.0) (2026-10-06)
 
 
