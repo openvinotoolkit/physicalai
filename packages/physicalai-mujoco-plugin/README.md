@@ -65,7 +65,7 @@ The viewer opens on its **Simulation** tab, which controls the simulation. The *
 - **Conveyor** (`conveyor_sort` only, in place of **Episode**): **Belt running** pauses or resumes the belt and the item feed. **Belt speed** sets the belt surface speed from 0 to 10 cm/s. The panel shows the items fed so far, the current and last episode's score, and the sorting rule.
 - **Objects**: tick **Drag objects** to show a handle on each free object. While you drag, the object stays at the handle's pose. When you let go, it falls from there with zero velocity. The target stays fixed.
 - **Cameras**: tick **Show previews** to see low-rate thumbnails of the rendered cameras. Previews start off because every open viewer receives them.
-- **Shutdown** asks for confirmation before stopping the owner (hidden with `--viewer-theme studio`).
+- **Shutdown** asks for confirmation before stopping the owner (hidden with `--viewer-theme studio` or `compact`).
 
 On the **Camera** tab, **Follow** chooses a body for the view to stay on: a free object, the target, or a gripper. Orbiting and zooming keep the view on it. Panning away stops following, and **Follow** goes back to **None**. **None**, the default, is a free camera that nothing moves. While you drag the followed object, the view holds still, then glides back onto it when you let go. **FOV** and **Reset View** apply to every open viewer. The follow choice is shared too. Following moves the viewer cameras; the rendered scene itself never shifts.
 
@@ -240,7 +240,7 @@ Common options:
 - `--no-gui`: disable all viewers
 - `--viser-port <port>`: browser viewer port (default `9090`; `0` picks a free port)
 - `--viser-host <host>`: browser viewer bind host (default `127.0.0.1`; use `0.0.0.0` to expose it remotely)
-- `--viewer-theme <default|studio>`: `studio` hides the browser viewer's share and **Shutdown** buttons, for a viewer embedded in Studio, which stops the simulation itself; the look stays viser's default
+- `--viewer-theme <default|studio|compact>`: `studio` hides the browser viewer's share and **Shutdown** buttons, for a viewer embedded in Studio, which stops the simulation itself; `compact` does the same and starts with the control panel minimized, for a viewer embedded next to its own controls (a notebook); the look stays viser's default
 - `--no-cameras`: disable camera rendering (HTTP streams and viewer previews)
 - `--http-host <host>`: host for the camera/control HTTP server (default `127.0.0.1`)
 - `--http-port <port>`: port for the camera/control HTTP server (default `8080`; `0` picks a free port)

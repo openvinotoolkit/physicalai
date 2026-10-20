@@ -67,6 +67,23 @@ class TestViewerLaunch:
 
         server.gui.configure_theme.assert_called_once_with(show_share_button=False)
         assert panel.call_args.kwargs == {"shutdown_button": False}
+        server.gui.main_panel.minimize.assert_not_called()
+
+    def test_compact_theme_hides_the_buttons_and_minimizes_the_control_panel(self, model_data) -> None:
+        server = MagicMock()
+        viewer = ViewerService(
+            host="127.0.0.1", port=9090, submit_command=MagicMock(), panel_state=MagicMock(), theme="compact"
+        )
+        with (
+            patch("viser.ViserServer", return_value=server),
+            patch("mjviser.ViserMujocoScene", return_value=MagicMock()),
+            patch("physicalai_mujoco_plugin.viser_controls.SimControlPanel") as panel,
+        ):
+            assert viewer.open(*model_data) is True
+
+        server.gui.configure_theme.assert_called_once_with(show_share_button=False)
+        assert panel.call_args.kwargs == {"shutdown_button": False}
+        server.gui.main_panel.minimize.assert_called_once_with()
 
     def test_default_theme_keeps_viser_look_and_shutdown_button(self, model_data) -> None:
         server = MagicMock()

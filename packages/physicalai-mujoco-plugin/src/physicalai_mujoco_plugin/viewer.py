@@ -27,8 +27,9 @@ if TYPE_CHECKING:
     from physicalai_mujoco_plugin.http_server import SimCommand
     from physicalai_mujoco_plugin.viser_controls import PanelState, SimControlPanel
 
-ViewerTheme = Literal["default", "studio"]
-"""viser's chrome: ``studio`` hides the Share and Shutdown buttons; the look stays viser's own."""
+ViewerTheme = Literal["default", "studio", "compact"]
+"""viser's chrome: ``studio`` hides the Share and Shutdown buttons; ``compact`` also starts with the control
+panel minimized, for a viewer embedded next to its own controls. The look stays viser's own."""
 
 
 class ViewerService:
@@ -219,7 +220,7 @@ class ViewerService:
             msg = "viser server is not running"
             raise RuntimeError(msg)
         if self.panel is None:
-            self.panel = SimControlPanel(server, viser, self._submit_command, shutdown_button=self.theme != "studio")
+            self.panel = SimControlPanel(server, viser, self._submit_command, shutdown_button=self.theme == "default")
 
         self.scene = None
         server.gui.reset()
@@ -241,6 +242,8 @@ class ViewerService:
         with tabs.add_tab("Groups", icon=viser.Icon.LAYERS_INTERSECT):
             scene.create_groups_gui()
         self.panel.build_scene_nodes(state)
+        if self.theme == "compact":
+            server.gui.main_panel.minimize()  # after `gui.reset()`, which restores the default placement
 
         self.scene = scene
         self._panel_failed = False
@@ -275,7 +278,7 @@ class ViewerService:
                 logger.warning("Port {} is taken; the 3D viewer listens on port {}", self.port, bound_port)
                 self.port = bound_port
             self.server = server
-            if self.theme == "studio":
+            if self.theme in {"studio", "compact"}:
                 server.gui.configure_theme(show_share_button=False)
             self.build_gui()
         except Exception as exc:  # noqa: BLE001
