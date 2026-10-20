@@ -9,6 +9,7 @@ import gc
 import importlib.util
 import multiprocessing
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -341,7 +342,7 @@ def test_prepare_connects_without_starting_control_until_connect() -> None:
 
 def test_loop_overruns_survive_disconnect_and_a_clean_stop_saves_the_last_cycles() -> None:
     follower = _process_follower(_FakeControl(START))
-    dump = Path(f"/tmp/franka-{follower.host}-last.npz")
+    dump = Path(tempfile.gettempdir()) / f"franka-{follower.host}-last.npz"
     dump.unlink(missing_ok=True)
     follower.connect()
     time.sleep(0.2)

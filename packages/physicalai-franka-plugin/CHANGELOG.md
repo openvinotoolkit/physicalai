@@ -22,8 +22,8 @@ All notable changes to this package are documented in this file.
 - `physicalai-gello-calibrate --robot HOST` matches a robot's current pose and
   `--mirror-port`/`--mirror-calibration` mirrors the other Duo arm; both give exact
   offsets instead of 90° steps.
-- The last 500 control cycles are saved to `/tmp/franka-<host>-abort.npz` (or
-  `-last.npz`) for post-mortems.
+- The last 500 control cycles are saved to `franka-<host>-abort.npz` (after a clean
+  stop: `-last.npz`) in the system temp directory, `/tmp` on Linux, for post-mortems.
 - Examples: `gello_teleop.py` (teleoperation workflow on the plugin drivers) and
   `joint_inspector.py` (read-only robot/GELLO values in a browser).
 

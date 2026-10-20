@@ -47,8 +47,8 @@ The control process reports the reason with the next call, for example
 `ConnectionError: FR3 172.16.1.41 control loop is not running: ControlException:
 ... reflex ... [after N ticks; longest gap X ms at tick T]`. The last 500 cycles
 (robot time step, command, measured position, PC time step, torque) are saved to
-`/tmp/franka-<host>-abort.npz`, and after a clean stop to
-`/tmp/franka-<host>-last.npz`. A "longest gap" of several milliseconds means the
+`franka-<host>-abort.npz`, and after a clean stop to `franka-<host>-last.npz`, in
+the system temp directory (`/tmp` on Linux). A "longest gap" of several milliseconds means the
 PC stalled; see the real-time checklist above.
 
 `robot.recover()` restarts the loop with automatic error recovery. Also check in

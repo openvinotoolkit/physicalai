@@ -31,6 +31,7 @@ import multiprocessing
 import os
 import queue
 import signal
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -386,13 +387,13 @@ def _arm_process(  # ruff: ignore[C901, PLR0912, PLR0914, PLR0915] - one inline 
 
 
 def _save_history(host: str, kind: str, history: np.ndarray, ticks: int) -> Path | None:
-    """Save the last cycles (oldest first) to ``/tmp/franka-<host>-<kind>.npz`` for post-mortems.
+    """Save the last cycles (oldest first) to ``franka-<host>-<kind>.npz`` in the temp directory for post-mortems.
 
     Returns:
         The file written, or ``None`` if it could not be written.
     """
     order = np.roll(np.arange(_HISTORY), -(ticks % _HISTORY))
-    path = Path(f"/tmp/franka-{host}-{kind}.npz")  # ruff: ignore[S108] - fixed, documented name
+    path = Path(tempfile.gettempdir()) / f"franka-{host}-{kind}.npz"
     try:
         np.savez(path, history=history[order], ticks=ticks)
     except OSError:
