@@ -1,10 +1,11 @@
 # Physical AI MuJoCo Plugin
 
-Run single-arm or bimanual SO-101 simulations, and other [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) robots, through [PhysicalAI Runtime](https://github.com/openvinotoolkit/physicalai). The plugin provides a browser viewer, camera streams, task scenes, and follower catalog entries for [Physical AI Studio](https://github.com/open-edge-platform/physical-ai-studio).
+Simulate robot arms, humanoids and quadrupeds from [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) as [PhysicalAI Runtime](https://github.com/openvinotoolkit/physicalai) robots. Runtime, Studio, policies and datasets use them through the same robot interface as real hardware. The plugin provides a browser viewer, camera streams, task scenes, and follower catalog entries for [Physical AI Studio](https://github.com/open-edge-platform/physical-ai-studio).
 
 ## Features
 
-- Run a virtual SO-101 as a PhysicalAI transport owner
+- Run any MuJoCo Menagerie robot as a PhysicalAI transport owner: 15 robots with a hand-written profile (SO-101, WidowX AI, reBot B601, UR5e, ALOHA, Franka, xArm7, Unitree G1, ...), and any other Menagerie model with a derived one; see [Other robots](#other-robots)
+- Digital twins of the SO-101, WidowX AI and reBot B601 with their real drivers' joint names and units
 - Viser browser viewer with a Simulation tab (scene switching, reset, arm homing, seeded resets, episode auto-reset, conveyor belt controls, object dragging, camera previews, confirmed shutdown) and a Camera tab to follow an object, the target, or a gripper
 - Camera streams over HTTP (MJPEG), used in Studio as IP cameras
 - REST control server with the same controls as the viewer
@@ -14,7 +15,7 @@ Run single-arm or bimanual SO-101 simulations, and other [MuJoCo Menagerie](http
 
 ## What this is for
 
-- Teleoperating a virtual SO-101 from PhysicalAI Studio.
+- Teleoperating a simulated robot from PhysicalAI Studio.
 - Testing robot setup, task logic, and control flows without physical hardware.
 - Playing back policy/inference outputs in a simulated scene while monitoring robot + camera streams.
 - Developing workflows where Studio, transport, and robot APIs stay identical between sim and real deployments.
@@ -25,7 +26,9 @@ Requires Python 3.12 or newer:
 
 ```bash
 pip install physicalai-mujoco-plugin
-physicalai-mujoco start
+physicalai-mujoco start                        # SO-101, the default profile
+physicalai-mujoco profiles                     # list the robots
+physicalai-mujoco start --profile franka_panda  # another robot
 ```
 
 To run it from a checkout of this repository instead, see [Development](#development).
@@ -36,7 +39,7 @@ On a headless Linux machine (neither `DISPLAY` nor `WAYLAND_DISPLAY` set, for ex
 MUJOCO_GL=osmesa physicalai-mujoco start
 ```
 
-The first `start` on a machine downloads the SO-101 model from [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) (about 4 MB) into a per-user cache before the simulation starts. To download it ahead of time, for example while building a container image, run:
+The first `start` of a robot on a machine downloads its model from [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) into a per-user cache before the simulation starts (about 4 MB for the SO-101). To download the models of every profile ahead of time, for example while building a container image, run:
 
 ```bash
 physicalai-mujoco prefetch
@@ -44,9 +47,9 @@ physicalai-mujoco prefetch
 
 On a machine without internet access, run `prefetch` on a connected machine and copy the cache (set its location with `MENAGERIE_CACHE_DIR`), or set `MENAGERIE_ROOT` to a `mujoco_menagerie` checkout. A simulation owner started some other way, such as `examples/run_mujoco_owner.py`, downloads the model during its startup instead, so run `prefetch` first on a slow connection.
 
-By default this starts:
+By default `start` runs:
 
-- A MuJoCo SO-101 owner named `mujoco-so101-follow`
+- The SO-101 profile, as an owner named `mujoco-so101-follow` (`mujoco-<profile>-follow` for other profiles)
 - Browser viewer at `http://127.0.0.1:9090`
 - Camera streams served over HTTP (MJPEG + REST control server on port `8080`)
 - Control rate `50 Hz`
