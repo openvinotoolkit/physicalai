@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -80,14 +81,24 @@ class BimanualFrankaFR3:
         return left_names + right_names
 
     def connect(self) -> None:
-        """Connect both arms, rolling the left connection back on failure."""
+        """Connect both arms, rolling both back on failure.
+
+        Both arms are prepared (processes started, robots reached) before either
+        1 kHz loop starts, so one arm's start-up never stalls the other's loop.
+        """
         if self.is_connected():
             return
-        self._left.connect()
         try:
+            for arm in (self._left, self._right):
+                prepare = getattr(arm, "prepare", None)
+                if prepare is not None:
+                    prepare()
+            self._left.connect()
             self._right.connect()
         except Exception:
-            self._left.disconnect()
+            for arm in (self._left, self._right):
+                with contextlib.suppress(Exception):
+                    arm.disconnect()
             raise
 
     def disconnect(self) -> None:

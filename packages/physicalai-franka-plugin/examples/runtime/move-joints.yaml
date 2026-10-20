@@ -15,7 +15,7 @@ runtime:
       host: 172.16.0.2 # CHANGE_ME: FCI hostname or IP address of the control unit
       gripper_enabled: false # arm-only; set true to include the Franka Hand gripper
       realtime_config: kEnforce # kEnforce | kIgnore (kIgnore for testing/development)
-      goal_time: 0.1 # seconds to reach a commanded target
+      goal_time: 0.1 # kept for compatibility; motion timing comes from the jerk-limited tracker
 
   action_source:
     class_path: physicalai_franka_plugin.motion.SineWaveSource

@@ -1,150 +1,34 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+"""Tests for the FR3 follower: tracker, shared buffer, 1 kHz arm process and FrankaFR3 (fake pylibfranka)."""
+
 from __future__ import annotations
 
+import gc
+import multiprocessing
 import sys
+import threading
 import time
-from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, ClassVar
-from unittest.mock import patch
 
 import numpy as np
 import pytest
 from physicalai.config import to_config
 
-from physicalai_franka_plugin.constants import FR3_JOINT_LIMITS_RAD
+from physicalai_franka_plugin import robot as franka
+from physicalai_franka_plugin.constants import (
+    FR3_GRIPPER_WIDTH_RANGE_M,
+    FR3_JOINT_MAX_ACCELERATION_RAD_S2,
+    FR3_JOINT_MAX_EFFORT_NM,
+    FR3_JOINT_MAX_JERK_RAD_S3,
+    FR3_JOINT_MAX_TORQUE_RATE_NM_S,
+    FR3_JOINT_MAX_VELOCITY_RAD_S,
+)
 from physicalai_franka_plugin.robot import FrankaFR3
 
-if TYPE_CHECKING:
-    from collections.abc import Generator
-
-
-class _FakeDuration:
-    def __init__(self, seconds: float) -> None:
-        self._seconds = seconds
-
-    def to_sec(self) -> float:
-        return self._seconds
-
-
-class _FakeErrors:
-    def __init__(self, *, has_errors: bool = False) -> None:
-        self._has_errors = has_errors
-
-    def __bool__(self) -> bool:
-        return self._has_errors
-
-
-def _make_state(q: np.ndarray, *, has_errors: bool = False) -> SimpleNamespace:
-    return SimpleNamespace(
-        q=np.asarray(q, dtype=np.float64),
-        dq=np.zeros(7, dtype=np.float64),
-        tau_J=np.zeros(7, dtype=np.float64),
-        tau_ext_hat_filtered=np.zeros(7, dtype=np.float64),
-        current_errors=_FakeErrors(has_errors=has_errors),
-        time=_FakeDuration(0.001),
-    )
-
-
-class _FakeJointPositions:
-    def __init__(self, q: object) -> None:
-        self.q = np.asarray(q, dtype=np.float64)
-
-
-class _FakeControl:
-    def __init__(self) -> None:
-        self.writes: list[np.ndarray] = []
-        self.reads = 0
-
-    def readOnce(self) -> tuple[SimpleNamespace, _FakeDuration]:  # noqa: N802 - mirrors the pylibfranka API
-        self.reads += 1
-        time.sleep(0.001)
-        return _make_state(np.zeros(7)), _FakeDuration(0.001)
-
-    def writeOnce(self, command: _FakeJointPositions) -> None:  # noqa: N802 - mirrors the pylibfranka API
-        self.writes.append(command.q.copy())
-
-
-class _FakeGripper:
-    def __init__(self, host: str) -> None:
-        self.host = host
-        self.width = 0.04
-        self.moved: list[tuple[float, float]] = []
-
-    def read_once(self) -> SimpleNamespace:
-        return SimpleNamespace(width=self.width, temperature=25.0)
-
-    def move(self, width: float, speed: float) -> None:
-        self.width = width
-        self.moved.append((width, speed))
-
-    def stop(self) -> None:
-        pass
-
-
-class _FakeRobot:
-    def __init__(self, host: str, realtime_config: str, *, has_errors: bool = False) -> None:
-        self.host = host
-        self.realtime_config = realtime_config
-        self.control: _FakeControl | None = None
-        self.recovered = False
-        self.stopped = False
-        self._has_errors = has_errors
-
-    def read_once(self) -> SimpleNamespace:
-        return _make_state(np.zeros(7), has_errors=self._has_errors)
-
-    def automatic_error_recovery(self) -> None:
-        self.recovered = True
-        self._has_errors = False
-
-    def start_joint_position_control(self, mode: str) -> _FakeControl:
-        self.control = _FakeControl()
-        return self.control
-
-    def stop(self) -> None:
-        self.stopped = True
-
-
-class _RealtimeConfig:
-    kEnforce = "kEnforce"  # noqa: N815 - mirrors the pylibfranka enum member
-    kIgnore = "kIgnore"  # noqa: N815 - mirrors the pylibfranka enum member
-
-
-class _ControllerMode:
-    JointImpedance = "JointImpedance"
-    CartesianImpedance = "CartesianImpedance"
-
-
-@dataclass
-class _FakePylibfranka:
-    robots: list[_FakeRobot] = None  # type: ignore[assignment]
-    grippers: list[_FakeGripper] = None  # type: ignore[assignment]
-    robot_has_errors: bool = False
-
-    def __post_init__(self) -> None:
-        self.robots = []
-        self.grippers = []
-
-    def Robot(self, host: str, realtime_config: str) -> _FakeRobot:  # noqa: N802 - mirrors the pylibfranka API
-        robot = _FakeRobot(host, realtime_config, has_errors=self.robot_has_errors)
-        self.robots.append(robot)
-        return robot
-
-    def Gripper(self, host: str) -> _FakeGripper:  # noqa: N802 - mirrors the pylibfranka API
-        gripper = _FakeGripper(host)
-        self.grippers.append(gripper)
-        return gripper
-
-    JointPositions: ClassVar[type[_FakeJointPositions]] = _FakeJointPositions
-    RealtimeConfig: ClassVar[type[_RealtimeConfig]] = _RealtimeConfig
-    ControllerMode: ClassVar[type[_ControllerMode]] = _ControllerMode
-
-
-@pytest.fixture
-def fake_pylibfranka() -> Generator[_FakePylibfranka]:
-    fake = _FakePylibfranka()
-    with patch.dict(sys.modules, {"pylibfranka": fake}):
-        yield fake
+from _fr3_fakes import START, _fake_pylibfranka, _FakeControl, _SlowGripper
 
 
 class TestFrankaFR3Construction:
@@ -155,25 +39,31 @@ class TestFrankaFR3Construction:
         assert robot.gripper_enabled is True
         assert robot.realtime_config == "kEnforce"
         assert robot.goal_time == pytest.approx(0.1)
+        assert robot.control_mode == "impedance"
         assert robot.joint_names == [*FrankaFR3.JOINT_ORDER, "gripper"]
         assert robot.device_ids == ()
+        assert robot.limits_deg[3, 0] == pytest.approx(np.degrees(-3.0770) + 5.0)  # hardware - 5 deg
 
     def test_arm_only_joint_layout(self) -> None:
         robot = FrankaFR3("172.16.0.2", gripper_enabled=False)
 
         assert robot.joint_names == FrankaFR3.JOINT_ORDER
 
-    def test_invalid_host_raises(self) -> None:
-        with pytest.raises(ValueError, match="host must be a non-empty"):
-            FrankaFR3("")
-
-    def test_invalid_realtime_config_raises(self) -> None:
-        with pytest.raises(ValueError, match="Invalid realtime_config"):
-            FrankaFR3("172.16.0.2", realtime_config="kSometimes")
-
-    def test_invalid_goal_time_raises(self) -> None:
-        with pytest.raises(ValueError, match="goal_time must be positive"):
-            FrankaFR3("172.16.0.2", goal_time=0.0)
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"host": ""}, "host must be a non-empty"),
+            ({"realtime_config": "kSometimes"}, "Invalid realtime_config"),
+            ({"goal_time": 0.0}, "goal_time must be positive"),
+            ({"control_mode": "velocity"}, "Invalid control_mode"),
+            ({"dynamics_factor": 0.0}, "dynamics_factor"),
+            ({"gripper_force_n": 0.0}, "gripper_force_n"),
+            ({"joint_limits": "nope"}, "joint limits"),
+        ],
+    )
+    def test_invalid_parameters_raise(self, kwargs: dict, match: str) -> None:
+        with pytest.raises(ValueError, match=match):
+            FrankaFR3(**{"host": "172.16.0.2", **kwargs})
 
     def test_exports_recipe(self) -> None:
         robot = FrankaFR3("172.16.0.2", gripper_enabled=False)
@@ -184,141 +74,264 @@ class TestFrankaFR3Construction:
         }
 
     def test_connect_requires_pylibfranka(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delitem(sys.modules, "pylibfranka", raising=False)
+        monkeypatch.setitem(sys.modules, "pylibfranka", None)  # makes the import fail even where installed
         robot = FrankaFR3("172.16.0.2")
 
         with pytest.raises(ImportError, match="pylibfranka"):
             robot.connect()
 
-
-class TestFrankaFR3ConnectDisconnect:
-    def test_connect_reads_state_and_starts_loop(self, fake_pylibfranka: _FakePylibfranka) -> None:
-        robot = FrankaFR3("172.16.0.2")
-
-        robot.connect()
-        assert robot.is_connected()
-        assert fake_pylibfranka.robots[0].host == "172.16.0.2"
-        assert fake_pylibfranka.robots[0].realtime_config == "kEnforce"
-        assert fake_pylibfranka.robots[0].control is not None
-
-        robot.disconnect()
-        assert not robot.is_connected()
-        assert fake_pylibfranka.robots[0].stopped
-
-    def test_connect_is_idempotent(self, fake_pylibfranka: _FakePylibfranka) -> None:
-        robot = FrankaFR3("172.16.0.2")
-
-        robot.connect()
-        first_control = fake_pylibfranka.robots[0].control
-        robot.connect()
-        assert fake_pylibfranka.robots[0].control is first_control
-        robot.disconnect()
-
-    def test_auto_recovery(self, fake_pylibfranka: _FakePylibfranka) -> None:
-        robot = FrankaFR3("172.16.0.2")
-
-        robot.connect()
-        assert not fake_pylibfranka.robots[0].recovered
-        robot.disconnect()
-
-    def test_auto_recovery_on_error(self, fake_pylibfranka: _FakePylibfranka) -> None:
-        fake_pylibfranka.robot_has_errors = True
-        robot = FrankaFR3("172.16.0.2")
-
-        robot.connect()
-        assert fake_pylibfranka.robots[0].recovered
-        robot.disconnect()
-
-    def test_disconnect_without_connect_is_noop(self) -> None:
-        robot = FrankaFR3("172.16.0.2")
-
-        robot.disconnect()
-
-
-class TestFrankaFRObservation:
-    def test_observation_shape_and_sensor_data(self, fake_pylibfranka: _FakePylibfranka) -> None:
-        robot = FrankaFR3("172.16.0.2")
-        robot.connect()
-        try:
-            observation = robot.get_observation()
-
-            assert observation.joint_positions.shape == (8,)
-            assert observation.sensor_data is not None
-            assert observation.sensor_data["velocities"].shape == (7,)
-            assert observation.sensor_data["torques"].shape == (7,)
-            assert observation.sensor_data["external_torques"].shape == (7,)
-            assert observation.state is observation.joint_positions
-        finally:
-            robot.disconnect()
-
-    def test_arm_only_observation_shape(self, fake_pylibfranka: _FakePylibfranka) -> None:
+    def test_send_action_and_observation_require_a_running_loop(self) -> None:
         robot = FrankaFR3("172.16.0.2", gripper_enabled=False)
-        robot.connect()
-        try:
-            observation = robot.get_observation()
 
-            assert observation.joint_positions.shape == (7,)
-        finally:
-            robot.disconnect()
-
-    def test_get_observation_before_connect_raises(self) -> None:
-        robot = FrankaFR3("172.16.0.2")
-
-        with pytest.raises(ConnectionError, match="not connected"):
+        with pytest.raises(ConnectionError, match="not running"):
             robot.get_observation()
+        with pytest.raises(ConnectionError, match="not running"):
+            robot.send_action(np.zeros(7))
+        robot.disconnect()  # no-op without connect
 
 
-class TestFrankaFR3SendAction:
-    def test_send_action_before_connect_raises(self) -> None:
-        robot = FrankaFR3("172.16.0.2")
+def _simulate(target_fn, seconds: float, factor: float = 0.3):
+    dt = 0.001
+    tracker = franka.JerkLimitedTracker(
+        np.zeros(7),
+        factor * np.asarray(FR3_JOINT_MAX_VELOCITY_RAD_S),
+        factor * np.asarray(FR3_JOINT_MAX_ACCELERATION_RAD_S2),
+        factor * np.asarray(FR3_JOINT_MAX_JERK_RAD_S3),
+    )
+    positions = np.array([tracker.step(target_fn(k * dt), dt) for k in range(int(seconds / dt))])
+    velocity = np.diff(positions, axis=0) / dt
+    acceleration = np.diff(velocity, axis=0) / dt
+    jerk = np.diff(acceleration, axis=0) / dt
+    return positions, velocity, acceleration, jerk
 
-        with pytest.raises(ConnectionError, match="not connected"):
-            robot.send_action(np.zeros(8))
 
-    def test_send_action_validates_shape(self, fake_pylibfranka: _FakePylibfranka) -> None:
-        robot = FrankaFR3("172.16.0.2")
-        robot.connect()
-        try:
-            with pytest.raises(ValueError, match="Expected action shape"):
-                robot.send_action(np.zeros(7))
-        finally:
-            robot.disconnect()
+@pytest.mark.parametrize("factor", [0.3, 1.0])
+def test_tracker_respects_limits_for_a_large_step(factor: float) -> None:
+    positions, velocity, acceleration, jerk = _simulate(lambda _t: np.full(7, 1.0), 6.0, factor)
+    margin = 1.0 + 1e-6
+    assert np.all(np.abs(velocity) <= factor * np.asarray(FR3_JOINT_MAX_VELOCITY_RAD_S) * margin)
+    assert np.all(np.abs(acceleration) <= factor * np.asarray(FR3_JOINT_MAX_ACCELERATION_RAD_S2) * margin)
+    assert np.all(np.abs(jerk) <= factor * np.asarray(FR3_JOINT_MAX_JERK_RAD_S3) * margin)
+    assert np.max(positions) < 1.0 + np.radians(0.1)  # no meaningful overshoot
+    assert np.allclose(positions[-1], 1.0, atol=1e-4)
 
-    def test_send_action_converges_to_clipped_target(self, fake_pylibfranka: _FakePylibfranka) -> None:
-        robot = FrankaFR3("172.16.0.2", goal_time=0.001)
-        robot.connect()
-        try:
-            robot.send_action(np.array([200.0, 10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.04]), goal_time=0.001)
+
+def test_tracker_smooths_a_25hz_zero_order_hold_stream() -> None:
+    def gello(t: float) -> np.ndarray:  # GELLO sampled at 25 Hz, held between samples
+        return np.full(7, 0.3 * np.sin(2 * np.pi * 1.5 * (np.floor(t * 25) / 25)))
+
+    _positions, velocity, acceleration, jerk = _simulate(gello, 4.0)
+    assert np.all(np.abs(velocity) <= 0.3 * np.asarray(FR3_JOINT_MAX_VELOCITY_RAD_S) * (1 + 1e-6))
+    assert np.all(np.abs(acceleration) <= 0.3 * np.asarray(FR3_JOINT_MAX_ACCELERATION_RAD_S2) * (1 + 1e-6))
+    assert np.all(np.abs(jerk) <= 0.3 * np.asarray(FR3_JOINT_MAX_JERK_RAD_S3) * (1 + 1e-6))
+
+
+def test_tracker_holds_still_at_the_target() -> None:
+    tracker = franka.JerkLimitedTracker(np.ones(7), np.ones(7), np.ones(7), np.ones(7) * 100)
+    for _ in range(100):
+        command = tracker.step(np.ones(7), 0.001)
+    assert np.array_equal(command, np.ones(7))
+
+
+def test_arm_loop_starts_at_q_d_and_moves_within_the_limits() -> None:
+    ctx = multiprocessing.get_context("fork")
+    control = _FakeControl(START)
+    target = franka.SeqBuffer.create(ctx, 7)
+    state = franka.SeqBuffer.create(ctx, franka._STATE_SIZE)  # noqa: SLF001
+    stop, ready, errors = threading.Event(), threading.Event(), ctx.Queue()
+    loop = threading.Thread(
+        target=franka._arm_process,  # noqa: SLF001 - run the process body in a thread to inspect it
+        args=("10.0.0.2", "kIgnore", 0.3, 80, True, target.raw, state.raw, stop, ready, errors),
+        kwargs={"pylibfranka": _fake_pylibfranka(control), "control_mode": "position"},
+    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(franka.signal, "signal", lambda *a: None)  # only allowed in the main thread
+        patch.setattr(franka, "_set_realtime_priority", lambda priority: None)
+        patch.setattr(franka, "_isolate_process", lambda cpu: None)
+        loop.start()
+        assert ready.wait(2.0)
+        target.write(START + np.radians(5.0))
+        time.sleep(1.5)
+        stop.set()
+        loop.join(2.0)
+    commands = np.array(control.commands)
+    assert np.allclose(commands[0], START)  # first command equals the desired pose: no jump
+    assert (
+        np.max(np.abs(np.diff(commands, axis=0))) <= 0.3 * np.asarray(FR3_JOINT_MAX_VELOCITY_RAD_S).max() * 0.001 * 1.01
+    )
+    assert np.allclose(commands[-1], START + np.radians(5.0), atol=np.radians(0.5))
+    assert state.read()[franka._STATE_ALIVE] == 0.0  # noqa: SLF001 - cleared on exit
+
+
+def test_arm_loop_impedance_sends_franka_gello_torques_within_limits() -> None:
+    ctx = multiprocessing.get_context("fork")
+    control = _FakeControl(START)  # the fake robot stays at START, so the error keeps growing
+    target = franka.SeqBuffer.create(ctx, 7)
+    state = franka.SeqBuffer.create(ctx, franka._STATE_SIZE)  # noqa: SLF001
+    stop, ready, errors = threading.Event(), threading.Event(), ctx.Queue()
+    loop = threading.Thread(
+        target=franka._arm_process,  # noqa: SLF001
+        args=("10.0.0.2", "kIgnore", 0.3, 80, True, target.raw, state.raw, stop, ready, errors),
+        kwargs={"pylibfranka": _fake_pylibfranka(control), "control_mode": "impedance"},
+    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(franka.signal, "signal", lambda *a: None)
+        patch.setattr(franka, "_set_realtime_priority", lambda priority: None)
+        patch.setattr(franka, "_isolate_process", lambda cpu: None)
+        loop.start()
+        assert ready.wait(2.0)
+        goal = START.copy()
+        goal[0] += 0.5  # J1 only, far enough that the torque saturates
+        target.write(goal)
+        deadline = time.monotonic() + 5.0  # the tracker needs ~1.5 s at dynamics_factor 0.3 to saturate J1
+        while time.monotonic() < deadline and not (control.torques and control.torques[-1][0] >= 87.0 - 1e-6):
             time.sleep(0.05)
+        stop.set()
+        loop.join(2.0)
+    assert not control.commands  # no joint-position commands in impedance mode
+    torques = np.array(control.torques)
+    assert np.allclose(torques[0], 0.0)  # starts at the measured pose: no torque jump
+    assert np.all(torques[-1, 0] > 0.0) and np.allclose(torques[:, 1:], 0.0)  # pulls J1 the right way only
+    assert np.max(np.abs(np.diff(torques, axis=0))) <= FR3_JOINT_MAX_TORQUE_RATE_NM_S * 0.001 + 1e-9
+    assert np.all(np.abs(torques) <= np.asarray(FR3_JOINT_MAX_EFFORT_NM) + 1e-9)
+    assert torques[-1, 0] == pytest.approx(
+        np.asarray(FR3_JOINT_MAX_EFFORT_NM)[0]
+    )  # 240 Nm/rad x 0.5 rad, clipped at 87 Nm
+    assert gc.isenabled()  # the loop gives garbage collection back on exit
 
-            control = fake_pylibfranka.robots[0].control
-            assert control is not None
-            expected = np.array(
-                [
-                    FR3_JOINT_LIMITS_RAD["fr3_joint1"][1],
-                    np.radians(10.0),
-                    0.0,
-                    FR3_JOINT_LIMITS_RAD["fr3_joint4"][1],
-                    0.0,
-                    FR3_JOINT_LIMITS_RAD["fr3_joint6"][0],
-                    0.0,
-                ],
-            )
-            np.testing.assert_allclose(control.writes[-1], expected, atol=1e-6)
-        finally:
-            robot.disconnect()
 
-    def test_gripper_move_only_on_change(self, fake_pylibfranka: _FakePylibfranka) -> None:
-        robot = FrankaFR3("172.16.0.2", goal_time=0.001)
-        robot.connect()
-        try:
-            action = np.zeros(8)
-            action[-1] = 0.03
-            robot.send_action(action)
-            time.sleep(0.02)
-            robot.send_action(action)
-            time.sleep(0.02)
+def _process_follower(control: _FakeControl, **kwargs):
+    kwargs.setdefault("gripper_enabled", False)
+    kwargs.setdefault("control_mode", "position")  # the fake robot only moves under position commands
+    follower = franka.FrankaFR3("10.0.0.2", realtime_config="kIgnore", **kwargs)
+    follower._mp_context = multiprocessing.get_context("fork")  # noqa: SLF001 - children see the fakes
+    follower._pylibfranka = _fake_pylibfranka(control)  # noqa: SLF001
+    follower._gripper_factory = _SlowGripper  # noqa: SLF001
+    return follower
 
-            assert fake_pylibfranka.grippers[0].moved == [(0.03, pytest.approx(0.05))]
-        finally:
-            robot.disconnect()
+
+def test_process_follower_tracks_and_drives_the_hand_from_its_own_processes() -> None:
+    follower = _process_follower(_FakeControl(START), gripper_enabled=True)
+    follower.connect()
+    try:
+        assert follower.joint_names[-1] == "gripper"
+        target_deg = np.degrees(START) + 5.0
+        follower.send_action(np.append(target_deg, 0.0))  # grasp: holds the gripper child's GIL
+        time.sleep(1.5)
+        closed = follower.get_observation().joint_positions
+        follower.send_action(np.append(target_deg, FR3_GRIPPER_WIDTH_RANGE_M[1]))
+        time.sleep(0.8)
+        opened = follower.get_observation().joint_positions
+    finally:
+        follower.disconnect()
+    assert np.allclose(closed[:7], target_deg, atol=0.5)
+    assert closed[7] == pytest.approx(0.03)
+    assert opened[7] == pytest.approx(FR3_GRIPPER_WIDTH_RANGE_M[1])
+    assert not follower.is_connected()
+
+
+def test_process_follower_reports_a_reflex_from_the_arm_process() -> None:
+    control = _FakeControl(START)
+    control.fail_after = 200  # ~0.2 s, then the fake robot aborts with a reflex
+    follower = _process_follower(control)
+    follower.connect()
+    try:
+        time.sleep(0.6)
+        with pytest.raises(ConnectionError, match="communication_constraints_violation"):
+            follower.get_observation()
+        with pytest.raises(ConnectionError):
+            follower.send_action(np.degrees(START))
+    finally:
+        follower.disconnect()
+
+
+def test_process_follower_connect_failure_raises_with_the_reason() -> None:
+    follower = franka.FrankaFR3("10.0.0.2", realtime_config="kIgnore")
+    follower._mp_context = multiprocessing.get_context("fork")  # noqa: SLF001
+    follower._pylibfranka = _fake_pylibfranka(_FakeControl(START), fail_connect="Connection to FCI refused")  # noqa: SLF001
+    with pytest.raises(ConnectionError, match="FCI refused"):
+        follower.connect()
+    assert not follower.is_connected()
+
+
+def test_seq_buffer_round_trips_and_never_returns_a_torn_read() -> None:
+    buffer = franka.SeqBuffer.create(multiprocessing.get_context("fork"), 3)
+    buffer.write(np.array([1.0, 2.0, 3.0]))
+    assert np.array_equal(buffer.read(), [1.0, 2.0, 3.0])
+    view = np.frombuffer(buffer.raw, dtype=np.float64)
+    view[0] += 1.0  # a writer is mid-update
+    assert buffer.read(attempts=5) is None  # the reader gives up instead of blocking or tearing
+
+
+def _robot_view(missed: set[int], *, coast: bool, ms: int = 3000, factor: float = 0.3) -> np.ndarray:
+    """Positions the robot executes each 1 ms when our command packets for ``missed`` cycles are lost.
+
+    Missed cycles are extrapolated by the robot with constant acceleration. Our loop only
+    learns about them from the next state's duration (``periods`` > 1).
+    """
+    tracker = franka.JerkLimitedTracker(
+        np.zeros(7),
+        factor * np.asarray(FR3_JOINT_MAX_VELOCITY_RAD_S),
+        factor * np.asarray(FR3_JOINT_MAX_ACCELERATION_RAD_S2),
+        factor * np.asarray(FR3_JOINT_MAX_JERK_RAD_S3),
+    )
+    target = np.full(7, 0.5)
+    executed = [np.zeros(7), np.zeros(7)]
+    periods = 1
+    for k in range(ms):
+        if k in missed:
+            q1, q0 = executed[-1], executed[-2]
+            velocity = q1 - q0
+            acceleration = velocity - (q0 - executed[-3]) if len(executed) > 2 else 0.0  # noqa: PLR2004
+            executed.append(q1 + velocity + acceleration)  # constant acceleration
+            periods += 1
+            continue
+        command = tracker.advance(target, periods) if coast else tracker.step(target, periods * 0.001)
+        executed.append(command)
+        periods = 1
+    return np.array(executed)
+
+
+@pytest.mark.parametrize("coast", [True, False])
+def test_missed_packets_keep_the_robots_acceleration_continuous_only_when_coasting(coast: bool) -> None:
+    rng = np.random.default_rng(1)
+    missed = {int(k) for k in rng.choice(np.arange(100, 2500), size=60, replace=False)} | {300, 301, 302, 303}
+    executed = _robot_view(missed, coast=coast)
+    acceleration = np.diff(executed, n=2, axis=0) / 1e-6
+    jump = np.max(
+        np.abs(np.diff(acceleration, axis=0)) / (np.asarray(FR3_JOINT_MAX_JERK_RAD_S3) * 1e-3)
+    )  # fraction of FR3 limit
+    if coast:
+        assert jump < 0.5  # well inside the robot's acceleration-discontinuity check
+    else:
+        assert jump > 1.0  # the old single big step violates it (the reflex seen on hardware)
+
+
+def test_prepare_connects_without_starting_control_until_connect() -> None:
+    follower = _process_follower(_FakeControl(START))
+    follower.prepare()
+    try:
+        time.sleep(0.3)
+        assert not follower.is_connected()  # process and robot connection up, but no 1 kHz loop yet
+        assert follower._arm.is_alive()  # noqa: SLF001
+        follower.connect()
+        assert follower.is_connected()
+        assert np.allclose(follower.get_observation().joint_positions, np.degrees(START), atol=1e-3)
+    finally:
+        follower.disconnect()
+
+
+def test_loop_overruns_survive_disconnect_and_a_clean_stop_saves_the_last_cycles() -> None:
+    follower = _process_follower(_FakeControl(START))
+    dump = Path(f"/tmp/franka-{follower.host}-last.npz")
+    dump.unlink(missing_ok=True)
+    follower.connect()
+    time.sleep(0.2)
+    follower.disconnect()  # the count is reported after this
+    history = np.load(dump)["history"]
+    assert history.shape == (franka._HISTORY, 23)  # robot dt, command, measured, wall-clock dt, torque
+    assert np.isfinite(history[-1]).all()
+    published = np.zeros(franka._STATE_SIZE)
+    published[franka._STATE_OVERRUNS] = 14
+    follower._state.write(published)  # noqa: SLF001
+    assert follower.loop_overruns == 14

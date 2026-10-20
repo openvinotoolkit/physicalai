@@ -14,7 +14,13 @@ from physicalai_franka_plugin.gello import (
     GelloLeader,
     present_position_counts,
 )
-from physicalai_franka_plugin.gello_calibrate import calculate_calibration
+from physicalai_franka_plugin.constants import fr3_joint_limits_deg
+from physicalai_franka_plugin.gello_calibrate import (
+    calculate_calibration,
+    calculate_matched_calibration,
+    mirror_pose,
+    normalize_raw,
+)
 
 
 class _FakePortHandler:
@@ -152,7 +158,7 @@ def test_trigger_wraps_whole_turns_into_the_calibrated_window(fake_dynamixel: ob
 
 
 def test_no_drift_after_passing_a_joint_limit(fake_dynamixel: object) -> None:
-    # J4 rests beyond the FR3 limit (-157 deg) at the Duo rest pose (~ -175 deg). Moving past the limit
+    # J4 rests near the FR3 limit (-171 deg after the 5 deg margin) at the Duo rest pose (~ -175 deg). Moving past it
     # and back must return the same reading; the old clamped-delta integrator kept the clamp error.
     _ = fake_dynamixel
     rest = [2048, 2048, 2048, 2048, 2048, 2048, 2048, 2700]
@@ -171,8 +177,10 @@ def test_no_drift_after_passing_a_joint_limit(fake_dynamixel: object) -> None:
         counts[3] = round(1.4 * 4095 / (2 * np.pi))  # J4 = -1.4 rad, inside the range
         leader.connect()
         before = leader.get_observation().joint_positions[3]
-        counts[3] = round(3.05 * 4095 / (2 * np.pi))  # J4 = -3.05 rad, past the -2.75 rad limit
-        assert leader.get_observation().joint_positions[3] == pytest.approx(np.degrees(-2.7478), abs=0.1)
+        counts[3] = round(3.05 * 4095 / (2 * np.pi))  # J4 = -3.05 rad, past the -2.99 rad limit (hardware - 5 deg)
+        assert leader.get_observation().joint_positions[3] == pytest.approx(
+            np.degrees(GelloLeader._LIMITS_RAD[3, 0]), abs=0.1
+        )
         counts[3] = round(1.4 * 4095 / (2 * np.pi))
         after = leader.get_observation().joint_positions[3]
     assert after == pytest.approx(before, abs=0.1)
@@ -238,3 +246,51 @@ def test_single_gello_uses_default_calibration(fake_dynamixel: object) -> None:
     leader.connect()
     assert leader.get_observation().joint_positions.shape == (8,)
     leader.disconnect()
+
+
+def test_gello_clips_to_fr3_hardware_limits_not_the_urdf(fake_dynamixel: object) -> None:
+    # The GELLO rest pose has the elbow (J4) near -174 deg: the URDF limit (-157 deg) used to
+    # clip it, the FR3 hardware limit minus 5 deg (-171.3 deg) only trims the last few degrees.
+    leader = GelloLeader("/dev/null")
+    cal = GelloCalibration.default()
+    for elbow, expected in ((-165.0, -165.0), (-174.0, -171.3)):
+        q = np.radians([0.0, 0.0, 0.0, elbow, 0.0, 145.0, 0.0])
+        raw = (q + np.pi) * np.array(cal.joint_signs) + np.array(cal.assembly_offsets_rad)
+        clipped = np.clip(leader._normalize_initial(raw), *GelloLeader._LIMITS_RAD.T)
+        assert np.degrees(clipped)[3] == pytest.approx(expected, abs=0.05)
+
+
+def test_matched_calibration_reads_the_target_exactly_and_keeps_factory_offsets_at_factory_readings() -> None:
+    signs = np.array([1, -1, 1, -1, 1, 1, 1], dtype=float)
+    factory = np.array(GelloCalibration.default().assembly_offsets_rad)
+    home = np.radians([0.0, 0.0, 0.0, -90.0, 0.0, 90.0, 0.0])
+    # A GELLO on the robot's marks that is a few degrees off its factory assembly.
+    assembly_error = np.radians([-11.6, -0.2, -3.3, 0.4, -6.2, -0.9, -5.5])
+    raw = (home + np.pi) * signs + factory + assembly_error
+    calibration = calculate_matched_calibration(
+        raw, target_rad=home, gripper_closed_rad=2.2, gripper_open_rad=3.4, baudrate=57_600
+    )
+    offsets = np.array(calibration.assembly_offsets_rad)
+    assert np.allclose(normalize_raw(raw, offsets, signs), home, atol=1e-9)
+    change = (offsets - factory + np.pi) % (2 * np.pi) - np.pi
+    assert np.allclose(change, assembly_error, atol=1e-9)  # exact, not rounded to 90 deg
+
+
+def test_mirror_pose_flips_the_rolling_joints_of_the_duo_reference_poses() -> None:
+    left = np.array([-1.57, -0.80, 1.80, -3.00, 1.40, 1.50, -2.10])
+    right = np.array([1.57, -0.80, -1.80, -3.00, -1.40, 1.50, 2.10])
+    assert np.allclose(mirror_pose(right), left)
+    assert np.allclose(mirror_pose(mirror_pose(left)), left)
+
+
+def test_fr3_joint_limits_share_midpoints_and_hardware_shrinks_by_the_margin() -> None:
+    hardware = fr3_joint_limits_deg("hardware", 5.0)
+    assert hardware[3, 0] == pytest.approx(np.degrees(-3.0770) + 5.0)
+    assert hardware[3, 1] == pytest.approx(np.degrees(-0.1169) - 5.0)
+    for kind in ("suggested", "urdf"):
+        assert np.allclose(fr3_joint_limits_deg(kind).mean(axis=1), hardware.mean(axis=1), atol=0.05)
+    assert np.all(hardware[:, 0] < fr3_joint_limits_deg("urdf")[:, 0])
+    with pytest.raises(ValueError, match="joint limits"):
+        fr3_joint_limits_deg("nope")
+    with pytest.raises(ValueError, match="no joint range"):
+        fr3_joint_limits_deg("hardware", 200.0)

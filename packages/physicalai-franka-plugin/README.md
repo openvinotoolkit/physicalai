@@ -11,15 +11,19 @@
 - 7-DOF FR3 follower over the Franka Control Interface (FCI) via the official `pylibfranka` bindings
 - Bimanual left/right FR3 follower with deterministic left-then-right action layout
 - Optional Franka Hand gripper commanded by width as an extra action element
-- 1 kHz joint position control loop with `goal_time`-based interpolation
+- 1 kHz control loop in its own process (and the Franka Hand in another), so other
+  Python work such as a teleoperation leader cannot stall it
+- Torque-mode joint impedance by default, with the gains of Franka's GELLO controller;
+  a jerk-limited tracker turns each target into a smooth trajectory
+- Passive GELLO / GELLO Duo leaders, with a calibration command that never moves anything
 - Bundled FR3 URDF for the PhysicalAI Studio 3D viewer
 
 ## Hardware
 
-| Class       | Arm                                         | Protocol              | Units                                             |
-| ----------- | ------------------------------------------- | --------------------- | ------------------------------------------------- |
-| `FrankaFR3` | FR3 follower (7-DOF + optional Franka Hand) | FCI via `pylibfranka` | Arm positions in degrees; gripper width in meters |
-| `BimanualFrankaFR3` | Left/right FR3 followers | Two FCI connections | Left arm values followed by right arm values |
+| Class               | Arm                                         | Protocol              | Units                                             |
+| ------------------- | ------------------------------------------- | --------------------- | ------------------------------------------------- |
+| `FrankaFR3`         | FR3 follower (7-DOF + optional Franka Hand) | FCI via `pylibfranka` | Arm positions in degrees; gripper width in meters |
+| `BimanualFrankaFR3` | Left/right FR3 followers                    | Two FCI connections   | Left arm values followed by right arm values      |
 
 ## Installation
 
@@ -72,6 +76,23 @@ Franka seven-axis GELLO and GELLO Duo. Each arm uses IDs 1–7 for joints and ID
 GELLO; custom values can be pasted as JSON in Studio’s advanced **Calibration**
 field.
 
+### Teleoperating with the example script
+
+`examples/gello_teleop.py` wraps the drivers in a teleoperation workflow:
+`--probe` and `--dry-run` (read only), `--align` (guides the GELLO onto the
+robot's pose joint by joint), `--joints 1,2` (only these joints follow), a slow
+catch-up to the GELLO pose before tracking, and `--park` (joint-by-joint moves to
+a pose or `--home`). Start with one arm and one joint:
+
+```bash
+python examples/gello_teleop.py --align --joints 1 \
+  --right-host 172.16.1.41 --right-port /dev/serial/by-id/usb-ROBOTIS_OpenRB-150_...
+```
+
+Hold the GELLO near the robot's pose: the robot cannot reach the GELLO's folded
+rest pose. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for the real-time PC
+checklist.
+
 ### Calibrating a GELLO
 
 Use the non-actuating calibration command after self-assembly, motor/flange
@@ -92,6 +113,10 @@ advanced JSON field; it is not read from a runtime filesystem path.
 
 It never enables torque or sends a position command. Use `/dev/serial/by-id/`
 paths rather than transient `/dev/ttyACM*` names.
+
+For exact offsets, match a robot whose joints sit on their marks (`--robot
+HOST`, read only) or mirror the other, calibrated arm of a Duo
+(`--mirror-port`, `--mirror-calibration`); see [calibration.md](calibration.md).
 
 The bundled GELLO visual assets are not collision-certified; verify the physical
 mounting and link geometry before using them for collision-sensitive setup.

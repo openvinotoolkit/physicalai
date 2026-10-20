@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 import numpy as np
 
 from physicalai.config import export_config
-from physicalai_franka_plugin.constants import FR3_JOINT_LIMITS_RAD
+from physicalai_franka_plugin.constants import fr3_joint_limits_deg
 
 if TYPE_CHECKING:
     from physicalai.capture.frame import Frame
@@ -120,7 +120,9 @@ class GelloLeader:
     """
 
     JOINT_ORDER: ClassVar[tuple[str, ...]] = (*tuple(f"joint_{index}" for index in range(7)), "gripper")
-    _LIMITS_RAD: ClassVar[np.ndarray] = np.array([FR3_JOINT_LIMITS_RAD[f"fr3_joint{index}"] for index in range(1, 8)])
+    # FR3 hardware limits minus 5 deg (as FrankaFR3 clips): the URDF limits would clip real poses, e.g. the
+    # GELLO rest pose (J4 ~ -174 deg). All limit sets share their midpoints, so the wrap window is unchanged.
+    _LIMITS_RAD: ClassVar[np.ndarray] = np.radians(fr3_joint_limits_deg("hardware", 5.0))
 
     def __init__(
         self, port: str, *, calibration: GelloCalibration | str | None = None, smoothing: float = 0.85
