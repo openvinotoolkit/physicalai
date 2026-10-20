@@ -27,6 +27,7 @@ sys.modules.setdefault("motorbridge", _mock_motorbridge)
 
 
 class _RebotPackageModule:
+    dm: object
     rs: object
 
 
@@ -61,9 +62,12 @@ def _make_mock_motorbridge() -> MagicMock:
 @pytest.fixture
 def mock_motorbridge(monkeypatch: pytest.MonkeyPatch) -> Generator[MagicMock]:
     module = _make_mock_motorbridge()
+    pkg = sys.modules.get("physicalai_rebot_b601_plugin")
+    sys.modules.pop("physicalai_rebot_b601_plugin.dm", None)
     sys.modules.pop("physicalai_rebot_b601_plugin.rs", None)
     sys.modules.pop("physicalai_rebot_b601_plugin", None)
-    pkg = sys.modules.get("physicalai_rebot_b601_plugin")
+    if pkg is not None and hasattr(pkg, "dm"):
+        del cast("_RebotPackageModule", pkg).dm
     if pkg is not None and hasattr(pkg, "rs"):
         del cast("_RebotPackageModule", pkg).rs
     # setitem restores only this key; patch.dict(sys.modules) would also drop
@@ -71,6 +75,7 @@ def mock_motorbridge(monkeypatch: pytest.MonkeyPatch) -> Generator[MagicMock]:
     monkeypatch.setitem(sys.modules, "motorbridge", module)
     import_module("physicalai_rebot_b601_plugin.rs")
     yield module
+    sys.modules.pop("physicalai_rebot_b601_plugin.dm", None)
     sys.modules.pop("physicalai_rebot_b601_plugin.rs", None)
     sys.modules.pop("physicalai_rebot_b601_plugin", None)
 
@@ -98,6 +103,15 @@ class TestReBotB601RSConstruction:
             "wrist_roll",
             "gripper",
         ]
+
+    def test_rs_inherits_dm_implementation(self, mock_motorbridge: MagicMock) -> None:
+        from physicalai.robot.interface import Robot
+        from physicalai_rebot_b601_plugin import ReBotB601DM, ReBotB601RS
+
+        robot = ReBotB601RS()
+
+        assert issubclass(ReBotB601RS, ReBotB601DM)
+        assert isinstance(robot, Robot)
 
     def test_invalid_adapter_raises(self, mock_motorbridge: MagicMock) -> None:
         from physicalai_rebot_b601_plugin import ReBotB601RS
@@ -255,15 +269,15 @@ class TestReBotB601RSAction:
         motors = list(controller.mock_motors)
         motors[6].get_state.return_value = _MotorState(pos=0.0, vel=0.0)
 
-        action = np.array([200.0, 200.0, -500.0, -45.0, -100.0, 100.0, 100.0], dtype=np.float32)
+        action = np.array([200.0, 200.0, -500.0, -45.0, -100.0, 100.0, -270.0], dtype=np.float32)
         robot.send_action(action)
 
-        motors[0].send_mit.assert_called_once_with(math.radians(145.0), 0.0, 50.0, 3.0, 0.0)
-        motors[1].send_mit.assert_called_once_with(math.radians(170.0), 0.0, 150.0, 10.0, 0.0)
+        motors[0].send_mit.assert_called_once_with(math.radians(-145.0), 0.0, 50.0, 3.0, 0.0)
+        motors[1].send_mit.assert_called_once_with(0.0, 0.0, 150.0, 10.0, 0.0)
         motors[2].send_mit.assert_called_once_with(math.radians(200.0), 0.0, 150.0, 10.0, 0.0)
         motors[3].send_mit.assert_called_once_with(math.radians(45.0), 0.0, 50.0, 5.0, 0.0)
         motors[4].send_mit.assert_called_once_with(math.radians(90.0), 0.0, 50.0, 4.0, 0.0)
-        motors[5].send_mit.assert_called_once_with(math.radians(90.0), 0.0, 50.0, 4.0, 0.0)
+        motors[5].send_mit.assert_called_once_with(math.radians(-90.0), 0.0, 50.0, 4.0, 0.0)
         # The gripper has not moved yet, so it counts as stalled and uses the hold limit.
         gripper_tau = motors[6].send_mit.call_args.args[4]
         assert gripper_tau == pytest.approx(1.0)
@@ -298,7 +312,7 @@ class TestReBotB601RSAction:
         robot.connect()
         gripper = mock_motorbridge.Controller.return_value.mock_motors[6]
         gripper.get_state.return_value = _MotorState(pos=0.0)
-        action = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 45.0], dtype=np.float32)
+        action = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -270.0], dtype=np.float32)
 
         taus = []
         for _ in range(5):
@@ -313,7 +327,7 @@ class TestReBotB601RSAction:
         robot.connect()
         gripper = mock_motorbridge.Controller.return_value.mock_motors[6]
         gripper.get_state.return_value = _MotorState(pos=0.0)
-        action = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 45.0], dtype=np.float32)
+        action = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -270.0], dtype=np.float32)
 
         with patch("physicalai_rebot_b601_plugin.rs.logger") as logger:
             for _ in range(20):
@@ -331,9 +345,9 @@ class TestReBotB601RSAction:
 
         robot.send_action(np.array([-145.0, 170.0, 0.0, -12.0, 0.0, 0.0, 0.0], dtype=np.float32))
 
-        # present=10 everywhere: large jumps are limited to a 5-degree step, small ones pass through.
-        motors[0].send_mit.assert_called_once_with(math.radians(5.0), 0.0, 50.0, 3.0, 0.0)
-        motors[1].send_mit.assert_called_once_with(math.radians(15.0), 0.0, 150.0, 10.0, 0.0)
+        # Raw motor position 10 is public -10; limiting happens before the -1 motor conversion.
+        motors[0].send_mit.assert_called_once_with(math.radians(15.0), 0.0, 50.0, 3.0, 0.0)
+        motors[1].send_mit.assert_called_once_with(math.radians(5.0), 0.0, 150.0, 10.0, 0.0)
         motors[3].send_mit.assert_called_once_with(math.radians(12.0), 0.0, 50.0, 5.0, 0.0)
 
     def test_send_action_max_relative_target_scales_gripper_step(self, mock_motorbridge: MagicMock) -> None:
@@ -349,16 +363,21 @@ class TestReBotB601RSAction:
         for motor in motors:
             motor.get_state.return_value = _MotorState(pos=0.0)
 
-        robot.send_action(np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 30.0], dtype=np.float32))
+        robot.send_action(np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -30.0], dtype=np.float32))
 
-        # 30 joint deg maps to 180 motor deg; a 10 joint-deg step on the 6x gripper is 60 motor deg.
+        # A 10-degree public-frame step maps to 10 motor degrees; there is no magnitude scaling.
         gripper_tau = motors[6].send_mit.call_args.args[4]
-        assert gripper_tau == pytest.approx(12.0 * math.radians(60.0))
+        assert gripper_tau == pytest.approx(12.0 * math.radians(10.0))
 
-    @pytest.mark.parametrize("max_relative_target", [0.0, -1.0, math.inf, math.nan])
+    @pytest.mark.parametrize("max_relative_target", [0.0, -2.0, math.inf, math.nan])
     def test_invalid_max_relative_target_raises(self, mock_motorbridge: MagicMock, max_relative_target: float) -> None:
-        with pytest.raises(ValueError, match="max_relative_target must be a finite positive value"):
+        with pytest.raises(ValueError, match="max_relative_target must be -1, None, or a finite positive value"):
             _create_robot(mock_motorbridge, max_relative_target=max_relative_target)
+
+    def test_minus_one_disables_max_relative_target(self, mock_motorbridge: MagicMock) -> None:
+        robot = _create_robot(mock_motorbridge, max_relative_target=-1.0)
+
+        assert robot.max_relative_target is None
 
     def test_send_action_wrong_shape_raises(self, mock_motorbridge: MagicMock) -> None:
         robot = _create_robot(mock_motorbridge)
@@ -407,7 +426,7 @@ class TestReBotB601RSAction:
 
         robot.send_action(np.array([-30.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32))
 
-        motors[0].send_mit.assert_called_once_with(math.radians(-30.0), 0.0, 50.0, 3.0, 0.0)
+        motors[0].send_mit.assert_called_once_with(math.radians(30.0), 0.0, 50.0, 3.0, 0.0)
 
     def test_echoing_observation_holds_current_pose(self, mock_motorbridge: MagicMock) -> None:
         """Sending the observation back as the action must hold every joint in place."""

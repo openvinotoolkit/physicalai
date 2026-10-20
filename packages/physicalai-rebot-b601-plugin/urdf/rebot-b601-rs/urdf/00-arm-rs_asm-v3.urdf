@@ -613,6 +613,14 @@
     <axis
       xyz="0 0 0" />
   </joint>
+  <link name="gripper_drive_link" />
+  <joint name="gripper_drive" type="revolute">
+    <origin xyz="0 0 0" rpy="0 0 0" />
+    <parent link="gripper_end" />
+    <child link="gripper_drive_link" />
+    <axis xyz="1 0 0" />
+    <limit lower="-4.71238898" upper="0" effort="1" velocity="10" />
+  </joint>
   <link
     name="gripper_left">
     <inertial>
@@ -690,6 +698,7 @@
       upper="0.05"
       effort="500"
       velocity="10" />
+    <mimic joint="gripper_drive" multiplier="-0.01061032954" offset="0" />
   </joint>
   <link
     name="gripper_right">
@@ -768,5 +777,6 @@
       upper="0.0715"
       effort="500"
       velocity="10" />
+    <mimic joint="gripper_drive" multiplier="-0.01517277124" offset="0" />
   </joint>
 </robot>
