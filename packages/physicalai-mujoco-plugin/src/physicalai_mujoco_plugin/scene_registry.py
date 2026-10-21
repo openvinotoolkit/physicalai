@@ -573,6 +573,9 @@ _SCENES: dict[str, SceneConfig] = {
             ("piper", OverviewRig(pos=(-0.182, 0.155, 1.285))),
             ("franka_fr3", OverviewRig(pos=(-0.313, 0.216, 1.88))),
             ("franka_panda", OverviewRig(pos=(-0.323, 0.231, 1.994))),
+            ("franka_fr3_hand", OverviewRig(pos=(-0.306, 0.22, 1.899))),
+            # The Duo's arms stand symmetric about its single mount: the camera stays on the centre line.
+            ("franka_duo", OverviewRig(pos=(-0.295, 0.0, 1.475))),
             ("xarm7", OverviewRig(pos=(-0.228, 0.212, 1.723))),
         ),
         # Far enough for the tallest home poses (Franka, xArm, Kinova); the WidowX AI's upright
@@ -595,6 +598,8 @@ _SCENES: dict[str, SceneConfig] = {
             "piper",
             "franka_fr3",
             "franka_panda",
+            "franka_fr3_hand",
+            "franka_duo",
             "xarm7",
             "kinova_gen3",
         ),

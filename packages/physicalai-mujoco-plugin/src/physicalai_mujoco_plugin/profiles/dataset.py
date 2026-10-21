@@ -108,6 +108,37 @@ PIPER_PROFILE = RobotProfile(
     end_effectors=(EndEffector(body="link6", pos=(0.0, 0.0, 0.138)),),
     reach=0.570,
 )
+# Self-collision pairs Franka disables for its arms (franka_description 2.9.0,
+# robots/fr3_duo/fr3_duo.srdf.xacro, missing_self_arm_collisions): their simplified collision hulls
+# overlap in valid folded poses, e.g. the Franka GELLO Duo's rest/calibration pose.
+_FRANKA_DISABLED_SELF_COLLISIONS = (
+    ("link0", "link5"),
+    ("link0", "link6"),
+    ("link0", "link7"),
+    ("link1", "link5"),
+    ("link1", "link6"),
+    ("link1", "link7"),
+    ("link2", "link5"),
+    ("link2", "link7"),
+    *(
+        (link, part)
+        for link in ("link0", "link1", "link2", "link5")
+        for part in ("hand", "left_finger", "right_finger")
+    ),
+)
+
+
+def exclude_franka_self_collisions(spec: mujoco.MjSpec, *, link_prefix: str) -> None:
+    """Exclude Franka's disabled self-collision pairs; hand pairs only where the model has a hand."""
+    names = {body.name for body in spec.bodies}
+    for first, second in _FRANKA_DISABLED_SELF_COLLISIONS:
+        a = f"{link_prefix}{first}" if first.startswith("link") else first
+        b = f"{link_prefix}{second}" if second.startswith("link") else second
+        if a in names and b in names:
+            exclude = spec.add_exclude()
+            exclude.bodyname1, exclude.bodyname2 = a, b
+
+
 FRANKA_FR3_PROFILE = RobotProfile(
     name="franka_fr3",
     display_name="Franka Research 3",
@@ -115,6 +146,7 @@ FRANKA_FR3_PROFILE = RobotProfile(
     menagerie_entry="fr3",
     tier="dataset",
     default_scene="single_pick_place",
+    customize=partial(exclude_franka_self_collisions, link_prefix="fr3_"),
     end_effectors=(EndEffector(site="attachment_site"),),
     reach=0.793,
 )
@@ -125,6 +157,7 @@ FRANKA_PANDA_PROFILE = RobotProfile(
     menagerie_entry="panda",
     tier="dataset",
     default_scene="single_pick_place",
+    customize=partial(exclude_franka_self_collisions, link_prefix=""),
     end_effectors=(EndEffector(body="hand", pos=(0.0, 0.0, 0.110)),),
     reach=0.849,
 )
@@ -171,4 +204,5 @@ __all__ = [
     "PIPER_PROFILE",
     "SO_ARM100_PROFILE",
     "XARM7_PROFILE",
+    "exclude_franka_self_collisions",
 ]

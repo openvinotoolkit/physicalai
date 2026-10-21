@@ -120,6 +120,8 @@ def test_registry_has_hand_written_profiles_and_any_menagerie_model() -> None:
         "so101",
         "trossen_wxai",
         "rebot_b601",
+        "franka_fr3_hand",
+        "franka_duo",
         "ur5e",
         "aloha",
         "so_arm100",

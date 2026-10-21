@@ -480,6 +480,8 @@ class TestGeneratedEntries:
             ("MuJoCo_WidowXAI_Bimanual_Follower", "mujoco-trossen_wxai-bimanual-follow"),
             ("MuJoCo_reBotB601_Follower", "mujoco-rebot_b601-follow"),
             ("MuJoCo_reBotB601_Bimanual_Follower", "mujoco-rebot_b601-bimanual-follow"),
+            ("MuJoCo_FrankaFR3Hand_Follower", "mujoco-franka_fr3_hand-follow"),
+            ("MuJoCo_FrankaDuo_Follower", "mujoco-franka_duo-follow"),
             ("MuJoCo_UniversalRobotsUR5e_Follower", "mujoco-ur5e-follow"),
             ("MuJoCo_ALOHA_Follower", "mujoco-aloha-follow"),
             ("MuJoCo_SOARM100_Follower", "mujoco-so_arm100-follow"),
