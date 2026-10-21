@@ -4,6 +4,7 @@ import contextlib
 import os
 import sys
 import threading
+import time
 import types
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -497,6 +498,49 @@ class TestObservationsAndActions:
     def test_normalized_values_outside_the_range_are_clamped(self, robot) -> None:
         robot.send_action(np.full(6, -150.0))
         np.testing.assert_allclose(robot._data.ctrl, RANGES[:, 0])  # noqa: SLF001
+
+
+class TestActionEasing:
+    """A streamed action eases in over the gap between actions (capped by goal_time), not as a step."""
+
+    @pytest.fixture(autouse=True)
+    def _clock_only(self):
+        # Targets only: advance the simulation clock without dynamics (the toy model's large
+        # target jumps go unstable, and MuJoCo's auto-reset would zero ctrl).
+        with patch.object(mujoco, "mj_step", lambda model, data: setattr(data, "time", data.time + model.opt.timestep)):
+            yield
+
+    def test_streamed_actions_ease_between_targets(self, robot) -> None:
+        first, second = np.full(6, -20.0), np.full(6, 20.0)
+        robot.send_action(first)  # the first action applies at once
+        np.testing.assert_allclose(robot._data.ctrl, normalized_to_radians(first))  # noqa: SLF001
+        time.sleep(0.04)
+        robot.send_action(second, goal_time=0.12)
+        np.testing.assert_allclose(robot._data.ctrl, normalized_to_radians(first))  # noqa: SLF001 - not jumped
+        seen = []
+        for _ in range(30):
+            robot.get_observation()
+            seen.append(robot._data.ctrl.copy())  # noqa: SLF001
+        np.testing.assert_allclose(seen[-1], normalized_to_radians(second))
+        midway = [c for c in seen if not np.allclose(c, seen[-1])]
+        assert midway, "the target should pass through intermediate values"
+        assert robot._ease is None  # noqa: SLF001
+
+    def test_goal_time_zero_applies_at_once(self, robot) -> None:
+        robot.send_action(np.zeros(6))
+        time.sleep(0.04)
+        robot.send_action(np.full(6, 30.0), goal_time=0.0)
+        np.testing.assert_allclose(robot._data.ctrl, normalized_to_radians(np.full(6, 30.0)))  # noqa: SLF001
+
+    def test_other_target_writes_cancel_the_ease(self, robot) -> None:
+        robot.send_action(np.zeros(6))
+        time.sleep(0.04)
+        robot.send_action(np.full(6, 40.0), goal_time=0.12)
+        robot._write_public(np.full(6, -40.0))  # noqa: SLF001 - e.g. a reset or POST /home
+        for _ in range(30):
+            robot.get_observation()
+        np.testing.assert_allclose(robot._data.ctrl, normalized_to_radians(np.full(6, -40.0)))  # noqa: SLF001
+        assert robot._ease is None  # noqa: SLF001
 
 
 class TestCommands:
