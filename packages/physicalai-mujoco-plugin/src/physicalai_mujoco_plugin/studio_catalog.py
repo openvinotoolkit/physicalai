@@ -82,7 +82,7 @@ CATALOG_TIERS = ("twin", "dataset", "experimental")
 """Profile tiers that get Studio entries; ``unsupported`` models get none."""
 BIMANUAL_TIERS = ("twin",)
 """Profile tiers that also get a two-arm entry: the robots with real bimanual leaders."""
-SEPARATE_BIMANUAL_PROFILES = frozenset({"franka_fr3_hand"})
+SEPARATE_BIMANUAL_PROFILES = frozenset({"franka_fr3"})
 """Twins whose real two-arm setup is its own profile (the FR3 pair is ``franka_duo``): no side-by-side entry."""
 DEFAULT_HTTP_URL = f"http://127.0.0.1:{DEFAULT_HTTP_PORT}"
 """The owner's camera and control server under ``physicalai-mujoco start``'s defaults."""

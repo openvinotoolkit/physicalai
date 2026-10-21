@@ -316,14 +316,13 @@ Every robot comes from MuJoCo Menagerie and is described by a _profile_: what th
 | `so101`                | SO-101, matching the real `SO101` driver                | `twin`         | all tabletop scenes | 1, 2 | `normalized` |
 | `trossen_wxai`         | Trossen WidowX AI, matching Runtime's `WidowXAI` driver | `twin`         | `single_pick_place` | 1, 2 | `degrees`    |
 | `rebot_b601`           | Seeed reBot B601-RS, `ReBotB601RS` names (provisional)  | `twin`         | `single_pick_place` | 1, 2 | `degrees`    |
-| `franka_fr3_hand`      | Franka FR3 with Franka Hand, matching `FrankaFR3`       | `twin`         | `single_pick_place` | 1, 2 | `degrees`    |
+| `franka_fr3`           | Franka Research 3 with hand, matching `FrankaFR3`       | `twin`         | `single_pick_place` | 1, 2 | `degrees`    |
 | `franka_duo`           | Franka FR3 Duo, both arms as one robot (16 channels)    | `twin`         | `single_pick_place` | 1    | `degrees`    |
 | `ur5e`                 | Universal Robots UR5e (no gripper)                      | `dataset`      | `single_pick_place` | 1, 2 | `degrees`    |
 | `aloha`                | ALOHA, both arms as one robot (14 joints)               | `dataset`      | `single_pick_place` | 1    | `degrees`    |
 | `so_arm100`            | SO-ARM100 (Menagerie `trs_so_arm100`)                   | `dataset`      | `single_pick_place` | 1, 2 | `degrees`    |
 | `koch`                 | Koch low-cost arm (`low_cost_robot_arm`)                | `dataset`      | `single_pick_place` | 1, 2 | `degrees`    |
 | `piper`                | AgileX PiPER                                            | `dataset`      | `single_pick_place` | 1, 2 | `degrees`    |
-| `franka_fr3`           | Franka Research 3 (no gripper)                          | `dataset`      | `single_pick_place` | 1, 2 | `degrees`    |
 | `franka_panda`         | Franka Emika Panda                                      | `dataset`      | `single_pick_place` | 1, 2 | `degrees`    |
 | `xarm7`                | UFACTORY xArm7                                          | `dataset`      | `single_pick_place` | 1, 2 | `degrees`    |
 | `kinova_gen3`          | Kinova Gen3 (no gripper)                                | `dataset`      | `single_pick_place` | 1, 2 | `degrees`    |
@@ -335,7 +334,7 @@ Every robot comes from MuJoCo Menagerie and is described by a _profile_: what th
 
 ALOHA attaches as Menagerie's two-arm model at the scene's single mount, so both arms keep their real spacing and their wrist cameras (`wrist_cam_left`, `wrist_cam_right`). Its joints are named `left_waist` ... `right_gripper`, as in LeRobot's ALOHA datasets.
 
-The Franka profiles follow `physicalai-franka-plugin`: `fr3_joint1` ... `fr3_joint7` in degrees and `gripper`, the hand's opening width in metres (0 to 0.08), prefixed `left_` and `right_` on the Duo as `BimanualFrankaFR3` names them. Menagerie's FR3 has no hand, so both mount the Franka Hand from Menagerie's Panda package on the flange as Menagerie's Panda does. `franka_duo` is one model, like ALOHA's, with both arms where Franka's FR3 Duo mount (`fr3_duo_mount_v0_3`) puts them, 0.30 m above the scene's mount (an estimate of the Duo's column), so its joint-space poses match the real Duo and the Franka GELLO Duo one to one. Studio lists the Duo instead of a side-by-side `franka_fr3_hand` pair; `start --bimanual` still runs one.
+The Franka profiles follow `physicalai-franka-plugin`: `fr3_joint1` ... `fr3_joint7` in degrees and `gripper`, the hand's opening width in metres (0 to 0.08), prefixed `left_` and `right_` on the Duo as `BimanualFrankaFR3` names them. Menagerie's FR3 has no hand, so both mount the Franka Hand from Menagerie's Panda package on the flange as Menagerie's Panda does. `franka_duo` is one model, like ALOHA's, with both arms where Franka's FR3 Duo mount (`fr3_duo_mount_v0_3`) puts them, 0.30 m above the scene's mount (an estimate of the Duo's column), so its joint-space poses match the real Duo and the Franka GELLO Duo one to one. Studio lists the Duo instead of a side-by-side `franka_fr3` pair; `start --bimanual` still runs one.
 
 The Koch and SO-ARM100 profiles turn Menagerie's arm about its base so that it faces +x like the others (Menagerie's face -x and -y, and their base joint limits keep part of the table out of reach); joint names, ranges and zero pose are unchanged. The Kinova Gen3 has four unlimited joints, so it runs in `degrees` only.
 
@@ -347,7 +346,7 @@ A reset tries not to spawn the block (or, in `yahtzee`, drop a die) under a low 
 
 Two profile fields drive this:
 
-- `RobotProfile.end_effectors`: each arm's tool frame, as a model site (`EndEffector(site="attachment_site")`) or a point in a body (`EndEffector(body="hand", pos=(0, 0, 0.110))`), and its approach `axis`, the direction in that frame that points out of the gripper or flange. Menagerie's tool sites are used where they exist; the SO-ARM100, Koch, PiPER, Panda, reBot B601 and the Franka twins use the point between their finger tips. The arms without a gripper (UR5e, FR3, Kinova Gen3) use their flange.
+- `RobotProfile.end_effectors`: each arm's tool frame, as a model site (`EndEffector(site="attachment_site")`) or a point in a body (`EndEffector(body="hand", pos=(0, 0, 0.110))`), and its approach `axis`, the direction in that frame that points out of the gripper or flange. Menagerie's tool sites are used where they exist; the SO-ARM100, Koch, PiPER, Panda, reBot B601 and the Franka twins use the point between their finger tips. The arms without a gripper (UR5e, Kinova Gen3) use their flange.
 - `RobotProfile.reach`: the farthest horizontal distance from the arm's base, toward the spawn area, at which the end effector reaches a point 2 cm above the table within 5 mm, with its approach axis within 15° of straight down (the SO-101: 0.367 m). A `reach` scene refuses a profile without one.
 
 The reachability test (`tests/test_reach.py`, marker `mujoco_smoke`) solves a damped least-squares IK for every arm on the centre and the extremes of its scaled spawn arc: within 1 cm, approach axis within 15° of straight down (the SO-101 needs 12° at the far edge of its own arc). With two arms, both reach the points on the arc's axis and the nearest arm reaches the others. It also measures each `reach` and checks the stored value to 1 cm. After changing an arm, print fresh measurements with `uv run python packages/physicalai-mujoco-plugin/tests/test_reach.py [profile ...]`.

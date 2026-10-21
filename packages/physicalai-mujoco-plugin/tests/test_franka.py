@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Franka twins: the FR3 with a Franka Hand and the FR3 Duo, under ``physicalai-franka-plugin``'s names and units."""
+"""Franka twins: the FR3 with its Franka Hand and the FR3 Duo, under ``physicalai-franka-plugin``'s names and units."""
 
 # MuJoCo model/data attributes are supplied by the C extension at runtime.
 # pyrefly: ignore-errors [missing-attribute]
@@ -22,15 +22,15 @@ from physicalai_mujoco_plugin.profiles.franka import (
     FRANKA_DUO_HOME_DEG,
     FRANKA_DUO_PROFILE,
     FRANKA_DUO_RPY,
-    FRANKA_FR3_HAND_PROFILE,
+    FRANKA_FR3_PROFILE,
     FRANKA_HAND_WIDTH_M,
 )
 from physicalai_mujoco_plugin.scene_registry import supported_arm_counts
 from physicalai_mujoco_plugin.studio_catalog import list_catalog_entries
 
 ARM_NAMES = tuple(f"fr3_joint{index}" for index in range(1, 8))
-FR3_HAND_NAMES = (*ARM_NAMES, "gripper")
-DUO_NAMES = tuple(f"{side}_{name}" for side in ("left", "right") for name in FR3_HAND_NAMES)
+FR3_NAMES = (*ARM_NAMES, "gripper")
+DUO_NAMES = tuple(f"{side}_{name}" for side in ("left", "right") for name in FR3_NAMES)
 
 
 def _model(profile: object) -> mujoco.MjModel:
@@ -46,7 +46,7 @@ def _relative_pose(model: mujoco.MjModel, data: mujoco.MjData, parent: str, chil
 
 def test_channels_follow_the_franka_plugin() -> None:
     """``FrankaFR3(gripper_enabled=True)``: seven joints in degrees, then the hand width in metres."""
-    for profile, names in ((FRANKA_FR3_HAND_PROFILE, FR3_HAND_NAMES), (FRANKA_DUO_PROFILE, DUO_NAMES)):
+    for profile, names in ((FRANKA_FR3_PROFILE, FR3_NAMES), (FRANKA_DUO_PROFILE, DUO_NAMES)):
         channels = robot_layout(profile).channels
         assert tuple(channel.name for channel in channels) == names
         assert [channel.unit for channel in channels] == [("metres" if n.endswith("gripper") else "degrees") for n in names]
@@ -54,11 +54,11 @@ def test_channels_follow_the_franka_plugin() -> None:
 
 def test_channels_match_the_real_driver_when_installed() -> None:
     robot = pytest.importorskip("physicalai_franka_plugin.robot", reason="needs physicalai-franka-plugin")
-    assert (*robot.FrankaFR3.JOINT_ORDER, "gripper") == FR3_HAND_NAMES
+    assert (*robot.FrankaFR3.JOINT_ORDER, "gripper") == FR3_NAMES
 
 
 def test_hand_sits_on_the_flange_as_on_menageries_panda() -> None:
-    fr3 = _model(FRANKA_FR3_HAND_PROFILE)
+    fr3 = _model(FRANKA_FR3_PROFILE)
     panda = mujoco.MjModel.from_xml_path(str(fetch_profile(get_profile("franka_panda"))))
     fr3_data, panda_data = mujoco.MjData(fr3), mujoco.MjData(panda)
     mujoco.mj_forward(fr3, fr3_data)
@@ -71,7 +71,7 @@ def test_hand_sits_on_the_flange_as_on_menageries_panda() -> None:
 
 @pytest.mark.parametrize("width", [0.0, 0.03, FRANKA_HAND_WIDTH_M])
 def test_gripper_command_is_the_hand_opening_width(width: float) -> None:
-    model = _model(FRANKA_FR3_HAND_PROFILE)
+    model = _model(FRANKA_FR3_PROFILE)
     data = mujoco.MjData(model)
     mujoco.mj_resetDataKeyframe(model, data, model.key("home").id)
     actuator = model.actuator("gripper")
@@ -123,5 +123,5 @@ def test_duo_runs_alone_and_the_fr3_pair_is_the_duo_in_studio() -> None:
     assert supported_arm_counts(FRANKA_DUO_PROFILE) == (1,)
     entries = {(entry.profile.name, entry.bimanual) for entry in list_catalog_entries()}
     assert ("franka_duo", False) in entries
-    assert ("franka_fr3_hand", False) in entries
-    assert ("franka_fr3_hand", True) not in entries
+    assert ("franka_fr3", False) in entries
+    assert ("franka_fr3", True) not in entries

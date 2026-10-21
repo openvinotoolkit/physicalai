@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Franka FR3 twins: one FR3 with a Franka Hand, and the two-arm FR3 Duo.
+"""Franka FR3 twins: the FR3 with its Franka Hand, and the two-arm FR3 Duo.
 
 They follow the names and units of ``physicalai-franka-plugin``: ``FrankaFR3(gripper_enabled=True)``
 reports ``fr3_joint1`` ... ``fr3_joint7`` in degrees and ``gripper``, the hand's opening width in
@@ -107,7 +107,7 @@ def attach_franka_hand(arm: mujoco.MjSpec) -> None:
     actuator.forcelimited = 1
 
 
-def customize_franka_fr3_hand(spec: mujoco.MjSpec) -> None:
+def customize_franka_fr3(spec: mujoco.MjSpec) -> None:
     """FR3 with the Franka Hand; Franka's home pose with the hand open."""
     attach_franka_hand(spec)
     exclude_franka_self_collisions(spec, link_prefix="fr3_")
@@ -120,7 +120,7 @@ def customize_franka_fr3_hand(spec: mujoco.MjSpec) -> None:
 def customize_franka_duo(spec: mujoco.MjSpec) -> None:
     """Replace the loaded FR3 with two FR3s and hands on the Duo mount, named ``left_*`` and ``right_*``."""
     arm = spec.copy()
-    customize_franka_fr3_hand(arm)
+    customize_franka_fr3(arm)
     for element in (*spec.keys, *spec.actuators, *spec.excludes):
         spec.delete(element)
     spec.delete(spec.body("base"))
@@ -156,14 +156,14 @@ def _wrist_camera(name: str, body: str) -> CameraSpec:
     )
 
 
-FRANKA_FR3_HAND_PROFILE = RobotProfile(
-    name="franka_fr3_hand",
-    display_name="Franka FR3 + Hand",
+FRANKA_FR3_PROFILE = RobotProfile(
+    name="franka_fr3",
+    display_name="Franka Research 3",
     menagerie_model="franka_fr3",
     menagerie_entry="fr3",
     tier="twin",
     default_unit="degrees",
-    customize=customize_franka_fr3_hand,
+    customize=customize_franka_fr3,
     default_scene="single_pick_place",
     end_effectors=(EndEffector(body="hand", pos=_HAND_TIP),),
     reach=0.855,
@@ -191,9 +191,9 @@ __all__ = [
     "FRANKA_DUO_HOME_DEG",
     "FRANKA_DUO_PROFILE",
     "FRANKA_DUO_RPY",
-    "FRANKA_FR3_HAND_PROFILE",
+    "FRANKA_FR3_PROFILE",
     "FRANKA_HAND_WIDTH_M",
     "attach_franka_hand",
     "customize_franka_duo",
-    "customize_franka_fr3_hand",
+    "customize_franka_fr3",
 ]

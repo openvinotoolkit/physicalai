@@ -10,8 +10,7 @@ LeRobot datasets name the joints: ALOHA's ``left_waist`` ... ``right_gripper``, 
 
 End effectors are Menagerie's tool sites where the model has one. The SO-ARM100, Koch, PiPER and
 Panda have none: theirs is the point between the finger tips (the mean of each finger's mesh
-vertices within 5 mm of its tip), in the gripper body's frame. The FR3 has no gripper: its end
-effector is the flange.
+vertices within 5 mm of its tip), in the gripper body's frame.
 """
 
 from __future__ import annotations
@@ -139,17 +138,6 @@ def exclude_franka_self_collisions(spec: mujoco.MjSpec, *, link_prefix: str) -> 
             exclude.bodyname1, exclude.bodyname2 = a, b
 
 
-FRANKA_FR3_PROFILE = RobotProfile(
-    name="franka_fr3",
-    display_name="Franka Research 3",
-    menagerie_model="franka_fr3",
-    menagerie_entry="fr3",
-    tier="dataset",
-    default_scene="single_pick_place",
-    customize=partial(exclude_franka_self_collisions, link_prefix="fr3_"),
-    end_effectors=(EndEffector(site="attachment_site"),),
-    reach=0.793,
-)
 FRANKA_PANDA_PROFILE = RobotProfile(
     name="franka_panda",
     display_name="Franka Emika Panda",
@@ -187,7 +175,6 @@ DATASET_PROFILES: tuple[RobotProfile, ...] = (
     SO_ARM100_PROFILE,
     KOCH_PROFILE,
     PIPER_PROFILE,
-    FRANKA_FR3_PROFILE,
     FRANKA_PANDA_PROFILE,
     XARM7_PROFILE,
     KINOVA_GEN3_PROFILE,
@@ -197,7 +184,6 @@ DATASET_PROFILES: tuple[RobotProfile, ...] = (
 __all__ = [
     "ALOHA_PROFILE",
     "DATASET_PROFILES",
-    "FRANKA_FR3_PROFILE",
     "FRANKA_PANDA_PROFILE",
     "KINOVA_GEN3_PROFILE",
     "KOCH_PROFILE",
