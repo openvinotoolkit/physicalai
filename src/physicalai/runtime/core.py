@@ -185,6 +185,8 @@ class RobotRuntime:
         # the top of run(), so clearing there would drop a stop() that landed
         # between connect() and run() and the session would never end.
         self._stop = threading.Event()
+        # Set by stop(return_to_initial_state=True) and cleared with ``_stop``.
+        self._return_on_stop = threading.Event()
         self._last_run_reason: RunReason | None = None
         self._initial_state: RobotObservation | None = None
         self._cycle_start = 0.0
@@ -341,7 +343,7 @@ class RobotRuntime:
         ns = parser.parse_object(document)
         return parser.instantiate(ns).runtime
 
-    def stop(self) -> None:
+    def stop(self, *, return_to_initial_state: bool = False) -> None:
         """Request the loop to exit after the current tick. Thread-safe.
 
         The tick already in flight finishes and its action is still sent, so the
@@ -353,7 +355,16 @@ class RobotRuntime:
         Distinct from ``Execution.stop()`` (tear down the inference worker) and
         ``ActionSource.disconnect()`` (release source-owned resources): this
         only asks the control loop to finish.
+
+        Args:
+            return_to_initial_state: Also move the robot back to the pose read at
+                the start of the run during shutdown, as if :meth:`run` had been
+                called with ``return_to_initial_state=True``. Lets a caller decide
+                per stop rather than once per run. Cleared with the stop flag.
         """
+        if return_to_initial_state:
+            # Set before the stop flag so the loop never exits without seeing it.
+            self._return_on_stop.set()
         self._stop.set()
 
     def run(
@@ -377,7 +388,8 @@ class RobotRuntime:
             return_to_initial_state: Interpolate the robot back to the pose read
                 at the start of the run during shutdown, instead of leaving it
                 wherever the last action put it. Best-effort — a failure only
-                logs and shutdown still completes.
+                logs and shutdown still completes. ``stop(return_to_initial_state=True)``
+                requests the same move for a single stop.
 
         Returns:
             Number of control ticks completed this run. A tick reads an
@@ -764,6 +776,9 @@ class RobotRuntime:
         goal_time = _RETURN_DURATION_S / steps
         try:
             current = self._robot.get_observation().joint_positions
+            if np.array_equal(target, current):
+                logger.info("Robot is already at its initial position")
+                return
             travel = float(np.max(np.abs(target - current)))
             logger.info("Returning robot to initial position over %.1fs", _RETURN_DURATION_S)
             for i in range(1, steps + 1):
@@ -796,7 +811,7 @@ class RobotRuntime:
             # Release the action source first so nothing else is driving the
             # robot while the return move runs.
             self._disconnect_and_log_errors()
-            if return_to_initial_state:
+            if return_to_initial_state or self._return_on_stop.is_set():
                 self._return_to_initial_state()
         finally:
             try:
@@ -806,4 +821,5 @@ class RobotRuntime:
                 # Ctrl+C the bus does not swallow — the stop flag must not
                 # survive into the next run() and silently zero-step it.
                 self._stop.clear()
+                self._return_on_stop.clear()
                 logger.info("Shutdown complete — %d steps (%s)", step, reason)

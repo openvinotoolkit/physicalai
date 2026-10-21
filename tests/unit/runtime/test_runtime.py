@@ -9,6 +9,7 @@ import json
 import multiprocessing as mp
 import threading
 import time
+import warnings
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -769,11 +770,12 @@ class _StopBeforeSend:
 
     step: int
     runtime: RobotRuntime | None = None
+    return_to_initial_state: bool = False
 
     def on_action_ready(self, *, action: np.ndarray, step: int) -> np.ndarray:
         if step >= self.step:
             assert self.runtime is not None
-            self.runtime.stop()
+            self.runtime.stop(return_to_initial_state=self.return_to_initial_state)
         return action
 
 
@@ -1486,3 +1488,49 @@ class TestReturnToInitialState:
         assert steps == 3
         assert robot.send_action.call_count == 4
         assert runtime.last_run_reason == "duration_elapsed"
+
+    def test_stop_flag_requests_the_move_for_that_run_only(self) -> None:
+        start = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+        stopper = _StopBeforeSend(step=2, return_to_initial_state=True)
+        runtime, robot = _stop_runtime(robot=_make_following_robot(start), callbacks=[stopper])
+        stopper.runtime = runtime
+
+        with _frozen_time():
+            steps = runtime.run(duration_s=100.0)
+
+        assert steps == 3
+        assert runtime.last_run_reason == "stop_requested"
+        assert robot.send_action.call_count == steps + self._RETURN_STEPS
+        np.testing.assert_allclose(robot.send_action.call_args_list[-1].args[0], start, rtol=1e-6)
+
+        stopper.step = 10**9
+        robot.send_action.reset_mock()
+        with _frozen_time():
+            resumed = runtime.run(duration_s=0.3)
+
+        # The flag cleared with the stop, so this run ends without a return move.
+        assert robot.send_action.call_count == resumed
+
+    def test_plain_stop_does_not_move(self) -> None:
+        start = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+        stopper = _StopBeforeSend(step=2)
+        runtime, robot = _stop_runtime(robot=_make_following_robot(start), callbacks=[stopper])
+        stopper.runtime = runtime
+
+        with _frozen_time():
+            steps = runtime.run(duration_s=100.0)
+
+        assert robot.send_action.call_count == steps
+
+    def test_skips_the_move_when_already_at_the_initial_pose(self) -> None:
+        start = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+        runtime, robot = _stop_runtime(
+            robot=_make_following_robot(start),
+            action_source=FakeActionSource(next_action=start.copy()),
+        )
+
+        with _frozen_time(), warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            steps = runtime.run(duration_s=0.3, return_to_initial_state=True)
+
+        assert robot.send_action.call_count == steps

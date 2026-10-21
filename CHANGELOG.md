@@ -11,6 +11,14 @@
 ### Features
 
 - Add `Config.to_yaml()` for in-memory YAML serialization.
+- Add `RobotRuntime.stop(return_to_initial_state=True)` to request the return to
+  the run's initial pose for a single stop, instead of for every run end.
+
+### Bug Fixes
+
+- Skip the return to the initial pose when the robot is already there. The
+  collision check divided by a zero travel, which warned and could report a
+  false collision.
 
 ## [0.3.0](https://github.com/openvinotoolkit/physicalai/compare/v0.2.0...v0.3.0) (2026-10-07)
 

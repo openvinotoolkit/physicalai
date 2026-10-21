@@ -20,8 +20,13 @@ The most important methods are shown below.
 ```python
 runtime.connect() -> None
 runtime.disconnect() -> None
-runtime.run(*, duration_s: float | None = None, stop_event: StopSignal | None = None) -> int
-runtime.stop() -> None
+runtime.run(
+    *,
+    duration_s: float | None = None,
+    stop_event: StopSignal | None = None,
+    return_to_initial_state: bool = False,
+) -> int
+runtime.stop(*, return_to_initial_state: bool = False) -> None
 runtime.last_run_reason -> RunReason | None
 ```
 
@@ -43,6 +48,12 @@ from physicalai.runtime import StopSignal   # Protocol: is_set() -> bool
 ```
 
 Calling `stop()` when no run is active is remembered rather than ignored: the next `run()` sees it, returns immediately, and reports zero steps. The request is cleared once a run ends, so one runtime can serve consecutive sessions.
+
+### Returning to the Initial Pose
+
+`run(return_to_initial_state=True)` moves the robot back to the pose read at the start of the run, during shutdown, however the run ended. `stop(return_to_initial_state=True)` asks for the same move for that one stop only, so a long-running session can decide per stop: return home on request, leave the arm where it is otherwise. Like the stop itself, the request is cleared once the run ends.
+
+The move is a straight line in joint space over 2.5 seconds. It runs after the action source has been disconnected and before the `shutdown` lifecycle event. It sends commands directly to the robot, so no ticks, callbacks or interpolation happen during it, and it cannot be cancelled. If a joint falls behind its command by more than 15% of the move (a possible collision), the move stops and the robot holds its measured pose. Any failure is only logged, so shutdown always completes.
 
 Running again starts a fresh session rather than continuing the old one. Actions still queued from the previous run are dropped, because they were computed from observations that are now out of date. If a background worker is still inside the model when the next run starts, `run()` waits a moment for it and then raises `RuntimeError` if it is still busy, rather than letting two runs share one model.
 
