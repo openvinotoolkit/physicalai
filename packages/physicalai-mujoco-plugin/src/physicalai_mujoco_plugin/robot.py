@@ -53,6 +53,8 @@ _DEFAULT_SUCCESS_DWELL_S = 5.0
 _CAMERA_STOP_TIMEOUT_S = 5.0
 _EDIT_RETRY_STOP_TIMEOUT_S = 0.0
 """A deferred live XML edit only checks again whether the camera thread has ended."""
+_MAX_EASE_S = 0.25
+"""Longest an action is eased over, however long ``goal_time`` or the gap between actions is."""
 
 
 @dataclass
@@ -221,6 +223,10 @@ class MuJoCoRobot(OperatorControls):
         self._tick_meter = RateMeter()
         self._ignored_action_logged = False
         self._invalid_action_logged_at = 0.0
+        # Target easing (send_action goal_time): (start, end, sim start time, duration, sim, last written).
+        self._ease: tuple[np.ndarray, np.ndarray, float, float, object, np.ndarray] | None = None
+        self._last_action_at: float | None = None
+        self._action_interval: float | None = None
         self._names: list[str] | None = None
         self._base_status: tuple[BaseStatus, ...] = ()
         """Floating-base readouts of the last tick, for the HTTP and viewer threads."""
@@ -371,8 +377,14 @@ class MuJoCoRobot(OperatorControls):
             floating_state=floating_state,
         )
 
-    def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None:  # noqa: ARG002
-        """Set joint targets, in this robot's units, for the next ticks.
+    def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None:
+        """Set joint targets, in this robot's units, reached by easing over the next ticks.
+
+        The targets move linearly from the current ones to *action* over the measured interval
+        between actions, at most *goal_time* (and ``_MAX_EASE_S``): a leader streamed at 25 Hz then
+        drives a smooth trajectory instead of a 25 Hz staircase whose steps jerk the arm (and shake a
+        held object loose), adding at most one action interval of latency. The first action, and
+        ``goal_time <= 0``, apply at once.
 
         A non-finite action is discarded and logged at most once per second (CHN-7). While the
         conveyor autopilot drives the arm, or a replay runs, actions are ignored. The first action
@@ -409,10 +421,34 @@ class MuJoCoRobot(OperatorControls):
             return
         self._ignored_action_logged = False
         sim.bases.release_holds()
+        now = time.monotonic()
+        if self._last_action_at is not None:
+            gap = now - self._last_action_at
+            self._action_interval = gap if self._action_interval is None else 0.7 * self._action_interval + 0.3 * gap
+        self._last_action_at = now
+        duration = min(goal_time, self._action_interval or 0.0, _MAX_EASE_S)
+        if duration <= float(sim.model.opt.timestep):
+            self._ease = None
+            self._write_public(values)
+            return
+        start_values = self._targets_to_units(self._arm_targets())
+        self._ease = (start_values, values, float(sim.data.time), duration, sim, self._arm_targets())
+
+    def _write_public(self, values: np.ndarray) -> None:
         start = 0
-        for channels in sim.channels:
+        for channels in self._sim.channels:  # type: ignore[union-attr]
             channels.write(values[start : start + len(channels)])
             start += len(channels)
+
+    def _advance_ease(self) -> None:
+        """Write this substep's eased targets; drop the plan when it ends or something else set targets."""
+        start_values, end_values, start_time, duration, sim, written = self._ease  # type: ignore[misc]
+        if sim is not self._sim or not np.allclose(self._arm_targets(), written, atol=1e-9):
+            self._ease = None  # a reset, home, replay or scene switch set the targets meanwhile
+            return
+        fraction = min(max((float(sim.data.time) - start_time) / duration, 0.0), 1.0)  # type: ignore[union-attr]
+        self._write_public(start_values + (end_values - start_values) * fraction)
+        self._ease = None if fraction >= 1.0 else (*self._ease[:5], self._arm_targets())  # type: ignore[index]
 
     def reset(self) -> None:
         """Restore the start state without changing the scene (DRV-8).
@@ -692,6 +728,8 @@ class MuJoCoRobot(OperatorControls):
             control_dt = self._substeps * float(model.opt.timestep)
             self._automation.tick(model, data, control_dt, self._arm_targets())  # type: ignore[union-attr]
             for _ in range(self._substeps):
+                if self._ease is not None:
+                    self._advance_ease()
                 for channels in sim.channels:  # type: ignore[union-attr]
                     channels.apply_pd()
                 mujoco.mj_step(model, data)
