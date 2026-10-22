@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from physicalai_trossen_plugin import BimanualWidowXAI as BimanualWidowXAI
     from physicalai_trossen_plugin import WidowXAI as WidowXAI
 
+    from physicalai.robot.handover import HandoverCapabilities as HandoverCapabilities
     from physicalai.robot.transport import SharedRobot as SharedRobot
 
 __all__ = [
@@ -41,6 +42,7 @@ __all__ = [
     "BimanualWidowXAI",
     "CompositeRobot",
     "CompositeRobotObservation",
+    "HandoverCapabilities",
     "Robot",
     "RobotDeviceAlreadyOwned",
     "RobotError",
@@ -75,6 +77,11 @@ def __getattr__(name: str) -> object:
         from physicalai.robot.plugins import load_robot_plugin
 
         return load_robot_plugin("physicalai_so101_plugin", "so101").SO101
+
+    if name == "HandoverCapabilities":
+        from physicalai.robot.handover import HandoverCapabilities
+
+        return HandoverCapabilities
 
     if name == "SharedRobot":
         from physicalai.robot.transport import SharedRobot

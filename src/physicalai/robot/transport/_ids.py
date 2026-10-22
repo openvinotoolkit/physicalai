@@ -88,6 +88,15 @@ def metadata_key(name: str) -> str:
     return f"{robot_prefix(name)}/metadata"
 
 
+def torque_key(name: str) -> str:
+    """Key for checked torque-control requests to the owner.
+
+    Returns:
+        The ``{prefix}/torque`` key expression.
+    """
+    return f"{robot_prefix(name)}/torque"
+
+
 def derive_endpoint_port(name: str) -> int:
     """Deterministic loopback TCP port for the owner's Zenoh listen endpoint.
 

@@ -35,7 +35,7 @@ its contents.
 
 ## Remote robot sharing has no built-in security controls
 
-The `SharedRobot` network transport uses Zenoh `/action`, `/state`, and `/metadata` traffic to share one robot
+The `SharedRobot` network transport uses Zenoh `/action`, `/state`, `/metadata`, and optional `/torque` traffic to share one robot
 connection across processes. It has no application-level authentication, access control, or encryption of
 its own. Local-only mode is the default.
 
@@ -43,11 +43,12 @@ If you enable `allow_remote=True` (`--allow_remote` on `physicalai robot serve`/
 an isolated, firewalled robot-cell network (VLAN/firewall) or with Zenoh ACL/TLS configured yourself — the
 same requirement documented in [CLI Reference](../reference/cli.md#physicalai-robot-serve). Without one of
 those, anyone who can reach that network can observe robot state and, if nothing else restricts it, send
-actions to the robot.
+actions to the robot or enable and disable its torque. Torque-off can let an unsupported arm fall.
 
-`SharedRobot` checks metadata protocol version, dimensions, and joint-name consistency before attaching.
-These checks detect malformed or incompatible metadata; they do not authenticate the publisher or prove its
-identity.
+`SharedRobot` checks metadata protocol version, dimensions, joint names, and optional handover declarations
+before attaching. These checks detect malformed data; they do not authenticate the publisher, prove calibration
+compatibility, or confirm physical torque state. Treat coordinate-space declarations as claims made by the
+installed driver, not as hardware safety certification.
 
 ## Action validation currently varies by robot driver
 

@@ -222,8 +222,10 @@ def identify_so101_robot_visually(connection_string: str) -> None:
         )
         raise RuntimeError(msg) from exc
     finally:
-        driver.set_torque(enabled=False)
-        driver.disconnect()
+        try:
+            driver.set_torque(enabled=False)
+        finally:
+            driver.disconnect()
 
 
 class SO101Probe(RobotProbe[SO101RobotPayload]):

@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock
 from xml.etree import ElementTree
 
+import numpy as np
 import pytest
 from pydantic import ValidationError
 
@@ -32,6 +34,22 @@ class _StubRobot:
     def __init__(self, robot_type: str, payload: object) -> None:
         self.type = robot_type
         self.payload = payload
+
+
+def test_identify_disconnects_when_torque_off_acknowledgment_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    from physicalai_so101_plugin import studio_catalog
+
+    factory = MagicMock()
+    factory.JOINT_ORDER = studio_catalog.SO101.JOINT_ORDER
+    driver = factory.uncalibrated.return_value
+    driver.get_observation.return_value.joint_positions = np.full(6, 2048.0)
+    driver.set_torque.side_effect = ConnectionError("torque-off failed")
+    monkeypatch.setattr(studio_catalog, "SO101", factory)
+    monkeypatch.setattr(studio_catalog.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(ConnectionError, match="torque-off failed"):
+        studio_catalog.identify_so101_robot_visually("unused")
+    driver.disconnect.assert_called_once()
 
 
 def test_registers_so101_definitions() -> None:
