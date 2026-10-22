@@ -47,20 +47,22 @@ BUCKET_SIZE = (0.150, 0.2025, 0.120)
 """The bucket's outer size in its own frame, in metres: across (x), long axis (y) and depth (z).
 
 It lies on its long side with its opening up (``scripts/build_bucket_sort_meshes.py``)."""
-BUCKET_YAW = 0.0
-"""The buckets' turn about the vertical, in radians, before jitter: 0 lays their long axis along
-the row (y), with the open end above the low lip at +y. Along the row, the buckets' far edge is
-0.70 m from the base; turned along x, it would be 0.75 m, and the bucket centres 3 cm further out."""
-SLOT_X = 0.62
-"""Distance of the bucket row in front of the robot base, in metres: its near edge is 0.545 m away."""
-SLOT_Y = (0.26, 0.0, -0.26)
+BUCKET_YAW = float(np.pi / 2)
+"""The buckets' turn about the vertical before jitter, in radians (counter-clockwise seen from above).
+
+The bucket's open end, above its low lip, is at +y in its own frame; a quarter turn points it at
+the robot (-x), with the long axis along x."""
+SLOT_X = 0.645
+"""Distance of the bucket centres in front of the robot base, in metres: the open ends are 0.544 m
+away, the closed ends 0.746 m (before jitter)."""
+SLOT_Y = (0.22, 0.0, -0.22)
 """Slot centres along y: left, centre and right, as seen from behind the robot."""
 SLOT_NAMES = ("left", "centre", "right")
 BUCKET_JITTER_XY = 0.01
 """Largest random shift of a bucket from its slot centre along x and along y, in metres."""
 BUCKET_JITTER_YAW = float(np.radians(5.0))
 """Largest random turn of a bucket about the vertical, in radians. With the shifts, neighbouring
-buckets (5.75 cm apart in their slots) stay at least 2.5 cm apart."""
+buckets (7 cm apart in their slots) stay at least 3 cm apart."""
 BUCKET_INTERIOR = ((-0.069, 0.069), (-0.095, 0.095), (0.006, 0.120))
 """The space inside a bucket in its own frame, ``(x, y, z)`` ranges in metres: between its walls,
 above its bottom, up to its rim."""

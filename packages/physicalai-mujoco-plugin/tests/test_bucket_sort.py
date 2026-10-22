@@ -248,7 +248,7 @@ class TestLayout:
                 assert abs(pos[0] - bs.SLOT_X) <= bs.BUCKET_JITTER_XY
                 assert abs(pos[1] - slot_y) <= bs.BUCKET_JITTER_XY
                 assert pos[2] == 0.0
-            assert task.describe()["slots"][0] == {"slot": "left", "y": 0.26, "color": task.slot_colors[0]}
+            assert task.describe()["slots"][0] == {"slot": "left", "y": 0.22, "color": task.slot_colors[0]}
 
     def test_objects_never_overlap_each_other_or_the_buckets(self, sim) -> None:
         model, data = sim.model, sim.data
@@ -306,7 +306,8 @@ class TestBucketPose:
             geom = model.geom(f"bucket_blue_{wall}")
             assert geom.pos[2] + geom.size[2] == pytest.approx(bs.BUCKET_SIZE[2])  # walls up to the rim
 
-    def test_buckets_keep_their_heading_and_two_cm_apart(self, sim) -> None:
+    def test_buckets_face_the_robot_and_stay_apart_on_the_table(self, sim) -> None:
+        assert bs.BUCKET_YAW == pytest.approx(np.pi / 2)  # radians
         model, data = sim.model, sim.data
         half = np.array(bs.BUCKET_SIZE[:2]) / 2
         corners = np.array([[x, y] for x in (-1, 1) for y in (-1, 1)]) * half
@@ -316,13 +317,13 @@ class TestBucketPose:
             for color in task.slot_colors:
                 body = model.body(f"bucket_{color}").id
                 rotation = data.xmat[body].reshape(3, 3)
-                long_axis = rotation[:2, 1]
-                assert np.degrees(np.arccos(abs(long_axis[1]))) <= np.degrees(bs.BUCKET_YAW) + 5.0 + 1e-6
+                open_end = rotation[:2, 1]  # the open end, above the lip, is at +y in the bucket's frame
+                assert np.degrees(np.arccos(np.clip(open_end @ (-1.0, 0.0), -1, 1))) <= 5.0 + 1e-6  # toward the robot
                 assert rotation[2, 2] == pytest.approx(1.0)
                 footprint = data.xpos[body][:2] + corners @ rotation[:2, :2].T
                 spans.append((footprint[:, 1].min(), footprint[:, 1].max()))
                 assert footprint[:, 0].min() > bs.OBJECT_ZONE[0][1] + 0.104 + 0.02  # a hand at the zone's edge
-                assert footprint[:, 0].max() < 0.73  # the table's far edge
+                assert footprint[:, 0].max() < 0.80 - 0.03  # 3 cm from the table's far edge
             for (low, _), (_, high) in itertools.pairwise(spans):  # left to right: decreasing y
                 assert low - high >= 0.02, seed
 
