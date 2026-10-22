@@ -221,6 +221,18 @@ class TestViewerGui:
         scene.create_scene_gui.assert_not_called()
         scene.set_refresh_handler.assert_called_once()
 
+    def test_fixed_geometry_casts_shadows(self, model_data) -> None:
+        # mjviser adds it without, so shadows of what stands on a table fall through to the floor.
+        viewer = self._built(model_data)
+        scene = MagicMock()
+        table = MagicMock(cast_shadow=False)
+        scene._fixed_geom_handles = {(0, 0, 0): table}  # noqa: SLF001
+
+        with patch("mjviser.ViserMujocoScene", return_value=scene):
+            viewer.build_gui()
+
+        assert table.cast_shadow is True
+
     def test_tab_order(self, model_data) -> None:
         server = MagicMock()
         viewer = self._built(model_data, server)
