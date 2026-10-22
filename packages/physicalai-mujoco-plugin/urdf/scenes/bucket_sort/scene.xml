@@ -1,0 +1,138 @@
+<?xml version="1.0"?>
+<!--
+  bucket_sort: a Franka FR3 on a table with three buckets (black, blue, red) and three objects
+  (resistor, 9 V battery, CPU). Each episode names one object and one bucket
+  ("put the CPU in the red bucket"); bucket_sort.py randomizes the layout and checks success.
+
+  Layout (world frame, metres; the robot base sits at the origin facing +x):
+    - Table top at z = 0, 1.2 m wide (y) and 0.9 m deep (x, from -0.17 to 0.73); the floor is
+      0.75 m below it.
+    - Bucket slots 0.60 m in front of the base at y = +0.25, 0, -0.25 (left, centre, right as
+      seen from behind the robot). The buckets are mocap bodies: each reset assigns the colours
+      to the slots at random and jitters them slightly.
+    - Objects spawn between the base and the buckets (bucket_sort.OBJECT_ZONE).
+  The buckets' open side faces +x, away from the robot. Meshes come from
+  scripts/build_bucket_sort_meshes.py; the bucket's collision is primitives here, which match
+  the mesh's floor and three walls (bucket_sort.BUCKET_INTERIOR uses the same numbers).
+-->
+<mujoco model="bucket_sort">
+  <compiler angle="radian" assetdir="assets" autolimits="true"/>
+  <option integrator="implicitfast" timestep="0.002" cone="elliptic" iterations="10" ls_iterations="20" impratio="10"/>
+  <include file="../scene_common.xml"/>
+
+  <default>
+    <default class="visual">
+      <geom contype="0" conaffinity="0" group="2" type="mesh" density="0"/>
+    </default>
+    <default class="bucket_collision">
+      <geom type="box" group="3" rgba="0.5 0.5 0.5 0" condim="3" friction="0.6 0.005 0.0001"/>
+    </default>
+    <!-- Grippable objects: friction 0.9 against the Franka Hand's pads, torsional friction so a
+         two-finger grasp does not spin them. -->
+    <default class="object_collision">
+      <geom type="mesh" group="3" rgba="0.5 0.5 0.5 0" condim="4" friction="0.9 0.01 0.0001"/>
+    </default>
+  </default>
+
+  <asset>
+    <mesh name="bucket" file="bucket.obj" inertia="shell"/>
+    <mesh name="battery_metal" file="battery_metal.obj" inertia="shell"/>
+    <mesh name="battery_label" file="battery_label.obj" inertia="shell"/>
+    <mesh name="battery_band" file="battery_band.obj" inertia="shell"/>
+    <mesh name="battery_hull" file="battery_hull.obj"/>
+    <mesh name="cpu_body" file="cpu_body.obj" inertia="shell"/>
+    <mesh name="cpu_marking" file="cpu_marking.obj" inertia="shell"/>
+    <mesh name="cpu_lever" file="cpu_lever.obj" inertia="shell"/>
+    <mesh name="cpu_hull" file="cpu_hull.obj"/>
+    <mesh name="resistor_body" file="resistor_body.obj" inertia="shell"/>
+    <mesh name="resistor_hull" file="resistor_hull.obj"/>
+
+    <texture name="table_top" type="2d" builtin="flat" rgb1="0.78 0.66 0.50" rgb2="0.72 0.60 0.45" mark="random" random="0.08" markrgb="0.70 0.58 0.43" width="256" height="256"/>
+    <material name="table_top" texture="table_top" texrepeat="3 3" texuniform="true" specular="0.15"/>
+    <material name="table_leg" rgba="0.30 0.31 0.33 1" specular="0.4"/>
+
+    <material name="bucket_black" rgba="0.10 0.10 0.11 1" specular="0.3" shininess="0.4"/>
+    <material name="bucket_blue" rgba="0.12 0.32 0.85 1" specular="0.3" shininess="0.4"/>
+    <material name="bucket_red" rgba="0.82 0.10 0.08 1" specular="0.3" shininess="0.4"/>
+
+    <!-- The objects' colours are the diffuse colours of their source materials. -->
+    <material name="battery_metal" rgba="0.647 0.647 0.647 1" specular="0.6" shininess="0.6"/>
+    <material name="battery_label" rgba="0.263 0.282 0.302 1"/>
+    <material name="battery_band" rgba="1.000 0.757 0.055 1"/>
+    <material name="cpu_body" rgba="0.263 0.282 0.302 1"/>
+    <material name="cpu_marking" rgba="1.000 1.000 1.000 1"/>
+    <material name="cpu_lever" rgba="0.647 0.647 0.647 1" specular="0.6" shininess="0.6"/>
+    <material name="resistor_body" rgba="0.616 0.812 0.929 1"/>
+  </asset>
+
+  <worldbody>
+    <light pos="1 1 3.5" dir="-0.227 -0.268 -0.936" directional="false" cutoff="25" exponent="1" diffuse="0.5 0.5 0.5"/>
+    <light pos="0 0 3.5" dir="0 0 -1" directional="true" diffuse="0.5 0.5 0.5" castshadow="false"/>
+    <geom name="floor" type="plane" size="0 0 0.01" pos="0 0 -0.75" material="floor" condim="3" friction="0.5 0.005 0.0001"/>
+
+    <!-- Table: a 4 cm top on four legs. -->
+    <geom name="table_top" type="box" pos="0.28 0 -0.02" size="0.45 0.6 0.02" material="table_top" condim="3" friction="0.6 0.005 0.0001"/>
+    <geom name="table_leg_1" type="box" pos="-0.13 0.56 -0.395" size="0.025 0.025 0.355" material="table_leg"/>
+    <geom name="table_leg_2" type="box" pos="-0.13 -0.56 -0.395" size="0.025 0.025 0.355" material="table_leg"/>
+    <geom name="table_leg_3" type="box" pos="0.69 0.56 -0.395" size="0.025 0.025 0.355" material="table_leg"/>
+    <geom name="table_leg_4" type="box" pos="0.69 -0.56 -0.395" size="0.025 0.025 0.355" material="table_leg"/>
+
+    <!-- Buckets, 150 mm wide (y) x 120 mm deep (x) x 202.5 mm tall, origin at the centre of the
+         footprint on the table. The mesh has a floor and three walls: its open side faces +x.
+         Collision: a floor whose top is the mesh's (6 mm), reaching 3 cm down into the table so a
+         dropped object cannot pass through it; 6 mm side walls 195 mm tall, 6 mm back wall 180 mm tall (the
+         mesh's back wall dips to 175.5 mm in its middle). Written in the slots in BUCKET_COLORS order; each reset moves them. -->
+    <body name="bucket_black" mocap="true" pos="0.6 0.25 0">
+      <geom class="visual" mesh="bucket" material="bucket_black"/>
+      <geom class="bucket_collision" name="bucket_black_floor" pos="0 0 -0.012" size="0.06 0.075 0.018"/>
+      <geom class="bucket_collision" name="bucket_black_wall_left" pos="0 0.072 0.0975" size="0.06 0.003 0.0975"/>
+      <geom class="bucket_collision" name="bucket_black_wall_right" pos="0 -0.072 0.0975" size="0.06 0.003 0.0975"/>
+      <geom class="bucket_collision" name="bucket_black_wall_back" pos="-0.057 0 0.09" size="0.003 0.069 0.09"/>
+    </body>
+    <body name="bucket_blue" mocap="true" pos="0.6 0 0">
+      <geom class="visual" mesh="bucket" material="bucket_blue"/>
+      <geom class="bucket_collision" name="bucket_blue_floor" pos="0 0 -0.012" size="0.06 0.075 0.018"/>
+      <geom class="bucket_collision" name="bucket_blue_wall_left" pos="0 0.072 0.0975" size="0.06 0.003 0.0975"/>
+      <geom class="bucket_collision" name="bucket_blue_wall_right" pos="0 -0.072 0.0975" size="0.06 0.003 0.0975"/>
+      <geom class="bucket_collision" name="bucket_blue_wall_back" pos="-0.057 0 0.09" size="0.003 0.069 0.09"/>
+    </body>
+    <body name="bucket_red" mocap="true" pos="0.6 -0.25 0">
+      <geom class="visual" mesh="bucket" material="bucket_red"/>
+      <geom class="bucket_collision" name="bucket_red_floor" pos="0 0 -0.012" size="0.06 0.075 0.018"/>
+      <geom class="bucket_collision" name="bucket_red_wall_left" pos="0 0.072 0.0975" size="0.06 0.003 0.0975"/>
+      <geom class="bucket_collision" name="bucket_red_wall_right" pos="0 -0.072 0.0975" size="0.06 0.003 0.0975"/>
+      <geom class="bucket_collision" name="bucket_red_wall_back" pos="-0.057 0 0.09" size="0.003 0.069 0.09"/>
+    </body>
+
+    <!-- Objects, real size, origin at the centre of their bounding box, lying flat. Visuals: one
+         mesh per source material. Collision: the convex hull of the visual meshes. -->
+    <body name="resistor" pos="0.30 0.15 0.0155">
+      <joint type="free" name="resistor:joint"/>
+      <geom class="object_collision" name="resistor_collision" mesh="resistor_hull" mass="0.040"/>
+      <geom class="visual" mesh="resistor_body" material="resistor_body"/>
+    </body>
+    <body name="battery" pos="0.33 0 0.0091">
+      <joint type="free" name="battery:joint"/>
+      <geom class="object_collision" name="battery_collision" mesh="battery_hull" mass="0.045"/>
+      <geom class="visual" mesh="battery_metal" material="battery_metal"/>
+      <geom class="visual" mesh="battery_label" material="battery_label"/>
+      <geom class="visual" mesh="battery_band" material="battery_band"/>
+    </body>
+    <body name="cpu" pos="0.30 -0.15 0.011">
+      <joint type="free" name="cpu:joint"/>
+      <geom class="object_collision" name="cpu_collision" mesh="cpu_hull" mass="0.030"/>
+      <geom class="visual" mesh="cpu_body" material="cpu_body"/>
+      <geom class="visual" mesh="cpu_marking" material="cpu_marking"/>
+      <geom class="visual" mesh="cpu_lever" material="cpu_lever"/>
+    </body>
+
+    <frame name="robot_mount"/>
+    <!-- Overview: beside the base on its left, 0.85 m above the table, looking at (0.45, 0, 0.03),
+         so the arm at home hides neither the objects nor the buckets. -->
+    <body name="overview_camera_rig" pos="0.05 0.55 0.85" quat="0.647950 -0.696081 -0.226354 0.210703">
+      <body name="overview_camera_tilt" euler="0.95 0 0">
+        <camera name="overview" mode="fixed" euler="0 0 3.141592653589793" fovy="58"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

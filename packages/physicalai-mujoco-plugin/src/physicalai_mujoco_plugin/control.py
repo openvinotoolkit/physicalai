@@ -508,7 +508,8 @@ class OperatorControls:
             logger.warning("Scene '{}' has no conveyor belt", self._current_scene_id)
 
     def _init_episode_auto_reset(self) -> None:
-        """Attach the scene's episode controller: the conveyor's, else the cube-on-plate auto-reset."""
+        """Attach the scene's episode controller: the conveyor's, bucket sort's, else the cube-on-plate auto-reset."""
+        from physicalai_mujoco_plugin.bucket_sort import BucketSortEpisode, BucketSortTask  # noqa: PLC0415
         from physicalai_mujoco_plugin.episode_auto_reset import EpisodeAutoReset  # noqa: PLC0415
 
         model = self._sim.model  # type: ignore[union-attr]
@@ -519,6 +520,11 @@ class OperatorControls:
             robots=len(self._sim.bindings),  # type: ignore[union-attr]
             robot_roots=self._sim.robot_roots,  # type: ignore[union-attr]
         )
+        task = self._sim.on_reset  # type: ignore[union-attr]
+        if helper is None and isinstance(task, BucketSortTask):
+            helper = BucketSortEpisode(
+                task, self._rng, success_dwell_s=self._auto_reset_dwell_s, active=self._auto_reset_active
+            )
         if helper is None:
             area = self._area
             helper = EpisodeAutoReset.maybe_create(
