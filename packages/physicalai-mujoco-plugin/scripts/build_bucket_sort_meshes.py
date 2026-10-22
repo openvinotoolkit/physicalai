@@ -10,6 +10,10 @@ light OBJ meshes to ``urdf/scenes/bucket_sort/assets/``:
 - one visual mesh per source material (``<object>_<part>.obj``), decimated, in metres, with
   the object's origin at its bounding-box centre; ``scene.xml`` gives each part the colour of
   its material (printed below as ``rgba``);
+- the CPU's six legs: the export holds one leg (``cpu - Part 2.obj``, its two pegs in the first of
+  the body's six leg sockets), which is copied into the other five sockets;
+- the resistor's four colour bands, cut out of its body mesh as separate meshes
+  (``resistor_band<n>.obj``) that ``scene.xml`` colours;
 - one convex collision hull per object (``<object>_hull.obj``), from the decimated parts;
 - the bucket's visual mesh (``bucket.obj``), turned so its open side faces +x and its origin
   is the centre of its footprint on the floor. Its collision is box primitives in scene.xml.
@@ -52,6 +56,10 @@ class Part:
     """Target face count after decimation; at least the source's count keeps it as it is."""
     lift: float = 0.0
     """Metres to move the part up, to keep a decal off a coplanar surface below it."""
+    copies: tuple[tuple[float, bool], ...] = ((0.0, False),)
+    """Where the part appears, in the source frame: a shift along x in metres, and whether it is
+    mirrored across the plane ``y = mirror_y``. One entry without either keeps it where it is."""
+    mirror_y: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -62,6 +70,8 @@ class SmallObject:
     parts: tuple[Part, ...]
     scale: float = 1.0
     """Source units to metres."""
+    bands: tuple[tuple[float, float], ...] = ()
+    """Colour bands cut out of the first part: ``(y_low, y_high)`` in metres, in the centred frame."""
 
 
 _GREY = "0.647059_0.647059_0.647059_0.000000_0.000000"
@@ -84,14 +94,29 @@ OBJECTS = (
             Part("body", "cpu/cpu - Part 1.obj", _DARK, 2500),
             # Printed marking on the lid, coplanar with the lid's top: lifted 0.2 mm against z-fighting.
             Part("marking", "cpu/cpu - Part 1.obj", _WHITE, 1800, lift=0.0002),
-            Part("lever", "cpu/cpu - Part 2.obj", None, 400),
+            # One leg; the body has sockets at x = 2, 23.5 and 45 mm on both long sides (y = -27.37
+            # and +4.63 mm, mirror plane between them).
+            Part(
+                "legs",
+                "cpu/cpu - Part 2.obj",
+                None,
+                400,
+                copies=tuple((dx, mirror) for mirror in (False, True) for dx in (0.0, 0.0215, 0.043)),
+                mirror_y=-0.011370,
+            ),
         ),
     ),
     SmallObject(
         "resistor",
         (Part("body", "resistor parts - resistor body/resistor parts - resistor body.obj", None, 3000),),
+        # A 4-band 10 kOhm 5 % code (brown, black, orange, gold) on the body between the end caps,
+        # which span |y| > 17 mm; 4 mm bands, wide enough to show in a 640 x 480 overview.
+        bands=((-0.0150, -0.0110), (-0.0090, -0.0050), (-0.0030, 0.0010), (0.0080, 0.0120)),
     ),
 )
+
+_BOUNDS_TOLERANCE = 5e-5
+"""Largest change of a mesh's bounding box under decimation, in metres."""
 
 BUCKET_SOURCE = "BUCKET-150p.stl"
 BUCKET_FACES = 5000
@@ -126,6 +151,49 @@ def _load_parts(source_dir: Path, obj: SmallObject) -> list[tuple[Part, trimesh.
     return loaded
 
 
+def _place_copies(mesh: trimesh.Trimesh, part: Part) -> trimesh.Trimesh:
+    """Return the part's copies (:attr:`Part.copies`) as one mesh.
+
+    Returns:
+        *mesh* itself for a part with one unmoved copy.
+    """
+    if part.copies == ((0.0, False),):
+        return mesh
+    copies = []
+    for dx, mirror in part.copies:
+        vertices = np.array(mesh.vertices, dtype=np.float64)
+        faces = np.array(mesh.faces)
+        vertices[:, 0] += dx
+        if mirror:
+            vertices[:, 1] = 2.0 * part.mirror_y - vertices[:, 1]
+            faces = faces[:, ::-1]  # a mirror turns the faces inside out
+        copies.append(trimesh.Trimesh(vertices, faces, process=False))
+    return trimesh.util.concatenate(copies)
+
+
+def _cut_bands(mesh: trimesh.Trimesh, bands: tuple[tuple[float, float], ...]) -> tuple[trimesh.Trimesh, list]:
+    """Cut *mesh* at planes across y into the parts outside the bands and one mesh per band.
+
+    Both sides of each cut share the new vertices on the plane, so the pieces meet without gaps.
+
+    Returns:
+        ``(rest, bands)``: the mesh outside every band, and each band's mesh in order.
+    """
+    from trimesh.intersections import slice_mesh_plane  # noqa: PLC0415
+
+    def between(lo: float | None, hi: float | None) -> trimesh.Trimesh:
+        piece = mesh
+        if lo is not None:
+            piece = slice_mesh_plane(piece, plane_normal=[0.0, 1.0, 0.0], plane_origin=[0.0, lo, 0.0])
+        if hi is not None:
+            piece = slice_mesh_plane(piece, plane_normal=[0.0, -1.0, 0.0], plane_origin=[0.0, hi, 0.0])
+        return piece
+
+    edges = [None, *(edge for band in bands for edge in band), None]
+    rest = trimesh.util.concatenate([between(edges[i], edges[i + 1]) for i in range(0, len(edges), 2)])
+    return rest, [between(lo, hi) for lo, hi in bands]
+
+
 def _decimate(mesh: trimesh.Trimesh, faces: int) -> trimesh.Trimesh:
     """Reduce *mesh* to about *faces* faces with MeshLab's quadric edge collapse, keeping its open boundaries.
 
@@ -144,6 +212,10 @@ def _decimate(mesh: trimesh.Trimesh, faces: int) -> trimesh.Trimesh:
     out = meshes.current_mesh()
     small = trimesh.Trimesh(out.vertex_matrix() / 1000.0, out.face_matrix(), process=True)
     small.remove_unreferenced_vertices()
+    grown = np.abs(small.bounds - mesh.bounds).max()
+    if grown > _BOUNDS_TOLERANCE:
+        msg = f"Decimation moved the mesh's bounds by {grown * 1000:.2f} mm"
+        raise ValueError(msg)
     return small
 
 
@@ -158,19 +230,26 @@ def _write_obj(mesh: trimesh.Trimesh, path: Path, comment: str) -> None:
 def build_object(source_dir: Path, obj: SmallObject) -> None:
     """Write an object's visual parts and its convex collision hull, centred on its bounding box."""
     loaded = _load_parts(source_dir, obj)
-    combined = trimesh.util.concatenate([mesh for _, mesh, _ in loaded])
+    combined = trimesh.util.concatenate([_place_copies(mesh, part) for part, mesh, _ in loaded])
     lo, hi = combined.bounds
     centre = (lo + hi) / 2.0
     decimated = []
-    for part, mesh, rgba in loaded:
-        small = _decimate(mesh, part.faces)
+    for index, (part, mesh, rgba) in enumerate(loaded):
+        small = _place_copies(_decimate(mesh, part.faces), part)
         small.apply_translation(-centre)
         decimated.append(small.copy())  # the hull takes the part where it is, without the lift
         small.apply_translation([0.0, 0.0, part.lift])
         name = f"{obj.name}_{part.name}"
-        _write_obj(small, OUT / f"{name}.obj", f"{name}: {part.source}, generated by scripts/build_bucket_sort_meshes.py")
+        comment = f"{name}: {part.source}, generated by scripts/build_bucket_sort_meshes.py"
+        if index == 0 and obj.bands:
+            small, bands = _cut_bands(small, obj.bands)
+            for number, band in enumerate(bands, start=1):
+                _write_obj(band, OUT / f"{obj.name}_band{number}.obj", f"{obj.name}_band{number}: cut from {comment}")
+            print(f"{obj.name}: cut {len(bands)} bands, {sum(len(b.faces) for b in bands)} faces")  # noqa: T201
+        _write_obj(small, OUT / f"{name}.obj", comment)
         print(  # noqa: T201
-            f"{name}: {len(mesh.faces)} -> {len(small.faces)} faces, rgba {' '.join(f'{c:.3f}' for c in rgba)}"
+            f"{name}: {len(mesh.faces)} x {len(part.copies)} -> {len(small.faces)} faces, "
+            f"rgba {' '.join(f'{c:.3f}' for c in rgba)}"
         )
     hull = trimesh.util.concatenate(decimated).convex_hull
     _write_obj(hull, OUT / f"{obj.name}_hull.obj", f"{obj.name}_hull: convex hull of the {obj.name} visual parts")

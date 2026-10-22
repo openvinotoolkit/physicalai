@@ -42,9 +42,13 @@
     <mesh name="battery_hull" file="battery_hull.obj"/>
     <mesh name="cpu_body" file="cpu_body.obj" inertia="shell"/>
     <mesh name="cpu_marking" file="cpu_marking.obj" inertia="shell"/>
-    <mesh name="cpu_lever" file="cpu_lever.obj" inertia="shell"/>
+    <mesh name="cpu_legs" file="cpu_legs.obj" inertia="shell"/>
     <mesh name="cpu_hull" file="cpu_hull.obj"/>
     <mesh name="resistor_body" file="resistor_body.obj" inertia="shell"/>
+    <mesh name="resistor_band1" file="resistor_band1.obj" inertia="shell"/>
+    <mesh name="resistor_band2" file="resistor_band2.obj" inertia="shell"/>
+    <mesh name="resistor_band3" file="resistor_band3.obj" inertia="shell"/>
+    <mesh name="resistor_band4" file="resistor_band4.obj" inertia="shell"/>
     <mesh name="resistor_hull" file="resistor_hull.obj"/>
 
     <texture name="table_top" type="2d" builtin="flat" rgb1="0.78 0.66 0.50" rgb2="0.72 0.60 0.45" mark="random" random="0.08" markrgb="0.70 0.58 0.43" width="256" height="256"/>
@@ -61,8 +65,13 @@
     <material name="battery_band" rgba="1.000 0.757 0.055 1"/>
     <material name="cpu_body" rgba="0.263 0.282 0.302 1"/>
     <material name="cpu_marking" rgba="1.000 1.000 1.000 1"/>
-    <material name="cpu_lever" rgba="0.647 0.647 0.647 1" specular="0.6" shininess="0.6"/>
+    <material name="cpu_legs" rgba="0.647 0.647 0.647 1" specular="0.6" shininess="0.6"/>
     <material name="resistor_body" rgba="0.616 0.812 0.929 1"/>
+    <!-- The resistor's bands, not in the source: 10 kOhm, 5 % (brown, black, orange, gold). -->
+    <material name="band_brown" rgba="0.42 0.22 0.08 1"/>
+    <material name="band_black" rgba="0.05 0.05 0.05 1"/>
+    <material name="band_orange" rgba="1.00 0.45 0.00 1"/>
+    <material name="band_gold" rgba="0.83 0.66 0.22 1" specular="0.8" shininess="0.8"/>
   </asset>
 
   <worldbody>
@@ -110,6 +119,10 @@
       <joint type="free" name="resistor:joint"/>
       <geom class="object_collision" name="resistor_collision" mesh="resistor_hull" mass="0.040"/>
       <geom class="visual" mesh="resistor_body" material="resistor_body"/>
+      <geom class="visual" mesh="resistor_band1" material="band_brown"/>
+      <geom class="visual" mesh="resistor_band2" material="band_black"/>
+      <geom class="visual" mesh="resistor_band3" material="band_orange"/>
+      <geom class="visual" mesh="resistor_band4" material="band_gold"/>
     </body>
     <body name="battery" pos="0.33 0 0.0091">
       <joint type="free" name="battery:joint"/>
@@ -118,12 +131,12 @@
       <geom class="visual" mesh="battery_label" material="battery_label"/>
       <geom class="visual" mesh="battery_band" material="battery_band"/>
     </body>
-    <body name="cpu" pos="0.30 -0.15 0.011">
+    <body name="cpu" pos="0.30 -0.15 0.0110">
       <joint type="free" name="cpu:joint"/>
       <geom class="object_collision" name="cpu_collision" mesh="cpu_hull" mass="0.030"/>
       <geom class="visual" mesh="cpu_body" material="cpu_body"/>
       <geom class="visual" mesh="cpu_marking" material="cpu_marking"/>
-      <geom class="visual" mesh="cpu_lever" material="cpu_lever"/>
+      <geom class="visual" mesh="cpu_legs" material="cpu_legs"/>
     </body>
 
     <frame name="robot_mount"/>

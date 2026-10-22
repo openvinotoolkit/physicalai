@@ -110,8 +110,8 @@ class TestScene:
         assert masses == pytest.approx({"resistor": 0.040, "battery": 0.045, "cpu": 0.030})
 
     def test_objects_are_real_size_and_fit_the_franka_hand(self, sim) -> None:
-        # Bounding boxes of the source CAD, in mm; the CPU includes its lever.
-        sizes = {"resistor": (34.5, 67.7, 29.9), "battery": (26.0, 47.5, 17.1), "cpu": (70.0, 35.0, 20.9)}
+        # Bounding boxes of the source CAD, in mm; the CPU includes its six legs.
+        sizes = {"resistor": (34.5, 67.7, 29.9), "battery": (26.0, 47.5, 17.1), "cpu": (70.0, 38.0, 20.9)}
         model = sim.model
         rotation = np.zeros(9)
         for name, size in sizes.items():
@@ -124,6 +124,59 @@ class TestScene:
             np.testing.assert_allclose(1000 * np.ptp(points, axis=0), size, atol=0.1)
             np.testing.assert_allclose(points.min(axis=0) + points.max(axis=0), 0.0, atol=1e-4)  # origin at the centre
             assert min(size[:2]) < 1000 * 0.08  # narrower than the hand's full opening
+
+
+def _mesh_points(model: mujoco.MjModel, geom: int) -> np.ndarray:
+    """Return a mesh geom's vertices in its body's frame."""
+    mesh = model.geom_dataid[geom]
+    vertices = model.mesh_vert[model.mesh_vertadr[mesh] : model.mesh_vertadr[mesh] + model.mesh_vertnum[mesh]]
+    rotation = np.zeros(9)
+    mujoco.mju_quat2Mat(rotation, model.geom_quat[geom])
+    return model.geom_pos[geom] + vertices @ rotation.reshape(3, 3).T
+
+
+def _visual_geom(model: mujoco.MjModel, mesh_name: str) -> int:
+    return next(g for g in range(model.ngeom) if model.geom_dataid[g] >= 0 and model.mesh(model.geom_dataid[g]).name == mesh_name)
+
+
+class TestObjectLooks:
+    def test_cpu_has_three_legs_on_each_long_side_reaching_the_table(self, sim) -> None:
+        model = sim.model
+        legs = _mesh_points(model, _visual_geom(model, "cpu_legs"))
+        body = _mesh_points(model, _visual_geom(model, "cpu_body"))
+        hull = _mesh_points(model, _visual_geom(model, "cpu_hull"))
+        # Legs stand outside both long sides of the body and reach the bottom of the collision hull.
+        assert legs[:, 1].min() < body[:, 1].min() - 0.002
+        assert legs[:, 1].max() > body[:, 1].max() + 0.002
+        assert legs[:, 2].min() == pytest.approx(hull[:, 2].min(), abs=1e-4)
+        assert body[:, 2].min() > hull[:, 2].min() + 0.003
+        for side in (legs[legs[:, 1] < body[:, 1].min()], legs[legs[:, 1] > body[:, 1].max()]):
+            # Three 10 mm legs with 11.5 mm between them: three runs of x without a gap over 8 mm.
+            x = np.sort(side[:, 0])
+            assert np.count_nonzero(np.diff(x) > 0.008) == 2
+            assert np.ptp(x) == pytest.approx(0.053, abs=5e-4)
+
+    def test_cpu_rests_level_on_its_legs(self, sim) -> None:
+        task = _reset(sim, 2)
+        _step(sim, 1.0)
+        body = sim.model.body("cpu").id
+        assert sim.data.xmat[body][8] == pytest.approx(1.0, abs=1e-4)  # upright: less than 1 degree of tilt
+        assert sim.data.xpos[body][2] == pytest.approx(object_extent(sim.model, "cpu")[1], abs=0.002)
+        assert not task.evaluate(sim.model, sim.data).success
+
+    def test_resistor_has_four_colour_bands_on_its_body(self, sim) -> None:
+        model = sim.model
+        resistor = model.body("resistor").id
+        geoms = [g for g in np.flatnonzero(model.geom_bodyid == resistor) if model.geom_dataid[g] >= 0]
+        bands = {model.mesh(model.geom_dataid[g]).name: g for g in geoms if "band" in model.mesh(model.geom_dataid[g]).name}
+        assert sorted(bands) == [f"resistor_band{i}" for i in range(1, 5)]
+        colors = [model.mat(model.geom_matid[bands[f"resistor_band{i}"]]).name for i in range(1, 5)]
+        assert colors == ["band_brown", "band_black", "band_orange", "band_gold"]
+        for geom in bands.values():
+            assert model.geom_contype[geom] == 0
+            y = _mesh_points(model, geom)[:, 1]
+            assert 0.003 < np.ptp(y) <= 0.0041  # a 4 mm ring across the body
+            assert np.abs(y).max() < 0.017  # between the end caps
 
 
 class TestInstructions:
@@ -192,7 +245,7 @@ class TestLayout:
             task = _reset(sim, seed)
             for color, slot_y in zip(task.slot_colors, bs.SLOT_Y, strict=True):
                 pos = sim.data.mocap_pos[sim.model.body_mocapid[sim.model.body(f"bucket_{color}").id]]
-                assert abs(pos[0] - bs.SLOT_X) <= bs.BUCKET_JITTER_XY
+                assert abs(pos[0] - bs.slot_x(task.open_side)) <= bs.BUCKET_JITTER_XY
                 assert abs(pos[1] - slot_y) <= bs.BUCKET_JITTER_XY
                 assert pos[2] == 0.0
             assert task.describe()["slots"][0] == {"slot": "left", "y": 0.25, "color": task.slot_colors[0]}
@@ -234,6 +287,38 @@ class TestLayout:
                 assert np.linalg.norm(pos[:2] - start[name][:2]) < 0.005
                 assert 0.0 < pos[2] < 0.02
             assert min(data.contact.dist[: data.ncon]) > -0.001
+
+
+class TestOpenSide:
+    def test_default_faces_away_from_the_robot(self) -> None:
+        assert bs.BUCKET_OPEN_SIDE == "away"
+        assert bs.SLOT_X == pytest.approx(0.60)
+
+    @pytest.mark.parametrize("side", ["away", "robot", "+y", "-y"])
+    def test_buckets_turn_and_the_success_volume_follows(self, sim, side: str) -> None:
+        task = sim.on_reset
+        try:
+            task.open_side = side
+            _reset(sim, 9)
+            model, data = sim.model, sim.data
+            for color in BUCKET_COLORS:
+                body = model.body(f"bucket_{color}").id
+                opening = data.xmat[body].reshape(3, 3)[:, 0]  # the mesh's open side faces its +x
+                expected = {"away": (1, 0), "robot": (-1, 0), "+y": (0, 1), "-y": (0, -1)}[side]
+                assert np.degrees(np.arccos(np.clip(opening[:2] @ expected, -1, 1))) <= 5.0 + 1e-6
+                near = data.xpos[body][0] - (0.06 if side in {"away", "robot"} else 0.075)
+                assert abs(near - bs.BUCKET_NEAR_EDGE) <= bs.BUCKET_JITTER_XY
+            instruction = task.instruction
+            _drop_into(sim, instruction.object, instruction.bucket)
+            _step(sim, 0.5)
+            assert task.evaluate(model, data).success
+            assert task.describe()["open_side"] == side
+        finally:
+            task.open_side = bs.BUCKET_OPEN_SIDE
+
+    def test_rejects_an_unknown_side(self) -> None:
+        with pytest.raises(ValueError, match="open side"):
+            BucketSortTask(open_side="up")  # type: ignore[arg-type]
 
 
 class TestSuccess:
