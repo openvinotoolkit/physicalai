@@ -5,7 +5,7 @@
   ("put the CPU in the red bucket"); bucket_sort.py randomizes the layout and checks success.
 
   Layout (world frame, metres; the robot base sits at the origin facing +x):
-    - Table top at z = 0, 1.2 m wide (y) and 0.97 m deep (x, from -0.17 to 0.80); the floor is
+    - Table top at z = 0, 1.8 m wide (y, from -0.9 to 0.9) and 1.0 m deep (x, from -0.17 to 0.83); the floor is
       0.75 m below it.
     - Bucket slots 0.645 m in front of the base at y = +0.22, 0, -0.22 (left, centre, right as
       seen from behind the robot). The buckets are mocap bodies: each reset assigns the colours
@@ -81,11 +81,11 @@
     <geom name="floor" type="plane" size="0 0 0.01" pos="0 0 -0.75" material="floor" condim="3" friction="0.5 0.005 0.0001"/>
 
     <!-- Table: a 4 cm top on four legs, darker than the resistor's tan body. -->
-    <geom name="table_top" type="box" pos="0.315 0 -0.02" size="0.485 0.6 0.02" material="table_top" condim="3" friction="0.6 0.005 0.0001"/>
-    <geom name="table_leg_1" type="box" pos="-0.13 0.56 -0.395" size="0.025 0.025 0.355" material="table_leg"/>
-    <geom name="table_leg_2" type="box" pos="-0.13 -0.56 -0.395" size="0.025 0.025 0.355" material="table_leg"/>
-    <geom name="table_leg_3" type="box" pos="0.76 0.56 -0.395" size="0.025 0.025 0.355" material="table_leg"/>
-    <geom name="table_leg_4" type="box" pos="0.76 -0.56 -0.395" size="0.025 0.025 0.355" material="table_leg"/>
+    <geom name="table_top" type="box" pos="0.33 0 -0.02" size="0.5 0.9 0.02" material="table_top" condim="3" friction="0.6 0.005 0.0001"/>
+    <geom name="table_leg_1" type="box" pos="-0.13 0.86 -0.395" size="0.025 0.025 0.355" material="table_leg"/>
+    <geom name="table_leg_2" type="box" pos="-0.13 -0.86 -0.395" size="0.025 0.025 0.355" material="table_leg"/>
+    <geom name="table_leg_3" type="box" pos="0.79 0.86 -0.395" size="0.025 0.025 0.355" material="table_leg"/>
+    <geom name="table_leg_4" type="box" pos="0.79 -0.86 -0.395" size="0.025 0.025 0.355" material="table_leg"/>
 
     <!-- Buckets lying on their long side, opening up: 150 mm across (x), 202.5 mm long (y) and
          120 mm deep in their own frame (turned a quarter turn in the world, BUCKET_YAW), origin at

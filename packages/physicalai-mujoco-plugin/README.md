@@ -590,7 +590,7 @@ Measured over 3 seeds of 3 episodes (90 items per speed): 99–100% of items sor
 
 ### Bucket sort
 
-`bucket_sort` is a language-conditioned sorting task for one Franka FR3 with its hand (`start --profile franka_fr3 --scene bucket_sort`). The arm stands on a 1.2 m x 0.97 m table whose top is the robot's base plane, with the floor 0.75 m below.
+`bucket_sort` is a language-conditioned sorting task for one Franka FR3 with its hand (`start --profile franka_fr3 --scene bucket_sort`). The arm stands on a 1.8 m x 1.0 m table whose top is the robot's base plane, with the floor 0.75 m below.
 
 - **Buckets**: black, blue and red open bins lying on their long side with the opening up: 202.5 mm long, 150 mm across and 120 mm deep. Their long axis points at the robot, and their open end (above a 35 mm lip) faces it (`bucket_sort.BUCKET_YAW`, a quarter turn, in radians). They stand in three slots 0.645 m in front of the base at y = +0.22, 0 and -0.22 m (left, centre and right as seen from behind the robot), at least 3 cm apart.
 - **Objects**: a resistor body coloured like a carbon-film resistor (tan, with brown, red, brown and yellow bands; 34.5 x 67.7 x 29.9 mm, 40 g), a 9 V battery (26 x 47.5 x 17 mm, 45 g) and a CPU standing on six legs (70 x 38 x 21 mm, 30 g), all narrower than the hand's 80 mm opening across one side.

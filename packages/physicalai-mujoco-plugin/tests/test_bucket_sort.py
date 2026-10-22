@@ -289,7 +289,21 @@ class TestLayout:
             assert min(data.contact.dist[: data.ncon]) > -0.001
 
 
+_TABLE_FAR_EDGE = 0.83
+_TABLE_HALF_WIDTH = 0.9
+
+
 class TestBucketPose:
+    def test_table_spans_the_robot_and_the_work_area(self, sim) -> None:
+        table = sim.model.geom("table_top")
+        np.testing.assert_allclose(table.pos - table.size, (-0.17, -_TABLE_HALF_WIDTH, -0.04))
+        np.testing.assert_allclose(table.pos + table.size, (_TABLE_FAR_EDGE, _TABLE_HALF_WIDTH, 0.0))
+        for corner in range(1, 5):
+            leg = sim.model.geom(f"table_leg_{corner}")
+            assert abs(leg.pos[0] - table.pos[0]) == pytest.approx(table.size[0] - 0.04, abs=0.005)
+            assert abs(leg.pos[1]) == pytest.approx(_TABLE_HALF_WIDTH - 0.04)
+
+
     def test_bucket_lies_on_its_long_side_with_the_opening_up(self, sim) -> None:
         model = sim.model
         points = _mesh_points(model, _visual_geom(model, "bucket"))
@@ -323,7 +337,8 @@ class TestBucketPose:
                 footprint = data.xpos[body][:2] + corners @ rotation[:2, :2].T
                 spans.append((footprint[:, 1].min(), footprint[:, 1].max()))
                 assert footprint[:, 0].min() > bs.OBJECT_ZONE[0][1] + 0.104 + 0.02  # a hand at the zone's edge
-                assert footprint[:, 0].max() < 0.80 - 0.03  # 3 cm from the table's far edge
+                assert footprint[:, 0].max() < _TABLE_FAR_EDGE - 0.05  # at least 5 cm from the table's far edge
+                assert np.abs(footprint[:, 1]).max() < _TABLE_HALF_WIDTH - 0.3
             for (low, _), (_, high) in itertools.pairwise(spans):  # left to right: decreasing y
                 assert low - high >= 0.02, seed
 
