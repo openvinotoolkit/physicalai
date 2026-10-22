@@ -96,8 +96,8 @@ class TestScene:
             assert len(visual) == 1
             assert model.mesh(model.geom_dataid[visual[0]]).name == "bucket"
             colors[color] = tuple(model.mat_rgba[model.geom_matid[visual[0]]][:3])
-            # Floor and three walls collide; the visual mesh does not.
-            assert sum(model.geom_contype[g] > 0 for g in geoms) == 4
+            # Bottom, three walls and the lip collide; the visual mesh does not.
+            assert sum(model.geom_contype[g] > 0 for g in geoms) == 5
         assert len(set(colors.values())) == 3
         for name in OBJECTS:
             joint = model.joint(f"{name}:joint")
@@ -171,12 +171,12 @@ class TestObjectLooks:
         bands = {model.mesh(model.geom_dataid[g]).name: g for g in geoms if "band" in model.mesh(model.geom_dataid[g]).name}
         assert sorted(bands) == [f"resistor_band{i}" for i in range(1, 5)]
         colors = [model.mat(model.geom_matid[bands[f"resistor_band{i}"]]).name for i in range(1, 5)]
-        assert colors == ["band_brown", "band_black", "band_orange", "band_gold"]
+        assert colors == ["band_brown", "band_red", "band_brown", "band_yellow"]  # as in the reference photo
         for geom in bands.values():
             assert model.geom_contype[geom] == 0
             y = _mesh_points(model, geom)[:, 1]
-            assert 0.003 < np.ptp(y) <= 0.0041  # a 4 mm ring across the body
-            assert np.abs(y).max() < 0.017  # between the end caps
+            assert 0.005 < np.ptp(y) <= 0.0056  # a 5.5 mm ring around the body
+            assert np.abs(y).max() < 0.030  # clear of the ends
 
 
 class TestInstructions:
@@ -245,10 +245,10 @@ class TestLayout:
             task = _reset(sim, seed)
             for color, slot_y in zip(task.slot_colors, bs.SLOT_Y, strict=True):
                 pos = sim.data.mocap_pos[sim.model.body_mocapid[sim.model.body(f"bucket_{color}").id]]
-                assert abs(pos[0] - bs.slot_x(task.open_side)) <= bs.BUCKET_JITTER_XY
+                assert abs(pos[0] - bs.SLOT_X) <= bs.BUCKET_JITTER_XY
                 assert abs(pos[1] - slot_y) <= bs.BUCKET_JITTER_XY
                 assert pos[2] == 0.0
-            assert task.describe()["slots"][0] == {"slot": "left", "y": 0.25, "color": task.slot_colors[0]}
+            assert task.describe()["slots"][0] == {"slot": "left", "y": 0.26, "color": task.slot_colors[0]}
 
     def test_objects_never_overlap_each_other_or_the_buckets(self, sim) -> None:
         model, data = sim.model, sim.data
@@ -289,36 +289,42 @@ class TestLayout:
             assert min(data.contact.dist[: data.ncon]) > -0.001
 
 
-class TestOpenSide:
-    def test_default_faces_away_from_the_robot(self) -> None:
-        assert bs.BUCKET_OPEN_SIDE == "away"
-        assert bs.SLOT_X == pytest.approx(0.60)
+class TestBucketPose:
+    def test_bucket_lies_on_its_long_side_with_the_opening_up(self, sim) -> None:
+        model = sim.model
+        points = _mesh_points(model, _visual_geom(model, "bucket"))
+        np.testing.assert_allclose(1000 * np.ptp(points, axis=0), (150.0, 202.5, 120.0), atol=0.1)
+        assert points[:, 2].min() == pytest.approx(0.0, abs=1e-4)  # on the table, not in it or above it
+        np.testing.assert_allclose(points[:, :2].min(axis=0) + points[:, :2].max(axis=0), 0.0, atol=1e-4)
+        assert bs.BUCKET_SIZE == pytest.approx((0.150, 0.2025, 0.120))
+        # The collision bottom's top is the mesh's inner bottom (6 mm), under the whole opening but the lip.
+        bottom = model.geom("bucket_blue_bottom")
+        assert bottom.pos[2] + bottom.size[2] == pytest.approx(0.006)
+        assert bottom.pos[0] + bottom.size[0] == pytest.approx(0.075)
+        assert bottom.pos[1] - bottom.size[1] == pytest.approx(-0.10125)
+        for wall in ("wall_left", "wall_right", "wall_end"):
+            geom = model.geom(f"bucket_blue_{wall}")
+            assert geom.pos[2] + geom.size[2] == pytest.approx(bs.BUCKET_SIZE[2])  # walls up to the rim
 
-    @pytest.mark.parametrize("side", ["away", "robot", "+y", "-y"])
-    def test_buckets_turn_and_the_success_volume_follows(self, sim, side: str) -> None:
-        task = sim.on_reset
-        try:
-            task.open_side = side
-            _reset(sim, 9)
-            model, data = sim.model, sim.data
-            for color in BUCKET_COLORS:
+    def test_buckets_keep_their_heading_and_two_cm_apart(self, sim) -> None:
+        model, data = sim.model, sim.data
+        half = np.array(bs.BUCKET_SIZE[:2]) / 2
+        corners = np.array([[x, y] for x in (-1, 1) for y in (-1, 1)]) * half
+        for seed in range(100):
+            task = _reset(sim, seed)
+            spans = []
+            for color in task.slot_colors:
                 body = model.body(f"bucket_{color}").id
-                opening = data.xmat[body].reshape(3, 3)[:, 0]  # the mesh's open side faces its +x
-                expected = {"away": (1, 0), "robot": (-1, 0), "+y": (0, 1), "-y": (0, -1)}[side]
-                assert np.degrees(np.arccos(np.clip(opening[:2] @ expected, -1, 1))) <= 5.0 + 1e-6
-                near = data.xpos[body][0] - (0.06 if side in {"away", "robot"} else 0.075)
-                assert abs(near - bs.BUCKET_NEAR_EDGE) <= bs.BUCKET_JITTER_XY
-            instruction = task.instruction
-            _drop_into(sim, instruction.object, instruction.bucket)
-            _step(sim, 0.5)
-            assert task.evaluate(model, data).success
-            assert task.describe()["open_side"] == side
-        finally:
-            task.open_side = bs.BUCKET_OPEN_SIDE
-
-    def test_rejects_an_unknown_side(self) -> None:
-        with pytest.raises(ValueError, match="open side"):
-            BucketSortTask(open_side="up")  # type: ignore[arg-type]
+                rotation = data.xmat[body].reshape(3, 3)
+                long_axis = rotation[:2, 1]
+                assert np.degrees(np.arccos(abs(long_axis[1]))) <= np.degrees(bs.BUCKET_YAW) + 5.0 + 1e-6
+                assert rotation[2, 2] == pytest.approx(1.0)
+                footprint = data.xpos[body][:2] + corners @ rotation[:2, :2].T
+                spans.append((footprint[:, 1].min(), footprint[:, 1].max()))
+                assert footprint[:, 0].min() > bs.OBJECT_ZONE[0][1] + 0.104 + 0.02  # a hand at the zone's edge
+                assert footprint[:, 0].max() < 0.73  # the table's far edge
+            for (low, _), (_, high) in itertools.pairwise(spans):  # left to right: decreasing y
+                assert low - high >= 0.02, seed
 
 
 class TestSuccess:

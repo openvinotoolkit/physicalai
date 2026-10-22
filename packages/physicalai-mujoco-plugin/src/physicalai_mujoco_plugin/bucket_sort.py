@@ -43,48 +43,27 @@ BUCKET_COLORS = ("black", "blue", "red")
 ALL_PAIRS: tuple[tuple[str, str], ...] = tuple((obj, color) for obj in OBJECTS for color in BUCKET_COLORS)
 """Every (object, bucket colour) pair an instruction can name."""
 
-OpenSide = Literal["away", "robot", "+y", "-y"]
-"""Which way a bucket's open side faces: away from the robot (+x), toward it (-x), or along y."""
-OPEN_SIDE_YAW: dict[OpenSide, float] = {
-    "away": 0.0,
-    "robot": float(np.pi),
-    "+y": float(np.pi / 2),
-    "-y": -float(np.pi / 2),
-}
-"""The bucket's turn about the vertical for each open side, in radians (the mesh's open side faces +x)."""
-BUCKET_OPEN_SIDE: OpenSide = "away"
-"""Which way the buckets' open side faces; the success volume and collision follow the bucket's frame."""
-BUCKET_SIZE = (0.120, 0.150, 0.2025)
-"""The bucket's outer size in its own frame: depth (x, toward its open side), width (y) and height, in metres."""
-BUCKET_NEAR_EDGE = 0.54
-"""Distance from the robot base to the bucket row's near edge, before jitter, in metres."""
+BUCKET_SIZE = (0.150, 0.2025, 0.120)
+"""The bucket's outer size in its own frame, in metres: across (x), long axis (y) and depth (z).
 
-
-def slot_x(open_side: OpenSide = BUCKET_OPEN_SIDE) -> float:
-    """Return the bucket row's distance in front of the robot base for buckets whose open side faces *open_side*.
-
-    The near edge stays at :data:`BUCKET_NEAR_EDGE`, whichever way the buckets turn.
-
-    Returns:
-        The slot centres' x, in metres.
-    """
-    depth, width, _ = BUCKET_SIZE
-    return BUCKET_NEAR_EDGE + (depth if open_side in {"away", "robot"} else width) / 2.0
-
-
-SLOT_X = slot_x()
-"""Distance of the bucket row in front of the robot base for :data:`BUCKET_OPEN_SIDE`, in metres."""
-SLOT_Y = (0.25, 0.0, -0.25)
+It lies on its long side with its opening up (``scripts/build_bucket_sort_meshes.py``)."""
+BUCKET_YAW = 0.0
+"""The buckets' turn about the vertical, in radians, before jitter: 0 lays their long axis along
+the row (y), with the open end above the low lip at +y. Along the row, the buckets' far edge is
+0.70 m from the base; turned along x, it would be 0.75 m, and the bucket centres 3 cm further out."""
+SLOT_X = 0.62
+"""Distance of the bucket row in front of the robot base, in metres: its near edge is 0.545 m away."""
+SLOT_Y = (0.26, 0.0, -0.26)
 """Slot centres along y: left, centre and right, as seen from behind the robot."""
 SLOT_NAMES = ("left", "centre", "right")
 BUCKET_JITTER_XY = 0.01
 """Largest random shift of a bucket from its slot centre along x and along y, in metres."""
 BUCKET_JITTER_YAW = float(np.radians(5.0))
 """Largest random turn of a bucket about the vertical, in radians. With the shifts, neighbouring
-buckets (5 cm apart in their slots) stay at least 2 cm apart."""
-BUCKET_INTERIOR = ((-0.054, 0.060), (-0.069, 0.069), (0.006, 0.2025))
-"""The space inside a bucket in its own frame, ``(x, y, z)`` ranges in metres: above its floor,
-between its side walls, in front of its back wall, up to its rim. Its open side faces +x."""
+buckets (5.75 cm apart in their slots) stay at least 2.5 cm apart."""
+BUCKET_INTERIOR = ((-0.069, 0.069), (-0.095, 0.095), (0.006, 0.120))
+"""The space inside a bucket in its own frame, ``(x, y, z)`` ranges in metres: between its walls,
+above its bottom, up to its rim."""
 
 OBJECT_ZONE = ((0.29, 0.40), (-0.22, 0.22))
 """Where object centres spawn: ``(x, y)`` ranges in the world frame, in metres.
@@ -195,7 +174,6 @@ class BucketSortTask:
         allowed_pairs: Iterable[Pair] | None = None,
         place_home: Callable[[object, object], None] | None = None,
         robot_roots: tuple[int, ...] = (),
-        open_side: OpenSide = BUCKET_OPEN_SIDE,
     ) -> None:
         """Create the task; nothing is laid out until the first reset.
 
@@ -204,19 +182,10 @@ class BucketSortTask:
                 (:func:`check_pairs`); ``None`` allows all nine.
             place_home: Puts the arm at its home pose at rest; ``None`` leaves the arm where it is.
             robot_roots: Root body of every robot: objects touching them are held, not resting.
-            open_side: Which way the buckets' open side faces (:data:`OPEN_SIDE_YAW`).
-
-        Raises:
-            ValueError: If *open_side* is not one of :data:`OPEN_SIDE_YAW`.
         """
         self._allowed = check_pairs(allowed_pairs)
         self._place_home = place_home
         self._robot_roots = tuple(robot_roots)
-        if open_side not in OPEN_SIDE_YAW:
-            msg = f"Unknown bucket open side {open_side!r}; choose one of {sorted(OPEN_SIDE_YAW)}"
-            raise ValueError(msg)
-        self.open_side: OpenSide = open_side
-        """Which way the buckets' open side faces; applies from the next reset."""
         self.instruction: Instruction | None = None
         """The current instruction; ``None`` before the first reset."""
         self.slot_colors: tuple[str, ...] = BUCKET_COLORS
@@ -245,8 +214,8 @@ class BucketSortTask:
         for color, slot_y in zip(self.slot_colors, SLOT_Y, strict=True):
             mocap = int(model.body_mocapid[_body(model, f"bucket_{color}")])
             dx, dy = rng.uniform(-BUCKET_JITTER_XY, BUCKET_JITTER_XY, size=2)
-            data.mocap_pos[mocap] = (slot_x(self.open_side) + dx, slot_y + dy, 0.0)
-            yaw = OPEN_SIDE_YAW[self.open_side] + float(rng.uniform(-BUCKET_JITTER_YAW, BUCKET_JITTER_YAW))
+            data.mocap_pos[mocap] = (SLOT_X + dx, slot_y + dy, 0.0)
+            yaw = BUCKET_YAW + float(rng.uniform(-BUCKET_JITTER_YAW, BUCKET_JITTER_YAW))
             data.mocap_quat[mocap] = _yaw_quat(yaw)
         _place_objects(model, data, rng)
         self.instruction = sample_instruction(rng, self._allowed)
@@ -286,7 +255,6 @@ class BucketSortTask:
                 for slot, y, color in zip(SLOT_NAMES, SLOT_Y, self.slot_colors, strict=True)
             ],
             "allowed_pairs": [list(pair) for pair in self._allowed],
-            "open_side": self.open_side,
         }
 
     def _bodies_touching_robot(self, model: object, data: object) -> set[int]:
@@ -479,11 +447,11 @@ __all__ = [
     "ALL_PAIRS",
     "BUCKET_COLORS",
     "BUCKET_INTERIOR",
-    "BUCKET_OPEN_SIDE",
+    "BUCKET_SIZE",
+    "BUCKET_YAW",
     "OBJECTS",
     "OBJECT_LABELS",
     "OBJECT_ZONE",
-    "OPEN_SIDE_YAW",
     "SLOT_X",
     "SLOT_Y",
     "BucketSortEpisode",
@@ -494,5 +462,4 @@ __all__ = [
     "check_pairs",
     "object_extent",
     "sample_instruction",
-    "slot_x",
 ]
