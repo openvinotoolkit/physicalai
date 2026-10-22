@@ -13,7 +13,8 @@
     - Objects spawn between the base and the buckets (bucket_sort.OBJECT_ZONE).
   The buckets lie on their long side with the opening up, the long axis along x and the open
   end (above the low lip) facing the robot.
-  Meshes come from scripts/build_bucket_sort_meshes.py; the bucket's collision is primitives
+  Meshes are MuJoCo's binary MSH files from scripts/build_bucket_sort_meshes.py; the *_hull meshes
+  hold vertices only, and MuJoCo builds their convex hulls. The bucket's collision is primitives
   here (bucket_sort.BUCKET_INTERIOR uses the same numbers).
 -->
 <mujoco model="bucket_sort">
@@ -36,21 +37,20 @@
   </default>
 
   <asset>
-    <mesh name="bucket" file="bucket.obj" inertia="shell"/>
-    <mesh name="battery_metal" file="battery_metal.obj" inertia="shell"/>
-    <mesh name="battery_label" file="battery_label.obj" inertia="shell"/>
-    <mesh name="battery_band" file="battery_band.obj" inertia="shell"/>
-    <mesh name="battery_hull" file="battery_hull.obj"/>
-    <mesh name="cpu_body" file="cpu_body.obj" inertia="shell"/>
-    <mesh name="cpu_marking" file="cpu_marking.obj" inertia="shell"/>
-    <mesh name="cpu_legs" file="cpu_legs.obj" inertia="shell"/>
-    <mesh name="cpu_hull" file="cpu_hull.obj"/>
-    <mesh name="resistor_body" file="resistor_body.obj" inertia="shell"/>
-    <mesh name="resistor_band1" file="resistor_band1.obj" inertia="shell"/>
-    <mesh name="resistor_band2" file="resistor_band2.obj" inertia="shell"/>
-    <mesh name="resistor_band3" file="resistor_band3.obj" inertia="shell"/>
-    <mesh name="resistor_band4" file="resistor_band4.obj" inertia="shell"/>
-    <mesh name="resistor_hull" file="resistor_hull.obj"/>
+    <mesh name="bucket" file="bucket.msh" inertia="shell"/>
+    <mesh name="battery_metal" file="battery_metal.msh" inertia="shell"/>
+    <mesh name="battery_label" file="battery_label.msh" inertia="shell"/>
+    <mesh name="battery_band" file="battery_band.msh" inertia="shell"/>
+    <mesh name="battery_hull" file="battery_hull.msh"/>
+    <mesh name="cpu_body" file="cpu_body.msh" inertia="shell"/>
+    <mesh name="cpu_marking" file="cpu_marking.msh" inertia="shell"/>
+    <mesh name="cpu_legs" file="cpu_legs.msh" inertia="shell"/>
+    <mesh name="cpu_hull" file="cpu_hull.msh"/>
+    <mesh name="resistor_body" file="resistor_body.msh" inertia="shell"/>
+    <mesh name="resistor_band_brown" file="resistor_band_brown.msh" inertia="shell"/>
+    <mesh name="resistor_band_red" file="resistor_band_red.msh" inertia="shell"/>
+    <mesh name="resistor_band_yellow" file="resistor_band_yellow.msh" inertia="shell"/>
+    <mesh name="resistor_hull" file="resistor_hull.msh"/>
 
     <texture name="table_top" type="2d" builtin="flat" rgb1="0.56 0.43 0.31" rgb2="0.52 0.40 0.29" mark="random" random="0.08" markrgb="0.50 0.38 0.27" width="256" height="256"/>
     <material name="table_top" texture="table_top" texrepeat="3 3" texuniform="true" specular="0.15"/>
@@ -125,10 +125,9 @@
       <joint type="free" name="resistor:joint"/>
       <geom class="object_collision" name="resistor_collision" mesh="resistor_hull" mass="0.040"/>
       <geom class="visual" mesh="resistor_body" material="resistor_body"/>
-      <geom class="visual" mesh="resistor_band1" material="band_brown"/>
-      <geom class="visual" mesh="resistor_band2" material="band_red"/>
-      <geom class="visual" mesh="resistor_band3" material="band_brown"/>
-      <geom class="visual" mesh="resistor_band4" material="band_yellow"/>
+      <geom class="visual" mesh="resistor_band_brown" material="band_brown"/>
+      <geom class="visual" mesh="resistor_band_red" material="band_red"/>
+      <geom class="visual" mesh="resistor_band_yellow" material="band_yellow"/>
     </body>
     <body name="battery" pos="0.33 0 0.0091">
       <joint type="free" name="battery:joint"/>

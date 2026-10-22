@@ -169,14 +169,19 @@ class TestObjectLooks:
         resistor = model.body("resistor").id
         geoms = [g for g in np.flatnonzero(model.geom_bodyid == resistor) if model.geom_dataid[g] >= 0]
         bands = {model.mesh(model.geom_dataid[g]).name: g for g in geoms if "band" in model.mesh(model.geom_dataid[g]).name}
-        assert sorted(bands) == [f"resistor_band{i}" for i in range(1, 5)]
-        colors = [model.mat(model.geom_matid[bands[f"resistor_band{i}"]]).name for i in range(1, 5)]
-        assert colors == ["band_brown", "band_red", "band_brown", "band_yellow"]  # as in the reference photo
-        for geom in bands.values():
+        assert sorted(bands) == [f"resistor_band_{color}" for color in ("brown", "red", "yellow")]
+        rings = []
+        for name, geom in bands.items():
             assert model.geom_contype[geom] == 0
-            y = _mesh_points(model, geom)[:, 1]
-            assert 0.005 < np.ptp(y) <= 0.0056  # a 5.5 mm ring around the body
-            assert np.abs(y).max() < 0.030  # clear of the ends
+            assert model.mat(model.geom_matid[geom]).name == name.replace("resistor_", "")
+            y = np.sort(_mesh_points(model, geom)[:, 1])
+            # One mesh per colour: split it into its rings where y jumps (they are over 7 mm apart).
+            for ring in np.split(y, np.flatnonzero(np.diff(y) > 0.006) + 1):
+                assert 0.005 < np.ptp(ring) <= 0.0056  # a 5.5 mm ring around the body
+                assert np.abs(ring).max() < 0.030  # clear of the ends
+                rings.append((ring.mean(), name.removeprefix("resistor_band_")))
+        # Brown, red, brown and yellow along the body, as in the reference photo.
+        assert [color for _, color in sorted(rings)] == ["brown", "red", "brown", "yellow"]
 
 
 class TestInstructions:

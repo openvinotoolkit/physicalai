@@ -5,25 +5,30 @@
 
 The sources are far too heavy for MuJoCo (14k to 55k faces each), mix millimetres and
 metres, and keep their colours in ``.mtl`` files, which MuJoCo ignores. This script writes
-light OBJ meshes to ``urdf/scenes/bucket_sort/assets/``:
+light meshes to ``urdf/scenes/bucket_sort/assets/`` in MuJoCo's binary MSH format (see
+:func:`_write_msh`), which MuJoCo loads directly, about half the size of the same meshes as text
+OBJ and, unlike STL, kept out of Git LFS by the repository's ``.gitattributes``:
 
-- one visual mesh per source material (``<object>_<part>.obj``), decimated, in metres, with
+- one visual mesh per source material (``<object>_<part>.msh``), decimated, in metres, with
   the object's origin at its bounding-box centre; ``scene.xml`` gives each part the colour of
   its material (printed below as ``rgba``);
 - the CPU's six legs: the export holds one leg (``cpu - Part 2.obj``, its two pegs in the first of
   the body's six leg sockets), which is copied into the other five sockets;
-- the resistor's four colour bands, cut out of its body mesh as separate meshes
-  (``resistor_band<n>.obj``) that ``scene.xml`` colours;
-- one convex collision hull per object (``<object>_hull.obj``), from the decimated parts;
-- the bucket's visual mesh (``bucket.obj``), laid on its long side with its opening up (see
+- the resistor's four colour bands, cut out of its body mesh, one mesh per band colour
+  (``resistor_band_<colour>.msh``; the two brown bands share one) that ``scene.xml`` colours;
+- one convex collision hull per object (``<object>_hull.msh``), from the decimated parts: its
+  vertices only, as MuJoCo builds the hull of a mesh without faces itself;
+- the bucket's visual mesh (``bucket.msh``), laid on its long side with its opening up (see
   :func:`build_bucket`), origin at the centre of its footprint on the table. Its collision is
   box primitives in scene.xml.
 
-It needs trimesh and pymeshlab, which the plugin does not depend on. Run it from
-the package directory with the sources in one folder:
+It needs trimesh, pymeshlab and shapely (for trimesh's plane cuts), which the plugin does not
+depend on. Run it from the package directory with the sources in one folder:
 
     uv run --no-project --with trimesh==4.8.3 --with pymeshlab==2025.7 --with numpy --with scipy \
-        python scripts/build_bucket_sort_meshes.py ~/Downloads/bucket_demo
+        --with shapely python scripts/build_bucket_sort_meshes.py ~/Downloads/bucket_demo
+
+The output is the same, byte for byte, on every run with these versions.
 
 The source folder holds ``BUCKET-150p.stl``, ``9V-battery/9V-battery.obj``,
 ``cpu/cpu - Part 1.obj``, ``cpu/cpu - Part 2.obj`` and
@@ -48,7 +53,7 @@ class Part:
     """One visual part of an object: the faces of one source material."""
 
     name: str
-    """Suffix of the output mesh, ``<object>_<name>.obj``."""
+    """Suffix of the output mesh, ``<object>_<name>.msh``."""
     source: str
     """Source file, relative to the source folder."""
     material: str | None
@@ -71,8 +76,9 @@ class SmallObject:
     parts: tuple[Part, ...]
     scale: float = 1.0
     """Source units to metres."""
-    bands: tuple[tuple[float, float], ...] = ()
-    """Colour bands cut out of the first part: ``(y_low, y_high)`` in metres, in the centred frame."""
+    bands: tuple[tuple[str, float, float], ...] = ()
+    """Colour bands cut out of the first part: ``(colour, y_low, y_high)``, in metres in the centred
+    frame. Bands of one colour share a mesh, ``<object>_band_<colour>.msh``."""
 
 
 _GREY = "0.647059_0.647059_0.647059_0.000000_0.000000"
@@ -113,7 +119,12 @@ OBJECTS = (
         # Four 5.5 mm bands placed as in the reference photo of a carbon-film resistor: the first on
         # one end cap's shoulder, two on the neck, the tolerance band on the other cap (the caps
         # span |y| > 17 mm and are widest at |y| = 23 mm).
-        bands=((-0.0234, -0.0179), (-0.0104, -0.0049), (0.0027, 0.0082), (0.0205, 0.0260)),
+        bands=(
+            ("brown", -0.0234, -0.0179),
+            ("red", -0.0104, -0.0049),
+            ("brown", 0.0027, 0.0082),
+            ("yellow", 0.0205, 0.0260),
+        ),
     ),
 )
 
@@ -173,13 +184,16 @@ def _place_copies(mesh: trimesh.Trimesh, part: Part) -> trimesh.Trimesh:
     return trimesh.util.concatenate(copies)
 
 
-def _cut_bands(mesh: trimesh.Trimesh, bands: tuple[tuple[float, float], ...]) -> tuple[trimesh.Trimesh, list]:
-    """Cut *mesh* at planes across y into the parts outside the bands and one mesh per band.
+def _cut_bands(
+    mesh: trimesh.Trimesh, bands: tuple[tuple[str, float, float], ...]
+) -> tuple[trimesh.Trimesh, dict[str, trimesh.Trimesh]]:
+    """Cut *mesh* at planes across y into the parts outside the bands and one mesh per band colour.
 
     Both sides of each cut share the new vertices on the plane, so the pieces meet without gaps.
 
     Returns:
-        ``(rest, bands)``: the mesh outside every band, and each band's mesh in order.
+        ``(rest, bands)``: the mesh outside every band, and the bands of each colour as one mesh,
+        in the order the colours first appear.
     """
     from trimesh.intersections import slice_mesh_plane  # noqa: PLC0415
 
@@ -191,9 +205,12 @@ def _cut_bands(mesh: trimesh.Trimesh, bands: tuple[tuple[float, float], ...]) ->
             piece = slice_mesh_plane(piece, plane_normal=[0.0, -1.0, 0.0], plane_origin=[0.0, hi, 0.0])
         return piece
 
-    edges = [None, *(edge for band in bands for edge in band), None]
+    edges = [None, *(edge for _, lo, hi in bands for edge in (lo, hi)), None]
     rest = trimesh.util.concatenate([between(edges[i], edges[i + 1]) for i in range(0, len(edges), 2)])
-    return rest, [between(lo, hi) for lo, hi in bands]
+    by_colour: dict[str, list[trimesh.Trimesh]] = {}
+    for colour, lo, hi in bands:
+        by_colour.setdefault(colour, []).append(between(lo, hi))
+    return rest, {colour: trimesh.util.concatenate(pieces) for colour, pieces in by_colour.items()}
 
 
 def _decimate(mesh: trimesh.Trimesh, faces: int) -> trimesh.Trimesh:
@@ -221,12 +238,35 @@ def _decimate(mesh: trimesh.Trimesh, faces: int) -> trimesh.Trimesh:
     return small
 
 
-def _write_obj(mesh: trimesh.Trimesh, path: Path, comment: str) -> None:
-    """Write vertices and faces only, at 0.01 mm precision; MuJoCo computes the normals."""
-    lines = [f"# {line}" for line in comment.splitlines()]
-    lines += [f"v {x:.5f} {y:.5f} {z:.5f}" for x, y, z in mesh.vertices]
-    lines += [f"f {a + 1} {b + 1} {c + 1}" for a, b, c in mesh.faces]
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+def _write_msh(mesh: trimesh.Trimesh, path: Path, *, faces: bool = True) -> tuple[int, int]:
+    """Write *mesh* as MuJoCo's binary MSH: vertices and faces only; MuJoCo computes the normals.
+
+    Vertices are rounded to 0.01 mm, then those that coincide are merged (the cuts and copies
+    leave duplicates) and unused ones dropped, keeping the order in which they first appear.
+    The file is four little-endian int32 counts (vertices, normals, texture coordinates, faces),
+    the vertices as float32 ``x y z`` and the faces as int32 vertex indices. Without *faces*, only
+    the vertices are written, and MuJoCo builds their convex hull.
+
+    Returns:
+        The vertex and face counts written.
+    """
+    grid = np.round(np.asarray(mesh.vertices, dtype=np.float64) * 1e5).astype(np.int64)
+    unique, inverse = np.unique(grid, axis=0, return_inverse=True)
+    inverse = inverse.reshape(-1)
+    first = np.full(len(unique), len(grid))
+    np.minimum.at(first, inverse, np.arange(len(grid)))
+    tris = inverse[np.asarray(mesh.faces, dtype=np.int64)]
+    used = np.zeros(len(unique), dtype=bool)
+    used[tris.ravel()] = True
+    order = np.argsort(first, kind="stable")
+    order = order[used[order]]
+    index = np.full(len(unique), -1, dtype=np.int64)
+    index[order] = np.arange(len(order))
+    vertices = unique[order] / 1e5
+    tris = index[tris] if faces else np.zeros((0, 3), dtype=np.int64)
+    header = np.array([len(vertices), 0, 0, len(tris)], dtype="<i4")
+    path.write_bytes(header.tobytes() + vertices.astype("<f4").tobytes() + tris.astype("<i4").tobytes())
+    return len(vertices), len(tris)
 
 
 def build_object(source_dir: Path, obj: SmallObject) -> None:
@@ -242,19 +282,18 @@ def build_object(source_dir: Path, obj: SmallObject) -> None:
         decimated.append(small.copy())  # the hull takes the part where it is, without the lift
         small.apply_translation([0.0, 0.0, part.lift])
         name = f"{obj.name}_{part.name}"
-        comment = f"{name}: {part.source}, generated by scripts/build_bucket_sort_meshes.py"
         if index == 0 and obj.bands:
             small, bands = _cut_bands(small, obj.bands)
-            for number, band in enumerate(bands, start=1):
-                _write_obj(band, OUT / f"{obj.name}_band{number}.obj", f"{obj.name}_band{number}: cut from {comment}")
-            print(f"{obj.name}: cut {len(bands)} bands, {sum(len(b.faces) for b in bands)} faces")  # noqa: T201
-        _write_obj(small, OUT / f"{name}.obj", comment)
+            for colour, band in bands.items():
+                _write_msh(band, OUT / f"{obj.name}_band_{colour}.msh")
+            print(f"{obj.name}: cut {len(obj.bands)} bands, {sum(len(b.faces) for b in bands.values())} faces")  # noqa: T201
+        _write_msh(small, OUT / f"{name}.msh")
         print(  # noqa: T201
             f"{name}: {len(mesh.faces)} x {len(part.copies)} -> {len(small.faces)} faces, "
             f"rgba {' '.join(f'{c:.3f}' for c in rgba)}"
         )
     hull = trimesh.util.concatenate(decimated).convex_hull
-    _write_obj(hull, OUT / f"{obj.name}_hull.obj", f"{obj.name}_hull: convex hull of the {obj.name} visual parts")
+    _write_msh(hull, OUT / f"{obj.name}_hull.msh", faces=False)
     size = (hi - lo) * 1000.0
     print(  # noqa: T201
         f"{obj.name}_hull: {len(hull.faces)} faces, size {size[0]:.1f} x {size[1]:.1f} x {size[2]:.1f} mm, "
@@ -279,7 +318,7 @@ def build_bucket(source_dir: Path) -> None:
     turn[:3, :3] = [[-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]]
     mesh.apply_transform(turn)
     small = _decimate(mesh, BUCKET_FACES)
-    _write_obj(small, OUT / "bucket.obj", f"bucket: {BUCKET_SOURCE}, generated by scripts/build_bucket_sort_meshes.py")
+    _write_msh(small, OUT / "bucket.msh")
     size = (small.bounds[1] - small.bounds[0]) * 1000.0
     print(  # noqa: T201
         f"bucket: {len(mesh.faces)} -> {len(small.faces)} faces, size {size[0]:.1f} x {size[1]:.1f} x {size[2]:.1f} mm"
