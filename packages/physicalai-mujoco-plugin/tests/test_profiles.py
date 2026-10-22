@@ -130,6 +130,7 @@ def test_registry_has_hand_written_profiles_and_any_menagerie_model() -> None:
         "franka_panda",
         "xarm7",
         "kinova_gen3",
+        "franka_fr3_robotiq",
         "unitree_g1",
         "unitree_go2",
         "boston_dynamics_spot",
@@ -155,6 +156,7 @@ def test_dataset_tier_arms_run_in_single_pick_place() -> None:
         "franka_panda",
         "xarm7",
         "kinova_gen3",
+        "franka_fr3_robotiq",
     ]
     for profile in dataset:
         validate_profile(profile)
