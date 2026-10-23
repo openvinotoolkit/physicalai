@@ -568,6 +568,18 @@ class TestAutomationRoutes:
         assert client.post("/studio/recording", json={**body, "task": "  Sort  "}).status_code == 200
         assert leader_app["commands"].get_nowait().options.task == "Sort"  # stored trimmed
 
+    def test_studio_recording_runs_in_the_bucket_sort_scene_only_besides_the_conveyor(self, leader_app: dict) -> None:
+        client = leader_app["client"]
+        body = {"enabled": True, "keep": "perfect", "max_episodes": 2}
+        for kind in ("cube_on_plate", None):
+            leader_app["status"]["episode"] = {"enabled": True, "kind": kind}
+            response = client.post("/studio/recording", json=body)
+            assert response.status_code == 409
+            assert "conveyor or bucket_sort" in response.json()["detail"]
+        leader_app["status"]["episode"] = {"enabled": True, "kind": "bucket_sort"}
+        assert client.post("/studio/recording", json=body).status_code == 200
+        assert leader_app["commands"].get_nowait().options.max_episodes == 2
+
 
 class TestReplayRoutes:
     JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex")

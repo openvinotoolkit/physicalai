@@ -58,6 +58,8 @@ MAX_OBJECT_COORD_M = 2.0
 _MIN_QUAT_NORM = 1e-6
 _WILDCARD_HOSTS = frozenset({"0.0.0.0", "::"})  # noqa: S104 - matched, not bound  # nosec B104
 MAX_REPLAY_FRAMES = 36_000
+RECORDING_SCENE_KINDS = frozenset({"conveyor", "bucket_sort"})
+"""Episode kinds whose episodes automatic Studio recording can record."""
 """Most frames ``POST /replay`` accepts: 20 minutes at 30 fps."""
 MAX_REPLAY_FPS = 1000.0
 MAX_REPLAY_BODY_BYTES = 16 * 1024 * 1024
@@ -192,7 +194,10 @@ class AutopilotRequest(BaseModel):
 
 
 class StudioRecordingRequest(BaseModel):
-    """Body for ``POST /studio/recording``; the Studio URL is a launch option, not a request field."""
+    """Body for ``POST /studio/recording``; the Studio URL is a launch option, not a request field.
+
+    The bucket_sort scene ignores ``task``: each episode's instruction is its task.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -794,8 +799,10 @@ def _add_automation_routes(
 
     @app.post("/studio/recording")
     def studio_recording(request: StudioRecordingRequest) -> dict[str, Any]:
-        if request.enabled and get_status().get("episode", {}).get("kind") != "conveyor":
-            raise HTTPException(status_code=409, detail="Automatic Studio recording needs the conveyor scene")
+        if request.enabled and get_status().get("episode", {}).get("kind") not in RECORDING_SCENE_KINDS:
+            raise HTTPException(
+                status_code=409, detail="Automatic Studio recording needs the conveyor or bucket_sort scene"
+            )
         options = (
             RecordingOptions(task=request.task, keep=request.keep, max_episodes=request.max_episodes)
             if request.enabled
