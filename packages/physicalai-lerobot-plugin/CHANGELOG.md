@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/openvinotoolkit/physicalai/compare/physicalai-lerobot-plugin-v0.4.0...physicalai-lerobot-plugin-v0.4.1) (2026-10-23)
+
+
+### 🔧 Chores
+
+* deprecate `RobotAdapterOptions` ([#374](https://github.com/openvinotoolkit/physicalai/issues/374)) ([0ca5b8e](https://github.com/openvinotoolkit/physicalai/commit/0ca5b8e06c132aa2c83aa7a92bc6dfb79a7b231f))
+
 ## [0.4.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-lerobot-plugin-v0.3.1...physicalai-lerobot-plugin-v0.4.0) (2026-09-15)
 
 
