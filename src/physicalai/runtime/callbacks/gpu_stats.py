@@ -8,7 +8,7 @@ from __future__ import annotations
 import csv
 import math
 import shutil
-import subprocess  # noqa: S404 - Only fixed, read-only vendor queries run, without a shell and with timeouts.
+import subprocess  # noqa: S404  # nosec B404  # Only fixed read-only queries, without a shell.
 from dataclasses import dataclass, field
 
 from loguru import logger
@@ -50,7 +50,7 @@ def collect_gpu_stats() -> GpuStatsSample:
         if executable is None:
             continue
         try:
-            result = subprocess.run(  # noqa: S603 - Read-only query via an absolute executable from the operator's PATH.
+            result = subprocess.run(  # noqa: S603  # nosec B603  # Fixed query via trusted PATH, no shell.
                 [executable, *args],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
