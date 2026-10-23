@@ -144,7 +144,7 @@ class PolicySource(ActionSource):
         reset = getattr(type(self._execution), "reset", None)
         return reset is not None and reset is not Execution.reset
 
-    def update(self, robot_state: RobotObservation, camera_frames: Mapping[str, Frame], step: int) -> np.ndarray:
+    def update(self, robot_state: RobotObservation, camera_frames: Mapping[str, Frame], step: int) -> np.ndarray | None:
         """Maybe request inference and return the next action.
 
         On the first call, seeds the queue via ``execution.warmup()`` behind a

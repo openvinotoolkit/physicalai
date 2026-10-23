@@ -33,16 +33,21 @@ class ActionSource(Protocol):
         """
         ...
 
-    def update(self, robot_state: RobotObservation, camera_frames: Mapping[str, Frame], step: int) -> np.ndarray:
-        """Return the action to send this tick.
+    def update(self, robot_state: RobotObservation, camera_frames: Mapping[str, Frame], step: int) -> np.ndarray | None:
+        """Return the action to send this tick, or ``None`` to send nothing.
 
-        Always returns a sendable action — no ``None`` sentinel. What to do
-        when there is nothing new to decide (repeat the last action, go to a
-        safe pose, whatever) is entirely this action source's own call, made
-        internally. If it truly cannot produce anything, it raises.
+        What to do when there is nothing new to decide (repeat the last action,
+        go to a safe pose, whatever) is entirely this action source's own call,
+        made internally. If it truly cannot produce anything, it raises.
+
+        ``None`` means another controller drives the robot: the runtime still
+        reads the robot and the cameras and emits the tick (with
+        ``action_sent=None``), but sends no command and runs no
+        ``on_action_ready``/``on_action_sent`` hooks. A run that ends this way
+        does not move the robot back to its initial state.
 
         Returns:
-            Action vector to send to the robot this tick.
+            Action vector to send to the robot this tick, or ``None``.
         """
         ...
 
