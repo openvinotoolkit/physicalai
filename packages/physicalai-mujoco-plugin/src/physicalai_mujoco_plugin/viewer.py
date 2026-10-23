@@ -231,6 +231,7 @@ class ViewerService:
         # mjviser's default refresh re-renders from the viser thread while the sim thread may be
         # stepping the same data; the sim loop re-renders at the control rate anyway.
         scene.set_refresh_handler(lambda: None)
+        _cast_fixed_shadows(scene)
         state = self._panel_state()
         tabs = server.gui.add_tab_group()
         with tabs.add_tab("Simulation", icon=viser.Icon.ROBOT):
@@ -358,6 +359,16 @@ class ViewerService:
             for (body_id, *_rest), handle in (getattr(scene, attribute, None) or {}).items():
                 handle.position = np.asarray(data.xpos[body_id], dtype=np.float64)
                 handle.wxyz = np.asarray(data.xquat[body_id], dtype=np.float64)
+
+
+def _cast_fixed_shadows(scene: object) -> None:
+    """Let the fixed world geometry (tables, walls, frames) cast shadows in the browser viewer.
+
+    mjviser adds it with ``cast_shadow=False``, so a table top does not block the light: the
+    shadows of the arm and the objects on it fall through to the floor grid below it.
+    """
+    for handle in (getattr(scene, "_fixed_geom_handles", None) or {}).values():
+        handle.cast_shadow = True
 
 
 __all__ = ["ViewerService", "ViewerTheme"]

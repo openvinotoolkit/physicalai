@@ -693,7 +693,7 @@ class TestStatus:
         assert status["connected"] is False
         assert status["scene"] == "single_pick_place"
         assert status["profile"] == "so101"
-        assert set(status["scenes"]) == {"single_pick_place", "yahtzee", "conveyor_sort", "floor_flat"}
+        assert set(status["scenes"]) == {"single_pick_place", "yahtzee", "conveyor_sort", "bucket_sort", "floor_flat"}
         assert "floor_flat" not in status["compatible_scenes"]
         assert status["objects"] == []
         assert status["cameras"] == [

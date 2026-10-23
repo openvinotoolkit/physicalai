@@ -15,6 +15,9 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 
 from physicalai_mujoco_plugin._urdf import get_urdf_path
+from physicalai_mujoco_plugin.bucket_sort import BUCKET_JOINTS as BUCKET_SORT_BUCKET_JOINTS
+from physicalai_mujoco_plugin.bucket_sort import OBJECTS as BUCKET_SORT_OBJECTS
+from physicalai_mujoco_plugin.bucket_sort import BucketSortTask
 from physicalai_mujoco_plugin.compose import (
     MountPose,
     OverviewRig,
@@ -378,6 +381,22 @@ _CONVEYOR_SORT_HOME: tuple[tuple[str, float], ...] = (
 )
 
 
+# Franka's "ready" pose: the hand 0.49 m above the table over the objects, fingers down and open.
+# The profile's home stretches the forearm out over the buckets.
+_BUCKET_SORT_HOME: tuple[tuple[str, float], ...] = (
+    ("fr3_joint1", 0.0),
+    ("fr3_joint2", float(np.radians(-45.0))),
+    ("fr3_joint3", 0.0),
+    ("fr3_joint4", float(np.radians(-135.0))),
+    ("fr3_joint5", 0.0),
+    ("fr3_joint6", float(np.radians(90.0))),
+    ("fr3_joint7", float(np.radians(45.0))),
+    ("finger_joint1", 0.04),
+    ("finger_joint2", 0.04),
+    ("gripper", 0.08),
+)
+
+
 # ---------------------------------------------------------------------------
 # Scene reset functions
 # ---------------------------------------------------------------------------
@@ -421,13 +440,21 @@ def _freejoint_spawn_reset(
 
 
 def _set_arm_pose(model: object, data: object, pose: tuple[tuple[str, float], ...]) -> None:
-    """Put the named arm joints (and their position actuators) at `pose`, at rest."""
+    """Put the named arm joints (and their position actuators) at `pose`, at rest.
+
+    A name without a joint sets the target of the actuator of that name (a tendon gripper).
+    """
     import mujoco  # noqa: PLC0415
 
     for joint_name, val in pose:
         # pyrefly: ignore [missing-attribute]
         jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
         if jid < 0:
+            # pyrefly: ignore [missing-attribute]
+            aid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, joint_name)
+            if aid >= 0:
+                # pyrefly: ignore [missing-attribute]
+                data.ctrl[aid] = val
             continue
         # pyrefly: ignore [missing-attribute]
         qpos_adr = int(model.jnt_qposadr[jid])
@@ -518,6 +545,15 @@ def _drop_dice(  # noqa: PLR0914
 
     # pyrefly: ignore [missing-attribute]
     mujoco.mj_forward(model, data)
+
+
+def _bucket_sort_reset(home: tuple[tuple[str, float], ...], robot_roots: tuple[int, ...]) -> BucketSortTask:
+    """Build the bucket sort reset: the arms at *home*, then a new layout and instruction (:mod:`.bucket_sort`).
+
+    Returns:
+        The task, which is the scene's reset callback and holds its instruction.
+    """
+    return BucketSortTask(place_home=lambda model, data: _set_arm_pose(model, data, home), robot_roots=robot_roots)
 
 
 def _conveyor_sort_reset(home: tuple[tuple[str, float], ...]) -> ResetFn:
@@ -629,6 +665,20 @@ _SCENES: dict[str, SceneConfig] = {
         # The pick zone on the belt.
         front_view=FrontView(distance=0.75, aim=(0.25, 0.0, 0.06)),
     ),
+    "bucket_sort": SceneConfig(
+        scene_id="bucket_sort",
+        display_name="Bucket Sort",
+        description="Put the named object (resistor, 9 V battery, CPU) in the named bucket (black, blue, red)",
+        scene_xml_relpath="scenes/bucket_sort/scene.xml",
+        # The objects, then the buckets: the viewer's drag gizmos and POST /objects/{joint}/pose move both.
+        free_joints=(*(f"{name}:joint" for name in BUCKET_SORT_OBJECTS), *BUCKET_SORT_BUCKET_JOINTS),
+        robots=("franka_fr3",),
+        arm_counts=(1,),
+        home_qpos=_BUCKET_SORT_HOME,
+        # Across the table, facing the robot: steep enough to see the objects over the buckets, and
+        # far enough to frame the arm at home (tests/test_compose.py).
+        front_view=FrontView(distance=1.4, aim=(0.35, 0.0, 0.25), elevation_deg=55.0),
+    ),
     "floor_flat": SceneConfig(
         scene_id="floor_flat",
         display_name="Flat Floor",
@@ -646,6 +696,7 @@ _FREEJOINT_SPAWN_SCENES = ("single_pick_place",)
 _RESET_FUNCTIONS: dict[str, Callable[[SceneConfig, int, tuple[int, ...]], ResetFn]] = {
     "yahtzee": lambda _scene, _arms, roots: _yahtzee_reset(roots),
     "conveyor_sort": lambda scene, arms, _roots: _conveyor_sort_reset(scene.home_pose(arms)),
+    "bucket_sort": lambda scene, arms, roots: _bucket_sort_reset(scene.home_pose(arms), roots),
 }
 """Reset builders by scene id, for the scene, its number of arms and the root body of every robot."""
 
