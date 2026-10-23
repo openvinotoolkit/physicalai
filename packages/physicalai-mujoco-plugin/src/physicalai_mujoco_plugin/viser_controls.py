@@ -476,7 +476,13 @@ def _autopilot_markdown(autopilot: Mapping[str, Any]) -> str:
         return "**Autopilot:** off"
     phase = autopilot.get("phase") or "idle"
     target = autopilot.get("target")
-    return f"**Autopilot:** {phase}" + (f" ({target})" if target else "")
+    text = f"**Autopilot:** {phase}" + (f" ({target})" if target else "")
+    if autopilot.get("attempt"):  # bucket_sort: the attempt, and how the episode ended
+        text += f", attempt {autopilot['attempt']}/{autopilot.get('max_attempts', 2)}"
+        outcome = autopilot.get("outcome")
+        if outcome and outcome != "running":
+            text += f", {outcome}" + (f": {autopilot['failure']}" if autopilot.get("failure") else "")
+    return text
 
 
 def _refresh_replay(handles: tuple[Any, ...] | None, replay: Mapping[str, Any]) -> None:
@@ -842,6 +848,7 @@ class SimControlPanel:
 
     def _build_autopilot_controls(self, state: PanelState) -> None:
         gui = self._server.gui
+        conveyor = _is_conveyor(state.episode)
         with gui.add_folder("Autopilot"):
             mode = gui.add_dropdown(
                 "Autopilot",
@@ -850,9 +857,17 @@ class SimControlPanel:
                 hint=(
                     "The scripted demonstrator sorts the belt. 'Drive the arm' moves it directly; "
                     "'Virtual leader' only publishes targets for Studio's MuJoCo SO-101 Virtual Leader"
+                    if conveyor
+                    else "The scripted demonstrator carries out each instruction. 'Drive the arm' moves it "
+                    "directly; 'Virtual leader' only publishes its targets on GET /leader"
                 ),
             )
             status = gui.add_markdown(_autopilot_markdown(state.autopilot))
+            self._handles.autopilot_mode = (mode, status)
+            if not conveyor:
+                # Automatic Studio recording runs conveyor episodes only.
+                self._bind_autopilot_mode(mode)
+                return
             studio = state.studio
             active = studio.get("phase", "off") not in {"off", "done", "stopped", "error"}
             toggle = gui.add_checkbox(
@@ -874,14 +889,9 @@ class SimControlPanel:
                 step=1,
             )
             studio_status = gui.add_markdown(_studio_markdown(studio))
-        self._handles.autopilot_mode = (mode, status)
         self._handles.studio_toggle = toggle
         self._handles.studio_status = studio_status
-
-        @mode.on_update
-        def _on_mode(event: object) -> None:
-            if not _is_server_event(event):
-                self._submit(SetAutopilotCommand(mode=_AUTOPILOT_BY_LABEL[str(mode.value)]))
+        self._bind_autopilot_mode(mode)
 
         @toggle.on_update
         def _on_toggle(event: object) -> None:
@@ -893,6 +903,12 @@ class SimControlPanel:
                 episodes = min(max(int(budget.value), 0), MAX_EPISODES)
                 options = RecordingOptions(task=text, keep=_KEEP_BY_LABEL[str(keep.value)], max_episodes=episodes)
             self._submit(SetStudioRecordingCommand(options=options))
+
+    def _bind_autopilot_mode(self, mode: Any) -> None:  # noqa: ANN401 - a viser dropdown
+        @mode.on_update
+        def _on_mode(event: object) -> None:
+            if not _is_server_event(event):
+                self._submit(SetAutopilotCommand(mode=_AUTOPILOT_BY_LABEL[str(mode.value)]))
 
     def _build_episode_controls(self, state: PanelState) -> None:
         if _is_conveyor(state.episode):
