@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.1](https://github.com/openvinotoolkit/physicalai/compare/physicalai-rebot-b601-plugin-v0.8.0...physicalai-rebot-b601-plugin-v0.8.1) (2026-10-23)
+
+
+### ✅ Tests
+
+* **plugins:** patch only the mocked sdk in rebot and stararm fixtures ([#345](https://github.com/openvinotoolkit/physicalai/issues/345)) ([01edbf4](https://github.com/openvinotoolkit/physicalai/commit/01edbf4eeb640634d96f0c11c1516677a4a9001b))
+
+
+### 🔧 Chores
+
+* deprecate `RobotAdapterOptions` ([#374](https://github.com/openvinotoolkit/physicalai/issues/374)) ([0ca5b8e](https://github.com/openvinotoolkit/physicalai/commit/0ca5b8e06c132aa2c83aa7a92bc6dfb79a7b231f))
+
 ## [0.8.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-rebot-b601-plugin-v0.7.0...physicalai-rebot-b601-plugin-v0.8.0) (2026-10-06)
 
 
