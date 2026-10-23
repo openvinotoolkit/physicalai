@@ -25,13 +25,16 @@ from physicalai_mujoco_plugin.http_server import (
     SetObjectPoseCommand,
     SetOverviewCommand,
     SetSeedCommand,
+    SetStudioRecordingCommand,
     ShutdownCommand,
     StopReplayCommand,
     SwitchSceneCommand,
 )
+from physicalai_mujoco_plugin.studio_recorder import RecordingOptions
 from physicalai_mujoco_plugin.viser_controls import (
     AUTOPILOT_LABELS,
     CUSTOM_MODEL_LABEL,
+    KEEP_LABELS,
     NO_FOLLOW_LABEL,
     OVERVIEW_HINT,
     CameraFollow,
@@ -408,7 +411,6 @@ class TestEpisodeControls:
         dropdown = server.gui.handles["Autopilot"]
         assert dropdown.value == "Off"
         assert dropdown.options == tuple(AUTOPILOT_LABELS.values())
-        assert "Record in Studio" not in server.gui.handles  # Studio recording runs conveyor episodes only
         dropdown.fire(AUTOPILOT_LABELS["drive"])
         dropdown.fire(AUTOPILOT_LABELS["leader"])
         dropdown.fire(AUTOPILOT_LABELS["off"])
@@ -416,6 +418,19 @@ class TestEpisodeControls:
             SetAutopilotCommand(mode="drive"),
             SetAutopilotCommand(mode="leader"),
             SetAutopilotCommand(mode="off"),
+        ]
+
+    def test_bucket_sort_records_in_studio_with_each_instruction_as_the_task(self) -> None:
+        """The Record / Keep / Episodes controls are there; the Task field is not, the instruction is the task."""
+        _, server, commands = build_panel(self._bucket_sort_state())
+        assert "Task" not in server.gui.handles
+        server.gui.handles["Keep"].value = KEEP_LABELS["all"]
+        server.gui.handles["Episodes (0 = no limit)"].value = 3
+        server.gui.handles["Record in Studio"].fire(True)
+        server.gui.handles["Record in Studio"].fire(False)
+        assert commands == [
+            SetStudioRecordingCommand(options=RecordingOptions(keep="all", max_episodes=3)),
+            SetStudioRecordingCommand(options=None),
         ]
 
     def test_a_scene_without_a_demonstrator_has_no_autopilot_folder(self) -> None:

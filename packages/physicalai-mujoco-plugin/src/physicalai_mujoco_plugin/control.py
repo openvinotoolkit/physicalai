@@ -186,7 +186,7 @@ class OperatorControls:
         Returns:
             The reason, or ``None``.
         """
-        if self._automation is not None and self._automation.recorder.active:
+        if self._automation is not None and self._automation.recording_active:
             return (
                 "Automatic Studio recording is on, and a dataset keeps the view it was recorded with; "
                 "switch recording off to move the overview camera"

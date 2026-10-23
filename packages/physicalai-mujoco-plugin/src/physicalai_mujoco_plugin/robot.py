@@ -748,7 +748,7 @@ class MuJoCoRobot(OperatorControls):
             if self._episode_auto_reset is not None:
                 self._episode_auto_reset.update(model, data)
             if self._automation.take_reset_request():  # type: ignore[union-attr]
-                logger.info("The autopilot gave up on the episode; resetting the scene")
+                logger.info("Resetting the scene for the autopilot or for Studio recording")
                 self._reset()
             self._objects.apply_held(model, data)
         self._objects.publish(data)
