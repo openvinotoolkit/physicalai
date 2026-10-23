@@ -10,7 +10,8 @@ metres (0 to 0.08); ``BimanualFrankaFR3`` prefixes them ``left_`` and ``right_``
 Menagerie's FR3 has no hand. Both profiles mount the Franka Hand of Menagerie's Panda package
 (``hand.xml``; the FR3 and the Panda share it) on the FR3 flange as Menagerie's Panda does:
 0.107 m out along link 7, turned -45 deg about it. The hand's actuator then drives the finger
-tendon as the width the real hand reports.
+tendon as the width the real hand reports, and grasps like the real hand: 70 N on each finger,
+at most 0.2 m/s (:func:`~physicalai_mujoco_plugin.profiles.dataset.tune_franka_hand_fingers`).
 
 The Duo is one model, like ALOHA's, with both arms where Franka's FR3 Duo mount puts them, so it
 attaches at a single ``robot_mount`` frame and its joint-space poses match the real Duo and the
@@ -26,7 +27,13 @@ import math
 from typing import TYPE_CHECKING
 
 from physicalai_mujoco_plugin.profiles._types import CameraSpec, EndEffector, RobotProfile
-from physicalai_mujoco_plugin.profiles.dataset import FRANKA_PANDA_PROFILE, exclude_franka_self_collisions
+from physicalai_mujoco_plugin.profiles.dataset import (
+    FRANKA_HAND_GRASP_FORCE_N,
+    FRANKA_HAND_STIFFNESS_N_M,
+    FRANKA_PANDA_PROFILE,
+    exclude_franka_self_collisions,
+    tune_franka_hand_fingers,
+)
 
 if TYPE_CHECKING:
     import mujoco
@@ -35,10 +42,6 @@ FRANKA_HAND_WIDTH_M = 0.08
 """The Franka Hand's full opening width: each finger travels 0.04 m."""
 _HAND_POS = (0.0, 0.0, 0.107)
 _HAND_QUAT = (0.9238795, 0.0, 0.0, -0.3826834)  # -45 deg about link 7, as in Menagerie's panda.xml
-# Menagerie's hand actuator pulls a tendon of half the finger sum with kp 100, kv 10 and +-100 N.
-# The tendon here is the full width (twice as long), so these halve per-finger force and damping
-# back to the same values at each finger joint.
-_HAND_KP, _HAND_KV, _HAND_FORCE_N = 25.0, 2.5, 50.0
 
 # franka_description accessories/fr3_duo_mount_v0_3/kinematics.yaml (release 2.9.0): each arm base is
 # 50.18 mm either side of the mount origin, rolled outward 51.2 deg, pitched -10 deg, yawed 26.5 deg.
@@ -100,11 +103,13 @@ def attach_franka_hand(arm: mujoco.MjSpec) -> None:
     split = next(tendon for tendon in arm.tendons if tendon.name == "split")
     arm.delete(split)
     actuator = arm.add_actuator(name="gripper", target="gripper_width", trntype=mujoco.mjtTrn.mjTRN_TENDON)
-    actuator.set_to_position(kp=_HAND_KP, kv=_HAND_KV)
+    # The tendon is the full finger sum, so its force is the force on each finger.
+    actuator.set_to_position(kp=FRANKA_HAND_STIFFNESS_N_M)
     actuator.ctrlrange = [0.0, FRANKA_HAND_WIDTH_M]
-    actuator.forcerange = [-_HAND_FORCE_N, _HAND_FORCE_N]
+    actuator.forcerange = [-FRANKA_HAND_GRASP_FORCE_N, FRANKA_HAND_GRASP_FORCE_N]
     actuator.ctrllimited = 1
     actuator.forcelimited = 1
+    tune_franka_hand_fingers(arm)
 
 
 def customize_franka_fr3(spec: mujoco.MjSpec) -> None:

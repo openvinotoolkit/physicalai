@@ -171,8 +171,7 @@ class DemoParams:
     yaw_speed: float = 1.5
     """Peak turn rate of the hand about the vertical, rad/s."""
     held_accel: float = 1.0
-    """Peak hand acceleration with the object in the hand, m/s^2: the simulated hand squeezes with
-    under 1 N, so a faster carry shakes a 45 g battery loose."""
+    """Peak hand acceleration with the object in the hand, m/s^2."""
     pregrasp_height: float = 0.10
     """Height of the stop above the grasp."""
     lift_height: float = 0.10
