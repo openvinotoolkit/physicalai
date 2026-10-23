@@ -17,7 +17,9 @@ bucket, "put the CPU in the red bucket". A reset:
   :data:`OBJECT_Y`), apart from each other and far enough from the buckets that a hand grasping
   from above clears the bucket walls;
 - samples the instruction from the allowed (object, bucket) pairs, all nine by default, so pairs
-  can be held out of training (:func:`sample_instruction`, :class:`BucketSortTask`).
+  can be held out of training (:func:`sample_instruction`, :class:`BucketSortTask`), and words it
+  in one of many ways (:data:`PHRASES`): "Drop the 9V battery in the blue bin.", "Can you put the
+  chip in the red box?".
 
 The episode succeeds when the named object rests inside the named bucket, out of the gripper,
 and no other object is in a bucket (:meth:`BucketSortTask.evaluate`). :class:`BucketSortEpisode`
@@ -41,7 +43,7 @@ if TYPE_CHECKING:
 OBJECTS = ("resistor", "battery", "cpu")
 """Object names: each is a body with the free joint ``<name>:joint``."""
 OBJECT_LABELS = {"resistor": "resistor", "battery": "9 V battery", "cpu": "CPU"}
-"""How an instruction names each object."""
+"""How the canonical instruction (:attr:`Instruction.canonical_text`) names each object."""
 BUCKET_COLORS = ("black", "blue", "red")
 """Bucket colours: each bucket is the body ``bucket_<colour>`` with the free joint ``bucket_<colour>:joint``."""
 BUCKET_JOINTS = tuple(f"bucket_{color}:joint" for color in BUCKET_COLORS)
@@ -424,23 +426,176 @@ def sample_layout(rng: np.random.Generator, footprints: Mapping[str, ObjectFootp
     return Layout(buckets=FALLBACK_LAYOUT.buckets, objects=FALLBACK_LAYOUT.objects, draws=draws, fallback=True)
 
 
+# ----------------------------------------------------------------------
+# Instructions
+# ----------------------------------------------------------------------
+
+VARY_INSTRUCTION_TEXT = True
+"""Whether instructions are worded in many ways (:data:`PHRASES`) by default; ``False`` always
+gives the canonical sentence. :class:`BucketSortTask` can override it."""
+
+Weighted = tuple[tuple[str, float], ...]
+
+
+@dataclass(frozen=True)
+class InstructionPhrases:
+    """The words an instruction is made of; :data:`PHRASES` is the scene's set.
+
+    A worded instruction is, with probability :attr:`canonical_fraction`, the canonical sentence
+    (:attr:`Instruction.canonical_text`, "put the CPU in the red bucket"); otherwise a template
+    filled with a name of the object, a container word and the bucket's colour, in sentence case,
+    with an optional "please" and a final full stop. Every choice is weighted (the weights of a
+    list need not sum to one).
+
+    To extend it, add entries to the lists below. A name must name only its object (no word of
+    another object's names, and no colour word), and a template must hold ``{object}`` once and
+    either ``{bucket}`` (the colour and a container word: "red bin") or ``{containers}`` before
+    ``{color} one`` ("of the three bins, ... the red one"); ``tests/test_bucket_sort.py`` checks
+    that every sentence names the right object and colour and nothing else.
+    """
+
+    canonical_fraction: float
+    """Probability of the canonical sentence, word for word."""
+    templates: tuple[tuple[str, float, Literal["imperative", "question", "plain"]], ...]
+    """``(template, weight, kind)``: an imperative can take "please" before or after it, a
+    question takes it after "can you"/"could you" and ends in a question mark, a plain sentence takes none."""
+    object_names: dict[str, Weighted]
+    """Names of each object, used after "the"."""
+    containers: Weighted
+    """Words for a bucket."""
+    plurals: dict[str, str]
+    """The plural of each container word."""
+    please: float
+    """Probability of "please" in a template that can take it."""
+    please_first: float
+    """Of those, probability that "please" opens the sentence rather than ending it."""
+    full_stop: float
+    """Probability of a full stop after a sentence that is not a question."""
+
+
+PHRASES = InstructionPhrases(
+    canonical_fraction=0.3,
+    templates=(
+        ("put the {object} in the {bucket}", 2.0, "imperative"),
+        ("put the {object} into the {bucket}", 1.0, "imperative"),
+        ("place the {object} in the {bucket}", 1.0, "imperative"),
+        ("place the {object} into the {bucket}", 1.0, "imperative"),
+        ("drop the {object} in the {bucket}", 1.0, "imperative"),
+        ("move the {object} to the {bucket}", 1.0, "imperative"),
+        ("sort the {object} into the {bucket}", 1.0, "imperative"),
+        ("take the {object} and put it in the {bucket}", 1.0, "imperative"),
+        ("pick up the {object} and drop it in the {bucket}", 1.0, "imperative"),
+        ("grab the {object} and place it in the {bucket}", 1.0, "imperative"),
+        ("can you put the {object} in the {bucket}", 1.0, "question"),
+        ("could you place the {object} into the {bucket}", 1.0, "question"),
+        ("I want the {object} in the {bucket}", 1.0, "plain"),
+        ("the {object} goes in the {bucket}", 1.0, "plain"),
+        ("the {object} belongs in the {bucket}", 1.0, "plain"),
+        ("of the three {containers}, put the {object} in the {color} one", 1.0, "plain"),
+    ),
+    object_names={
+        "battery": (
+            ("battery", 3.0),
+            ("9 V battery", 2.0),
+            ("9V battery", 1.0),
+            ("9 volt battery", 1.0),
+            ("nine volt battery", 1.0),
+        ),
+        "cpu": (("CPU", 3.0), ("processor", 1.5), ("chip", 1.5), ("microchip", 1.0), ("computer chip", 1.0)),
+        "resistor": (("resistor", 1.0),),
+    },
+    containers=(("bucket", 3.0), ("bin", 2.0), ("box", 1.5), ("container", 1.5), ("tub", 1.0)),
+    plurals={"bucket": "buckets", "bin": "bins", "box": "boxes", "container": "containers", "tub": "tubs"},
+    please=0.25,
+    please_first=0.6,
+    full_stop=0.5,
+)
+"""The scene's instruction wording (:class:`InstructionPhrases`).
+
+The resistor has no other name: it is the longest of the three objects, so "small resistor" would
+point at the wrong one, and "the resistor" is what the templates already say."""
+
+
+def _choose(rng: np.random.Generator, options: Weighted) -> str:
+    return options[int(rng.choice(len(options), p=_normalized([weight for _, weight in options])))][0]
+
+
+def canonical_text(obj: str, color: str) -> str:
+    """Return the canonical instruction, e.g. ``put the CPU in the red bucket``.
+
+    Returns:
+        The sentence.
+    """
+    return f"put the {OBJECT_LABELS[obj]} in the {color} bucket"
+
+
+def word_instruction(rng: np.random.Generator, obj: str, color: str, phrases: InstructionPhrases = PHRASES) -> str:
+    """Word the instruction "put *obj* in the *color* bucket" at random (:class:`InstructionPhrases`).
+
+    Args:
+        rng: The generator.
+        obj: One of :data:`OBJECTS`.
+        color: One of :data:`BUCKET_COLORS`.
+        phrases: The words to use.
+
+    Returns:
+        The sentence.
+    """
+    if rng.random() < phrases.canonical_fraction:
+        return canonical_text(obj, color)
+    index = int(rng.choice(len(phrases.templates), p=_normalized([weight for _, weight, _ in phrases.templates])))
+    template, _, kind = phrases.templates[index]
+    name = _choose(rng, phrases.object_names[obj])
+    container = _choose(rng, phrases.containers)
+    text = template.format(
+        object=name, bucket=f"{color} {container}", containers=phrases.plurals[container], color=color
+    )
+    if kind != "plain" and rng.random() < phrases.please:
+        if kind == "question":
+            text = text.replace(" you ", " you please ", 1)
+        elif rng.random() < phrases.please_first:
+            text = f"please {text}"
+        else:
+            text = f"{text}, please"
+    if kind == "question":
+        text += "?"
+    elif rng.random() < phrases.full_stop:
+        text += "."
+    return text[0].upper() + text[1:]
+
+
+def _normalized(weights: list[float]) -> np.ndarray:
+    values = np.asarray(weights, dtype=np.float64)
+    return values / values.sum()
+
+
 @dataclass(frozen=True)
 class Instruction:
-    """One episode's instruction: put ``object`` in the ``bucket`` bucket."""
+    """One episode's instruction: put ``object`` in the ``bucket`` bucket.
+
+    Two instructions are equal when they name the same object and bucket, however they are worded.
+    """
 
     object: str
     """One of :data:`OBJECTS`."""
     bucket: str
     """One of :data:`BUCKET_COLORS`."""
+    wording: str | None = field(default=None, compare=False)
+    """The sentence this episode uses; ``None`` for the canonical one."""
+
+    @property
+    def canonical_text(self) -> str:
+        """The instruction in its fixed form, e.g. ``put the CPU in the red bucket``."""
+        return canonical_text(self.object, self.bucket)
 
     @property
     def text(self) -> str:
-        """The instruction as a sentence, e.g. ``put the CPU in the red bucket``."""
-        return f"put the {OBJECT_LABELS[self.object]} in the {self.bucket} bucket"
+        """The instruction as given to the robot: :attr:`wording`, else :attr:`canonical_text`."""
+        return self.wording if self.wording is not None else self.canonical_text
 
     def as_dict(self) -> dict[str, str]:
-        """Return the instruction for JSON: ``object``, ``bucket`` and ``text``."""
-        return {"object": self.object, "bucket": self.bucket, "text": self.text}
+        """Return the instruction for JSON: ``object``, ``bucket``, ``text`` and ``canonical_text``."""
+        return {"object": self.object, "bucket": self.bucket, "text": self.text, "canonical_text": self.canonical_text}
 
 
 def check_pairs(pairs: Iterable[Pair] | None) -> tuple[Pair, ...]:
@@ -468,19 +623,24 @@ def check_pairs(pairs: Iterable[Pair] | None) -> tuple[Pair, ...]:
     return tuple(pair for pair in ALL_PAIRS if pair in wanted)
 
 
-def sample_instruction(rng: np.random.Generator, allowed_pairs: Iterable[Pair] | None = None) -> Instruction:
-    """Draw an instruction uniformly from the allowed (object, bucket colour) pairs.
+def sample_instruction(
+    rng: np.random.Generator, allowed_pairs: Iterable[Pair] | None = None, *, vary_text: bool | None = None
+) -> Instruction:
+    """Draw an instruction uniformly from the allowed (object, bucket colour) pairs, then word it.
 
     Args:
         rng: The generator.
         allowed_pairs: The pairs to draw from (:func:`check_pairs`); ``None`` draws from all nine.
+        vary_text: Word it at random (:func:`word_instruction`) or use the canonical sentence;
+            ``None`` follows :data:`VARY_INSTRUCTION_TEXT`.
 
     Returns:
         The instruction.
     """
     pairs = check_pairs(allowed_pairs)
     obj, color = pairs[int(rng.integers(len(pairs)))]
-    return Instruction(object=obj, bucket=color)
+    vary = VARY_INSTRUCTION_TEXT if vary_text is None else vary_text
+    return Instruction(object=obj, bucket=color, wording=word_instruction(rng, obj, color) if vary else None)
 
 
 def _yaw_quat(yaw: float) -> np.ndarray:
@@ -515,8 +675,8 @@ class BucketSortTask:
     """The scene's reset and success test, with the current layout and instruction.
 
     Call it as the scene's reset callback, ``task(model, data, rng)``: it puts the arm at home,
-    lays the buckets and objects out and samples the instruction. The allowed pairs can be
-    changed at any time and apply from the next reset.
+    lays the buckets and objects out and samples the instruction. The allowed pairs and the
+    wording can be changed at any time and apply from the next reset.
     """
 
     def __init__(
@@ -525,6 +685,7 @@ class BucketSortTask:
         allowed_pairs: Iterable[Pair] | None = None,
         place_home: Callable[[object, object], None] | None = None,
         robot_roots: tuple[int, ...] = (),
+        vary_text: bool | None = None,
     ) -> None:
         """Create the task; nothing is laid out until the first reset.
 
@@ -533,10 +694,13 @@ class BucketSortTask:
                 (:func:`check_pairs`); ``None`` allows all nine.
             place_home: Puts the arm at its home pose at rest; ``None`` leaves the arm where it is.
             robot_roots: Root body of every robot: objects touching them are held, not resting.
+            vary_text: Word instructions at random, or always use the canonical sentence;
+                ``None`` follows :data:`VARY_INSTRUCTION_TEXT` at each reset.
         """
         self._allowed = check_pairs(allowed_pairs)
         self._place_home = place_home
         self._robot_roots = tuple(robot_roots)
+        self._vary_text = vary_text
         self._footprints: tuple[object, dict[str, ObjectFootprint]] | None = None
         self.instruction: Instruction | None = None
         """The current instruction; ``None`` before the first reset."""
@@ -556,6 +720,23 @@ class BucketSortTask:
         The current instruction stays until the next reset.
         """
         self._allowed = check_pairs(pairs)
+
+    @property
+    def vary_text(self) -> bool:
+        """Whether the next resets word the instruction at random."""
+        return VARY_INSTRUCTION_TEXT if self._vary_text is None else self._vary_text
+
+    def set_vary_text(self, vary: bool | None) -> None:  # noqa: FBT001
+        """Word later instructions at random (``True``) or canonically (``False``).
+
+        ``None`` follows :data:`VARY_INSTRUCTION_TEXT`.
+        """
+        self._vary_text = vary
+
+    @property
+    def canonical_text(self) -> str | None:
+        """The current instruction in its fixed form (:attr:`Instruction.canonical_text`); ``None`` before a reset."""
+        return self.instruction.canonical_text if self.instruction is not None else None
 
     def footprints(self, model: object) -> dict[str, ObjectFootprint]:
         """Return each object's :class:`ObjectFootprint` on *model*, computed once per model."""
@@ -579,9 +760,14 @@ class BucketSortTask:
             )
         self.layout = layout
         self.slot_colors = layout.colors_left_to_right
-        self.instruction = sample_instruction(rng, self._allowed)
+        self.instruction = sample_instruction(rng, self._allowed, vary_text=self.vary_text)
         mujoco.mj_forward(model, data)
-        logger.info("Bucket sort: {!r}; buckets left to right {}", self.instruction.text, ", ".join(self.slot_colors))
+        logger.info(
+            "Bucket sort: {!r} ({}); buckets left to right {}",
+            self.instruction.text,
+            self.instruction.canonical_text,
+            ", ".join(self.slot_colors),
+        )
 
     def evaluate(self, model: object, data: object) -> TaskState:
         """Check where the objects are and whether the current instruction is done.
@@ -630,6 +816,7 @@ class BucketSortTask:
                 for slot, color in zip(SLOT_NAMES, self.slot_colors, strict=True)
             ],
             "allowed_pairs": [list(pair) for pair in self._allowed],
+            "vary_text": self.vary_text,
         }
 
     def _bodies_touching_robot(self, model: object, data: object) -> set[int]:
@@ -852,10 +1039,13 @@ __all__ = [
     "OBJECT_LABELS",
     "OBJECT_X",
     "OBJECT_Y",
+    "PHRASES",
     "REACH_RADIUS",
+    "VARY_INSTRUCTION_TEXT",
     "BucketSortEpisode",
     "BucketSortTask",
     "Instruction",
+    "InstructionPhrases",
     "Layout",
     "ObjectFootprint",
     "Pose2D",
@@ -863,10 +1053,12 @@ __all__ = [
     "bucket_containing",
     "bucket_footprint",
     "bucket_problems",
+    "canonical_text",
     "check_pairs",
     "object_extent",
     "object_footprint",
     "object_problems",
     "sample_instruction",
     "sample_layout",
+    "word_instruction",
 ]

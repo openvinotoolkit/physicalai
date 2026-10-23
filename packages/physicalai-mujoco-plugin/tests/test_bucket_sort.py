@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import itertools
+import re
 from collections import Counter
 
 import mujoco
@@ -192,11 +193,17 @@ class TestObjectLooks:
 class TestInstructions:
     def test_text_names_the_object_and_the_bucket(self) -> None:
         assert Instruction("cpu", "red").text == "put the CPU in the red bucket"
+        assert Instruction("cpu", "red").canonical_text == "put the CPU in the red bucket"
         assert Instruction("battery", "black").as_dict() == {
             "object": "battery",
             "bucket": "black",
             "text": "put the 9 V battery in the black bucket",
+            "canonical_text": "put the 9 V battery in the black bucket",
         }
+        worded = Instruction("battery", "black", wording="Drop the battery in the black bin.")
+        assert worded.text == "Drop the battery in the black bin."
+        assert worded.canonical_text == "put the 9 V battery in the black bucket"
+        assert worded == Instruction("battery", "black")  # the same instruction, worded differently
 
     def test_all_nine_pairs_by_default(self) -> None:
         assert check_pairs(None) == ALL_PAIRS
@@ -561,7 +568,9 @@ def test_robot_serves_the_task_and_reset_draws_a_new_one() -> None:
         robot.get_observation()
         episode = robot._http_status()["episode"]  # noqa: SLF001
         assert episode["kind"] == "bucket_sort"
-        assert episode["instruction"]["text"].startswith("put the ")
+        assert episode["instruction"]["canonical_text"].startswith("put the ")
+        assert episode["instruction"]["text"]
+        assert episode["vary_text"] is True
 
         def layout() -> tuple[object, ...]:
             robot._commands.put(ResetCommand())  # noqa: SLF001
@@ -736,3 +745,99 @@ class TestReach:
                 for heading in np.radians([0.0, 45.0, 90.0, 135.0]):
                     best = max(ik.margin(pos, azimuth + heading + flip) for flip in (0.0, np.pi))
                     assert best >= 8.0, (radius, np.degrees(azimuth), z, np.degrees(heading), best)
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", text.lower())
+
+
+_OBJECT_WORDS = {
+    name: {word for label, _ in bs.PHRASES.object_names[name] for word in _words(label)} | set(_words(bs.OBJECT_LABELS[name]))
+    for name in OBJECTS
+}
+_CONTAINER_WORDS = {word for word, _ in bs.PHRASES.containers} | set(bs.PHRASES.plurals.values())
+
+
+class TestPhrasing:
+    def test_canonical_when_variation_is_off(self, monkeypatch) -> None:
+        rng = np.random.default_rng(0)
+        for _ in range(50):
+            instruction = sample_instruction(rng, vary_text=False)
+            assert instruction.text == instruction.canonical_text
+        monkeypatch.setattr(bs, "VARY_INSTRUCTION_TEXT", False)
+        assert sample_instruction(np.random.default_rng(1)).text == sample_instruction(np.random.default_rng(1)).canonical_text
+
+    def test_object_words_name_one_object(self) -> None:
+        for a, b in itertools.combinations(OBJECTS, 2):
+            assert not _OBJECT_WORDS[a] & _OBJECT_WORDS[b], (a, b)
+        for template, _, _ in bs.PHRASES.templates:
+            words = set(_words(template))
+            assert not words & set(BUCKET_COLORS), template
+            assert not words & set().union(*_OBJECT_WORDS.values()), template
+            assert template.count("{object}") == 1
+            assert ("{bucket}" in template) != ("{color} one" in template), template
+
+    @pytest.mark.parametrize(("obj", "color"), ALL_PAIRS)
+    def test_every_sentence_names_the_right_object_and_colour_and_nothing_else(self, obj, color) -> None:
+        rng = np.random.default_rng(ALL_PAIRS.index((obj, color)))
+        names = [label for label, _ in bs.PHRASES.object_names[obj]] + [bs.OBJECT_LABELS[obj]]
+        for _ in range(2000):
+            text = bs.word_instruction(rng, obj, color)
+            words = _words(text)
+            assert [w for w in words if w in BUCKET_COLORS] == [color], text
+            for other in OBJECTS:
+                if other != obj:
+                    assert not set(words) & _OBJECT_WORDS[other], text
+            assert any(re.search(rf"\bthe {re.escape(name)}\b", text, re.IGNORECASE) for name in names), text
+            containers = [i for i, w in enumerate(words) if w in _CONTAINER_WORDS]
+            assert len(containers) == 1, text
+            if "one" in words:
+                assert containers[0] < words.index("one"), text  # "the red one" only after a container word
+            else:
+                assert words[containers[0] - 1] == color, text  # "the red bin"
+            assert text[0].isupper() or text == bs.canonical_text(obj, color)
+            assert text.count("please") <= 1
+
+    def test_wording_repeats_per_seed(self) -> None:
+        first = [sample_instruction(np.random.default_rng(seed)).text for seed in range(200)]
+        assert first == [sample_instruction(np.random.default_rng(seed)).text for seed in range(200)]
+        assert len(set(first)) > 100
+
+    def test_distribution_keeps_the_canonical_sentence_common_and_no_phrase_rare(self) -> None:
+        rng = np.random.default_rng(5)
+        n = 8000
+        texts = [bs.word_instruction(rng, "battery", "red") for _ in range(n)]
+        canonical = sum(text == "put the 9 V battery in the red bucket" for text in texts) / n
+        assert canonical == pytest.approx(bs.PHRASES.canonical_fraction, abs=0.02)
+        varied = [text for text in texts if text != "put the 9 V battery in the red bucket"]
+        lowered = [text.lower() for text in varied]
+        for label, _ in bs.PHRASES.object_names["battery"]:
+            share = sum(bool(re.search(rf"\bthe {re.escape(label.lower())}\b", t)) for t in lowered) / len(varied)
+            assert share > 0.08, label
+        for word, _ in bs.PHRASES.containers:
+            share = sum(bool(re.search(rf"\b({word}|{bs.PHRASES.plurals[word]})\b", t)) for t in lowered) / len(varied)
+            assert share > 0.08, word
+        starts = Counter(" ".join(_words(t)[:2]) for t in varied if not t.lower().startswith("please"))
+        assert len(starts) >= 12
+        assert max(starts.values()) / len(varied) < 0.25
+        assert 0.1 < sum("please" in t for t in lowered) / len(varied) < 0.3
+        assert 0.1 < sum(t.endswith("?") for t in varied) / len(varied) < 0.2
+
+    def test_task_words_its_instruction_and_can_turn_it_off(self, sim) -> None:
+        task = sim.on_reset
+        try:
+            texts = {_reset(sim, seed).instruction.text for seed in range(40)}
+            assert len(texts) > 20
+            assert task.describe()["instruction"]["canonical_text"] == task.canonical_text
+            task.set_vary_text(False)
+            for seed in range(10):
+                _reset(sim, seed)
+                assert task.instruction.text == task.canonical_text
+            assert task.describe()["vary_text"] is False
+            # The layout and the pair do not depend on the wording.
+            task.set_vary_text(True)
+            worded = (_reset(sim, 3).instruction, task.layout)
+            task.set_vary_text(False)
+            assert (_reset(sim, 3).instruction, task.layout) == worded
+        finally:
+            task.set_vary_text(None)
