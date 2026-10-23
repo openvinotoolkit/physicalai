@@ -937,6 +937,8 @@ class SimControlPanel:
         self._handles.auto_reset = auto_reset
         self._handles.dwell = dwell
         self._handles.episode_status = status
+        if state.autopilot.get("available"):  # a scene with a demonstrator; the others have no folder
+            self._build_autopilot_controls(state)
 
         @auto_reset.on_update
         def _on_auto_reset(event: object) -> None:
