@@ -75,7 +75,7 @@ capture = [
 ur = []
 abb = []
 franka = []
-observer-rerun = ["rerun-sdk>=0.22"]
+observer-rerun = ["rerun-sdk>=0.22", "psutil>=5.9"]
 robots = [
     "physicalai[ur]",
     "physicalai[abb]",
