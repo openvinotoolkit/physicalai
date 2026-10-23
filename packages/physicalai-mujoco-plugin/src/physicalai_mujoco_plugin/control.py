@@ -513,14 +513,16 @@ class OperatorControls:
         from physicalai_mujoco_plugin.episode_auto_reset import EpisodeAutoReset  # noqa: PLC0415
 
         model = self._sim.model  # type: ignore[union-attr]
+        task = self._sim.on_reset  # type: ignore[union-attr]
         helper = self._automation.attach_scene(  # type: ignore[union-attr]
             model,
             rng=self._rng,
             active=self._auto_reset_active,
             robots=len(self._sim.bindings),  # type: ignore[union-attr]
             robot_roots=self._sim.robot_roots,  # type: ignore[union-attr]
+            bucket_task=task if isinstance(task, BucketSortTask) else None,
+            seed=self._seed,
         )
-        task = self._sim.on_reset  # type: ignore[union-attr]
         if helper is None and isinstance(task, BucketSortTask):
             helper = BucketSortEpisode(
                 task, self._run_scene_reset, success_dwell_s=self._auto_reset_dwell_s, active=self._auto_reset_active

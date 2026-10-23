@@ -554,8 +554,8 @@ _FRONT_SCENES = [
 
 
 @pytest.mark.parametrize(("scene_id", "name", "arms"), _FRONT_SCENES)
-def test_front_overview_frames_the_arms_at_home_and_the_aim_point(scene_id: str, name: str, arms: int) -> None:
-    """The ``front`` overview of the other tabletop scenes shows every arm at the scene's home pose and its aim point."""
+def test_front_overview_frames_its_subject_and_aim_point(scene_id: str, name: str, arms: int) -> None:
+    """Frame the arms, or the task bodies for bucket_sort's deliberately task-focused short-pole view."""
     scene = get_scene(scene_id)
     profile = get_profile(name)
     composed = compose_scene(scene.scene_xml_path, profile, scene_layout=scene.layout_for(profile, arms, "front"))
@@ -568,7 +568,12 @@ def test_front_overview_frames_the_arms_at_home_and_the_aim_point(scene_id: str,
     mujoco.mj_forward(model, data)
     aim = np.asarray(scene.front_view.aim or (*scene.for_profile(profile, arms).spawn_center, 0.0))  # type: ignore[union-attr]
 
-    points = np.vstack([_robot_geometry_points(model, data, _robot_bodies(model, scene.scene_xml_path)), aim])
+    subjects = _robot_bodies(model, scene.scene_xml_path)
+    if scene_id == "bucket_sort":
+        # Its real 0.8-1.0 m poles frame the task rather than the full arm. Dedicated camera tests
+        # cover complete bucket/object meshes across random resets, plus the mount constraints.
+        subjects = {int(model.jnt_bodyid[model.joint(joint).id]) for joint in scene.free_joints}
+    points = np.vstack([_robot_geometry_points(model, data, subjects), aim])
     _assert_in_overview(model, data, points, f"{name} in {scene_id} with {arms} arm(s)")
 
 

@@ -21,7 +21,9 @@
 -->
 <mujoco model="bucket_sort">
   <compiler angle="radian" assetdir="assets" autolimits="true"/>
-  <option integrator="implicitfast" timestep="0.002" cone="elliptic" iterations="10" ls_iterations="20" impratio="10"/>
+  <!-- ls_iterations 50: under the Franka Hand's 70 N squeeze, 20 line-search steps can leave the
+       contact solve unfinished, and the held object is thrown out at metres per second. -->
+  <option integrator="implicitfast" timestep="0.002" cone="elliptic" iterations="10" ls_iterations="50" impratio="10"/>
   <include file="../scene_common.xml"/>
 
   <default>
@@ -155,11 +157,14 @@
     </body>
 
     <frame name="robot_mount"/>
-    <!-- Overview: beside the base on its left, 0.85 m above the table, looking at (0.45, 0, 0.03),
-         so the arm at home hides neither the objects nor the buckets. -->
-    <body name="overview_camera_rig" pos="0.05 0.55 0.85" quat="0.647950 -0.696081 -0.226354 0.210703">
-      <body name="overview_camera_tilt" euler="0.95 0 0">
-        <camera name="overview" mode="fixed" euler="0 0 3.141592653589793" fovy="58"/>
+    <!-- D435 RGB on a rear-edge table pole: eye (-0.17, 0.68, 0.90), aim (0.45, 0, 0.05).
+         The nominal optical centre is directly above the clamp; account for the real tilt head's
+         offset when mounting. This task-focused view intentionally crops the upper arm.
+         Camera +x is image right and +y is level-image up. RGB vertical FOV is 42 degrees,
+         not the depth sensor's 58. Front repositions this same camera through SceneConfig. -->
+    <body name="overview_camera_rig" pos="-0.17 0.68 0.90" xyaxes="-0.68 -0.62 0 0.527 -0.578 0.8468">
+      <body name="overview_camera_tilt">
+        <camera name="overview" mode="fixed" fovy="42"/>
       </body>
     </body>
   </worldbody>

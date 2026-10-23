@@ -34,6 +34,7 @@ from physicalai_mujoco_plugin.channels import TorqueMode
 from physicalai_mujoco_plugin.compose import OverviewStyle
 from physicalai_mujoco_plugin.control import OperatorControls
 from physicalai_mujoco_plugin.profiles import DefaultUnit, RobotProfile, get_profile
+from physicalai_mujoco_plugin.profiles.franka import with_grip_force
 from physicalai_mujoco_plugin.scene_objects import SceneObjects, SpawnArea
 from physicalai_mujoco_plugin.sim import Sim, default_cameras, joint_names_before_load, load_sim, resolve_scene
 from physicalai_mujoco_plugin.studio_recorder import DEFAULT_STUDIO_URL
@@ -107,6 +108,7 @@ class MuJoCoRobot(OperatorControls):
         studio_url: str = DEFAULT_STUDIO_URL,
         seed: int | None = None,
         exit_with_pid: int | None = None,
+        grip_force_n: float | None = None,
     ) -> None:
         """Create a disconnected simulation.
 
@@ -142,10 +144,13 @@ class MuJoCoRobot(OperatorControls):
             exit_with_pid: The PID of the process that starts this owner, its parent: once this
                 process is no longer its child, the shared owner shuts down as on ``POST /shutdown``.
                 ``physicalai-mujoco start --exit-with-parent`` passes its own PID.
+            grip_force_n: The Franka Hand's grasp force per finger in newtons, above 0 and at most
+                140; ``None`` keeps the real hand's 70 N. Only the Franka profiles have the hand.
 
         Raises:
             ValueError: If ``unit``, ``torque_mode``, ``rate_hz``, ``substeps``, ``overview``,
-                ``viewer_theme`` or ``exit_with_pid`` is invalid, the scene, the profile or
+                ``viewer_theme``, ``exit_with_pid`` or ``grip_force_n`` is invalid, the profile has no
+                Franka Hand but ``grip_force_n`` is set, the scene, the profile or
                 ``model_path`` cannot run the requested arm count, or the scene has no ``front``
                 overview and ``overview`` asks for it.
         """
@@ -173,9 +178,12 @@ class MuJoCoRobot(OperatorControls):
             "overview": overview, "enable_viewer": enable_viewer, "viser_host": viser_host, "viser_port": viser_port,
             "viewer_theme": viewer_theme, "http_host": http_host, "http_port": http_port, "owner_name": owner_name,
             "studio_url": studio_url, "seed": seed, "exit_with_pid": exit_with_pid,
+            "grip_force_n": grip_force_n,
         }  # fmt: skip
         """Constructor arguments, for pickling (``__getstate__``)."""
         self._profile: RobotProfile = get_profile(profile)
+        if grip_force_n is not None:
+            self._profile = with_grip_force(self._profile, grip_force_n)
         self._unit: DefaultUnit = unit or self._profile.default_unit
         self._torque_mode: TorqueMode = torque_mode
         self._scene_arg = scene
@@ -739,6 +747,9 @@ class MuJoCoRobot(OperatorControls):
             self._record_tick(float(data.time))
             if self._episode_auto_reset is not None:
                 self._episode_auto_reset.update(model, data)
+            if self._automation.take_reset_request():  # type: ignore[union-attr]
+                logger.info("The autopilot gave up on the episode; resetting the scene")
+                self._reset()
             self._objects.apply_held(model, data)
         self._objects.publish(data)
         if self._viewer is not None:
