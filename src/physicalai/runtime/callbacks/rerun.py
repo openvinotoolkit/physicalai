@@ -9,17 +9,21 @@ import colorsys
 import logging
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Literal
 
 from physicalai.config import export_config
+from physicalai.runtime.callbacks.gpu_stats import collect_gpu_stats
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from concurrent.futures import Future
 
     import numpy as np
     import psutil
 
     from physicalai.capture.frame import Frame
+    from physicalai.runtime.callbacks.gpu_stats import GpuStatsSample
     from physicalai.runtime.events import InferenceEvent, LifecycleEvent, MetricsEvent, TickEvent
 
 logger = logging.getLogger(__name__)
@@ -37,8 +41,11 @@ class RerunCallback:
     layout are discovered lazily from the first tick's ``camera_frames`` keys,
     so this callback never holds a ``Camera`` reference of its own.
     Host CPU/RAM and process CPU/resident memory are sampled at most once per
-    second and shown in a System Stats table. Both CPU percentages are normalized
-    across all host logical cores, so 100% means the entire host CPU capacity.
+    second and shown alongside inference latency in one Monitoring sidebar. Both CPU
+    percentages are normalized across all host logical cores, so 100% means the
+    entire host CPU capacity. GPU utilization, memory, and temperature are queried
+    in the background using ``nvidia-smi`` / ``xpu-smi`` when available. Missing
+    tools, permissions, and unsupported counters do not prevent runtime use.
 
     Do NOT wrap with :class:`AsyncCallback` — Rerun's SDK already batches I/O
     asynchronously.  The ``AsyncCallback`` guard (rejects inners with action
@@ -84,12 +91,24 @@ class RerunCallback:
         self._latencies: deque[float] = deque(maxlen=200)
         self._process: psutil.Process | None = None
         self._next_system_stats: float = 0.0
+        self._system_stats_rows = ""
+        self._latency_stats_rows = ""
+        self._gpu_stats_rows = ""
+        self._gpu_executor: ThreadPoolExecutor | None = None
+        self._gpu_future: Future[GpuStatsSample] | None = None
 
     def on_lifecycle(self, event: LifecycleEvent) -> None:  # noqa: D102
         if event.event == "start":
             self._source_ticks = 0
             self._process = None
             self._next_system_stats = 0.0
+            self._system_stats_rows = ""
+            self._latency_stats_rows = ""
+            self._gpu_stats_rows = ""
+            if self._gpu_future is not None:
+                self._gpu_future.cancel()
+                self._gpu_future = None
+            self._latencies.clear()
             if not self._initialized:
                 self._init_rerun(event.session_id, event.metadata)
         self._log_lifecycle_marker(event)
@@ -183,7 +202,7 @@ class RerunCallback:
         rr.set_time("wall", timestamp=event.timestamp)
         rr.log("queue/inference", rr.Scalars(float(horizon)))
 
-        # Inference latency stats as a live-updating table.
+        # Update the inference section without resampling system counters.
         self._latencies.append(event.latency_s)
         self._log_latency_table()
 
@@ -253,6 +272,8 @@ class RerunCallback:
         # Queue: green line; inference: thin red vertical spikes
         rr.log("queue/remaining", rr.SeriesLines(widths=3.0, colors=[80, 200, 120, 255], names="queue"), static=True)
         rr.log("queue/inference", rr.SeriesLines(widths=1.5, colors=[220, 50, 50, 255], names="inference"), static=True)
+        rr.log("runtime/utilization/cpu/host", rr.SeriesLines(names="Host CPU (%)"), static=True)
+        rr.log("runtime/utilization/cpu/process", rr.SeriesLines(names="Process CPU (%)"), static=True)
 
     def _send_default_blueprint(self) -> None:
         """Send a default blueprint with robot plots, cameras, and live stats."""
@@ -279,20 +300,16 @@ class RerunCallback:
             end=rrb.TimeRangeBoundary.cursor_relative(seq=0),
         )
 
-        latency_view = rrb.TextDocumentView(
-            origin="/inference/stats",
-            name="Inference Latency",
+        monitoring_view = rrb.Tabs(
+            rrb.TextDocumentView(origin="/runtime/monitoring", name="Monitoring"),
+            rrb.TimeSeriesView(origin="/runtime/utilization/cpu", name="CPU %"),
+            rrb.TimeSeriesView(origin="/runtime/utilization/gpu", name="GPU %"),
+            active_tab="Monitoring",
         )
-        top_row = rrb.Grid(
-            contents=[
-                *[rrb.Spatial2DView(origin=f"/camera/{n}", name=n) for n in camera_names],
-                latency_view,
-                rrb.TextDocumentView(origin="/system/stats", name="System Stats"),
-            ],
-        )
-
-        views: list[Any] = [
-            top_row,
+        views: list[Any] = []
+        if camera_names:
+            views.append(rrb.Grid(contents=[rrb.Spatial2DView(origin=f"/camera/{n}", name=n) for n in camera_names]))
+        views.extend([
             rrb.Tabs(
                 rrb.TimeSeriesView(
                     origin="/robot",
@@ -312,10 +329,10 @@ class RerunCallback:
                 name="Action Queue",
                 time_ranges=actions_range,
             ),
-        ]
+        ])
 
         blueprint = rrb.Blueprint(
-            rrb.Vertical(*views),
+            rrb.Horizontal(rrb.Vertical(*views), monitoring_view, column_shares=[3, 1]),
             rrb.SelectionPanel(state="collapsed"),
             rrb.TimePanel(state="expanded"),
         )
@@ -360,6 +377,7 @@ class RerunCallback:
         if now < self._next_system_stats:
             return
         self._next_system_stats = now + 1.0
+        self._update_gpu_stats()
 
         try:
             if self._process is None:
@@ -378,20 +396,44 @@ class RerunCallback:
             self._process = None
             return
 
-        md = (
-            "| Metric | Value |\n"
-            "|--------|-------|\n"
+        rr.log("runtime/utilization/cpu/host", rr.Scalars(cpu))
+        rr.log("runtime/utilization/cpu/process", rr.Scalars(process_cpu))
+        self._system_stats_rows = (
             f"| **Host CPU** | {cpu:.1f}% |\n"
             f"| **Host RAM** | {memory.percent:.1f}% "
             f"({(memory.total - memory.available) / 2**30:.2f} / {memory.total / 2**30:.2f} GiB) |\n"
             f"| **Process CPU** | {process_cpu:.1f}% |\n"
             f"| **Process RAM (RSS)** | {rss / 2**20:.1f} MiB |"
         )
-        rr.log("system/stats", rr.TextDocument(md, media_type=rr.MediaType.MARKDOWN))
+        self._log_monitoring()
+
+    def _update_gpu_stats(self) -> None:
+        import rerun as rr  # noqa: PLC0415
+
+        if self._gpu_future is not None:
+            if not self._gpu_future.done():
+                return
+            sample = self._gpu_future.result()
+            self._gpu_stats_rows = sample.rows
+            for device, value in sample.utilization.items():
+                rr.log(f"runtime/utilization/gpu/{device}", rr.Scalars(value))
+            self._log_monitoring()
+        if self._gpu_executor is None:
+            self._gpu_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="physicalai-gpu-stats")
+        self._gpu_future = self._gpu_executor.submit(collect_gpu_stats)
+
+    def close(self) -> None:
+        """Stop scheduling GPU queries without waiting on the control thread.
+
+        In-flight vendor queries finish within their subprocess timeouts.
+        """
+        if self._gpu_executor is not None:
+            self._gpu_executor.shutdown(wait=False, cancel_futures=True)
+            self._gpu_executor = None
+            self._gpu_future = None
 
     def _log_latency_table(self) -> None:
         import numpy as np  # noqa: PLC0415
-        import rerun as rr  # noqa: PLC0415
 
         arr = np.array(self._latencies)
         p50 = float(np.percentile(arr, 50))
@@ -404,9 +446,7 @@ class RerunCallback:
         queue_time = self._pred_horizon / self._fps if self._pred_horizon else 0
         headroom = queue_time - p99
 
-        md = (
-            f"| Metric | Value |\n"
-            f"|--------|-------|\n"
+        self._latency_stats_rows = (
             f"| **Last** | {last * 1000:.1f} ms |\n"
             f"| **p50** | {p50 * 1000:.1f} ms |\n"
             f"| **p95** | {p95 * 1000:.1f} ms |\n"
@@ -414,7 +454,21 @@ class RerunCallback:
             f"| **Queue headroom** | {headroom * 1000:.0f} ms |\n"
             f"| Samples | {n} |"
         )
-        rr.log("inference/stats", rr.TextDocument(md, media_type=rr.MediaType.MARKDOWN))
+        self._log_monitoring()
+
+    def _log_monitoring(self) -> None:
+        import rerun as rr  # noqa: PLC0415
+
+        system = self._system_stats_rows or "| Status | Waiting for system sample |"
+        inference = self._latency_stats_rows or "| Status | Waiting for inference |"
+        gpu = self._gpu_stats_rows or "| Status | Waiting for GPU sample |"
+        header = "| Metric | Value |\n|--------|-------|\n"
+        md = (
+            f"### Inference Latency\n\n{header}{inference}\n\n"
+            f"### System\n\n{header}{system}\n\n"
+            f"### GPU\n\n{header}{gpu}"
+        )
+        rr.log("runtime/monitoring", rr.TextDocument(md, media_type=rr.MediaType.MARKDOWN))
 
 
 def _downsample_to_max_dim(data: np.ndarray, max_dim: int) -> np.ndarray:

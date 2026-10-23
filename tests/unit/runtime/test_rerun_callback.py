@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import sys
+from concurrent.futures import Future
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 
+from physicalai.runtime.callbacks.gpu_stats import GpuStatsSample
 from physicalai.runtime.events import InferenceEvent, LifecycleEvent, MetricsEvent, TickEvent
 from tests.unit.runtime.conftest import FakeRobotObservation
 
@@ -45,7 +47,15 @@ def mock_psutil() -> MagicMock:
 
 
 @pytest.fixture()
-def _patch_rerun(mock_rerun: MagicMock, mock_psutil: MagicMock) -> Any:
+def mock_gpu_executor() -> Any:
+    executor = MagicMock()
+    executor.submit.return_value.done.return_value = False
+    with patch("physicalai.runtime.callbacks.rerun.ThreadPoolExecutor", return_value=executor):
+        yield executor
+
+
+@pytest.fixture()
+def _patch_rerun(mock_rerun: MagicMock, mock_psutil: MagicMock, mock_gpu_executor: MagicMock) -> Any:
     """Patch optional observer dependencies so RerunCallback can import them."""
     with patch.dict(sys.modules, {"rerun": mock_rerun, "psutil": mock_psutil}):
         yield
@@ -380,31 +390,37 @@ class TestRerunCallbackSystemStats:
 
         mock_psutil.cpu_percent.assert_called_once_with(interval=None)
         mock_psutil.Process.return_value.cpu_percent.assert_called_once_with(interval=None)
-        assert not any(c.args[0] == "system/stats" for c in mock_rerun.log.call_args_list)
+        assert not any(c.args[0] == "runtime/monitoring" for c in mock_rerun.log.call_args_list)
 
     def test_logs_system_table_at_most_once_per_second(
         self, make_callback: Any, mock_rerun: MagicMock, mock_psutil: MagicMock, clock: MagicMock
     ) -> None:
         cb = make_callback()
         cb.on_lifecycle(_lifecycle_start())
+        mock_rerun.reset_mock()
         cb.on_tick(_tick())
         clock.return_value = 10.9
         cb.on_tick(_tick(step=1))
         mock_psutil.virtual_memory.assert_not_called()
+        assert not any(c.args[0].startswith("runtime/utilization/cpu/") for c in mock_rerun.log.call_args_list)
 
         clock.return_value = 11.0
         cb.on_tick(_tick(step=2))
         clock.return_value = 11.5
         cb.on_tick(_tick(step=3))
         mock_psutil.virtual_memory.assert_called_once_with()
-        stats_calls = [c for c in mock_rerun.log.call_args_list if c.args[0] == "system/stats"]
+        stats_calls = [c for c in mock_rerun.log.call_args_list if c.args[0] == "runtime/monitoring"]
         assert len(stats_calls) == 1
+        mock_rerun.log.assert_any_call("runtime/utilization/cpu/host", ("Scalars", (42.5,), {}))
+        mock_rerun.log.assert_any_call("runtime/utilization/cpu/process", ("Scalars", (15.625,), {}))
+        assert len([c for c in mock_rerun.log.call_args_list if c.args[0] == "runtime/utilization/cpu/host"]) == 1
         md = mock_rerun.TextDocument.call_args.args[0]
         assert "42.5%" in md
         assert "62.5% (10.00 / 16.00 GiB)" in md
         assert "| **Process CPU** | 15.6% |" in md
         assert "one core" not in md
         assert "256.0 MiB" in md
+        assert "Waiting for inference" in md
         assert mock_rerun.TextDocument.call_args.kwargs["media_type"] == mock_rerun.MediaType.MARKDOWN
 
         clock.return_value = 12.0
@@ -480,8 +496,163 @@ class TestRerunCallbackSystemStats:
         cb.on_tick(_tick(step=3))
         assert cb._last_step == 3
 
+    def test_monitoring_preserves_both_sections_on_updates(
+        self, make_callback: Any, mock_rerun: MagicMock, mock_psutil: MagicMock, clock: MagicMock
+    ) -> None:
+        cb = make_callback()
+        cb.on_lifecycle(_lifecycle_start())
+        cb.on_tick(_tick())
+        cb.on_inference(_inference())
+        md = mock_rerun.TextDocument.call_args.args[0]
+        assert "Waiting for system sample" in md
+        assert "| **Last** | 50.0 ms |" in md
+
+        clock.return_value += 1.0
+        cb.on_tick(_tick(step=1))
+        md = mock_rerun.TextDocument.call_args.args[0]
+        assert "Waiting for system sample" not in md
+        assert "Waiting for inference" not in md
+        assert md.startswith("### Inference Latency\n\n| Metric | Value |")
+        assert "| **Host CPU** | 42.5% |" in md
+        assert "\n\n### System\n\n| Metric | Value |" in md
+        assert md.index("### Inference Latency") < md.index("### System") < md.index("### GPU")
+        assert "| **Last** | 50.0 ms |" in md
+        assert "| Samples | 1 |" in md
+        assert md.count("| Metric | Value |") == 3
+        assert "\n\n### GPU\n\n| Metric | Value |" in md
+
+        mock_psutil.virtual_memory.reset_mock()
+        cb.on_inference(_inference())
+        md = mock_rerun.TextDocument.call_args.args[0]
+        assert "| **Host CPU** | 42.5% |" in md
+        assert "| Samples | 2 |" in md
+        mock_psutil.virtual_memory.assert_not_called()
+        paths = [c.args[0] for c in mock_rerun.log.call_args_list]
+        assert "runtime/monitoring" in paths
+        assert "system/stats" not in paths
+        assert "inference/stats" not in paths
+
+    def test_monitoring_clears_both_sections_on_session_start(
+        self, make_callback: Any, mock_rerun: MagicMock, clock: MagicMock
+    ) -> None:
+        cb = make_callback()
+        cb.on_lifecycle(_lifecycle_start())
+        cb.on_tick(_tick())
+        cb.on_inference(_inference())
+        clock.return_value += 1.0
+        cb.on_tick(_tick(step=1))
+
+        cb.on_lifecycle(_lifecycle_start("sess-2"))
+        cb.on_inference(_inference())
+        md = mock_rerun.TextDocument.call_args.args[0]
+        assert "Waiting for system sample" in md
+        assert "Host CPU" not in md
+        assert "| Samples | 1 |" in md
+
+        cb.on_lifecycle(_lifecycle_start("sess-3"))
+        cb.on_tick(_tick())
+        clock.return_value += 1.0
+        cb.on_tick(_tick(step=1))
+        md = mock_rerun.TextDocument.call_args.args[0]
+        assert "| **Host CPU** | 42.5% |" in md
+        assert "Waiting for inference" in md
+        assert "| **Last** |" not in md
+
+    def test_gpu_sampling_runs_in_background_without_queueing_queries(
+        self, make_callback: Any, mock_rerun: MagicMock, mock_gpu_executor: MagicMock, clock: MagicMock
+    ) -> None:
+        from physicalai.runtime.callbacks.gpu_stats import collect_gpu_stats
+
+        future: Future[GpuStatsSample] = Future()
+        mock_gpu_executor.submit.return_value = future
+        cb = make_callback()
+        cb.on_lifecycle(_lifecycle_start())
+        cb.on_tick(_tick())
+        mock_gpu_executor.submit.assert_called_once_with(collect_gpu_stats)
+
+        clock.return_value += 1.0
+        cb.on_tick(_tick(step=1))
+        mock_gpu_executor.submit.assert_called_once()
+        assert "Waiting for GPU sample" in mock_rerun.TextDocument.call_args.args[0]
+
+        future.set_result(GpuStatsSample("| **NVIDIA GPU 0** | |\n| Utilization | 65% |", {"nvidia_0": 65.0}))
+        clock.return_value += 1.0
+        cb.on_tick(_tick(step=2))
+        assert mock_gpu_executor.submit.call_count == 2
+        assert "NVIDIA GPU 0" in mock_rerun.TextDocument.call_args.args[0]
+        assert "65%" in mock_rerun.TextDocument.call_args.args[0]
+        mock_rerun.log.assert_any_call("runtime/utilization/gpu/nvidia_0", ("Scalars", (65.0,), {}))
+
+    def test_gpu_stats_still_update_when_system_counters_fail(
+        self,
+        make_callback: Any,
+        mock_rerun: MagicMock,
+        mock_psutil: MagicMock,
+        mock_gpu_executor: MagicMock,
+        clock: MagicMock,
+    ) -> None:
+        future: Future[GpuStatsSample] = Future()
+        mock_gpu_executor.submit.return_value = future
+        cb = make_callback()
+        cb.on_lifecycle(_lifecycle_start())
+        cb.on_tick(_tick())
+        future.set_result(GpuStatsSample("| **Intel GPU 0** | |\n| Utilization | 30% |", {"intel_0": 30.0}))
+        mock_psutil.virtual_memory.side_effect = OSError("unavailable")
+        clock.return_value += 1.0
+        cb.on_tick(_tick(step=1))
+        assert "Intel GPU 0" in mock_rerun.TextDocument.call_args.args[0]
+        mock_rerun.log.assert_any_call("runtime/utilization/gpu/intel_0", ("Scalars", (30.0,), {}))
+
+    def test_session_start_discards_previous_gpu_query(
+        self, make_callback: Any, mock_rerun: MagicMock, mock_gpu_executor: MagicMock, clock: MagicMock
+    ) -> None:
+        old: Future[GpuStatsSample] = Future()
+        old.set_running_or_notify_cancel()
+        new: Future[GpuStatsSample] = Future()
+        mock_gpu_executor.submit.side_effect = [old, new]
+        cb = make_callback()
+        cb.on_lifecycle(_lifecycle_start())
+        cb.on_tick(_tick())
+        cb.on_lifecycle(_lifecycle_start("sess-2"))
+        cb.on_tick(_tick())
+        old.set_result(GpuStatsSample("| Old session | Stale GPU sample |", {"nvidia_0": 99.0}))
+        clock.return_value += 1.0
+        cb.on_tick(_tick(step=1))
+        md = mock_rerun.TextDocument.call_args.args[0]
+        assert "Stale GPU sample" not in md
+        assert "Waiting for GPU sample" in md
+        assert not any(c.args[0].startswith("runtime/utilization/gpu/") for c in mock_rerun.log.call_args_list)
+
+    def test_unavailable_gpu_metrics_do_not_create_zero_history_samples(
+        self, make_callback: Any, mock_rerun: MagicMock, mock_gpu_executor: MagicMock, clock: MagicMock
+    ) -> None:
+        future: Future[GpuStatsSample] = Future()
+        mock_gpu_executor.submit.return_value = future
+        cb = make_callback()
+        cb.on_lifecycle(_lifecycle_start())
+        cb.on_tick(_tick())
+        future.set_result(GpuStatsSample("| NVIDIA | Unavailable |"))
+        clock.return_value += 1.0
+        cb.on_tick(_tick(step=1))
+        assert "Unavailable" in mock_rerun.TextDocument.call_args.args[0]
+        assert not any(c.args[0].startswith("runtime/utilization/gpu/") for c in mock_rerun.log.call_args_list)
+
+    def test_close_releases_gpu_worker_without_waiting(
+        self, make_callback: Any, mock_gpu_executor: MagicMock, clock: MagicMock
+    ) -> None:
+        cb = make_callback()
+        cb.close()
+        mock_gpu_executor.shutdown.assert_not_called()
+        cb.on_lifecycle(_lifecycle_start())
+        cb.on_tick(_tick())
+        cb.close()
+        cb.close()
+        mock_gpu_executor.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
+        assert cb._gpu_executor is None
+        assert cb._gpu_future is None
+
     @pytest.mark.parametrize("with_camera", [False, True])
-    def test_blueprint_includes_system_stats(
+    def test_blueprint_includes_one_monitoring_view(
         self, make_callback: Any, mock_rerun: MagicMock, with_camera: bool
     ) -> None:
         blueprint = MagicMock()
@@ -491,7 +662,20 @@ class TestRerunCallbackSystemStats:
             cb.on_lifecycle(_lifecycle_start())
             cb.on_tick(_tick(camera_frames={"top": _fake_frame()} if with_camera else {}))
 
-        blueprint.TextDocumentView.assert_any_call(origin="/system/stats", name="System Stats")
+        assert blueprint.TextDocumentView.call_args_list
+        assert all(
+            c.kwargs == {"origin": "/runtime/monitoring", "name": "Monitoring"}
+            for c in blueprint.TextDocumentView.call_args_list
+        )
+        blueprint.Horizontal.assert_called_with(
+            blueprint.Vertical.return_value, blueprint.Tabs.return_value, column_shares=[3, 1]
+        )
+        sidebar = [c for c in blueprint.Tabs.call_args_list if c.kwargs.get("active_tab") == "Monitoring"]
+        assert sidebar
+        assert len(sidebar[-1].args) == 3
+        blueprint.TimeSeriesView.assert_any_call(origin="/runtime/utilization/cpu", name="CPU %")
+        blueprint.TimeSeriesView.assert_any_call(origin="/runtime/utilization/gpu", name="GPU %")
+        assert blueprint.Grid.called is with_camera
         mock_rerun.send_blueprint.assert_called()
 
 
