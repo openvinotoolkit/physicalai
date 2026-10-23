@@ -8,6 +8,29 @@
 * **mujoco:** `physicalai-mujoco-so101 start` downloads the robot model before it starts the simulation owner, with a progress bar, so a slow first download no longer fails as an owner startup timeout. The new `physicalai-mujoco-so101 prefetch` command downloads every robot model ahead of time for offline machines.
 * **mujoco:** Studio's MuJoCo follower probes report an owner as online only when it drives that entry's joints, so the single-arm entry no longer attaches to a bimanual simulation or the other way round.
 
+## [0.5.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-mujoco-plugin-v0.4.0...physicalai-mujoco-plugin-v0.5.0) (2026-10-23)
+
+
+### ✨ Features
+
+* **mujoco:** Franka FR3 with hand and FR3 Duo twins, ease streamed actions ([#393](https://github.com/openvinotoolkit/physicalai/issues/393)) ([ab545d8](https://github.com/openvinotoolkit/physicalai/commit/ab545d868754fbb5bb4d61449da7239c1f944f11))
+
+
+### 🐛 Bug Fixes
+
+* **mujoco-plugin:** write the README for a PyPI install ([#389](https://github.com/openvinotoolkit/physicalai/issues/389)) ([a3b1359](https://github.com/openvinotoolkit/physicalai/commit/a3b1359be93a180d2b3e5696afe93069339a9034))
+* **mujoco:** show camera previews in the viewer on first start ([#399](https://github.com/openvinotoolkit/physicalai/issues/399)) ([e93eb9c](https://github.com/openvinotoolkit/physicalai/commit/e93eb9c575c01672873540098c4fa3320e092577))
+
+
+### 📚 Documentation
+
+* add a tutorial that runs a policy in the MuJoCo simulation ([#380](https://github.com/openvinotoolkit/physicalai/issues/380)) ([7308fcc](https://github.com/openvinotoolkit/physicalai/commit/7308fcc45ebd624110d0c3a50fce4a06cf87dae8))
+
+
+### 🔧 Chores
+
+* deprecate `RobotAdapterOptions` ([#374](https://github.com/openvinotoolkit/physicalai/issues/374)) ([0ca5b8e](https://github.com/openvinotoolkit/physicalai/commit/0ca5b8e06c132aa2c83aa7a92bc6dfb79a7b231f))
+
 ## [0.4.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-mujoco-plugin-v0.3.1...physicalai-mujoco-plugin-v0.4.0) (2026-10-20)
 
 
