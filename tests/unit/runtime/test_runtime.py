@@ -326,6 +326,78 @@ class TestGenericActionSource:
         assert type(result) is int  # noqa: E721 — must be a plain int, not RunStats
 
 
+class _ObservingActionSource(FakeActionSource):
+    """Returns ``None`` (send nothing) for the steps where ``observe`` is true, else ``next_action``."""
+
+    def __init__(
+        self, next_action: np.ndarray | None = None, observe: Callable[[int], bool] = lambda _step: True
+    ) -> None:
+        super().__init__(next_action=next_action)
+        self.observe = observe
+
+    def update(self, robot_state: Any, camera_frames: Any, step: int) -> np.ndarray | None:
+        self.calls.append((robot_state, camera_frames, step))
+        return None if self.observe(step) else self.next_action
+
+
+class TestObserving:
+    """An action source that returns None lets another controller drive the robot."""
+
+    @staticmethod
+    def _run(action_source: FakeActionSource, *, fps: float = 10.0, **kwargs: Any) -> tuple[MagicMock, list, int]:
+        robot = _make_mock_robot()
+        ticks: list = []
+        callback = MagicMock(spec=["on_tick", "on_action_ready", "on_action_sent"])
+        callback.on_tick.side_effect = ticks.append
+        callback.on_action_ready.side_effect = lambda *, action, step: action
+        runtime = RobotRuntime(
+            robot=robot,
+            action_source=action_source,
+            fps=fps,
+            callbacks=[callback],
+            interpolator=kwargs.pop("interpolator", None),
+        )
+        runtime._connected = True  # noqa: SLF001
+        with patch("physicalai.runtime.core.time") as mock_time:
+            mock_time.perf_counter.return_value = 0.0
+            mock_time.sleep = MagicMock()
+            mock_time.time.return_value = 0.0
+            steps = runtime.run(**kwargs)
+        robot.callback = callback
+        return robot, ticks, steps
+
+    def test_none_sends_nothing_but_still_reads_and_reports_every_tick(self) -> None:
+        source = _ObservingActionSource()
+        robot, ticks, steps = self._run(source, interpolator=LinearInterpolator(multiplier=4), duration_s=0.3)
+
+        assert steps == 3  # one tick per cycle at the base fps, interpolation or not
+        assert len(source.calls) == 3
+        robot.send_action.assert_not_called()
+        robot.callback.on_action_ready.assert_not_called()
+        robot.callback.on_action_sent.assert_not_called()
+        assert [tick.action_sent for tick in ticks] == [None, None, None]
+        assert all(tick.source_updated for tick in ticks)
+        assert robot.get_observation.call_count >= 3
+
+    def test_the_first_action_after_observing_is_sent_as_is(self) -> None:
+        target = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+        source = _ObservingActionSource(next_action=target, observe=lambda step: step < 2)
+        robot, _, _ = self._run(source, interpolator=LinearInterpolator(multiplier=2), duration_s=0.3)
+
+        sent = [call.args[0] for call in robot.send_action.call_args_list]
+        assert sent
+        np.testing.assert_allclose(sent[0], target)
+
+    def test_a_run_that_ends_observing_does_not_move_the_robot_home(self) -> None:
+        robot, _, _ = self._run(_ObservingActionSource(), duration_s=0.2, return_to_initial_state=True)
+        robot.send_action.assert_not_called()
+
+    def test_a_run_that_ends_sending_still_moves_the_robot_home(self) -> None:
+        source = _ObservingActionSource(next_action=np.zeros(3, dtype=np.float32), observe=lambda step: step == 0)
+        robot, _, steps = self._run(source, duration_s=0.3, return_to_initial_state=True)
+        assert robot.send_action.call_count > steps - 1  # the sent ticks plus the return move
+
+
 class TestRuntimeCallback:
     def test_on_action_ready_called(self) -> None:
         robot = _make_mock_robot()

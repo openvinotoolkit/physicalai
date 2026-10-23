@@ -54,7 +54,7 @@ class TeleopSource(ActionSource):
             self._leader.connect()
             self._leader_owned = True
 
-    def update(self, robot_state: RobotObservation, camera_frames: Mapping[str, Frame], step: int) -> np.ndarray:  # noqa: ARG002
+    def update(self, robot_state: RobotObservation, camera_frames: Mapping[str, Frame], step: int) -> np.ndarray | None:  # noqa: ARG002
         """Read the leader arm and return the action for the follower.
 
         Returns:

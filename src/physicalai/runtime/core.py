@@ -189,6 +189,7 @@ class RobotRuntime:
         self._initial_state: RobotObservation | None = None
         self._cycle_start = 0.0
         self._next_substep = 0
+        self._observing = False
 
     @property
     def robot(self) -> Robot:
@@ -377,11 +378,13 @@ class RobotRuntime:
             return_to_initial_state: Interpolate the robot back to the pose read
                 at the start of the run during shutdown, instead of leaving it
                 wherever the last action put it. Best-effort — a failure only
-                logs and shutdown still completes.
+                logs and shutdown still completes. Skipped when the run ends
+                with the action source returning ``None``.
 
         Returns:
             Number of control ticks completed this run. A tick reads an
-            observation and sends one command to the robot. Every
+            observation and sends one command to the robot (none while the
+            action source returns ``None``). Every
             ``interpolator.multiplier`` ticks form one cycle at ``fps`` whose
             first tick gets a new action from ``action_source``.
 
@@ -457,7 +460,9 @@ class RobotRuntime:
         """Read, send one command and pace one control tick.
 
         A new cycle queries the action source; every other tick sends the next
-        interpolated command without reading cameras.
+        interpolated command without reading cameras. While the action source
+        returns ``None`` (another controller drives the robot), every tick is a
+        new cycle that reads and reports but sends nothing.
         """
         cycle_period = 1.0 / self._fps
         tick_period = cycle_period / self._interpolator.multiplier
@@ -467,22 +472,33 @@ class RobotRuntime:
         if new_cycle:
             self._cycle_start = loop_start
             self._next_substep = 0
-            self._interpolator.add(self._action_source.update(robot_state, camera_frames, step))
+            proposed = self._action_source.update(robot_state, camera_frames, step)
+            self._observing = proposed is None
+            if self._observing:
+                # Forget the last target: the first action after observing is sent as is,
+                # not blended from a pose the robot has long left.
+                self._interpolator.reset()
+            else:
+                self._interpolator.add(proposed)
 
-        # Pick the substep by elapsed time so a slow tick skips overdue commands instead of lagging.
-        substep = max(self._next_substep, int((time.perf_counter() - self._cycle_start) / tick_period))
-        self._next_substep = substep + 1
-        action = self._interpolator.get(substep)
-        action = self._bus.invoke_on_action_ready(action=action, step=step)
-
-        self._resilient_send(action)
-        self._bus.invoke_on_action_sent(action=action, step=step)
-
-        # Deadlines hang off the cycle start so a slow tick borrows time from the rest of its cycle.
-        if self._interpolator.needs_new_action():
+        action: np.ndarray | None = None
+        if self._observing:
             deadline = self._cycle_start + cycle_period
         else:
-            deadline = self._cycle_start + self._next_substep * tick_period
+            # Pick the substep by elapsed time so a slow tick skips overdue commands instead of lagging.
+            substep = max(self._next_substep, int((time.perf_counter() - self._cycle_start) / tick_period))
+            self._next_substep = substep + 1
+            action = self._interpolator.get(substep)
+            action = self._bus.invoke_on_action_ready(action=action, step=step)
+
+            self._resilient_send(action)
+            self._bus.invoke_on_action_sent(action=action, step=step)
+
+            # Deadlines hang off the cycle start so a slow tick borrows time from the rest of its cycle.
+            if self._interpolator.needs_new_action():
+                deadline = self._cycle_start + cycle_period
+            else:
+                deadline = self._cycle_start + self._next_substep * tick_period
         elapsed, sleep_time = self._tick_sleep(loop_start, deadline)
         self._bus.emit_tick(
             TickEvent(
@@ -545,6 +561,7 @@ class RobotRuntime:
         self._interpolator.reset()
         self._cycle_start = 0.0
         self._next_substep = 0
+        self._observing = False
 
     @staticmethod
     def _tick_sleep(loop_start: float, deadline: float) -> tuple[float, float]:
@@ -796,7 +813,9 @@ class RobotRuntime:
             # Release the action source first so nothing else is driving the
             # robot while the return move runs.
             self._disconnect_and_log_errors()
-            if return_to_initial_state:
+            if return_to_initial_state and self._observing:
+                logger.info("Not returning to the initial position: the run ended observing another controller")
+            elif return_to_initial_state:
                 self._return_to_initial_state()
         finally:
             try:
