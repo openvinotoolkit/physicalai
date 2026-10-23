@@ -1282,3 +1282,57 @@ class TestHeadlessGl:
                 os.environ.pop(name, None)
             cli._start(cli._build_parser().parse_args(["start"]))  # noqa: SLF001
         assert seen == [("egl", "egl")]
+
+
+class TestGripForce:
+    @staticmethod
+    def _start(arguments: list[str]) -> list[object]:
+        """Run ``start`` with the owner stubbed, returning the configs it was asked to run."""
+        args = cli._build_parser().parse_args(["start", "--name", "my-sim", "--no-cameras", "--no-gui", *arguments])
+        configs: list[object] = []
+
+        def wait(shutdown, _name, _pid) -> None:
+            shutdown.set()
+
+        with (
+            patch.object(cli, "fetch_profile"),
+            patch.object(cli.SharedRobot, "from_config", side_effect=lambda config, **_k: configs.append(config) or MagicMock()),
+            patch.object(cli, "_owner_pid", return_value=None),
+            patch.object(cli, "_wait_for_owner_shutdown", side_effect=wait),
+            patch.object(cli.signal, "signal"),
+        ):
+            cli._start(args)
+        return configs
+
+    def test_the_option_defaults_to_none_and_parses_a_force(self) -> None:
+        parser = cli._build_parser()
+        assert parser.parse_args(["start"]).grip_force is None
+        assert parser.parse_args(["start", "--grip-force", "25"]).grip_force == 25.0
+        assert parser.parse_args(["start", "--grip-force", "140"]).grip_force == 140.0
+
+    @pytest.mark.parametrize("value", ["0", "-5", "140.1", "inf", "nan", "strong"])
+    def test_a_force_outside_the_hands_range_is_rejected(self, value: str, capsys: pytest.CaptureFixture[str]) -> None:
+        with pytest.raises(SystemExit) as exit_info:
+            cli._build_parser().parse_args(["start", "--grip-force", value])
+        assert exit_info.value.code == 2
+        assert "--grip-force" in capsys.readouterr().err
+
+    def test_start_gives_the_owner_a_robot_that_grips_with_the_force(self) -> None:
+        (config,) = self._start(["--profile", "franka_fr3", "--grip-force", "25"])
+        assert config.instantiate().profile.customize.keywords == {"grip_force_n": 25.0}  # type: ignore[attr-defined]
+
+    def test_start_without_the_option_leaves_the_profile_alone(self) -> None:
+        (config,) = self._start(["--profile", "franka_fr3"])
+        assert config.instantiate().profile.customize.__name__ == "customize_franka_fr3"  # type: ignore[attr-defined]
+
+    def test_a_profile_without_a_franka_hand_exits_before_fetching_or_starting(self) -> None:
+        args = cli._build_parser().parse_args(["start", "--no-cameras", "--no-gui", "--grip-force", "50"])
+        with (
+            patch.object(cli, "fetch_profile") as fetch,
+            patch.object(cli.SharedRobot, "from_config") as factory,
+            pytest.raises(SystemExit) as exit_info,
+        ):
+            cli._start(args)
+        assert exit_info.value.code == 1
+        fetch.assert_not_called()
+        factory.assert_not_called()

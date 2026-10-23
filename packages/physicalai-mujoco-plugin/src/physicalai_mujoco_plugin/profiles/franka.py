@@ -24,14 +24,18 @@ Franka GELLO Duo one to one.
 from __future__ import annotations
 
 import math
+from dataclasses import replace
+from functools import partial
 from typing import TYPE_CHECKING
 
 from physicalai_mujoco_plugin.profiles._types import CameraSpec, EndEffector, RobotProfile
 from physicalai_mujoco_plugin.profiles.dataset import (
     FRANKA_HAND_GRASP_FORCE_N,
-    FRANKA_HAND_STIFFNESS_N_M,
+    FRANKA_HAND_PEAK_FORCE_N,
     FRANKA_PANDA_PROFILE,
+    customize_franka_panda,
     exclude_franka_self_collisions,
+    franka_hand_stiffness,
     tune_franka_hand_fingers,
 )
 
@@ -82,8 +86,11 @@ def _load_hand() -> mujoco.MjSpec:
     return mujoco.MjSpec.from_file(str(fetch_profile(FRANKA_PANDA_PROFILE).parent / "hand.xml"))
 
 
-def attach_franka_hand(arm: mujoco.MjSpec) -> None:
-    """Mount the Franka Hand on an FR3 arm spec, with a ``gripper`` actuator in width metres."""
+def attach_franka_hand(arm: mujoco.MjSpec, grip_force_n: float = FRANKA_HAND_GRASP_FORCE_N) -> None:
+    """Mount the Franka Hand on an FR3 arm spec, with a ``gripper`` actuator in width metres.
+
+    Each finger grips with up to *grip_force_n* newtons.
+    """
     import mujoco  # noqa: PLC0415
 
     hand = _load_hand()
@@ -104,17 +111,17 @@ def attach_franka_hand(arm: mujoco.MjSpec) -> None:
     arm.delete(split)
     actuator = arm.add_actuator(name="gripper", target="gripper_width", trntype=mujoco.mjtTrn.mjTRN_TENDON)
     # The tendon is the full finger sum, so its force is the force on each finger.
-    actuator.set_to_position(kp=FRANKA_HAND_STIFFNESS_N_M)
+    actuator.set_to_position(kp=franka_hand_stiffness(grip_force_n))
     actuator.ctrlrange = [0.0, FRANKA_HAND_WIDTH_M]
-    actuator.forcerange = [-FRANKA_HAND_GRASP_FORCE_N, FRANKA_HAND_GRASP_FORCE_N]
+    actuator.forcerange = [-grip_force_n, grip_force_n]
     actuator.ctrllimited = 1
     actuator.forcelimited = 1
-    tune_franka_hand_fingers(arm)
+    tune_franka_hand_fingers(arm, grip_force_n=grip_force_n)
 
 
-def customize_franka_fr3(spec: mujoco.MjSpec) -> None:
+def customize_franka_fr3(spec: mujoco.MjSpec, grip_force_n: float = FRANKA_HAND_GRASP_FORCE_N) -> None:
     """FR3 with the Franka Hand; Franka's home pose with the hand open."""
-    attach_franka_hand(spec)
+    attach_franka_hand(spec, grip_force_n)
     exclude_franka_self_collisions(spec, link_prefix="fr3_")
     for key in list(spec.keys):
         spec.delete(key)
@@ -122,10 +129,10 @@ def customize_franka_fr3(spec: mujoco.MjSpec) -> None:
     spec.add_key(name="home", qpos=[*home, 0.04, 0.04], ctrl=[*home, FRANKA_HAND_WIDTH_M])
 
 
-def customize_franka_duo(spec: mujoco.MjSpec) -> None:
+def customize_franka_duo(spec: mujoco.MjSpec, grip_force_n: float = FRANKA_HAND_GRASP_FORCE_N) -> None:
     """Replace the loaded FR3 with two FR3s and hands on the Duo mount, named ``left_*`` and ``right_*``."""
     arm = spec.copy()
-    customize_franka_fr3(arm)
+    customize_franka_fr3(arm, grip_force_n)
     for element in (*spec.keys, *spec.actuators, *spec.excludes):
         spec.delete(element)
     spec.delete(spec.body("base"))
@@ -190,6 +197,28 @@ FRANKA_DUO_PROFILE = RobotProfile(
     reach=0.815,  # from the tilted mount origin; one arm alone reaches 0.855 m
 )
 
+_FRANKA_HAND_CUSTOMIZERS = (customize_franka_fr3, customize_franka_duo, customize_franka_panda)
+
+
+def with_grip_force(profile: RobotProfile, grip_force_n: float) -> RobotProfile:
+    """Return *profile* with its Franka Hand gripping with *grip_force_n* newtons per finger.
+
+    Returns:
+        A copy of the profile whose ``customize`` builds the hand for that force.
+
+    Raises:
+        ValueError: If the force is not above 0 and at most the hand's 140 N peak, or the profile
+            has no Franka Hand.
+    """
+    if not 0.0 < grip_force_n <= FRANKA_HAND_PEAK_FORCE_N:  # also rejects NaN
+        msg = f"The grip force must be above 0 N and at most {FRANKA_HAND_PEAK_FORCE_N:g} N, got {grip_force_n!r}"
+        raise ValueError(msg)
+    if profile.customize not in _FRANKA_HAND_CUSTOMIZERS:
+        msg = f"Profile {profile.name!r} has no Franka Hand, so --grip-force does not apply to it"
+        raise ValueError(msg)
+    return replace(profile, customize=partial(profile.customize, grip_force_n=grip_force_n))
+
+
 __all__ = [
     "FRANKA_DUO_ARM_Y",
     "FRANKA_DUO_HEIGHT",
@@ -201,4 +230,5 @@ __all__ = [
     "attach_franka_hand",
     "customize_franka_duo",
     "customize_franka_fr3",
+    "with_grip_force",
 ]
