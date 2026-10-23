@@ -923,11 +923,20 @@ class BucketSortEpisode:
     """
 
     def __init__(
-        self, task: BucketSortTask, rng: np.random.Generator, *, success_dwell_s: float = 5.0, active: bool = True
+        self,
+        task: BucketSortTask,
+        reset_scene: Callable[[], None],
+        *,
+        success_dwell_s: float = 5.0,
+        active: bool = True,
     ) -> None:
-        """Watch *task*; *rng* is the scene's reset generator, used for the automatic resets."""
+        """Watch *task*; *reset_scene* is the owner's scene reset, which the automatic resets share.
+
+        Going through the owner keeps a fixed seed repeating the layout and drops viewer drags,
+        as a manual reset does.
+        """
         self.task = task
-        self._rng = rng
+        self._reset_scene = reset_scene
         self._dwell_s = float(success_dwell_s)
         self._active = active
         self._phase: Phase = "idle"
@@ -998,7 +1007,7 @@ class BucketSortEpisode:
         self._countdown_s = max(0.0, self._dwell_s - (now - self._success_since))
         if self._countdown_s > 0.0:
             return
-        self.task(model, data, self._rng)
+        self._reset_scene()
         self._episode_count += 1
         self.notify_manual_reset()
         self._state = self.task.evaluate(model, data)

@@ -523,7 +523,7 @@ class OperatorControls:
         task = self._sim.on_reset  # type: ignore[union-attr]
         if helper is None and isinstance(task, BucketSortTask):
             helper = BucketSortEpisode(
-                task, self._rng, success_dwell_s=self._auto_reset_dwell_s, active=self._auto_reset_active
+                task, self._run_scene_reset, success_dwell_s=self._auto_reset_dwell_s, active=self._auto_reset_active
             )
         if helper is None:
             area = self._area

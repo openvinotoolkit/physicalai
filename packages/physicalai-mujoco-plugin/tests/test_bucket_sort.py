@@ -26,7 +26,12 @@ from physicalai_mujoco_plugin.bucket_sort import (
     object_extent,
     sample_instruction,
 )
-from physicalai_mujoco_plugin.http_server import ResetCommand, SetObjectPoseCommand, SetSeedCommand
+from physicalai_mujoco_plugin.http_server import (
+    ResetCommand,
+    SetAutoResetCommand,
+    SetObjectPoseCommand,
+    SetSeedCommand,
+)
 from physicalai_mujoco_plugin.profiles import SO101_PROFILE, get_profile
 from physicalai_mujoco_plugin.robot import MuJoCoRobot
 from physicalai_mujoco_plugin.scene_registry import get_scene, list_scenes_for
@@ -522,7 +527,13 @@ class TestSuccess:
 class TestEpisode:
     def test_status_reports_the_instruction_and_restarts_after_the_dwell(self, sim) -> None:
         task = _reset(sim, 6)
-        episode = BucketSortEpisode(task, np.random.default_rng(0), success_dwell_s=0.2)
+        resets = []
+
+        def reset_scene() -> None:
+            resets.append(task.instruction)
+            task(sim.model, sim.data, np.random.default_rng(0))
+
+        episode = BucketSortEpisode(task, reset_scene, success_dwell_s=0.2)
         episode.update(sim.model, sim.data)
         status = episode.status()
         assert status["kind"] == "bucket_sort"
@@ -545,6 +556,7 @@ class TestEpisode:
         _step(sim, 0.25)
         episode.update(sim.model, sim.data)
         status = episode.status()
+        assert resets == [done]
         assert status["episode_count"] == 1
         assert status["phase"] == "idle"
         assert status["success"] is False
@@ -552,7 +564,7 @@ class TestEpisode:
 
     def test_paused_episode_reports_but_does_not_restart(self, sim) -> None:
         task = _reset(sim, 8)
-        episode = BucketSortEpisode(task, np.random.default_rng(0), success_dwell_s=0.0, active=False)
+        episode = BucketSortEpisode(task, pytest.fail, success_dwell_s=0.0, active=False)
         _drop_into(sim, task.instruction.object, task.instruction.bucket)
         _step(sim, 0.3)
         episode.update(sim.model, sim.data)
@@ -590,6 +602,45 @@ def test_robot_serves_the_task_and_reset_draws_a_new_one() -> None:
         assert layout() == layout()
         robot._commands.put(SetSeedCommand(seed=None))  # noqa: SLF001
         assert len({layout() for _ in range(8)}) > 1
+    finally:
+        robot.disconnect()
+
+
+def test_automatic_reset_repeats_a_fixed_seed_and_drops_drags() -> None:
+    robot = MuJoCoRobot("franka_fr3", scene="bucket_sort", substeps=1, cameras=[])
+    robot.connect()
+    try:
+
+        def run(*commands: object) -> dict[str, object]:
+            for command in commands:
+                robot._commands.put(command)  # noqa: SLF001
+            robot.get_observation()
+            return robot._http_status()["episode"]  # noqa: SLF001
+
+        def layout(episode: dict[str, object]) -> tuple[object, ...]:
+            return episode["instruction"]["text"], tuple((slot["color"], slot["x"], slot["y"]) for slot in episode["slots"])
+
+        seeded = run(SetAutoResetCommand(enabled=True, dwell_s=0.0), SetSeedCommand(seed=11), ResetCommand())
+        task = robot._sim.on_reset  # noqa: SLF001
+        target = task.instruction
+        other = next(name for name in OBJECTS if name != target.object)
+        dragged = (0.45, -0.5, 0.3)
+        run(SetObjectPoseCommand(joint=f"{other}:joint", position=dragged, wxyz=None, hold=True))
+        _drop_into(robot._sim, target.object, target.bucket)  # noqa: SLF001
+        for _ in range(2000):
+            episode = run()
+            if episode["episode_count"] == 1:
+                break
+        else:
+            pytest.fail("the success never started a new episode")
+
+        # The automatic reset reseeds as a manual one does, and a drag no longer pins its object.
+        assert layout(episode) == layout(seeded)
+        assert robot._objects.held == {}  # noqa: SLF001
+        run()
+        position = robot._sim.data.xpos[robot._sim.model.body(other).id]  # noqa: SLF001
+        assert position[2] < 0.1
+        assert position[:2] != pytest.approx(dragged[:2], abs=1e-3)
     finally:
         robot.disconnect()
 
