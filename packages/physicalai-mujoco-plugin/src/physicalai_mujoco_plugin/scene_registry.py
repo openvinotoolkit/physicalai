@@ -108,8 +108,8 @@ class FrontOverride:
     distance: float | None = None
     """Metres from the aim point to the camera, after scaling."""
     direction: tuple[float, float] | None = None
-    """Horizontal direction from the robot toward the camera, for robots whose mounts do not show
-    which way they face (ALOHA's two arms face each other across its single mount)."""
+    """Horizontal direction from the aim point toward the camera, instead of deriving it from the
+    mounts: for an off-axis table clamp or mounts that do not show which way the robot faces (ALOHA)."""
     elevation_deg: float | None = None
     """How far the line of sight points down from level."""
 
@@ -675,9 +675,15 @@ _SCENES: dict[str, SceneConfig] = {
         robots=("franka_fr3",),
         arm_counts=(1,),
         home_qpos=_BUCKET_SORT_HOME,
-        # Across the table, facing the robot: steep enough to see the objects over the buckets, and
-        # far enough to frame the arm at home (tests/test_compose.py).
-        front_view=FrontView(distance=1.4, aim=(0.35, 0.0, 0.25), elevation_deg=55.0),
+        # A D435 RGB on a short pole clamped to the front edge: eye (0.83, -0.80, 0.90),
+        # aimed at (0.45, -0.20, 0.05). Like the rear pole in the XML, this frames the task,
+        # not the whole arm. The off-axis direction keeps the pole on the table edge.
+        front_view=FrontView(
+            distance=float(np.linalg.norm((0.38, -0.60, 0.85))),
+            aim=(0.45, -0.20, 0.05),
+            elevation_deg=float(np.degrees(np.arctan2(0.85, np.hypot(0.38, 0.60)))),
+        ),
+        profile_front_overrides=(("franka_fr3", FrontOverride(direction=(0.38, -0.60))),),
     ),
     "floor_flat": SceneConfig(
         scene_id="floor_flat",
