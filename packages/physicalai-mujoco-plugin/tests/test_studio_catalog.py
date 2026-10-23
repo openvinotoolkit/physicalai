@@ -490,6 +490,7 @@ class TestGeneratedEntries:
             ("MuJoCo_FrankaEmikaPanda_Follower", "mujoco-franka_panda-follow"),
             ("MuJoCo_UFACTORYxArm7_Follower", "mujoco-xarm7-follow"),
             ("MuJoCo_KinovaGen3_Follower", "mujoco-kinova_gen3-follow"),
+            ("MuJoCo_FrankaResearch3Robotiq2F85_Follower", "mujoco-franka_fr3_robotiq-follow"),
             ("MuJoCo_UnitreeG1_Follower", "mujoco-unitree_g1-follow"),
             ("MuJoCo_UnitreeGo2_Follower", "mujoco-unitree_go2-follow"),
             ("MuJoCo_BostonDynamicsSpot_Follower", "mujoco-boston_dynamics_spot-follow"),
