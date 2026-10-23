@@ -8,8 +8,9 @@
     - Table top at z = 0, 1.8 m wide (y, from -0.9 to 0.9) and 1.0 m deep (x, from -0.17 to 0.83); the floor is
       0.75 m below it.
     - Bucket slots 0.645 m in front of the base at y = +0.22, 0, -0.22 (left, centre, right as
-      seen from behind the robot). The buckets are mocap bodies: each reset assigns the colours
-      to the slots at random and jitters them slightly.
+      seen from behind the robot). The buckets are free bodies (bucket_<colour>:joint) that can
+      be pushed or moved; each reset assigns the colours to the slots at random and jitters them
+      slightly.
     - Objects spawn between the base and the buckets (bucket_sort.OBJECT_ZONE).
   The buckets lie on their long side with the opening up, the long axis along x and the open
   end (above the low lip) facing the robot.
@@ -26,8 +27,12 @@
     <default class="visual">
       <geom contype="0" conaffinity="0" group="2" type="mesh" density="0"/>
     </default>
+    <!-- Bucket walls: 350 kg/m^3 over the boxes gives a 0.2 kg bucket, about a printed one. Their
+         contacts are stiff (solref 4 ms, and solmix makes it win over the other geom's): with
+         MuJoCo's default 20 ms an object dropped from 0.26 m sinks about 19 mm and passes through
+         the 6 mm bottom; with this, about 3 mm. -->
     <default class="bucket_collision">
-      <geom type="box" group="3" rgba="0.5 0.5 0.5 0" condim="3" friction="0.6 0.005 0.0001"/>
+      <geom type="box" group="3" rgba="0.5 0.5 0.5 0" condim="3" friction="0.6 0.005 0.0001" density="350" solref="0.004 1" solmix="100"/>
     </default>
     <!-- Grippable objects: friction 0.9 against the Franka Hand's pads, torsional friction so a
          two-finger grasp does not spin them. -->
@@ -89,34 +94,38 @@
 
     <!-- Buckets lying on their long side, opening up: 150 mm across (x), 202.5 mm long (y) and
          120 mm deep in their own frame (turned a quarter turn in the world, BUCKET_YAW), origin at
-         the centre of the footprint on the table. Collision, matching the
-         mesh: the bottom (6 mm; it reaches 3 cm down into the table so a dropped object cannot
-         pass through it), two 6 mm long walls and a 6 mm end wall at -y, all 120 mm high. The +y
-         end is open above a sloped lip that rises 35 mm. Written in the slots in BUCKET_COLORS
-         order; each reset moves them. -->
-    <body name="bucket_black" mocap="true" pos="0.645 0.22 0" quat="0.707107 0 0 0.707107">
+         the centre of the footprint on the table. They are free bodies of 0.2 kg (the collision
+         boxes at the bucket_collision density) that stand on the table; each reset writes them
+         into the slots in a new colour order (bucket_sort.BucketSortTask). Collision, matching
+         the mesh: the 6 mm bottom, the only box that touches the table, two 6 mm long walls and a
+         6 mm end wall at -y standing on it up to the 120 mm rim, and the sloped lip that closes
+         the +y end up to 35 mm. -->
+    <body name="bucket_black" pos="0.645 0.22 0" quat="0.707107 0 0 0.707107">
+      <freejoint name="bucket_black:joint"/>
       <geom class="visual" mesh="bucket" material="bucket_black"/>
-      <geom class="bucket_collision" name="bucket_black_bottom" pos="0 -0.0125 -0.012" size="0.075 0.08875 0.018"/>
-      <geom class="bucket_collision" name="bucket_black_wall_left" pos="0.072 0 0.06" size="0.003 0.10125 0.06"/>
-      <geom class="bucket_collision" name="bucket_black_wall_right" pos="-0.072 0 0.06" size="0.003 0.10125 0.06"/>
-      <geom class="bucket_collision" name="bucket_black_wall_end" pos="0 -0.09825 0.06" size="0.069 0.003 0.06"/>
-      <geom class="bucket_collision" name="bucket_black_lip" pos="0 0.0867 0.0175" euler="0.8789 1.50 0" size="0.069 0.0227 0.003"/>
+      <geom class="bucket_collision" name="bucket_black_bottom" pos="0 -0.0125 0.003" size="0.075 0.08875 0.003"/>
+      <geom class="bucket_collision" name="bucket_black_wall_left" pos="0.072 0 0.063" size="0.003 0.10125 0.057"/>
+      <geom class="bucket_collision" name="bucket_black_wall_right" pos="-0.072 0 0.063" size="0.003 0.10125 0.057"/>
+      <geom class="bucket_collision" name="bucket_black_wall_end" pos="0 -0.09825 0.063" size="0.069 0.003 0.057"/>
+      <geom class="bucket_collision" name="bucket_black_lip" pos="0 0.0867 0.0195" euler="0.8789 0 0" size="0.069 0.0227 0.003"/>
     </body>
-    <body name="bucket_blue" mocap="true" pos="0.645 0 0" quat="0.707107 0 0 0.707107">
+    <body name="bucket_blue" pos="0.645 0 0" quat="0.707107 0 0 0.707107">
+      <freejoint name="bucket_blue:joint"/>
       <geom class="visual" mesh="bucket" material="bucket_blue"/>
-      <geom class="bucket_collision" name="bucket_blue_bottom" pos="0 -0.0125 -0.012" size="0.075 0.08875 0.018"/>
-      <geom class="bucket_collision" name="bucket_blue_wall_left" pos="0.072 0 0.06" size="0.003 0.10125 0.06"/>
-      <geom class="bucket_collision" name="bucket_blue_wall_right" pos="-0.072 0 0.06" size="0.003 0.10125 0.06"/>
-      <geom class="bucket_collision" name="bucket_blue_wall_end" pos="0 -0.09825 0.06" size="0.069 0.003 0.06"/>
-      <geom class="bucket_collision" name="bucket_blue_lip" pos="0 0.0867 0.0175" euler="0.8789 1.5 0" size="0.069 0.0227 0.003"/>
+      <geom class="bucket_collision" name="bucket_blue_bottom" pos="0 -0.0125 0.003" size="0.075 0.08875 0.003"/>
+      <geom class="bucket_collision" name="bucket_blue_wall_left" pos="0.072 0 0.063" size="0.003 0.10125 0.057"/>
+      <geom class="bucket_collision" name="bucket_blue_wall_right" pos="-0.072 0 0.063" size="0.003 0.10125 0.057"/>
+      <geom class="bucket_collision" name="bucket_blue_wall_end" pos="0 -0.09825 0.063" size="0.069 0.003 0.057"/>
+      <geom class="bucket_collision" name="bucket_blue_lip" pos="0 0.0867 0.0195" euler="0.8789 0 0" size="0.069 0.0227 0.003"/>
     </body>
-    <body name="bucket_red" mocap="true" pos="0.645 -0.22 0" quat="0.707107 0 0 0.707107">
+    <body name="bucket_red" pos="0.645 -0.22 0" quat="0.707107 0 0 0.707107">
+      <freejoint name="bucket_red:joint"/>
       <geom class="visual" mesh="bucket" material="bucket_red"/>
-      <geom class="bucket_collision" name="bucket_red_bottom" pos="0 -0.0125 -0.012" size="0.075 0.08875 0.018"/>
-      <geom class="bucket_collision" name="bucket_red_wall_left" pos="0.072 0 0.06" size="0.003 0.10125 0.06"/>
-      <geom class="bucket_collision" name="bucket_red_wall_right" pos="-0.072 0 0.06" size="0.003 0.10125 0.06"/>
-      <geom class="bucket_collision" name="bucket_red_wall_end" pos="0 -0.09825 0.06" size="0.069 0.003 0.06"/>
-      <geom class="bucket_collision" name="bucket_red_lip" pos="0 0.0867 0.0175" euler="0.8789 1.5 0" size="0.069 0.0227 0.003"/>
+      <geom class="bucket_collision" name="bucket_red_bottom" pos="0 -0.0125 0.003" size="0.075 0.08875 0.003"/>
+      <geom class="bucket_collision" name="bucket_red_wall_left" pos="0.072 0 0.063" size="0.003 0.10125 0.057"/>
+      <geom class="bucket_collision" name="bucket_red_wall_right" pos="-0.072 0 0.063" size="0.003 0.10125 0.057"/>
+      <geom class="bucket_collision" name="bucket_red_wall_end" pos="0 -0.09825 0.063" size="0.069 0.003 0.057"/>
+      <geom class="bucket_collision" name="bucket_red_lip" pos="0 0.0867 0.0195" euler="0.8789 0 0" size="0.069 0.0227 0.003"/>
     </body>
 
     <!-- Objects, real size, origin at the centre of their bounding box, lying flat. Visuals: one

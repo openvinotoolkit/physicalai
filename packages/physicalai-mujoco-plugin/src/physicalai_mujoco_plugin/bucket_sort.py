@@ -8,7 +8,9 @@ Three buckets (black, blue, red) stand in a row of slots in front of the arm, an
 object and one bucket, "put the CPU in the red bucket". A reset:
 
 - assigns the colours to the slots at random, so the bucket to use is told by its colour and not
-  by where it stands, and jitters each bucket a little;
+  by where it stands, and jitters each bucket a little. The buckets are free bodies: the arm can
+  push them and the viewer or ``POST /objects/{joint}/pose`` can move them, and the success test
+  follows them wherever they are;
 - drops the objects at random, non-overlapping positions and headings;
 - samples the instruction from the allowed (object, bucket) pairs, all nine by default, so pairs
   can be held out of training (:func:`sample_instruction`, :class:`BucketSortTask`).
@@ -23,7 +25,7 @@ reports it in ``/health`` and the viewer, and starts a new episode after the suc
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
@@ -39,7 +41,9 @@ OBJECTS = ("resistor", "battery", "cpu")
 OBJECT_LABELS = {"resistor": "resistor", "battery": "9 V battery", "cpu": "CPU"}
 """How an instruction names each object."""
 BUCKET_COLORS = ("black", "blue", "red")
-"""Bucket colours: each bucket is the mocap body ``bucket_<colour>``."""
+"""Bucket colours: each bucket is the body ``bucket_<colour>`` with the free joint ``bucket_<colour>:joint``."""
+BUCKET_JOINTS = tuple(f"bucket_{color}:joint" for color in BUCKET_COLORS)
+"""The buckets' free joints, in :data:`BUCKET_COLORS` order."""
 ALL_PAIRS: tuple[tuple[str, str], ...] = tuple((obj, color) for obj in OBJECTS for color in BUCKET_COLORS)
 """Every (object, bucket colour) pair an instruction can name."""
 
@@ -156,10 +160,18 @@ class TaskState:
     """Whether each object is still and out of the robot's grasp."""
     success: bool
     """The named object rests in the named bucket, and no other object is in a bucket."""
+    buckets: dict[str, dict[str, list[float]]] = field(default_factory=dict)
+    """Each bucket's pose in the world frame: ``position`` (metres, the centre of its footprint)
+    and ``wxyz``."""
 
     def as_dict(self) -> dict[str, object]:
         """Return the state for JSON."""
-        return {"in_bucket": dict(self.in_bucket), "resting": dict(self.resting), "success": self.success}
+        return {
+            "in_bucket": dict(self.in_bucket),
+            "resting": dict(self.resting),
+            "success": self.success,
+            "buckets": {color: dict(pose) for color, pose in self.buckets.items()},
+        }
 
 
 class BucketSortTask:
@@ -214,11 +226,13 @@ class BucketSortTask:
         order = rng.permutation(len(BUCKET_COLORS))
         self.slot_colors = tuple(BUCKET_COLORS[int(i)] for i in order)
         for color, slot_y in zip(self.slot_colors, SLOT_Y, strict=True):
-            mocap = int(model.body_mocapid[_body(model, f"bucket_{color}")])
+            joint = _joint(model, f"bucket_{color}:joint")
+            adr, dof = int(model.jnt_qposadr[joint]), int(model.jnt_dofadr[joint])
             dx, dy = rng.uniform(-BUCKET_JITTER_XY, BUCKET_JITTER_XY, size=2)
-            data.mocap_pos[mocap] = (SLOT_X + dx, slot_y + dy, 0.0)
+            data.qpos[adr : adr + 3] = (SLOT_X + dx, slot_y + dy, 0.0)
             yaw = BUCKET_YAW + float(rng.uniform(-BUCKET_JITTER_YAW, BUCKET_JITTER_YAW))
-            data.mocap_quat[mocap] = _yaw_quat(yaw)
+            data.qpos[adr + 3 : adr + 7] = _yaw_quat(yaw)
+            data.qvel[dof : dof + 6] = 0.0
         _place_objects(model, data, rng)
         self.instruction = sample_instruction(rng, self._allowed)
         mujoco.mj_forward(model, data)
@@ -246,7 +260,15 @@ class BucketSortTask:
             and resting[instruction.object]
             and all(in_bucket[name] is None for name in OBJECTS if name != instruction.object)
         )
-        return TaskState(in_bucket=in_bucket, resting=resting, success=success)
+        buckets = {
+            color: {
+                "position": [float(v) for v in data.xpos[body]],
+                "wxyz": [float(v) for v in data.xquat[body]],
+            }
+            for color in BUCKET_COLORS
+            for body in (_body(model, f"bucket_{color}"),)
+        }
+        return TaskState(in_bucket=in_bucket, resting=resting, success=success, buckets=buckets)
 
     def describe(self) -> dict[str, object]:
         """Return the instruction, the colour in each slot and the allowed pairs, for JSON."""
@@ -295,6 +317,9 @@ def _place_objects(model: object, data: object, rng: np.random.Generator) -> Non
 
 def bucket_containing(model: object, data: object, point: np.ndarray) -> str | None:
     """Return the colour of the bucket whose interior (:data:`BUCKET_INTERIOR`) holds *point*.
+
+    The interior moves with each bucket's current pose (``data.xpos`` and ``data.xmat``, as of the
+    last ``mj_forward`` or step), so it follows a bucket that was pushed or dragged.
 
     Returns:
         The colour, or ``None`` outside every bucket.
@@ -398,6 +423,7 @@ class BucketSortEpisode:
             **self.task.describe(),
             "success": state.success if state is not None else False,
             "in_bucket": dict(state.in_bucket) if state is not None else dict.fromkeys(OBJECTS),
+            "buckets": dict(state.buckets) if state is not None else {},
         }
 
     def update(self, model: object, data: object) -> None:
@@ -449,6 +475,7 @@ __all__ = [
     "ALL_PAIRS",
     "BUCKET_COLORS",
     "BUCKET_INTERIOR",
+    "BUCKET_JOINTS",
     "BUCKET_SIZE",
     "BUCKET_YAW",
     "OBJECTS",

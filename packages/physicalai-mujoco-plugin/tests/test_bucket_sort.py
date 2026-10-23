@@ -16,6 +16,7 @@ from physicalai_mujoco_plugin import bucket_sort as bs
 from physicalai_mujoco_plugin.bucket_sort import (
     ALL_PAIRS,
     BUCKET_COLORS,
+    BUCKET_JOINTS,
     OBJECTS,
     BucketSortEpisode,
     BucketSortTask,
@@ -24,7 +25,7 @@ from physicalai_mujoco_plugin.bucket_sort import (
     object_extent,
     sample_instruction,
 )
-from physicalai_mujoco_plugin.http_server import ResetCommand, SetSeedCommand
+from physicalai_mujoco_plugin.http_server import ResetCommand, SetObjectPoseCommand, SetSeedCommand
 from physicalai_mujoco_plugin.profiles import SO101_PROFILE, get_profile
 from physicalai_mujoco_plugin.robot import MuJoCoRobot
 from physicalai_mujoco_plugin.scene_registry import get_scene, list_scenes_for
@@ -77,7 +78,8 @@ class TestScene:
         scene = get_scene("bucket_sort")
         assert scene.robots == ("franka_fr3",)
         assert scene.arm_counts == (1,)
-        assert scene.free_joints == tuple(f"{name}:joint" for name in OBJECTS)
+        assert scene.free_joints == (*(f"{name}:joint" for name in OBJECTS), *BUCKET_JOINTS)
+        assert BUCKET_JOINTS == ("bucket_black:joint", "bucket_blue:joint", "bucket_red:joint")
         assert "bucket_sort" in list_scenes_for(FR3, 1)
         assert "bucket_sort" not in list_scenes_for(SO101_PROFILE)
         assert scene.overview_styles == ("shoulder", "front")
@@ -90,7 +92,10 @@ class TestScene:
         colors = {}
         for color in BUCKET_COLORS:
             body = model.body(f"bucket_{color}")
-            assert model.body_mocapid[body.id] >= 0
+            joint = model.joint(f"bucket_{color}:joint")
+            assert joint.type[0] == mujoco.mjtJoint.mjJNT_FREE
+            assert joint.bodyid[0] == body.id
+            assert 0.15 <= model.body_mass[body.id] <= 0.25  # about a printed bucket
             geoms = np.flatnonzero(model.geom_bodyid == body.id)
             visual = [g for g in geoms if model.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH]
             assert len(visual) == 1
@@ -235,9 +240,9 @@ class TestLayout:
     def test_colour_permutation_repeats_per_seed_and_varies_across_seeds(self, sim) -> None:
         def layout(seed: int) -> tuple[tuple[str, ...], Instruction, np.ndarray]:
             task = _reset(sim, seed)
-            mocap = sim.data.mocap_pos.copy()
-            objects = np.array([sim.data.xpos[sim.model.body(name).id] for name in OBJECTS])
-            return task.slot_colors, task.instruction, np.concatenate([mocap.ravel(), objects.ravel()])
+            bodies = [f"bucket_{color}" for color in BUCKET_COLORS] + list(OBJECTS)
+            poses = np.array([sim.data.xpos[sim.model.body(name).id] for name in bodies])
+            return task.slot_colors, task.instruction, poses.ravel()
 
         first, again = layout(7), layout(7)
         assert first[:2] == again[:2]
@@ -246,13 +251,17 @@ class TestLayout:
         assert permutations == set(itertools.permutations(BUCKET_COLORS))
 
     def test_buckets_stand_in_their_slots_with_small_jitter(self, sim) -> None:
+        model, data = sim.model, sim.data
         for seed in range(30):
+            data.qvel[:] = 1.0  # a reset stills the buckets whatever they were doing
             task = _reset(sim, seed)
             for color, slot_y in zip(task.slot_colors, bs.SLOT_Y, strict=True):
-                pos = sim.data.mocap_pos[sim.model.body_mocapid[sim.model.body(f"bucket_{color}").id]]
+                pos = data.xpos[model.body(f"bucket_{color}").id]
                 assert abs(pos[0] - bs.SLOT_X) <= bs.BUCKET_JITTER_XY
                 assert abs(pos[1] - slot_y) <= bs.BUCKET_JITTER_XY
                 assert pos[2] == 0.0
+                dof = int(model.joint(f"bucket_{color}:joint").dofadr[0])
+                assert not data.qvel[dof : dof + 6].any()
             assert task.describe()["slots"][0] == {"slot": "left", "y": 0.22, "color": task.slot_colors[0]}
 
     def test_objects_never_overlap_each_other_or_the_buckets(self, sim) -> None:
@@ -267,8 +276,9 @@ class TestLayout:
                 assert y_lo <= y <= y_hi
             for a, b in itertools.combinations(OBJECTS, 2):
                 assert np.linalg.norm(xy[a] - xy[b]) >= radii[a] + radii[b] + bs.OBJECT_GAP, seed
-            # Nothing touches at reset: objects are released just above the table.
-            assert data.ncon == 0, seed
+            # Objects are released just above the table: only the buckets' bottoms touch it at reset.
+            touching = {(model.geom(data.contact.geom1[i]).name, model.geom(data.contact.geom2[i]).name) for i in range(data.ncon)}
+            assert touching <= {("table_top", f"bucket_{color}_bottom") for color in BUCKET_COLORS}, seed
 
     def test_reset_puts_the_arm_at_the_scene_home_with_the_hand_open(self, sim) -> None:
         model, data = sim.model, sim.data
@@ -316,14 +326,17 @@ class TestBucketPose:
         assert points[:, 2].min() == pytest.approx(0.0, abs=1e-4)  # on the table, not in it or above it
         np.testing.assert_allclose(points[:, :2].min(axis=0) + points[:, :2].max(axis=0), 0.0, atol=1e-4)
         assert bs.BUCKET_SIZE == pytest.approx((0.150, 0.2025, 0.120))
-        # The collision bottom's top is the mesh's inner bottom (6 mm), under the whole opening but the lip.
+        # The collision bottom's top is the mesh's inner bottom (6 mm), under the whole opening but the lip;
+        # it stands on the table and carries the bucket.
         bottom = model.geom("bucket_blue_bottom")
         assert bottom.pos[2] + bottom.size[2] == pytest.approx(0.006)
+        assert bottom.pos[2] - bottom.size[2] == pytest.approx(0.0)
         assert bottom.pos[0] + bottom.size[0] == pytest.approx(0.075)
         assert bottom.pos[1] - bottom.size[1] == pytest.approx(-0.10125)
         for wall in ("wall_left", "wall_right", "wall_end"):
             geom = model.geom(f"bucket_blue_{wall}")
             assert geom.pos[2] + geom.size[2] == pytest.approx(bs.BUCKET_SIZE[2])  # walls up to the rim
+            assert geom.pos[2] - geom.size[2] == pytest.approx(0.006)  # standing on the bottom
 
     def test_buckets_face_the_robot_and_stay_apart_on_the_table(self, sim) -> None:
         assert bs.BUCKET_YAW == pytest.approx(np.pi / 2)  # radians
@@ -346,6 +359,72 @@ class TestBucketPose:
                 assert np.abs(footprint[:, 1]).max() < _TABLE_HALF_WIDTH - 0.3
             for (low, _), (_, high) in itertools.pairwise(spans):  # left to right: decreasing y
                 assert low - high >= 0.02, seed
+
+
+def _bucket_pose(sim, color: str) -> tuple[np.ndarray, np.ndarray]:
+    body = sim.model.body(f"bucket_{color}").id
+    return sim.data.xpos[body].copy(), sim.data.xmat[body].reshape(3, 3).copy()
+
+
+def _move_bucket(sim, color: str, xy: tuple[float, float], yaw: float) -> None:
+    joint = sim.model.joint(f"bucket_{color}:joint")
+    adr, dof = int(joint.qposadr[0]), int(joint.dofadr[0])
+    sim.data.qpos[adr : adr + 3] = (*xy, 0.0)
+    sim.data.qpos[adr + 3 : adr + 7] = (np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2))
+    sim.data.qvel[dof : dof + 6] = 0.0
+    mujoco.mj_forward(sim.model, sim.data)
+
+
+class TestDynamicBuckets:
+    def test_buckets_rest_still_on_the_table(self, sim) -> None:
+        for seed in range(3):
+            _reset(sim, seed)
+            start = {color: _bucket_pose(sim, color) for color in BUCKET_COLORS}
+            _step(sim, 2.0)
+            for color, (pos, _) in start.items():
+                now, rotation = _bucket_pose(sim, color)
+                assert np.linalg.norm(now[:2] - pos[:2]) < 1e-4  # no creep
+                assert abs(now[2]) < 5e-4
+                assert rotation[2, 2] == pytest.approx(1.0, abs=1e-6)  # level
+            assert min(sim.data.contact.dist[: sim.data.ncon]) > -0.001
+
+    @pytest.mark.parametrize("name", OBJECTS)
+    def test_an_object_dropped_from_the_hand_lands_inside_and_leaves_the_bucket_in_place(self, sim, name) -> None:
+        # Released 0.26 m above the table, about where a hand over the bucket lets go: it must not
+        # pass through the 6 mm bottom or shove the 0.2 kg bucket.
+        model, data = sim.model, sim.data
+        task = _reset(sim, 9)
+        color = BUCKET_COLORS[OBJECTS.index(name)]
+        pos, rotation = _bucket_pose(sim, color)
+        joint = model.joint(f"{name}:joint")
+        adr, dof = int(joint.qposadr[0]), int(joint.dofadr[0])
+        data.qpos[adr : adr + 3] = (*(pos + rotation @ (0.02, -0.01, 0.0))[:2], 0.26)
+        data.qpos[adr + 3 : adr + 7] = (np.cos(0.3), np.sin(0.3), 0.0, 0.0)  # tilted, to land on an edge
+        data.qvel[dof : dof + 6] = 0.0
+        mujoco.mj_forward(model, data)
+        deepest = 0.0
+        for _ in range(int(1.5 / model.opt.timestep)):
+            mujoco.mj_step(model, data)
+            deepest = min(deepest, *data.contact.dist[: data.ncon], 0.0)
+        assert task.evaluate(model, data).in_bucket[name] == color
+        assert data.xpos[model.body(name).id][2] > 0.006  # on the bucket's bottom, not under it
+        assert deepest > -0.006
+        now, now_rotation = _bucket_pose(sim, color)
+        assert np.linalg.norm(now[:2] - pos[:2]) < 0.002
+        assert now_rotation[2, 2] == pytest.approx(1.0, abs=1e-4)
+
+    def test_success_follows_a_moved_bucket(self, sim) -> None:
+        task = _reset(sim, 3)
+        instruction = task.instruction
+        old, _ = _bucket_pose(sim, instruction.bucket)
+        # Away from its slot, turned the other way: the interior moves with it.
+        _move_bucket(sim, instruction.bucket, (0.55, 0.45), -0.5)
+        _drop_into(sim, instruction.object, instruction.bucket)
+        _step(sim, 0.5)
+        state = task.evaluate(sim.model, sim.data)
+        assert state.success
+        assert state.buckets[instruction.bucket]["position"][:2] == pytest.approx([0.55, 0.45], abs=1e-3)
+        assert bs.bucket_containing(sim.model, sim.data, old + (0.0, 0.0, 0.05)) is None
 
 
 class TestSuccess:
@@ -405,6 +484,10 @@ class TestEpisode:
         assert [slot["color"] for slot in status["slots"]] == list(task.slot_colors)
         assert status["success"] is False
         assert status["phase"] == "idle"
+        for color in BUCKET_COLORS:
+            body = sim.model.body(f"bucket_{color}").id
+            assert status["buckets"][color]["position"] == pytest.approx(sim.data.xpos[body])
+            assert status["buckets"][color]["wxyz"] == pytest.approx(sim.data.xquat[body])
 
         done = task.instruction
         _drop_into(sim, done.object, done.bucket)
@@ -445,6 +528,14 @@ def test_robot_serves_the_task_and_reset_draws_a_new_one() -> None:
             robot.get_observation()
             episode = robot._http_status()["episode"]  # noqa: SLF001
             return episode["instruction"]["text"], tuple(slot["color"] for slot in episode["slots"])
+
+        # The buckets are free objects: the pose route moves them, and /health reports where they are.
+        assert {obj["joint"] for obj in robot._http_status()["objects"]} >= set(BUCKET_JOINTS)  # noqa: SLF001
+        robot._commands.put(SetObjectPoseCommand(joint="bucket_red:joint", position=(0.6, 0.45, 0.0), wxyz=None))  # noqa: SLF001
+        robot.get_observation()
+        robot.get_observation()
+        red = robot._http_status()["episode"]["buckets"]["red"]  # noqa: SLF001
+        assert red["position"][:2] == pytest.approx([0.6, 0.45], abs=1e-3)
 
         robot._commands.put(SetSeedCommand(seed=11))  # noqa: SLF001
         assert layout() == layout()

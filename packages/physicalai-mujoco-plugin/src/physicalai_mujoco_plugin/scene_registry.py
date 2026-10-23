@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 
 from physicalai_mujoco_plugin._urdf import get_urdf_path
+from physicalai_mujoco_plugin.bucket_sort import BUCKET_JOINTS as BUCKET_SORT_BUCKET_JOINTS
 from physicalai_mujoco_plugin.bucket_sort import OBJECTS as BUCKET_SORT_OBJECTS
 from physicalai_mujoco_plugin.bucket_sort import BucketSortTask
 from physicalai_mujoco_plugin.compose import (
@@ -669,7 +670,8 @@ _SCENES: dict[str, SceneConfig] = {
         display_name="Bucket Sort",
         description="Put the named object (resistor, 9 V battery, CPU) in the named bucket (black, blue, red)",
         scene_xml_relpath="scenes/bucket_sort/scene.xml",
-        free_joints=tuple(f"{name}:joint" for name in BUCKET_SORT_OBJECTS),
+        # The objects, then the buckets: the viewer's drag gizmos and POST /objects/{joint}/pose move both.
+        free_joints=(*(f"{name}:joint" for name in BUCKET_SORT_OBJECTS), *BUCKET_SORT_BUCKET_JOINTS),
         robots=("franka_fr3",),
         arm_counts=(1,),
         home_qpos=_BUCKET_SORT_HOME,
