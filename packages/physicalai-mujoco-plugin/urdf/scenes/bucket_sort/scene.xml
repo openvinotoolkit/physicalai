@@ -21,7 +21,9 @@
 -->
 <mujoco model="bucket_sort">
   <compiler angle="radian" assetdir="assets" autolimits="true"/>
-  <option integrator="implicitfast" timestep="0.002" cone="elliptic" iterations="10" ls_iterations="20" impratio="10"/>
+  <!-- ls_iterations 50: under the Franka Hand's 70 N squeeze, 20 line-search steps can leave the
+       contact solve unfinished, and the held object is thrown out at metres per second. -->
+  <option integrator="implicitfast" timestep="0.002" cone="elliptic" iterations="10" ls_iterations="50" impratio="10"/>
   <include file="../scene_common.xml"/>
 
   <default>
