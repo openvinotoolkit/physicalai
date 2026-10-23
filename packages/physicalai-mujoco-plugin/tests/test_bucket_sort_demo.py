@@ -5,11 +5,14 @@
 
 from __future__ import annotations
 
+import itertools
+
 import mujoco
 import numpy as np
 import pytest
 
 from physicalai_mujoco_plugin import bucket_sort_demo as bd
+from physicalai_mujoco_plugin.bucket_sort import OBJECT_X, OBJECT_Y
 from physicalai_mujoco_plugin.bucket_sort_demo import (
     FR3_DDQ_MAX,
     FR3_DQ_MAX,
@@ -267,6 +270,15 @@ class TestLifecycle:
         assert status["episode"] == first + 1
         assert status["phase"] == "settle" and status["instruction"] == scene._sim.on_reset.instruction.text
 
+    def test_a_reset_behind_its_back_restarts_from_the_reset_arm(self, scene: MuJoCoRobot) -> None:
+        demo = _demo(scene)
+        model, data = scene._sim.model, scene._sim.data
+        demo.step(data, TICK_S, apply=False)
+        demo._q = HOME_Q + 0.3  # the last episode's targets, away from home
+        scene._sim.on_reset(model, data, np.random.default_rng(1))  # as the success dwell's reset does
+        targets = demo.step(data, TICK_S, apply=False)
+        np.testing.assert_allclose(targets[:7], data.qpos[demo.ik.qpos_adr])
+
     def test_leader_mode_without_a_client_stalls_instead_of_looping(self, scene: MuJoCoRobot) -> None:
         scene._automation.set_autopilot("leader")
         before = scene._arm_targets().copy()
@@ -284,6 +296,67 @@ class TestLifecycle:
             scene.get_observation()
         assert scene._http_status()["autopilot"]["phase"] == "stalled"
         assert scene._http_status()["episode"]["episode_count"] == 0 or not scene._automation.take_reset_request()
+
+
+class TestReplan:
+    def test_an_object_turned_in_place_before_the_grasp_is_planned_for_again(self, scene: MuJoCoRobot) -> None:
+        scene._automation.set_autopilot("drive")
+        demo = scene._automation.autopilot.demonstrator
+        model, data = scene._sim.model, scene._sim.data
+        name = scene._sim.on_reset.instruction.object
+        for _ in range(round(10.0 / TICK_S)):
+            scene.get_observation()
+            if demo.phase == "approach":
+                break
+        assert demo.phase == "approach"
+        adr = int(model.joint(f"{name}:joint").qposadr[0])
+        turn, quat = np.array([np.cos(np.pi / 4), 0.0, 0.0, np.sin(np.pi / 4)]), np.zeros(4)
+        mujoco.mju_mulQuat(quat, turn, data.qpos[adr + 3 : adr + 7].copy())
+        data.qpos[adr + 3 : adr + 7] = quat  # a quarter turn about the vertical, not moved
+        mujoco.mj_forward(model, data)
+        axis = demo.planner.grasp_axis_yaw(name, data.xmat[model.body(name).id].reshape(3, 3))
+        scene.get_observation()
+        assert demo.stats.replans == 1
+        assert wrap_near(demo._planned_axis, axis, np.pi) == pytest.approx(axis, abs=1e-3)
+
+    def test_a_retry_picks_up_anywhere_an_episode_can_start(self, scene: MuJoCoRobot, monkeypatch) -> None:
+        demo = _demo(scene)
+        demo.step(scene._sim.data, TICK_S, apply=False)
+        name = scene._sim.on_reset.instruction.object
+        monkeypatch.setattr(bd, "bucket_containing", lambda *_: None)  # wherever the buckets lie
+        for xy in itertools.product(OBJECT_X, OBJECT_Y):
+            _place(scene, name, xy, 0.0)
+            assert demo._graspable(scene._sim.data), xy
+        _place(scene, name, (0.40, OBJECT_Y[1] + 0.05), 0.0)
+        assert not demo._graspable(scene._sim.data)
+
+    def test_a_place_replan_keeps_the_object_where_the_hand_holds_it(self, scene: MuJoCoRobot, monkeypatch) -> None:
+        demo = _demo(scene)
+        model, data = scene._sim.model, scene._sim.data
+        demo.step(data, TICK_S, apply=False)
+        name = scene._sim.on_reset.instruction.object
+        hand = demo.ik.hand
+        data.qpos[demo.ik.qpos_adr] = HOME_Q
+        mujoco.mj_forward(model, data)
+        held = np.array([0.006, -0.004, -0.01])  # off centre in the hand frame
+        _place(scene, name, (0.0, 0.0), 0.0)
+        adr = int(model.joint(f"{name}:joint").qposadr[0])
+        data.qpos[adr : adr + 3] = demo.ik.tcp(data) + data.xmat[hand].reshape(3, 3) @ held
+        mujoco.mj_forward(model, data)
+        # Braking stops elsewhere: the plan starts there, with the object still in the hand.
+        demo._q = HOME_Q + np.array([0.15, 0.1, 0.0, 0.1, 0.0, 0.0, 0.2])
+        demo.ik.set_arm(demo._q)
+        expected = (demo.ik.data.xmat[hand].reshape(3, 3) @ held)[:2]
+        offsets = []
+        place_script = demo.planner.place_script
+
+        def record(start, instruction, params, offset, slow=None):
+            offsets.append(np.array(offset))
+            return place_script(start, instruction, params, offset, slow)
+
+        monkeypatch.setattr(demo.planner, "place_script", record)
+        demo._begin_place(data, TICK_S)
+        np.testing.assert_allclose(offsets[0], expected, atol=1e-6)
 
 
 @pytest.mark.slow
