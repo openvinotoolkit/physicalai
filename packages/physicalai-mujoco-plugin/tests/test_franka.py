@@ -25,6 +25,7 @@ from physicalai_mujoco_plugin.profiles.franka import (
     FRANKA_DUO_RPY,
     FRANKA_FR3_PROFILE,
     FRANKA_HAND_WIDTH_M,
+    with_grip_force,
 )
 from physicalai_mujoco_plugin.scene_registry import supported_arm_counts
 from physicalai_mujoco_plugin.studio_catalog import list_catalog_entries
@@ -195,3 +196,62 @@ def test_duo_runs_alone_and_the_fr3_pair_is_the_duo_in_studio() -> None:
     assert ("franka_duo", False) in entries
     assert ("franka_fr3", False) in entries
     assert ("franka_fr3", True) not in entries
+
+
+@pytest.mark.parametrize(
+    ("profile_name", "prefixes"),
+    [("franka_fr3", ("",)), ("franka_duo", ("left_", "right_")), ("franka_panda", ("",))],
+)
+@pytest.mark.parametrize("grip_force_n", [25.0, 140.0])
+def test_the_requested_grip_force_is_what_each_finger_squeezes_with(
+    profile_name: str, prefixes: tuple[str, ...], grip_force_n: float
+) -> None:
+    profile = with_grip_force(get_profile(profile_name), grip_force_n)
+    model = _with_block(profile, tuple(f"{prefix}hand" for prefix in prefixes), 0.032)
+    data = mujoco.MjData(model)
+    mujoco.mj_resetDataKeyframe(model, data, model.key("home").id)
+    data.ctrl[[model.actuator(f"{prefix}gripper" if profile_name != "franka_panda" else "actuator8").id for prefix in prefixes]] = 0.0
+    for _ in range(1000):
+        mujoco.mj_step(model, data)
+    for prefix in prefixes:
+        for side in ("left", "right"):
+            assert _squeeze(model, data, f"{prefix}{side}_finger") == pytest.approx(grip_force_n, rel=0.05)
+
+
+@pytest.mark.parametrize("grip_force_n", [25.0, 140.0])
+def test_the_hands_speed_does_not_depend_on_the_grip_force(grip_force_n: float) -> None:
+    model = _model(with_grip_force(FRANKA_FR3_PROFILE, grip_force_n))
+    data = mujoco.MjData(model)
+    mujoco.mj_resetDataKeyframe(model, data, model.key("home").id)
+    gripper = model.actuator("gripper").id
+    fingers = [model.joint(name).qposadr[0] for name in ("finger_joint1", "finger_joint2")]
+    for command in (0.0, FRANKA_HAND_WIDTH_M):
+        data.ctrl[gripper] = command
+        widths = []
+        for _ in range(1000):
+            mujoco.mj_step(model, data)
+            widths.append(data.qpos[fingers].sum())
+        speed = np.abs(np.diff(widths)).max() / model.opt.timestep
+        assert 0.9 * FRANKA_HAND_SPEED_M_S < speed <= 1.01 * FRANKA_HAND_SPEED_M_S
+        assert widths[-1] == pytest.approx(command, abs=1e-4)
+
+
+@pytest.mark.parametrize("profile_name", ["franka_fr3", "franka_duo", "franka_panda"])
+def test_the_default_grip_force_is_the_hands_continuous_70_n(profile_name: str) -> None:
+    """Passing 70 N is the same model as passing nothing."""
+    profile = get_profile(profile_name)
+    default, explicit = _model(profile), _model(with_grip_force(profile, FRANKA_HAND_GRASP_FORCE_N))
+    for field in ("actuator_forcerange", "actuator_gainprm", "actuator_biasprm", "dof_damping"):
+        np.testing.assert_array_equal(getattr(default, field), getattr(explicit, field))
+
+
+@pytest.mark.parametrize("grip_force_n", [0.0, -1.0, 140.5, math.nan, math.inf])
+def test_a_grip_force_outside_the_hands_range_is_rejected(grip_force_n: float) -> None:
+    with pytest.raises(ValueError, match="above 0 N and at most 140 N"):
+        with_grip_force(FRANKA_FR3_PROFILE, grip_force_n)
+
+
+@pytest.mark.parametrize("profile_name", ["so101", "ur5e", "xarm7"])
+def test_a_profile_without_a_franka_hand_rejects_a_grip_force(profile_name: str) -> None:
+    with pytest.raises(ValueError, match=f"Profile '{profile_name}' has no Franka Hand"):
+        with_grip_force(get_profile(profile_name), 50.0)

@@ -44,6 +44,8 @@ from physicalai_mujoco_plugin.constants import (
     default_owner_name,
 )
 from physicalai_mujoco_plugin.profiles import RobotProfile, get_profile, list_profiles
+from physicalai_mujoco_plugin.profiles.dataset import FRANKA_HAND_PEAK_FORCE_N
+from physicalai_mujoco_plugin.profiles.franka import with_grip_force
 from physicalai_mujoco_plugin.studio_recorder import DEFAULT_STUDIO_URL, validate_studio_url
 from physicalai_mujoco_plugin.viewer import ViewerTheme
 
@@ -110,6 +112,25 @@ def _seed_number(value: str) -> int:
     return seed
 
 
+def _grip_force(value: str) -> float:
+    """Parse a Franka Hand grasp force in newtons for ``argparse``.
+
+    Returns:
+        The force.
+
+    Raises:
+        argparse.ArgumentTypeError: If *value* is not a number above 0 and at most the hand's peak force.
+    """
+    try:
+        force = float(value)
+    except ValueError:
+        force = 0.0
+    if not 0.0 < force <= FRANKA_HAND_PEAK_FORCE_N:
+        msg = f"expected a force above 0 N and at most {FRANKA_HAND_PEAK_FORCE_N:g} N, got {value!r}"
+        raise argparse.ArgumentTypeError(msg)
+    return force
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=_CLI_NAME,
@@ -161,6 +182,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Joint units for observations and actions (default: the profile's; normalized for the SO-101, like "
             "the calibrated SO101 driver: body joints -100..100 and gripper 0..100 across each joint's range)"
+        ),
+    )
+    start.add_argument(
+        "--grip-force",
+        type=_grip_force,
+        default=None,
+        metavar="N",
+        help=(
+            "Franka Hand grasp force in newtons per finger, above 0 and at most "
+            f"{FRANKA_HAND_PEAK_FORCE_N:g} (default: 70, the real hand's continuous force). "
+            "Only the Franka profiles have the hand"
         ),
     )
     start.add_argument(
@@ -359,6 +391,17 @@ def _resolve_scene(args: argparse.Namespace, profile: RobotProfile) -> tuple[str
     return scene_id, num_arms
 
 
+def _check_grip_force(args: argparse.Namespace, profile: RobotProfile) -> None:
+    """Exit with the reason if ``--grip-force`` is given for a profile without a Franka Hand."""
+    if args.grip_force is None:
+        return
+    try:
+        with_grip_force(profile, args.grip_force)
+    except ValueError as exc:
+        logger.error("{}", exc)
+        sys.exit(1)
+
+
 def _check_overview(args: argparse.Namespace, scene_id: str | None) -> None:
     """Exit with the reason when the scene cannot place its overview camera in the ``--overview`` style."""
     from physicalai_mujoco_plugin.scene_registry import get_scene  # noqa: PLC0415
@@ -523,6 +566,7 @@ def _run_start(args: argparse.Namespace, status: _StatusWriter) -> None:  # noqa
     from physicalai_mujoco_plugin.scene_registry import get_scene  # noqa: PLC0415
 
     profile = _profile_or_exit(args.profile)
+    _check_grip_force(args, profile)
     scene_id, num_arms = _resolve_scene(args, profile)
     _check_overview(args, scene_id)
     owner_name = _resolve_owner_name(args, profile.name, num_arms)
@@ -558,6 +602,7 @@ def _run_start(args: argparse.Namespace, status: _StatusWriter) -> None:  # noqa
         studio_url=validate_studio_url(args.studio_url),
         # The owner runs in its own session; it watches this process so a hard kill stops it too.
         exit_with_pid=os.getpid() if args.exit_with_parent else None,
+        grip_force_n=args.grip_force,
     )
 
     shared = SharedRobot.from_config(

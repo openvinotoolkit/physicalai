@@ -1128,3 +1128,54 @@ def test_model_cameras_in_status_use_the_live_renderers(robot) -> None:
     # A real renderer is needed only by the camera tests in test_scene_models.py and test_cameras.py.
     assert robot._http_status()["cameras"] == []  # noqa: SLF001
     assert mujoco.mj_name2id(robot._model, mujoco.mjtObj.mjOBJ_CAMERA, "overview") >= 0  # noqa: SLF001
+
+
+class TestGripForce:
+    @staticmethod
+    def _grippers(robot: MuJoCoRobot) -> np.ndarray:
+        model = robot._model  # noqa: SLF001
+        ids = [i for i in range(model.nu) if model.actuator(i).name.endswith("gripper")]
+        assert ids
+        return model.actuator_forcerange[ids]
+
+    def test_the_force_reaches_the_owner_through_its_recipe(self) -> None:
+        robot = MuJoCoRobot("franka_fr3", scene="single_pick_place", grip_force_n=25.0, substeps=1, cameras=[])
+        assert robot.__getstate__()["grip_force_n"] == 25.0
+        owner = Config.from_instance(robot).instantiate()
+        assert owner.profile.customize.keywords == {"grip_force_n": 25.0}  # type: ignore[union-attr]
+
+    def test_the_force_is_off_by_default(self) -> None:
+        robot = MuJoCoRobot("franka_fr3", scene="single_pick_place", substeps=1, cameras=[])
+        robot.connect()
+        try:
+            np.testing.assert_allclose(self._grippers(robot), [[-70.0, 70.0]])
+        finally:
+            robot.disconnect()
+
+    def test_a_profile_without_a_franka_hand_rejects_it(self) -> None:
+        with pytest.raises(ValueError, match="Profile 'so101' has no Franka Hand"):
+            MuJoCoRobot("so101", grip_force_n=10.0, cameras=[])
+
+    def test_the_force_survives_a_scene_switch_and_a_reset(self) -> None:
+        robot = MuJoCoRobot("franka_fr3", scene="single_pick_place", grip_force_n=25.0, substeps=1, cameras=[])
+        robot.connect()
+        try:
+            np.testing.assert_allclose(self._grippers(robot), [[-25.0, 25.0]])
+            assert robot._switch_to_scene("bucket_sort")  # noqa: SLF001
+            robot.get_observation()
+            np.testing.assert_allclose(self._grippers(robot), [[-25.0, 25.0]])
+            robot._reset()  # noqa: SLF001
+            robot.get_observation()
+            np.testing.assert_allclose(self._grippers(robot), [[-25.0, 25.0]])
+        finally:
+            robot.disconnect()
+
+    def test_the_force_applies_to_both_arms_of_a_bimanual_run(self) -> None:
+        robot = MuJoCoRobot(
+            "franka_fr3", scene="single_pick_place", bimanual=True, grip_force_n=25.0, substeps=1, cameras=[]
+        )
+        robot.connect()
+        try:
+            np.testing.assert_allclose(self._grippers(robot), [[-25.0, 25.0]] * 2)
+        finally:
+            robot.disconnect()

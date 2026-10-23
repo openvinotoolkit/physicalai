@@ -240,6 +240,7 @@ Common options:
 - `--scene <name>`: registered scene name. Default comes from the selected profile
 - `--overview <shoulder|front>`: where a tabletop scene's `overview` camera stands, see [Overview camera styles](#overview-camera-styles) (default `shoulder`)
 - `--seed <0..4294967295>`: fixed seed for scene resets, so object layouts repeat, as with **Fixed seed** in the viewer or `POST /seed` (default: random layouts)
+- `--grip-force <newtons>`: the Franka Hand's grasp force per finger, above 0 and at most 140 (default 70, the real hand's continuous force); only the Franka profiles have the hand, see [Other robots](#other-robots)
 - `--no-gui`: disable all viewers
 - `--viser-port <port>`: browser viewer port (default `9090`; `0` picks a free port)
 - `--viser-host <host>`: browser viewer bind host (default `127.0.0.1`; use `0.0.0.0` to expose it remotely)
@@ -339,7 +340,7 @@ ALOHA attaches as Menagerie's two-arm model at the scene's single mount, so both
 
 The Franka profiles follow `physicalai-franka-plugin`: `fr3_joint1` ... `fr3_joint7` in degrees and `gripper`, the hand's opening width in metres (0 to 0.08), prefixed `left_` and `right_` on the Duo as `BimanualFrankaFR3` names them. Menagerie's FR3 has no hand, so both mount the Franka Hand from Menagerie's Panda package on the flange as Menagerie's Panda does. `franka_duo` is one model, like ALOHA's, with both arms where Franka's FR3 Duo mount (`fr3_duo_mount_v0_3`) puts them, 0.30 m above the scene's mount (an estimate of the Duo's column), so its joint-space poses match the real Duo and the Franka GELLO Duo one to one. Studio lists the Duo instead of a side-by-side `franka_fr3` pair; `start --bimanual` still runs one.
 
-Every Franka Hand (FR3, both Duo hands and `franka_panda`) grasps like the real one: a closed command squeezes each finger against the object with 70 N, the real hand's continuous grasp force, and the hand opens and closes at up to 0.2 m/s. Short of saturation the force is 7000 N/m times the width the fingers stand short of the command (a command 4 mm narrower than the object squeezes with 28 N). `franka_panda` keeps Menagerie's `actuator8` command, 0 to 255 for 0 to 0.04 m on each finger.
+Every Franka Hand (FR3, both Duo hands and `franka_panda`) grasps like the real one: a closed command squeezes each finger against the object with 70 N, the real hand's continuous grasp force, and the hand opens and closes at up to 0.2 m/s. Short of saturation the force is 7000 N/m times the width the fingers stand short of the command (a command 4 mm narrower than the object squeezes with 28 N). `franka_panda` keeps Menagerie's `actuator8` command, 0 to 255 for 0 to 0.04 m on each finger. `start --grip-force <newtons>` sets the force (up to the real hand's 140 N peak); the stiffness follows it, and so does the finger damping, so the 0.2 m/s speed stays.
 
 The Koch and SO-ARM100 profiles turn Menagerie's arm about its base so that it faces +x like the others (Menagerie's face -x and -y, and their base joint limits keep part of the table out of reach); joint names, ranges and zero pose are unchanged. The Kinova Gen3 has four unlimited joints, so it runs in `degrees` only.
 
