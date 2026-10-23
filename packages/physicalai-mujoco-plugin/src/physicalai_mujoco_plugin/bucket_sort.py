@@ -3,15 +3,19 @@
 
 """Layout, instructions and success for the ``bucket_sort`` scene.
 
-Three buckets (black, blue, red) stand in a row of slots in front of the arm, and three objects
-(a resistor, a 9 V battery and a CPU) lie between the arm and the buckets. Each episode names one
-object and one bucket, "put the CPU in the red bucket". A reset:
+Three buckets (black, blue, red) stand in front of the arm, and three objects (a resistor, a 9 V
+battery and a CPU) lie between the arm and the buckets. Each episode names one object and one
+bucket, "put the CPU in the red bucket". A reset:
 
-- assigns the colours to the slots at random, so the bucket to use is told by its colour and not
-  by where it stands, and jitters each bucket a little. The buckets are free bodies: the arm can
-  push them and the viewer or ``POST /objects/{joint}/pose`` can move them, and the success test
-  follows them wherever they are;
-- drops the objects at random, non-overlapping positions and headings;
+- lays the buckets out anywhere in their area (:data:`BUCKET_X`, :data:`BUCKET_Y`), each turned
+  up to :data:`BUCKET_YAW_RANGE` away from facing the robot, at least :data:`BUCKET_GAP` apart and
+  in the arm's reach, and gives them the colours in a random order, so neither the place nor the
+  order tells which bucket is meant (:func:`sample_layout`). The buckets are free bodies: the arm
+  can push them and the viewer or ``POST /objects/{joint}/pose`` can move them, and the success
+  test follows them wherever they are;
+- drops the objects at random positions and headings in their area (:data:`OBJECT_X`,
+  :data:`OBJECT_Y`), apart from each other and far enough from the buckets that a hand grasping
+  from above clears the bucket walls;
 - samples the instruction from the allowed (object, bucket) pairs, all nine by default, so pairs
   can be held out of training (:func:`sample_instruction`, :class:`BucketSortTask`).
 
@@ -31,10 +35,8 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 from loguru import logger
 
-from physicalai_mujoco_plugin.spawn import SPAWN_ATTEMPTS, sample_clear_position
-
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Iterable, Mapping
 
 OBJECTS = ("resistor", "battery", "cpu")
 """Object names: each is a body with the free joint ``<name>:joint``."""
@@ -52,39 +54,374 @@ BUCKET_SIZE = (0.150, 0.2025, 0.120)
 
 It lies on its long side with its opening up (``scripts/build_bucket_sort_meshes.py``)."""
 BUCKET_YAW = float(np.pi / 2)
-"""The buckets' turn about the vertical before jitter, in radians (counter-clockwise seen from above).
+"""The turn about the vertical, in radians (counter-clockwise seen from above), that points a
+bucket's open end straight at the robot.
 
 The bucket's open end, above its low lip, is at +y in its own frame; a quarter turn points it at
-the robot (-x), with the long axis along x."""
-SLOT_X = 0.645
-"""Distance of the bucket centres in front of the robot base, in metres: the open ends are 0.544 m
-away, the closed ends 0.746 m (before jitter)."""
-SLOT_Y = (0.22, 0.0, -0.22)
-"""Slot centres along y: left, centre and right, as seen from behind the robot."""
-SLOT_NAMES = ("left", "centre", "right")
-BUCKET_JITTER_XY = 0.01
-"""Largest random shift of a bucket from its slot centre along x and along y, in metres."""
-BUCKET_JITTER_YAW = float(np.radians(5.0))
-"""Largest random turn of a bucket about the vertical, in radians. With the shifts, neighbouring
-buckets (7 cm apart in their slots) stay at least 3 cm apart."""
+the robot (-x), with the long axis along x. A reset adds up to :data:`BUCKET_YAW_RANGE` to it."""
 BUCKET_INTERIOR = ((-0.069, 0.069), (-0.095, 0.095), (0.006, 0.120))
 """The space inside a bucket in its own frame, ``(x, y, z)`` ranges in metres: between its walls,
 above its bottom, up to its rim."""
 
-OBJECT_ZONE = ((0.29, 0.40), (-0.22, 0.22))
-"""Where object centres spawn: ``(x, y)`` ranges in the world frame, in metres.
+# ----------------------------------------------------------------------
+# Layout
+# ----------------------------------------------------------------------
+# Every range below is in the world frame, in metres (the robot base at the origin, facing +x).
 
-The near edge keeps the hand clear of the arm's joint limits 10 cm above the table. At the far
-edge, a hand grasping from above with its fingers closing toward the buckets (it reaches 0.104 m
-from the grasp point along that axis) stays 2 cm from a bucket at its largest jitter."""
+TABLE_X = (-0.17, 0.83)
+"""The table top's extent along x (``scene.xml``)."""
+TABLE_Y = (-0.9, 0.9)
+"""The table top's extent along y."""
+TABLE_MARGIN = 0.03
+"""Smallest distance from a bucket's footprint to the table's edges."""
+BUCKET_X = (0.50, 0.72)
+"""Where bucket centres are drawn along x, before the checks below."""
+BUCKET_Y = (-0.40, 0.40)
+"""Where bucket centres are drawn along y. The buckets are drawn one by one, each anywhere, so
+they stand in a row, staggered, or two behind each other."""
+BUCKET_YAW_RANGE = float(np.radians(25.0))
+"""Largest turn of a bucket away from :data:`BUCKET_YAW`, either way, in radians: the open end
+still faces the robot's side of the table."""
+BUCKET_GAP = 0.03
+"""Smallest gap between two buckets' footprints (their rotated outer rectangles)."""
+OBJECT_X = (0.30, 0.48)
+"""Where object centres are drawn along x."""
+OBJECT_Y = (-0.34, 0.34)
+"""Where object centres are drawn along y."""
 OBJECT_GAP = 0.02
-"""Smallest gap between the circles that enclose two objects at any heading, in metres."""
+"""Smallest gap between the circles that enclose two objects at any heading."""
+OBJECT_BUCKET_GAP = 0.06
+"""Smallest gap between an object's enclosing circle and a bucket's footprint."""
+REACH_RADIUS = (0.35, 0.76)
+"""Horizontal distance from the base's axis, ``(nearest, farthest)``, at which the hand reaches
+every object centre and every point of :data:`BUCKET_REACH_POINTS`.
+
+Measured with damped least-squares IK of the FR3 with the fingers down, for four hand headings
+(each with its half-turn twin), the null space pulling the joints away from their limits: at
+0.35 m every joint stays at least 9 deg inside its limits from the table up to 0.16 m (the grasp
+and the stop above it); nearer, the folded elbow comes within 7 deg. At 0.76 m the margin is over
+45 deg up to 0.27 m (the carry over a bucket), and the reach ends at about 0.80 m. The nearest
+radius also keeps the objects away from the arm's base."""
+BUCKET_REACH_POINTS = ((0.0, -0.04), (0.0, 0.0), (0.0, 0.04))
+"""Points in a bucket's frame, ``(x, y)``, that must be in :data:`REACH_RADIUS`: where a hand
+over the opening lets an object go."""
+HAND_HALF_SIZE = (0.110, 0.045)
+"""Half the footprint of the Franka Hand about the grasp point, in metres: along the fingers'
+closing axis and across it.
+
+The hand's housing spans 0.106 m either way along the closing axis and 0.032 m across, from
+0.03 m above the fingertips, so it is below a bucket's rim when the hand grasps an object on the
+table. The margins cover a grasp turned 7 deg or shifted 6 mm along the object."""
+HAND_BUCKET_GAP = 0.015
+"""Smallest gap between the footprint of a hand grasping an object (:data:`HAND_HALF_SIZE`,
+closing across the object's short side) and a bucket's footprint."""
+FINGER_HALF_SIZE = (0.068, 0.012)
+"""Half the footprint of the open fingers about the grasp point: along the closing axis and across."""
+FINGER_OBJECT_GAP = 0.01
+"""Smallest gap between the open fingers grasping one object and another object's enclosing circle."""
+LAYOUT_DRAWS = 200
+"""Draws per bucket or object before a layout is started over."""
+LAYOUT_RESTARTS = 50
+"""Layouts started over before :data:`FALLBACK_LAYOUT` is used (it never was in 100 000 seeds)."""
+SLOT_NAMES = ("left", "centre", "right")
+"""Names of the buckets from left to right as seen from behind the robot (decreasing y)."""
 DROP_HEIGHT = 0.002
 """How far above the table an object is released at reset, in metres."""
 SETTLE_SPEED = 0.02
 """Largest speed, in m/s, at which an object counts as resting."""
 
 Pair = tuple[str, str]
+
+
+@dataclass(frozen=True)
+class Pose2D:
+    """A pose on the table: the centre's ``x`` and ``y`` in metres and the ``yaw`` in radians."""
+
+    x: float
+    y: float
+    yaw: float
+
+    def as_dict(self) -> dict[str, float]:
+        """Return the pose for JSON."""
+        return {"x": self.x, "y": self.y, "yaw": self.yaw}
+
+
+@dataclass(frozen=True)
+class ObjectFootprint:
+    """What the layout needs to know of an object lying flat."""
+
+    radius: float
+    """Horizontal radius at any heading, about the body origin."""
+    half_height: float
+    """Height of the body origin above the table."""
+    closing_yaw: float
+    """Heading in the body frame of the object's short horizontal side, across which a hand closes:
+    0 for the body's x axis, a quarter turn for its y axis."""
+
+
+@dataclass(frozen=True)
+class Layout:
+    """Where a reset puts the buckets and the objects."""
+
+    buckets: dict[str, Pose2D]
+    """Each bucket's pose by colour; the yaw includes :data:`BUCKET_YAW`."""
+    objects: dict[str, Pose2D]
+    """Each object's pose by name."""
+    draws: int = 0
+    """Candidate poses drawn to find this layout."""
+    fallback: bool = False
+    """Whether no layout was found and :data:`FALLBACK_LAYOUT` was used."""
+
+    @property
+    def colors_left_to_right(self) -> tuple[str, ...]:
+        """The bucket colours by decreasing y: left to right as seen from behind the robot."""
+        return tuple(sorted(self.buckets, key=lambda color: -self.buckets[color].y))
+
+
+FALLBACK_LAYOUT = Layout(
+    buckets={color: Pose2D(0.645, y, BUCKET_YAW) for color, y in zip(BUCKET_COLORS, (0.22, 0.0, -0.22), strict=True)},
+    objects={name: Pose2D(0.40, y, 0.0) for name, y in zip(OBJECTS, (0.17, 0.0, -0.17), strict=True)},
+    fallback=True,
+)
+"""A layout that passes every check, for a generator that finds none."""
+
+
+def _rotation(yaw: float) -> np.ndarray:
+    c, s = np.cos(yaw), np.sin(yaw)
+    return np.array([[c, -s], [s, c]])
+
+
+def _rectangle(pose: Pose2D, half: tuple[float, float], yaw: float | None = None) -> np.ndarray:
+    # The corners, counter-clockwise, of a rectangle of half sizes *half* (along its x and y) at *pose*.
+    corners = np.array([[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]]) * np.asarray(half)
+    return np.array([pose.x, pose.y]) + corners @ _rotation(pose.yaw if yaw is None else yaw).T
+
+
+def _segment_distances(points: np.ndarray, polygon: np.ndarray) -> np.ndarray:
+    # The distance from each of *points* (n, 2) to the boundary of *polygon* (m, 2).
+    edges = np.roll(polygon, -1, axis=0) - polygon
+    offset = points[:, None, :] - polygon[None, :, :]
+    t = np.clip(np.einsum("nmi,mi->nm", offset, edges) / np.einsum("mi,mi->m", edges, edges), 0.0, 1.0)
+    return np.linalg.norm(offset - t[..., None] * edges[None], axis=2).min(axis=1)
+
+
+def _overlap(a: np.ndarray, b: np.ndarray) -> bool:
+    # Whether two convex polygons overlap: the separating axis test.
+    for polygon in (a, b):
+        edges = np.roll(polygon, -1, axis=0) - polygon
+        normals = np.stack([edges[:, 1], -edges[:, 0]], axis=1)
+        pa, pb = a @ normals.T, b @ normals.T
+        if np.any((pa.max(axis=0) < pb.min(axis=0)) | (pb.max(axis=0) < pa.min(axis=0))):
+            return False
+    return True
+
+
+def polygon_gap(a: np.ndarray, b: np.ndarray) -> float:
+    """Return the distance between two convex polygons (corners in order), or ``-1`` if they overlap.
+
+    Returns:
+        Metres.
+    """
+    if _overlap(a, b):
+        return -1.0
+    return float(min(_segment_distances(a, b).min(), _segment_distances(b, a).min()))
+
+
+def circle_gap(centre: tuple[float, float], radius: float, polygon: np.ndarray) -> float:
+    """Return the distance from a circle to a convex polygon (corners counter-clockwise), negative when they overlap.
+
+    Returns:
+        Metres.
+    """
+    point = np.asarray(centre, dtype=np.float64)
+    edges = np.roll(polygon, -1, axis=0) - polygon
+    inside = np.all(edges[:, 0] * (point[1] - polygon[:, 1]) - edges[:, 1] * (point[0] - polygon[:, 0]) >= 0.0)
+    distance = float(_segment_distances(point[None], polygon)[0])
+    return (-distance if inside else distance) - radius
+
+
+def _far_apart(a: tuple[float, float], b: tuple[float, float], reach: float) -> bool:
+    # Shapes within radii that add up to *reach* (with the gap) cannot come closer than the gap.
+    return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 > reach**2
+
+
+_BUCKET_RADIUS = float(np.hypot(BUCKET_SIZE[0], BUCKET_SIZE[1]) / 2.0)
+_HAND_RADIUS = float(np.hypot(*HAND_HALF_SIZE))
+_FINGER_RADIUS = float(np.hypot(*FINGER_HALF_SIZE))
+
+
+def bucket_footprint(pose: Pose2D) -> np.ndarray:
+    """Return a bucket's outer rectangle on the table at *pose*, corners counter-clockwise.
+
+    Returns:
+        ``(4, 2)`` corners in metres.
+    """
+    return _rectangle(pose, (BUCKET_SIZE[0] / 2.0, BUCKET_SIZE[1] / 2.0))
+
+
+def _grasp_rectangle(pose: Pose2D, footprint: ObjectFootprint, half: tuple[float, float]) -> np.ndarray:
+    # The rectangle *half* (along the closing axis, across) of a hand grasping an object at *pose*.
+    return _rectangle(pose, half, pose.yaw + footprint.closing_yaw)
+
+
+def _in_reach(x: float, y: float) -> bool:
+    return REACH_RADIUS[0] ** 2 <= x * x + y * y <= REACH_RADIUS[1] ** 2
+
+
+def bucket_problems(pose: Pose2D, others: Iterable[Pose2D] = (), *, first: bool = False) -> list[str]:
+    """Return what keeps a bucket at *pose* out of a layout with the buckets *others*.
+
+    Args:
+        pose: The bucket's pose.
+        others: The buckets placed before it.
+        first: Stop at the first problem.
+
+    Returns:
+        The problems; empty when the pose is fine.
+    """
+    problems: list[str] = []
+    corners = bucket_footprint(pose)
+    (x_lo, x_hi), (y_lo, y_hi) = TABLE_X, TABLE_Y
+    if (
+        corners[:, 0].min() < x_lo + TABLE_MARGIN
+        or corners[:, 0].max() > x_hi - TABLE_MARGIN
+        or corners[:, 1].min() < y_lo + TABLE_MARGIN
+        or corners[:, 1].max() > y_hi - TABLE_MARGIN
+    ):
+        problems.append("table edge")
+        if first:
+            return problems
+    turn = _rotation(pose.yaw)
+    if not all(_in_reach(*(np.array([pose.x, pose.y]) + turn @ point)) for point in BUCKET_REACH_POINTS):
+        problems.append("reach")
+        if first:
+            return problems
+    for other in others:
+        if _far_apart((pose.x, pose.y), (other.x, other.y), 2.0 * _BUCKET_RADIUS + BUCKET_GAP):
+            continue
+        if polygon_gap(corners, bucket_footprint(other)) < BUCKET_GAP:
+            problems.append("bucket gap")
+            break
+    return problems
+
+
+def object_problems(
+    name: str,
+    pose: Pose2D,
+    footprints: Mapping[str, ObjectFootprint],
+    buckets: Iterable[Pose2D],
+    others: Mapping[str, Pose2D] | None = None,
+    *,
+    first: bool = False,
+) -> list[str]:
+    """Return what keeps object *name* at *pose* out of a layout with *buckets* and the objects *others*.
+
+    Args:
+        name: The object.
+        pose: Its pose.
+        footprints: Every object's footprint (:func:`object_footprint`).
+        buckets: The buckets' poses.
+        others: The objects placed before it.
+        first: Stop at the first problem.
+
+    Returns:
+        The problems, sorted; empty when the pose is fine.
+    """
+    problems: set[str] = set()
+    shape = footprints[name]
+    centre = (pose.x, pose.y)
+    if not _in_reach(pose.x, pose.y):
+        problems.add("reach")
+        if first:
+            return sorted(problems)
+    hand = _grasp_rectangle(pose, shape, HAND_HALF_SIZE)
+    for bucket in buckets:
+        if _far_apart(
+            centre,
+            (bucket.x, bucket.y),
+            _BUCKET_RADIUS + max(shape.radius + OBJECT_BUCKET_GAP, _HAND_RADIUS + HAND_BUCKET_GAP),
+        ):
+            continue
+        corners = bucket_footprint(bucket)
+        if circle_gap(centre, shape.radius, corners) < OBJECT_BUCKET_GAP:
+            problems.add("object near bucket")
+        if polygon_gap(hand, corners) < HAND_BUCKET_GAP:
+            problems.add("hand near bucket")
+        if first and problems:
+            return sorted(problems)
+    fingers = _grasp_rectangle(pose, shape, FINGER_HALF_SIZE)
+    for other, other_pose in (others or {}).items():
+        other_shape = footprints[other]
+        other_centre = (other_pose.x, other_pose.y)
+        if not _far_apart(centre, other_centre, shape.radius + other_shape.radius + OBJECT_GAP):
+            problems.add("object gap")
+        elif not _far_apart(
+            centre, other_centre, _FINGER_RADIUS + max(shape.radius, other_shape.radius) + FINGER_OBJECT_GAP
+        ) and (
+            circle_gap(other_centre, other_shape.radius, fingers) < FINGER_OBJECT_GAP
+            or circle_gap(centre, shape.radius, _grasp_rectangle(other_pose, other_shape, FINGER_HALF_SIZE))
+            < FINGER_OBJECT_GAP
+        ):
+            problems.add("fingers near object")
+        if first and problems:
+            break
+    return sorted(problems)
+
+
+def sample_layout(rng: np.random.Generator, footprints: Mapping[str, ObjectFootprint]) -> Layout:
+    """Draw a layout of the buckets and the objects that passes every check.
+
+    The colours, then the objects, are placed in a random order, each drawn uniformly in its area
+    (and heading range) until it passes :func:`bucket_problems` or :func:`object_problems` with
+    those placed before it; a bucket or object that finds no place in :data:`LAYOUT_DRAWS` draws
+    starts the layout over. The same generator state gives the same layout.
+
+    Args:
+        rng: The generator.
+        footprints: Each object's :class:`ObjectFootprint` (:func:`object_footprint`).
+
+    Returns:
+        The layout; :data:`FALLBACK_LAYOUT` when :data:`LAYOUT_RESTARTS` layouts all failed.
+    """
+    draws = 0
+    for _ in range(LAYOUT_RESTARTS):
+        buckets: dict[str, Pose2D] = {}
+        for index in rng.permutation(len(BUCKET_COLORS)):
+            for _ in range(LAYOUT_DRAWS):
+                draws += 1
+                pose = Pose2D(
+                    float(rng.uniform(*BUCKET_X)),
+                    float(rng.uniform(*BUCKET_Y)),
+                    BUCKET_YAW + float(rng.uniform(-BUCKET_YAW_RANGE, BUCKET_YAW_RANGE)),
+                )
+                if not bucket_problems(pose, buckets.values(), first=True):
+                    buckets[BUCKET_COLORS[int(index)]] = pose
+                    break
+            else:
+                break
+        if len(buckets) < len(BUCKET_COLORS):
+            continue
+        objects: dict[str, Pose2D] = {}
+        for index in rng.permutation(len(OBJECTS)):
+            name = OBJECTS[int(index)]
+            for _ in range(LAYOUT_DRAWS):
+                draws += 1
+                pose = Pose2D(
+                    float(rng.uniform(*OBJECT_X)), float(rng.uniform(*OBJECT_Y)), float(rng.uniform(0.0, 2.0 * np.pi))
+                )
+                if not object_problems(name, pose, footprints, buckets.values(), objects, first=True):
+                    objects[name] = pose
+                    break
+            else:
+                break
+        if len(objects) == len(OBJECTS):
+            return Layout(
+                buckets={color: buckets[color] for color in BUCKET_COLORS},
+                objects={name: objects[name] for name in OBJECTS},
+                draws=draws,
+            )
+    logger.warning("Bucket sort: no layout found in {} draws; using the fallback layout", draws)
+    return Layout(buckets=FALLBACK_LAYOUT.buckets, objects=FALLBACK_LAYOUT.objects, draws=draws, fallback=True)
 
 
 @dataclass(frozen=True)
@@ -200,10 +537,13 @@ class BucketSortTask:
         self._allowed = check_pairs(allowed_pairs)
         self._place_home = place_home
         self._robot_roots = tuple(robot_roots)
+        self._footprints: tuple[object, dict[str, ObjectFootprint]] | None = None
         self.instruction: Instruction | None = None
         """The current instruction; ``None`` before the first reset."""
+        self.layout: Layout | None = None
+        """Where the last reset put the buckets and objects; ``None`` before the first reset."""
         self.slot_colors: tuple[str, ...] = BUCKET_COLORS
-        """The bucket colour in each slot, left to right (:data:`SLOT_Y`)."""
+        """The bucket colours left to right (by decreasing y) as the last reset put them."""
 
     @property
     def allowed_pairs(self) -> tuple[Pair, ...]:
@@ -217,23 +557,28 @@ class BucketSortTask:
         """
         self._allowed = check_pairs(pairs)
 
+    def footprints(self, model: object) -> dict[str, ObjectFootprint]:
+        """Return each object's :class:`ObjectFootprint` on *model*, computed once per model."""
+        if self._footprints is None or self._footprints[0] is not model:
+            self._footprints = (model, {name: object_footprint(model, name) for name in OBJECTS})
+        return self._footprints[1]
+
     def __call__(self, model: object, data: object, rng: np.random.Generator) -> None:
-        """Reset: the arm at home, the colours shuffled over the slots, the objects respawned, a new instruction."""
+        """Reset: the arm at home, a new layout (:func:`sample_layout`) and a new instruction."""
         import mujoco  # noqa: PLC0415
 
         if self._place_home is not None:
             self._place_home(model, data)
-        order = rng.permutation(len(BUCKET_COLORS))
-        self.slot_colors = tuple(BUCKET_COLORS[int(i)] for i in order)
-        for color, slot_y in zip(self.slot_colors, SLOT_Y, strict=True):
-            joint = _joint(model, f"bucket_{color}:joint")
-            adr, dof = int(model.jnt_qposadr[joint]), int(model.jnt_dofadr[joint])
-            dx, dy = rng.uniform(-BUCKET_JITTER_XY, BUCKET_JITTER_XY, size=2)
-            data.qpos[adr : adr + 3] = (SLOT_X + dx, slot_y + dy, 0.0)
-            yaw = BUCKET_YAW + float(rng.uniform(-BUCKET_JITTER_YAW, BUCKET_JITTER_YAW))
-            data.qpos[adr + 3 : adr + 7] = _yaw_quat(yaw)
-            data.qvel[dof : dof + 6] = 0.0
-        _place_objects(model, data, rng)
+        footprints = self.footprints(model)
+        layout = sample_layout(rng, footprints)
+        for color, pose in layout.buckets.items():
+            _set_free_pose(model, data, f"bucket_{color}:joint", (pose.x, pose.y, 0.0), pose.yaw)
+        for name, pose in layout.objects.items():
+            _set_free_pose(
+                model, data, f"{name}:joint", (pose.x, pose.y, footprints[name].half_height + DROP_HEIGHT), pose.yaw
+            )
+        self.layout = layout
+        self.slot_colors = layout.colors_left_to_right
         self.instruction = sample_instruction(rng, self._allowed)
         mujoco.mj_forward(model, data)
         logger.info("Bucket sort: {!r}; buckets left to right {}", self.instruction.text, ", ".join(self.slot_colors))
@@ -271,12 +616,18 @@ class BucketSortTask:
         return TaskState(in_bucket=in_bucket, resting=resting, success=success, buckets=buckets)
 
     def describe(self) -> dict[str, object]:
-        """Return the instruction, the colour in each slot and the allowed pairs, for JSON."""
+        """Return the instruction, the buckets left to right as laid out, and the allowed pairs, for JSON.
+
+        ``slots`` lists the buckets by decreasing y at the last reset (``left``, ``centre``,
+        ``right`` as seen from behind the robot) with that reset's centre and yaw; ``buckets`` in
+        the episode status has their live poses.
+        """
+        layout = self.layout
         return {
             "instruction": self.instruction.as_dict() if self.instruction is not None else None,
             "slots": [
-                {"slot": slot, "y": y, "color": color}
-                for slot, y, color in zip(SLOT_NAMES, SLOT_Y, self.slot_colors, strict=True)
+                {"slot": slot, "color": color, **(layout.buckets[color].as_dict() if layout is not None else {})}
+                for slot, color in zip(SLOT_NAMES, self.slot_colors, strict=True)
             ],
             "allowed_pairs": [list(pair) for pair in self._allowed],
         }
@@ -293,26 +644,15 @@ class BucketSortTask:
         return {int(b) for b in np.concatenate([b2[r1 & ~r2], b1[r2 & ~r1]])}
 
 
-def _place_objects(model: object, data: object, rng: np.random.Generator) -> None:
-    """Drop every object flat at a random heading in :data:`OBJECT_ZONE`, clear of the others."""
-    placed: list[tuple[float, float, float]] = []
-    (x_lo, x_hi), (y_lo, y_hi) = OBJECT_ZONE
-    for name in OBJECTS:
-        radius, half_height = object_extent(model, name)
-
-        def draw() -> tuple[float, float]:
-            return float(rng.uniform(x_lo, x_hi)), float(rng.uniform(y_lo, y_hi))
-
-        def clear(xy: tuple[float, float], radius: float = radius) -> bool:
-            return all(np.hypot(xy[0] - x, xy[1] - y) >= radius + r + OBJECT_GAP for x, y, r in placed)
-
-        x, y = sample_clear_position(draw, clear_of_others=clear, attempts=SPAWN_ATTEMPTS)
-        placed.append((x, y, radius))
-        joint = _joint(model, f"{name}:joint")
-        adr, dof = int(model.jnt_qposadr[joint]), int(model.jnt_dofadr[joint])
-        data.qpos[adr : adr + 3] = (x, y, half_height + DROP_HEIGHT)
-        data.qpos[adr + 3 : adr + 7] = _yaw_quat(float(rng.uniform(0.0, 2.0 * np.pi)))
-        data.qvel[dof : dof + 6] = 0.0
+def _set_free_pose(
+    model: object, data: object, joint_name: str, position: tuple[float, float, float], yaw: float
+) -> None:
+    """Put a free joint at *position*, turned *yaw* about the vertical, at rest."""
+    joint = _joint(model, joint_name)
+    adr, dof = int(model.jnt_qposadr[joint]), int(model.jnt_dofadr[joint])
+    data.qpos[adr : adr + 3] = position
+    data.qpos[adr + 3 : adr + 7] = _yaw_quat(yaw)
+    data.qvel[dof : dof + 6] = 0.0
 
 
 def bucket_containing(model: object, data: object, point: np.ndarray) -> str | None:
@@ -357,6 +697,32 @@ def object_extent(model: object, name: str) -> tuple[float, float]:
         radius = max(radius, float(np.hypot(points[:, 0], points[:, 1]).max()))
         half_height = max(half_height, float(-points[:, 2].min()))
     return radius, half_height
+
+
+def object_footprint(model: object, name: str) -> ObjectFootprint:
+    """Return what the layout needs of an object (:class:`ObjectFootprint`), from its collision geoms.
+
+    Returns:
+        The footprint.
+    """
+    import mujoco  # noqa: PLC0415
+
+    radius, half_height = object_extent(model, name)
+    body = _body(model, name)
+    rotation = np.zeros(9)
+    corners = np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)], dtype=np.float64)
+    half = np.zeros(2)
+    for geom in np.flatnonzero(np.asarray(model.geom_bodyid) == body):
+        if int(model.geom_contype[geom]) == 0 and int(model.geom_conaffinity[geom]) == 0:
+            continue
+        mujoco.mju_quat2Mat(rotation, model.geom_quat[geom])
+        points = (
+            model.geom_pos[geom]
+            + (model.geom_aabb[geom, :3] + corners * model.geom_aabb[geom, 3:]) @ rotation.reshape(3, 3).T
+        )
+        half = np.maximum(half, np.abs(points[:, :2]).max(axis=0))
+    closing_yaw = 0.0 if half[0] <= half[1] else float(np.pi / 2)
+    return ObjectFootprint(radius=radius, half_height=half_height, closing_yaw=closing_yaw)
 
 
 Phase = Literal["idle", "success_hold"]
@@ -474,21 +840,33 @@ def _joint(model: object, name: str) -> int:
 __all__ = [
     "ALL_PAIRS",
     "BUCKET_COLORS",
+    "BUCKET_GAP",
     "BUCKET_INTERIOR",
     "BUCKET_JOINTS",
     "BUCKET_SIZE",
+    "BUCKET_X",
+    "BUCKET_Y",
     "BUCKET_YAW",
+    "BUCKET_YAW_RANGE",
     "OBJECTS",
     "OBJECT_LABELS",
-    "OBJECT_ZONE",
-    "SLOT_X",
-    "SLOT_Y",
+    "OBJECT_X",
+    "OBJECT_Y",
+    "REACH_RADIUS",
     "BucketSortEpisode",
     "BucketSortTask",
     "Instruction",
+    "Layout",
+    "ObjectFootprint",
+    "Pose2D",
     "TaskState",
     "bucket_containing",
+    "bucket_footprint",
+    "bucket_problems",
     "check_pairs",
     "object_extent",
+    "object_footprint",
+    "object_problems",
     "sample_instruction",
+    "sample_layout",
 ]

@@ -7,13 +7,14 @@
   Layout (world frame, metres; the robot base sits at the origin facing +x):
     - Table top at z = 0, 1.8 m wide (y, from -0.9 to 0.9) and 1.0 m deep (x, from -0.17 to 0.83); the floor is
       0.75 m below it.
-    - Bucket slots 0.645 m in front of the base at y = +0.22, 0, -0.22 (left, centre, right as
-      seen from behind the robot). The buckets are free bodies (bucket_<colour>:joint) that can
-      be pushed or moved; each reset assigns the colours to the slots at random and jitters them
-      slightly.
-    - Objects spawn between the base and the buckets (bucket_sort.OBJECT_ZONE).
+    - Buckets stand 0.50 to 0.72 m in front of the base and up to 0.40 m to either side
+      (bucket_sort.BUCKET_X, BUCKET_Y). The buckets are free bodies (bucket_<colour>:joint) that
+      can be pushed or moved; each reset lays them out anew in a random colour order.
+    - Objects spawn between the base and the buckets (bucket_sort.OBJECT_X, OBJECT_Y), clear of
+      the buckets and of each other (bucket_sort.sample_layout).
   The buckets lie on their long side with the opening up, the long axis along x and the open
-  end (above the low lip) facing the robot.
+  end (above the low lip) facing the robot, turned up to 25 degrees either way at each reset.
+  The poses written below are only the model's defaults, before the first reset.
   Meshes are MuJoCo's binary MSH files from scripts/build_bucket_sort_meshes.py; the *_hull meshes
   hold vertices only, and MuJoCo builds their convex hulls. The bucket's collision is primitives
   here (bucket_sort.BUCKET_INTERIOR uses the same numbers).
@@ -95,8 +96,8 @@
     <!-- Buckets lying on their long side, opening up: 150 mm across (x), 202.5 mm long (y) and
          120 mm deep in their own frame (turned a quarter turn in the world, BUCKET_YAW), origin at
          the centre of the footprint on the table. They are free bodies of 0.2 kg (the collision
-         boxes at the bucket_collision density) that stand on the table; each reset writes them
-         into the slots in a new colour order (bucket_sort.BucketSortTask). Collision, matching
+         boxes at the bucket_collision density) that stand on the table; each reset lays them
+         out anew (bucket_sort.BucketSortTask). Collision, matching
          the mesh: the 6 mm bottom, the only box that touches the table, two 6 mm long walls and a
          6 mm end wall at -y standing on it up to the 120 mm rim, and the sloped lip that closes
          the +y end up to 35 mm. -->

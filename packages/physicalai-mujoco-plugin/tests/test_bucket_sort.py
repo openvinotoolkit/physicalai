@@ -237,45 +237,59 @@ class TestInstructions:
 
 
 class TestLayout:
-    def test_colour_permutation_repeats_per_seed_and_varies_across_seeds(self, sim) -> None:
-        def layout(seed: int) -> tuple[tuple[str, ...], Instruction, np.ndarray]:
+    def test_layout_repeats_per_seed_and_varies_across_seeds(self, sim) -> None:
+        def layout(seed: int) -> tuple[tuple[str, ...], Instruction, str, np.ndarray]:
             task = _reset(sim, seed)
             bodies = [f"bucket_{color}" for color in BUCKET_COLORS] + list(OBJECTS)
             poses = np.array([sim.data.xpos[sim.model.body(name).id] for name in bodies])
-            return task.slot_colors, task.instruction, poses.ravel()
+            return task.slot_colors, task.instruction, task.instruction.text, poses.ravel()
 
         first, again = layout(7), layout(7)
-        assert first[:2] == again[:2]
-        np.testing.assert_array_equal(first[2], again[2])
-        permutations = {layout(seed)[0] for seed in range(60)}
-        assert permutations == set(itertools.permutations(BUCKET_COLORS))
+        assert first[:3] == again[:3]
+        np.testing.assert_array_equal(first[3], again[3])
+        orders = {layout(seed)[0] for seed in range(60)}
+        assert orders == set(itertools.permutations(BUCKET_COLORS))
 
-    def test_buckets_stand_in_their_slots_with_small_jitter(self, sim) -> None:
+    def test_reset_writes_the_sampled_layout_at_rest(self, sim) -> None:
         model, data = sim.model, sim.data
         for seed in range(30):
             data.qvel[:] = 1.0  # a reset stills the buckets whatever they were doing
             task = _reset(sim, seed)
-            for color, slot_y in zip(task.slot_colors, bs.SLOT_Y, strict=True):
-                pos = data.xpos[model.body(f"bucket_{color}").id]
-                assert abs(pos[0] - bs.SLOT_X) <= bs.BUCKET_JITTER_XY
-                assert abs(pos[1] - slot_y) <= bs.BUCKET_JITTER_XY
-                assert pos[2] == 0.0
+            layout = task.layout
+            assert not layout.fallback
+            for color, pose in layout.buckets.items():
+                body = model.body(f"bucket_{color}").id
+                np.testing.assert_allclose(data.xpos[body], (pose.x, pose.y, 0.0), atol=1e-9)
+                assert _yaw(data, body) == pytest.approx(_wrap(pose.yaw), abs=1e-9)
                 dof = int(model.joint(f"bucket_{color}:joint").dofadr[0])
                 assert not data.qvel[dof : dof + 6].any()
-            assert task.describe()["slots"][0] == {"slot": "left", "y": 0.22, "color": task.slot_colors[0]}
+            for name, pose in layout.objects.items():
+                np.testing.assert_allclose(data.xpos[model.body(name).id][:2], (pose.x, pose.y), atol=1e-9)
+            # The colours are listed left to right: by decreasing y.
+            ys = [layout.buckets[color].y for color in task.slot_colors]
+            assert ys == sorted(ys, reverse=True)
+            slots = task.describe()["slots"]
+            assert [slot["slot"] for slot in slots] == ["left", "centre", "right"]
+            assert slots[0] == {"slot": "left", "color": task.slot_colors[0], **layout.buckets[task.slot_colors[0]].as_dict()}
 
     def test_objects_never_overlap_each_other_or_the_buckets(self, sim) -> None:
         model, data = sim.model, sim.data
-        (x_lo, x_hi), (y_lo, y_hi) = bs.OBJECT_ZONE
         radii = {name: object_extent(model, name)[0] for name in OBJECTS}
         for seed in range(200):
             _reset(sim, seed)
             xy = {name: data.xpos[model.body(name).id][:2].copy() for name in OBJECTS}
-            for name, (x, y) in xy.items():
-                assert x_lo <= x <= x_hi
-                assert y_lo <= y <= y_hi
+            for x, y in xy.values():
+                assert bs.OBJECT_X[0] <= x <= bs.OBJECT_X[1]
+                assert bs.OBJECT_Y[0] <= y <= bs.OBJECT_Y[1]
+                assert bs.REACH_RADIUS[0] <= np.hypot(x, y) <= bs.REACH_RADIUS[1]
             for a, b in itertools.combinations(OBJECTS, 2):
                 assert np.linalg.norm(xy[a] - xy[b]) >= radii[a] + radii[b] + bs.OBJECT_GAP, seed
+            for name, centre in xy.items():
+                for color in BUCKET_COLORS:
+                    # Brute force, apart from the module's geometry: the footprint's boundary every 2 mm.
+                    gap = np.linalg.norm(_footprint_outline(sim, color) - centre, axis=1).min() - radii[name]
+                    assert gap >= bs.OBJECT_BUCKET_GAP - 0.002, (seed, name, color)
+                    assert bs.bucket_containing(model, data, np.array([*centre, 0.01])) is None
             # Objects are released just above the table: only the buckets' bottoms touch it at reset.
             touching = {(model.geom(data.contact.geom1[i]).name, model.geom(data.contact.geom2[i]).name) for i in range(data.ncon)}
             assert touching <= {("table_top", f"bucket_{color}_bottom") for color in BUCKET_COLORS}, seed
@@ -341,24 +355,50 @@ class TestBucketPose:
     def test_buckets_face_the_robot_and_stay_apart_on_the_table(self, sim) -> None:
         assert bs.BUCKET_YAW == pytest.approx(np.pi / 2)  # radians
         model, data = sim.model, sim.data
-        half = np.array(bs.BUCKET_SIZE[:2]) / 2
-        corners = np.array([[x, y] for x in (-1, 1) for y in (-1, 1)]) * half
         for seed in range(100):
             task = _reset(sim, seed)
-            spans = []
+            outlines = {}
             for color in task.slot_colors:
                 body = model.body(f"bucket_{color}").id
                 rotation = data.xmat[body].reshape(3, 3)
                 open_end = rotation[:2, 1]  # the open end, above the lip, is at +y in the bucket's frame
-                assert np.degrees(np.arccos(np.clip(open_end @ (-1.0, 0.0), -1, 1))) <= 5.0 + 1e-6  # toward the robot
+                turn = np.degrees(np.arccos(np.clip(open_end @ (-1.0, 0.0), -1, 1)))
+                assert turn <= np.degrees(bs.BUCKET_YAW_RANGE) + 1e-6  # toward the robot
                 assert rotation[2, 2] == pytest.approx(1.0)
-                footprint = data.xpos[body][:2] + corners @ rotation[:2, :2].T
-                spans.append((footprint[:, 1].min(), footprint[:, 1].max()))
-                assert footprint[:, 0].min() > bs.OBJECT_ZONE[0][1] + 0.104 + 0.02  # a hand at the zone's edge
-                assert footprint[:, 0].max() < _TABLE_FAR_EDGE - 0.05  # at least 5 cm from the table's far edge
-                assert np.abs(footprint[:, 1]).max() < _TABLE_HALF_WIDTH - 0.3
-            for (low, _), (_, high) in itertools.pairwise(spans):  # left to right: decreasing y
-                assert low - high >= 0.02, seed
+                outline = outlines[color] = _footprint_outline(sim, color)
+                assert outline[:, 0].min() >= -0.17 + bs.TABLE_MARGIN - 1e-9
+                assert outline[:, 0].max() <= _TABLE_FAR_EDGE - bs.TABLE_MARGIN + 1e-9
+                assert np.abs(outline[:, 1]).max() <= _TABLE_HALF_WIDTH - bs.TABLE_MARGIN
+                for local in bs.BUCKET_REACH_POINTS:
+                    point = data.xpos[body][:2] + rotation[:2, :2] @ local
+                    assert bs.REACH_RADIUS[0] <= np.hypot(*point) <= bs.REACH_RADIUS[1]
+            for a, b in itertools.combinations(outlines, 2):
+                gap = np.linalg.norm(outlines[a][:, None] - outlines[b][None], axis=2).min()
+                assert gap >= bs.BUCKET_GAP - 0.002, seed
+
+
+def _yaw(data, body: int) -> float:
+    rotation = data.xmat[body].reshape(3, 3)
+    return float(np.arctan2(rotation[1, 0], rotation[0, 0]))
+
+
+def _wrap(angle: float) -> float:
+    return float(np.angle(np.exp(1j * angle)))
+
+
+def _footprint_outline(sim, color: str, step: float = 0.002) -> np.ndarray:
+    """Return points every *step* along the outer rectangle of the *color* bucket as it stands now."""
+    body = sim.model.body(f"bucket_{color}").id
+    hx, hy = bs.BUCKET_SIZE[0] / 2, bs.BUCKET_SIZE[1] / 2
+    xs, ys = np.arange(-hx, hx + 1e-9, step), np.arange(-hy, hy + 1e-9, step)
+    local = np.concatenate([
+        np.column_stack([xs, np.full_like(xs, -hy)]),
+        np.column_stack([xs, np.full_like(xs, hy)]),
+        np.column_stack([np.full_like(ys, -hx), ys]),
+        np.column_stack([np.full_like(ys, hx), ys]),
+    ])
+    rotation = sim.data.xmat[body].reshape(3, 3)[:2, :2]
+    return sim.data.xpos[body][:2] + local @ rotation.T
 
 
 def _bucket_pose(sim, color: str) -> tuple[np.ndarray, np.ndarray]:
@@ -417,13 +457,13 @@ class TestDynamicBuckets:
         task = _reset(sim, 3)
         instruction = task.instruction
         old, _ = _bucket_pose(sim, instruction.bucket)
-        # Away from its slot, turned the other way: the interior moves with it.
-        _move_bucket(sim, instruction.bucket, (0.55, 0.45), -0.5)
+        # Away from where every layout puts a bucket, turned the other way: the interior moves with it.
+        _move_bucket(sim, instruction.bucket, (0.55, 0.65), -0.5)
         _drop_into(sim, instruction.object, instruction.bucket)
         _step(sim, 0.5)
         state = task.evaluate(sim.model, sim.data)
         assert state.success
-        assert state.buckets[instruction.bucket]["position"][:2] == pytest.approx([0.55, 0.45], abs=1e-3)
+        assert state.buckets[instruction.bucket]["position"][:2] == pytest.approx([0.55, 0.65], abs=1e-3)
         assert bs.bucket_containing(sim.model, sim.data, old + (0.0, 0.0, 0.05)) is None
 
 
@@ -527,15 +567,15 @@ def test_robot_serves_the_task_and_reset_draws_a_new_one() -> None:
             robot._commands.put(ResetCommand())  # noqa: SLF001
             robot.get_observation()
             episode = robot._http_status()["episode"]  # noqa: SLF001
-            return episode["instruction"]["text"], tuple(slot["color"] for slot in episode["slots"])
+            return episode["instruction"]["text"], tuple((slot["color"], slot["x"], slot["y"]) for slot in episode["slots"])
 
         # The buckets are free objects: the pose route moves them, and /health reports where they are.
         assert {obj["joint"] for obj in robot._http_status()["objects"]} >= set(BUCKET_JOINTS)  # noqa: SLF001
-        robot._commands.put(SetObjectPoseCommand(joint="bucket_red:joint", position=(0.6, 0.45, 0.0), wxyz=None))  # noqa: SLF001
+        robot._commands.put(SetObjectPoseCommand(joint="bucket_red:joint", position=(0.6, 0.65, 0.0), wxyz=None))  # noqa: SLF001
         robot.get_observation()
         robot.get_observation()
         red = robot._http_status()["episode"]["buckets"]["red"]  # noqa: SLF001
-        assert red["position"][:2] == pytest.approx([0.6, 0.45], abs=1e-3)
+        assert red["position"][:2] == pytest.approx([0.6, 0.65], abs=1e-3)
 
         robot._commands.put(SetSeedCommand(seed=11))  # noqa: SLF001
         assert layout() == layout()
@@ -543,3 +583,156 @@ def test_robot_serves_the_task_and_reset_draws_a_new_one() -> None:
         assert len({layout() for _ in range(8)}) > 1
     finally:
         robot.disconnect()
+
+
+@pytest.fixture(scope="module")
+def footprints(sim) -> dict[str, bs.ObjectFootprint]:
+    return {name: bs.object_footprint(sim.model, name) for name in OBJECTS}
+
+
+class TestLayoutSampler:
+    def test_geometry_helpers(self) -> None:
+        square = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+        assert bs.polygon_gap(square, square + (1.5, 0.0)) == pytest.approx(0.5)
+        assert bs.polygon_gap(square, square + (1.3, 1.4)) == pytest.approx(0.5)  # corner to corner
+        assert bs.polygon_gap(square, square + (0.5, 0.5)) < 0
+        assert bs.circle_gap((2.0, 0.5), 0.25, square) == pytest.approx(0.75)
+        assert bs.circle_gap((0.5, 0.5), 0.1, square) == pytest.approx(-0.6)
+        corners = bs.bucket_footprint(bs.Pose2D(0.6, 0.1, bs.BUCKET_YAW))
+        np.testing.assert_allclose(corners.min(axis=0), (0.6 - 0.10125, 0.1 - 0.075))
+        np.testing.assert_allclose(corners.max(axis=0), (0.6 + 0.10125, 0.1 + 0.075))
+
+    def test_object_footprints_close_across_the_short_side(self, sim, footprints) -> None:
+        # The resistor and the battery are narrow along their body x, the CPU along its body y.
+        assert footprints["resistor"].closing_yaw == 0.0
+        assert footprints["battery"].closing_yaw == 0.0
+        assert footprints["cpu"].closing_yaw == pytest.approx(np.pi / 2)
+        for name, shape in footprints.items():
+            assert (shape.radius, shape.half_height) == pytest.approx(object_extent(sim.model, name))
+
+    def test_every_layout_passes_every_check(self, footprints) -> None:
+        draws = []
+        for seed in range(300):
+            layout = bs.sample_layout(np.random.default_rng(seed), footprints)
+            assert not layout.fallback, seed
+            draws.append(layout.draws)
+            buckets = list(layout.buckets.values())
+            for i, pose in enumerate(buckets):
+                assert not bs.bucket_problems(pose, buckets[:i] + buckets[i + 1 :]), seed
+                assert bs.BUCKET_X[0] <= pose.x <= bs.BUCKET_X[1]
+                assert bs.BUCKET_Y[0] <= pose.y <= bs.BUCKET_Y[1]
+                assert abs(pose.yaw - bs.BUCKET_YAW) <= bs.BUCKET_YAW_RANGE
+            for name, pose in layout.objects.items():
+                others = {other: p for other, p in layout.objects.items() if other != name}
+                assert not bs.object_problems(name, pose, footprints, buckets, others), seed
+        assert np.mean(draws) < 60  # about 40 draws for six placements
+
+    def test_layouts_cover_the_areas(self, footprints) -> None:
+        layouts = [bs.sample_layout(np.random.default_rng(seed), footprints) for seed in range(300)]
+        buckets = np.array([[p.x, p.y, p.yaw - bs.BUCKET_YAW] for layout in layouts for p in layout.buckets.values()])
+        objects = np.array([[p.x, p.y] for layout in layouts for p in layout.objects.values()])
+        assert np.ptp(buckets[:, 0]) > 0.17
+        assert np.ptp(buckets[:, 1]) > 0.75
+        assert buckets[:, 2].min() < -np.radians(22) and buckets[:, 2].max() > np.radians(22)
+        assert np.ptp(objects[:, 0]) > 0.15
+        assert np.ptp(objects[:, 1]) > 0.6
+        # Not a row: in most layouts the buckets stand at clearly different depths.
+        stagger = np.array([np.ptp([p.x for p in layout.buckets.values()]) for layout in layouts])
+        assert np.mean(stagger > 0.05) > 0.6
+        # Every colour stands left, centre and right, about equally often.
+        ranks = Counter((color, i) for layout in layouts for i, color in enumerate(layout.colors_left_to_right))
+        assert len(ranks) == 9
+        assert min(ranks.values()) > 70  # about 100 each
+
+    def test_fallback_layout_passes_the_checks_and_is_used_when_nothing_fits(self, footprints, monkeypatch) -> None:
+        fallback = bs.FALLBACK_LAYOUT
+        buckets = list(fallback.buckets.values())
+        for i, pose in enumerate(buckets):
+            assert not bs.bucket_problems(pose, buckets[:i])
+        for name, pose in fallback.objects.items():
+            others = {other: p for other, p in fallback.objects.items() if other != name}
+            assert not bs.object_problems(name, pose, footprints, buckets, others)
+        monkeypatch.setattr(bs, "BUCKET_X", (0.95, 0.99))  # off the table
+        monkeypatch.setattr(bs, "LAYOUT_RESTARTS", 2)
+        layout = bs.sample_layout(np.random.default_rng(0), footprints)
+        assert layout.fallback
+        assert layout.buckets == fallback.buckets
+
+
+class _ReachIK:
+    """Damped least-squares IK of the FR3's TCP, fingers down, the null space pushing away from joint limits."""
+
+    TCP = np.array([0.0, 0.0, 0.1034])
+    HOME = np.radians([0.0, -45.0, 0.0, -135.0, 0.0, 90.0, 45.0])
+
+    def __init__(self, model) -> None:
+        self.model, self.data = model, mujoco.MjData(model)
+        joints = [model.joint(f"fr3_joint{i}").id for i in range(1, 8)]
+        self.qadr = np.array([model.jnt_qposadr[j] for j in joints])
+        self.dadr = np.array([model.jnt_dofadr[j] for j in joints])
+        self.lo = np.array([model.jnt_range[j][0] for j in joints])
+        self.hi = np.array([model.jnt_range[j][1] for j in joints])
+        self.hand = model.body("hand").id
+
+    def margin(self, pos: np.ndarray, yaw: float) -> float:
+        """Return the smallest joint margin (deg) of a solution, or -1 when the pose is not reached."""
+        model, data = self.model, self.data
+        c, s = np.cos(yaw), np.sin(yaw)
+        goal = np.array([[-s, c, 0.0], [c, s, 0.0], [0.0, 0.0, -1.0]])
+        lo, hi = self.lo + np.radians(7.0), self.hi - np.radians(7.0)
+        centre, half = (self.lo + self.hi) / 2, (self.hi - self.lo) / 2
+        q = self.HOME.copy()
+        jacp, jacr = np.zeros((3, model.nv)), np.zeros((3, model.nv))
+        quat, e_rot = np.zeros(4), np.zeros(3)
+        for it in range(110):
+            data.qpos[self.qadr] = q
+            mujoco.mj_kinematics(model, data)
+            mujoco.mj_comPos(model, data)
+            tcp = data.xpos[self.hand] + data.xmat[self.hand].reshape(3, 3) @ self.TCP
+            e_pos = pos - tcp
+            mujoco.mju_mat2Quat(quat, (goal @ data.xmat[self.hand].reshape(3, 3).T).ravel())
+            mujoco.mju_quat2Vel(e_rot, quat, 1.0)
+            if it == 109:
+                break
+            pull = np.zeros(7)
+            if it >= 30:  # first reach the pose, then move away from the limits
+                x = (q - centre) / half
+                pull = 0.02 * (-6.0 * x**5 / half)
+                pull[1] += 2.0 * q[1] / 0.09 * np.exp(-(q[1] ** 2) / 0.09)
+                if np.abs(pull).max() > 0.03:
+                    pull *= 0.03 / np.abs(pull).max()
+            mujoco.mj_jac(model, data, jacp, jacr, tcp, self.hand)
+            jac = np.vstack([jacp[:, self.dadr], jacr[:, self.dadr]])
+            free = np.ones(7, dtype=bool)
+            for _ in range(7):
+                jf = jac * free
+                pinv = jf.T @ np.linalg.inv(jf @ jf.T + 0.03**2 * np.eye(6))
+                dq = (pinv @ np.concatenate([e_pos, e_rot]) + (np.eye(7) - pinv @ jf) @ (pull * free)) * free
+                blocked = free & (((q >= hi - 1e-9) & (dq > 0)) | ((q <= lo + 1e-9) & (dq < 0)))
+                if not blocked.any():
+                    break
+                free &= ~blocked
+            if np.abs(dq).max() > 0.1:
+                dq *= 0.1 / np.abs(dq).max()
+            q = np.clip(q + dq, lo, hi)
+        if np.linalg.norm(e_pos) > 0.003 or np.linalg.norm(e_rot) > np.radians(2.0):
+            return -1.0
+        return float(np.degrees(min((q - self.lo).min(), (self.hi - q).min())))
+
+
+class TestReach:
+    @pytest.mark.parametrize(
+        ("radius", "heights"),
+        [(bs.REACH_RADIUS[0], (0.013, 0.10, 0.16)), (bs.REACH_RADIUS[1], (0.12, 0.20, 0.27))],
+        ids=["nearest", "farthest"],
+    )
+    def test_hand_reaches_the_reach_limits_fingers_down_with_a_joint_margin(self, sim, radius, heights) -> None:
+        # Four hand headings relative to the base's direction, each with its half-turn twin (the
+        # hand is symmetric): the better of the two keeps every joint 8 deg inside its limits.
+        ik = _ReachIK(sim.model)
+        for azimuth in np.radians([0.0, 35.0, -35.0]):
+            for z in heights:
+                pos = np.array([radius * np.cos(azimuth), radius * np.sin(azimuth), z])
+                for heading in np.radians([0.0, 45.0, 90.0, 135.0]):
+                    best = max(ik.margin(pos, azimuth + heading + flip) for flip in (0.0, np.pi))
+                    assert best >= 8.0, (radius, np.degrees(azimuth), z, np.degrees(heading), best)
