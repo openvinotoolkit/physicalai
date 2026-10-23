@@ -739,6 +739,9 @@ class MuJoCoRobot(OperatorControls):
             self._record_tick(float(data.time))
             if self._episode_auto_reset is not None:
                 self._episode_auto_reset.update(model, data)
+            if self._automation.take_reset_request():  # type: ignore[union-attr]
+                logger.info("The autopilot gave up on the episode; resetting the scene")
+                self._reset()
             self._objects.apply_held(model, data)
         self._objects.publish(data)
         if self._viewer is not None:

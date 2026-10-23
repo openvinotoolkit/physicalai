@@ -708,6 +708,8 @@ class BucketSortTask:
         """Where the last reset put the buckets and objects; ``None`` before the first reset."""
         self.slot_colors: tuple[str, ...] = BUCKET_COLORS
         """The bucket colours left to right (by decreasing y) as the last reset put them."""
+        self.reset_count = 0
+        """How many resets have run: a new value means a new layout and instruction."""
 
     @property
     def allowed_pairs(self) -> tuple[Pair, ...]:
@@ -761,6 +763,7 @@ class BucketSortTask:
         self.layout = layout
         self.slot_colors = layout.colors_left_to_right
         self.instruction = sample_instruction(rng, self._allowed, vary_text=self.vary_text)
+        self.reset_count += 1
         mujoco.mj_forward(model, data)
         logger.info(
             "Bucket sort: {!r} ({}); buckets left to right {}",

@@ -1,7 +1,10 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Run the scripted conveyor demonstrator inside the simulation loop.
+"""Run a scene's scripted demonstrator inside the simulation loop.
+
+The conveyor scene has ``conveyor_demo.ConveyorDemonstrator`` (one SO-101), the bucket_sort scene
+``bucket_sort_demo.BucketSortDemonstrator`` (one Franka FR3).
 
 Two ways to use it:
 
@@ -17,9 +20,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal, get_args
 
-if TYPE_CHECKING:
-    import numpy as np
+import numpy as np
 
+if TYPE_CHECKING:
+    from physicalai_mujoco_plugin.bucket_sort import BucketSortTask
+    from physicalai_mujoco_plugin.bucket_sort_demo import BucketSortDemonstrator
     from physicalai_mujoco_plugin.conveyor import ConveyorSort
     from physicalai_mujoco_plugin.conveyor_demo import ConveyorDemonstrator
 
@@ -33,14 +38,19 @@ class Autopilot:
     def __init__(self) -> None:
         """Start switched off, with no scene bound."""
         self._mode: AutopilotMode = "off"
-        self._demo: ConveyorDemonstrator | None = None
+        self._demo: ConveyorDemonstrator | BucketSortDemonstrator | None = None
         self._unavailable: str | None = None
         """Why a conveyor scene has no autopilot, for the viewer and ``POST /autopilot``."""
 
     @property
     def available(self) -> bool:
-        """Whether the current scene has a demonstrator (conveyor scenes only)."""
+        """Whether the current scene has a demonstrator (the conveyor and bucket_sort scenes)."""
         return self._demo is not None
+
+    @property
+    def demonstrator(self) -> ConveyorDemonstrator | BucketSortDemonstrator | None:
+        """The current scene's demonstrator, if it has one."""
+        return self._demo
 
     @property
     def mode(self) -> AutopilotMode:
@@ -52,14 +62,34 @@ class Autopilot:
         """Whether the demonstrator writes the actuators, so client actions must be ignored."""
         return self.mode == "drive"
 
-    def bind(self, model: object | None, conveyor: ConveyorSort | None, *, robots: int = 1) -> None:
+    def bind(
+        self,
+        model: object | None,
+        conveyor: ConveyorSort | None,
+        *,
+        robots: int = 1,
+        bucket_task: BucketSortTask | None = None,
+        seed: int | None = None,
+    ) -> None:
         """Attach to a freshly loaded scene, switched off.
 
-        Scenes without a conveyor have no autopilot, and neither has a conveyor with several arms:
-        the demonstrator drives one SO-101.
+        Only the conveyor and bucket_sort scenes have an autopilot, and a conveyor with several arms
+        has none: its demonstrator drives one SO-101.
+
+        Args:
+            model: The loaded model, or ``None``.
+            conveyor: The scene's conveyor controller, if it has a belt.
+            robots: Number of arms.
+            bucket_task: The bucket_sort scene's task (its reset callback), if that is the scene.
+            seed: Seeds the bucket_sort demonstrator's draws; ``None`` draws a fresh seed.
         """
         self._mode = "off"  # a mode chosen for an earlier scene must not come back with this one
         self._unavailable = None
+        if model is not None and conveyor is None and bucket_task is not None:
+            from physicalai_mujoco_plugin.bucket_sort_demo import BucketSortDemonstrator  # noqa: PLC0415
+
+            self._demo = BucketSortDemonstrator(model, bucket_task, rng=np.random.default_rng(seed))
+            return
         if model is None or conveyor is None:
             self._demo = None
             return
@@ -88,12 +118,22 @@ class Autopilot:
         if self._demo is not None:
             self._demo.reset()
 
+    def take_reset_request(self) -> bool:
+        """Return whether the demonstrator gave up on an episode and wants the scene reset, once.
+
+        Returns:
+            ``True`` once per failed bucket_sort episode while the autopilot runs.
+        """
+        demo = self._demo
+        take = getattr(demo, "take_reset_request", None)
+        return bool(take()) if take is not None and self.mode != "off" else False
+
     def step(self, data: object, dt: float) -> np.ndarray | None:
         """Advance the demonstrator by one tick.
 
         Returns:
-            The demonstrator's joint targets in radians (``SO101_JOINT_ORDER``),
-            or ``None`` when the autopilot is off.
+            The demonstrator's targets in model units, one per channel (joints in radians; the
+            Franka Hand's opening in metres), or ``None`` when the autopilot is off.
         """
         if self._demo is None or self._mode == "off":
             return None
@@ -103,10 +143,15 @@ class Autopilot:
         """Return a JSON-friendly snapshot for ``/health`` and the viewer."""
         demo = self._demo
         target = demo.target if demo is not None and self.mode != "off" else None
-        return {
+        status: dict[str, object] = {
             "available": demo is not None,
             "unavailable_reason": self._unavailable,
             "mode": self.mode,
             "phase": demo.phase if demo is not None and self.mode != "off" else None,
-            "target": target.name if target is not None else None,
+            "target": getattr(target, "name", target),
         }
+        episode = getattr(demo, "status", None)
+        if episode is not None:
+            # bucket_sort: the instruction, the attempt and how the episode ended.
+            status.update(episode() if self.mode != "off" else dict.fromkeys(episode(), None))
+        return status
