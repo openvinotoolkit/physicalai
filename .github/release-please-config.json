@@ -61,6 +61,11 @@
       "release-type": "python",
       "package-name": "physicalai-trossen-plugin",
       "changelog-path": "CHANGELOG.md"
+    },
+    "packages/physicalai-franka-plugin": {
+      "release-type": "python",
+      "package-name": "physicalai-franka-plugin",
+      "changelog-path": "CHANGELOG.md"
     }
   }
 }
