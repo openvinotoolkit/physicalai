@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import colorsys
 import logging
+import time
 from collections import deque
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     import numpy as np
+    import psutil
 
     from physicalai.capture.frame import Frame
     from physicalai.runtime.events import InferenceEvent, LifecycleEvent, MetricsEvent, TickEvent
@@ -34,6 +36,9 @@ class RerunCallback:
     carry no frames and are not counted). Camera names for the blueprint
     layout are discovered lazily from the first tick's ``camera_frames`` keys,
     so this callback never holds a ``Camera`` reference of its own.
+    Host CPU/RAM and process CPU/resident memory are sampled at most once per
+    second and shown in a System Stats table. Both CPU percentages are normalized
+    across all host logical cores, so 100% means the entire host CPU capacity.
 
     Do NOT wrap with :class:`AsyncCallback` — Rerun's SDK already batches I/O
     asynchronously.  The ``AsyncCallback`` guard (rejects inners with action
@@ -77,10 +82,14 @@ class RerunCallback:
         self._blueprint_updated = False
         self._camera_names: list[str] | None = None
         self._latencies: deque[float] = deque(maxlen=200)
+        self._process: psutil.Process | None = None
+        self._next_system_stats: float = 0.0
 
     def on_lifecycle(self, event: LifecycleEvent) -> None:  # noqa: D102
         if event.event == "start":
             self._source_ticks = 0
+            self._process = None
+            self._next_system_stats = 0.0
             if not self._initialized:
                 self._init_rerun(event.session_id, event.metadata)
         self._log_lifecycle_marker(event)
@@ -101,6 +110,7 @@ class RerunCallback:
         rr.log("runtime/loop_duration_s", rr.Scalars(event.loop_duration_s))
         rr.log("runtime/sleep_time_s", rr.Scalars(event.sleep_time_s))
         rr.log("runtime/stale_obs", rr.Scalars(float(event.stale_obs)))
+        self._log_system_stats()
 
         if self._camera_names is None:
             # Discover camera names from the first tick's already-read frames —
@@ -245,7 +255,7 @@ class RerunCallback:
         rr.log("queue/inference", rr.SeriesLines(widths=1.5, colors=[220, 50, 50, 255], names="inference"), static=True)
 
     def _send_default_blueprint(self) -> None:
-        """Send a default blueprint: actions+predicted overlaid, queue, joints, cameras."""
+        """Send a default blueprint with robot plots, cameras, and live stats."""
         try:
             import rerun as rr  # noqa: PLC0415
             import rerun.blueprint as rrb  # noqa: PLC0415
@@ -273,15 +283,13 @@ class RerunCallback:
             origin="/inference/stats",
             name="Inference Latency",
         )
-        if camera_names:
-            top_row = rrb.Grid(
-                contents=[
-                    *[rrb.Spatial2DView(origin=f"/camera/{n}", name=n) for n in camera_names],
-                    latency_view,
-                ],
-            )
-        else:
-            top_row = latency_view
+        top_row = rrb.Grid(
+            contents=[
+                *[rrb.Spatial2DView(origin=f"/camera/{n}", name=n) for n in camera_names],
+                latency_view,
+                rrb.TextDocumentView(origin="/system/stats", name="System Stats"),
+            ],
+        )
 
         views: list[Any] = [
             top_row,
@@ -343,6 +351,43 @@ class RerunCallback:
             f"runtime/lifecycle/{event.event}",
             rr.TextLog(f"{event.event}: {event.metadata}"),
         )
+
+    def _log_system_stats(self) -> None:
+        import psutil  # noqa: PLC0415
+        import rerun as rr  # noqa: PLC0415
+
+        now = time.monotonic()
+        if now < self._next_system_stats:
+            return
+        self._next_system_stats = now + 1.0
+
+        try:
+            if self._process is None:
+                self._process = psutil.Process()
+                # The first nonblocking CPU sample is meaningless; prime both counters.
+                self._process.cpu_percent(interval=None)
+                psutil.cpu_percent(interval=None)
+                return
+            cpu = psutil.cpu_percent(interval=None)
+            memory = psutil.virtual_memory()
+            process_cpu = self._process.cpu_percent(interval=None) / (psutil.cpu_count() or 1)
+            rss = self._process.memory_info().rss
+        except (OSError, psutil.Error):
+            # Observability must not stop robot control when OS counters are unavailable.
+            logger.debug("Failed to sample system stats", exc_info=True)
+            self._process = None
+            return
+
+        md = (
+            "| Metric | Value |\n"
+            "|--------|-------|\n"
+            f"| **Host CPU** | {cpu:.1f}% |\n"
+            f"| **Host RAM** | {memory.percent:.1f}% "
+            f"({(memory.total - memory.available) / 2**30:.2f} / {memory.total / 2**30:.2f} GiB) |\n"
+            f"| **Process CPU** | {process_cpu:.1f}% |\n"
+            f"| **Process RAM (RSS)** | {rss / 2**20:.1f} MiB |"
+        )
+        rr.log("system/stats", rr.TextDocument(md, media_type=rr.MediaType.MARKDOWN))
 
     def _log_latency_table(self) -> None:
         import numpy as np  # noqa: PLC0415

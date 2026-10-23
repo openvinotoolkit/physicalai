@@ -30,9 +30,24 @@ def mock_rerun() -> MagicMock:
 
 
 @pytest.fixture()
-def _patch_rerun(mock_rerun: MagicMock) -> Any:
-    """Patch rerun in sys.modules so RerunCallback can import it."""
-    with patch.dict(sys.modules, {"rerun": mock_rerun}):
+def mock_psutil() -> MagicMock:
+    """Provide deterministic OS counters without requiring the observer extra."""
+    psutil = MagicMock()
+    psutil.Error = RuntimeError
+    psutil.cpu_percent.return_value = 42.5
+    psutil.cpu_count.return_value = 8
+    psutil.virtual_memory.return_value.percent = 62.5
+    psutil.virtual_memory.return_value.total = 16 * 2**30
+    psutil.virtual_memory.return_value.available = 6 * 2**30
+    psutil.Process.return_value.cpu_percent.return_value = 125.0
+    psutil.Process.return_value.memory_info.return_value.rss = 256 * 2**20
+    return psutil
+
+
+@pytest.fixture()
+def _patch_rerun(mock_rerun: MagicMock, mock_psutil: MagicMock) -> Any:
+    """Patch optional observer dependencies so RerunCallback can import them."""
+    with patch.dict(sys.modules, {"rerun": mock_rerun, "psutil": mock_psutil}):
         yield
 
 
@@ -348,6 +363,136 @@ class TestRerunCallbackInference:
         cb.on_tick(_tick(step=0))
         cb.on_inference(_inference(horizon=50, dof=7))
         assert cb._pred_horizon == 50
+
+
+class TestRerunCallbackSystemStats:
+    @pytest.fixture()
+    def clock(self) -> Any:
+        with patch("physicalai.runtime.callbacks.rerun.time.monotonic", return_value=10.0) as clock:
+            yield clock
+
+    def test_primes_cpu_counters_without_logging(
+        self, make_callback: Any, mock_rerun: MagicMock, mock_psutil: MagicMock, clock: MagicMock
+    ) -> None:
+        cb = make_callback()
+        cb.on_lifecycle(_lifecycle_start())
+        cb.on_tick(_tick())
+
+        mock_psutil.cpu_percent.assert_called_once_with(interval=None)
+        mock_psutil.Process.return_value.cpu_percent.assert_called_once_with(interval=None)
+        assert not any(c.args[0] == "system/stats" for c in mock_rerun.log.call_args_list)
+
+    def test_logs_system_table_at_most_once_per_second(
+        self, make_callback: Any, mock_rerun: MagicMock, mock_psutil: MagicMock, clock: MagicMock
+    ) -> None:
+        cb = make_callback()
+        cb.on_lifecycle(_lifecycle_start())
+        cb.on_tick(_tick())
+        clock.return_value = 10.9
+        cb.on_tick(_tick(step=1))
+        mock_psutil.virtual_memory.assert_not_called()
+
+        clock.return_value = 11.0
+        cb.on_tick(_tick(step=2))
+        clock.return_value = 11.5
+        cb.on_tick(_tick(step=3))
+        mock_psutil.virtual_memory.assert_called_once_with()
+        stats_calls = [c for c in mock_rerun.log.call_args_list if c.args[0] == "system/stats"]
+        assert len(stats_calls) == 1
+        md = mock_rerun.TextDocument.call_args.args[0]
+        assert "42.5%" in md
+        assert "62.5% (10.00 / 16.00 GiB)" in md
+        assert "| **Process CPU** | 15.6% |" in md
+        assert "one core" not in md
+        assert "256.0 MiB" in md
+        assert mock_rerun.TextDocument.call_args.kwargs["media_type"] == mock_rerun.MediaType.MARKDOWN
+
+        clock.return_value = 12.0
+        cb.on_tick(_tick(step=4))
+        assert mock_psutil.virtual_memory.call_count == 2
+
+    @pytest.mark.parametrize(
+        ("cores", "raw_cpu", "expected"),
+        [(8, 800.0, "100.0%"), (8, 100.0, "12.5%"), (1, 100.0, "100.0%"), (None, 100.0, "100.0%")],
+    )
+    def test_process_cpu_is_normalized_across_all_cores(
+        self,
+        make_callback: Any,
+        mock_rerun: MagicMock,
+        mock_psutil: MagicMock,
+        clock: MagicMock,
+        cores: int | None,
+        raw_cpu: float,
+        expected: str,
+    ) -> None:
+        mock_psutil.cpu_count.return_value = cores
+        mock_psutil.Process.return_value.cpu_percent.return_value = raw_cpu
+        cb = make_callback()
+        cb.on_lifecycle(_lifecycle_start())
+        cb.on_tick(_tick())
+        clock.return_value += 1.0
+        cb.on_tick(_tick(step=1))
+
+        md = mock_rerun.TextDocument.call_args.args[0]
+        assert f"| **Process CPU** | {expected} |" in md
+        assert "| **Host CPU** | 42.5% |" in md
+
+    def test_session_start_reprimes_cpu_counters(
+        self, make_callback: Any, mock_psutil: MagicMock, clock: MagicMock
+    ) -> None:
+        cb = make_callback()
+        cb.on_lifecycle(_lifecycle_start())
+        cb.on_tick(_tick())
+        cb.on_lifecycle(_lifecycle_start("sess-2"))
+        cb.on_tick(_tick())
+
+        assert mock_psutil.Process.call_count == 2
+        assert mock_psutil.cpu_percent.call_count == 2
+        mock_psutil.virtual_memory.assert_not_called()
+
+    @pytest.mark.parametrize("error", [OSError("unavailable"), RuntimeError("access denied")])
+    @pytest.mark.parametrize("during_priming", [True, False])
+    def test_counter_failure_does_not_break_ticks(
+        self,
+        make_callback: Any,
+        mock_psutil: MagicMock,
+        clock: MagicMock,
+        error: Exception,
+        during_priming: bool,
+    ) -> None:
+        cb = make_callback()
+        cb.on_lifecycle(_lifecycle_start())
+        if during_priming:
+            mock_psutil.Process.side_effect = error
+        else:
+            cb.on_tick(_tick())
+            clock.return_value = 11.0
+            mock_psutil.virtual_memory.side_effect = error
+        cb.on_tick(_tick(step=1))
+        assert cb._process is None
+
+        mock_psutil.Process.side_effect = None
+        mock_psutil.virtual_memory.side_effect = None
+        clock.return_value += 1.0
+        cb.on_tick(_tick(step=2))
+        assert cb._process is not None
+        clock.return_value += 1.0
+        cb.on_tick(_tick(step=3))
+        assert cb._last_step == 3
+
+    @pytest.mark.parametrize("with_camera", [False, True])
+    def test_blueprint_includes_system_stats(
+        self, make_callback: Any, mock_rerun: MagicMock, with_camera: bool
+    ) -> None:
+        blueprint = MagicMock()
+        mock_rerun.blueprint = blueprint
+        with patch.dict(sys.modules, {"rerun.blueprint": blueprint}):
+            cb = make_callback()
+            cb.on_lifecycle(_lifecycle_start())
+            cb.on_tick(_tick(camera_frames={"top": _fake_frame()} if with_camera else {}))
+
+        blueprint.TextDocumentView.assert_any_call(origin="/system/stats", name="System Stats")
+        mock_rerun.send_blueprint.assert_called()
 
 
 @pytest.mark.usefixtures("_patch_rerun")

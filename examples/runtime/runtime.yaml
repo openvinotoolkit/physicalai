@@ -69,6 +69,8 @@ runtime:
 
   callbacks:
     # Live visualization in Rerun. ``mode: spawn`` launches a viewer window.
+    # Includes host CPU/RAM and process CPU/resident memory, sampled once per second.
+    # Install with: uv sync --extra observer-rerun
     # For a remote/long-running viewer, swap to:
     #   mode: connect
     #   connect_addr: "127.0.0.1:9876"
