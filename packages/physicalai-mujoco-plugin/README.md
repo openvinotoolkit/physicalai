@@ -60,7 +60,7 @@ To drive the simulation from Physical AI Studio, see [Use with Physical AI Studi
 
 The viewer opens on its **Simulation** tab, which controls the simulation. The **Camera** tab controls whether the view follows a body. The **Visualization** and **Groups** tabs come from mjviser and control what is drawn.
 
-- **Scene**: pick another scene for the running robot; every tabletop scene runs one or two arms, and a switch keeps the arm count. **Reset Scene** respawns the scene's objects while keeping the target fixed. **Home Arm** puts the arm joints and their position targets at the scene's home pose. An active policy or teleop session will drive the arm away again on its next action. During a replay ([`POST /replay`](#replay-recorded-joint-positions)), the folder shows the replayed frame and a **Stop Replay** button. **Overview camera** moves the `overview` camera between **Shoulder** and **Front** ([Overview camera styles](#overview-camera-styles)); it is disabled while the conveyor's automatic Studio recording runs.
+- **Scene**: pick another scene for the running robot; every tabletop scene runs one or two arms, and a switch keeps the arm count. **Reset Scene** respawns the scene's objects while keeping the target fixed. **Home Arm** puts the arm joints and their position targets at the scene's home pose. An active policy or teleop session will drive the arm away again on its next action. During a replay ([`POST /replay`](#replay-recorded-joint-positions)), the folder shows the replayed frame and a **Stop Replay** button. **Overview camera** moves the `overview` camera between **Shoulder** and **Front** ([Overview camera styles](#overview-camera-styles)); it is disabled while automatic Studio recording runs.
 - **Robot**: the profile, its tier, the joint units, the overview camera style, and each floating base's height, tilt and hold.
 - **Performance**: the simulation speed as a multiple of real time, the control loop rate, and each camera's frame rate, over the last two seconds. Below 0.95x real time, the belt, arm and physics all run slower than the wall clock, while Studio records and policies run at wall-clock rates. Keep it at 1.00x when recording or evaluating.
 - **Randomization**: tick **Fixed seed** to reseed before every reset and scene switch, so object layouts repeat. Untick it to go back to random layouts.
@@ -209,7 +209,16 @@ In `conveyor_sort`, the scripted demonstrator can act as the leader arm, and the
 
 The simulation joins Studio's session the same way a second browser tab does. It finds the session through `GET /api/runtime/sessions` and never stops that session. Use `--studio-url` if Studio does not run at `http://127.0.0.1:7860`.
 
-**Autopilot** has a third mode, **Drive the arm**. It moves the arm directly and ignores incoming actions, which is useful for demos, but don't record in this mode.
+**Autopilot** has a third mode, **Drive the arm**. It moves the arm directly and ignores incoming actions, which is useful for demos, but don't record the conveyor in this mode.
+
+#### Record the bucket_sort autopilot, with automatic episodes
+
+In `bucket_sort`, the demonstrator drives the arm and Studio only observes it. This needs a Studio version with the `observe` follower source, in which Studio sends no actions and records the observed joint positions as the actions.
+
+1. In Studio, open the MuJoCo FR3 follower's recording view (no leader is needed) with a dataset.
+2. In the viewer's **Autopilot** folder, set **Autopilot** to **Drive the arm**.
+3. Set **Keep** and **Episodes**, then tick **Record in Studio**. There is no **Task** field: each episode's worded instruction is its task. The simulation attaches to Studio's session and switches its follower source to `observe`. For each episode it resets the scene, starts a recording with that episode's instruction, and lets the arm move once Studio records. A success is saved as soon as it is detected; with **Perfect episodes only**, a success after a retry (`clean` false) is discarded. A failed or stalled episode, a reset during the episode, or switching the autopilot out of **Drive the arm** discards the episode.
+4. Untick **Record in Studio** to stop, or set **Episodes** to stop after that many saved episodes. Stopping sets Studio's follower source back to `hold`. Pressing stop in Studio, or moving its follower off `observe`, also stops the automation.
 
 ### 5. Run a trained policy
 
@@ -417,7 +426,7 @@ The tabletop scenes place their `overview` camera in one of the two common third
 - `shoulder` (default): high behind the robot base, looking over it at the work area, like the over-the-shoulder camera of [BridgeData V2](https://rail-berkeley.github.io/bridgedata/). This is the scene file's own pose, and the SO-101's is unchanged from earlier releases, so datasets recorded and policies trained on it keep working. A gripper hovering at home can hide a spawned block from it.
 - `front`: across the work area from the robots, facing them, 45 degrees down at the spawn area's centre (between the arms with two), like the `agentview` camera of [robosuite](https://robosuite.ai) and [LIBERO](https://libero-project.github.io). Its distance and aim point grow with the arm's reach like the scene's layout, so every arm, the spawn area and the target stay in frame; in `single_pick_place` the arms at home hide neither a spawned block nor the target. ALOHA's front camera faces its arms from the side opposite its teleoperator.
 
-The camera is named `overview` in both styles, so the camera set and a dataset's camera features stay the same. Choose the style when the simulation starts, with `start --overview front` or `MuJoCoRobot(overview="front")`. While it runs, switch it with the viewer's **Overview camera** dropdown (Simulation tab, **Scene** folder) or `POST /overview`. The switch moves only the camera; the scene, arms and objects stay where they are, and later scene switches keep the style. Datasets and policies expect the view they were recorded with: don't switch during a recording, and keep one view per dataset. While the conveyor's automatic Studio recording runs, the switch is refused (`409`, and the dropdown is disabled).
+The camera is named `overview` in both styles, so the camera set and a dataset's camera features stay the same. Choose the style when the simulation starts, with `start --overview front` or `MuJoCoRobot(overview="front")`. While it runs, switch it with the viewer's **Overview camera** dropdown (Simulation tab, **Scene** folder) or `POST /overview`. The switch moves only the camera; the scene, arms and objects stay where they are, and later scene switches keep the style. Datasets and policies expect the view they were recorded with: don't switch during a recording, and keep one view per dataset. While automatic Studio recording runs, the switch is refused (`409`, and the dropdown is disabled).
 
 The style is not saved: it lasts as long as the simulation, and every start uses `--overview` or the `overview` argument (default `shoulder`). `floor_flat` and custom `--model` XMLs keep their own cameras and offer only `shoulder`; asking them for `front` fails at start, and `POST /overview` returns `409`. `GET /health` reports `overview_style`, the scene's `overview_styles`, and `overview_locked`, the reason a switch is refused now (or `null`).
 
@@ -468,29 +477,29 @@ curl -X POST http://127.0.0.1:8080/replay/stop
 curl -X POST http://127.0.0.1:8080/shutdown
 ```
 
-| Endpoint                    | Method | Description                                                                                     |
-| --------------------------- | ------ | ----------------------------------------------------------------------------------------------- |
-| `/`                         | GET    | Service info, endpoint index                                                                    |
-| `/health`                   | GET    | Sim status: connected, scene, compatible scenes, overview style, seed, episode, timing, cameras |
-| `/cameras`                  | GET    | Camera list with stream/snapshot URLs                                                           |
-| `/cameras/{name}/mjpeg`     | GET    | MJPEG stream (`multipart/x-mixed-replace`)                                                      |
-| `/cameras/{name}/frame.jpg` | GET    | Latest frame as a JPEG snapshot                                                                 |
-| `/scenes`                   | GET    | Current scene, available scene IDs, and IDs compatible with this robot                          |
-| `/scenes/{scene_id}`        | POST   | Switch to a compatible scene (`409` for another arm count)                                      |
-| `/reset`                    | POST   | Reset/randomize the scene; floating bases return to their start pose (held)                     |
-| `/home`                     | POST   | Move the arm joints and targets to the scene's home pose                                        |
-| `/overview`                 | POST   | `{"style": "shoulder" \| "front"}`: move the overview camera; `409` while Studio records        |
-| `/seed`                     | POST   | `{"seed": <0..4294967295> or null}`: fix or clear the reset seed                                |
-| `/episode/auto-reset`       | POST   | `{"enabled": bool, "dwell_s": 0.5..120}` (either field); `409` if unsupported                   |
-| `/conveyor/belt-speed`      | POST   | `{"speed": 0..0.1}` belt speed in m/s; `409` if the scene has no conveyor belt                  |
-| `/autopilot`                | POST   | `{"mode": "off" \| "drive" \| "leader"}`; `409` if the scene has no autopilot                   |
-| `/leader`                   | GET    | Virtual leader pose: `seq`, `mode`, `unit`, `joint_names`, `joint_positions`                    |
-| `/studio/recording`         | POST   | `{"enabled": bool, "task": str (1-200), "keep": "perfect" \| "all", "max_episodes": 0..10000}`  |
-| `/objects`                  | GET    | Free-object joint names and world poses                                                         |
-| `/objects/{joint}/pose`     | POST   | `{"position": [x, y, z], "wxyz": [w, x, y, z]}`: teleport a free object                         |
-| `/replay`                   | POST   | `{"joint_positions": [[...], ...], "fps": 0..1000, "base": null}`: replay recorded joints       |
-| `/replay/stop`              | POST   | End the replay and restore the simulation state from before it                                  |
-| `/shutdown`                 | POST   | Gracefully stop the simulation owner                                                            |
+| Endpoint                    | Method | Description                                                                                                                                                     |
+| --------------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/`                         | GET    | Service info, endpoint index                                                                                                                                    |
+| `/health`                   | GET    | Sim status: connected, scene, compatible scenes, overview style, seed, episode, timing, cameras                                                                 |
+| `/cameras`                  | GET    | Camera list with stream/snapshot URLs                                                                                                                           |
+| `/cameras/{name}/mjpeg`     | GET    | MJPEG stream (`multipart/x-mixed-replace`)                                                                                                                      |
+| `/cameras/{name}/frame.jpg` | GET    | Latest frame as a JPEG snapshot                                                                                                                                 |
+| `/scenes`                   | GET    | Current scene, available scene IDs, and IDs compatible with this robot                                                                                          |
+| `/scenes/{scene_id}`        | POST   | Switch to a compatible scene (`409` for another arm count)                                                                                                      |
+| `/reset`                    | POST   | Reset/randomize the scene; floating bases return to their start pose (held)                                                                                     |
+| `/home`                     | POST   | Move the arm joints and targets to the scene's home pose                                                                                                        |
+| `/overview`                 | POST   | `{"style": "shoulder" \| "front"}`: move the overview camera; `409` while Studio records                                                                        |
+| `/seed`                     | POST   | `{"seed": <0..4294967295> or null}`: fix or clear the reset seed                                                                                                |
+| `/episode/auto-reset`       | POST   | `{"enabled": bool, "dwell_s": 0.5..120}` (either field); `409` if unsupported                                                                                   |
+| `/conveyor/belt-speed`      | POST   | `{"speed": 0..0.1}` belt speed in m/s; `409` if the scene has no conveyor belt                                                                                  |
+| `/autopilot`                | POST   | `{"mode": "off" \| "drive" \| "leader"}`; `409` if the scene has no autopilot                                                                                   |
+| `/leader`                   | GET    | Virtual leader pose: `seq`, `mode`, `unit`, `joint_names`, `joint_positions`                                                                                    |
+| `/studio/recording`         | POST   | `{"enabled": bool, "task": str (1-200), "keep": "perfect" \| "all", "max_episodes": 0..10000}`; conveyor_sort or bucket_sort (which ignores `task`), else `409` |
+| `/objects`                  | GET    | Free-object joint names and world poses                                                                                                                         |
+| `/objects/{joint}/pose`     | POST   | `{"position": [x, y, z], "wxyz": [w, x, y, z]}`: teleport a free object                                                                                         |
+| `/replay`                   | POST   | `{"joint_positions": [[...], ...], "fps": 0..1000, "base": null}`: replay recorded joints                                                                       |
+| `/replay/stop`              | POST   | End the replay and restore the simulation state from before it                                                                                                  |
+| `/shutdown`                 | POST   | Gracefully stop the simulation owner                                                                                                                            |
 
 Control requests are queued and applied on the next control cycle. Invalid bodies return `422`, except for `/replay`. Object coordinates must be finite and within ±2 m.
 
@@ -619,6 +628,7 @@ See the [dimensioned schematic and IRL setup checklist](docs/bucket-sort-camera-
   - Heights, speeds, the grasp offset, the hand yaw, pauses and the release point are drawn per episode from the demonstrator's generator (`--seed` seeds it too).
   - Poses are read live: an object that moves or turns before the grasp re-plans the approach, and a named bucket that moves (pushed, or dragged in the viewer) between the start of the carry and the release re-plans the carry and the release.
   - A missed or dropped object gets one retry; then the episode is reported failed and the scene resets. `/health` `autopilot` reports `phase`, `instruction`, `episode`, `attempt`, `outcome` (`running`, `success`, `failed`, or `stalled` when the arm does not follow the published targets, as in `leader` mode with no client), `failure`, and `clean` (no attempt went wrong).
+  - With **Record in Studio**, each episode is saved to the dataset open in Studio, with its instruction as the task ([Record the bucket_sort autopilot](#record-the-bucket_sort-autopilot-with-automatic-episodes)).
 
 The meshes come from the source CAD with `scripts/build_bucket_sort_meshes.py`, which decimates them, converts them to metres, splits each object by material so MuJoCo can colour it, and writes them in MuJoCo's binary MSH format (about half the size of the same meshes as OBJ, and binary in diffs; the repository sends `*.stl` to Git LFS, `*.msh` is committed as is). The CPU export holds one leg, which the script copies into the body's other five leg sockets, and the script cuts the resistor's bands out of its body mesh. It needs trimesh, pymeshlab and shapely, which the plugin does not depend on; its docstring has the command.
 

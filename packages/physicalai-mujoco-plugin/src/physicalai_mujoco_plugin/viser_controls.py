@@ -864,8 +864,8 @@ class SimControlPanel:
             )
             status = gui.add_markdown(_autopilot_markdown(state.autopilot))
             self._handles.autopilot_mode = (mode, status)
-            if not conveyor:
-                # Automatic Studio recording runs conveyor episodes only.
+            if not conveyor and state.episode.get("kind") != "bucket_sort":
+                # Automatic Studio recording runs conveyor and bucket_sort episodes only.
                 self._bind_autopilot_mode(mode)
                 return
             studio = state.studio
@@ -873,9 +873,17 @@ class SimControlPanel:
             toggle = gui.add_checkbox(
                 "Record in Studio",
                 initial_value=active,
-                hint="Save each conveyor episode to the dataset open in Studio's recording view",
+                hint="Save each conveyor episode to the dataset open in Studio's recording view"
+                if conveyor
+                else "Save each episode the autopilot drives to the dataset open in Studio's recording view; "
+                "Studio only observes the arm",
             )
-            task = gui.add_text("Task", initial_value=str(studio.get("task") or DEFAULT_TASK))
+            if conveyor:
+                task = gui.add_text("Task", initial_value=str(studio.get("task") or DEFAULT_TASK))
+            else:
+                # The instruction is each episode's task, so there is no task to type.
+                task = None
+                gui.add_markdown("**Task:** each episode's instruction. Needs the autopilot on 'Drive the arm'.")
             keep = gui.add_dropdown(
                 "Keep",
                 options=tuple(KEEP_LABELS.values()),
@@ -899,7 +907,7 @@ class SimControlPanel:
                 return
             options = None
             if toggle.value:
-                text = str(task.value).strip()[:MAX_TASK_CHARS] or DEFAULT_TASK
+                text = (str(task.value).strip()[:MAX_TASK_CHARS] if task is not None else "") or DEFAULT_TASK
                 episodes = min(max(int(budget.value), 0), MAX_EPISODES)
                 options = RecordingOptions(task=text, keep=_KEEP_BY_LABEL[str(keep.value)], max_episodes=episodes)
             self._submit(SetStudioRecordingCommand(options=options))

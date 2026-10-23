@@ -11,7 +11,8 @@ simulation, so ``MuJoCoRobot`` only forwards to it:
 - the autopilot (the scripted demonstrator, see ``autopilot.py``);
 - the virtual leader pose served on ``GET /leader``;
 - automatic Studio episodes (``studio_recorder.py``), including holding the
-  belt feed between episodes.
+  belt feed between episodes; in the bucket_sort scene, holding the autopilot
+  between episodes and resetting the scene before each one.
 
 All methods except `leader_snapshot` and `status` run on the simulation thread.
 """
@@ -29,6 +30,8 @@ from physicalai_mujoco_plugin.conveyor import DEFAULT_BELT_SPEED, ConveyorSort
 from physicalai_mujoco_plugin.studio_recorder import (
     DEFAULT_STUDIO_URL,
     AutoRecorder,
+    BucketSortProgress,
+    BucketSortRecorder,
     RecordingOptions,
     StudioLink,
     validate_studio_url,
@@ -65,6 +68,9 @@ class ConveyorAutomation:
         self.studio_url = validate_studio_url(studio_url)
         self.autopilot = Autopilot()
         self.recorder = AutoRecorder(self._open_link)
+        """Records conveyor episodes."""
+        self.bucket_recorder = BucketSortRecorder(self._open_link)
+        """Records bucket_sort episodes that the autopilot drives."""
         self.belt_speed = DEFAULT_BELT_SPEED
         """Belt speed in m/s, kept across scene switches like the auto-reset settings."""
         self._joint_names = tuple(joint_names)
@@ -72,6 +78,8 @@ class ConveyorAutomation:
         self._to_units = to_units
         self._owner_name = owner_name
         self._conveyor: ConveyorSort | None = None
+        self._bucket_task: BucketSortTask | None = None
+        self._recorder_reset = False
         self._holds_feed = False
         self._lock = threading.Lock()
         self._leader_seq = 0
@@ -81,6 +89,16 @@ class ConveyorAutomation:
     def conveyor(self) -> ConveyorSort | None:
         """The current scene's conveyor controller, if it has a belt."""
         return self._conveyor
+
+    @property
+    def studio_recorder(self) -> AutoRecorder | BucketSortRecorder:
+        """The recorder for the current scene: bucket_sort's, else the conveyor's."""
+        return self.bucket_recorder if self._bucket_task is not None else self.recorder
+
+    @property
+    def recording_active(self) -> bool:
+        """Whether automatic Studio recording runs (so the overview camera must stay put)."""
+        return self.recorder.active or self.bucket_recorder.active
 
     @property
     def drives_arm(self) -> bool:
@@ -124,20 +142,28 @@ class ConveyorAutomation:
             )
         self._conveyor = conveyor
         self._holds_feed = False  # a new conveyor starts unheld
+        self._recorder_reset = False
         self.autopilot.bind(model, conveyor, robots=robots, bucket_task=bucket_task, seed=seed)
+        self._bucket_task = bucket_task if model is not None and conveyor is None else None
         if conveyor is None and self.recorder.phase != "off":
             self.recorder.disable("Automatic recording needs the conveyor scene.")
         elif conveyor is not None:
             self.recorder.restart_episode("The scene was reloaded.")
+        if self._bucket_task is None and self.bucket_recorder.phase != "off":
+            self.bucket_recorder.disable("Automatic recording of bucket_sort episodes needs the bucket_sort scene.")
+        # A reloaded bucket_sort scene is a new task object: the recorder discards the episode itself.
         return conveyor
 
     def take_reset_request(self) -> bool:
-        """Return whether the autopilot gave up on an episode and wants the scene reset, once.
+        """Return whether the scene should be reset now, once.
 
         Returns:
-            ``True`` once per failed bucket_sort episode.
+            ``True`` once per failed bucket_sort episode the autopilot gave up on, and once before
+            each bucket_sort episode Studio records.
         """
-        return self.autopilot.take_reset_request()
+        requested = self.autopilot.take_reset_request()
+        recorder, self._recorder_reset = self._recorder_reset, False
+        return requested or recorder
 
     def reset(self) -> None:
         """Forget the autopilot's current pick and restart a Studio episode; call after a scene reset."""
@@ -147,6 +173,7 @@ class ConveyorAutomation:
     def close(self) -> None:
         """Detach from Studio; call when the simulation disconnects."""
         self.recorder.disable()
+        self.bucket_recorder.disable()
 
     # ------------------------------------------------------------------
     # Commands
@@ -180,17 +207,22 @@ class ConveyorAutomation:
     def set_studio_recording(self, options: RecordingOptions | None) -> bool:
         """Switch automatic Studio recording on with `options`, or off with ``None``.
 
+        In the bucket_sort scene the task of `options` is ignored: each episode's instruction is its task.
+
         Returns:
-            ``False`` if recording was requested outside the conveyor scene.
+            ``False`` if recording was requested outside the conveyor and bucket_sort scenes.
         """
         if options is None:
-            self.recorder.disable("Switched off.")
+            self.studio_recorder.disable("Switched off.")
             return True
-        if self._conveyor is None:
-            logger.warning("Automatic Studio recording needs the conveyor scene")
-            return False
-        self.recorder.enable(options)
-        return True
+        if self._conveyor is not None:
+            self.recorder.enable(options)
+            return True
+        if self._bucket_task is not None:
+            self.bucket_recorder.enable(options)
+            return True
+        logger.warning("Automatic Studio recording needs the conveyor or bucket_sort scene")
+        return False
 
     # ------------------------------------------------------------------
     # Per control tick
@@ -216,8 +248,31 @@ class ConveyorAutomation:
             if directive.clear_belt:
                 conveyor.reset_items(model, data)
                 self.autopilot.reset()
-        targets = self.autopilot.step(data, dt)
+        hold_arm = False
+        if self._bucket_task is not None:
+            bucket = self.bucket_recorder.update(self._bucket_progress())
+            hold_arm = bucket.hold_arm
+            self._recorder_reset = self._recorder_reset or bucket.reset_scene
+        targets = None if hold_arm else self.autopilot.step(data, dt)
         self._publish_leader(arm_targets if targets is None else targets)
+
+    def _bucket_progress(self) -> BucketSortProgress:
+        """Read what the bucket_sort recorder needs this tick.
+
+        Returns:
+            The layout generation, the instruction and the autopilot's mode and episode outcome.
+        """
+        task = self._bucket_task
+        instruction = task.instruction if task is not None else None
+        episode = self.autopilot.status()
+        outcome, clean = episode.get("outcome"), episode.get("clean")
+        return BucketSortProgress(
+            generation=(id(task), task.reset_count if task is not None else 0),
+            instruction=instruction.text if instruction is not None else None,
+            driving=self.autopilot.mode == "drive",
+            outcome=outcome if isinstance(outcome, str) else None,
+            clean=clean if isinstance(clean, bool) else None,
+        )
 
     def _publish_leader(self, targets: np.ndarray) -> None:
         """Publish the virtual leader pose in the robot's unit.
@@ -253,7 +308,7 @@ class ConveyorAutomation:
 
     def status(self) -> dict[str, dict[str, object]]:
         """Return the ``autopilot`` and ``studio`` sections of ``/health`` and the viewer."""
-        return {"autopilot": self.autopilot.status(), "studio": self.recorder.status()}
+        return {"autopilot": self.autopilot.status(), "studio": self.studio_recorder.status()}
 
     def _open_link(self) -> StudioLink:
         return StudioLink(self.studio_url, self._owner_name())
