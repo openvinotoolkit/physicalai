@@ -302,6 +302,9 @@ class MuJoCoRobot(OperatorControls):
             len(self.joint_names),
             sim.model.opt.timestep,
         )
+        if self._camera_arg is None:
+            # Before the viewer opens: its panel lists the configured cameras (the Cameras folder).
+            self._cameras.configs = self._default_cameras(sim)
         if self._enable_viewer:
             from physicalai_mujoco_plugin.viewer import ViewerService  # noqa: PLC0415
 
@@ -315,8 +318,6 @@ class MuJoCoRobot(OperatorControls):
             )
             if not self._viewer.open(sim.model, sim.data):
                 self._viewer, self._enable_viewer = None, False
-        if self._camera_arg is None:
-            self._cameras.configs = self._default_cameras(sim)
         self._cameras.start(sim.model, sim.data)
         self._start_http_server()
 
