@@ -28,7 +28,7 @@ outside the bucket gets one retry: the hand lets go and returns home, and once t
 the table, in reach, its long side level) a new attempt with fresh parameters starts from there.
 After that the episode is marked ``failed`` and the demonstrator asks for a scene reset
 (:meth:`BucketSortDemonstrator.take_reset_request`), so a recorder can discard the episode and the
-next one starts. A target object that moves before the grasp re-plans the approach; a target bucket
+next one starts. A target object that moves or turns before the grasp re-plans the approach; a target bucket
 that moves during the carry or the descent into it, up to the release, re-plans the place. The
 buckets are free bodies: their poses are read from the live data on every check and copied, with
 the objects', from ``qpos`` into every plan.
@@ -49,7 +49,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 from loguru import logger
 
-from physicalai_mujoco_plugin.bucket_sort import BUCKET_COLORS, BUCKET_INTERIOR, OBJECTS, bucket_containing
+from physicalai_mujoco_plugin.bucket_sort import BUCKET_COLORS, BUCKET_INTERIOR, OBJECT_Y, OBJECTS, bucket_containing
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -129,6 +129,12 @@ FAILURE_HOLD_S = 1.0
 """A failed episode is reported this long, at home, before the reset is requested."""
 REPLAN_SHIFT = 0.012
 """Re-plan the approach when the target object moved this far (m) before the grasp."""
+REPLAN_TURN = float(np.radians(5.0))
+"""Re-plan the approach when the target object's grasp axis turned this far before the grasp."""
+RETRY_X = (0.24, 0.52)
+RETRY_Y = (OBJECT_Y[0] - 0.02, OBJECT_Y[1] + 0.02)
+"""Where a retry picks the object up again: around the spawn area (``bucket_sort.OBJECT_X`` and
+``OBJECT_Y``), with room for the nudge a missed grasp gives it."""
 MAX_REPLANS = 3
 
 Phase = Literal[
@@ -864,6 +870,25 @@ class Planner:
         body = self._bucket_body[color]
         return self.ik.data.xpos[body].copy(), self.ik.data.xmat[body].reshape(3, 3).copy()
 
+    def carry_held(self, name: str, live: object, q: np.ndarray) -> None:
+        """Move object *name* in the private data from the hand in *live* to the hand at *q* (after :meth:`load`).
+
+        The object keeps its pose relative to the hand, so a plan that starts at *q* (where braking
+        stops) sees it where the hand will hold it then, not where it is now.
+        """
+        body, adr = self._object_body[name], self._object_qpos[name]
+        hand_rot = live.xmat[self.ik.hand].reshape(3, 3)
+        relative_pos = hand_rot.T @ (live.xpos[body] - self.ik.tcp(live))
+        relative_rot = hand_rot.T @ live.xmat[body].reshape(3, 3)
+        data = self.ik.data
+        self.ik.set_arm(q)
+        hand_rot = data.xmat[self.ik.hand].reshape(3, 3)
+        data.qpos[adr : adr + 3] = self.ik.tcp() + hand_rot @ relative_pos
+        quat = np.zeros(4)
+        self._mujoco.mju_mat2Quat(quat, (hand_rot @ relative_rot).ravel())
+        data.qpos[adr + 3 : adr + 7] = quat
+        self._mujoco.mj_kinematics(self.model, data)
+
     # -- grasp geometry ---------------------------------------------------
 
     def grasp_axes(self, name: str, rotation: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
@@ -1450,6 +1475,7 @@ class BucketSortDemonstrator:
         self._lift_check_since: float | None = None
         self._rest_z = 0.0
         self._planned_object: np.ndarray | None = None
+        self._planned_axis = 0.0
         self._reset_requested = False
         self.plans: list[JointPlan] = []
         """Every plan of the current episode, for diagnostics."""
@@ -1522,10 +1548,12 @@ class BucketSortDemonstrator:
             Eight targets in model units, ``ACTUATORS`` order: the seven arm joints (radians) and the
             hand's opening (m).
         """
-        if self._q is None:
+        new_episode = self._episode is None or self._generation != self.task.reset_count
+        if self._q is None or new_episode:
+            # A scene reset puts the arm home: start from there, not from the last episode's targets.
             self._q = np.array(data.qpos[self.ik.qpos_adr])
             self._grip = float(np.clip(data.ctrl[self._actuators[7]], 0.0, GRIP_OPEN))
-        if self._episode is None or self._generation != self.task.reset_count:
+        if new_episode:
             self._start_episode(data)
         self._q_prev = self._q.copy()
         self._advance(data, dt)
@@ -1610,8 +1638,12 @@ class BucketSortDemonstrator:
             return
         name = episode.instruction.object
         if self._phase in {"approach", "descend"} and self._planned_object is not None:
-            moved = np.linalg.norm(data.xpos[self._object_body[name]][:2] - self._planned_object[:2])
-            if moved > REPLAN_SHIFT:
+            body = self._object_body[name]
+            moved = np.linalg.norm(data.xpos[body][:2] - self._planned_object[:2])
+            axis = self.planner.grasp_axis_yaw(name, data.xmat[body].reshape(3, 3))
+            # The hand closes the same way turned by half a turn.
+            turned = abs(wrap_near(axis, self._planned_axis, np.pi) - self._planned_axis)
+            if moved > REPLAN_SHIFT or turned > REPLAN_TURN:
                 self._replan(data, dt, f"the {name} moved", attempt=True)
             return
         if plan.lift_check is not None and tick == plan.lift_check:
@@ -1732,8 +1764,8 @@ class BucketSortDemonstrator:
         position = data.xpos[body]
         rotation = data.xmat[body].reshape(3, 3)
         return bool(
-            0.24 <= position[0] <= 0.52  # noqa: PLR2004
-            and abs(position[1]) <= 0.32  # noqa: PLR2004
+            RETRY_X[0] <= position[0] <= RETRY_X[1]
+            and RETRY_Y[0] <= position[1] <= RETRY_Y[1]
             and position[2] < 0.05  # noqa: PLR2004
             and self.planner.shapes[name].grasp_axes(rotation) is not None
             and bucket_containing(self.model, data, position) is None
@@ -1828,9 +1860,10 @@ class BucketSortDemonstrator:
             self.stats.attempts += 1
         snapshot = SceneSnapshot.take(data)
         self.planner.load(snapshot)
-        position, _ = self.planner.object_pose(episode.instruction.object)
+        position, rotation = self.planner.object_pose(episode.instruction.object)
         self._rest_z = float(position[2])
         self._planned_object = position.copy()
+        self._planned_axis = self.planner.grasp_axis_yaw(episode.instruction.object, rotation)
         plan = self.plan_attempt(
             snapshot, self._q, self._start_state(), episode.instruction, episode.params, dt, episode.rng
         )
@@ -1840,8 +1873,9 @@ class BucketSortDemonstrator:
         """Plan the carry and the release again, with the object in the hand, and start it."""
         episode = self._episode
         instruction = episode.instruction  # type: ignore[union-attr]
-        snapshot = SceneSnapshot.take(data)
-        self.planner.load(snapshot)
+        self.planner.load(SceneSnapshot.take(data))
+        # Plan from where braking stops, with the object where the hand will hold it then.
+        self.planner.carry_held(instruction.object, data, self._q)
         start = self._start_state()
         position, _ = self.planner.object_pose(instruction.object)
         offset = (position - start[:3])[:2]
