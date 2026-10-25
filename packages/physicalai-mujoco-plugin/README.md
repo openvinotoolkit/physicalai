@@ -314,7 +314,7 @@ Use `--unit degrees` (or `unit="degrees"` on `MuJoCoRobot`) to get joint angles 
 Every robot comes from MuJoCo Menagerie and is described by a _profile_: what the plugin knows about it beyond its model. `physicalai-mujoco profiles` lists the hand-written ones. Their _tier_ says how closely they are maintained:
 
 - `twin`: matches a real robot's driver, with the same joint names and units.
-- `dataset`: an arm that public robot-learning datasets use. Channels, home pose and cameras are derived from the model. Channel names change only where LeRobot datasets name the joints (ALOHA, SO-100, Koch); values stay in model units from the model's zero pose, without any dataset's calibration.
+- `dataset`: an arm that public robot-learning datasets use. Channels, home pose and cameras are derived from the model. Channel names change only where LeRobot datasets name the joints (ALOHA, SO-100, Koch); values stay in model units from the model's zero pose, without any dataset's calibration. `franka_fr3_robotiq` is the exception: it keeps `franka_fr3`'s channel names and reads its gripper as a width in metres.
 - `experimental`: floating-base robots on floor scenes; nothing balances them.
 
 | Profile                | Robot                                                   | Tier           | Scenes              | Arms | Units        |
@@ -332,6 +332,7 @@ Every robot comes from MuJoCo Menagerie and is described by a _profile_: what th
 | `franka_panda`         | Franka Emika Panda                                      | `dataset`      | `single_pick_place` | 1, 2 | `degrees`    |
 | `xarm7`                | UFACTORY xArm7                                          | `dataset`      | `single_pick_place` | 1, 2 | `degrees`    |
 | `kinova_gen3`          | Kinova Gen3 (no gripper)                                | `dataset`      | `single_pick_place` | 1, 2 | `degrees`    |
+| `franka_fr3_robotiq`   | Franka Research 3 with DROID's Robotiq 2F-85            | `dataset`      | `single_pick_place` | 1, 2 | `degrees`    |
 | `unitree_g1`           | Unitree G1 humanoid                                     | `experimental` | `floor_flat`        | 1    | `degrees`    |
 | `unitree_go2`          | Unitree Go2 quadruped                                   | `experimental` | `floor_flat`        | 1    | `degrees`    |
 | `boston_dynamics_spot` | Boston Dynamics Spot                                    | `experimental` | `floor_flat`        | 1    | `degrees`    |
@@ -341,6 +342,8 @@ Every robot comes from MuJoCo Menagerie and is described by a _profile_: what th
 ALOHA attaches as Menagerie's two-arm model at the scene's single mount, so both arms keep their real spacing and their wrist cameras (`wrist_cam_left`, `wrist_cam_right`). Its joints are named `left_waist` ... `right_gripper`, as in LeRobot's ALOHA datasets.
 
 The Franka profiles follow `physicalai-franka-plugin`: `fr3_joint1` ... `fr3_joint7` in degrees and `gripper`, the hand's opening width in metres (0 to 0.08), prefixed `left_` and `right_` on the Duo as `BimanualFrankaFR3` names them. Menagerie's FR3 has no hand, so both mount the Franka Hand from Menagerie's Panda package on the flange as Menagerie's Panda does. `franka_duo` is one model, like ALOHA's, with both arms where Franka's FR3 Duo mount (`fr3_duo_mount_v0_3`) puts them, 0.30 m above the scene's mount (an estimate of the Duo's column), so its joint-space poses match the real Duo and the Franka GELLO Duo one to one. Studio lists the Duo instead of a side-by-side `franka_fr3` pair; `start --bimanual` still runs one.
+
+`franka_fr3_robotiq` is the same FR3 with the Robotiq 2F-85 that DROID's Franka arms carry, from Menagerie's `robotiq_2f85`, turned 90° about link 7 so that joint 7 at 0 grasps across the reach. It is not a twin: the real FR3 carries the Franka Hand. It publishes `franka_fr3`'s eight channels, with `gripper` again the opening width in metres (0 closed, 0.085 open). The width follows the finger tendon linearly, which the 2F-85's four-bar linkage departs from by up to 2.2 mm (a closed gripper reads about 2 mm). Menagerie's actuator force limit of ±5 N is kept; the real gripper holds harder. It starts from a ready pose with the gripper pointing down over the table.
 
 The Koch and SO-ARM100 profiles turn Menagerie's arm about its base so that it faces +x like the others (Menagerie's face -x and -y, and their base joint limits keep part of the table out of reach); joint names, ranges and zero pose are unchanged. The Kinova Gen3 has four unlimited joints, so it runs in `degrees` only.
 

@@ -213,8 +213,7 @@ def _customized_robot_spec(profile: RobotProfile) -> mujoco.MjSpec:
         for name in channel.actuators:
             actuator = spec.actuator(name)
             if actuator is None:
-                msg = f"Profile {profile.name!r} channel {channel.name!r} names missing actuator {name!r}"
-                raise ValueError(msg)
+                continue  # an actuator that customize adds is checked below
             if channel.range is not None:
                 joint = spec.joint(actuator.target)
                 if joint is None:
@@ -225,6 +224,11 @@ def _customized_robot_spec(profile: RobotProfile) -> mujoco.MjSpec:
                 actuator.forcerange = list(profile.actuator_forcerange)
     if profile.customize is not None:
         profile.customize(spec)
+    for channel in profile.channels:
+        for name in channel.actuators:
+            if spec.actuator(name) is None:
+                msg = f"Profile {profile.name!r} channel {channel.name!r} names missing actuator {name!r}"
+                raise ValueError(msg)
     return spec
 
 

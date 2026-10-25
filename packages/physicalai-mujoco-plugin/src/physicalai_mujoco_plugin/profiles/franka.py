@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Franka FR3 twins: the FR3 with its Franka Hand, and the two-arm FR3 Duo.
+"""Franka FR3 profiles: the twins (the FR3 with its Franka Hand, the two-arm FR3 Duo) and the Robotiq FR3.
 
 They follow the names and units of ``physicalai-franka-plugin``: ``FrankaFR3(gripper_enabled=True)``
 reports ``fr3_joint1`` ... ``fr3_joint7`` in degrees and ``gripper``, the hand's opening width in
@@ -15,6 +15,11 @@ tendon as the width the real hand reports.
 The Duo is one model, like ALOHA's, with both arms where Franka's FR3 Duo mount puts them, so it
 attaches at a single ``robot_mount`` frame and its joint-space poses match the real Duo and the
 Franka GELLO Duo one to one.
+
+DROID's Franka arms carry a Robotiq 2F-85 instead of the Franka Hand. ``franka_fr3_robotiq`` mounts
+Menagerie's 2F-85 on the FR3 flange and publishes the same eight channels as ``franka_fr3``, the
+gripper again as the opening width in metres (0 to 0.085). It is not a twin of the hardware, which
+carries the Franka Hand.
 """
 
 # MjSpec is supplied by the MuJoCo C extension at runtime.
@@ -25,7 +30,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING
 
-from physicalai_mujoco_plugin.profiles._types import CameraSpec, EndEffector, RobotProfile
+from physicalai_mujoco_plugin.profiles._types import CameraSpec, ChannelOverride, EndEffector, RobotProfile
 from physicalai_mujoco_plugin.profiles.dataset import FRANKA_PANDA_PROFILE, exclude_franka_self_collisions
 
 if TYPE_CHECKING:
@@ -137,6 +142,60 @@ def customize_franka_duo(spec: mujoco.MjSpec) -> None:
     spec.add_key(name="home", qpos=qpos, ctrl=ctrl)
 
 
+ROBOTIQ_WIDTH_M = 0.085
+"""The Robotiq 2F-85's full opening width."""
+_ROBOTIQ_CLOSED_RAD = 0.8
+"""Length of Menagerie's ``split`` tendon (the mean of the two driver angles) with the fingers closed."""
+_ROBOTIQ_KP, _ROBOTIQ_KV, _ROBOTIQ_FORCE_N = 100.0, 10.0, 5.0
+"""Menagerie's actuator, rewritten as a position servo on the tendon: its force is 0.3137 ctrl - 100 L - 10 v
+with ctrl in 0..255, so ctrl / 255 * 0.8 is the target length. Its +-5 N force limit is kept."""
+_ROBOTIQ_MOUNT_YAW = math.pi / 2
+"""Turn of the gripper about link 7: DROID mounts it so that a joint 7 of 0 grasps across the reach."""
+_ROBOTIQ_HOME_RAD = (0.0, -0.3, 0.0, -2.4, 0.0, 2.07, 0.0)
+"""A ready pose: the arm raised, the gripper pointing down over the table."""
+_ROBOTIQ_MENAGERIE = RobotProfile(name="robotiq_2f85", display_name="Robotiq 2F-85", menagerie_model="robotiq_2f85")
+"""Reference to Menagerie's gripper, which is mounted on the FR3 but is not a robot profile of its own."""
+
+
+def attach_robotiq(arm: mujoco.MjSpec) -> None:
+    """Mount Menagerie's Robotiq 2F-85 on an FR3 flange, driven by a ``gripper`` position servo on the finger tendon."""
+    import mujoco  # noqa: PLC0415
+
+    from physicalai_mujoco_plugin.compose import fetch_profile  # noqa: PLC0415 - compose imports the profiles
+
+    grip = mujoco.MjSpec.from_file(str(fetch_profile(_ROBOTIQ_MENAGERIE)))
+    taken = {material.name for material in arm.materials}
+    for material in grip.materials:
+        if material.name in taken:
+            old, material.name = material.name, f"robotiq_{material.name}"
+            for geom in grip.geoms:
+                if geom.material == old:
+                    geom.material = material.name
+    grip.delete(grip.actuator("fingers_actuator"))
+    grip.option.cone, grip.option.impratio = arm.option.cone, arm.option.impratio  # the scene's options win anyway
+    half = _ROBOTIQ_MOUNT_YAW / 2
+    frame = arm.body("fr3_link7").add_frame(pos=list(_HAND_POS), quat=[math.cos(half), 0.0, 0.0, math.sin(half)])
+    frame.attach_body(grip.body("base_mount"), "robotiq_", "")
+    actuator = arm.add_actuator(name="gripper", target="robotiq_split", trntype=mujoco.mjtTrn.mjTRN_TENDON)
+    actuator.set_to_position(kp=_ROBOTIQ_KP, kv=_ROBOTIQ_KV)
+    actuator.ctrlrange = [0.0, _ROBOTIQ_CLOSED_RAD]
+    actuator.forcerange = [-_ROBOTIQ_FORCE_N, _ROBOTIQ_FORCE_N]
+    actuator.ctrllimited = 1
+    actuator.forcelimited = 1
+
+
+def customize_franka_fr3_robotiq(spec: mujoco.MjSpec) -> None:
+    """FR3 with the Robotiq 2F-85; a ready pose with the gripper open."""
+    attach_robotiq(spec)
+    exclude_franka_self_collisions(spec, link_prefix="fr3_")
+    qpos = spec.copy().compile().qpos0  # the gripper's joints stay at their zero pose, which is open
+    qpos[: len(_ROBOTIQ_HOME_RAD)] = _ROBOTIQ_HOME_RAD
+    ctrl = [*_ROBOTIQ_HOME_RAD, 0.0]
+    for key in list(spec.keys):
+        spec.delete(key)
+    spec.add_key(name="home", qpos=qpos, ctrl=ctrl)
+
+
 _HAND_TIP = (0.0, 0.0, 0.1034)
 """Between the finger tips in the hand frame: Franka's TCP, 103.4 mm from the hand's base."""
 
@@ -185,6 +244,42 @@ FRANKA_DUO_PROFILE = RobotProfile(
     reach=0.815,  # from the tilted mount origin; one arm alone reaches 0.855 m
 )
 
+FRANKA_FR3_ROBOTIQ_PROFILE = RobotProfile(
+    name="franka_fr3_robotiq",
+    display_name="Franka Research 3 (Robotiq 2F-85)",
+    menagerie_model="franka_fr3",
+    menagerie_entry="fr3",
+    tier="dataset",
+    default_unit="degrees",
+    channels=(
+        *(ChannelOverride(name=f"fr3_joint{index}", actuators=(f"fr3_joint{index}",)) for index in range(1, 8)),
+        # The servo's target is the finger tendon's length (0 open, 0.8 closed); the channel reads and
+        # takes the opening width instead, like the Franka Hand's. The linkage is not linear, so this
+        # is approximate between the ends.
+        ChannelOverride(
+            name="gripper",
+            actuators=("gripper",),
+            unit="metres",
+            scale=-ROBOTIQ_WIDTH_M / _ROBOTIQ_CLOSED_RAD,
+            offset=ROBOTIQ_WIDTH_M,
+        ),
+    ),
+    customize=customize_franka_fr3_robotiq,
+    default_scene="single_pick_place",
+    # Behind the fingers, looking forward and down at the pads.
+    cameras=(
+        CameraSpec(
+            name="wrist",
+            body="robotiq_base_mount",
+            pos=(0.0, 0.09, 0.04),
+            quat=(0.0, 0.0, 0.986151, 0.165852),
+            fovy=75.0,
+        ),
+    ),
+    end_effectors=(EndEffector(site="robotiq_pinch"),),
+    reach=0.867,
+)
+
 __all__ = [
     "FRANKA_DUO_ARM_Y",
     "FRANKA_DUO_HEIGHT",
@@ -192,8 +287,12 @@ __all__ = [
     "FRANKA_DUO_PROFILE",
     "FRANKA_DUO_RPY",
     "FRANKA_FR3_PROFILE",
+    "FRANKA_FR3_ROBOTIQ_PROFILE",
     "FRANKA_HAND_WIDTH_M",
+    "ROBOTIQ_WIDTH_M",
     "attach_franka_hand",
+    "attach_robotiq",
     "customize_franka_duo",
     "customize_franka_fr3",
+    "customize_franka_fr3_robotiq",
 ]
