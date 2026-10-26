@@ -603,6 +603,51 @@ class TestRTCExecutionObsSlot:
         finally:
             ex.stop()
 
+    def test_refill_infers_on_fresh_observation_not_one_published_during_previous_inference(self) -> None:
+        """Observations published while a chunk is in flight must not seed the next refill.
+
+        ``maybe_request()`` keeps publishing while the queue is below threshold,
+        including while the worker is inside the model. If the slot survives the
+        merge, the next refill infers on a sample that is many ticks old, and
+        the robot replays part of the old trajectory.
+        """
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+
+        chunk_size = 20
+        horizon = 5
+        tick_s = 0.01
+        inference_s = 0.035
+        lock = threading.Lock()
+        tick = 0
+        staleness: list[int] = []
+
+        def predict(inputs: dict[str, Any]) -> dict[str, np.ndarray]:
+            with lock:
+                staleness.append(tick - int(inputs["state"][0]))
+            time.sleep(inference_s)
+            return {"action": np.zeros((1, chunk_size, 3), dtype=np.float32)}
+
+        model = _rtc_model(chunk_size=chunk_size, action_dim=3)
+        model.side_effect = predict
+        queue = RTCActionQueue()
+        ex = RTCExecution(chunk_size=chunk_size, execution_horizon=horizon, fps=1 / tick_s, queue_threshold=horizon)
+        ex.start(model, queue)
+        try:
+            ex.warmup({"state": np.zeros(3, dtype=np.float32)})
+            for _ in range(150):
+                with lock:
+                    tick += 1
+                    current = tick
+                ex.maybe_request({"state": np.full(3, current, dtype=np.float32)})
+                queue.pop()
+                time.sleep(tick_s)
+        finally:
+            ex.stop()
+
+        refills = staleness[1:]
+        assert len(refills) >= 3
+        assert max(refills) <= 2, f"refills inferred on stale observations: {refills}"
+
     def test_reset_rearms_warmup_without_restarting_worker(self) -> None:
         from physicalai.runtime import RTCActionQueue, RTCExecution
 
