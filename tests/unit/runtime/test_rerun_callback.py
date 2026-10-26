@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -121,6 +122,18 @@ class TestRerunCallbackConstruction:
         cb = make_callback(mode="save", save_path="/tmp/test.rrd")
         assert cb is not None
 
+    @pytest.mark.parametrize(
+        "addr",
+        ["not-an-address", "127.0.0.1", "rerun+ftp://127.0.0.1:9876/proxy", "rerun+http://127.0.0.1/proxy"],
+    )
+    def test_invalid_connect_addr_raises(self, make_callback: Any, addr: str) -> None:
+        with pytest.raises(ValueError, match="connect_addr"):
+            make_callback(mode="connect", connect_addr=addr)
+
+    def test_invalid_connect_addr_raises_for_spawn(self, make_callback: Any) -> None:
+        with pytest.raises(ValueError, match="connect_addr"):
+            make_callback(mode="spawn", connect_addr="nope")
+
     def test_missing_rerun_raises_import_error(self) -> None:
         with patch.dict(sys.modules, {"rerun": None}):
             from physicalai.runtime import RerunCallback
@@ -136,8 +149,21 @@ class TestRerunCallbackLifecycle:
         cb.on_lifecycle(_lifecycle_start("my-session"))
 
         mock_rerun.init.assert_called_once_with(application_id="physicalai-runtime", recording_id="my-session")
-        mock_rerun.spawn.assert_called_once()
+        mock_rerun.spawn.assert_called_once_with(port=9876)
         mock_rerun.save.assert_not_called()
+
+    def test_init_rerun_spawn_uses_connect_addr_port(self, make_callback: Any, mock_rerun: MagicMock) -> None:
+        cb = make_callback(connect_addr="127.0.0.1:9800")
+        cb.on_lifecycle(_lifecycle_start())
+
+        mock_rerun.spawn.assert_called_once_with(port=9800)
+        mock_rerun.connect_grpc.assert_not_called()
+
+    def test_init_rerun_spawn_accepts_full_url(self, make_callback: Any, mock_rerun: MagicMock) -> None:
+        cb = make_callback(connect_addr="rerun+http://localhost:9800/proxy")
+        cb.on_lifecycle(_lifecycle_start())
+
+        mock_rerun.spawn.assert_called_once_with(port=9800)
 
     def test_init_rerun_save(self, make_callback: Any, mock_rerun: MagicMock) -> None:
         cb = make_callback(mode="save", save_path="/tmp/out.rrd")
@@ -145,6 +171,43 @@ class TestRerunCallbackLifecycle:
 
         mock_rerun.save.assert_called_once_with("/tmp/out.rrd")
         mock_rerun.spawn.assert_not_called()
+
+    def test_init_rerun_connect_uses_addr(self, make_callback: Any, mock_rerun: MagicMock) -> None:
+        cb = make_callback(mode="connect", connect_addr="10.0.0.1:9800")
+        cb.on_lifecycle(_lifecycle_start())
+
+        mock_rerun.connect_grpc.assert_called_once_with(url="rerun+http://10.0.0.1:9800/proxy")
+        mock_rerun.spawn.assert_not_called()
+        mock_rerun.save.assert_not_called()
+
+    def test_init_rerun_connect_accepts_full_url(self, make_callback: Any, mock_rerun: MagicMock) -> None:
+        cb = make_callback(mode="connect", connect_addr="rerun+https://example.com:9800/proxy")
+        cb.on_lifecycle(_lifecycle_start())
+
+        mock_rerun.connect_grpc.assert_called_once_with(url="rerun+https://example.com:9800/proxy")
+
+    def test_init_rerun_connect_default_addr(self, make_callback: Any, mock_rerun: MagicMock) -> None:
+        cb = make_callback(mode="connect")
+        cb.on_lifecycle(_lifecycle_start())
+
+        mock_rerun.connect_grpc.assert_called_once_with(url="rerun+http://127.0.0.1:9876/proxy")
+
+    def test_connect_addr_ignored_in_save_mode_warns(
+        self, make_callback: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING):
+            make_callback(mode="save", save_path="/tmp/x.rrd", connect_addr="10.0.0.1:9800")
+        assert "connect_addr" in caplog.text
+        assert "ignored" in caplog.text
+
+    def test_spawn_with_remote_host_warns_but_uses_port(
+        self, make_callback: Any, mock_rerun: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING):
+            cb = make_callback(mode="spawn", connect_addr="10.0.0.1:9800")
+        assert "ignored" in caplog.text
+        cb.on_lifecycle(_lifecycle_start())
+        mock_rerun.spawn.assert_called_once_with(port=9800)
 
     def test_lifecycle_marker_logged(self, make_callback: Any, mock_rerun: MagicMock) -> None:
         cb = make_callback()

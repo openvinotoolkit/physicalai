@@ -9,6 +9,7 @@ import colorsys
 import logging
 from collections import deque
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urlsplit
 
 from physicalai.config import export_config
 
@@ -21,6 +22,39 @@ if TYPE_CHECKING:
     from physicalai.runtime.events import InferenceEvent, LifecycleEvent, MetricsEvent, TickEvent
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_RERUN_PORT = 9876
+_RERUN_SCHEMES = frozenset({"rerun", "rerun+http", "rerun+https"})
+# Hosts that mean "this machine"; ``spawn`` can only launch a local viewer.
+_LOCAL_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "0.0.0.0", "::"})
+
+
+def _split_connect_addr(addr: str) -> tuple[str, str, int]:
+    """Split a Rerun address into ``(scheme, host, port)``.
+
+    Accepts ``"host:port"`` (including ``"[::1]:port"``) and canonical
+    ``rerun://``, ``rerun+http://`` or ``rerun+https://`` URLs ending in
+    ``/proxy``. Bare addresses use the ``rerun+http`` scheme.
+
+    Returns:
+        Scheme, host and port parsed from ``addr``.
+
+    Raises:
+        ValueError: If ``addr`` is not a supported Rerun address.
+    """
+    msg = f"invalid connect_addr {addr!r}: expected 'host:port' or 'rerun(+http|+https)://host:port/proxy'"
+    value = addr.strip()
+    is_url = "://" in value
+    try:
+        parsed = urlsplit(value) if is_url else urlsplit(f"//{value}")
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(msg) from exc
+    if parsed.hostname is None or port is None:
+        raise ValueError(msg)
+    if is_url and (parsed.scheme not in _RERUN_SCHEMES or parsed.path.rstrip("/") != "/proxy"):
+        raise ValueError(msg)
+    return parsed.scheme or "rerun+http", parsed.hostname, port
 
 
 @export_config(class_path="physicalai.runtime.RerunCallback")
@@ -39,6 +73,18 @@ class RerunCallback:
     asynchronously.  The ``AsyncCallback`` guard (rejects inners with action
     hooks) is not triggered because this class defines none, but wrapping would
     double the buffering with no benefit.
+
+    ``mode`` selects where data goes:
+
+    - ``"spawn"`` — launch a local viewer and stream to it. The port comes from
+      ``connect_addr`` (default ``127.0.0.1:9876``); the host is ignored, since
+      the viewer is always local. If a viewer is already listening on that
+      port, the spawned process exits and the SDK attaches to the existing one.
+    - ``"connect"`` — stream to an already-running viewer/gRPC server at
+      ``connect_addr`` (``"host:port"`` or a full ``rerun(+http|+https)://host:port/proxy``
+      URL). Use this for remote viewers or when you don't want the SDK to
+      launch one.
+    - ``"save"`` — write to ``save_path``; ``connect_addr`` is unused.
     """
 
     def __init__(  # noqa: D107
@@ -50,12 +96,33 @@ class RerunCallback:
         image_max_dim: int | None = None,
         mode: Literal["spawn", "save", "connect"] = "spawn",
         save_path: str | None = None,
-        connect_addr: str = "127.0.0.1:9876",
+        connect_addr: str | None = None,
         application_id: str = "physicalai-runtime",
     ) -> None:
         if mode == "save" and save_path is None:
             msg = "mode='save' requires save_path"
             raise ValueError(msg)
+        if connect_addr is not None and mode == "save":
+            logger.warning(
+                "RerunCallback connect_addr=%r is ignored because mode='save'; "
+                "use mode='connect' or mode='spawn' to stream to a viewer",
+                connect_addr,
+            )
+
+        spawn_port = _DEFAULT_RERUN_PORT
+        connect_url = f"rerun+http://127.0.0.1:{_DEFAULT_RERUN_PORT}/proxy"
+        if connect_addr is not None and mode != "save":
+            scheme, host, port = _split_connect_addr(connect_addr)
+            connect_url = f"{scheme}://{host}:{port}/proxy"
+            spawn_port = port
+            if mode == "spawn" and host not in _LOCAL_HOSTS:
+                logger.warning(
+                    "RerunCallback mode='spawn' starts a local viewer; host %r from connect_addr is ignored "
+                    "and only port %d is used. Use mode='connect' to stream to a remote viewer.",
+                    host,
+                    port,
+                )
+
         # Fail fast if rerun-sdk is not installed.
         import rerun as rr  # noqa: PLC0415, F401
 
@@ -66,6 +133,8 @@ class RerunCallback:
         self._mode = mode
         self._save_path = save_path
         self._connect_addr = connect_addr
+        self._connect_url = connect_url
+        self._spawn_port = spawn_port
         self._application_id = application_id
 
         self._last_step: int = 0
@@ -188,15 +257,15 @@ class RerunCallback:
 
         rr.init(application_id=self._application_id, recording_id=session_id)
         if self._mode == "spawn":
-            rr.spawn()
+            # The SDK hardcodes 127.0.0.1:9876 when spawning; pass the configured
+            # port so spawn honors connect_addr too.
+            rr.spawn(port=self._spawn_port)
         elif self._mode == "save":
             rr.save(self._save_path)
         elif self._mode == "connect":
             # Rerun 0.22+ uses gRPC. Address like "127.0.0.1:9876" is wrapped
             # into the canonical rerun+http://host:port/proxy URL.
-            addr = self._connect_addr
-            url = addr if addr.startswith(("rerun+http://", "rerun+https://")) else f"rerun+http://{addr}/proxy"
-            rr.connect_grpc(url=url)
+            rr.connect_grpc(url=self._connect_url)
 
         self._fps = metadata.get("fps", 30)
         self._multiplier = int(metadata.get("interpolation_multiplier", 1))
