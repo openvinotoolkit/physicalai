@@ -362,6 +362,8 @@ class RTCExecution(Execution):
             return
 
         with self._obs_lock:
+            if not self._rtc_queue.below_threshold(self.queue_threshold):
+                return
             snapshot = {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in observation.items()}
             self._obs_slot = (snapshot, self._incarnation, None)
 
