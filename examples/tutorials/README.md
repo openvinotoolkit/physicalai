@@ -63,7 +63,7 @@ An ACT policy ([iMaxxgx/act-so101-conveyor-sort](https://huggingface.co/iMaxxgx/
 
 ### Prerequisites
 
-No robot, camera or GPU: it runs on a CPU. From a checkout of this repository:
+No robot, camera or GPU: it runs on a CPU, with Python 3.12 or newer. The notebook installs its packages from PyPI in its first code cell. From a checkout of this repository, skip that cell and use:
 
 ```bash
 uv sync --all-packages --extra notebooks
