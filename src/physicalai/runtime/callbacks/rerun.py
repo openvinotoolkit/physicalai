@@ -24,37 +24,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_RERUN_PORT = 9876
-_RERUN_SCHEMES = frozenset({"rerun", "rerun+http", "rerun+https"})
-# Hosts that mean "this machine"; ``spawn`` can only launch a local viewer.
-_LOCAL_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "0.0.0.0", "::"})
 
 
-def _split_connect_addr(addr: str) -> tuple[str, str, int]:
-    """Split a Rerun address into ``(scheme, host, port)``.
+def _connect_port(addr: str) -> int:
+    """Extract the port from a Rerun address.
 
-    Accepts ``"host:port"`` (including ``"[::1]:port"``) and canonical
-    ``rerun://``, ``rerun+http://`` or ``rerun+https://`` URLs ending in
-    ``/proxy``. Bare addresses use the ``rerun+http`` scheme.
+    Accepts ``"host:port"`` and ``rerun(+http|+https)://host:port/proxy``.
 
     Returns:
-        Scheme, host and port parsed from ``addr``.
+        Port parsed from ``addr``.
 
     Raises:
-        ValueError: If ``addr`` is not a supported Rerun address.
+        ValueError: If ``addr`` has no usable port.
     """
     msg = f"invalid connect_addr {addr!r}: expected 'host:port' or 'rerun(+http|+https)://host:port/proxy'"
-    value = addr.strip()
-    is_url = "://" in value
     try:
-        parsed = urlsplit(value) if is_url else urlsplit(f"//{value}")
-        port = parsed.port
+        port = urlsplit(addr if "://" in addr else f"//{addr}").port
     except ValueError as exc:
         raise ValueError(msg) from exc
-    if parsed.hostname is None or port is None:
+    if port is None:
         raise ValueError(msg)
-    if is_url and (parsed.scheme not in _RERUN_SCHEMES or parsed.path.rstrip("/") != "/proxy"):
-        raise ValueError(msg)
-    return parsed.scheme or "rerun+http", parsed.hostname, port
+    return port
 
 
 @export_config(class_path="physicalai.runtime.RerunCallback")
@@ -102,26 +92,9 @@ class RerunCallback:
         if mode == "save" and save_path is None:
             msg = "mode='save' requires save_path"
             raise ValueError(msg)
-        if connect_addr is not None and mode == "save":
-            logger.warning(
-                "RerunCallback connect_addr=%r is ignored because mode='save'; "
-                "use mode='connect' or mode='spawn' to stream to a viewer",
-                connect_addr,
-            )
-
-        spawn_port = _DEFAULT_RERUN_PORT
-        connect_url = f"rerun+http://127.0.0.1:{_DEFAULT_RERUN_PORT}/proxy"
-        if connect_addr is not None and mode != "save":
-            scheme, host, port = _split_connect_addr(connect_addr)
-            connect_url = f"{scheme}://{host}:{port}/proxy"
-            spawn_port = port
-            if mode == "spawn" and host not in _LOCAL_HOSTS:
-                logger.warning(
-                    "RerunCallback mode='spawn' starts a local viewer; host %r from connect_addr is ignored "
-                    "and only port %d is used. Use mode='connect' to stream to a remote viewer.",
-                    host,
-                    port,
-                )
+        if mode == "spawn" and connect_addr is not None:
+            # Fail fast on a bad address rather than at the first tick.
+            _connect_port(connect_addr)
 
         # Fail fast if rerun-sdk is not installed.
         import rerun as rr  # noqa: PLC0415, F401
@@ -133,8 +106,6 @@ class RerunCallback:
         self._mode = mode
         self._save_path = save_path
         self._connect_addr = connect_addr
-        self._connect_url = connect_url
-        self._spawn_port = spawn_port
         self._application_id = application_id
 
         self._last_step: int = 0
@@ -259,13 +230,19 @@ class RerunCallback:
         if self._mode == "spawn":
             # The SDK hardcodes 127.0.0.1:9876 when spawning; pass the configured
             # port so spawn honors connect_addr too.
-            rr.spawn(port=self._spawn_port)
+            rr.spawn(port=self._spawn_port())
         elif self._mode == "save":
             rr.save(self._save_path)
         elif self._mode == "connect":
-            # Rerun 0.22+ uses gRPC. Address like "127.0.0.1:9876" is wrapped
-            # into the canonical rerun+http://host:port/proxy URL.
-            rr.connect_grpc(url=self._connect_url)
+            # Rerun 0.22+ uses gRPC. A bare "host:port" is wrapped into the
+            # canonical rerun+http://host:port/proxy URL.
+            addr = self._connect_addr or f"127.0.0.1:{_DEFAULT_RERUN_PORT}"
+            url = (
+                addr
+                if addr.startswith(("rerun://", "rerun+http://", "rerun+https://"))
+                else f"rerun+http://{addr}/proxy"
+            )
+            rr.connect_grpc(url=url)
 
         self._fps = metadata.get("fps", 30)
         self._multiplier = int(metadata.get("interpolation_multiplier", 1))
@@ -274,6 +251,14 @@ class RerunCallback:
 
         self._send_series_styles()
         self._send_default_blueprint()
+
+    def _spawn_port(self) -> int:
+        """Port to spawn the local viewer on, derived from ``connect_addr``.
+
+        Returns:
+            The configured port, or Rerun's default when ``connect_addr`` is unset.
+        """
+        return _DEFAULT_RERUN_PORT if self._connect_addr is None else _connect_port(self._connect_addr)
 
     @staticmethod
     def _generate_joint_colors(n: int) -> list[list[int]]:
