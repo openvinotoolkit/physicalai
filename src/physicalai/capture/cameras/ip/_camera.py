@@ -26,9 +26,8 @@ if TYPE_CHECKING:
 # the only portable way to force TCP: FFmpeg's UDP default is often silently
 # dropped by routers/NAT, leaving the RTSP session "open" but frame-less
 # forever. `stimeout` (microseconds) is a session-wide socket timeout — a
-# real, working backstop against a stalled socket, unlike
-# CAP_PROP_READ_TIMEOUT_MSEC (see read()/_wait_first_frame()). Guarded by a
-# lock since this is process-global state and each connect() computes its
+# socket-level backstop in addition to the open-only FFmpeg read timeout.
+# Guarded by a lock since this is process-global state and each connect() computes its
 # own stimeout value from its own `timeout`.
 _RTSP_TRANSPORT_LOCK = threading.Lock()
 
@@ -70,9 +69,14 @@ class IPCamera(Camera):
     ``connect()`` forces TCP transport for ``rtsp://`` URLs — plain UDP RTP is
     often silently dropped by routers/NAT. Credentials in the URL are
     redacted from :attr:`device_id`/logs, but TLS isn't verified for
-    ``https://`` sources — treat the camera and network as trusted. A single
-    read can occasionally take longer than requested (e.g. waiting for the
-    next RTSP keyframe); that's normal RTSP behavior, not a bug here.
+    ``https://`` sources — treat the camera and network as trusted.
+
+    A single reader continuously drains the stream into a latest-frame slot,
+    independently of consumer/publisher pacing. Both read methods can skip
+    frames; this backend is for live control, not lossless recording.
+    Timestamps mark local decode/conversion completion, NOT source capture.
+    Sequences count locally decoded frames, not source exposures. Upstream
+    latency and sources faster than this host can decode remain unobservable.
     """
 
     # Sleep between failed read attempts in the retry loops below. Matches
@@ -81,10 +85,9 @@ class IPCamera(Camera):
     # starts returning immediately instead of blocking on network I/O.
     _POLL_INTERVAL_S = 0.001
 
-    # read_latest() must not block for a control-loop tick behind a stalled
-    # stream, so it uses a minimal read timeout instead of whatever timeout
-    # a prior read()/connect() call left configured on the capture object.
-    _LATEST_READ_TIMEOUT_MS = 1
+    # FFmpeg accepts this only at open time; cap.set() silently fails.
+    # Bound native I/O so disconnect can join before releasing the handle.
+    _IO_TIMEOUT_S = 1.0
 
     def __init__(
         self,
@@ -107,24 +110,25 @@ class IPCamera(Camera):
         self._connected = False
         self._sequence = 0
         self._last_timestamp: float = 0.0
+        self._first_timestamp: float | None = None
         self._cap: cv2.VideoCapture | None = None
         self._last_frame_data: np.ndarray | None = None
+        self._condition = threading.Condition()
+        self._stop = threading.Event()
+        self._reader: threading.Thread | None = None
+        self._error: CaptureError | None = None
+        self._read_sequence = 0
 
     def connect(self, timeout: float = 5.0) -> None:
-        # One deadline for the whole call: CAP_PROP_OPEN_TIMEOUT_MSEC bounds
-        # only the constructor's handshake, so the first-frame wait below
-        # must consume whatever time is left, not a fresh `timeout` budget on
-        # top of it. Otherwise connect() could take up to ~2x timeout,
-        # violating the base class's "timeout bounds the whole call" contract.
+        if self.is_connected:
+            return
+        self._do_disconnect()
         deadline = time.monotonic() + timeout
         timeout_ms = int(timeout * 1000)
         is_rtsp = self._url.lower().startswith("rtsp://")
         try:
-            # Only CAP_PROP_OPEN_TIMEOUT_MSEC goes here — this build rejects
-            # the whole params array if CAP_PROP_READ_TIMEOUT_MSEC/BUFFERSIZE
-            # are also included (verified against real opencv-python-headless,
-            # not reachable via the mocked tests). Both are applied via
-            # cap.set() below instead, after a successful open.
+            # BUFFERSIZE is best-effort below, not a supported FFmpeg open
+            # parameter. READ_TIMEOUT_MSEC, unlike BUFFERSIZE, is open-only.
             with _RTSP_TRANSPORT_LOCK if is_rtsp else contextlib.nullcontext():
                 previous_options = os.environ.get("OPENCV_FFMPEG_CAPTURE_OPTIONS") if is_rtsp else None
                 if is_rtsp:
@@ -133,7 +137,12 @@ class IPCamera(Camera):
                     cap = cv2.VideoCapture(
                         self._url,
                         cv2.CAP_FFMPEG,
-                        [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, timeout_ms],
+                        [
+                            cv2.CAP_PROP_OPEN_TIMEOUT_MSEC,
+                            timeout_ms,
+                            cv2.CAP_PROP_READ_TIMEOUT_MSEC,
+                            max(1, min(timeout_ms, int(self._IO_TIMEOUT_S * 1000))),
+                        ],
                     )
                 finally:
                     # FFmpeg only reads this env var once, at open time (a
@@ -146,12 +155,14 @@ class IPCamera(Camera):
                             os.environ.pop("OPENCV_FFMPEG_CAPTURE_OPTIONS", None)
                         else:
                             os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = previous_options
-        except Exception as err:
+        except Exception:  # noqa: BLE001
+            # Native exception text can contain the authenticated URL.
             msg = f"Failed to open IP camera stream {_redact_url(self._url)}"
-            raise CaptureError(msg) from err
+            raise CaptureError(msg) from None
 
         if not cap.isOpened():
-            cap.release()
+            with contextlib.suppress(Exception):
+                cap.release()
             msg = f"Failed to open IP camera stream {_redact_url(self._url)}"
             raise CaptureError(msg)
 
@@ -161,50 +172,63 @@ class IPCamera(Camera):
         cap.set(cv2.CAP_PROP_FPS, self._fps)
 
         self._cap = cap
-        self._wait_first_frame(timeout, deadline, cap)
-
-    def _wait_first_frame(self, timeout: float, deadline: float, cap: cv2.VideoCapture) -> None:
-        start = deadline - timeout
+        self._stop.clear()
+        self._error = None
+        self._first_timestamp = None
+        self._sequence, self._read_sequence = -1, 0
+        self._reader = threading.Thread(target=self._capture_loop, args=(cap,), name="ip-camera-reader", daemon=True)
         try:
+            self._reader.start()
+            self._wait_first_frame(deadline)
+            self._connected = True
+        except CaptureError:
+            self._do_disconnect()
+            raise
+        except RuntimeError:
+            self._do_disconnect()
+            msg = "Failed to start IP camera reader"
+            raise CaptureError(msg) from None
+        logger.info(f"IP camera {_redact_url(self._url)} connected ({self._width}x{self._height})")
+
+    def _wait_first_frame(self, deadline: float) -> None:
+        with self._condition:
             while True:
+                if self._error is not None:
+                    raise self._error
+                if self._first_timestamp is not None and self._first_timestamp <= deadline:
+                    return
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    break
-                # Best-effort re-clamp per iteration; not honored on every
-                # build (verified: cap.set() can return False even on a live
-                # capture), so a single cap.read() can still exceed
-                # `remaining`. connect()'s `stimeout` is the real backstop
-                # against a stalled socket — this doesn't bound normal RTSP
-                # keyframe-wait latency, which is expected, not a bug.
-                cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, remaining * 1000)
+                    msg = f"Timed out waiting for first frame from {_redact_url(self._url)}"
+                    raise CaptureTimeoutError(msg)
+                self._condition.wait(remaining)
+
+    def _capture_loop(self, cap: cv2.VideoCapture) -> None:
+        try:
+            while not self._stop.is_set():
                 ok, frame = cap.read()
-                if ok and frame is not None:
-                    data = self._convert(frame)
+                if not ok or frame is None:
+                    self._stop.wait(self._POLL_INTERVAL_S)
+                    continue
+                data = self._convert(frame)
+                with self._condition:
                     self._height, self._width = data.shape[:2]
                     self._last_frame_data = data
                     self._last_timestamp = time.monotonic()
-                    self._connected = True
-                    self._sequence = 0
-                    logger.info(f"IP camera {_redact_url(self._url)} connected ({self._width}x{self._height})")
-                    return
-                time.sleep(self._POLL_INTERVAL_S)
-        except Exception as err:
-            # Any unexpected failure while reading/converting the first frame
-            # (e.g. an unusual channel layout) must still release the
-            # VideoCapture handle — self._cap was already assigned by
-            # connect() before this call, so leaving it open here would leak
-            # the handle and orphan it on a subsequent connect() retry.
-            self._do_disconnect()
-            msg = f"Failed to read first frame from IP camera stream {_redact_url(self._url)}"
-            raise CaptureError(msg) from err
-
-        elapsed = time.monotonic() - start
-        self._do_disconnect()
-        msg = (
-            f"Timed out waiting for first frame from {_redact_url(self._url)} "
-            f"after {elapsed:.1f}s (requested timeout: {timeout}s)"
-        )
-        raise CaptureTimeoutError(msg)
+                    self._sequence += 1
+                    if self._first_timestamp is None:
+                        self._first_timestamp = self._last_timestamp
+                    self._condition.notify_all()
+        except Exception:  # noqa: BLE001
+            # Native errors can contain the authenticated URL; do not relay them.
+            with self._condition:
+                self._error = CaptureError("IP camera stream acquisition failed")
+                self._condition.notify_all()
+        finally:
+            try:
+                cap.release()
+            except Exception:  # noqa: BLE001
+                logger.debug("Error releasing IP camera stream")
 
     def _ensure_connected(self) -> cv2.VideoCapture:
         cap = self._cap
@@ -213,14 +237,22 @@ class IPCamera(Camera):
         return cap
 
     def _do_disconnect(self) -> None:
-        if self._cap is not None:
-            try:
-                self._cap.release()
-            except Exception:  # noqa: BLE001
-                logger.debug(f"Error releasing IP camera stream {_redact_url(self._url)}")
+        with self._condition:
+            self._connected = False
+            self._stop.set()
+            self._condition.notify_all()
+        if self._reader is not None and self._reader.ident is not None:
+            self._reader.join(timeout=self._IO_TIMEOUT_S + 1.0)
+            if self._reader.is_alive():
+                msg = "IP camera backend did not stop within its I/O timeout"
+                raise CaptureError(msg)
+        elif self._cap is not None:
+            with contextlib.suppress(Exception):
+                self._cap.release()  # reader never started, so no native read can be in flight
+        self._reader = None
         self._cap = None
         self._last_frame_data = None
-        self._connected = False
+        self._error = None
 
     def _convert(self, frame: np.ndarray) -> np.ndarray:
         """Convert a raw BGR frame (as decoded by OpenCV) to the requested color mode and size.
@@ -249,54 +281,54 @@ class IPCamera(Camera):
 
     @property
     def is_connected(self) -> bool:
-        return self._connected and self._cap is not None
+        return self._connected and self._cap is not None and self._error is None
 
     @property
     def device_id(self) -> str:
         return f"ip:{_redact_url(self._url)}"
 
     def read(self, timeout: float = 2.0) -> Frame:
-        cap = self._ensure_connected()
+        """Wait for a newer decoded frame, skipping overwritten frames.
 
-        start = time.monotonic()
-        deadline = start + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            # Best-effort; see the identical clamp in _wait_first_frame() for
-            # why a single cap.read() isn't actually guaranteed to respect this.
-            cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, remaining * 1000)
-            ok, frame = cap.read()
-            if ok and frame is not None:
-                data = self._convert(frame)
-                self._last_frame_data = data
-                self._sequence += 1
-                self._last_timestamp = time.monotonic()
-                return Frame(data=data, timestamp=self._last_timestamp, sequence=self._sequence)
-            time.sleep(self._POLL_INTERVAL_S)
+        The timeout bounds the consumer wait, not native network I/O.
 
-        elapsed = time.monotonic() - start
-        msg = f"Timed out waiting for frame after {elapsed:.1f}s (requested timeout: {timeout}s)"
-        raise CaptureTimeoutError(msg)
+        Returns:
+            The newest frame decoded since the previous consumer read.
+
+        Raises:
+            CaptureTimeoutError: No newer frame arrived within timeout.
+        """
+        deadline = time.monotonic() + timeout
+        with self._condition:
+            while True:
+                self._ensure_connected()
+                if self._error is not None:
+                    raise self._error
+                if self._sequence > self._read_sequence:
+                    return self.read_latest()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    msg = "Timed out waiting for IP camera frame"
+                    raise CaptureTimeoutError(msg)
+                self._condition.wait(remaining)
 
     def read_latest(self) -> Frame:
-        cap = self._ensure_connected()
+        """Return the latest decoded frame without performing network I/O.
 
-        # Best-effort: bound this read to a minimal timeout so a stalled
-        # stream falls back to the cached frame quickly instead of blocking
-        # for whatever timeout a prior read()/connect() call configured.
-        cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, self._LATEST_READ_TIMEOUT_MS)
+        A stalled source returns the same sequence and decode timestamp.
 
-        ok, frame = cap.read()
-        if ok and frame is not None:
-            data = self._convert(frame)
-            self._last_frame_data = data
-            self._sequence += 1
-            self._last_timestamp = time.monotonic()
-            return Frame(data=data, timestamp=self._last_timestamp, sequence=self._sequence)
+        Returns:
+            The most recently decoded frame, including its original metadata.
 
-        if self._last_frame_data is not None:
+        Raises:
+            CaptureError: Acquisition failed or no frame is available.
+        """
+        with self._condition:
+            self._ensure_connected()
+            if self._error is not None:
+                raise self._error
+            if self._last_frame_data is None:
+                msg = "No frame available"
+                raise CaptureError(msg)
+            self._read_sequence = self._sequence
             return Frame(data=self._last_frame_data, timestamp=self._last_timestamp, sequence=self._sequence)
-        msg = "No frame available"
-        raise CaptureError(msg)

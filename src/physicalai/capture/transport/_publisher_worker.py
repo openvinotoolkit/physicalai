@@ -179,6 +179,12 @@ def _camera_fps_from_config(config: dict[str, object]) -> int:
     return int(fps)
 
 
+def _pace_capture(iteration_start: float, fps: int) -> None:
+    """Rate-limit unpaced capture, including acquisition and publish work."""
+    if fps > 0:
+        shutdown.wait(max(0.0, 1.0 / fps - (time.monotonic() - iteration_start)))
+
+
 class _PublisherState:
     """Mutable holder for camera/publisher resources shared between threads.
 
@@ -441,6 +447,7 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0914, PLR0915
         last_node_check = 0.0
         consecutive_failures = 0
         while not shutdown.is_set():
+            iteration_start = time.monotonic()
             with state.lock:
                 current_camera = state.camera
                 current_fps = state.camera_fps
@@ -476,10 +483,9 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0914, PLR0915
             with contextlib.suppress(Exception):
                 notifier.notify_with_custom_event_id(iox2.EventId.new(0))
 
-            # Yield CPU until next frame is likely ready
-            if current_fps > 0:
-                sleep_percentage = 0.85
-                time.sleep(sleep_percentage / current_fps)
+            # Limit unpaced cameras without adding a full sleep after a
+            # blocking read. IP cameras drain independently of this pacing.
+            _pace_capture(iteration_start, current_fps)
 
             now = time.monotonic()
             if now - last_node_check >= node_check_interval:

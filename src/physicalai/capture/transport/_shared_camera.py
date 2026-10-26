@@ -332,51 +332,32 @@ class SharedCamera(Camera):
 
         iox2 = cast("Any", import_module("iceoryx2"))
 
-        wait_timeout = timeout
-        event = self._listener.timed_wait_one(iox2.Duration.from_secs_f64(wait_timeout))
-        if event is None:
-            msg = "timed out waiting for frame"
-            raise CaptureTimeoutError(msg)
-
-        self._held_sample = None  # release previous borrow before draining
-        newest_sample = None
+        deadline = time.monotonic() + timeout
+        previous = self._latest
         while True:
-            sample = self._subscriber.receive()
-            if sample is None:
-                break
-            newest_sample = sample
-            # Explicitly clear 'sample' to release reference. Otherwise, Python keeps
-            # it alive during the next receive() call, triggering iceoryx2 subscriber warnings/errors,
-            # especially when run in an IDE where debuggers hold onto local frames.
-            sample = None
-
-        if newest_sample is not None:
-            header, frame = self._decode_sample(newest_sample)
-            self._last_header = header
-            self._latest = frame
-            self._check_config_match(header)
-            # Explicitly clear 'newest_sample' to release the iceoryx2 sample borrow under IDE/debugger.
-            newest_sample = None
-
-        if self._latest is None:
-            msg = "no frame available"
-            raise CaptureTimeoutError(msg)
-
-        return self._latest
+            # Notifications can be stale or lost; inspect queued data first.
+            frame = self.read_latest()
+            if frame is not previous:
+                return frame
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                msg = "timed out waiting for frame"
+                raise CaptureTimeoutError(msg)
+            self._listener.timed_wait_one(iox2.Duration.from_secs_f64(min(remaining, 0.5)))
 
     def read_latest(self) -> Frame:
         if not self._connected or self._subscriber is None:
             msg = "shared camera is not connected"
             raise NotConnectedError(msg)
 
-        self._held_sample = None  # release previous borrow before draining
         newest_sample = None
-        # Bounded queue: iceoryx2's default subscriber buffer is small (typically 1-2 samples).
-        # The publisher sends one frame per camera tick, and the subscriber drains on every read_latest() call.
-        while True:
+        # Drain at most one queue capacity even if a fast publisher keeps
+        # refilling it; read_latest must remain bounded under sustained load.
+        for _ in range(self._subscriber.buffer_size):
             sample = self._subscriber.receive()
             if sample is None:
                 break
+            self._held_sample = None  # release the cache only when replacing it
             newest_sample = sample
             # Explicitly clear 'sample' to release reference. Otherwise, Python keeps
             # it alive during the next receive() call, triggering iceoryx2 subscriber warnings/errors,
