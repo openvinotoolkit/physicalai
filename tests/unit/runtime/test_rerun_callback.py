@@ -121,6 +121,11 @@ class TestRerunCallbackConstruction:
         cb = make_callback(mode="save", save_path="/tmp/test.rrd")
         assert cb is not None
 
+    @pytest.mark.parametrize("addr", ["not-an-address", "127.0.0.1", "rerun+http://127.0.0.1/proxy"])
+    def test_spawn_port_requires_a_port(self, make_callback: Any, addr: str) -> None:
+        with pytest.raises(ValueError, match="connect_addr"):
+            make_callback(connect_addr=addr)
+
     def test_missing_rerun_raises_import_error(self) -> None:
         with patch.dict(sys.modules, {"rerun": None}):
             from physicalai.runtime import RerunCallback
@@ -131,12 +136,19 @@ class TestRerunCallbackConstruction:
 
 @pytest.mark.usefixtures("_patch_rerun")
 class TestRerunCallbackLifecycle:
-    def test_init_rerun_spawn(self, make_callback: Any, mock_rerun: MagicMock) -> None:
-        cb = make_callback()
-        cb.on_lifecycle(_lifecycle_start("my-session"))
+    @pytest.mark.parametrize(
+        ("connect_addr", "expected_port"),
+        [(None, 9876), ("127.0.0.1:9800", 9800), ("rerun+http://localhost:9800/proxy", 9800)],
+    )
+    def test_init_rerun_spawn_uses_connect_addr_port(
+        self, make_callback: Any, mock_rerun: MagicMock, connect_addr: str | None, expected_port: int
+    ) -> None:
+        cb = make_callback(connect_addr=connect_addr)
+        cb.on_lifecycle(_lifecycle_start())
 
-        mock_rerun.init.assert_called_once_with(application_id="physicalai-runtime", recording_id="my-session")
-        mock_rerun.spawn.assert_called_once()
+        mock_rerun.init.assert_called_once_with(application_id="physicalai-runtime", recording_id="sess-1")
+        mock_rerun.spawn.assert_called_once_with(port=expected_port)
+        mock_rerun.connect_grpc.assert_not_called()
         mock_rerun.save.assert_not_called()
 
     def test_init_rerun_save(self, make_callback: Any, mock_rerun: MagicMock) -> None:
@@ -145,6 +157,28 @@ class TestRerunCallbackLifecycle:
 
         mock_rerun.save.assert_called_once_with("/tmp/out.rrd")
         mock_rerun.spawn.assert_not_called()
+        mock_rerun.connect_grpc.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("connect_addr", "expected_url"),
+        [
+            (None, "rerun+http://127.0.0.1:9876/proxy"),
+            ("10.0.0.1:9800", "rerun+http://10.0.0.1:9800/proxy"),
+            ("[::1]:9800", "rerun+http://[::1]:9800/proxy"),
+            ("rerun+https://example.com:9800/proxy", "rerun+https://example.com:9800/proxy"),
+            ("rerun://10.0.0.1:9800/proxy", "rerun://10.0.0.1:9800/proxy"),
+            ("rerun+http://example.com/proxy", "rerun+http://example.com/proxy"),
+        ],
+    )
+    def test_init_rerun_connect_url(
+        self, make_callback: Any, mock_rerun: MagicMock, connect_addr: str | None, expected_url: str
+    ) -> None:
+        cb = make_callback(mode="connect", connect_addr=connect_addr)
+        cb.on_lifecycle(_lifecycle_start())
+
+        mock_rerun.connect_grpc.assert_called_once_with(url=expected_url)
+        mock_rerun.spawn.assert_not_called()
+        mock_rerun.save.assert_not_called()
 
     def test_lifecycle_marker_logged(self, make_callback: Any, mock_rerun: MagicMock) -> None:
         cb = make_callback()

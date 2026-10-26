@@ -9,6 +9,7 @@ import colorsys
 import logging
 from collections import deque
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urlsplit
 
 from physicalai.config import export_config
 
@@ -21,6 +22,29 @@ if TYPE_CHECKING:
     from physicalai.runtime.events import InferenceEvent, LifecycleEvent, MetricsEvent, TickEvent
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_RERUN_PORT = 9876
+
+
+def _connect_port(addr: str) -> int:
+    """Extract the port from a Rerun address.
+
+    Accepts ``"host:port"`` and ``rerun(+http|+https)://host:port/proxy``.
+
+    Returns:
+        Port parsed from ``addr``.
+
+    Raises:
+        ValueError: If ``addr`` has no usable port.
+    """
+    msg = f"invalid connect_addr {addr!r}: expected 'host:port' or 'rerun(+http|+https)://host:port/proxy'"
+    try:
+        port = urlsplit(addr if "://" in addr else f"//{addr}").port
+    except ValueError as exc:
+        raise ValueError(msg) from exc
+    if port is None:
+        raise ValueError(msg)
+    return port
 
 
 @export_config(class_path="physicalai.runtime.RerunCallback")
@@ -39,6 +63,18 @@ class RerunCallback:
     asynchronously.  The ``AsyncCallback`` guard (rejects inners with action
     hooks) is not triggered because this class defines none, but wrapping would
     double the buffering with no benefit.
+
+    ``mode`` selects where data goes:
+
+    - ``"spawn"`` — launch a local viewer and stream to it. The port comes from
+      ``connect_addr`` (default ``127.0.0.1:9876``); the host is ignored, since
+      the viewer is always local. If a viewer is already listening on that
+      port, the spawned process exits and the SDK attaches to the existing one.
+    - ``"connect"`` — stream to an already-running viewer/gRPC server at
+      ``connect_addr`` (``"host:port"`` or a full ``rerun(+http|+https)://host:port/proxy``
+      URL). Use this for remote viewers or when you don't want the SDK to
+      launch one.
+    - ``"save"`` — write to ``save_path``; ``connect_addr`` is unused.
     """
 
     def __init__(  # noqa: D107
@@ -50,12 +86,16 @@ class RerunCallback:
         image_max_dim: int | None = None,
         mode: Literal["spawn", "save", "connect"] = "spawn",
         save_path: str | None = None,
-        connect_addr: str = "127.0.0.1:9876",
+        connect_addr: str | None = None,
         application_id: str = "physicalai-runtime",
     ) -> None:
         if mode == "save" and save_path is None:
             msg = "mode='save' requires save_path"
             raise ValueError(msg)
+        if mode == "spawn" and connect_addr is not None:
+            # Fail fast on a bad address rather than at the first tick.
+            _connect_port(connect_addr)
+
         # Fail fast if rerun-sdk is not installed.
         import rerun as rr  # noqa: PLC0415, F401
 
@@ -188,14 +228,20 @@ class RerunCallback:
 
         rr.init(application_id=self._application_id, recording_id=session_id)
         if self._mode == "spawn":
-            rr.spawn()
+            # The SDK hardcodes 127.0.0.1:9876 when spawning; pass the configured
+            # port so spawn honors connect_addr too.
+            rr.spawn(port=self._spawn_port())
         elif self._mode == "save":
             rr.save(self._save_path)
         elif self._mode == "connect":
-            # Rerun 0.22+ uses gRPC. Address like "127.0.0.1:9876" is wrapped
-            # into the canonical rerun+http://host:port/proxy URL.
-            addr = self._connect_addr
-            url = addr if addr.startswith(("rerun+http://", "rerun+https://")) else f"rerun+http://{addr}/proxy"
+            # Rerun 0.22+ uses gRPC. A bare "host:port" is wrapped into the
+            # canonical rerun+http://host:port/proxy URL.
+            addr = self._connect_addr or f"127.0.0.1:{_DEFAULT_RERUN_PORT}"
+            url = (
+                addr
+                if addr.startswith(("rerun://", "rerun+http://", "rerun+https://"))
+                else f"rerun+http://{addr}/proxy"
+            )
             rr.connect_grpc(url=url)
 
         self._fps = metadata.get("fps", 30)
@@ -205,6 +251,14 @@ class RerunCallback:
 
         self._send_series_styles()
         self._send_default_blueprint()
+
+    def _spawn_port(self) -> int:
+        """Port to spawn the local viewer on, derived from ``connect_addr``.
+
+        Returns:
+            The configured port, or Rerun's default when ``connect_addr`` is unset.
+        """
+        return _DEFAULT_RERUN_PORT if self._connect_addr is None else _connect_port(self._connect_addr)
 
     @staticmethod
     def _generate_joint_colors(n: int) -> list[list[int]]:
