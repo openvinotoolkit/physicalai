@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import cast
+
 import numpy as np
 import pytest
 
@@ -124,8 +127,8 @@ class TestXR0PreprocessorState:
             patch_size=16,
             merge_size=2,
             normalize_state=True,
-            state_mean=[1.0] * 8,
-            state_std=[2.0] * 8,
+            state_mean=[[1.0] * 8],
+            state_std=[[2.0] * 8],
         )
         inputs = _make_inputs(state_dim=8)
         inputs[STATE] = np.ones(8, dtype=np.float32) * 3.0
@@ -212,6 +215,79 @@ class TestXR0PreprocessorExtractImages:
             preprocessor._extract_images({STATE: np.zeros((8,), dtype=np.float32)})
 
 
+class TestXR0PreprocessorViewMap:
+    """Observation image keys renamed onto the canonical XR0 view names."""
+
+    @staticmethod
+    def _inputs() -> dict[str, object]:
+        # Keys and order of the local ``Put-the-yellow-ball-to-the-black-box``
+        # dataset: neither name is a canonical XR0 view.
+        return {
+            IMAGES: {
+                "pov_black_follower_camera": np.full((256, 256, 3), 255, dtype=np.uint8),
+                "top_camera": np.zeros((256, 256, 3), dtype=np.uint8),
+            },
+        }
+
+    @staticmethod
+    def _prep(**kwargs) -> XR0Preprocessor:
+        return XR0Preprocessor(max_state_dim=32, patch_size=16, merge_size=2, **kwargs)
+
+    def test_renames_and_reorders_canonically(self) -> None:
+        # The map is declared in dataset order, but the prompt must follow the
+        # canonical order the pretrained checkpoint was trained with.
+        prep = self._prep(
+            image_key_view_map={"images.pov_black_follower_camera": "wrist_left", "images.top_camera": "ego"},
+        )
+        views, images = prep._extract_images(self._inputs())
+        assert views == ["ego", "wrist_left"]
+        # ``ego`` is top_camera (0) and ``wrist_left`` is the follower cam (255).
+        assert images[0].max() == 0
+        assert images[1].max() == 255
+
+    def test_prompt_matches_pretrain_reference(self) -> None:
+        # Byte-for-byte parity with the reference prompt of the base Pretrain
+        # checkpoint (xr0/docs/data_format.md, mibot/server/runtime/client.py).
+        prep = self._prep(
+            image_key_view_map={"images.top_camera": "ego", "images.pov_black_follower_camera": "wrist_left"},
+        )
+        inputs = self._inputs()
+        inputs[STATE] = np.zeros((8,), dtype=np.float32)
+        task = prep(inputs)[TASK]
+        assert isinstance(task, list)
+        prompt = task[0]
+        assert isinstance(prompt, str)
+        assert "# Ego View" in prompt
+        assert prompt.index("# Ego View") < prompt.index("# Left-Wrist View")
+
+    def test_three_views_match_reference_order(self) -> None:
+        prep = self._prep(
+            image_key_view_map={"images.cam_a": "wrist_right", "images.cam_b": "ego", "images.cam_c": "wrist_left"},
+        )
+        inputs: dict[str, object] = {
+            IMAGES: {name: np.zeros((256, 256, 3), dtype=np.uint8) for name in ("cam_a", "cam_b", "cam_c")},
+        }
+        views, _ = prep._extract_images(inputs)
+        assert views == ["ego", "wrist_left", "wrist_right"]
+
+    def test_empty_map_keeps_observation_names(self) -> None:
+        views, _ = self._prep()._extract_images(self._inputs())
+        assert views == ["pov_black_follower_camera", "top_camera"]
+
+    def test_key_mismatch_raises(self) -> None:
+        prep = self._prep(image_key_view_map={"images.top_camera": "ego"})
+        with pytest.raises(ValueError, match="must match the observation image keys exactly"):
+            prep._extract_images(self._inputs())
+
+    def test_unknown_view_name_raises(self) -> None:
+        with pytest.raises(ValueError, match="canonical XR0 view names"):
+            self._prep(image_key_view_map={"images.top_camera": "front_cam"})
+
+    def test_duplicate_view_name_raises(self) -> None:
+        with pytest.raises(ValueError, match="must be unique"):
+            self._prep(image_key_view_map={"images.top_camera": "ego", "images.pov_black_follower_camera": "ego"})
+
+
 class TestBuildPixelGrid:
     def test_shape_and_dtype(self) -> None:
         images = [np.zeros((32, 48, 3), dtype=np.uint8) for _ in range(2)]
@@ -257,6 +333,12 @@ class TestRenderChatPrompt:
         # View order preserved: base section precedes wrist-left section.
         assert prompt.index("# Base View") < prompt.index("# Left-Wrist View")
 
+    def test_pretrain_view_titles(self) -> None:
+        # The base Pretrain checkpoint's three views (xr0/docs/data_format.md).
+        prompt = _render_chat_prompt(["ego", "wrist_left", "wrist_right"], [1, 1, 1], "task")
+        assert "# Ego View" in prompt
+        assert prompt.index("# Ego View") < prompt.index("# Left-Wrist View") < prompt.index("# Right-Wrist View")
+
     def test_unknown_view_title_capitalized(self) -> None:
         prompt = _render_chat_prompt(["top_down"], [1], "task")
         assert "# Top Down View" in prompt
@@ -282,6 +364,19 @@ class TestPrepareState:
     def small_preprocessor(self):
         # Small max_state_dim keeps the reference tensors tiny.
         return XR0Preprocessor(max_state_dim=4, patch_size=16, merge_size=2)
+
+    def test_pad_state_stat(self, small_preprocessor) -> None:
+        padded = small_preprocessor._pad_state_stat([[2.0, 3.0]], fill=1.0)
+        np.testing.assert_array_equal(padded, np.array([2.0, 3.0, 1.0, 1.0], dtype=np.float32))
+        assert padded.dtype == np.float32
+
+        truncated = small_preprocessor._pad_state_stat([[2.0, 3.0, 4.0, 5.0, 6.0]], fill=0.0)
+        np.testing.assert_array_equal(truncated, np.array([2.0, 3.0, 4.0, 5.0], dtype=np.float32))
+
+    @pytest.mark.parametrize("values", [[1.0, 2.0], [[1.0], [2.0]], [[[1.0]]]])
+    def test_pad_state_stat_rejects_invalid_shape(self, small_preprocessor, values) -> None:
+        with pytest.raises(ValueError, match="state stats must be per-timestep with shape"):
+            small_preprocessor._pad_state_stat(values, fill=0.0)
 
     @pytest.mark.parametrize(
         ("state", "expected"),
@@ -343,13 +438,37 @@ class TestPrepareState:
             patch_size=16,
             merge_size=2,
             normalize_state=True,
-            state_mean=[1.0, 1.0],
-            state_std=[2.0, 2.0],
+            state_mean=[[1.0, 1.0]],
+            state_std=[[2.0, 2.0]],
         )
         result = prep._prepare_state({STATE: state})
         assert result.shape == expected.shape
         assert result.dtype == np.float32
         np.testing.assert_allclose(result, expected, atol=1e-5)
+
+    def test_flat_state_stats_raise(self) -> None:
+        # Per-dimension stats without the timestep axis are no longer accepted.
+        with pytest.raises(ValueError, match="per-timestep"):
+            XR0Preprocessor(
+                max_state_dim=4,
+                patch_size=16,
+                merge_size=2,
+                normalize_state=True,
+                state_mean=cast("Sequence[Sequence[float]]", [1.0, 1.0]),
+                state_std=cast("Sequence[Sequence[float]]", [2.0, 2.0]),
+            )
+
+    def test_multi_timestep_state_stats_raise(self) -> None:
+        # More than one row is ambiguous: only the current frame is normalized.
+        with pytest.raises(ValueError, match="per-timestep"):
+            XR0Preprocessor(
+                max_state_dim=4,
+                patch_size=16,
+                merge_size=2,
+                normalize_state=True,
+                state_mean=[[1.0, 1.0], [2.0, 2.0]],
+                state_std=[[2.0, 2.0], [3.0, 3.0]],
+            )
 
     def test_missing_state_raises(self, small_preprocessor) -> None:
         with pytest.raises(ValueError, match="requires a 'state'"):

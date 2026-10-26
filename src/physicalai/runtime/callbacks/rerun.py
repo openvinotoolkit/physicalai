@@ -201,6 +201,7 @@ class RerunCallback:
         rr.set_time("step", sequence=self._last_step)
         rr.set_time("wall", timestamp=event.timestamp)
         rr.log("queue/inference", rr.Scalars(float(horizon)))
+        rr.log("inference/latency_ms", rr.Scalars(event.latency_s * 1000.0))
 
         # Update the inference section without resampling system counters.
         self._latencies.append(event.latency_s)
@@ -447,7 +448,7 @@ class RerunCallback:
         headroom = queue_time - p99
 
         self._latency_stats_rows = (
-            f"| **Last** | {last * 1000:.1f} ms |\n"
+            f"| **Last (round-trip)** | {last * 1000:.1f} ms |\n"
             f"| **p50** | {p50 * 1000:.1f} ms |\n"
             f"| **p95** | {p95 * 1000:.1f} ms |\n"
             f"| **p99** | {p99 * 1000:.1f} ms |\n"

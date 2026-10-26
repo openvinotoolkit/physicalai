@@ -338,6 +338,7 @@ class TestRerunCallbackInference:
         log_calls = mock_rerun.log.call_args_list
         queue_calls = [c for c in log_calls if c.args[0] == "queue/inference"]
         assert len(queue_calls) == 1
+        mock_rerun.log.assert_any_call("inference/latency_ms", ("Scalars", (50.0,), {}))
 
     def test_inference_resets_time_to_current_step(self, make_callback: Any, mock_rerun: MagicMock) -> None:
         cb = make_callback()
@@ -505,7 +506,7 @@ class TestRerunCallbackSystemStats:
         cb.on_inference(_inference())
         md = mock_rerun.TextDocument.call_args.args[0]
         assert "Waiting for system sample" in md
-        assert "| **Last** | 50.0 ms |" in md
+        assert "| **Last (round-trip)** | 50.0 ms |" in md
 
         clock.return_value += 1.0
         cb.on_tick(_tick(step=1))
@@ -516,7 +517,7 @@ class TestRerunCallbackSystemStats:
         assert "| **Host CPU** | 42.5% |" in md
         assert "\n\n### System\n\n| Metric | Value |" in md
         assert md.index("### Inference Latency") < md.index("### System") < md.index("### GPU")
-        assert "| **Last** | 50.0 ms |" in md
+        assert "| **Last (round-trip)** | 50.0 ms |" in md
         assert "| Samples | 1 |" in md
         assert md.count("| Metric | Value |") == 3
         assert "\n\n### GPU\n\n| Metric | Value |" in md
@@ -556,7 +557,7 @@ class TestRerunCallbackSystemStats:
         md = mock_rerun.TextDocument.call_args.args[0]
         assert "| **Host CPU** | 42.5% |" in md
         assert "Waiting for inference" in md
-        assert "| **Last** |" not in md
+        assert "| **Last (round-trip)** |" not in md
 
     def test_gpu_sampling_runs_in_background_without_queueing_queries(
         self, make_callback: Any, mock_rerun: MagicMock, mock_gpu_executor: MagicMock, clock: MagicMock

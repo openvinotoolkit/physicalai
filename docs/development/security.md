@@ -73,6 +73,8 @@ security model explicitly accepts unless a change crosses that boundary or makes
 12. Network transports must remain local-only by default. The documented, explicitly enabled remote mode and
     its deployment assumptions are accepted behavior, not a finding by themselves. Flag changes that widen
     default exposure, alter peer-identity assumptions, add peer-selected code or path semantics, or weaken
-    payload validation. Preserve fixed payload-size limits before deserialization. If a change alters the
-    trust boundary, update the user security model in the same change. Deserialization of untrusted transport
-    data must comply with rule 6.
+    payload validation. Preserve fixed payload-size limits before deserialization. `physicalai.robot.transport`
+    (Zenoh) applies `/action` payloads to physical hardware **without authentication** and assumes a trusted,
+    isolated robot-cell network. Any new network-capable transport must document its trust boundary, must never
+    deserialize payloads with `pickle` (rule 6 — use msgpack/json), and must not silently widen exposure
+    (e.g. adding remote-code or file-path semantics to wire payloads) without a security review.

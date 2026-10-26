@@ -892,6 +892,24 @@ class TestSceneSwitching:
             finally:
                 robot.disconnect()
 
+    def test_the_viewer_panel_is_built_with_the_default_cameras(self, model_path) -> None:
+        """The Simulation tab's Cameras folder is built when the viewer opens, so the streams must be known by then."""
+        robot = MuJoCoRobot("so101", model_path=model_path, substeps=1, enable_viewer=True)
+        built: list[list[str]] = []
+
+        def open_viewer(viewer: ViewerService, _model: object, _data: object) -> bool:
+            built.append(list(viewer._panel_state().cameras))  # noqa: SLF001
+            return False  # no viser server; the robot carries on without a viewer
+
+        with (
+            patch("mujoco.Renderer"),
+            patch(RENDERING_AVAILABLE, return_value=True),
+            patch.object(ViewerService, "open", open_viewer),
+        ):
+            robot.connect()
+            robot.disconnect()
+        assert built == [["wrist", "overview"]]
+
     def test_an_unsupported_scene_is_rejected_before_loading(self, robot) -> None:
         model = robot._model  # noqa: SLF001
         with patch("physicalai_mujoco_plugin.compose.compose_scene") as compose:

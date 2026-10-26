@@ -34,3 +34,12 @@ from physicalai.inference.callbacks.base import Callback
 from physicalai.inference.model import InferenceModel
 
 __all__ = ["Callback", "InferenceModel"]
+
+
+def __getattr__(name: str) -> object:
+    if name in {"InferenceServer", "RemoteInferenceModel"}:
+        from physicalai.inference.remote import InferenceServer, RemoteInferenceModel  # noqa: PLC0415
+
+        return {"InferenceServer": InferenceServer, "RemoteInferenceModel": RemoteInferenceModel}[name]
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)
