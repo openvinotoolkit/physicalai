@@ -309,7 +309,11 @@ def test_wrist_cameras_see_the_jaws_in_the_lower_half(scene_id: str, camera: str
 @pytest.mark.parametrize("scene_id", list(list_scenes()))
 def test_scene_xml_camera_reload_keeps_the_compiled_poses(scene_id: str) -> None:
     """Live XML camera edits are re-applied by hand; unchanged XML must give the compiled poses."""
-    profile = "so101" if scene_id in list_scenes_for(SO101_PROFILE) else "unitree_go2"
+    robots = get_scene(scene_id).robots
+    if scene_id in list_scenes_for(SO101_PROFILE):
+        profile = "so101"
+    else:
+        profile = robots[0] if robots != "*" else "unitree_go2"
     robot = MuJoCoRobot(profile, scene=scene_id, substeps=1, cameras=[])
     robot.connect()
     try:

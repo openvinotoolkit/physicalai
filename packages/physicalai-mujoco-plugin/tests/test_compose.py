@@ -43,8 +43,11 @@ from physicalai_mujoco_plugin.spawn import FREEJOINT_SPAWN_Z
 
 
 def _scene_profile(scene_id: str) -> RobotProfile:
-    """The SO-101 for tabletop scenes, the Go2 for floor scenes (spawn anchors)."""
-    return SO101_PROFILE if scene_id in list_scenes_for(SO101_PROFILE) else get_profile("unitree_go2")
+    """The SO-101 for its tabletop scenes, the first listed robot of other scenes, the Go2 for floor scenes."""
+    if scene_id in list_scenes_for(SO101_PROFILE):
+        return SO101_PROFILE
+    robots = get_scene(scene_id).robots
+    return get_profile(robots[0] if robots != "*" else "unitree_go2")
 
 # Joint ranges (radians) of the plugin's SO-101 model before it moved to MuJoCo Menagerie's.
 # Normalized units span these ranges, so trained policies depend on them staying put.

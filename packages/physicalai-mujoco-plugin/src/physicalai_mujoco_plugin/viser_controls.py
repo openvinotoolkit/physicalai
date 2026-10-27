@@ -517,13 +517,20 @@ def _studio_markdown(studio: Mapping[str, Any]) -> str:
 def _episode_markdown(episode: Mapping[str, Any]) -> str:
     if _is_conveyor(episode):
         return _conveyor_markdown(episode)
+    bucket_sort = episode.get("kind") == "bucket_sort"
     if not episode.get("active", True):
         phase = "paused"
     elif episode.get("phase") == "success_hold" and episode.get("countdown_s") is not None:
-        phase = f"success, respawning in {float(episode['countdown_s']):.1f} s"
+        restart = "next episode" if bucket_sort else "respawning"
+        phase = f"success, {restart} in {float(episode['countdown_s']):.1f} s"
     else:
         phase = "waiting for success"
-    return f"**Status:** {phase}  \n**Episodes:** {int(episode.get('episode_count', 0))}"
+    lines = [f"**Status:** {phase}", f"**Episodes:** {int(episode.get('episode_count', 0))}"]
+    if bucket_sort:
+        instruction = episode.get("instruction") or {}
+        slots = ", ".join(str(slot.get("color", "")) for slot in episode.get("slots", []))
+        lines[:0] = [f"**Instruction:** {instruction.get('text', '-')}", f"**Buckets, left to right:** {slots}"]
+    return "  \n".join(lines)
 
 
 class SimControlPanel:
@@ -897,7 +904,11 @@ class SimControlPanel:
             auto_reset = gui.add_checkbox(
                 "Auto-reset",
                 initial_value=bool(episode.get("active", True)),
-                hint="Respawn the cube after it rests on the target",
+                hint=(
+                    "Start a new episode after the named object rests in the named bucket"
+                    if episode.get("kind") == "bucket_sort"
+                    else "Respawn the cube after it rests on the target"
+                ),
             )
             dwell = gui.add_number(
                 "Success dwell (s)",
