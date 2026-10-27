@@ -53,7 +53,7 @@ def omnicamera_cls(monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
     mock_fmt.height = 480
     mock_fmt.frame_rate = 30
     mock_fmt_opts.resolve.return_value = mock_fmt
-    mock_fmt_opts.__iter__ = mock.Mock(return_value=iter([mock_fmt]))
+    mock_fmt_opts.__iter__ = mock.Mock(side_effect=lambda: iter([mock_fmt]))
     mock_fmt_opts.__bool__ = mock.Mock(return_value=True)
 
     mock_cam.poll_frame_np.return_value = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -289,15 +289,16 @@ def test_read_not_connected_raises(omnicamera_cls: tuple) -> None:
         cam.read()
 
 
-def test_read_timeout_raises(omnicamera_cls: tuple) -> None:
-    """read() raises CaptureTimeoutError when poll always returns None within timeout."""
+@pytest.mark.parametrize("poll_result", [None, (None, 0)])
+def test_read_timeout_raises(omnicamera_cls: tuple, poll_result: tuple[None, int] | None) -> None:
+    """read() treats an empty native poll as no new frame, not a device failure."""
     camera_cls, mock_omni_camera = omnicamera_cls
     mock_cam = mock_omni_camera.Camera.return_value
 
     cam = camera_cls()
     cam.connect()
 
-    mock_cam.poll_frame_np_with_seq.return_value = (None, 0)
+    mock_cam.poll_frame_np_with_seq.return_value = poll_result
     with pytest.raises(CaptureTimeoutError):
         cam.read(timeout=0.01)
 
@@ -405,6 +406,89 @@ def test_read_latest_sequence_from_hw_counter(omnicamera_cls: tuple) -> None:
     mock_cam.poll_frame_np_with_seq.return_value = (raw, 6)
     f3 = cam.read_latest()
     assert f3.sequence == 6
+
+
+@pytest.mark.parametrize("empty_poll", [False, True, None])
+def test_latest_preserves_timestamp_for_unchanged_native_frame(omnicamera_cls: tuple, empty_poll: bool | None) -> None:
+    camera_cls, native = omnicamera_cls
+    camera = camera_cls()
+    camera.connect()
+    raw = np.full((2, 2, 3), 42, dtype=np.uint8)
+    native.Camera.return_value.poll_frame_np_with_seq.return_value = (raw, 5)
+    with mock.patch("physicalai.capture.cameras.uvc._omnicamera.time.monotonic", return_value=100.0):
+        first = camera.read_latest()
+    if empty_poll is None:
+        native.Camera.return_value.poll_frame_np_with_seq.return_value = None
+    elif empty_poll:
+        native.Camera.return_value.poll_frame_np_with_seq.return_value = (None, 5)
+    with mock.patch("physicalai.capture.cameras.uvc._omnicamera.time.monotonic", return_value=105.0):
+        repeated = camera.read_latest()
+    assert repeated.timestamp == first.timestamp == 100.0
+    assert repeated.sequence == first.sequence == 5
+    np.testing.assert_array_equal(repeated.data, first.data)
+    native.Camera.return_value.poll_frame_np_with_seq.return_value = (raw, 6)
+    with mock.patch("physicalai.capture.cameras.uvc._omnicamera.time.monotonic", return_value=110.0):
+        newest = camera.read_latest()
+    assert newest.sequence == 6
+    assert newest.timestamp == 110.0
+
+
+def test_latest_preserves_first_frame_timestamp_after_connect(omnicamera_cls: tuple) -> None:
+    camera_cls, _ = omnicamera_cls
+    camera = camera_cls()
+    with mock.patch("physicalai.capture.cameras.uvc._omnicamera.time.monotonic", return_value=100.0):
+        camera.connect()
+    with mock.patch("physicalai.capture.cameras.uvc._omnicamera.time.monotonic", return_value=105.0):
+        frame = camera.read_latest()
+    assert frame.timestamp == 100.0
+
+
+def test_latest_preserves_timestamp_after_blocking_read(omnicamera_cls: tuple) -> None:
+    camera_cls, native = omnicamera_cls
+    camera = camera_cls()
+    camera.connect()
+    native.Camera.return_value.poll_frame_np_with_seq.return_value = (np.zeros((2, 2, 3), dtype=np.uint8), 1)
+    with mock.patch("physicalai.capture.cameras.uvc._omnicamera.time.monotonic", return_value=100.0):
+        first = camera.read()
+    with mock.patch("physicalai.capture.cameras.uvc._omnicamera.time.monotonic", return_value=105.0):
+        assert camera.read_latest().timestamp == first.timestamp == 100.0
+
+
+@pytest.mark.parametrize("empty_poll", ["same", "none", "empty"])
+def test_cached_latest_reuses_color_conversion(omnicamera_cls: tuple, empty_poll: str) -> None:
+    camera_cls, native = omnicamera_cls
+    camera = camera_cls(color_mode=ColorMode.GRAY)
+    camera.connect()
+    raw = np.full((2, 2, 3), 42, dtype=np.uint8)
+    native.Camera.return_value.poll_frame_np_with_seq.return_value = (raw, 1)
+    with mock.patch.object(camera, "_convert_color", wraps=camera._convert_color) as convert:
+        first = camera.read()
+        if empty_poll == "none":
+            native.Camera.return_value.poll_frame_np_with_seq.return_value = None
+        elif empty_poll == "empty":
+            native.Camera.return_value.poll_frame_np_with_seq.return_value = (None, 1)
+        assert camera.read_latest() is first
+        assert camera.read_latest() is first
+        convert.assert_called_once()
+        native.Camera.return_value.poll_frame_np_with_seq.return_value = (np.full_like(raw, 84), 2)
+        newest = camera.read_latest()
+        assert newest.sequence == 2
+        assert convert.call_count == 2
+        assert not np.array_equal(newest.data, first.data)
+
+
+def test_reconnect_discards_converted_cache(omnicamera_cls: tuple) -> None:
+    camera_cls, native = omnicamera_cls
+    camera = camera_cls(color_mode=ColorMode.GRAY)
+    camera.connect()
+    first = camera.read_latest()
+    camera.disconnect()
+    native.Camera.return_value.poll_frame_np_with_seq.return_value = (np.full((2, 2, 3), 84, dtype=np.uint8), 0)
+    camera.connect()
+    newest = camera.read_latest()
+    assert newest is not first
+    assert newest.sequence == first.sequence == 0
+    assert newest.data[0, 0] != first.data[0, 0]
 
 
 def test_disconnect_closes_camera(omnicamera_cls: tuple) -> None:
@@ -775,8 +859,8 @@ def test_connect_by_dict_resolves_distinct_models_sharing_a_generic_serial(omnic
     innomaker = _make_cam_info(40, _INNOMAKER_USB[2], name="Innomaker-U20CAM-1080p-S1")
     innomaker.device_meta_json = {"serial": _INNOMAKER_USB[2], "index": 40}
     mock_omni_camera.query.return_value = [ugreen, innomaker]
-    mock_omni_camera.resolve_camera_for_device_meta_json.side_effect = (
-        lambda meta: _fake_resolve_camera_for_device_meta_json(mock_omni_camera, meta)
+    mock_omni_camera.resolve_camera_for_device_meta_json.side_effect = lambda meta: (
+        _fake_resolve_camera_for_device_meta_json(mock_omni_camera, meta)
     )
 
     cam = camera_cls(device_id={"serial": _INNOMAKER_USB[2], "index": 40})

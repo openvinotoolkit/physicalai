@@ -23,7 +23,7 @@ import pytest
 
 from physicalai.capture.camera import ColorMode
 from physicalai.capture.cameras.ip import IPCamera
-from physicalai.capture.errors import CaptureTimeoutError
+from physicalai.capture.errors import CaptureError, CaptureTimeoutError
 from physicalai.capture.frame import Frame
 from physicalai.capture.transport import _publisher_worker as worker
 from physicalai.capture.transport._header import encode_frame
@@ -279,6 +279,28 @@ def test_shared_latest_drains_after_stalls_and_preserves_source_metadata(zero_co
     assert camera.read_latest().sequence == 19
     assert camera._subscriber.receive.call_count == 2
     camera.disconnect()
+
+
+def test_live_publisher_waits_then_returns_latest_pixels() -> None:
+    camera = MagicMock()
+    camera.read.return_value = Frame(np.full((2, 2, 3), 1, dtype=np.uint8), 1.0, 1)
+    newest = Frame(np.full((2, 2, 3), 3, dtype=np.uint8), 3.0, 3)
+    camera.read_latest.return_value = newest
+    assert worker._read_live_frame(camera) is newest
+    camera.read.assert_called_once_with(timeout=1.0)
+    camera.read_latest.assert_called_once_with()
+
+
+@pytest.mark.parametrize("method", ["read", "read_latest"])
+def test_live_publisher_preserves_capture_errors(method: str) -> None:
+    camera = MagicMock()
+    error = CaptureError("camera disconnected")
+    getattr(camera, method).side_effect = error
+    with pytest.raises(CaptureError) as raised:
+        worker._read_live_frame(camera)
+    assert raised.value is error
+    if method == "read":
+        camera.read_latest.assert_not_called()
 
 
 def test_shared_read_ignores_stale_notifications(monkeypatch: pytest.MonkeyPatch) -> None:

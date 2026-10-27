@@ -59,10 +59,11 @@ They cannot expose upstream latency, repeated source images, or source drops.
 Shared transport preserves this metadata; it does not make source time available.
 A source faster than the host can decode can still accumulate upstream latency.
 
-The shared publisher includes read and publish work in its FPS pacing budget.
+The shared publisher waits for acquisition, then asks the backend for its latest
+frame before publishing. This discards hardware backlogs without changing direct
+sequential `read()` calls. Read and publish work count toward its FPS pacing budget.
 Unpaced cameras retain a publication rate limit; IP acquisition drains independently
-even when publication or consumers pause. Hardware capture implementations and
-controls are unchanged.
+even when publication or consumers pause.
 
 FFmpeg's native open/read timeouts are set at open time. Consumer read timeouts
 bound the slot wait independently of native I/O. Disconnect wakes waiting consumers,
@@ -72,5 +73,22 @@ native read timeout (at most one second, plus scheduling/cleanup). A backend tha
 ignores its native timeout raises a shutdown error rather than being reopened over
 an active reader. After a permanent stream failure, disconnect/reconnect explicitly;
 this backend does not automatically reconnect.
+
+### USB frame freshness
+
+`UVCCamera` defaults to OmniCamera/pynokhwa on every platform, including Linux.
+The native SDK already captures continuously into a latest-frame slot. Returned
+sequence numbers identify native decoded frames, not necessarily sensor exposures.
+Timestamps mark when Python first observes each sequence; repeated or cached reads
+preserve that timestamp. Native/driver latency before that observation is not measured.
+
+Linux callers can explicitly select `backend="v4l2"`. Its direct `read()` remains
+sequential, while `read_latest()` drains at most one allocated buffer set and returns
+the newest drained frame. If none are ready it returns its cached frame, or raises
+`CaptureError` immediately when no cache exists. It never waits for a new frame.
+V4L2 frames retain kernel sequence numbers, including gaps. Monotonic driver
+timestamps are preserved; unknown/non-monotonic clocks use local dequeue time with
+a warning because source capture age is unavailable. Neither cached reads nor
+shared transport restamp those frames.
 
 Camera instances are not thread-safe.

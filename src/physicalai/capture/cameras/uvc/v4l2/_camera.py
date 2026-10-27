@@ -10,9 +10,11 @@ import ctypes
 import mmap
 import os
 import select
+import time
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
+from loguru import logger
 
 from physicalai.capture.camera import Camera, ColorMode
 from physicalai.capture.cameras.uvc._camera_setting import CameraSetting  # noqa: PLC2701
@@ -21,6 +23,8 @@ from physicalai.capture.frame import Frame
 
 from ._controls import V4L2CameraControls
 from ._ioctl import (
+    V4L2_BUF_FLAG_TIMESTAMP_MASK,
+    V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC,
     V4L2_BUF_TYPE_VIDEO_CAPTURE,
     V4L2_CAP_STREAMING,
     V4L2_CAP_VIDEO_CAPTURE,
@@ -79,7 +83,8 @@ class V4L2Camera(Camera):
         self._initial_controls = controls or {}
 
         self._connected: bool = False
-        self._sequence: int = 0
+        self._latest_frame: Frame | None = None
+        self._timestamp_clock_warned = False
         self._fd: int | None = None
         self._buffers: list[tuple[mmap.mmap, int]] = []
         self._jpeg: TurboJPEG | None = None
@@ -142,7 +147,8 @@ class V4L2Camera(Camera):
                 self._raise_connect_timeout()
 
             self._connected = True
-            self._sequence = 0
+            self._latest_frame = None
+            self._timestamp_clock_warned = False
             self._controls = V4L2CameraControls(self._device_path, fd=self._fd)
 
             for ctrl_id, ctrl_value in self._initial_controls.items():
@@ -172,6 +178,7 @@ class V4L2Camera(Camera):
             self._fd = None
 
         self._connected = False
+        self._latest_frame = None
 
     def _cleanup_connection(self) -> None:
         try:
@@ -182,6 +189,7 @@ class V4L2Camera(Camera):
             self._fd = None
             self._buffers = []
             self._connected = False
+            self._latest_frame = None
 
     @staticmethod
     def _validate_capabilities(capabilities: int) -> None:
@@ -197,6 +205,20 @@ class V4L2Camera(Camera):
     def _raise_read_timeout(self) -> None:
         msg = f"Timed out waiting for frame from {self._device_path}"
         raise CaptureTimeoutError(msg)
+
+    def _buffer_timestamp(self, buf: v4l2_buffer) -> float:
+        if buf.flags & V4L2_BUF_FLAG_TIMESTAMP_MASK == V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC:
+            return buf.timestamp.tv_sec + buf.timestamp.tv_usec / 1_000_000
+        # Unknown clocks cannot safely be compared with the host's monotonic clock.
+        if not self._timestamp_clock_warned:
+            logger.warning(
+                "V4L2 camera {} has an unknown/non-monotonic timestamp clock (flags={:#x}); "
+                "using local dequeue time, source capture age is unavailable",
+                self._device_path,
+                buf.flags,
+            )
+            self._timestamp_clock_warned = True
+        return time.monotonic()
 
     def read(self, timeout: float = 2.0) -> Frame:
         if not self._connected or self._fd is None:
@@ -214,7 +236,8 @@ class V4L2Camera(Camera):
             buf.memory = V4L2_MEMORY_MMAP
             xioctl(self._fd, VIDIOC_DQBUF, buf)
 
-            acquired_at = buf.timestamp.tv_sec + buf.timestamp.tv_usec / 1_000_000
+            acquired_at = self._buffer_timestamp(buf)
+            sequence = int(buf.sequence)
 
             mm, _ = self._buffers[buf.index]
             raw = bytes(mm[: buf.bytesused])
@@ -227,13 +250,8 @@ class V4L2Camera(Camera):
             msg = f"Failed to read frame from {self._device_path}: {exc}"
             raise CaptureError(msg) from exc
         else:
-            frame = Frame(
-                data=decoded,
-                timestamp=acquired_at,
-                sequence=self._sequence,
-            )
-            self._sequence += 1
-            return frame
+            self._latest_frame = Frame(data=decoded, timestamp=acquired_at, sequence=sequence)
+            return self._latest_frame
 
     def read_latest(self) -> Frame:
         if not self._connected or self._fd is None:
@@ -241,11 +259,13 @@ class V4L2Camera(Camera):
             raise NotConnectedError(msg)
 
         latest_raw: bytes | None = None
-        acquired_at: float = 0.0
-        decoded: NDArray[np.uint8]
+        acquired_at = 0.0
+        sequence = 0
+        decoded: NDArray[np.uint8] | None = None
 
         try:
-            while True:
+            # Bound work even if the driver refills buffers while they are drained.
+            for _ in self._buffers:
                 ready, _, _ = select.select([self._fd], [], [], 0)
                 if not ready:
                     break
@@ -253,32 +273,31 @@ class V4L2Camera(Camera):
                 buf = v4l2_buffer()
                 buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE
                 buf.memory = V4L2_MEMORY_MMAP
-                xioctl(self._fd, VIDIOC_DQBUF, buf)
+                try:
+                    xioctl(self._fd, VIDIOC_DQBUF, buf)
+                except BlockingIOError:
+                    break
 
-                acquired_at = buf.timestamp.tv_sec + buf.timestamp.tv_usec / 1_000_000
-
+                acquired_at = self._buffer_timestamp(buf)
+                sequence = int(buf.sequence)
                 mm, _ = self._buffers[buf.index]
                 latest_raw = bytes(mm[: buf.bytesused])
-
                 xioctl(self._fd, VIDIOC_QBUF, buf)
 
-            if latest_raw is None:
-                return self.read()
-
-            decoded = self._decode(latest_raw)
+            if latest_raw is not None:
+                decoded = self._decode(latest_raw)
         except Exception as exc:
-            if isinstance(exc, NotConnectedError):
+            if isinstance(exc, CaptureError):
                 raise
             msg = f"Failed to read latest frame from {self._device_path}: {exc}"
             raise CaptureError(msg) from exc
-        else:
-            frame = Frame(
-                data=decoded,
-                timestamp=acquired_at,
-                sequence=self._sequence,
-            )
-            self._sequence += 1
-            return frame
+        if decoded is None:
+            if self._latest_frame is None:
+                msg = "No frame available"
+                raise CaptureError(msg)
+            return self._latest_frame
+        self._latest_frame = Frame(data=decoded, timestamp=acquired_at, sequence=sequence)
+        return self._latest_frame
 
     def _decode(self, raw: bytes) -> NDArray[np.uint8]:
         if self._pixel_format == "mjpeg":

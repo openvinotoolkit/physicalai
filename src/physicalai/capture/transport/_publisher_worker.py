@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from types import FrameType
 
     from physicalai.capture.camera import Camera
+    from physicalai.capture.frame import Frame
 
 _MAX_CONSECUTIVE_FAILURES = 5
 _CONTROL_MAX_SLICE_LEN = 4096
@@ -183,6 +184,16 @@ def _pace_capture(iteration_start: float, fps: int) -> None:
     """Rate-limit unpaced capture, including acquisition and publish work."""
     if fps > 0:
         shutdown.wait(max(0.0, 1.0 / fps - (time.monotonic() - iteration_start)))
+
+
+def _read_live_frame(camera: Camera) -> Frame:
+    """Wait for acquisition, then discard any backlog before live publication.
+
+    Returns:
+        The newest available frame after the blocking acquisition.
+    """
+    camera.read(timeout=1.0)
+    return camera.read_latest()
 
 
 class _PublisherState:
@@ -453,7 +464,7 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0914, PLR0915
                 current_fps = state.camera_fps
 
             try:
-                frame = current_camera.read(timeout=1.0)
+                frame = _read_live_frame(current_camera)
             except CaptureError:
                 with state.lock:
                     if state.camera is not current_camera:
