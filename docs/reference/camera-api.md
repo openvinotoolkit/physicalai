@@ -41,54 +41,26 @@ class CameraType(StrEnum):
 
 | Method          | Semantics                                                      |
 | --------------- | -------------------------------------------------------------- |
-| `read()`        | Returns the next frame, blocks, and preserves sequence.        |
+| `read()`        | Blocks for a new frame; backend-specific skipping applies.     |
 | `read_latest()` | Returns the newest frame, does not block, and may skip frames. |
 | `async_read()`  | Provides an async wrapper around `read()`.                     |
 
-`IPCamera` continuously drains OpenCV/FFmpeg into a single latest-frame slot.
-Its `read()` waits for a frame newer than the last returned by either read method,
-skipping overwritten frames. `read_latest()` only reads that slot: it never waits
-for network I/O. `SharedCamera` also skips intermediate frames, draining its bounded
-transport queue to the newest sample. Neither backend promises lossless recording.
-A stalled stream's cached frame keeps its original sequence and timestamp;
-`read(timeout=...)` times out instead of reporting the cache as a new frame.
+`IPCamera`, default `UVCCamera`, and `SharedCamera` provide latest-oriented reads
+that can skip intermediate frames; they do not guarantee lossless recording.
+`IPCamera.read()` waits for a frame newer than the last returned by either read method.
+Cached frames retain their sequence and timestamp; `read(timeout=...)` raises
+`CaptureTimeoutError` if no new frame arrives. `read_latest()` never waits for a new
+frame and raises `CaptureError` if no frame is available.
 
-IP frame timestamps measure **local decode/conversion completion**, not source
-capture or simulator-pose publication. Sequences count locally decoded frames.
-They cannot expose upstream latency, repeated source images, or source drops.
-Shared transport preserves this metadata; it does not make source time available.
-A source faster than the host can decode can still accumulate upstream latency.
+IP timestamps mark local decode/conversion completion; default UVC timestamps mark
+Python's first observation of a decoded frame. Neither measures source capture age.
+Linux UVC with `backend="v4l2"` keeps sequential `read()` semantics and preserves kernel
+sequences and monotonic driver timestamps, falling back to local dequeue time for
+other clocks. Shared transport preserves the backend's metadata.
 
-The shared publisher waits for acquisition, then asks the backend for its latest
-frame before publishing. This discards hardware backlogs without changing direct
-sequential `read()` calls. Read and publish work count toward its FPS pacing budget.
-Unpaced cameras retain a publication rate limit; IP acquisition drains independently
-even when publication or consumers pause.
-
-FFmpeg's native open/read timeouts are set at open time. Consumer read timeouts
-bound the slot wait independently of native I/O. Disconnect wakes waiting consumers,
-stops and joins the reader, then releases capture in that reader (never concurrently
-with a native read). Connection-time failure cleanup can additionally take up to one
-native read timeout (at most one second, plus scheduling/cleanup). A backend that
-ignores its native timeout raises a shutdown error rather than being reopened over
-an active reader. After a permanent stream failure, disconnect/reconnect explicitly;
-this backend does not automatically reconnect.
-
-### USB frame freshness
-
-`UVCCamera` defaults to OmniCamera/pynokhwa on every platform, including Linux.
-The native SDK already captures continuously into a latest-frame slot. Returned
-sequence numbers identify native decoded frames, not necessarily sensor exposures.
-Timestamps mark when Python first observes each sequence; repeated or cached reads
-preserve that timestamp. Native/driver latency before that observation is not measured.
-
-Linux callers can explicitly select `backend="v4l2"`. Its direct `read()` remains
-sequential, while `read_latest()` drains at most one allocated buffer set and returns
-the newest drained frame. If none are ready it returns its cached frame, or raises
-`CaptureError` immediately when no cache exists. It never waits for a new frame.
-V4L2 frames retain kernel sequence numbers, including gaps. Monotonic driver
-timestamps are preserved; unknown/non-monotonic clocks use local dequeue time with
-a warning because source capture age is unavailable. Neither cached reads nor
-shared transport restamp those frames.
+IP consumer read timeouts bound frame waits independently of native network I/O.
+After a permanent IP stream failure, explicitly disconnect/reconnect; there is no
+automatic reconnection. Shared-publisher reconfiguration of IP cameras is unsupported
+and leaves the existing stream running.
 
 Camera instances are not thread-safe.

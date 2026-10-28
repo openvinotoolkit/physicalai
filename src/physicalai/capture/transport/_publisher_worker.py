@@ -291,6 +291,8 @@ def _handle_reconfigure(state: _PublisherState, request: dict, service_name: str
     Returns:
         Response dict with ``ok`` and optional ``error``.
     """
+    from physicalai.capture.cameras.ip import IPCamera  # noqa: PLC0415
+
     from ._spec import validate_reconfigure_request  # noqa: PLC0415
 
     try:
@@ -299,8 +301,11 @@ def _handle_reconfigure(state: _PublisherState, request: dict, service_name: str
         return {"ok": False, "error": f"invalid reconfigure request: {exc}"}
 
     with state.lock:
-        old_config = state.config.copy()
         old_camera = state.camera
+        if isinstance(old_camera, IPCamera):
+            return {"ok": False, "error": "IP camera reconfiguration is not supported"}
+
+        old_config = state.config.copy()
         old_fps = state.camera_fps
 
         local_camera = old_config["camera"]
@@ -316,6 +321,7 @@ def _handle_reconfigure(state: _PublisherState, request: dict, service_name: str
             old_camera.disconnect()
         except Exception:  # noqa: BLE001
             logger.warning(f"Old camera disconnect failed during reconfigure for {service_name}")
+            return {"ok": False, "error": "camera disconnect failed during reconfigure"}
 
         try:
             new_camera = build_camera(new_config)

@@ -232,6 +232,60 @@ class TestReconfigureRequest:
         camera.disconnect.assert_not_called()
         build.assert_not_called()
 
+    @pytest.mark.parametrize("settings", [{"width": 640}, {"height": 480}, {"fps": 15}])
+    def test_worker_rejects_ip_reconfigure_without_side_effects(self, settings: dict[str, int]) -> None:
+        from physicalai.capture import IPCamera
+        from physicalai.capture.transport._publisher_worker import _PublisherState, _handle_reconfigure
+
+        camera = IPCamera(url="http://example.test/stream", width=320, height=240, fps=30)
+        config = {
+            "camera": Config.from_instance(camera),
+            "service_name": "physicalai/test/ip/frame",
+        }
+        state = _PublisherState(camera=camera, publisher=MagicMock(), camera_fps=30, config=config)
+
+        with (
+            patch.object(camera, "disconnect") as disconnect,
+            patch("physicalai.capture.transport._publisher_worker.build_camera") as build,
+        ):
+            result = _handle_reconfigure(
+                state,
+                {"kind": "RECONFIGURE", "settings": settings},
+                "physicalai/test/ip/frame",
+            )
+
+        assert result == {"ok": False, "error": "IP camera reconfiguration is not supported"}
+        disconnect.assert_not_called()
+        build.assert_not_called()
+        assert state.camera is camera
+        assert state.config is config
+        assert state.camera_fps == 30
+
+    def test_worker_aborts_reconfigure_on_disconnect_failure(self) -> None:
+        from physicalai.capture.transport._publisher_worker import _PublisherState, _handle_reconfigure
+
+        camera = MagicMock()
+        camera.disconnect.side_effect = CaptureError("camera reader did not stop")
+        config = {
+            "camera": {"class_path": FAKE_CAMERA_CLASS, "init_args": {"width": 320, "fps": 30}},
+            "service_name": "physicalai/test/disconnect/frame",
+        }
+        state = _PublisherState(camera=camera, publisher=MagicMock(), camera_fps=30, config=config)
+
+        with patch("physicalai.capture.transport._publisher_worker.build_camera") as build:
+            result = _handle_reconfigure(
+                state,
+                {"kind": "RECONFIGURE", "settings": {"width": 640}},
+                "physicalai/test/disconnect/frame",
+            )
+
+        assert result == {"ok": False, "error": "camera disconnect failed during reconfigure"}
+        camera.disconnect.assert_called_once_with()
+        build.assert_not_called()
+        assert state.camera is camera
+        assert state.config is config
+        assert state.camera_fps == 30
+
     def test_reconfigure_failure_restores_old(self) -> None:
         from physicalai.capture.transport._publisher_worker import _PublisherState, _handle_reconfigure
 
