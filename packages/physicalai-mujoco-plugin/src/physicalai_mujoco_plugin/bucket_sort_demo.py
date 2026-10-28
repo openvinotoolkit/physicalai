@@ -1409,6 +1409,24 @@ class Planner:
         if plan.peak_accel_ratio > ACCEL_FRACTION:
             plan.problems.append(f"joint acceleration {plan.peak_accel_ratio:.0%} of the {self.arm.label} limit")
 
+    def arm_clearance(self, q: np.ndarray, snapshot: SceneSnapshot) -> float:
+        """Return how close the working arm comes to the arms holding still, at each row of *q* (capped at 5 cm).
+
+        Every row is checked: braking is short. The arms holding still stand as in *snapshot*.
+
+        Returns:
+            Metres; infinite without other arms.
+        """
+        clearance = self.clearance
+        if clearance.arm is None or clearance.other_arms is None:
+            return float(np.inf)
+        self.load(snapshot)
+        worst = float(np.inf)
+        for row in np.atleast_2d(q):
+            self.ik.set_arm(row)
+            worst = min(worst, clearance._min_distance(clearance.arm, clearance.other_arms))  # noqa: SLF001
+        return worst
+
     def _check_clearance(self, plan: JointPlan, target: str, held: tuple[int, int] | None) -> None:
         """Sweep the hand (and, between the *held* ticks, the object in it) and record the clearances."""
         ik, data = self.ik, self.ik.data
@@ -2013,8 +2031,9 @@ class BucketSortDemonstrator:
         """Plan an attempt with the arm that suits it, and let that arm work (several arms, at rest).
 
         Every arm plans, in the order of :meth:`_arm_preference`: the first whose plan passes every
-        check works, else the one with the best plan, unless that one misses its path by more than
-        :data:`OUT_OF_REACH` or comes too close to the other arm. The ranking only orders the arms:
+        check works, else the best of the plans that may run (:meth:`_may_run`: within
+        :data:`OUT_OF_REACH` of their path and clear of the other arm), however well a plan that may
+        not run scores. The ranking only orders the arms:
         its probe does not try the other grasp yaw or the turn for the release, which a plan may need.
 
         Returns:
@@ -2023,17 +2042,22 @@ class BucketSortDemonstrator:
         preference = {i: self._arm_preference(i, snapshot, instruction, params) for i in range(len(self.arms))}
         order = sorted(preference, key=lambda i: preference[i])
         best: tuple[int, JointPlan] | None = None
+        """The best plan that may run (:meth:`_may_run`), and its arm."""
+        closest: JointPlan | None = None
+        """The best of the plans that may not, for the log."""
         for arm in order:
             self._switch_arm(arm)
             plan = self.plan_attempt(snapshot, self._q, self._start_state(), instruction, params, dt, rng, report=False)  # type: ignore[arg-type]
             if plan.ok:
                 logger.info("Demonstrator: the {} works this attempt", self.active_arm.label)
                 return plan
-            if best is None or _severity(plan) < _severity(best[1]):
+            if self._may_run(plan) and (best is None or _severity(plan) < _severity(best[1])):
                 best = (arm, plan)
-        if best is None or best[1].pos_error > OUT_OF_REACH or best[1].clearance.get("arm", np.inf) < CLEARANCE["arm"]:
-            if best is not None:
-                logger.info("Demonstrator: no arm can do this attempt ({})", "; ".join(best[1].problems))
+            elif best is None and (closest is None or _severity(plan) < _severity(closest)):
+                closest = plan
+        if best is None:
+            if closest is not None:
+                logger.info("Demonstrator: no arm can do this attempt ({})", "; ".join(closest.problems))
             return None
         self._switch_arm(best[0])
         logger.info("Demonstrator: the {} works this attempt", self.active_arm.label)
@@ -2131,6 +2155,8 @@ class BucketSortDemonstrator:
         if rng is not None:
             variants += [DemoParams.sample(rng) for _ in range(2)]
         best: JointPlan | None = None
+        eligible: JointPlan | None = None
+        """With several arms, the best plan that may run at all (:meth:`_may_run`)."""
         for variant in variants:
             for yaw in candidates:
                 planner.load(snapshot)
@@ -2148,9 +2174,28 @@ class BucketSortDemonstrator:
                     return plan
                 if best is None or _severity(plan) < _severity(best):
                     best = plan
+                if (
+                    len(self.arms) > 1
+                    and self._may_run(plan)
+                    and (eligible is None or _severity(plan) < _severity(eligible))
+                ):
+                    eligible = plan
+        if eligible is not None:
+            best = eligible  # a plan that would be refused must not hide one that may run
         if report:
             self._report_problems(best)  # type: ignore[arg-type]
         return best  # type: ignore[return-value]
+
+    @staticmethod
+    def _may_run(plan: JointPlan) -> bool:
+        """Return whether a best-effort plan of several arms may run: near its path and clear of the other arm.
+
+        Near is within :data:`OUT_OF_REACH`; clear is :data:`CLEARANCE` ``arm``.
+
+        Returns:
+            ``True`` for a plan that misses some check but neither of these.
+        """
+        return plan.pos_error <= OUT_OF_REACH and plan.clearance.get("arm", np.inf) >= CLEARANCE["arm"]
 
     def _too_close_to_an_arm(self, plan: JointPlan) -> bool:
         """Return whether *plan* brings the working arm closer than :data:`CLEARANCE` ``arm`` to an arm holding still.
@@ -2160,17 +2205,32 @@ class BucketSortDemonstrator:
         """
         return len(self.arms) > 1 and plan.clearance.get("arm", np.inf) < CLEARANCE["arm"]
 
-    def _stop_and_fail(self, data: object, plan: JointPlan, brake: np.ndarray | None) -> None:
-        """Stop where braking ends and hold there; the episode fails and the scene resets after :data:`FAILURE_HOLD_S`.
+    def _stop_and_fail(
+        self,
+        data: object,
+        plan: JointPlan,
+        brake: np.ndarray | None,
+        too_close: str | None = None,
+        *,
+        freeze_at: np.ndarray | None = None,
+    ) -> None:
+        """Stop and hold; the episode fails and the scene resets after :data:`FAILURE_HOLD_S`.
 
-        No other plan runs from here: one that goes home could come as close to the other arm.
+        The arm stops where *brake* ends (checked clear of the other arm), else at once on *freeze_at*
+        (the target before a braking that was not clear), else where its targets are. No other plan
+        runs from here: one that goes home could come as close to the other arm.
         """
         episode = self._episode
-        distance, needed = plan.clearance["arm"] * 1000, CLEARANCE["arm"] * 1000
-        reason = f"the {plan.kind} plan would come {distance:.0f} mm from the other arm (at least {needed:.0f} mm)"
-        q = np.vstack([brake, brake[-1:]]) if brake is not None and len(brake) else self._q[None, :].copy()  # type: ignore[index]
+        needed = CLEARANCE["arm"] * 1000
+        if too_close is None:
+            too_close = f"the {plan.kind} plan would come {plan.clearance['arm'] * 1000:.0f} mm"
+        reason = f"{too_close} from the other arm (at least {needed:.0f} mm)"
         if brake is not None and len(brake):
+            q = np.vstack([brake, brake[-1:]])
             self._q = self._braking_from  # this tick still outputs where the arm is now
+        else:
+            self._q = np.array(freeze_at if freeze_at is not None else self._q, dtype=np.float64)
+            q = self._q[None, :].copy()
         ticks = len(q)
         state = self._start_state()
         stop = JointPlan(
@@ -2200,9 +2260,18 @@ class BucketSortDemonstrator:
         logger.warning("Demonstrator: no plan passed every check ({}); running the best one", "; ".join(plan.problems))
 
     def _run(self, plan: JointPlan, data: object, brake: np.ndarray | None = None) -> None:
-        if self._too_close_to_an_arm(plan):
-            self._stop_and_fail(data, plan, brake)
-            return
+        if len(self.arms) > 1:
+            braking = brake is not None and len(brake) > 0
+            brake_clearance = self.planner.arm_clearance(brake, SceneSnapshot.take(data)) if braking else np.inf
+            if brake_clearance < CLEARANCE["arm"]:
+                # Braking along the current speed would reach into the other arm: stop on the last
+                # target instead, which a checked plan (or the hold) put there.
+                too_close = f"braking would come {brake_clearance * 1000:.0f} mm"
+                self._stop_and_fail(data, plan, None, too_close, freeze_at=self._braking_from)
+                return
+            if self._too_close_to_an_arm(plan):
+                self._stop_and_fail(data, plan, brake)
+                return
         if brake is not None and len(brake):
             # Prefix the braking ticks; the plan's own ticks shift by as many.
             n = len(brake)

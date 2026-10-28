@@ -158,6 +158,67 @@ class TestDemonstrator:
         assert failure is not None and "other arm" in failure, failure
         assert scene._sim.on_reset.reset_count == resets + 1  # and the scene reset after the hold
 
+    def test_braking_into_the_idle_arm_stops_on_the_last_target_instead(self, scene: MuJoCoRobot) -> None:
+        """Braking extrapolates the targets' speed; when that would reach the idle arm, the arm stops at once."""
+        if scene._profile.name != "franka_duo":
+            pytest.skip("one arm")
+        data = scene._sim.data
+        scene._automation.set_autopilot("drive")
+        demo = scene._automation.autopilot.demonstrator
+        for _ in range(round(10.0 / TICK_S)):
+            scene.get_observation()
+            if demo.phase == "approach":
+                break
+        assert demo.phase == "approach"
+        planner, ik = demo.planner, demo.ik
+        idle = demo.planners[1 - demo._active].ik
+        snapshot = bd.SceneSnapshot.take(data)
+        # A line in joint space from the current targets toward the idle arm's hand.
+        into, _, _ = ik.solve(demo._q, idle.fk(idle.home)[0], idle.home_yaw, iters=60)
+        line = [demo._q + s * (into - demo._q) for s in np.linspace(0.0, 1.0, 41)]
+        gaps = [planner.arm_clearance(q, snapshot) for q in line]
+        clear = max(i for i, gap in enumerate(gaps) if gap >= 0.045 and all(g >= 0.045 for g in gaps[: i + 1]))
+        touching = next(i for i, gap in enumerate(gaps) if i > clear and gap < 0.005)
+        # Moving along that line fast enough that braking (half the speed times BRAKE_S) ends touching.
+        velocity = (line[touching] - line[clear]) / (bd.BRAKE_S / 2.0)
+        demo._q, demo._q_prev = line[clear].copy(), line[clear] - velocity * TICK_S
+        demo._replan(data, TICK_S, "a test move", attempt=True)
+        assert demo.phase == "failed"
+        assert "braking" in demo.status()["failure"]
+        assert planner.arm_clearance(demo._plan.q, snapshot) >= bd.CLEARANCE["arm"]
+        np.testing.assert_array_equal(demo._plan.q[-1], line[clear])
+
+    def test_a_plan_that_may_run_beats_one_that_scores_better_but_may_not(self, scene: MuJoCoRobot, monkeypatch) -> None:
+        """29 mm from the other arm scores 1, a 5 mm miss of the path 2: the miss may run, so it is the fallback."""
+        if scene._profile.name != "franka_duo":
+            pytest.skip("one arm")
+        data = scene._sim.data
+        demo = scene._automation.autopilot.demonstrator
+        demo.reset()
+        demo.step(data, TICK_S, apply=False)
+
+        def fake(pos_error: float = 0.0, arm: float = 0.05) -> bd.JointPlan:
+            plan = bd.JointPlan(
+                kind="attempt", dt=TICK_S, q=np.zeros((2, 7)), grip=np.zeros(2), phases=["approach"] * 2,
+                cartesian=np.zeros((2, 5)),
+            )
+            plan.pos_error, plan.clearance, plan.problems = pos_error, {"arm": arm}, ["a check"]
+            return plan
+
+        close, missing = fake(arm=0.029), fake(pos_error=0.005)
+        assert bd._severity(close) < bd._severity(missing)
+        snapshot, instruction = bd.SceneSnapshot.take(data), scene._sim.on_reset.instruction
+        # Within one arm's variants ...
+        plans = iter([close, missing, *(fake(pos_error=0.5) for _ in range(20))])
+        monkeypatch.setattr(demo.planner, "checked", lambda *_args, **_kwargs: next(plans))
+        best = demo.plan_attempt(snapshot, demo._q, demo._start_state(), instruction, bd.DemoParams(), TICK_S)
+        assert best is missing
+        # ... and across the arms.
+        by_arm = {0: close, 1: missing}
+        monkeypatch.setattr(demo, "plan_attempt", lambda *_args, **_kwargs: by_arm[demo._active])
+        chosen = demo._plan_with_an_arm(snapshot, instruction, bd.DemoParams(), TICK_S, np.random.default_rng(0))
+        assert chosen is missing and demo._active == 1
+
     def test_an_arm_the_probe_misses_still_plans_with_the_other_yaw_or_a_turned_release(self, robot: MuJoCoRobot) -> None:
         """Seed 1019: the probe misses both arms, yet the left arm's plan passes every check."""
         if robot._profile.name != "franka_duo":
