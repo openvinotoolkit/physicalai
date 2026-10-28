@@ -116,12 +116,13 @@ PANDA_ARM = FrankaArm(
     ddq_max=PANDA_DDQ_MAX,
 )
 DUO_READY_DEG = {
-    "left": (-27.9, -54.7, 42.2, -162.4, 80.5, 83.3, -7.8),
-    "right": (27.9, -54.7, -42.2, -162.4, -80.5, 83.3, 7.8),
+    "left": (-26.7, -45.0, 28.0, -154.0, 65.8, 83.9, -6.7),
+    "right": (26.7, -45.0, -28.0, -154.0, -65.8, 83.9, 6.7),
 }
-"""Each Duo arm's ready pose, degrees: the hand 0.35 m above the table, 0.40 m in front of the mount
-and 0.30 m out to its side, fingers down. The left arm's is the right arm's mirrored (joints 1, 3, 5
-and 7 negated). Of the poses tried, from this one the arms plan the most attempts over the table."""
+"""Each Duo arm's ready pose, degrees: the hand 0.38 m above the table, 0.40 m in front of the mount
+frame and 0.30 m out to its side, fingers down, every joint at least 20 deg inside its limits. The
+left arm's is the right arm's mirrored (joints 1, 3, 5 and 7 negated). Of the poses tried, from this
+one the arms plan the most attempts over the table."""
 DUO_ARMS = tuple(
     FrankaArm(
         label=f"{side} arm",

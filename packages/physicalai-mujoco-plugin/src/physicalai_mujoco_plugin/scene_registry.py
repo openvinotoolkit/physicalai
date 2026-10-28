@@ -177,6 +177,9 @@ class SceneConfig:
     camera does not frame (an elbow folded behind the base, ALOHA's second arm)."""
     front_view: FrontView | None = None
     """The ``front`` overview style's camera placement; ``None``: the scene offers only its own (``shoulder``)."""
+    floor_depth: float = 0.0
+    """How far the floor lies below the robot mount, in metres: 0 when the robot stands on the floor,
+    the table's height when it stands on a table. A robot's stand (the Duo's column) rests on the floor."""
     profile_front_overrides: tuple[tuple[str, FrontOverride], ...] = ()
     """Per profile: changes to the derived ``front`` camera pose (:class:`FrontOverride`)."""
 
@@ -247,9 +250,10 @@ class SceneConfig:
         else:
             # One rig per profile frames either arm count (tests/test_compose.py checks both).
             rig = dict(self.profile_overview_rigs).get(profile.name)
-        if scale == 1.0 and rig is None and mounts is None:  # noqa: RUF069 - layout_scale returns exactly 1.0 for the SO-101
+        floor_depth = self.floor_depth if profile.stand is not None else 0.0
+        if scale == 1.0 and rig is None and mounts is None and not floor_depth:  # noqa: RUF069 - layout_scale returns exactly 1.0 for the SO-101
             return None
-        return SceneLayout(scale=scale, overview_rig=rig, mounts=mounts)
+        return SceneLayout(scale=scale, overview_rig=rig, mounts=mounts, floor_depth=floor_depth)
 
     def front_overview_rig(
         self,
@@ -683,6 +687,14 @@ _SCENES: dict[str, SceneConfig] = {
             elevation_deg=float(np.degrees(np.arctan2(0.85, np.hypot(0.38, 0.60)))),
         ),
         profile_front_overrides=tuple((name, _BUCKET_SORT_FRONT) for name in BUCKET_SORT_ARMS),
+        # The table top is the robot mount's plane; the floor is 0.75 m below (scene.xml).
+        floor_depth=0.75,
+        # The rear pole's camera, at the same height, stands behind the Duo instead of behind its left
+        # arm, which from there hides about half the objects and buckets at home: eye (-0.17, 0, 0.90)
+        # aimed at (0.45, 0, 0.05) (compose.aim_overview_rig).
+        profile_overview_rigs=(
+            ("franka_duo", OverviewRig(pos=(-0.17, 0.0, 0.90), quat=(0.672293, 0.219139, -0.219139, -0.672293))),
+        ),
     ),
     "floor_flat": SceneConfig(
         scene_id="floor_flat",
