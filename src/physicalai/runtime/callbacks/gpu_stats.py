@@ -17,11 +17,28 @@ _CSV_COLUMNS = 5
 
 
 @dataclass
-class GpuStatsSample:
-    """GPU table rows and numeric utilization samples keyed by vendor/device ID."""
+class GpuDeviceStats:
+    """Numeric GPU counters; unsupported values are None, never synthetic zeros."""
 
-    rows: str
-    utilization: dict[str, float] = field(default_factory=dict)
+    vendor: str
+    index: str
+    utilization: float | None = None
+    memory_used_mib: float | None = None
+    memory_total_mib: float | None = None
+    temperature_c: float | None = None
+
+    @property
+    def device_id(self) -> str:
+        """Stable vendor/device key for utilization history."""
+        return f"{self.vendor.lower()}_{self.index}"
+
+
+@dataclass
+class GpuStatsSample:
+    """GPU counters and availability messages, independent of any viewer."""
+
+    devices: list[GpuDeviceStats] = field(default_factory=list)
+    unavailable: dict[str, str] = field(default_factory=dict)
 
 
 def collect_gpu_stats() -> GpuStatsSample:
@@ -30,10 +47,9 @@ def collect_gpu_stats() -> GpuStatsSample:
     This performs bounded subprocess I/O and must run outside the control thread.
 
     Returns:
-        Table rows (or availability messages) and supported utilization values.
+        Numeric device counters and availability messages.
     """
-    rows = []
-    utilization = {}
+    sample = GpuStatsSample()
     queries = (
         (
             "NVIDIA",
@@ -59,18 +75,21 @@ def collect_gpu_stats() -> GpuStatsSample:
                 encoding="utf-8",
                 errors="replace",
             )
-            parsed = _parse_gpu_stats(vendor, result.stdout)
+            devices = _parse_gpu_stats(vendor, result.stdout)
         except (OSError, subprocess.SubprocessError, csv.Error):
             logger.debug("{} GPU counters unavailable", vendor)
-            parsed = GpuStatsSample("")
-        rows.append(parsed.rows or f"| {vendor} | Unavailable (tool, driver, or permissions) |")
-        utilization.update(parsed.utilization)
-    return GpuStatsSample("\n".join(rows) or "| Status | No Intel/NVIDIA monitoring tool found |", utilization)
+            devices = []
+        if devices:
+            sample.devices.extend(devices)
+        else:
+            sample.unavailable[vendor] = "Unavailable (tool, driver, or permissions)"
+    if not sample.devices and not sample.unavailable:
+        sample.unavailable["Status"] = "No Intel/NVIDIA monitoring tool found"
+    return sample
 
 
-def _parse_gpu_stats(vendor: str, output: str) -> GpuStatsSample:
-    rows = []
-    samples = {}
+def _parse_gpu_stats(vendor: str, output: str) -> list[GpuDeviceStats]:
+    devices = []
     for values in csv.reader(output.splitlines(), skipinitialspace=True, strict=True):
         if len(values) != _CSV_COLUMNS:  # Also ignores banners and incomplete output.
             continue
@@ -82,19 +101,17 @@ def _parse_gpu_stats(vendor: str, output: str) -> GpuStatsSample:
         index = index.strip()
         if not index.isdecimal():  # Ignore Intel's CSV header.
             continue
-        value = _parse_metric(utilization)
-        if value is not None:
-            samples[f"{vendor.lower()}_{index}"] = value
-        memory = _format_metric(used, " MiB")
-        if vendor == "NVIDIA":
-            memory += f" / {_format_metric(total, ' MiB')}"
-        rows.extend([
-            f"| **{vendor} GPU {index}** | |",
-            f"| Utilization | {_format_metric(utilization, '%')} |",
-            f"| Memory | {memory} |",
-            f"| Temperature | {_format_metric(temperature, ' °C')} |",
-        ])
-    return GpuStatsSample("\n".join(rows), samples)
+        devices.append(
+            GpuDeviceStats(
+                vendor=vendor,
+                index=index,
+                utilization=_parse_metric(utilization),
+                memory_used_mib=_parse_metric(used),
+                memory_total_mib=_parse_metric(total),
+                temperature_c=_parse_metric(temperature),
+            )
+        )
+    return devices
 
 
 def _parse_metric(raw: str) -> float | None:
@@ -103,8 +120,3 @@ def _parse_metric(raw: str) -> float | None:
     except ValueError:
         return None
     return value if math.isfinite(value) and value >= 0 else None
-
-
-def _format_metric(raw: str, unit: str) -> str:
-    value = _parse_metric(raw)
-    return f"{value:g}{unit}" if value is not None else "N/A"

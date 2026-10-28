@@ -7,23 +7,20 @@ from __future__ import annotations
 
 import colorsys
 import logging
-import time
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Literal
 
 from physicalai.config import export_config
-from physicalai.runtime.callbacks.gpu_stats import collect_gpu_stats
+from physicalai.runtime.callbacks.system_monitor import LocalSystemMonitor
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
-    from concurrent.futures import Future
 
     import numpy as np
-    import psutil
 
     from physicalai.capture.frame import Frame
     from physicalai.runtime.callbacks.gpu_stats import GpuStatsSample
+    from physicalai.runtime.callbacks.system_monitor import SystemMonitor
     from physicalai.runtime.events import InferenceEvent, LifecycleEvent, MetricsEvent, TickEvent
 
 logger = logging.getLogger(__name__)
@@ -46,6 +43,9 @@ class RerunCallback:
     entire host CPU capacity. GPU utilization, memory, and temperature are queried
     in the background using ``nvidia-smi`` / ``xpu-smi`` when available. Missing
     tools, permissions, and unsupported counters do not prevent runtime use.
+    Pass ``system_monitor`` to replace collection with a custom nonblocking
+    :class:`~physicalai.runtime.callbacks.system_monitor.SystemMonitor`. The
+    callback resets it on session start and owns its cleanup via ``close()``.
 
     Do NOT wrap with :class:`AsyncCallback` — Rerun's SDK already batches I/O
     asynchronously.  The ``AsyncCallback`` guard (rejects inners with action
@@ -64,6 +64,7 @@ class RerunCallback:
         save_path: str | None = None,
         connect_addr: str = "127.0.0.1:9876",
         application_id: str = "physicalai-runtime",
+        system_monitor: SystemMonitor | None = None,
     ) -> None:
         if mode == "save" and save_path is None:
             msg = "mode='save' requires save_path"
@@ -89,25 +90,18 @@ class RerunCallback:
         self._blueprint_updated = False
         self._camera_names: list[str] | None = None
         self._latencies: deque[float] = deque(maxlen=200)
-        self._process: psutil.Process | None = None
-        self._next_system_stats: float = 0.0
+        self._system_monitor = system_monitor if system_monitor is not None else LocalSystemMonitor()
         self._system_stats_rows = ""
         self._latency_stats_rows = ""
         self._gpu_stats_rows = ""
-        self._gpu_executor: ThreadPoolExecutor | None = None
-        self._gpu_future: Future[GpuStatsSample] | None = None
 
     def on_lifecycle(self, event: LifecycleEvent) -> None:  # noqa: D102
         if event.event == "start":
             self._source_ticks = 0
-            self._process = None
-            self._next_system_stats = 0.0
+            self._system_monitor.reset()
             self._system_stats_rows = ""
             self._latency_stats_rows = ""
             self._gpu_stats_rows = ""
-            if self._gpu_future is not None:
-                self._gpu_future.cancel()
-                self._gpu_future = None
             self._latencies.clear()
             if not self._initialized:
                 self._init_rerun(event.session_id, event.metadata)
@@ -218,7 +212,7 @@ class RerunCallback:
         rr.init(application_id=self._application_id, recording_id=session_id)
         if self._mode == "spawn":
             rr.spawn()
-        elif self._mode == "save":
+        elif self._mode == "save" and self._save_path is not None:
             rr.save(self._save_path)
         elif self._mode == "connect":
             # Rerun 0.22+ uses gRPC. Address like "127.0.0.1:9876" is wrapped
@@ -371,67 +365,33 @@ class RerunCallback:
         )
 
     def _log_system_stats(self) -> None:
-        import psutil  # noqa: PLC0415
         import rerun as rr  # noqa: PLC0415
 
-        now = time.monotonic()
-        if now < self._next_system_stats:
+        sample = self._system_monitor.poll()
+        if sample is None:
             return
-        self._next_system_stats = now + 1.0
-        self._update_gpu_stats()
-
-        try:
-            if self._process is None:
-                self._process = psutil.Process()
-                # The first nonblocking CPU sample is meaningless; prime both counters.
-                self._process.cpu_percent(interval=None)
-                psutil.cpu_percent(interval=None)
-                return
-            cpu = psutil.cpu_percent(interval=None)
-            memory = psutil.virtual_memory()
-            process_cpu = self._process.cpu_percent(interval=None) / (psutil.cpu_count() or 1)
-            rss = self._process.memory_info().rss
-        except (OSError, psutil.Error):
-            # Observability must not stop robot control when OS counters are unavailable.
-            logger.debug("Failed to sample system stats", exc_info=True)
-            self._process = None
-            return
-
-        rr.log("runtime/utilization/cpu/host", rr.Scalars(cpu))
-        rr.log("runtime/utilization/cpu/process", rr.Scalars(process_cpu))
-        self._system_stats_rows = (
-            f"| **Host CPU** | {cpu:.1f}% |\n"
-            f"| **Host RAM** | {memory.percent:.1f}% "
-            f"({(memory.total - memory.available) / 2**30:.2f} / {memory.total / 2**30:.2f} GiB) |\n"
-            f"| **Process CPU** | {process_cpu:.1f}% |\n"
-            f"| **Process RAM (RSS)** | {rss / 2**20:.1f} MiB |"
-        )
-        self._log_monitoring()
-
-    def _update_gpu_stats(self) -> None:
-        import rerun as rr  # noqa: PLC0415
-
-        if self._gpu_future is not None:
-            if not self._gpu_future.done():
-                return
-            sample = self._gpu_future.result()
-            self._gpu_stats_rows = sample.rows
-            for device, value in sample.utilization.items():
-                rr.log(f"runtime/utilization/gpu/{device}", rr.Scalars(value))
+        if sample.system is not None:
+            system = sample.system
+            rr.log("runtime/utilization/cpu/host", rr.Scalars(system.host_cpu_percent))
+            rr.log("runtime/utilization/cpu/process", rr.Scalars(system.process_cpu_percent))
+            self._system_stats_rows = (
+                f"| **Host CPU** | {system.host_cpu_percent:.1f}% |\n"
+                f"| **Host RAM** | {system.host_memory_percent:.1f}% "
+                f"({system.host_memory_used_bytes / 2**30:.2f} / {system.host_memory_total_bytes / 2**30:.2f} GiB) |\n"
+                f"| **Process CPU** | {system.process_cpu_percent:.1f}% |\n"
+                f"| **Process RAM (RSS)** | {system.process_rss_bytes / 2**20:.1f} MiB |"
+            )
+        if sample.gpu is not None:
+            self._gpu_stats_rows = _format_gpu_stats(sample.gpu)
+            for device in sample.gpu.devices:
+                if device.utilization is not None:
+                    rr.log(f"runtime/utilization/gpu/{device.device_id}", rr.Scalars(device.utilization))
+        if sample.system is not None or sample.gpu is not None:
             self._log_monitoring()
-        if self._gpu_executor is None:
-            self._gpu_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="physicalai-gpu-stats")
-        self._gpu_future = self._gpu_executor.submit(collect_gpu_stats)
 
     def close(self) -> None:
-        """Stop scheduling GPU queries without waiting on the control thread.
-
-        In-flight vendor queries finish within their subprocess timeouts.
-        """
-        if self._gpu_executor is not None:
-            self._gpu_executor.shutdown(wait=False, cancel_futures=True)
-            self._gpu_executor = None
-            self._gpu_future = None
+        """Close the owned system monitor without waiting for in-flight queries."""
+        self._system_monitor.close()
 
     def _log_latency_table(self) -> None:
         import numpy as np  # noqa: PLC0415
@@ -470,6 +430,26 @@ class RerunCallback:
             f"### GPU\n\n{header}{gpu}"
         )
         rr.log("runtime/monitoring", rr.TextDocument(md, media_type=rr.MediaType.MARKDOWN))
+
+
+def _format_gpu_stats(sample: GpuStatsSample) -> str:
+    rows = []
+    for device in sample.devices:
+        memory = _format_metric(device.memory_used_mib, " MiB")
+        if device.memory_total_mib is not None or device.vendor == "NVIDIA":
+            memory += f" / {_format_metric(device.memory_total_mib, ' MiB')}"
+        rows.extend([
+            f"| **{device.vendor} GPU {device.index}** | |",
+            f"| Utilization | {_format_metric(device.utilization, '%')} |",
+            f"| Memory | {memory} |",
+            f"| Temperature | {_format_metric(device.temperature_c, ' °C')} |",
+        ])
+    rows.extend(f"| {vendor} | {message} |" for vendor, message in sample.unavailable.items())
+    return "\n".join(rows)
+
+
+def _format_metric(value: float | None, unit: str) -> str:
+    return f"{value:g}{unit}" if value is not None else "N/A"
 
 
 def _downsample_to_max_dim(data: np.ndarray, max_dim: int) -> np.ndarray:

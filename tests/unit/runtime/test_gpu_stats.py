@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from physicalai.runtime.callbacks.gpu_stats import collect_gpu_stats
+from physicalai.runtime.callbacks.gpu_stats import GpuDeviceStats, collect_gpu_stats
 
 NVIDIA_CSV = "0, 65, 2048, 8192, 58\n1, N/A, [Not Supported], 16384, N/A\n"
 INTEL_CSV = (
@@ -39,21 +39,14 @@ def vendor_tools() -> Any:
 def test_collects_all_intel_and_nvidia_devices(vendor_tools: Any) -> None:
     _, _, query = vendor_tools
     sample = collect_gpu_stats()
-    md = sample.rows
-    assert sample.utilization == {"nvidia_0": 65.0, "intel_0": 30.5, "intel_1": 0.0}
-    assert "**NVIDIA GPU 0**" in md
-    assert "**NVIDIA GPU 1**" in md
-    assert "**Intel GPU 0**" in md
-    assert "**Intel GPU 1**" in md
-    assert "| Utilization | 65% |" in md
-    assert "| Memory | 2048 MiB / 8192 MiB |" in md
-    assert "| Temperature | 58 °C |" in md
-    assert "| Utilization | 30.5% |" in md
-    assert "| Memory | 512 MiB |" in md
-    assert "| Temperature | 45 °C |" in md
-    assert "| Utilization | N/A |" in md
-    assert "| Memory | N/A / 16384 MiB |" in md
-    assert "| Temperature | N/A |" in md
+    assert sample.devices == [
+        GpuDeviceStats("NVIDIA", "0", 65.0, 2048.0, 8192.0, 58.0),
+        GpuDeviceStats("NVIDIA", "1", memory_total_mib=16384.0),
+        GpuDeviceStats("Intel", "0", 30.5, 512.0, None, 45.0),
+        GpuDeviceStats("Intel", "1", utilization=0.0, memory_used_mib=1024.0),
+    ]
+    assert [device.device_id for device in sample.devices] == ["nvidia_0", "nvidia_1", "intel_0", "intel_1"]
+    assert sample.unavailable == {}
     assert query.call_count == 2
     for call in query.call_args_list:
         assert call.kwargs["timeout"] == 3
@@ -67,8 +60,8 @@ def test_missing_tools_do_not_launch_subprocesses(vendor_tools: Any) -> None:
     which.side_effect = None
     which.return_value = None
     sample = collect_gpu_stats()
-    assert "No Intel/NVIDIA monitoring tool found" in sample.rows
-    assert sample.utilization == {}
+    assert sample.unavailable == {"Status": "No Intel/NVIDIA monitoring tool found"}
+    assert sample.devices == []
     query.assert_not_called()
 
 
@@ -76,9 +69,9 @@ def test_missing_tools_do_not_launch_subprocesses(vendor_tools: Any) -> None:
 def test_each_vendor_works_without_the_other_tool(vendor_tools: Any, tool: str) -> None:
     _, which, query = vendor_tools
     which.side_effect = lambda candidate: f"/tools/{candidate}" if candidate == tool else None
-    md = collect_gpu_stats().rows
-    assert ("NVIDIA GPU" in md) is (tool == "nvidia-smi")
-    assert ("Intel GPU" in md) is (tool == "xpu-smi")
+    sample = collect_gpu_stats()
+    assert {device.vendor for device in sample.devices} == {"NVIDIA" if tool == "nvidia-smi" else "Intel"}
+    assert sample.unavailable == {}
     query.assert_called_once()
 
 
@@ -97,19 +90,17 @@ def test_query_failure_does_not_hide_the_other_vendor(vendor_tools: Any, error: 
 
     query.side_effect = run
     sample = collect_gpu_stats()
-    md = sample.rows
-    assert all(not key.startswith("nvidia") for key in sample.utilization)
-    assert "| NVIDIA | Unavailable" in md
-    assert "**Intel GPU 0**" in md
+    assert {device.vendor for device in sample.devices} == {"Intel"}
+    assert sample.unavailable == {"NVIDIA": "Unavailable (tool, driver, or permissions)"}
 
 
 @pytest.mark.parametrize("output", ["", "unexpected output\n", '0, "unterminated\n', "bad|index, 10, 20, 30, 40\n"])
 def test_malformed_output_is_unavailable(vendor_tools: Any, output: str) -> None:
     outputs, _, _ = vendor_tools
     outputs["nvidia-smi"] = output
-    md = collect_gpu_stats().rows
-    assert "| NVIDIA | Unavailable" in md
-    assert "**Intel GPU 0**" in md
+    sample = collect_gpu_stats()
+    assert sample.unavailable == {"NVIDIA": "Unavailable (tool, driver, or permissions)"}
+    assert {device.vendor for device in sample.devices} == {"Intel"}
 
 
 @pytest.mark.parametrize("invalid", ["N/A", "nan", "inf", "-1", "[Not Supported]"])
@@ -117,8 +108,4 @@ def test_unsupported_or_invalid_metrics_are_not_reported_as_zero(vendor_tools: A
     outputs, _, _ = vendor_tools
     outputs["nvidia-smi"] = f"0, {invalid}, {invalid}, 8192, {invalid}\n"
     sample = collect_gpu_stats()
-    md = sample.rows
-    assert "nvidia_0" not in sample.utilization
-    assert "| Utilization | N/A |" in md
-    assert "| Memory | N/A / 8192 MiB |" in md
-    assert "| Temperature | N/A |" in md
+    assert sample.devices[0] == GpuDeviceStats("NVIDIA", "0", memory_total_mib=8192.0)
