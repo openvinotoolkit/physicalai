@@ -18,6 +18,7 @@ import pytest
 from physicalai.capture.camera import ColorMode
 from physicalai.capture.cameras.ip import IPCamera
 from physicalai.capture.errors import CaptureError, CaptureTimeoutError, NotConnectedError
+from physicalai.capture.frame import Frame
 
 URL = "rtsp://cam.example.internal:554/stream"
 
@@ -169,7 +170,8 @@ def test_first_frame_deadline_uses_first_acquisition_not_latest(
 ) -> None:
     camera = IPCamera(url=URL)
     camera._first_timestamp = first_timestamp
-    camera._last_timestamp = 1.02  # reader overwrote the slot before waiter resumed
+    # The reader overwrote the slot before the waiter resumed.
+    camera._latest_frame = Frame(_bgr_frame(), timestamp=1.02, sequence=1)
     monkeypatch.setattr("physicalai.capture.cameras.ip._camera.time.monotonic", lambda: 1.03)
     if first_timestamp <= 1.0:
         camera._wait_first_frame(deadline=1.0)
@@ -193,6 +195,45 @@ def test_disconnect_and_reconnect(mock_cap: mock.MagicMock) -> None:
     assert camera.read_latest().sequence < 3
     camera.disconnect()
     assert mock_cap.release.call_count == 2
+
+
+def test_blocked_reader_retains_handle_and_prevents_reopen(mock_cap: mock.MagicMock) -> None:
+    resume = threading.Event()
+    blocked = threading.Event()
+    first_read = True
+
+    def read() -> tuple[bool, np.ndarray | None]:
+        nonlocal first_read
+        if first_read:
+            first_read = False
+            return True, _bgr_frame(height=2, width=2)
+        blocked.set()
+        resume.wait()
+        return False, None
+
+    mock_cap.read.side_effect = read
+    camera = IPCamera(url=URL)
+    try:
+        camera.connect()
+        reader = camera._reader
+        assert reader is not None and blocked.wait(1)
+        # Skip the actual join delay while the native read remains blocked.
+        with mock.patch.object(reader, "join") as join:
+            for operation in (camera.disconnect, camera.connect):
+                with pytest.raises(CaptureError, match="did not stop"):
+                    operation()
+                assert camera._reader is reader and reader.is_alive()
+                assert camera._cap is mock_cap
+                assert not camera.is_connected
+                mock_cap.release.assert_not_called()
+                mock_cap.video_capture_mock.assert_called_once()
+            assert join.call_args_list == [mock.call(timeout=camera._IO_TIMEOUT_S + 1.0)] * 2
+    finally:
+        resume.set()
+        camera.disconnect()
+    assert camera._reader is None and camera._cap is None
+    assert not reader.is_alive()
+    mock_cap.release.assert_called_once()
 
 
 def test_disconnect_without_connect() -> None:
@@ -265,6 +306,7 @@ def test_stall_keeps_metadata_and_consumer_timeout_bounded(mock_cap: mock.MagicM
     before_calls = mock_cap.read.call_count
     for _ in range(100):
         latest = camera.read_latest()
+        assert latest is first
         assert latest.sequence == first.sequence
         assert latest.timestamp == first.timestamp
     assert mock_cap.read.call_count <= before_calls + 1

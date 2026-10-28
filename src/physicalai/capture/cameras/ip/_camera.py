@@ -108,11 +108,9 @@ class IPCamera(Camera):
         self._width: int = 0
         self._height: int = 0
         self._connected = False
-        self._sequence = 0
-        self._last_timestamp: float = 0.0
         self._first_timestamp: float | None = None
         self._cap: cv2.VideoCapture | None = None
-        self._last_frame_data: np.ndarray | None = None
+        self._latest_frame: Frame | None = None
         self._condition = threading.Condition()
         self._stop = threading.Event()
         self._reader: threading.Thread | None = None
@@ -175,7 +173,7 @@ class IPCamera(Camera):
         self._stop.clear()
         self._error = None
         self._first_timestamp = None
-        self._sequence, self._read_sequence = -1, 0
+        self._read_sequence = 0
         self._reader = threading.Thread(target=self._capture_loop, args=(cap,), name="ip-camera-reader", daemon=True)
         try:
             self._reader.start()
@@ -213,11 +211,10 @@ class IPCamera(Camera):
                 data = self._convert(frame)
                 with self._condition:
                     self._height, self._width = data.shape[:2]
-                    self._last_frame_data = data
-                    self._last_timestamp = time.monotonic()
-                    self._sequence += 1
+                    sequence = 0 if self._latest_frame is None else self._latest_frame.sequence + 1
+                    self._latest_frame = Frame(data=data, timestamp=time.monotonic(), sequence=sequence)
                     if self._first_timestamp is None:
-                        self._first_timestamp = self._last_timestamp
+                        self._first_timestamp = self._latest_frame.timestamp
                     self._condition.notify_all()
         except Exception:  # noqa: BLE001
             # Native errors can contain the authenticated URL; do not relay them.
@@ -251,7 +248,7 @@ class IPCamera(Camera):
                 self._cap.release()  # reader never started, so no native read can be in flight
         self._reader = None
         self._cap = None
-        self._last_frame_data = None
+        self._latest_frame = None
         self._error = None
 
     def _convert(self, frame: np.ndarray) -> np.ndarray:
@@ -304,7 +301,7 @@ class IPCamera(Camera):
                 self._ensure_connected()
                 if self._error is not None:
                     raise self._error
-                if self._sequence > self._read_sequence:
+                if self._latest_frame is not None and self._latest_frame.sequence > self._read_sequence:
                     return self.read_latest()
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -327,8 +324,8 @@ class IPCamera(Camera):
             self._ensure_connected()
             if self._error is not None:
                 raise self._error
-            if self._last_frame_data is None:
+            if self._latest_frame is None:
                 msg = "No frame available"
                 raise CaptureError(msg)
-            self._read_sequence = self._sequence
-            return Frame(data=self._last_frame_data, timestamp=self._last_timestamp, sequence=self._sequence)
+            self._read_sequence = self._latest_frame.sequence
+            return self._latest_frame

@@ -425,6 +425,40 @@ class TestEncodeDecodeRoundtrip:
         assert decoded_header.fps == 0
 
 
+class TestSharedCameraDecoding:
+    @pytest.mark.parametrize("zero_copy", [False, True])
+    @pytest.mark.parametrize("color_mode", [ColorMode.RGB, ColorMode.GRAY])
+    def test_decodes_shared_views_without_payload_copies(self, zero_copy: bool, color_mode: ColorMode) -> None:
+        shape = (4, 4) if color_mode == ColorMode.GRAY else (4, 4, 3)
+        data = np.arange(np.prod(shape), dtype=np.uint8).reshape(shape)
+        source = Frame(data, timestamp=1.5, sequence=7)
+        header, pixels = encode_frame(source, color_mode)
+        buffer = ctypes.create_string_buffer(bytes(header) + pixels)
+        sample = MagicMock()
+        sample.payload.return_value.data_ptr = ctypes.addressof(buffer)
+        sample.payload.return_value.number_of_elements = len(buffer)
+        camera = SharedCamera.from_publisher("physicalai/test/decode/frame", zero_copy=zero_copy)
+
+        with patch("physicalai.capture.transport._shared_camera.decode_header", wraps=decode_header) as decode:
+            decoded_header, frame = camera._decode_sample(sample)
+
+        payload = decode.call_args.args[0]
+        assert isinstance(payload, memoryview) and payload.readonly
+        assert np.shares_memory(np.frombuffer(payload, dtype=np.uint8), np.frombuffer(buffer, dtype=np.uint8))
+        np.testing.assert_array_equal(frame.data, source.data)
+        assert frame.timestamp == source.timestamp
+        assert frame.sequence == decoded_header.sequence == source.sequence
+        assert np.shares_memory(frame.data, np.frombuffer(buffer, dtype=np.uint8)) == zero_copy
+        if zero_copy:
+            assert camera._held_sample is sample
+            with pytest.raises(ValueError):
+                frame.data.flags.writeable = True
+        else:
+            assert camera._held_sample is None
+            buffer[HEADER_SIZE] = b"\xff"
+            np.testing.assert_array_equal(frame.data, source.data)
+
+
 class TestSharedCameraConstruction:
     """Unit tests for SharedCamera constructor / from_config."""
 

@@ -379,11 +379,10 @@ class SharedCamera(Camera):
         return self._latest
 
     def _decode_sample(self, sample: Any) -> tuple[FrameHeader, Frame]:  # noqa: ANN401
-        import ctypes as _ct  # noqa: PLC0415
-
         slc = sample.payload()
-        buf = (_ct.c_uint8 * slc.number_of_elements).from_address(slc.data_ptr)
-        header = decode_header(bytes(buf))
+        buf = (ctypes.c_uint8 * slc.number_of_elements).from_address(slc.data_ptr)
+        payload = memoryview(buf).toreadonly()
+        header = decode_header(payload)
         if self._zero_copy:
             from ._header import decode_rgb_view  # noqa: PLC0415
 
@@ -396,8 +395,8 @@ class SharedCamera(Camera):
             # (which would be seen by every other subscriber). Bounds metadata on
             # the memoryview also prevents out-of-bounds indexing past the
             # payload. Consumers that need to modify the frame must ``.copy()``.
-            return header, decode_rgb_view(header, memoryview(buf).toreadonly())
-        return header, decode_rgb(header, bytes(buf))
+            return header, decode_rgb_view(header, payload)
+        return header, decode_rgb(header, payload)
 
     def _do_disconnect(self) -> None:
         self._held_sample = None

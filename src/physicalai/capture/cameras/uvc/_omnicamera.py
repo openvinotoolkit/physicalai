@@ -350,7 +350,7 @@ class OmniCamera(Camera):
             if sequence != self._sequence or self._last_frame is None:
                 self._last_timestamp = time.monotonic()
             self._sequence = sequence
-            self._last_frame = frame_data
+            self._last_frame = None
             self._latest_frame = Frame(data=converted, timestamp=self._last_timestamp, sequence=sequence)
         return self._latest_frame
 
@@ -397,6 +397,8 @@ class OmniCamera(Camera):
             msg = f"Failed to read frame from device: {self.device_id}"
             raise CaptureError(msg) from exc
 
+        if self._latest_frame is not None:
+            return self._latest_frame
         if self._last_frame is not None:
             return self._cache_frame(self._last_frame, self._sequence)
 

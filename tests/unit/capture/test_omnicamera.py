@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib
 import pathlib
 import sys
+import weakref
 from unittest import mock
 
 import numpy as np
@@ -358,7 +359,7 @@ def test_read_latest_returns_cached_frame_when_poll_none(omnicamera_cls: tuple) 
     # Connect stores _last_frame from connect's poll
     cam.connect()
 
-    # First read_latest with a real frame to populate _last_frame with our marked data
+    # First read_latest with a real frame to cache our marked data
     mock_cam.poll_frame_np_with_seq.return_value = (raw, 1)
     cam.read_latest()
 
@@ -475,6 +476,20 @@ def test_cached_latest_reuses_color_conversion(omnicamera_cls: tuple, empty_poll
         assert newest.sequence == 2
         assert convert.call_count == 2
         assert not np.array_equal(newest.data, first.data)
+
+
+def test_grayscale_cache_releases_raw_color(omnicamera_cls: tuple) -> None:
+    camera_cls, native = omnicamera_cls
+    camera = camera_cls(color_mode=ColorMode.GRAY)
+    camera.connect()
+    raw = np.full((2, 2, 3), 42, dtype=np.uint8)
+    raw_ref = weakref.ref(raw)
+    native.Camera.return_value.poll_frame_np_with_seq.return_value = (raw, 1)
+    frame = camera.read_latest()
+    native.Camera.return_value.poll_frame_np_with_seq.return_value = None
+    del raw
+    assert raw_ref() is None
+    assert camera.read_latest() is frame
 
 
 def test_reconnect_discards_converted_cache(omnicamera_cls: tuple) -> None:
