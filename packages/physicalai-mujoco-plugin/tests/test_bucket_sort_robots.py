@@ -125,6 +125,58 @@ class TestDemonstrator:
         np.testing.assert_array_equal(targets, demo.planners[idle].ik.home)
         np.testing.assert_allclose(_arm_qpos(scene, idle), demo.planners[idle].ik.home, atol=0.02)
 
+    def test_a_replan_into_the_idle_arm_stops_instead_of_running(self, scene: MuJoCoRobot) -> None:
+        """A dragged object re-plans the approach; a plan that reaches into the arm holding still never runs."""
+        if scene._profile.name != "franka_duo":
+            pytest.skip("one arm")
+        model, data = scene._sim.model, scene._sim.data
+        scene._automation.set_autopilot("drive")
+        demo = scene._automation.autopilot.demonstrator
+        for _ in range(round(10.0 / TICK_S)):
+            scene.get_observation()
+            if demo.phase == "approach":
+                break
+        assert demo.phase == "approach"
+        idle = demo.planners[1 - demo._active].ik
+        below = idle.fk(idle.home)[0]
+        name = scene._sim.on_reset.instruction.object
+        adr = int(model.joint(f"{name}:joint").qposadr[0])
+        data.qpos[adr : adr + 3] = (below[0], below[1], 0.02)  # right under the idle arm's hand
+        mujoco.mj_forward(model, data)
+        arms = [{int(b) for b in range(model.nbody) if model.body(b).name.startswith(side)} for side in ("left_", "right_")]
+        episode, failure, resets = demo.status()["episode"], None, scene._sim.on_reset.reset_count
+        for _ in range(round(4.0 / TICK_S)):
+            scene.get_observation()
+            for contact in data.contact[: data.ncon]:
+                bodies = {int(model.geom_bodyid[contact.geom1]), int(model.geom_bodyid[contact.geom2])}
+                assert not (bodies & arms[0] and bodies & arms[1]), "the arms touched"
+            status = demo.status()
+            if status["episode"] != episode:
+                break  # the failed episode's reset started the next one
+            failure = status["failure"]
+        assert demo.stats.replans >= 1
+        assert failure is not None and "other arm" in failure, failure
+        assert scene._sim.on_reset.reset_count == resets + 1  # and the scene reset after the hold
+
+    def test_an_arm_the_probe_misses_still_plans_with_the_other_yaw_or_a_turned_release(self, robot: MuJoCoRobot) -> None:
+        """Seed 1019: the probe misses both arms, yet the left arm's plan passes every check."""
+        if robot._profile.name != "franka_duo":
+            pytest.skip("one arm")
+        robot._automation.set_autopilot("off")
+        robot._set_seed(1019)
+        robot._reset()
+        robot._set_seed(None)
+        data = robot._sim.data
+        demo = robot._automation.autopilot.demonstrator
+        demo.reset()
+        demo.step(data, TICK_S, apply=False)
+        snapshot, instruction = bd.SceneSnapshot.take(data), robot._sim.on_reset.instruction
+        params = bd.DemoParams()
+        assert all(demo._arm_preference(arm, snapshot, instruction, params)[0] for arm in range(2))
+        plan = demo._plan_with_an_arm(snapshot, instruction, params, TICK_S, np.random.default_rng(0))
+        assert plan is not None and plan.ok, plan and plan.problems
+        assert demo.active_arm.label == "left arm"
+
     def test_an_instruction_no_arm_reaches_fails_the_episode_and_asks_for_a_reset(self, scene: MuJoCoRobot) -> None:
         if scene._profile.name != "franka_duo":
             pytest.skip("one arm")

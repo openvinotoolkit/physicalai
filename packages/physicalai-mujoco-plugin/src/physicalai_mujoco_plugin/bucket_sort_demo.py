@@ -2012,15 +2012,16 @@ class BucketSortDemonstrator:
     ) -> JointPlan | None:
         """Plan an attempt with the arm that suits it, and let that arm work (several arms, at rest).
 
-        Only the arms that reach the object and the bucket from home plan, the nearest first; the
-        first whose plan passes every check works, else the one with the best plan, unless that one
-        misses its path by more than :data:`OUT_OF_REACH` or comes too close to the other arm.
+        Every arm plans, in the order of :meth:`_arm_preference`: the first whose plan passes every
+        check works, else the one with the best plan, unless that one misses its path by more than
+        :data:`OUT_OF_REACH` or comes too close to the other arm. The ranking only orders the arms:
+        its probe does not try the other grasp yaw or the turn for the release, which a plan may need.
 
         Returns:
             The plan, for the arm that now works; ``None`` when no arm can do the attempt.
         """
         preference = {i: self._arm_preference(i, snapshot, instruction, params) for i in range(len(self.arms))}
-        order = sorted((i for i in preference if not preference[i][0]), key=lambda i: preference[i])
+        order = sorted(preference, key=lambda i: preference[i])
         best: tuple[int, JointPlan] | None = None
         for arm in order:
             self._switch_arm(arm)
@@ -2043,6 +2044,9 @@ class BucketSortDemonstrator:
         self, arm: int, snapshot: SceneSnapshot, instruction: Instruction, params: DemoParams
     ) -> tuple[bool, float]:
         """Rank arm *arm* for an attempt: whether it reaches the grasp and the bucket from home, and how far it goes.
+
+        The probe keeps the object's grasp yaw over the bucket; an arm it misses may still plan the
+        attempt with the other yaw or a turn for the release, so it ranks such an arm last.
 
         Returns:
             A sort key; lower is better.
@@ -2148,11 +2152,57 @@ class BucketSortDemonstrator:
             self._report_problems(best)  # type: ignore[arg-type]
         return best  # type: ignore[return-value]
 
+    def _too_close_to_an_arm(self, plan: JointPlan) -> bool:
+        """Return whether *plan* brings the working arm closer than :data:`CLEARANCE` ``arm`` to an arm holding still.
+
+        Every plan runs through :meth:`_run`, the re-planned approach and place and the way home
+        included, so none moves the working arm into the other.
+        """
+        return len(self.arms) > 1 and plan.clearance.get("arm", np.inf) < CLEARANCE["arm"]
+
+    def _stop_and_fail(self, data: object, plan: JointPlan, brake: np.ndarray | None) -> None:
+        """Stop where braking ends and hold there; the episode fails and the scene resets after :data:`FAILURE_HOLD_S`.
+
+        No other plan runs from here: one that goes home could come as close to the other arm.
+        """
+        episode = self._episode
+        distance, needed = plan.clearance["arm"] * 1000, CLEARANCE["arm"] * 1000
+        reason = f"the {plan.kind} plan would come {distance:.0f} mm from the other arm (at least {needed:.0f} mm)"
+        q = np.vstack([brake, brake[-1:]]) if brake is not None and len(brake) else self._q[None, :].copy()  # type: ignore[index]
+        if brake is not None and len(brake):
+            self._q = self._braking_from  # this tick still outputs where the arm is now
+        ticks = len(q)
+        state = self._start_state()
+        stop = JointPlan(
+            kind="home",
+            dt=plan.dt,
+            q=q,
+            grip=np.full(ticks, self._grip),
+            phases=["failed"] * ticks,
+            cartesian=np.repeat(state[None, :], ticks, axis=0),
+        )
+        if episode is not None:
+            if episode.outcome != "failed":  # a failed episode on its way home keeps its reason
+                self.stats.failures += 1
+                episode.outcome, episode.failure = "failed", reason
+            episode.reasons.append(reason)
+        logger.warning("Demonstrator: {}; stopping, the scene resets next", reason)
+        self._plan = stop
+        self.plans.append(stop)
+        self._tick = 0
+        self._plan_end = None
+        self._lag_since = None
+        self._lift_check_since = None
+        self._set_phase("failed", data)
+
     def _report_problems(self, plan: JointPlan) -> None:
         self.stats.plan_problems += 1
         logger.warning("Demonstrator: no plan passed every check ({}); running the best one", "; ".join(plan.problems))
 
     def _run(self, plan: JointPlan, data: object, brake: np.ndarray | None = None) -> None:
+        if self._too_close_to_an_arm(plan):
+            self._stop_and_fail(data, plan, brake)
+            return
         if brake is not None and len(brake):
             # Prefix the braking ticks; the plan's own ticks shift by as many.
             n = len(brake)
