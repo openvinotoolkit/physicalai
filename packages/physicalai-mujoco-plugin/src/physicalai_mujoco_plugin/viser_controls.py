@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     from physicalai_mujoco_plugin.compose import OverviewStyle
     from physicalai_mujoco_plugin.floating import BaseStatus
     from physicalai_mujoco_plugin.http_server import FrameBuffer, SimCommand
+    from physicalai_mujoco_plugin.scene_registry import ViewerView
     from physicalai_mujoco_plugin.studio_recorder import KeepPolicy
 
 CUSTOM_MODEL_LABEL = "Custom model"
@@ -307,6 +308,8 @@ class PanelState:
     """Point a free camera looks at by default."""
     view_extent: float = 1.0
     """Model size, used for the default camera distance."""
+    view: ViewerView | None = None
+    """The scene's starting view, which replaces the default angle on ``view_center``."""
     timing: Mapping[str, Any] = field(default_factory=dict)
     """Real-time factor, control rate and camera frame rates (see ``OperatorControls._timing_status``)."""
     autopilot: Mapping[str, Any] = field(default_factory=dict)
@@ -584,6 +587,7 @@ class SimControlPanel:
         self._fov_deg = _FOV_DEFAULT_DEG
         self._view_center = np.zeros(3)
         self._view_extent = 1.0
+        self._view: ViewerView | None = None
         server.on_client_disconnect(self._on_client_disconnect)
         # Registered once for the server's lifetime (mjviser's scene GUI would
         # add one per scene build), so it always reads the current settings.
@@ -634,6 +638,9 @@ class SimControlPanel:
         gui = self._server.gui
         self._view_center = np.asarray(state.view_center, dtype=np.float64)
         self._view_extent = float(state.view_extent)
+        if state.view != self._view:  # a new scene's view; a rebuild of the same scene keeps the slider
+            self._view = state.view
+            self._fov_deg = state.view.fov_deg if state.view is not None else _FOV_DEFAULT_DEG
         followed = self.camera.name
         if followed is not None and followed not in state.follow_targets:
             followed = None
@@ -678,11 +685,16 @@ class SimControlPanel:
                 self._aim_default(client)
 
     def _aim_default(self, client: Any) -> None:  # noqa: ANN401
-        """Point *client* at the followed body, or the model centre, from the default angle."""
+        """Point *client* at the followed body from the default angle, else at the scene's view or the model centre."""
         target = self.camera.last_target
-        look_at = target if target is not None else self._view_center
         with client.atomic() if hasattr(client, "atomic") else contextlib.nullcontext():
             client.camera.fov = np.deg2rad(self._fov_deg)
+            if target is None and self._view is not None:
+                client.camera.position = np.asarray(self._view.position, dtype=np.float64)
+                client.camera.look_at = np.asarray(self._view.look_at, dtype=np.float64)
+                client.camera.up_direction = (0.0, 0.0, 1.0)
+                return
+            look_at = target if target is not None else self._view_center
             client.camera.position = look_at + default_camera_position(self._view_extent)
             client.camera.look_at = look_at
 

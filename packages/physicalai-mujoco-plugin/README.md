@@ -248,7 +248,7 @@ Common options:
 - `--no-gui`: disable all viewers
 - `--viser-port <port>`: browser viewer port (default `9090`; `0` picks a free port)
 - `--viser-host <host>`: browser viewer bind host (default `127.0.0.1`; use `0.0.0.0` to expose it remotely)
-- `--viewer-theme <default|studio|compact>`: `studio` hides the browser viewer's share and **Shutdown** buttons, for a viewer embedded in Studio, which stops the simulation itself; `compact` does the same and starts with the control panel minimized, for a viewer embedded next to its own controls (a notebook); the look stays viser's default
+- `--viewer-theme <default|studio|compact>`: `compact` hides the browser viewer's share and **Shutdown** buttons and starts with the control panel minimized, for a viewer embedded next to its own controls (a notebook); `studio` is `compact` in dark mode, for a viewer embedded in Studio, which stops the simulation itself
 - `--no-cameras`: disable camera rendering (HTTP streams and viewer previews)
 - `--http-host <host>`: host for the camera/control HTTP server (default `127.0.0.1`)
 - `--http-port <port>`: port for the camera/control HTTP server (default `8080`; `0` picks a free port)

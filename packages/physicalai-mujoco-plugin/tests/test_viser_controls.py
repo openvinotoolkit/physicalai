@@ -29,6 +29,7 @@ from physicalai_mujoco_plugin.http_server import (
     StopReplayCommand,
     SwitchSceneCommand,
 )
+from physicalai_mujoco_plugin.scene_registry import ViewerView
 from physicalai_mujoco_plugin.viser_controls import (
     AUTOPILOT_LABELS,
     CUSTOM_MODEL_LABEL,
@@ -873,6 +874,23 @@ class TestCameraTab:
         assert client.camera.fov == pytest.approx(np.deg2rad(90.0))
         np.testing.assert_allclose(client.camera.look_at, [0.1, 0.0, 0.2])
         np.testing.assert_allclose(client.camera.position, np.array([0.1, 0.0, 0.2]) + default_camera_position(2.0))
+
+    def test_a_scene_view_replaces_the_default_angle_and_sets_the_fov(self) -> None:
+        view = ViewerView(position=(-0.25, 1.42, 1.0), look_at=(0.32, 0.0, 0.22), fov_deg=51.6)
+        panel, server, _ = build_panel(make_state(view=view))
+        assert server.gui.handles["FOV (°)"].value == pytest.approx(51.6)
+        client = make_client()
+        server.connect_callbacks[0](client)
+        np.testing.assert_allclose(client.camera.position, view.position)
+        np.testing.assert_allclose(client.camera.look_at, view.look_at)
+        assert client.camera.fov == pytest.approx(np.deg2rad(51.6))
+
+        server.gui.handles["FOV (°)"].fire(70.0)
+        panel.build_camera_tab(make_state(view=view))  # a rebuild of the same scene keeps the slider
+        assert server.gui.handles["FOV (°)"].value == pytest.approx(70.0)
+        server.clients = {1: make_client(look_at=(1.0, 1.0, 1.0))}
+        server.gui.handles["Reset View"].fire()
+        np.testing.assert_allclose(server.clients[1].camera.look_at, view.look_at)
 
     def test_new_clients_look_at_the_followed_body(self) -> None:
         panel, server, _ = build_panel()

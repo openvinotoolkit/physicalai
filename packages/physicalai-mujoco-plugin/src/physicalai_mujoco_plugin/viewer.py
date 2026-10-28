@@ -28,8 +28,9 @@ if TYPE_CHECKING:
     from physicalai_mujoco_plugin.viser_controls import PanelState, SimControlPanel
 
 ViewerTheme = Literal["default", "studio", "compact"]
-"""viser's chrome: ``studio`` hides the Share and Shutdown buttons; ``compact`` also starts with the control
-panel minimized, for a viewer embedded next to its own controls. The look stays viser's own."""
+"""viser's chrome: ``compact`` hides the Share and Shutdown buttons and starts with the control panel
+minimized, for a viewer embedded next to its own controls; ``studio`` is ``compact`` in dark mode, to sit
+inside Studio's dark UI."""
 
 
 class ViewerService:
@@ -51,7 +52,7 @@ class ViewerService:
             host: viser bind address.
             port: viser port; ``0`` or less disables viser.
             theme: viser's chrome; ``studio`` is for a viewer embedded in Studio, which stops the
-                simulation itself, so it has no Share or Shutdown button.
+                simulation itself: no Share or Shutdown button, the panel minimized, dark mode.
             submit_command: Queues a panel command for the sim thread.
             panel_state: Snapshots the state the panel shows.
             key_callback: Native viewer key handler.
@@ -243,7 +244,7 @@ class ViewerService:
         with tabs.add_tab("Groups", icon=viser.Icon.LAYERS_INTERSECT):
             scene.create_groups_gui()
         self.panel.build_scene_nodes(state)
-        if self.theme == "compact":
+        if self.theme in {"studio", "compact"}:
             server.gui.main_panel.minimize()  # after `gui.reset()`, which restores the default placement
 
         self.scene = scene
@@ -264,6 +265,9 @@ class ViewerService:
         except ImportError as exc:
             logger.warning("mjviser/viser unavailable, web viewer disabled: {}", exc)
             return False
+        from physicalai_mujoco_plugin.viewer_textures import install_box_textures  # noqa: PLC0415
+
+        install_box_textures()
 
         # SharedRobot's owner worker closes stdout after its READY handshake.
         # Viser prints from its background thread during stop(), so give Rich a
@@ -280,7 +284,7 @@ class ViewerService:
                 self.port = bound_port
             self.server = server
             if self.theme in {"studio", "compact"}:
-                server.gui.configure_theme(show_share_button=False)
+                server.gui.configure_theme(show_share_button=False, dark_mode=self.theme == "studio")
             self.build_gui()
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to start viser viewer on port {}: {}", self.port, exc)
