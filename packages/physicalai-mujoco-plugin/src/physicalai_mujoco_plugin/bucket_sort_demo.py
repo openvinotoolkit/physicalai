@@ -1781,8 +1781,11 @@ class BucketSortDemonstrator:
                 self._begin_attempt(data, dt, new_attempt=True)
             else:
                 self._fail(data, f"{episode.reasons[-1]}, and it cannot be picked up where it lies", dt)  # type: ignore[union-attr]
+        elif now - self._since > SETTLE_TIMEOUT_S and not still:
+            # No way home either: it would be checked against an arm that is not where it will be.
+            self._stop_and_fail(data, dt, None, "the arms do not come to rest", freeze_at=self._q)
         elif now - self._since > SETTLE_TIMEOUT_S:
-            self._fail(data, "the arms do not come to rest" if not still else "the object does not come to rest", dt)
+            self._fail(data, "the object does not come to rest", dt)
 
     def _arms_still(self, data: object, now: float) -> bool:
         """Return whether every arm has stood still on its targets for :data:`STILL_S` (several arms).
@@ -2247,7 +2250,7 @@ class BucketSortDemonstrator:
     def _stop_and_fail(
         self,
         data: object,
-        plan: JointPlan,
+        dt: float,
         brake: np.ndarray | None,
         reason: str,
         *,
@@ -2270,7 +2273,7 @@ class BucketSortDemonstrator:
         state = self._start_state()
         stop = JointPlan(
             kind="home",
-            dt=plan.dt,
+            dt=dt,
             q=q,
             grip=np.full(ticks, self._grip),
             phases=["failed"] * ticks,
@@ -2311,14 +2314,14 @@ class BucketSortDemonstrator:
                 reason = (
                     f"braking would come {brake_clearance * 1000:.0f} mm from the other arm (at least {needed:.0f} mm)"
                 )
-                self._stop_and_fail(data, plan, None, reason, freeze_at=self._braking_from)
+                self._stop_and_fail(data, plan.dt, None, reason, freeze_at=self._braking_from)
                 return
             if self._too_close_to_an_arm(plan):
                 distance = plan.clearance["arm"] * 1000
                 reason = (
                     f"the {plan.kind} plan would come {distance:.0f} mm from the other arm (at least {needed:.0f} mm)"
                 )
-                self._stop_and_fail(data, plan, brake, reason)
+                self._stop_and_fail(data, plan.dt, brake, reason)
                 return
             if plan.kind != "home" and plan.pos_error > OUT_OF_REACH:
                 # A re-planned approach or place out of reach would close on nothing or let go outside
@@ -2327,7 +2330,7 @@ class BucketSortDemonstrator:
                     f"the {plan.kind} plan misses its path by {plan.pos_error * 1000:.0f} mm "
                     f"(at most {OUT_OF_REACH * 1000:.0f} mm): out of reach"
                 )
-                self._stop_and_fail(data, plan, brake, reason)
+                self._stop_and_fail(data, plan.dt, brake, reason)
                 return
         if brake is not None and len(brake):
             # Prefix the braking ticks; the plan's own ticks shift by as many.

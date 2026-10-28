@@ -245,6 +245,32 @@ class TestDemonstrator:
         assert waited > 0, "planned while the right arm still moved"
         assert max(moving) < bd.STILL_SPEED, moving
 
+    def test_an_arm_that_never_rests_fails_the_episode_without_a_way_home(self, scene: MuJoCoRobot, monkeypatch) -> None:
+        """Past the settle timeout with an arm still moving: hold the targets, plan nothing, and reset."""
+        if scene._profile.name != "franka_duo":
+            pytest.skip("one arm")
+        monkeypatch.setattr(bd, "SETTLE_TIMEOUT_S", 1.0)
+        data = scene._sim.data
+        demo = scene._automation.autopilot.demonstrator
+        scene._automation.set_autopilot("drive")
+        scene.get_observation()
+        idle = demo.planners[1 - demo._active].ik
+        resets, failure = scene._sim.on_reset.reset_count, None
+        for _ in range(round(4.0 / TICK_S)):
+            if failure is None:
+                data.qvel[idle.dof_adr[0]] = 0.05  # something keeps nudging the arm that should hold
+            scene.get_observation()
+            if failure is None and demo.status()["outcome"] == "failed":
+                failure = demo.status()["failure"]
+                stop = demo._plan
+                assert stop is not None and set(stop.phases) == {"failed"}
+                np.testing.assert_array_equal(np.ptp(stop.q, axis=0), 0.0)  # holds its targets, goes nowhere
+                assert not any(phase in {"retreat", "return"} for plan in demo.plans for phase in plan.phases)
+            if scene._sim.on_reset.reset_count != resets:
+                break
+        assert failure == "the arms do not come to rest"
+        assert scene._sim.on_reset.reset_count == resets + 1  # the failed episode asked for the reset
+
     @pytest.mark.parametrize("what", ["object", "bucket"])
     def test_a_replan_out_of_reach_stops_instead_of_running(self, scene: MuJoCoRobot, what: str) -> None:
         """Dragged past both arms' reach, the object (before the grasp) or the bucket (in the carry) stops the arm."""
