@@ -4,6 +4,10 @@ Observed: 2026-10-28, approximately 13:50 CET, on Linux `7.2.8-9-omarchy`
 (`x86_64`). This records the earlier inspection; it is not a live inventory and
 was not refreshed when these documents were written.
 
+**Current scope update (2026-10-28):** the user subsequently unplugged the ZED
+because a colleague needed it. Its rows below are historical evidence, not a
+current missing-device problem. Further live validation excludes it.
+
 Related documents: [CLI proposal](cli-plan.md) and [implementation progress](progress.md).
 
 ## Scope and limitations
@@ -22,14 +26,14 @@ this document publicly if needed.
 
 ## Main connected devices
 
-| User/device description | USB VID:PID | Reported USB serial | USB topology path | Negotiated speed | Current endpoints |
-| --- | --- | --- | --- | --- | --- |
-| StarArm at `ttyUSB0`; CH340 adapter | `1a86:7523` | None | `3-4.1.4` | 12 Mb/s | `/dev/ttyUSB0` |
-| StarArm at `ttyUSB1`; CH340 adapter | `1a86:7523` | None | `3-1.2` | 12 Mb/s | `/dev/ttyUSB1` |
-| StarArm at `ttyUSB2`; CH340 adapter | `1a86:7523` | None | `3-4.1.1` | 12 Mb/s | `/dev/ttyUSB2` |
-| Likely Hiwonder camera; enumerates as icSpring `icspring camera` | `32e6:9221` | `202404160005` | `3-1.4` | 480 Mb/s | Capture `/dev/video42`; metadata `/dev/video43`; `/dev/media4` |
-| Orbbec Gemini 305 | `2bc5:0840` | `CV2T661000T1` | `3-4.1.2` | 480 Mb/s | `/dev/video32`–`41`; `/dev/media1`–`3` |
-| Stereolabs ZED-M HID interface | `2b03:f681` | `10209071` | `3-1.3` | 12 Mb/s | `/dev/hidraw8`; no video interface visible |
+| User/device description                                          | USB VID:PID | Reported USB serial | USB topology path | Negotiated speed | Current endpoints                                              |
+| ---------------------------------------------------------------- | ----------- | ------------------- | ----------------- | ---------------- | -------------------------------------------------------------- |
+| StarArm at `ttyUSB0`; CH340 adapter                              | `1a86:7523` | None                | `3-4.1.4`         | 12 Mb/s          | `/dev/ttyUSB0`                                                 |
+| StarArm at `ttyUSB1`; CH340 adapter                              | `1a86:7523` | None                | `3-1.2`           | 12 Mb/s          | `/dev/ttyUSB1`                                                 |
+| StarArm at `ttyUSB2`; CH340 adapter                              | `1a86:7523` | None                | `3-4.1.1`         | 12 Mb/s          | `/dev/ttyUSB2`                                                 |
+| Likely Hiwonder camera; enumerates as icSpring `icspring camera` | `32e6:9221` | `202404160005`      | `3-1.4`           | 480 Mb/s         | Capture `/dev/video42`; metadata `/dev/video43`; `/dev/media4` |
+| Orbbec Gemini 305                                                | `2bc5:0840` | `CV2T661000T1`      | `3-4.1.2`         | 480 Mb/s         | `/dev/video32`–`41`; `/dev/media1`–`3`                         |
+| Stereolabs ZED-M HID interface                                   | `2b03:f681` | `10209071`          | `3-1.3`           | 12 Mb/s          | `/dev/hidraw8`; no video interface visible                     |
 
 The serial adapters use `ch341`; both enumerated USB cameras use `uvcvideo`.
 The ZED HID interface uses `usbhid`.
@@ -128,13 +132,13 @@ Prepend the following to every suffix in the table:
 /dev/v4l/by-path/pci-0000:00:14.0-usb-0:
 ```
 
-| Capture node | Metadata node | Advertised format(s) | Port-bound capture suffix |
-| --- | --- | --- | --- |
-| `/dev/video32` | `/dev/video33` | `Z16` depth | `4.1.2:1.0-video-index0` |
-| `/dev/video34` | `/dev/video35` | `GREY` grayscale | `4.1.2:1.0-video-index2` |
-| `/dev/video36` | `/dev/video37` | `BA81` Bayer | `4.1.2:1.0-video-index4` |
-| `/dev/video38` | `/dev/video39` | `YUYV`, `MJPG` | `4.1.2:1.4-video-index0` |
-| `/dev/video40` | `/dev/video41` | `YUYV` | `4.1.2:1.6-video-index0` |
+| Capture node   | Metadata node  | Advertised format(s) | Port-bound capture suffix |
+| -------------- | -------------- | -------------------- | ------------------------- |
+| `/dev/video32` | `/dev/video33` | `Z16` depth          | `4.1.2:1.0-video-index0`  |
+| `/dev/video34` | `/dev/video35` | `GREY` grayscale     | `4.1.2:1.0-video-index2`  |
+| `/dev/video36` | `/dev/video37` | `BA81` Bayer         | `4.1.2:1.0-video-index4`  |
+| `/dev/video38` | `/dev/video39` | `YUYV`, `MJPG`       | `4.1.2:1.4-video-index0`  |
+| `/dev/video40` | `/dev/video41` | `YUYV`               | `4.1.2:1.6-video-index0`  |
 
 For example, the slot/interface-bound replacement for `/dev/video40` is:
 
@@ -188,14 +192,14 @@ interface; this is a separate observation, not proof of the missing-video cause.
 
 ## Other enumerated USB devices
 
-| Device | VID:PID | Path | Reported serial / note |
-| --- | --- | --- | --- |
-| Huasheng USB 2 hubs | `214b:7260` | `3-1`, `3-4.1` | No serial exposed |
-| VIA USB 2 hub | `2109:2211` | `3-4` | No serial exposed |
-| VIA USB 3 hub | `2109:0211` | `2-3` | 5 Gb/s; no downstream devices visible |
-| Logitech G Pro mouse | `046d:c088` | `3-4.1.3` | `3A37794068477D38`; 12 Mb/s |
-| Dell DA20 adapter / Billboard | `413c:b080` | `3-4.2` | `00000000000000000`; not a useful unique serial |
-| Synaptics SVP7500 | `06cb:0701` | `3-3` | `01.00.00.00`; internal `usbio-bridge` device, not a discovered robot |
+| Device                        | VID:PID     | Path           | Reported serial / note                                                |
+| ----------------------------- | ----------- | -------------- | --------------------------------------------------------------------- |
+| Huasheng USB 2 hubs           | `214b:7260` | `3-1`, `3-4.1` | No serial exposed                                                     |
+| VIA USB 2 hub                 | `2109:2211` | `3-4`          | No serial exposed                                                     |
+| VIA USB 3 hub                 | `2109:0211` | `2-3`          | 5 Gb/s; no downstream devices visible                                 |
+| Logitech G Pro mouse          | `046d:c088` | `3-4.1.3`      | `3A37794068477D38`; 12 Mb/s                                           |
+| Dell DA20 adapter / Billboard | `413c:b080` | `3-4.2`        | `00000000000000000`; not a useful unique serial                       |
+| Synaptics SVP7500             | `06cb:0701` | `3-3`          | `01.00.00.00`; internal `usbio-bridge` device, not a discovered robot |
 
 There is also an internal ISP/media device (`ipu7`, `/dev/media0`) and a virtual
 “Hardware ISP Camera” at `/dev/video50`. Many internal ISP nodes exist; node count
@@ -248,6 +252,57 @@ cat /sys/module/usbcore/parameters/usbfs_memory_mb
 8. Use journal fallback when `dmesg` is restricted, without automatic sudo.
 9. After a later replug test, preserve a port binding across node renumbering and
    report speed changes. This test remains unperformed.
+
+## Operator-approved camera streaming validation
+
+On 2026-10-28 the user approved camera-only testing of Hiwonder/icSpring and the
+Orbbec image stream. Neither camera had a visible existing V4L2 opener before the
+test. No robot port was opened and no USB/kernel settings were changed.
+
+Each camera was tested individually, then both were tested concurrently, for
+approximately five seconds per trial at requested/driver-reported 640×480 MJPEG
+at 30 FPS. Initial host-received rates were:
+
+| Camera                                   | Individual FPS | Concurrent FPS | Previous wire mode restored |
+| ---------------------------------------- | -------------- | -------------- | --------------------------- |
+| Hiwonder / icSpring                      | 10.4           | 10.2           | Yes: 1280×720 MJPEG, 30 FPS |
+| Orbbec image stream (`1.4-video-index0`) | 30.2           | 31.0           | Yes: 640×480 YUYV, 30 FPS   |
+
+These are short host-observed measurements, not USB utilization or a guaranteed
+sensor frame rate; initial queued frames can affect short-window rates. The
+diagnostic now flushes queued startup frames and also reports timestamp-derived
+FPS. No substantial extra concurrency penalty appeared in this workload. The
+Hiwonder's lower rate was already present when it ran alone, so adding the other
+selected camera does not explain that result.
+
+A read-only control inspection found aperture-priority auto exposure enabled on
+Hiwonder (`auto_exposure=3`). The inactive absolute-exposure field reported its
+default value, not a confirmed live exposure measurement. Exposure, firmware,
+format negotiation, and decode/CPU behavior remain possible investigation areas;
+no exposure setting was changed and no cause was established.
+
+The saved formats were restored and queried again after capture. The overall
+initial doctor exit code also included the then-present, incomplete ZED interface;
+that historical finding is not an issue to investigate after the user's removal
+of the ZED.
+
+A final validation of only Hiwonder and Orbbec completed at
+**2026-10-28 15:50 UTC**. It used the same requested 640×480 MJPEG/30 FPS modes,
+flushed startup frames, and recorded frame-timestamp-derived rates:
+
+| Camera              | Individual received FPS | Concurrent received FPS | Timestamp-derived FPS (individual / concurrent) |
+| ------------------- | ----------------------- | ----------------------- | ----------------------------------------------- |
+| Hiwonder / icSpring | 19.93                   | 20.11                   | 19.88 / 19.95                                   |
+| Orbbec              | 30.13                   | 30.11                   | 30.06 / 30.06                                   |
+
+Previous formats were again restored and verified for both cameras. The collector
+observed no new USB-related kernel records during that test window. The overall
+doctor exit code was `0` (warnings are non-fatal without `--strict`).
+
+The Hiwonder's baseline rate varied between the two runs; these observations do
+not isolate why. Within each run, adding the other selected stream did not produce
+a substantial extra frame-rate penalty. Do not attribute the across-run change to
+one device, setting, or cause without a controlled experiment.
 
 References:
 

@@ -849,6 +849,28 @@ def test_query_formats_by_index_uses_the_index_token(
     mock_omni_camera.Camera.assert_called_with(42)
 
 
+def test_physical_path_is_resolved_again_after_node_renumbering(omnicamera_cls: tuple) -> None:
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    camera_cls, _ = omnicamera_cls
+    infos = [SimpleNamespace(index=40), SimpleNamespace(index=44)]
+    path = "/dev/v4l/by-path/pci-port-camera-video-index0"
+    with mock.patch("sys.platform", "linux"), mock.patch.object(Path, "resolve", return_value=Path("/dev/video40")):
+        assert camera_cls._resolve_open_target(infos, path) == 40
+    with mock.patch("sys.platform", "linux"), mock.patch.object(Path, "resolve", return_value=Path("/dev/video44")):
+        assert camera_cls._resolve_open_target(infos, path) == 44
+
+
+def test_missing_physical_path_never_falls_back_to_another_camera(omnicamera_cls: tuple) -> None:
+    from pathlib import Path
+
+    camera_cls, _ = omnicamera_cls
+    with mock.patch("sys.platform", "linux"), mock.patch.object(Path, "resolve", side_effect=FileNotFoundError):
+        with pytest.raises(CaptureError, match="port path is unavailable"):
+            camera_cls._resolve_open_target([], "/dev/v4l/by-path/missing")
+
+
 def test_connect_resolves_by_unique_id(omnicamera_cls: tuple) -> None:
     """connect() resolves device by a reported serial string when it matches a camera."""
     camera_cls, mock_omni_camera = omnicamera_cls

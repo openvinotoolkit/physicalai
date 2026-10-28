@@ -482,9 +482,11 @@ class MuJoCoRobotProbe(RobotProbe[MuJoCoRobotPayload]):
         """Probe for owners that drive the joints of `entry`."""
         self.entry = entry
 
-    async def discover(self, manager: PortScanner) -> list[SerialPortInfo]:
+    async def discover(self, manager: PortScanner, *, passive: bool = False) -> list[SerialPortInfo]:
         """Return robots found by the port scanner."""
         _ = self
+        if passive:
+            return []  # Serial enumeration is not evidence of a simulation owner.
         await manager.find_robots()
         return manager.robots
 
@@ -501,9 +503,14 @@ class MuJoCoRobotProbe(RobotProbe[MuJoCoRobotPayload]):
         self,
         payload: MuJoCoRobotPayload,
         manager: PortScanner | None = None,
+        *,
+        passive: bool = False,
     ) -> bool:
         """Return whether the configured simulation owner is reachable and drives this entry's joints."""
         _ = manager
+        if passive:
+            msg = "Simulation owner status requires an active transport query."
+            raise NotImplementedError(msg)
         return await asyncio.to_thread(_check_entry_online, payload.name, self.entry)
 
 
@@ -531,9 +538,9 @@ def _check_virtual_leader_online(http_port: int) -> bool:
 class MuJoCoVirtualLeaderProbe(RobotProbe[MuJoCoVirtualLeaderPayload]):
     """Check that a simulation publishes a virtual leader pose."""
 
-    async def discover(self, manager: PortScanner) -> list[SerialPortInfo]:
+    async def discover(self, manager: PortScanner, *, passive: bool = False) -> list[SerialPortInfo]:
         """Return no serial devices: the leader is a simulation endpoint."""
-        _ = self, manager
+        _ = self, manager, passive
         await asyncio.sleep(0)
         return []
 
@@ -550,9 +557,14 @@ class MuJoCoVirtualLeaderProbe(RobotProbe[MuJoCoVirtualLeaderPayload]):
         self,
         payload: MuJoCoVirtualLeaderPayload,
         manager: PortScanner | None = None,
+        *,
+        passive: bool = False,
     ) -> bool:
         """Return whether the simulation answers on its HTTP port."""
         _ = self, manager
+        if passive:
+            msg = "Virtual leader status requires an active HTTP connection."
+            raise NotImplementedError(msg)
         return await asyncio.to_thread(_check_virtual_leader_online, payload.http_port)
 
 

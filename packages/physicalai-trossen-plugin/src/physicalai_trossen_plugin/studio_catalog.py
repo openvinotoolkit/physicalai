@@ -217,8 +217,8 @@ async def identify_trossen_robot_visually(payload: TrossenSingleArmPayload) -> N
 class TrossenSingleArmProbe:
     """Probe for Trossen single-arm robots."""
 
-    async def discover(self, manager: PortScanner) -> list[SerialPortInfo]:
-        _ = manager
+    async def discover(self, manager: PortScanner, *, passive: bool = False) -> list[SerialPortInfo]:
+        _ = manager, passive
         return []
 
     async def identify(
@@ -230,16 +230,21 @@ class TrossenSingleArmProbe:
         _ = manager, joint
         await identify_trossen_robot_visually(payload)
 
-    async def is_online(self, payload: TrossenSingleArmPayload, manager: PortScanner | None = None) -> bool:
+    async def is_online(
+        self, payload: TrossenSingleArmPayload, manager: PortScanner | None = None, *, passive: bool = False
+    ) -> bool:
         _ = manager
+        if passive:
+            msg = "Trossen online status requires an active network probe."
+            raise NotImplementedError(msg)
         return bool(payload.connection_string) and await _ping(payload.connection_string)
 
 
 class TrossenBimanualProbe:
     """Probe for Trossen bimanual robots."""
 
-    async def discover(self, manager: PortScanner) -> list[SerialPortInfo]:
-        _ = manager
+    async def discover(self, manager: PortScanner, *, passive: bool = False) -> list[SerialPortInfo]:
+        _ = manager, passive
         return []
 
     async def identify(
@@ -252,8 +257,13 @@ class TrossenBimanualProbe:
         for ip in (payload.connection_string_left, payload.connection_string_right):
             await identify_trossen_robot_visually(TrossenSingleArmPayload(connection_string=ip))
 
-    async def is_online(self, payload: TrossenBimanualPayload, manager: PortScanner | None = None) -> bool:
+    async def is_online(
+        self, payload: TrossenBimanualPayload, manager: PortScanner | None = None, *, passive: bool = False
+    ) -> bool:
         _ = manager
+        if passive:
+            msg = "Trossen online status requires active network probes."
+            raise NotImplementedError(msg)
         if not payload.connection_string_left or not payload.connection_string_right:
             return False
         left_ok, right_ok = await asyncio.gather(

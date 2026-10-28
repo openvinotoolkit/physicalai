@@ -1887,6 +1887,9 @@ capture = [
     { name = "pyrealsense2", marker = "sys_platform != 'darwin'" },
     { name = "pyrealsense2-macosx", marker = "sys_platform == 'darwin'" },
 ]
+doctor = [
+    { name = "pyserial" },
+]
 notebooks = [
     { name = "ipykernel" },
     { name = "ipywidgets" },
@@ -1994,6 +1997,7 @@ requires-dist = [
     { name = "pyrealsense2", marker = "sys_platform != 'darwin' and extra == 'realsense'", specifier = ">=2.58.4.10922" },
     { name = "pyrealsense2-macosx", marker = "sys_platform == 'darwin' and extra == 'capture'" },
     { name = "pyrealsense2-macosx", marker = "sys_platform == 'darwin' and extra == 'realsense'" },
+    { name = "pyserial", marker = "extra == 'doctor'", specifier = ">=3.5" },
     { name = "pytest", marker = "extra == 'tests'" },
     { name = "pyturbojpeg", marker = "sys_platform == 'linux'", specifier = "<2" },
     { name = "pyyaml", specifier = ">=6.0" },
@@ -2002,7 +2006,7 @@ requires-dist = [
     { name = "transformers", specifier = ">=5.15.1,<5.16.0" },
     { name = "typing-extensions", specifier = ">=4.5" },
 ]
-provides-extras = ["abb", "basler", "capture", "franka", "genicam", "notebooks", "observer-rerun", "plugin-mujoco", "plugin-rebot-b601", "plugin-so101", "plugin-stararm", "plugin-trossen", "realsense", "robots", "so101", "tests", "transport", "trossen", "ur"]
+provides-extras = ["abb", "basler", "capture", "doctor", "franka", "genicam", "notebooks", "observer-rerun", "plugin-mujoco", "plugin-rebot-b601", "plugin-so101", "plugin-stararm", "plugin-trossen", "realsense", "robots", "so101", "tests", "transport", "trossen", "ur"]
 
 [package.metadata.requires-dev]
 dev = [

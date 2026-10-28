@@ -230,13 +230,14 @@ class SO101Probe(RobotProbe[SO101RobotPayload]):
     """Probe for SO101 robots — serial discovery and gripper identification."""
 
     @staticmethod
-    async def discover(manager: PortScanner) -> list[SerialPortInfo]:
+    async def discover(manager: PortScanner, *, passive: bool = False) -> list[SerialPortInfo]:
         """Refresh and return the serial ports reported by the scanner.
 
         Returns:
             Serial ports reported by the scanner after refresh.
         """
-        await manager.find_robots()
+        if not passive:
+            await manager.find_robots()
         return manager.robots
 
     @staticmethod
@@ -270,13 +271,17 @@ class SO101Probe(RobotProbe[SO101RobotPayload]):
         await asyncio.to_thread(identify_so101_robot_visually, connection_string)
 
     @staticmethod
-    async def is_online(payload: SO101RobotPayload, manager: PortScanner | None = None) -> bool:
+    async def is_online(
+        payload: SO101RobotPayload, manager: PortScanner | None = None, *, passive: bool = False
+    ) -> bool:
         """Return whether the configured robot is currently discoverable."""
         serial_port = SerialPortInfo(
             connection_string=payload.connection_string or None,
             serial_number=payload.serial_number or None,
         )
         if manager is not None:
+            if passive:
+                return _resolve_serial_port(manager.robots, serial_port) is not None
             return await find_so101_port(manager, serial_port) is not None
 
         discovered = [

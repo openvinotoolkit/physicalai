@@ -1,6 +1,7 @@
 # Physical AI Doctor: CLI and implementation proposal
 
-Status: proposed; the commands and architecture below are not implemented.
+Status: design target with an initial Runtime implementation. See the progress
+checklist for completed work and remaining native-platform/identity integrations.
 Updated: 2026-10-28.
 
 Related documents: [hardware snapshot](hardware-summary.md) and
@@ -29,21 +30,21 @@ continues to own the `physicalai` command and its `pai` alias.
 
 All examples use `pai`; `physicalai` exposes the same commands.
 
-| Command | Purpose |
-| --- | --- |
-| `pai doctor` | Safe inventory, health checks, and actionable findings. |
-| `pai doctor --json` | One versioned JSON diagnostic report. |
-| `pai doctor --watch` | Initial assessment followed by hardware changes and new findings. |
-| `pai doctor --watch --duration 60 --json` | Bounded watch with newline-delimited JSON events. |
-| `pai doctor --config ./runtime.yaml` | Inspect configured selectors and modes without constructing or connecting hardware. |
-| `pai doctor --stream --camera SELECTOR --duration 10` | Explicit, bounded camera streaming test. Repeat `--camera` to test concurrency. |
-| `pai devices` | Flat inventory of physical devices and their endpoints. |
-| `pai devices --tree` | Host controllers, root ports, hubs, links, and endpoints. |
-| `pai devices --json` | Versioned machine-readable inventory. |
-| `pai devices inspect SELECTOR` | Identity evidence, endpoint roles, formats, paths, permissions, and backend status. |
-| `pai discover --output ./runtime.yaml` | Interactive robot/camera selection and complete Runtime configuration export. |
-| `pai discover --output ./runtime.json --format json` | The same workflow with explicit JSON output. |
-| `pai discover --components-only --output ./hardware.yaml` | Export named component recipes without requiring a policy or teleoperation source. |
+| Command                                                   | Purpose                                                                             |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `pai doctor`                                              | Safe inventory, health checks, and actionable findings.                             |
+| `pai doctor --json`                                       | One versioned JSON diagnostic report.                                               |
+| `pai doctor --watch`                                      | Initial assessment followed by hardware changes and new findings.                   |
+| `pai doctor --watch --duration 60 --json`                 | Bounded watch with newline-delimited JSON events.                                   |
+| `pai doctor --config ./runtime.yaml`                      | Inspect configured selectors and modes without constructing or connecting hardware. |
+| `pai doctor --stream --camera SELECTOR --duration 10`     | Explicit, bounded camera streaming test. Repeat `--camera` to test concurrency.     |
+| `pai devices`                                             | Flat inventory of physical devices and their endpoints.                             |
+| `pai devices --tree`                                      | Host controllers, root ports, hubs, links, and endpoints.                           |
+| `pai devices --json`                                      | Versioned machine-readable inventory.                                               |
+| `pai devices inspect SELECTOR`                            | Identity evidence, endpoint roles, formats, paths, permissions, and backend status. |
+| `pai discover --output ./runtime.yaml`                    | Interactive robot/camera selection and complete Runtime configuration export.       |
+| `pai discover --output ./runtime.json --format json`      | The same workflow with explicit JSON output.                                        |
+| `pai discover --components-only --output ./hardware.yaml` | Export named component recipes without requiring a policy or teleoperation source.  |
 
 `SELECTOR` accepts an inventory selection handle, an explicit device path, or a
 typed identity selector. An inventory handle is session-local unless explicitly
@@ -115,11 +116,11 @@ Return explicit collection errors and provenance instead of suppressing failures
 Inject the strategy and OS data sources in tests. Instantiate only the current
 platform's strategy and lazy-load optional platform libraries.
 
-| Platform | Initial data sources and intended behavior |
-| --- | --- |
-| Linux | sysfs, udev properties/links, V4L2 capability/format queries, serial enumeration; journal access with `dmesg` as an alternative. Prefer native device events, with bounded polling fallback. `usbfs_memory_mb` is Linux-specific. |
-| macOS | Existing camera backend and serial enumeration, supplemented by IOKit/IORegistry USB location and identity information. Assess `system_profiler` as a fallback, not a frequent polling source. Add notification-based changes where available. |
-| Windows | Existing camera backend and serial enumeration, supplemented by SetupAPI/Configuration Manager device instance IDs, container IDs, and location paths. Add device notifications where available. Do not treat COM numbers or camera indices as permanent identities. |
+| Platform | Initial data sources and intended behavior                                                                                                                                                                                                                           |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Linux    | sysfs, udev properties/links, V4L2 capability/format queries, serial enumeration; journal access with `dmesg` as an alternative. Prefer native device events, with bounded polling fallback. `usbfs_memory_mb` is Linux-specific.                                    |
+| macOS    | Existing camera backend and serial enumeration, supplemented by IOKit/IORegistry USB location and identity information. Assess `system_profiler` as a fallback, not a frequent polling source. Add notification-based changes where available.                       |
+| Windows  | Existing camera backend and serial enumeration, supplemented by SetupAPI/Configuration Manager device instance IDs, container IDs, and location paths. Add device notifications where available. Do not treat COM numbers or camera indices as permanent identities. |
 
 The shared core must work on all three platforms. Linux gets the first complete
 topology/log/resource checks; macOS and Windows get basic discovery/export and
@@ -175,15 +176,23 @@ The existing probe contract does not establish safety or exact robot type:
 - `SerialPortInfo` currently has only `connection_string` and `serial_number`.
   Add compatible enrichment or an associated richer record; do not make platform
   location fields mandatory for existing plugins.
-- Audit/classify each probe before running its `discover()` or `is_online()` in
-  passive mode. Unknown third-party behavior requires explicit opt-in. Timeouts
-  contain hangs, but do not make active hardware operations safe.
+- Add keyword-only `passive=False` arguments to `discover()` and `is_online()`.
+  Doctor explicitly passes `passive=True`; implementations must use OS/cached
+  evidence without opening robot ports or initiating network probes. Passive
+  calls must not trigger an unknown scanner's active refresh. Raise
+  `NotImplementedError` when passive status is unavailable rather than declaring
+  an untested device offline. Skip legacy signatures without this named argument.
+  Cooperative probe timeouts do not make active hardware operations safe.
 - Never call `identify()` automatically. Some implementations physically move a
   gripper; others are no-ops. Offer identification only as a separate, explicit
   action with the selected device, described behavior, and confirmation.
 - Report plugin load failures and SDK availability independently. Lazy-load
   installed, operator-trusted plugins; hardware metadata never selects Python
   import paths. No implicit network probing or remote-owner attachment.
+
+Keep the SDK migration and Studio repository changes separate, as agreed during
+implementation. Extend the existing plugin contracts compatibly and provide a
+Runtime-owned API that Studio can consume later.
 
 Keep `pai robot discover` as discovery of shared robot services. Physical
 discovery belongs to `pai devices` and the interactive `pai discover` workflow.

@@ -23,6 +23,7 @@ from physicalai_studio_plugin import (
 )
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from physicalai.config import Config
 from physicalai_stararm_plugin import StarArm102FLFollower, StarArm102HDLeader, StarArm102LDLeader, get_urdf_path
 
 if TYPE_CHECKING:
@@ -219,14 +220,15 @@ StarArmPayload = StarArm102LDPayload | StarArm102HDPayload | StarArm102FLPayload
 class StarArmProbe(RobotProbe[StarArmPayload]):
     """Probe implementation for Star Arm serial devices."""
 
-    async def discover(self, manager: PortScanner) -> list[SerialPortInfo]:
+    async def discover(self, manager: PortScanner, *, passive: bool = False) -> list[SerialPortInfo]:
         """Discover available Star Arm devices via the active port scanner.
 
         Returns:
             list[SerialPortInfo]: Detected serial devices.
         """
         _ = self
-        await manager.find_robots()
+        if not passive:
+            await manager.find_robots()
         return manager.robots
 
     async def identify(
@@ -238,14 +240,22 @@ class StarArmProbe(RobotProbe[StarArmPayload]):
         """Request a visual identify action on a specific joint, if supported."""
         _ = self, payload, manager, joint
 
-    async def is_online(self, payload: StarArmPayload, manager: PortScanner | None = None) -> bool:
+    async def is_online(
+        self, payload: StarArmPayload, manager: PortScanner | None = None, *, passive: bool = False
+    ) -> bool:
         """Report whether a Star Arm device is currently online.
 
         Returns:
             bool: ``True`` if the device is present in discovered serial ports.
+
+        Raises:
+            NotImplementedError: If passive status has no cached scanner evidence.
         """
         _ = self
         if manager is None:
+            if passive:
+                msg = "Passive StarArm status requires a cached PortScanner."
+                raise NotImplementedError(msg)
             return False
 
         ports = manager.robots
@@ -367,6 +377,29 @@ _STAR_ARM_102_LEADER_ZERO_CALIBRATION = RobotZeroCalibration[StarArm102HDLeader]
 )
 
 
+def _export_stararm_config(robot: PayloadContainer[StarArmPayload]) -> Config:
+    """Export constructor arguments without creating a driver or touching hardware.
+
+    Returns:
+        A passive constructor recipe with the selected connection binding.
+
+    Raises:
+        ValueError: If only a serial, rather than a resolved binding, was supplied.
+    """
+    payload = robot.payload
+    classes = {
+        StarArm102LDPayload: "physicalai_stararm_plugin.StarArm102LDLeader",
+        StarArm102HDPayload: "physicalai_stararm_plugin.StarArm102HDLeader",
+        StarArm102FLPayload: "physicalai_stararm_plugin.StarArm102FLFollower",
+    }
+    if not payload.connection_string:
+        msg = "Passive export requires a selected connection path, not only a serial number."
+        raise ValueError(msg)
+    args = payload.model_dump(exclude={"connection_string", "serial_number"})
+    args["port"] = payload.connection_string
+    return Config(classes[type(payload)], args)
+
+
 def _definitions() -> list[RobotCatalogDefinition]:
     return [
         RobotCatalogDefinition(
@@ -408,6 +441,7 @@ def _assert_payload_model_resolvable(model: type[BaseModel]) -> None:
 def register_physicalai_studio_plugin(registry: _RobotCatalogRegistry) -> None:
     """Register Star Arm catalog entries with the Physical AI Studio registry."""
     for definition in _definitions():
+        definition.config_exporter = _export_stararm_config
         payload_model = definition.robot_payload
         if isinstance(payload_model, type) and issubclass(payload_model, BaseModel):
             _assert_payload_model_resolvable(payload_model)

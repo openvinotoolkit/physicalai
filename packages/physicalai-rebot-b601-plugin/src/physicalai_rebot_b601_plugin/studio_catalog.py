@@ -163,14 +163,15 @@ class ReBotB601DMPayload(BaseModel):
 class ReBotProbe(RobotProbe[ReBotB601DMPayload]):
     """Probe implementation for ReBot serial devices."""
 
-    async def discover(self, manager: PortScanner) -> list[SerialPortInfo]:
+    async def discover(self, manager: PortScanner, *, passive: bool = False) -> list[SerialPortInfo]:
         """Discover available ReBot devices via the active port scanner.
 
         Returns:
             list[SerialPortInfo]: Detected serial devices.
         """
         _ = self
-        await manager.find_robots()
+        if not passive:
+            await manager.find_robots()
         return manager.robots
 
     async def identify(
@@ -182,7 +183,9 @@ class ReBotProbe(RobotProbe[ReBotB601DMPayload]):
         """Request a visual identify action on a specific joint, if supported."""
         _ = self, payload, manager, joint
 
-    async def is_online(self, payload: ReBotB601DMPayload, manager: PortScanner | None = None) -> bool:
+    async def is_online(
+        self, payload: ReBotB601DMPayload, manager: PortScanner | None = None, *, passive: bool = False
+    ) -> bool:
         """Report whether a ReBot device is currently online.
 
         Returns:
@@ -190,6 +193,9 @@ class ReBotProbe(RobotProbe[ReBotB601DMPayload]):
         """
         _ = self
         if manager is None:
+            if passive:
+                msg = "Passive ReBot status requires a cached PortScanner."
+                raise NotImplementedError(msg)
             return False
 
         ports = manager.robots
@@ -320,13 +326,13 @@ class ReBotB601RSPayload(BaseModel):
 class ReBotRSProbe(RobotProbe[ReBotB601RSPayload]):
     """Online check for ReBot RS arms, based on the SocketCAN interface state."""
 
-    async def discover(self, manager: PortScanner) -> list[SerialPortInfo]:
+    async def discover(self, manager: PortScanner, *, passive: bool = False) -> list[SerialPortInfo]:
         """Return no devices: SocketCAN interfaces are not serial ports.
 
         Returns:
             list[SerialPortInfo]: Always empty.
         """
-        _ = self, manager
+        _ = self, manager, passive
         return []
 
     async def identify(
@@ -338,13 +344,15 @@ class ReBotRSProbe(RobotProbe[ReBotB601RSPayload]):
         """Request a visual identify action; not supported for ReBot RS arms."""
         _ = self, payload, manager, joint
 
-    async def is_online(self, payload: ReBotB601RSPayload, manager: PortScanner | None = None) -> bool:
+    async def is_online(
+        self, payload: ReBotB601RSPayload, manager: PortScanner | None = None, *, passive: bool = False
+    ) -> bool:
         """Report whether the configured SocketCAN interface is up.
 
         Returns:
             bool: ``True`` if the interface exists and its operational state is ``up``.
         """
-        _ = self, manager
+        _ = self, manager, passive
         operstate = _SYSFS_NET_ROOT / payload.connection_string / "operstate"
         try:
             return operstate.read_text(encoding="utf-8").strip() == "up"

@@ -113,14 +113,15 @@ class BimanualSO101Payload(BaseModel):
 class BimanualSO101Probe(RobotProbe[BimanualSO101Payload]):
     """Probe implementation for bimanual SO-101 robots."""
 
-    async def discover(self, manager: PortScanner) -> list[SerialPortInfo]:
+    async def discover(self, manager: PortScanner, *, passive: bool = False) -> list[SerialPortInfo]:
         """Discover available serial devices.
 
         Returns:
             list[SerialPortInfo]: Detected serial devices.
         """
         _ = self
-        await manager.find_robots()
+        if not passive:
+            await manager.find_robots()
         return manager.robots
 
     async def identify(
@@ -132,13 +133,15 @@ class BimanualSO101Probe(RobotProbe[BimanualSO101Payload]):
         """Request a visual identify action, if supported."""
         _ = self, payload, manager, joint
 
-    async def is_online(self, payload: BimanualSO101Payload, manager: PortScanner | None = None) -> bool:
+    async def is_online(
+        self, payload: BimanualSO101Payload, manager: PortScanner | None = None, *, passive: bool = False
+    ) -> bool:
         """Check whether both arms are online.
 
         Returns:
             bool: ``True`` when both configured serial numbers are present.
         """
-        _ = self
+        _ = self, passive
         if manager is not None:
             ports_list = manager.robots
             left_match = any(p.serial_number == payload.left_serial_number for p in ports_list)
