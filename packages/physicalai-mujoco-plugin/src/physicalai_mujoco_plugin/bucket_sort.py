@@ -944,6 +944,7 @@ class BucketSortEpisode:
         self._active = active
         self._phase: Phase = "idle"
         self._success_since: float | None = None
+        self._resets_suspended = False
         self._countdown_s: float | None = None
         self._episode_count = 0
         self._state: TaskState | None = None
@@ -991,11 +992,21 @@ class BucketSortEpisode:
             "buckets": dict(state.buckets) if state is not None else {},
         }
 
+    def suspend_resets(self, suspended: bool) -> None:  # noqa: FBT001
+        """Keep evaluating the task but never reset the scene, while something else owns the episodes.
+
+        Automatic Studio recording ends and resets each episode itself; :attr:`active` and the
+        dwell stay as the user set them for afterwards.
+        """
+        if suspended and not self._resets_suspended:
+            self.notify_manual_reset()  # drop a success countdown in progress
+        self._resets_suspended = suspended
+
     def update(self, model: object, data: object) -> None:
         """Evaluate the task for one tick, and reset the scene once a success has held for the dwell."""
         state = self.task.evaluate(model, data)
         self._state = state
-        if not self._active:
+        if not self._active or self._resets_suspended:
             return
         if not state.success:
             if self._phase == "success_hold":

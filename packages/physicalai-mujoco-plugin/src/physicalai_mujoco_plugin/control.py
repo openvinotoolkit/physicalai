@@ -527,6 +527,7 @@ class OperatorControls:
             helper = BucketSortEpisode(
                 task, self._run_scene_reset, success_dwell_s=self._auto_reset_dwell_s, active=self._auto_reset_active
             )
+            self._automation.bind_bucket_episode(helper)  # type: ignore[union-attr]
         if helper is None:
             area = self._area
             helper = EpisodeAutoReset.maybe_create(

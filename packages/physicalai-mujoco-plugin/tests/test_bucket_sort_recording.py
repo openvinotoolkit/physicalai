@@ -239,6 +239,20 @@ def test_a_success_that_does_not_hold_is_not_saved() -> None:
     assert recorder.status()["message"].startswith("The object did not stay in its bucket.")
 
 
+def test_disabling_with_discard_discards_the_episode_studio_records() -> None:
+    recorder, link = _recorder()
+    recorder.update(_progress())
+    _start_episode(recorder, link, 1)
+    recorder.disable("The scene is gone.", discard=True)
+    assert link.events()[-1] == "discard_episode"
+    assert link.closed
+
+    recorder, link = _recorder()
+    recorder.update(_progress())
+    recorder.disable("Switched off.", discard=True)  # nothing recording: nothing to discard
+    assert "discard_episode" not in link.events()
+
+
 def test_switching_off_leaves_studio_teleoperating_and_leaving_teleop_stops() -> None:
     recorder, link = _recorder()
     recorder.update(_progress())
@@ -344,10 +358,60 @@ def _wait(predicate: Any, timeout_s: float = 5.0) -> None:  # noqa: ANN401
         time.sleep(0.01)
 
 
-@pytest.mark.slow
-def test_simulation_records_a_led_bucket_sort_episode_into_studio(studio: FakeStudio) -> None:
+@pytest.fixture
+def bucket_robot() -> Iterator[MuJoCoRobot]:
     robot = MuJoCoRobot("franka_fr3", scene="bucket_sort", cameras=[], http_port=0, seed=1)
     robot.connect()
+    yield robot
+    robot.disconnect()
+
+
+def _recording_with_fake_link(robot: MuJoCoRobot) -> FakeLink:
+    """Switch bucket_sort recording on against a scripted Studio that teleoperates and records."""
+    link = FakeLink()
+    automation = robot._automation  # noqa: SLF001
+    automation.bucket_recorder = BucketSortRecorder(lambda: link)
+    automation.set_autopilot("leader")
+    assert automation.set_studio_recording(RecordingOptions(keep="all"))
+    return link
+
+
+def test_a_reset_publishes_the_reset_pose_before_the_next_tick(bucket_robot: MuJoCoRobot) -> None:
+    robot = bucket_robot
+    _recording_with_fake_link(robot)
+    robot.get_observation()
+    robot.send_action(np.asarray(robot._automation.leader_snapshot()["joint_positions"]) + 10.0)  # noqa: SLF001
+    robot.get_observation()
+    robot._reset()  # noqa: SLF001 - as the recorder's reset request runs it, at the end of a tick
+    published = np.asarray(robot._automation.leader_snapshot()["joint_positions"])  # noqa: SLF001
+    np.testing.assert_allclose(published, robot._targets_to_units(robot._arm_targets()), atol=1e-6)  # noqa: SLF001
+
+
+def test_leaving_bucket_sort_discards_the_episode_studio_records(bucket_robot: MuJoCoRobot) -> None:
+    robot = bucket_robot
+    link = _recording_with_fake_link(robot)
+    recorder = robot._automation.bucket_recorder  # noqa: SLF001
+    for _ in range(200):
+        if recorder.phase == "starting":
+            link.state = {**TELEOP, "is_recording": True}
+        robot.get_observation()
+        if recorder.phase == "recording":
+            break
+    assert recorder.phase == "recording", recorder.status()
+    robot._automation.attach_scene(None, rng=np.random.default_rng(0), active=True)  # noqa: SLF001 - a scene switch
+    assert link.events()[-1] == "discard_episode"
+    assert recorder.phase == "off"
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("success_dwell_s", [None, 0.5])
+def test_simulation_records_a_led_bucket_sort_episode_into_studio(
+    studio: FakeStudio, success_dwell_s: float | None
+) -> None:
+    robot = MuJoCoRobot("franka_fr3", scene="bucket_sort", cameras=[], http_port=0, seed=1)
+    robot.connect()
+    if success_dwell_s is not None:  # shorter than the recorder's success hold: the recorder still saves
+        robot._episode_auto_reset.set_dwell(success_dwell_s)  # noqa: SLF001
     automation = robot._automation  # noqa: SLF001
     automation.bucket_recorder = BucketSortRecorder(
         lambda: StudioLink(f"http://127.0.0.1:{studio.port}", "sim", discover=lambda _url, _owner: TARGET)

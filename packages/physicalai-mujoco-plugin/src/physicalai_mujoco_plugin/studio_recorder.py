@@ -481,8 +481,16 @@ class _RecorderBase:
         self._link.start()
         self._set_phase("connecting", "Looking for Studio's session...")
 
-    def disable(self, message: str = "") -> None:
-        """Stop recording; an episode Studio is still recording stays for the user to save or discard."""
+    def disable(self, message: str = "", *, discard: bool = False) -> None:
+        """Stop recording; an episode Studio is still recording stays for the user to save or discard.
+
+        Args:
+            message: Shown in the viewer and ``/health``.
+            discard: Discard the episode Studio records instead, when the scene it shows is gone.
+        """
+        link = self._link
+        if discard and link is not None and link.phase == "connected" and self._phase in {"starting", "recording"}:
+            link.send("discard_episode", request_id=uuid.uuid4().hex)  # sent before the link closes
         self._close_link()
         if self._phase not in {"done", "stopped", "error"} or message:
             self._set_phase("off", message)

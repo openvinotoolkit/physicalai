@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from physicalai_mujoco_plugin.autopilot import AutopilotMode, Demonstrator
-    from physicalai_mujoco_plugin.bucket_sort import BucketSortTask
+    from physicalai_mujoco_plugin.bucket_sort import BucketSortEpisode, BucketSortTask
 
 
 class ConveyorAutomation:
@@ -81,6 +81,8 @@ class ConveyorAutomation:
         self._bucket_task: BucketSortTask | None = None
         self._recorder_reset = False
         self._holds_feed = False
+        self._bucket_episode: BucketSortEpisode | None = None
+        """The bucket_sort scene's episode helper, whose success reset waits while the recorder owns episodes."""
         self._reset_pose: np.ndarray | None = None
         """The arm's targets right after a scene reset while bucket_sort recording holds the arm: the
         leader publishes them and client actions are ignored, so Studio's last action of the previous
@@ -148,6 +150,7 @@ class ConveyorAutomation:
         self._holds_feed = False  # a new conveyor starts unheld
         self._recorder_reset = False
         self._reset_pose = None
+        self._bucket_episode = None
         demonstrator, unavailable = _scene_demonstrator(
             model, conveyor, robots=robots, bucket_task=bucket_task, seed=seed
         )
@@ -158,9 +161,21 @@ class ConveyorAutomation:
         elif conveyor is not None:
             self.recorder.restart_episode("The scene was reloaded.")
         if self._bucket_task is None and self.bucket_recorder.phase != "off":
-            self.bucket_recorder.disable("Automatic recording of bucket_sort episodes needs the bucket_sort scene.")
+            # The episode Studio records showed the scene that is gone: discard it.
+            self.bucket_recorder.disable(
+                "Automatic recording of bucket_sort episodes needs the bucket_sort scene.", discard=True
+            )
         # A reloaded bucket_sort scene is a new task object: the recorder discards the episode itself.
         return conveyor
+
+    def bind_bucket_episode(self, episode: BucketSortEpisode | None) -> None:
+        """Attach the bucket_sort scene's episode helper, after :meth:`attach_scene`.
+
+        While bucket_sort recording runs, the recorder ends and resets every episode, so the helper's
+        own reset after a success waits: a short success dwell would otherwise reset the scene before
+        the recorder saves the episode.
+        """
+        self._bucket_episode = episode
 
     def take_reset_request(self) -> bool:
         """Return whether the scene should be reset now, once.
@@ -184,6 +199,8 @@ class ConveyorAutomation:
         self.recorder.restart_episode("The scene was reset.")
         if arm_targets is not None and self._bucket_task is not None and self.bucket_recorder.active:
             self._reset_pose = np.array(arm_targets, dtype=np.float64)
+            # Before the next tick, which may start the Studio episode: Studio must already read this pose.
+            self._publish_leader(self._reset_pose)
 
     def close(self) -> None:
         """Detach from Studio; call when the simulation disconnects."""
@@ -270,6 +287,8 @@ class ConveyorAutomation:
             self._recorder_reset = self._recorder_reset or bucket.reset_scene
         if not hold_arm or not self.bucket_recorder.active:
             self._reset_pose = None
+        if self._bucket_episode is not None:
+            self._bucket_episode.suspend_resets(self.bucket_recorder.active)
         targets = None if hold_arm else self.autopilot.step(data, dt)
         if targets is None and self._reset_pose is not None:
             targets = self._reset_pose
