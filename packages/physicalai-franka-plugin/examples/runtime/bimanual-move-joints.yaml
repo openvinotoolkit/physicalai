@@ -1,0 +1,26 @@
+# Bimanual Franka FR3 motion smoke test. The arms WILL move.
+# Start with bimanual-read-joints.yaml and verify the workspace is clear first.
+runtime:
+  robot:
+    class_path: physicalai_franka_plugin.BimanualFrankaFR3
+    init_args:
+      left:
+        class_path: physicalai_franka_plugin.FrankaFR3
+        init_args:
+          host: 172.16.0.2 # CHANGE_ME
+          gripper_enabled: false
+          realtime_config: kEnforce
+      right:
+        class_path: physicalai_franka_plugin.FrankaFR3
+        init_args:
+          host: 172.16.0.3 # CHANGE_ME
+          gripper_enabled: false
+          realtime_config: kEnforce
+  action_source:
+    class_path: physicalai_franka_plugin.motion.SineWaveSource
+    init_args:
+      amplitude: 3 # degrees, centered on the pose at startup
+      frequency: 0.1 # Hz
+  fps: 20
+run:
+  duration_s: 10

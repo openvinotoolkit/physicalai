@@ -1,10 +1,11 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.12, <3.14"
 
 [manifest]
 members = [
     "physicalai",
+    "physicalai-franka-plugin",
     "physicalai-mujoco-plugin",
     "physicalai-rebot-b601-plugin",
     "physicalai-so101-plugin",
@@ -448,6 +449,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e0/4d/f332313098c1de1b2d2ff91cf2674415cc7cddab2ca1b01ae29774bd5fdf/docstring_parser-0.18.0.tar.gz", hash = "sha256:292510982205c12b1248696f44959db3cdd1740237a968ea1e2e7a900eeb2015", size = 29341, upload-time = "2026-04-14T04:09:19.867Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a7/5f/ed01f9a3cdffbd5a008556fc7b2a08ddb1cc6ace7effa7340604b1d16699/docstring_parser-0.18.0-py3-none-any.whl", hash = "sha256:b3fcbed555c47d8479be0796ef7e19c2670d428d72e96da63f3a40122860374b", size = 22484, upload-time = "2026-04-14T04:09:18.638Z" },
+]
+
+[[package]]
+name = "dynamixel-sdk"
+version = "4.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyserial" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c0/93/87fb2aa84c173a93397ed165827853a54177d13e55dc3e240f400bc00247/dynamixel_sdk-4.1.0.tar.gz", hash = "sha256:9ffcc12ab72623f4bf6c0e1df8cd256a1fa19a7099204c002ff9b7fc0027e26d", size = 29655, upload-time = "2026-09-14T04:42:20.029Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/01/4a/c58bf575b5eec48ac3fe54c74c1fdd5a456ac8b03249f5e53dc0be503041/dynamixel_sdk-4.1.0-py3-none-any.whl", hash = "sha256:4cb91491edcb5c0b9d7eda34935c26ae6a37c1fe766cc6c4b58bc6583fb941f2", size = 103484, upload-time = "2026-09-14T04:42:18.661Z" },
 ]
 
 [[package]]
@@ -1887,6 +1900,9 @@ capture = [
     { name = "pyrealsense2", marker = "sys_platform != 'darwin'" },
     { name = "pyrealsense2-macosx", marker = "sys_platform == 'darwin'" },
 ]
+franka = [
+    { name = "physicalai-franka-plugin", extra = ["franka"], marker = "python_full_version < '3.13'" },
+]
 notebooks = [
     { name = "ipykernel" },
     { name = "ipywidgets" },
@@ -1896,6 +1912,9 @@ notebooks = [
 ]
 observer-rerun = [
     { name = "rerun-sdk" },
+]
+plugin-franka = [
+    { name = "physicalai-franka-plugin" },
 ]
 plugin-mujoco = [
     { name = "physicalai-mujoco-plugin" },
@@ -1917,6 +1936,7 @@ realsense = [
     { name = "pyrealsense2-macosx", marker = "sys_platform == 'darwin'" },
 ]
 robots = [
+    { name = "physicalai-franka-plugin", extra = ["franka"], marker = "python_full_version < '3.13'" },
     { name = "physicalai-so101-plugin" },
     { name = "physicalai-trossen-plugin", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
 ]
@@ -1975,6 +1995,9 @@ requires-dist = [
     { name = "opencv-python-headless", marker = "extra == 'capture'" },
     { name = "openvino", specifier = ">=2026.4.0" },
     { name = "openvino-tokenizers", specifier = ">=2026.4.0.0" },
+    { name = "physicalai-franka-plugin", marker = "python_full_version >= '3.12' and extra == 'plugin-franka'", editable = "packages/physicalai-franka-plugin" },
+    { name = "physicalai-franka-plugin", extras = ["franka"], marker = "python_full_version == '3.12.*' and extra == 'franka'", editable = "packages/physicalai-franka-plugin" },
+    { name = "physicalai-franka-plugin", extras = ["franka"], marker = "python_full_version == '3.12.*' and extra == 'robots'", editable = "packages/physicalai-franka-plugin" },
     { name = "physicalai-mujoco-plugin", marker = "python_full_version >= '3.12' and extra == 'plugin-mujoco'", editable = "packages/physicalai-mujoco-plugin" },
     { name = "physicalai-rebot-b601-plugin", marker = "python_full_version >= '3.12' and extra == 'plugin-rebot-b601'", editable = "packages/physicalai-rebot-b601-plugin" },
     { name = "physicalai-so101-plugin", marker = "python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'plugin-so101'", editable = "packages/physicalai-so101-plugin" },
@@ -2000,7 +2023,7 @@ requires-dist = [
     { name = "transformers", specifier = ">=5.15.1,<5.16.0" },
     { name = "typing-extensions", specifier = ">=4.5" },
 ]
-provides-extras = ["abb", "basler", "capture", "franka", "genicam", "notebooks", "observer-rerun", "plugin-mujoco", "plugin-rebot-b601", "plugin-so101", "plugin-stararm", "plugin-trossen", "realsense", "robots", "so101", "tests", "transport", "trossen", "ur"]
+provides-extras = ["abb", "basler", "capture", "franka", "genicam", "notebooks", "observer-rerun", "plugin-franka", "plugin-mujoco", "plugin-rebot-b601", "plugin-so101", "plugin-stararm", "plugin-trossen", "realsense", "robots", "so101", "tests", "transport", "trossen", "ur"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2015,6 +2038,41 @@ docs = [
     { name = "mkdocs", specifier = ">=1.6" },
     { name = "mkdocs-material", specifier = ">=9.6" },
 ]
+
+[[package]]
+name = "physicalai-franka-plugin"
+source = { editable = "packages/physicalai-franka-plugin" }
+dependencies = [
+    { name = "dynamixel-sdk" },
+    { name = "loguru" },
+    { name = "numpy" },
+    { name = "physicalai" },
+    { name = "physicalai-studio-plugin" },
+    { name = "pydantic" },
+]
+
+[package.optional-dependencies]
+franka = [
+    { name = "pylibfranka" },
+]
+tests = [
+    { name = "pytest" },
+    { name = "pytest-anyio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dynamixel-sdk", specifier = ">=3.8" },
+    { name = "loguru", specifier = ">=0.7" },
+    { name = "numpy", specifier = ">=1.24" },
+    { name = "physicalai", editable = "." },
+    { name = "physicalai-studio-plugin", editable = "packages/physicalai-studio-plugin" },
+    { name = "pydantic", specifier = ">=2.0" },
+    { name = "pylibfranka", marker = "extra == 'franka'", specifier = ">=0.21" },
+    { name = "pytest", marker = "extra == 'tests'" },
+    { name = "pytest-anyio", marker = "extra == 'tests'" },
+]
+provides-extras = ["franka", "tests"]
 
 [[package]]
 name = "physicalai-mujoco-plugin"
@@ -2440,6 +2498,17 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/49/2e/ced460408999b33da6b31b0021b0f37d329e202d4169aeb164493778f25b/pygments-2.21.0.tar.gz", hash = "sha256:610ca751c9bc2492b38eb9a38a7fbc93edbbb2d7182edaf34e66ae493dee5c8c", size = 5005329, upload-time = "2026-08-17T08:02:48.824Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/71/46/17f022dd3e953bf20a04a028a21ec746d942f8d2af30fa0f124fa0e6a684/pygments-2.21.0-py3-none-any.whl", hash = "sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9", size = 1250147, upload-time = "2026-08-17T08:02:44.912Z" },
+]
+
+[[package]]
+name = "pylibfranka"
+version = "0.21.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5d/58/676d3c47012b5927f3f04984add4c3021de19cbac7e0b00640bdc15e9eb5/pylibfranka-0.21.3-cp312-cp312-manylinux_2_34_x86_64.whl", hash = "sha256:ba952e369a91d49487b01babb02f70507997cf2472379c27d92ca0da1fa6da56", size = 4180463, upload-time = "2026-07-30T07:47:47.084Z" },
 ]
 
 [[package]]

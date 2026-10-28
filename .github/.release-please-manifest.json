@@ -6,5 +6,6 @@
   "packages/physicalai-stararm-plugin": "0.4.0",
   "packages/physicalai-mujoco-plugin": "0.4.0",
   "packages/physicalai-so101-plugin": "0.2.0",
-  "packages/physicalai-trossen-plugin": "0.2.0"
+  "packages/physicalai-trossen-plugin": "0.2.0",
+  "packages/physicalai-franka-plugin": "0.1.0"
 }

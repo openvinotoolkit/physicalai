@@ -1,0 +1,8 @@
+Franka Research 3 URDF and meshes are from the
+franka_description repository (https://github.com/frankarobotics/franka_description),
+Copyright Franka Robotics GmbH, released under the Apache License 2.0
+(see the bundled LICENSE file).
+
+The URDF `urdf/fr3.urdf` was generated from `robots/fr3/fr3.urdf.xacro`
+and edited only to keep the mesh references compatible with the bundled
+meshes/ directory layout.
