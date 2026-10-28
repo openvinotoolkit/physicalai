@@ -885,6 +885,15 @@ class TestCameraTab:
         np.testing.assert_allclose(client.camera.look_at, view.look_at)
         assert client.camera.fov == pytest.approx(np.deg2rad(51.6))
 
+        open_viewer = make_client(look_at=(1.0, 1.0, 1.0))
+        server.clients = {7: open_viewer}
+        other = ViewerView(position=(1.0, 0.0, 1.0), look_at=(0.0, 0.0, 0.0), fov_deg=70.0)
+        panel.build_camera_tab(make_state(view=other))  # a scene switch moves open viewers too
+        np.testing.assert_allclose(open_viewer.camera.look_at, other.look_at)
+        assert open_viewer.camera.fov == pytest.approx(np.deg2rad(70.0))
+        panel.build_camera_tab(make_state(view=view))
+        server.clients = {}
+
         server.gui.handles["FOV (°)"].fire(70.0)
         panel.build_camera_tab(make_state(view=view))  # a rebuild of the same scene keeps the slider
         assert server.gui.handles["FOV (°)"].value == pytest.approx(70.0)

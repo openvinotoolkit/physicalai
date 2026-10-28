@@ -57,6 +57,7 @@ def test_untextured_boxes_and_other_primitives_stay_flat(model: mujoco.MjModel, 
 
 
 def test_installing_twice_patches_once() -> None:
+    assert install_box_textures()
     patched = conv.create_primitive_mesh
     assert install_box_textures()
     assert conv.create_primitive_mesh is patched

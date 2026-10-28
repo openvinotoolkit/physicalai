@@ -641,6 +641,8 @@ class SimControlPanel:
         if state.view != self._view:  # a new scene's view; a rebuild of the same scene keeps the slider
             self._view = state.view
             self._fov_deg = state.view.fov_deg if state.view is not None else _FOV_DEFAULT_DEG
+            for client in self._server.get_clients().values():  # open viewers move to the new scene's view
+                self._aim_default(client)
         followed = self.camera.name
         if followed is not None and followed not in state.follow_targets:
             followed = None
