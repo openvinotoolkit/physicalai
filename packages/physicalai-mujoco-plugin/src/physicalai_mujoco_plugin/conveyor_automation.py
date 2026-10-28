@@ -40,7 +40,7 @@ from physicalai_mujoco_plugin.studio_recorder import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from physicalai_mujoco_plugin.autopilot import AutopilotMode
+    from physicalai_mujoco_plugin.autopilot import AutopilotMode, Demonstrator
     from physicalai_mujoco_plugin.bucket_sort import BucketSortTask
 
 
@@ -143,7 +143,10 @@ class ConveyorAutomation:
         self._conveyor = conveyor
         self._holds_feed = False  # a new conveyor starts unheld
         self._recorder_reset = False
-        self.autopilot.bind(model, conveyor, robots=robots, bucket_task=bucket_task, seed=seed)
+        demonstrator, unavailable = _scene_demonstrator(
+            model, conveyor, robots=robots, bucket_task=bucket_task, seed=seed
+        )
+        self.autopilot.bind(demonstrator, unavailable=unavailable)
         self._bucket_task = bucket_task if model is not None and conveyor is None else None
         if conveyor is None and self.recorder.phase != "off":
             self.recorder.disable("Automatic recording needs the conveyor scene.")
@@ -312,3 +315,35 @@ class ConveyorAutomation:
 
     def _open_link(self) -> StudioLink:
         return StudioLink(self.studio_url, self._owner_name())
+
+
+def _scene_demonstrator(
+    model: object | None,
+    conveyor: ConveyorSort | None,
+    *,
+    robots: int,
+    bucket_task: BucketSortTask | None,
+    seed: int | None,
+) -> tuple[Demonstrator | None, str | None]:
+    """Pick the demonstrator for a freshly loaded scene.
+
+    Only the conveyor and bucket_sort scenes have one, and a conveyor with several arms has none:
+    its demonstrator drives one SO-101.
+
+    Returns:
+        The demonstrator, or ``None`` with the reason the viewer shows (``None`` when the scene
+        never has one).
+    """
+    if model is None:
+        return None, None
+    if conveyor is None:
+        if bucket_task is None:
+            return None, None
+        from physicalai_mujoco_plugin.bucket_sort_demo import BucketSortDemonstrator  # noqa: PLC0415
+
+        return BucketSortDemonstrator(model, bucket_task, rng=np.random.default_rng(seed)), None
+    if robots != 1:
+        return None, f"The conveyor autopilot drives one SO-101 arm; this simulation has {robots} arms."
+    from physicalai_mujoco_plugin.conveyor_demo import ConveyorDemonstrator  # noqa: PLC0415
+
+    return ConveyorDemonstrator(model, conveyor), None
