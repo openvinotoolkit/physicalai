@@ -11,6 +11,8 @@
 ### Features
 
 - Add `Config.to_yaml()` for in-memory YAML serialization.
+- Add the `vla_jepa` preprocessor so VLA-JEPA OpenVINO exports run without the
+  training library or PyTorch.
 
 ## [0.3.0](https://github.com/openvinotoolkit/physicalai/compare/v0.2.0...v0.3.0) (2026-10-07)
 
