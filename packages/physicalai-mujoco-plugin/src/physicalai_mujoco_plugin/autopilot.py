@@ -6,7 +6,7 @@
 The autopilot steps any :class:`Demonstrator`; the scene picks which one (see
 ``ConveyorAutomation.attach_scene``). The conveyor scene has
 ``conveyor_demo.ConveyorDemonstrator`` (one SO-101), the bucket_sort scene
-``bucket_sort_demo.BucketSortDemonstrator`` (one Franka FR3).
+``bucket_sort_demo.BucketSortDemonstrator`` (a Franka FR3, Panda or Duo).
 
 Two ways to use it:
 

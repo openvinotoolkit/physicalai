@@ -475,6 +475,47 @@ def test_simulation_records_a_led_bucket_sort_episode_into_studio(
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize(
+    ("profile", "grippers", "per_finger"),
+    [("franka_panda", ("actuator8",), True), ("franka_duo", ("left_gripper", "right_gripper"), False)],
+)
+def test_the_other_franka_robots_record_through_the_same_leader(
+    studio: FakeStudio,
+    profile: str,
+    grippers: tuple[str, ...],
+    per_finger: bool,  # noqa: FBT001
+) -> None:
+    """The recorder is the FR3's: the leader carries the profile's channels, whichever arm works."""
+    robot = MuJoCoRobot(profile, scene="bucket_sort", cameras=[], http_port=0, seed=1)
+    robot.connect()
+    automation = robot._automation  # noqa: SLF001
+    automation.bucket_recorder = BucketSortRecorder(
+        lambda: StudioLink(f"http://127.0.0.1:{studio.port}", "sim", discover=lambda _url, _owner: TARGET)
+    )
+    columns = [robot.joint_names.index(name) for name in grippers]
+    squeeze = 0.0
+    try:
+        automation.set_autopilot("leader")
+        robot._commands.put(SetStudioRecordingCommand(options=RecordingOptions(keep="all")))  # noqa: SLF001
+        deadline = time.monotonic() + 120.0
+        while "save_episode" not in studio.events() and "discard_episode" not in studio.events():
+            assert time.monotonic() < deadline, automation.status()
+            state = robot.get_observation().joint_positions
+            leader = automation.leader_snapshot()
+            assert leader["joint_names"] == list(robot.joint_names)
+            action = np.asarray(leader["joint_positions"], dtype=np.float32)
+            if studio.state.get("is_recording"):
+                squeeze = min(squeeze, *(float(action[c] - state[c]) for c in columns))
+            robot.send_action(action)
+        assert studio.events() == ["start_recording", "save_episode"]
+        assert robot._http_status()["episode"]["success"]  # noqa: SLF001
+        # The Panda's actuator8 channel is one finger's travel, half the hand's opening.
+        assert squeeze < (-0.0025 if per_finger else -0.005), squeeze
+    finally:
+        robot.disconnect()
+
+
+@pytest.mark.slow
 def test_the_conveyor_scene_keeps_its_own_recorder() -> None:
     robot = MuJoCoRobot(scene="conveyor_sort", cameras=[], http_port=0)
     robot.connect()

@@ -462,7 +462,7 @@ class OperatorControls:
 
         sim = self._sim
         scene = self._scene_config
-        scene_home = dict(scene.home_pose(len(sim.bindings))) if scene is not None else {}  # type: ignore[union-attr]
+        scene_home = dict(scene.home_pose(len(sim.bindings), self._profile)) if scene is not None else {}  # type: ignore[union-attr]
         for binding, channels in zip(sim.bindings, sim.channels, strict=True):  # type: ignore[union-attr]
             home = {joint: values[0] for joint, values in binding.layout.home_qpos.items() if len(values) == 1}
             home.update({joint: value for joint, value in scene_home.items() if joint in home})
@@ -522,6 +522,7 @@ class OperatorControls:
             robot_roots=self._sim.robot_roots,  # type: ignore[union-attr]
             bucket_task=task if isinstance(task, BucketSortTask) else None,
             seed=self._seed,
+            profile=self._profile.name,
         )
         if helper is None and isinstance(task, BucketSortTask):
             helper = BucketSortEpisode(

@@ -80,9 +80,9 @@ def _drop_into(sim, name: str, color: str) -> None:
 
 
 class TestScene:
-    def test_registered_for_one_franka_fr3(self) -> None:
+    def test_registered_for_one_franka_arm(self) -> None:
         scene = get_scene("bucket_sort")
-        assert scene.robots == ("franka_fr3",)
+        assert scene.robots == ("franka_fr3", "franka_panda", "franka_duo")
         assert scene.arm_counts == (1,)
         assert scene.free_joints == (*(f"{name}:joint" for name in OBJECTS), *BUCKET_JOINTS)
         assert BUCKET_JOINTS == ("bucket_black:joint", "bucket_blue:joint", "bucket_red:joint")

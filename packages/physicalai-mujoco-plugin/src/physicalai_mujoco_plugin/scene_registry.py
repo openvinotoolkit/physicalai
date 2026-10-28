@@ -18,6 +18,7 @@ from physicalai_mujoco_plugin._urdf import get_urdf_path
 from physicalai_mujoco_plugin.bucket_sort import BUCKET_JOINTS as BUCKET_SORT_BUCKET_JOINTS
 from physicalai_mujoco_plugin.bucket_sort import OBJECTS as BUCKET_SORT_OBJECTS
 from physicalai_mujoco_plugin.bucket_sort import BucketSortTask
+from physicalai_mujoco_plugin.bucket_sort_arms import BUCKET_SORT_ARMS, bucket_sort_home
 from physicalai_mujoco_plugin.compose import (
     MountPose,
     OverviewRig,
@@ -157,6 +158,8 @@ class SceneConfig:
     derived two-arm layout. Prefixes follow :func:`arm_prefixes`."""
     home_qpos: tuple[tuple[str, float], ...] = ()
     """Home joint positions of each arm in radians, without the arm's prefix; unlisted joints use the model default."""
+    profile_home_qpos: tuple[tuple[str, tuple[tuple[str, float], ...]], ...] = ()
+    """Per profile: home joint positions that replace ``home_qpos``, for arms with other joint names."""
     auto_reset_on_fall: bool = False
     """Reset when a floating base has fallen (DRV-9); off so a policy can see its fall."""
     layout: Literal["fixed", "reach"] = "fixed"
@@ -351,13 +354,16 @@ class SceneConfig:
             spawn_max_r=self.spawn_max_r * scale,
         )
 
-    def home_pose(self, arms: int = 1) -> tuple[tuple[str, float], ...]:
-        """Return the scene's home pose for *arms* arms, by full joint name.
+    def home_pose(self, arms: int = 1, profile: RobotProfile | None = None) -> tuple[tuple[str, float], ...]:
+        """Return the scene's home pose for *arms* arms of *profile*, by full joint name.
 
         Returns:
-            ``home_qpos`` for each arm with its prefix.
+            ``home_qpos`` (or the profile's ``profile_home_qpos``) for each arm with its prefix.
         """
-        return tuple((f"{prefix}{joint}", value) for prefix in arm_prefixes(arms) for joint, value in self.home_qpos)
+        home = self.home_qpos
+        if profile is not None:
+            home = dict(self.profile_home_qpos).get(profile.name, home)
+        return tuple((f"{prefix}{joint}", value) for prefix in arm_prefixes(arms) for joint, value in home)
 
     def load_model(
         self, profile: RobotProfile = SO101_PROFILE, arms: int | None = None, overview: OverviewStyle = "shoulder"
@@ -382,19 +388,10 @@ _CONVEYOR_SORT_HOME: tuple[tuple[str, float], ...] = (
 
 
 # Franka's "ready" pose: the hand 0.49 m above the table over the objects, fingers down and open.
-# The profile's home stretches the forearm out over the buckets.
-_BUCKET_SORT_HOME: tuple[tuple[str, float], ...] = (
-    ("fr3_joint1", 0.0),
-    ("fr3_joint2", float(np.radians(-45.0))),
-    ("fr3_joint3", 0.0),
-    ("fr3_joint4", float(np.radians(-135.0))),
-    ("fr3_joint5", 0.0),
-    ("fr3_joint6", float(np.radians(90.0))),
-    ("fr3_joint7", float(np.radians(45.0))),
-    ("finger_joint1", 0.04),
-    ("finger_joint2", 0.04),
-    ("gripper", 0.08),
-)
+# The profile's home stretches the forearm out over the buckets. The Panda takes the same pose; the
+# Duo's arms each hover over their side of the table (bucket_sort_arms).
+_BUCKET_SORT_HOME = bucket_sort_home("franka_fr3")
+_BUCKET_SORT_FRONT = FrontOverride(direction=(0.38, -0.60))
 
 
 # ---------------------------------------------------------------------------
@@ -672,9 +669,11 @@ _SCENES: dict[str, SceneConfig] = {
         scene_xml_relpath="scenes/bucket_sort/scene.xml",
         # The objects, then the buckets: the viewer's drag gizmos and POST /objects/{joint}/pose move both.
         free_joints=(*(f"{name}:joint" for name in BUCKET_SORT_OBJECTS), *BUCKET_SORT_BUCKET_JOINTS),
-        robots=("franka_fr3",),
+        # The robots the demonstrator drives (bucket_sort_arms): every one has the Franka Hand.
+        robots=tuple(BUCKET_SORT_ARMS),
         arm_counts=(1,),
         home_qpos=_BUCKET_SORT_HOME,
+        profile_home_qpos=tuple((name, bucket_sort_home(name)) for name in BUCKET_SORT_ARMS if name != "franka_fr3"),
         # A D435 RGB on a short pole clamped to the front edge: eye (0.83, -0.80, 0.90),
         # aimed at (0.45, -0.20, 0.05). Like the rear pole in the XML, this frames the task,
         # not the whole arm. The off-axis direction keeps the pole on the table edge.
@@ -683,7 +682,7 @@ _SCENES: dict[str, SceneConfig] = {
             aim=(0.45, -0.20, 0.05),
             elevation_deg=float(np.degrees(np.arctan2(0.85, np.hypot(0.38, 0.60)))),
         ),
-        profile_front_overrides=(("franka_fr3", FrontOverride(direction=(0.38, -0.60))),),
+        profile_front_overrides=tuple((name, _BUCKET_SORT_FRONT) for name in BUCKET_SORT_ARMS),
     ),
     "floor_flat": SceneConfig(
         scene_id="floor_flat",
@@ -699,12 +698,12 @@ _SCENES: dict[str, SceneConfig] = {
 _FREEJOINT_SPAWN_SCENES = ("single_pick_place",)
 """Scenes whose reset respawns their free objects in the spawn arc laid out for the robot."""
 
-_RESET_FUNCTIONS: dict[str, Callable[[SceneConfig, int, tuple[int, ...]], ResetFn]] = {
-    "yahtzee": lambda _scene, _arms, roots: _yahtzee_reset(roots),
-    "conveyor_sort": lambda scene, arms, _roots: _conveyor_sort_reset(scene.home_pose(arms)),
-    "bucket_sort": lambda scene, arms, roots: _bucket_sort_reset(scene.home_pose(arms), roots),
+_RESET_FUNCTIONS: dict[str, Callable[[SceneConfig, RobotProfile, int, tuple[int, ...]], ResetFn]] = {
+    "yahtzee": lambda _scene, _profile, _arms, roots: _yahtzee_reset(roots),
+    "conveyor_sort": lambda scene, profile, arms, _roots: _conveyor_sort_reset(scene.home_pose(arms, profile)),
+    "bucket_sort": lambda scene, profile, arms, roots: _bucket_sort_reset(scene.home_pose(arms, profile), roots),
 }
-"""Reset builders by scene id, for the scene, its number of arms and the root body of every robot."""
+"""Reset builders by scene id, for the scene, the profile, its number of arms and the root body of every robot."""
 
 
 def get_scene(scene_id: str) -> SceneConfig:
@@ -749,7 +748,7 @@ def get_reset_fn(
         height = ARM_FOOTPRINT_HEIGHT * scene.layout_scale(profile)
         return _freejoint_spawn_reset(scene.for_profile(profile, arms), robot_roots, height)
     build = _RESET_FUNCTIONS.get(scene_id)
-    return build(scene, arms, robot_roots) if build is not None else None
+    return build(scene, profile, arms, robot_roots) if build is not None else None
 
 
 def list_scenes_naming(profile_name: str) -> dict[str, SceneConfig]:

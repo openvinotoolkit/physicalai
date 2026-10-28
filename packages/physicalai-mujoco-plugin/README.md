@@ -12,7 +12,7 @@ Simulate robot arms, humanoids and quadrupeds from [MuJoCo Menagerie](https://gi
 - Built-in task scenes
 - Automatic cube respawn after a configurable success dwell (five seconds by default) in `single_pick_place`
 - A conveyor-belt sorting cell (`conveyor_sort`) with an adjustable belt speed, a continuous item feed, and per-episode scoring
-- A language-conditioned sorting task for the Franka FR3 (`bucket_sort`): an instruction such as "put the CPU in the red bucket", randomized bucket colours, and a success flag
+- A language-conditioned sorting task for the Franka FR3, Panda and Duo (`bucket_sort`): an instruction such as "put the CPU in the red bucket", randomized bucket colours, and a success flag
 
 ## What this is for
 
@@ -335,13 +335,13 @@ Every robot comes from MuJoCo Menagerie and is described by a _profile_: what th
 | `trossen_wxai`         | Trossen WidowX AI, matching Runtime's `WidowXAI` driver | `twin`         | `single_pick_place`                        | 1, 2 | `degrees`    |
 | `rebot_b601`           | Seeed reBot B601-RS, `ReBotB601RS` names (provisional)  | `twin`         | `single_pick_place`                        | 1, 2 | `degrees`    |
 | `franka_fr3`           | Franka Research 3 with hand, matching `FrankaFR3`       | `twin`         | `single_pick_place`, `bucket_sort` (1 arm) | 1, 2 | `degrees`    |
-| `franka_duo`           | Franka FR3 Duo, both arms as one robot (16 channels)    | `twin`         | `single_pick_place`                        | 1    | `degrees`    |
+| `franka_duo`           | Franka FR3 Duo, both arms as one robot (16 channels)    | `twin`         | `single_pick_place`, `bucket_sort`         | 1    | `degrees`    |
 | `ur5e`                 | Universal Robots UR5e (no gripper)                      | `dataset`      | `single_pick_place`                        | 1, 2 | `degrees`    |
 | `aloha`                | ALOHA, both arms as one robot (14 joints)               | `dataset`      | `single_pick_place`                        | 1    | `degrees`    |
 | `so_arm100`            | SO-ARM100 (Menagerie `trs_so_arm100`)                   | `dataset`      | `single_pick_place`                        | 1, 2 | `degrees`    |
 | `koch`                 | Koch low-cost arm (`low_cost_robot_arm`)                | `dataset`      | `single_pick_place`                        | 1, 2 | `degrees`    |
 | `piper`                | AgileX PiPER                                            | `dataset`      | `single_pick_place`                        | 1, 2 | `degrees`    |
-| `franka_panda`         | Franka Emika Panda                                      | `dataset`      | `single_pick_place`                        | 1, 2 | `degrees`    |
+| `franka_panda`         | Franka Emika Panda                                      | `dataset`      | `single_pick_place`, `bucket_sort` (1 arm) | 1, 2 | `degrees`    |
 | `xarm7`                | UFACTORY xArm7                                          | `dataset`      | `single_pick_place`                        | 1, 2 | `degrees`    |
 | `kinova_gen3`          | Kinova Gen3 (no gripper)                                | `dataset`      | `single_pick_place`                        | 1, 2 | `degrees`    |
 | `unitree_g1`           | Unitree G1 humanoid                                     | `experimental` | `floor_flat`                               | 1    | `degrees`    |
@@ -568,7 +568,7 @@ The plugin ships with built-in scenes that provide different environments for th
 | `single_pick_place` (default) | One block and a target disc              | 1 cube       | target disc | 1, 2 |
 | `yahtzee`                     | Six dice and a cup                       | 6 dice       | cup         | 1, 2 |
 | `conveyor_sort`               | Sort items off a moving belt into bins   | 24-item pool | 4 bins      | 1, 2 |
-| `bucket_sort` (Franka FR3)    | Put the named object in the named bucket | 3 objects    | 3 buckets   | 1    |
+| `bucket_sort` (Franka arms)   | Put the named object in the named bucket | 3 objects    | 3 buckets   | 1    |
 | `floor_flat`                  | A flat floor for a floating-base robot   | none         | none        | 1    |
 
 Start with a specific scene:
@@ -609,6 +609,8 @@ Measured over 3 seeds of 3 episodes (90 items per speed): 99–100% of items sor
 
 `bucket_sort` is a language-conditioned sorting task for one Franka FR3 with its hand (`start --profile franka_fr3 --scene bucket_sort`). The arm stands on a 1.8 m x 1.0 m table whose top is the robot's base plane, with the floor 0.75 m below.
 
+It also runs the Franka Panda (`--profile franka_panda`) and the FR3 Duo (`--profile franka_duo`, the Duo's own mount at the same place, no `--bimanual`); the layout and the cameras stay the FR3's. The Duo works with one arm per attempt, the one that reaches the object and the bucket, while the other holds its ready pose; layouts that neither arm reaches fail and reset (7 of 40 seeded layouts; the FR3 and the Panda did all 40). The WidowX AI does not run it: from the table edge its fingers-down reach (0.35 m at the release height) falls short of the nearest bucket (0.50 m).
+
 Both **Overview camera** choices in Viser model a D435 **RGB** camera on a short, table-clamped pole: nominal 42° vertical FOV, not the depth sensor's 58°. Choose **Shoulder** (the default, rear-side) or **Front**, or start with `--overview shoulder` / `--overview front`. Neither is mandatory. Both are task-focused views that intentionally crop the upper arm; keep the same POV for recording and deployment.
 
 | Style                | RGB optical centre `(x, y, z)` m | Aim point `(x, y, z)` m | Downward tilt |
@@ -627,7 +629,7 @@ See the [dimensioned schematic and IRL setup checklist](docs/bucket-sort-camera-
 - **Success**: the named object's centre is inside the named bucket, wherever that bucket stands now, and the object is still and out of the hand, while no other object is in a bucket. After the success dwell (**Episode** folder, `POST /episode/auto-reset`), the next episode starts.
 - **Held-out pairs**: instructions are drawn from all nine (object, bucket) pairs by default. To hold some out of training, give the task the pairs to draw from: `physicalai_mujoco_plugin.bucket_sort.BucketSortTask` is the scene's reset callback (`Sim.on_reset`), and `task.set_allowed_pairs([("cpu", "black"), ...])` applies from the next reset. `sample_instruction(rng, allowed_pairs)` draws one on its own.
 - **Canonical wording**: to always use the canonical sentence, set `bucket_sort.VARY_INSTRUCTION_TEXT = False`, or call `task.set_vary_text(False)` on the task (`BucketSortTask(vary_text=False)`); either applies from the next reset.
-- **Autopilot**: a scripted demonstrator (`bucket_sort_demo.py`) carries out each instruction, with the conveyor's modes: **Drive the arm** (`POST /autopilot {"mode": "drive"}`) moves the arm and ignores actions; **Virtual leader** (`"leader"`) only publishes its targets on `GET /leader` (`fr3_joint1` ... `fr3_joint7` in degrees and `gripper` in metres, the `franka_fr3` action layout) for a client that sends them back as actions and records them.
+- **Autopilot**: a scripted demonstrator (`bucket_sort_demo.py`) carries out each instruction, with the conveyor's modes: **Drive the arm** (`POST /autopilot {"mode": "drive"}`) moves the arm and ignores actions; **Virtual leader** (`"leader"`) only publishes its targets on `GET /leader` (the profile's channels: for the FR3 `fr3_joint1` ... `fr3_joint7` in degrees and `gripper` in metres) for a client that sends them back as actions and records them.
   - Each episode it closes the hand across the named object's short side (of the two symmetric hand yaws, the one that keeps the wrist further from its limits), lifts it, carries it above the rims, lowers it into the named bucket's opening, lets go and returns to the ready pose.
   - Moves are minimum-jerk in the hand's position, yaw and opening, blended into each other, and turned into joint targets by damped least-squares IK that stays 7 degrees inside the FR3's joint limits and under half its joint speed and acceleration limits. Every plan is checked for the hand's clearance from the buckets, the other objects and the table before it runs.
   - Heights, speeds, the grasp offset, the hand yaw, pauses and the release point are drawn per episode from the demonstrator's generator (`--seed` seeds it too).

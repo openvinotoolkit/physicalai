@@ -125,6 +125,7 @@ class ConveyorAutomation:
         robot_roots: tuple[int, ...] | None = None,
         bucket_task: BucketSortTask | None = None,
         seed: int | None = None,
+        profile: str = "franka_fr3",
     ) -> ConveyorSort | None:
         """Build the conveyor controller for a freshly loaded scene.
 
@@ -137,6 +138,7 @@ class ConveyorAutomation:
                 unprefixed SO-101.
             bucket_task: The bucket_sort scene's task, which gets that scene's demonstrator.
             seed: Seeds the bucket_sort demonstrator; ``None`` draws a fresh seed.
+            profile: The robot's profile name, which picks the bucket_sort demonstrator's arms.
 
         Returns:
             The controller, or ``None`` for scenes without a belt.
@@ -152,7 +154,7 @@ class ConveyorAutomation:
         self._reset_pose = None
         self._bucket_episode = None
         demonstrator, unavailable = _scene_demonstrator(
-            model, conveyor, robots=robots, bucket_task=bucket_task, seed=seed
+            model, conveyor, robots=robots, bucket_task=bucket_task, seed=seed, profile=profile
         )
         self.autopilot.bind(demonstrator, unavailable=unavailable)
         self._bucket_task = bucket_task if model is not None and conveyor is None else None
@@ -362,11 +364,13 @@ def _scene_demonstrator(
     robots: int,
     bucket_task: BucketSortTask | None,
     seed: int | None,
+    profile: str = "franka_fr3",
 ) -> tuple[Demonstrator | None, str | None]:
     """Pick the demonstrator for a freshly loaded scene.
 
-    Only the conveyor and bucket_sort scenes have one, and a conveyor with several arms has none:
-    its demonstrator drives one SO-101.
+    Only the conveyor and bucket_sort scenes have one. A conveyor with several arms has none: its
+    demonstrator drives one SO-101. The bucket_sort one drives the arms of the profiles in
+    :data:`~.bucket_sort_arms.BUCKET_SORT_ARMS` (one robot: the Duo's two arms are one).
 
     Returns:
         The demonstrator, or ``None`` with the reason the viewer shows (``None`` when the scene
@@ -377,9 +381,14 @@ def _scene_demonstrator(
     if conveyor is None:
         if bucket_task is None:
             return None, None
+        from physicalai_mujoco_plugin.bucket_sort_arms import BUCKET_SORT_ARMS  # noqa: PLC0415
         from physicalai_mujoco_plugin.bucket_sort_demo import BucketSortDemonstrator  # noqa: PLC0415
 
-        return BucketSortDemonstrator(model, bucket_task, rng=np.random.default_rng(seed)), None
+        arms = BUCKET_SORT_ARMS.get(profile)
+        if arms is None or robots != 1:
+            names = ", ".join(BUCKET_SORT_ARMS)
+            return None, f"The bucket_sort autopilot drives one robot of these profiles: {names}."
+        return BucketSortDemonstrator(model, bucket_task, arms=arms, rng=np.random.default_rng(seed)), None
     if robots != 1:
         return None, f"The conveyor autopilot drives one SO-101 arm; this simulation has {robots} arms."
     from physicalai_mujoco_plugin.conveyor_demo import ConveyorDemonstrator  # noqa: PLC0415

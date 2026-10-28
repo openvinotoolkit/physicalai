@@ -1,7 +1,11 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Scripted demonstrator for the ``bucket_sort`` scene: a Franka FR3 with its hand.
+"""Scripted demonstrator for the ``bucket_sort`` scene: a Franka FR3, a Panda or the FR3 Duo, with the Franka Hand.
+
+What differs per robot (joint and actuator names, the gripper's command, the home pose, the joint
+speed limits) comes from its arms in :mod:`.bucket_sort_arms`; on the Duo, each attempt goes to one
+arm while the other holds its home.
 
 It reads privileged simulation state (the instruction, the bucket and object poses) and writes the
 arm's joint targets one control tick at a time, so the autopilot (``autopilot.py``) can drive the arm
@@ -50,29 +54,29 @@ import numpy as np
 from loguru import logger
 
 from physicalai_mujoco_plugin.bucket_sort import BUCKET_COLORS, BUCKET_INTERIOR, OBJECT_Y, OBJECTS, bucket_containing
+from physicalai_mujoco_plugin.bucket_sort_arms import FINGER_JOINTS, FR3_ARM, FRANKA_GRIP_OPEN, FrankaArm
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from physicalai_mujoco_plugin.bucket_sort import BucketSortTask, Instruction
 
-ARM_JOINTS = tuple(f"fr3_joint{i}" for i in range(1, 8))
-FINGER_JOINTS = ("finger_joint1", "finger_joint2")
-ACTUATORS = (*ARM_JOINTS, "gripper")
+ARM_JOINTS = FR3_ARM.joints
+ACTUATORS = (*FR3_ARM.actuators, FR3_ARM.gripper)
 """The ``franka_fr3`` channels, in action order: seven arm joints (radians in the model) and the hand's width (m)."""
 HAND_BODY = "hand"
 TCP_LOCAL = np.array([0.0, 0.0, 0.1034])
 """Franka's TCP in the hand frame: between the finger tips, 103.4 mm from the hand's base."""
-HOME_Q = np.radians([0.0, -45.0, 0.0, -135.0, 0.0, 90.0, 45.0])
+HOME_Q = np.array(FR3_ARM.home)
 """Franka's ready pose, the scene's home: the hand 0.49 m above the table, fingers down."""
 HOME_YAW = -np.pi / 2
 """World yaw of the closing axis (the hand's y axis) at :data:`HOME_Q`."""
-GRIP_OPEN = 0.08
+GRIP_OPEN = FRANKA_GRIP_OPEN
 """The hand's full opening, in metres."""
 
-FR3_DQ_MAX = np.array([2.62, 2.62, 2.62, 2.62, 5.26, 4.18, 5.26])
+FR3_DQ_MAX = np.array(FR3_ARM.dq_max)
 """FR3 joint velocity limits, rad/s (Franka's FR3 datasheet)."""
-FR3_DDQ_MAX = np.full(7, 10.0)
+FR3_DDQ_MAX = np.array(FR3_ARM.ddq_max)
 """FR3 joint acceleration limits, rad/s^2."""
 FR3_DDDQ_MAX = np.full(7, 5000.0)
 """FR3 joint jerk limits, rad/s^3."""
@@ -91,8 +95,17 @@ MAX_TICK_SPEED = 0.8
 
 MIN_TCP_Z = 0.013
 """Lowest grasp: the finger pads reach 9 mm below the TCP, so they stay 4 mm above the table."""
-CLEARANCE = {"bucket": 0.012, "objects": 0.008, "table": 0.002, "held_bucket": 0.010, "held_objects": 0.008}
-"""Smallest planned distance, in metres, from the robot (or the object it holds) to each kind of obstacle."""
+CLEARANCE = {
+    "bucket": 0.012,
+    "objects": 0.008,
+    "table": 0.002,
+    "held_bucket": 0.010,
+    "held_objects": 0.008,
+    "arm": 0.03,
+}
+"""Smallest planned distance, in metres, from the robot (or the object it holds) to each kind of obstacle.
+
+``arm`` is the working arm's distance from another arm that holds still (the Duo's)."""
 IK_POS_TOL = 0.003
 IK_ROT_TOL = float(np.radians(2.0))
 SHOULDER_SINGULAR_WIDTH = 0.3
@@ -103,6 +116,8 @@ MAX_IK_STEP = 0.1
 """Largest joint change, in radians, of one IK iteration."""
 CHECK_EVERY = 2
 """Clearance is checked every this many ticks of a plan."""
+WRIST_PROBE_Z = 0.15
+"""TCP height at which a tilted arm's joint 7 is estimated for a yaw over a point (:meth:`Planner.predicted_q7`)."""
 
 LIFT_CHECK_DZ = 0.04
 """The grasp is checked once the hand has risen this far above the grasp height."""
@@ -136,6 +151,9 @@ RETRY_Y = (OBJECT_Y[0] - 0.02, OBJECT_Y[1] + 0.02)
 """Where a retry picks the object up again: around the spawn area (``bucket_sort.OBJECT_X`` and
 ``OBJECT_Y``), with room for the nudge a missed grasp gives it."""
 MAX_REPLANS = 3
+OUT_OF_REACH = 0.02
+"""With several arms, a best-effort plan whose IK misses by more than this (m), or that comes too close
+to an arm holding still, does not run: the episode fails instead (no arm reaches it)."""
 
 Phase = Literal[
     "idle",
@@ -407,7 +425,7 @@ def wrap_near(angle: float, reference: float, period: float = 2.0 * np.pi) -> fl
 
 
 class FrankaIK:
-    """Damped least-squares IK of the FR3's TCP: a position, fingers down, the closing axis at a yaw.
+    """Damped least-squares IK of a Franka arm's TCP: a position, fingers down, the closing axis at a yaw.
 
     The FR3 has one joint more than the task needs. That redundancy (where the wrist sits on a
     small circle about the hand's vertical axis, with the elbow swinging along) is resolved in the
@@ -416,16 +434,20 @@ class FrankaIK:
     objects, nearly straight over the far end of a bucket). Joints stay :data:`JOINT_MARGIN` inside
     the hardware limits; a joint pinned there drops out of the solve (an active set). It runs on a
     private ``MjData``, so the simulation is untouched.
+
+    The arm (:class:`~.bucket_sort_arms.FrankaArm`) names the joints, the hand and the home pose; it
+    defaults to the ``franka_fr3`` profile's FR3.
     """
 
-    def __init__(self, model: object) -> None:
-        """Resolve the arm joints and the hand on *model*."""
+    def __init__(self, model: object, arm: FrankaArm = FR3_ARM) -> None:
+        """Resolve *arm*'s joints and hand on *model*."""
         import mujoco  # noqa: PLC0415
 
         self._mujoco = mujoco
         self.model = model
+        self.arm = arm
         self.data = mujoco.MjData(model)
-        joints = [model.joint(name).id for name in ARM_JOINTS]
+        joints = [model.joint(arm.name(name)).id for name in arm.joints]
         self.qpos_adr = np.array([int(model.jnt_qposadr[j]) for j in joints])
         self.dof_adr = np.array([int(model.jnt_dofadr[j]) for j in joints])
         self.hard_lower = np.array([float(model.jnt_range[j][0]) for j in joints])
@@ -434,11 +456,15 @@ class FrankaIK:
         self.upper = self.hard_upper - JOINT_MARGIN
         self._centre = (self.hard_lower + self.hard_upper) / 2.0
         self._half = (self.hard_upper - self.hard_lower) / 2.0
-        self.finger_adr = np.array([int(model.jnt_qposadr[model.joint(name).id]) for name in FINGER_JOINTS])
-        self.hand = int(model.body(HAND_BODY).id)
+        self.finger_adr = np.array([int(model.jnt_qposadr[model.joint(arm.name(name)).id]) for name in FINGER_JOINTS])
+        self.hand = int(model.body(arm.name(HAND_BODY)).id)
         self._jacp = np.zeros((3, model.nv))
         self._jacr = np.zeros((3, model.nv))
         self.damping = IK_DAMPING
+        self.home = np.array(arm.home)
+        """The arm's home pose: plans start and end there."""
+        self.home_yaw = float(arm.home_yaw) if arm.home_yaw is not None else self.fk(self.home)[1]
+        """World yaw of the closing axis at :attr:`home`."""
 
     def set_arm(self, q: np.ndarray, grip: float | None = None) -> None:
         """Put the private model's arm at *q* (and the fingers at half *grip* each) and update its kinematics."""
@@ -468,16 +494,18 @@ class FrankaIK:
         return self.tcp(), self.yaw()
 
     def continuous_yaw(self, q: np.ndarray) -> float:
-        """Return the closing-axis yaw at *q* on the branch the planner uses: home is :data:`HOME_YAW`.
+        """Return the closing-axis yaw at *q* on the branch the planner uses: home is :attr:`home_yaw`.
 
         Turning the hand about the vertical turns joint 7 the other way, and the base joint turns it
-        along, so ``HOME_YAW + q1 - (q7 - q7_home)`` tells which turn of the wrapped yaw is meant.
+        along, so ``home_yaw + (q1 - q1_home) - (q7 - q7_home)`` tells which turn of the wrapped yaw
+        is meant. On a tilted base (the Duo's) the base joint turns the hand less than that, but far
+        less than the half turn that would pick the wrong branch.
 
         Returns:
             The yaw in radians.
         """
         _, yaw = self.fk(q)
-        return wrap_near(yaw, HOME_YAW + float(q[0]) - float(q[6] - HOME_Q[6]))
+        return wrap_near(yaw, self.home_yaw + float(q[0] - self.home[0]) - float(q[6] - self.home[6]))
 
     def limit_gradient(self, q: np.ndarray) -> np.ndarray:
         """Return the descent direction of ``sum(((q - centre) / half range) ** 6)``.
@@ -656,9 +684,14 @@ def object_shape(model: object, name: str) -> ObjectShape:
 
 
 class _Clearance:
-    """Distances from the hand (and a held object) to the buckets, the other objects and the table."""
+    """Distances from the hand (and a held object) to the buckets, the other objects and the table.
 
-    def __init__(self, model: object, data: object) -> None:
+    With *others*, also from the whole working arm to those arms, which hold still.
+    """
+
+    def __init__(
+        self, model: object, data: object, arm: FrankaArm = FR3_ARM, others: tuple[FrankaArm, ...] = ()
+    ) -> None:
         import mujoco  # noqa: PLC0415
 
         self._mujoco = mujoco
@@ -673,8 +706,19 @@ class _Clearance:
                 if int(model.geom_bodyid[g]) in bodies and (model.geom_contype[g] or model.geom_conaffinity[g])
             ])
 
-        self.robot = collision_geoms((HAND_BODY, "left_finger", "right_finger", "fr3_link7", "fr3_link6", "fr3_link5"))
-        self.fingers = collision_geoms(("left_finger", "right_finger"))
+        hand = tuple(arm.name(body) for body in (HAND_BODY, "left_finger", "right_finger"))
+        self.robot = collision_geoms((*hand, *(arm.name(link) for link in reversed(arm.links))))
+        self.fingers = collision_geoms(hand[1:])
+        # The base (link 0) never moves: its distance from another arm's base is the mount's.
+        moving = tuple(arm.name(link) for link in arm.arm_links[1:])
+        self.arm = collision_geoms((*hand, *moving)) if others else None
+        self.other_arms = (
+            collision_geoms(
+                tuple(o.name(b) for o in others for b in (*o.arm_links, HAND_BODY, "left_finger", "right_finger"))
+            )
+            if others
+            else None
+        )
         self.buckets = collision_geoms(tuple(f"bucket_{color}" for color in BUCKET_COLORS))
         self.objects = {name: collision_geoms((name,)) for name in OBJECTS}
         self.table = np.array([int(model.geom("table_top").id)])
@@ -711,6 +755,8 @@ class _Clearance:
         if held:
             out["held_bucket"] = self._min_distance(self.objects[target], self.buckets)
             out["held_objects"] = self._min_distance(self.objects[target], others)
+        if self.arm is not None and self.other_arms is not None:
+            out["arm"] = self._min_distance(self.arm, self.other_arms)
         return out
 
 
@@ -826,16 +872,27 @@ class SceneSnapshot:
 
 
 class Planner:
-    """Build and check joint plans for the bucket_sort scene."""
+    """Build and check joint plans of one arm for the bucket_sort scene."""
 
-    def __init__(self, model: object) -> None:
-        """Bind to the scene model; planning runs on private data."""
+    def __init__(self, model: object, arm: FrankaArm = FR3_ARM, others: tuple[FrankaArm, ...] = ()) -> None:
+        """Bind to the scene model and the *arm* that works; planning runs on private data.
+
+        Args:
+            model: The bucket_sort model.
+            arm: The arm the plans move.
+            others: Arms that hold still meanwhile; the plans keep clear of them.
+        """
         import mujoco  # noqa: PLC0415
 
         self._mujoco = mujoco
         self.model = model
-        self.ik = FrankaIK(model)
-        self.clearance = _Clearance(model, self.ik.data)
+        self.arm = arm
+        self.ik = FrankaIK(model, arm)
+        self.dq_max = np.array(arm.dq_max)
+        self.ddq_max = np.array(arm.ddq_max)
+        self.clearance = _Clearance(model, self.ik.data, arm, others)
+        self._wrist_probe: tuple[tuple[float, float], float, float] | None = None
+        """The last point :meth:`predicted_q7` solved a tilted arm for: the point, joint 7 and the yaw there."""
         self.shapes = {name: object_shape(model, name) for name in OBJECTS}
         self._object_qpos = {name: int(model.jnt_qposadr[model.joint(f"{name}:joint").id]) for name in OBJECTS}
         self._object_body = {name: int(model.body(name).id) for name in OBJECTS}
@@ -931,15 +988,25 @@ class Planner:
         point[2] = max(float(position[2]), MIN_TCP_Z) + params.grasp_dz
         return point
 
-    @staticmethod
-    def predicted_q7(yaw: float, xy: np.ndarray) -> float:
+    def predicted_q7(self, yaw: float, xy: np.ndarray) -> float:
         """Estimate joint 7 for the hand at *xy* with closing-axis yaw *yaw* (see :meth:`FrankaIK.continuous_yaw`).
+
+        An upright arm at the origin turns its base toward *xy*. A tilted one (the Duo's) is solved
+        for: the hand over *xy* at its home yaw, from home, then joint 7 turns against the rest of the yaw.
 
         Returns:
             Radians.
         """
-        q1 = float(np.arctan2(xy[1], xy[0]))
-        return float(HOME_Q[6] + q1 - (yaw - HOME_YAW))
+        ik = self.ik
+        if self.arm.upright:
+            q1 = float(np.arctan2(xy[1], xy[0]))
+            return float(ik.home[6] + (q1 - ik.home[0]) - (yaw - ik.home_yaw))
+        key = (float(xy[0]), float(xy[1]))
+        if self._wrist_probe is None or self._wrist_probe[0] != key:
+            q, _, _ = ik.solve(ik.home, np.array([*key, WRIST_PROBE_Z]), ik.home_yaw, iters=30)
+            self._wrist_probe = (key, float(q[6]), ik.continuous_yaw(q))
+        _, q7, solved_yaw = self._wrist_probe
+        return float(q7 - (yaw - solved_yaw))
 
     def yaw_candidates(self, axis_yaw: float, current: float, xy: np.ndarray, *, period: float = np.pi) -> list[float]:
         """Return the closing yaws that line up with *axis_yaw*, nearest to *current* first.
@@ -1159,8 +1226,8 @@ class Planner:
             plan = self.solve(script, q, dt, kind=kind, target=target, held_from=start, held_until=release)
             plan.yaw_release = yaw_release
             velocity = np.diff(plan.q, axis=0) / dt
-            speed = (np.abs(velocity) / FR3_DQ_MAX).max(axis=1)
-            accel = (np.abs(np.diff(velocity, axis=0)) / (dt * FR3_DDQ_MAX)).max(axis=1)
+            speed = (np.abs(velocity) / self.dq_max).max(axis=1)
+            accel = (np.abs(np.diff(velocity, axis=0)) / (dt * self.ddq_max)).max(axis=1)
             factors: dict[str, float] = {}
             for k in np.flatnonzero(speed > 0.9 * SPEED_FRACTION):
                 ratio = float(speed[k] / (0.85 * SPEED_FRACTION))
@@ -1217,7 +1284,7 @@ class Planner:
             target: The object being picked (and held from *held_from* to *held_until*, in seconds).
             held_from: When the hand starts carrying the object.
             held_until: When it lets go.
-            home_speed: After the script, the arm returns to :data:`HOME_Q` in joint space, each
+            home_speed: After the script, the arm returns home (:attr:`FrankaIK.home`) in joint space, each
                 joint at most this fraction of its speed and acceleration limits.
             home_blend: Fraction of the script's last move that the way home overlaps.
 
@@ -1231,11 +1298,11 @@ class Planner:
         phases = script.phases(np.arange(n_script) * dt)
         # The way home, in joint space: a minimum-jerk move of every joint onto the ready pose,
         # starting while the last move of the script ends.
-        delta = HOME_Q - q_script[-1]
+        delta = self.ik.home - q_script[-1]
         home_s = max(
             1.2,
-            1.875 * float(np.max(np.abs(delta) / (home_speed * FR3_DQ_MAX))),
-            float(np.sqrt(5.77 * np.max(np.abs(delta) / (home_speed * FR3_DDQ_MAX)))),
+            1.875 * float(np.max(np.abs(delta) / (home_speed * self.dq_max))),
+            float(np.sqrt(5.77 * np.max(np.abs(delta) / (home_speed * self.ddq_max)))),
         )
         last = script.moves[-1] if script.moves else None
         start = script.t_end - (home_blend * last.duration if last is not None and np.any(last.delta) else 0.0)
@@ -1294,7 +1361,7 @@ class Planner:
         q_script = np.zeros((n_script, 7))
         current = q_start.copy()
         pos_error = rot_error = 0.0
-        step_limit = MAX_TICK_SPEED * FR3_DQ_MAX * dt
+        step_limit = MAX_TICK_SPEED * self.dq_max * dt
         for k in range(n_script):
             solved, e_pos, e_rot = ik.solve(
                 current,
@@ -1335,12 +1402,12 @@ class Planner:
             plan.problems.append(f"IK residual {plan.pos_error * 1000:.1f} mm, {np.degrees(plan.rot_error):.1f} deg")
         plan.limit_margin = float(min((q - ik.hard_lower).min(), (ik.hard_upper - q).min()))
         smooth = joint_smoothness(q, plan.dt)
-        plan.peak_speed_ratio = float((smooth["velocity"] / FR3_DQ_MAX).max())
-        plan.peak_accel_ratio = float((smooth["acceleration"] / FR3_DDQ_MAX).max())
+        plan.peak_speed_ratio = float((smooth["velocity"] / self.dq_max).max())
+        plan.peak_accel_ratio = float((smooth["acceleration"] / self.ddq_max).max())
         if plan.peak_speed_ratio > SPEED_FRACTION:
-            plan.problems.append(f"joint speed {plan.peak_speed_ratio:.0%} of the FR3 limit")
+            plan.problems.append(f"joint speed {plan.peak_speed_ratio:.0%} of the {self.arm.label} limit")
         if plan.peak_accel_ratio > ACCEL_FRACTION:
-            plan.problems.append(f"joint acceleration {plan.peak_accel_ratio:.0%} of the FR3 limit")
+            plan.problems.append(f"joint acceleration {plan.peak_accel_ratio:.0%} of the {self.arm.label} limit")
 
     def _check_clearance(self, plan: JointPlan, target: str, held: tuple[int, int] | None) -> None:
         """Sweep the hand (and, between the *held* ticks, the object in it) and record the clearances."""
@@ -1426,13 +1493,19 @@ class _Episode:
 
 
 class BucketSortDemonstrator:
-    """Put the instructed object in the instructed bucket, one control tick at a time."""
+    """Put the instructed object in the instructed bucket, one control tick at a time.
+
+    With several arms (the Duo's), one works an attempt while the others hold their targets: each
+    attempt goes to the arm that reaches both the object and the bucket, the nearer one first, and
+    its plans keep clear of the arms that hold still.
+    """
 
     def __init__(
         self,
         model: object,
         task: BucketSortTask,
         *,
+        arms: tuple[FrankaArm, ...] = (FR3_ARM,),
         rng: np.random.Generator | None = None,
         randomize: bool = True,
         max_attempts: int = 2,
@@ -1441,28 +1514,43 @@ class BucketSortDemonstrator:
         """Bind to the scene model and its task.
 
         Args:
-            model: The bucket_sort model with one FR3.
+            model: The bucket_sort model.
             task: The scene's task (``Sim.on_reset``): the instruction and the success test.
+            arms: The robot's arms in channel order (:data:`~.bucket_sort_arms.BUCKET_SORT_ARMS`);
+                the default is the ``franka_fr3`` profile's FR3.
             rng: Draws each episode's own generator; the same seed repeats the same episodes.
             randomize: Draw each attempt's parameters (:meth:`DemoParams.sample`); otherwise the defaults.
             max_attempts: Attempts per episode, the retry included.
             reset_on_failure: Ask for a scene reset after a failed episode (:meth:`take_reset_request`).
         """
+        from physicalai_mujoco_plugin.profiles.derive import control_kind  # noqa: PLC0415
+
         self.model = model
         self.task = task
-        self.planner = Planner(model)
-        self.ik = self.planner.ik
+        self.arms = tuple(arms)
+        self.planners = tuple(Planner(model, arm, tuple(o for o in self.arms if o is not arm)) for arm in self.arms)
+        self._active = 0
         self.stats = DemoStats()
         self.randomize = randomize
         self.max_attempts = int(max_attempts)
         self.reset_on_failure = reset_on_failure
         self._rng = rng if rng is not None else np.random.default_rng()
-        self._actuators = np.array([int(model.actuator(name).id) for name in ACTUATORS])
+        self._actuators = np.array([
+            int(model.actuator(arm.name(name)).id) for arm in self.arms for name in (*arm.actuators, arm.gripper)
+        ])
+        """Every arm's actuators, in output order: seven joints, then the hand, arm by arm."""
+        # ctrl per model-unit target: 1 for the FR3, 6375 for the Panda's finger tendon (255 per 0.04 m).
+        self._ctrl_per_unit = np.array([
+            control_kind(model, int(a))[1] * float(model.actuator_gear[a, 0]) for a in self._actuators
+        ])
+        self._grip_per_width = np.array([arm.grip_per_width for arm in self.arms])
+        self._hold: list[np.ndarray | None] = [None] * len(self.arms)
+        """The targets each arm that does not work holds, model units (seven joints and the opening in metres)."""
         self._object_body = {name: int(model.body(name).id) for name in OBJECTS}
         self._bucket_body = {color: int(model.body(f"bucket_{color}").id) for color in BUCKET_COLORS}
         self._q: np.ndarray | None = None
         self._q_prev: np.ndarray | None = None
-        self._braking_from = HOME_Q.copy()
+        self._braking_from = self.ik.home.copy()
         self._grip = GRIP_OPEN
         self._generation: int | None = None
         self._episode: _Episode | None = None
@@ -1481,6 +1569,21 @@ class BucketSortDemonstrator:
         """Every plan of the current episode, for diagnostics."""
 
     # -- readouts ---------------------------------------------------------
+
+    @property
+    def planner(self) -> Planner:
+        """The planner of the arm that works now."""
+        return self.planners[self._active]
+
+    @property
+    def ik(self) -> FrankaIK:
+        """The IK of the arm that works now."""
+        return self.planners[self._active].ik
+
+    @property
+    def active_arm(self) -> FrankaArm:
+        """The arm that works now; the others hold still."""
+        return self.arms[self._active]
 
     @property
     def phase(self) -> Phase:
@@ -1545,22 +1648,50 @@ class BucketSortDemonstrator:
         With *apply*, the targets are written to the actuators; otherwise they are only returned.
 
         Returns:
-            Eight targets in model units, ``ACTUATORS`` order: the seven arm joints (radians) and the
-            hand's opening (m).
+            Eight targets per arm in model units, the channels' order (``ACTUATORS`` for the FR3): the
+            seven arm joints (radians) and the hand's actuator (the FR3's opening in metres).
         """
         new_episode = self._episode is None or self._generation != self.task.reset_count
         if self._q is None or new_episode:
             # A scene reset puts the arm home: start from there, not from the last episode's targets.
             self._q = np.array(data.qpos[self.ik.qpos_adr])
-            self._grip = float(np.clip(data.ctrl[self._actuators[7]], 0.0, GRIP_OPEN))
+            self._grip = self._ctrl_targets(data, self._active)[7]
+            self._hold = [None if i == self._active else self._ctrl_targets(data, i) for i in range(len(self.arms))]
         if new_episode:
             self._start_episode(data)
         self._q_prev = self._q.copy()
         self._advance(data, dt)
-        targets = np.array([*self._q, self._grip], dtype=np.float64)
+        targets = np.concatenate([
+            [*self._q, self._grip] if i == self._active else self._hold[i]  # type: ignore[list-item]
+            for i in range(len(self.arms))
+        ])
+        targets[7::8] *= self._grip_per_width
         if apply:
-            data.ctrl[self._actuators] = targets
+            data.ctrl[self._actuators] = targets * self._ctrl_per_unit
         return targets
+
+    def _ctrl_targets(self, data: object, arm: int) -> np.ndarray:
+        """Return arm *arm*'s current targets from ``ctrl``: seven joints and the opening in metres.
+
+        Returns:
+            Eight values.
+        """
+        rows = slice(8 * arm, 8 * arm + 8)
+        targets = np.array(data.ctrl[self._actuators[rows]]) / self._ctrl_per_unit[rows]
+        targets[7] = float(np.clip(targets[7] / self._grip_per_width[arm], 0.0, GRIP_OPEN))
+        return targets
+
+    def _switch_arm(self, arm: int) -> None:
+        """Let arm *arm* work from its held targets; the one that worked holds its own."""
+        hold = self._hold[arm]
+        if arm == self._active or hold is None or self._q is None:  # only the working arm has no hold
+            return
+        self._hold[self._active] = np.array([*self._q, self._grip])
+        self._hold[arm] = None
+        self._active = arm
+        self._q, self._grip = hold[:7].copy(), float(hold[7])
+        self._q_prev = self._q.copy()
+        self._braking_from = self._q.copy()
 
     def _start_episode(self, data: object) -> None:
         self._generation = self.task.reset_count
@@ -1745,7 +1876,7 @@ class BucketSortDemonstrator:
     # -- attempts ---------------------------------------------------------
 
     def _start_state(self) -> np.ndarray:
-        q = self._q if self._q is not None else HOME_Q
+        q = self._q if self._q is not None else self.ik.home
         tcp, _ = self.ik.fk(q)
         return np.array([*tcp, self.ik.continuous_yaw(q), self._grip])
 
@@ -1859,15 +1990,76 @@ class BucketSortDemonstrator:
             episode.attempt += 1
             self.stats.attempts += 1
         snapshot = SceneSnapshot.take(data)
+        if brake is None and len(self.arms) > 1:
+            plan = self._plan_with_an_arm(snapshot, episode.instruction, episode.params, dt, episode.rng)
+            if plan is None:
+                instruction = episode.instruction
+                self._fail(data, f"no arm reaches the {instruction.object} and the {instruction.bucket} bucket", dt)
+                return
+        else:
+            plan = self.plan_attempt(
+                snapshot, self._q, self._start_state(), episode.instruction, episode.params, dt, episode.rng
+            )
         self.planner.load(snapshot)
         position, rotation = self.planner.object_pose(episode.instruction.object)
         self._rest_z = float(position[2])
         self._planned_object = position.copy()
         self._planned_axis = self.planner.grasp_axis_yaw(episode.instruction.object, rotation)
-        plan = self.plan_attempt(
-            snapshot, self._q, self._start_state(), episode.instruction, episode.params, dt, episode.rng
-        )
         self._run(plan, data, brake)
+
+    def _plan_with_an_arm(
+        self, snapshot: SceneSnapshot, instruction: Instruction, params: DemoParams, dt: float, rng: np.random.Generator
+    ) -> JointPlan | None:
+        """Plan an attempt with the arm that suits it, and let that arm work (several arms, at rest).
+
+        Only the arms that reach the object and the bucket from home plan, the nearest first; the
+        first whose plan passes every check works, else the one with the best plan, unless that one
+        misses its path by more than :data:`OUT_OF_REACH` or comes too close to the other arm.
+
+        Returns:
+            The plan, for the arm that now works; ``None`` when no arm can do the attempt.
+        """
+        preference = {i: self._arm_preference(i, snapshot, instruction, params) for i in range(len(self.arms))}
+        order = sorted((i for i in preference if not preference[i][0]), key=lambda i: preference[i])
+        best: tuple[int, JointPlan] | None = None
+        for arm in order:
+            self._switch_arm(arm)
+            plan = self.plan_attempt(snapshot, self._q, self._start_state(), instruction, params, dt, rng, report=False)  # type: ignore[arg-type]
+            if plan.ok:
+                logger.info("Demonstrator: the {} works this attempt", self.active_arm.label)
+                return plan
+            if best is None or _severity(plan) < _severity(best[1]):
+                best = (arm, plan)
+        if best is None or best[1].pos_error > OUT_OF_REACH or best[1].clearance.get("arm", np.inf) < CLEARANCE["arm"]:
+            if best is not None:
+                logger.info("Demonstrator: no arm can do this attempt ({})", "; ".join(best[1].problems))
+            return None
+        self._switch_arm(best[0])
+        logger.info("Demonstrator: the {} works this attempt", self.active_arm.label)
+        self._report_problems(best[1])
+        return best[1]
+
+    def _arm_preference(
+        self, arm: int, snapshot: SceneSnapshot, instruction: Instruction, params: DemoParams
+    ) -> tuple[bool, float]:
+        """Rank arm *arm* for an attempt: whether it reaches the grasp and the bucket from home, and how far it goes.
+
+        Returns:
+            A sort key; lower is better.
+        """
+        planner = self.planners[arm]
+        ik = planner.ik
+        planner.load(snapshot)
+        position, rotation = planner.object_pose(instruction.object)
+        grasp = planner.grasp_point(instruction.object, position, rotation, params)
+        bucket, _ = planner.bucket_pose(instruction.bucket)
+        over = np.array([bucket[0], bucket[1], params.release_z])
+        q_grasp, e_grasp, _ = ik.optimize(ik.home, grasp, planner.grasp_axis_yaw(instruction.object, rotation), 0)
+        _, e_over, _ = ik.optimize(q_grasp, over, ik.continuous_yaw(q_grasp), 0)
+        home, _ = ik.fk(ik.home)
+        reaches = e_grasp <= IK_POS_TOL and e_over <= IK_POS_TOL
+        distance = float(np.linalg.norm((grasp - home)[:2]) + np.linalg.norm((bucket - home)[:2]))
+        return (not reaches, distance)
 
     def _begin_place(self, data: object, dt: float, brake: np.ndarray | None = None) -> None:
         """Plan the carry and the release again, with the object in the hand, and start it."""
@@ -1899,8 +2091,10 @@ class BucketSortDemonstrator:
         params: DemoParams,
         dt: float,
         rng: np.random.Generator | None = None,
+        *,
+        report: bool = True,
     ) -> JointPlan:
-        """Plan one attempt: the better grasp yaw first, then the other, then safer variants.
+        """Plan one attempt of the working arm: the better grasp yaw first, then the other, then safer variants.
 
         The two yaws are ranked by the joint-limit margin of their key postures (grasp, then
         release, solved from each other). When the margins are within 10 deg, ``params.yaw_choice``
@@ -1908,6 +2102,8 @@ class BucketSortDemonstrator:
 
         With *rng*, two fresh parameter draws come last: a path near the shoulder singularity
         (objects close in front of the base) often clears with other heights and speeds.
+
+        Without *report*, a plan that fails a check is neither counted nor logged.
 
         Returns:
             The first plan that passes every check, else the one with the fewest problems.
@@ -1948,9 +2144,13 @@ class BucketSortDemonstrator:
                     return plan
                 if best is None or _severity(plan) < _severity(best):
                     best = plan
-        self.stats.plan_problems += 1
-        logger.warning("Demonstrator: no plan passed every check ({}); running the best one", "; ".join(best.problems))  # type: ignore[union-attr]
+        if report:
+            self._report_problems(best)  # type: ignore[arg-type]
         return best  # type: ignore[return-value]
+
+    def _report_problems(self, plan: JointPlan) -> None:
+        self.stats.plan_problems += 1
+        logger.warning("Demonstrator: no plan passed every check ({}); running the best one", "; ".join(plan.problems))
 
     def _run(self, plan: JointPlan, data: object, brake: np.ndarray | None = None) -> None:
         if brake is not None and len(brake):
