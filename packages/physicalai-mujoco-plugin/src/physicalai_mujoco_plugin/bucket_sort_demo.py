@@ -151,6 +151,12 @@ RETRY_Y = (OBJECT_Y[0] - 0.02, OBJECT_Y[1] + 0.02)
 """Where a retry picks the object up again: around the spawn area (``bucket_sort.OBJECT_X`` and
 ``OBJECT_Y``), with room for the nudge a missed grasp gives it."""
 MAX_REPLANS = 3
+STILL_SPEED = 0.01
+"""With several arms, an arm whose joints are all slower than this (rad/s) is still (``_arms_still``)."""
+STILL_S = 0.1
+"""How long the arms must be still on their targets before an attempt is planned."""
+TARGET_TOLERANCE = 1e-4
+"""How close (rad) an arm's actuator targets must be to the ones it holds; a client's degrees round a little."""
 OUT_OF_REACH = 0.02
 """With several arms, a best-effort plan whose IK misses by more than this (m), or that comes too close
 to an arm holding still, does not run: the episode fails instead (no arm reaches it)."""
@@ -1563,6 +1569,8 @@ class BucketSortDemonstrator:
         ])
         self._grip_per_width = np.array([arm.grip_per_width for arm in self.arms])
         self._hold: list[np.ndarray | None] = [None] * len(self.arms)
+        self._still_since: float | None = None
+        """Since when every arm stands still on its targets (several arms)."""
         """The targets each arm that does not work holds, model units (seven joints and the opening in metres)."""
         self._object_body = {name: int(model.body(name).id) for name in OBJECTS}
         self._bucket_body = {color: int(model.body(f"bucket_{color}").id) for color in BUCKET_COLORS}
@@ -1725,6 +1733,8 @@ class BucketSortDemonstrator:
     def _set_phase(self, phase: Phase, data: object) -> None:
         self._phase = phase
         self._since = float(data.time)
+        if phase == "settle":
+            self._still_since = None  # the arms must stand still anew before this attempt
 
     def _advance(self, data: object, dt: float) -> None:
         episode = self._episode
@@ -1763,7 +1773,8 @@ class BucketSortDemonstrator:
     def _settle(self, data: object, dt: float, now: float) -> None:
         """Start the attempt once the pause is over and the object rests; a retry also needs it graspable."""
         episode = self._episode
-        if now - self._since >= episode.params.start_pause_s and self._resting(data):  # type: ignore[union-attr]
+        still = self._arms_still(data, now)
+        if now - self._since >= episode.params.start_pause_s and self._resting(data) and still:  # type: ignore[union-attr]
             if episode.attempt == 0:  # type: ignore[union-attr]
                 self._begin_attempt(data, dt)
             elif self._graspable(data):
@@ -1771,7 +1782,35 @@ class BucketSortDemonstrator:
             else:
                 self._fail(data, f"{episode.reasons[-1]}, and it cannot be picked up where it lies", dt)  # type: ignore[union-attr]
         elif now - self._since > SETTLE_TIMEOUT_S:
-            self._fail(data, "the object does not come to rest", dt)
+            self._fail(data, "the arms do not come to rest" if not still else "the object does not come to rest", dt)
+
+    def _arms_still(self, data: object, now: float) -> bool:
+        """Return whether every arm has stood still on its targets for :data:`STILL_S` (several arms).
+
+        A plan is checked against the arms that hold still where they stand when it is planned. An arm
+        still moving (toward a target a client sent before the autopilot took over, say) would stand
+        elsewhere: so every arm's actuator targets must be the ones the demonstrator gives it (the
+        working arm's, the holds), and every joint slower than :data:`STILL_SPEED`. A position servo
+        with a fixed target that has come to rest stays there, so the snapshot holds for the plan.
+
+        Returns:
+            ``True`` with one arm, which has no other arm to keep clear of.
+        """
+        if len(self.arms) == 1:
+            return True
+        for index, planner in enumerate(self.planners):
+            target = self._q if index == self._active else self._hold[index][:7]  # type: ignore[index]
+            targets = (
+                np.array(data.ctrl[self._actuators[8 * index : 8 * index + 7]])
+                / self._ctrl_per_unit[8 * index : 8 * index + 7]
+            )
+            moving = np.abs(np.array(data.qvel[planner.ik.dof_adr])).max() >= STILL_SPEED
+            if moving or np.abs(targets - target).max() > TARGET_TOLERANCE:
+                self._still_since = None
+                return False
+        if self._still_since is None:
+            self._still_since = now
+        return now - self._still_since >= STILL_S
 
     def _follow(self, data: object, plan: JointPlan, dt: float) -> None:
         """Output the plan's next targets, and check that the attempt still goes as planned."""
@@ -2210,7 +2249,7 @@ class BucketSortDemonstrator:
         data: object,
         plan: JointPlan,
         brake: np.ndarray | None,
-        too_close: str | None = None,
+        reason: str,
         *,
         freeze_at: np.ndarray | None = None,
     ) -> None:
@@ -2221,10 +2260,6 @@ class BucketSortDemonstrator:
         runs from here: one that goes home could come as close to the other arm.
         """
         episode = self._episode
-        needed = CLEARANCE["arm"] * 1000
-        if too_close is None:
-            too_close = f"the {plan.kind} plan would come {plan.clearance['arm'] * 1000:.0f} mm"
-        reason = f"{too_close} from the other arm (at least {needed:.0f} mm)"
         if brake is not None and len(brake):
             q = np.vstack([brake, brake[-1:]])
             self._q = self._braking_from  # this tick still outputs where the arm is now
@@ -2260,17 +2295,39 @@ class BucketSortDemonstrator:
         logger.warning("Demonstrator: no plan passed every check ({}); running the best one", "; ".join(plan.problems))
 
     def _run(self, plan: JointPlan, data: object, brake: np.ndarray | None = None) -> None:
+        """Start *plan*, after *brake*; with several arms, every plan passes one gate here first.
+
+        The braking and the plan must keep clear of the arms holding still, and an attempt or place
+        plan must stay within :data:`OUT_OF_REACH` of its path; otherwise the arm stops
+        (:meth:`_stop_and_fail`). One arm runs its plans as before: the FR3's best-effort plans included.
+        """
         if len(self.arms) > 1:
             braking = brake is not None and len(brake) > 0
             brake_clearance = self.planner.arm_clearance(brake, SceneSnapshot.take(data)) if braking else np.inf
+            needed = CLEARANCE["arm"] * 1000
             if brake_clearance < CLEARANCE["arm"]:
                 # Braking along the current speed would reach into the other arm: stop on the last
                 # target instead, which a checked plan (or the hold) put there.
-                too_close = f"braking would come {brake_clearance * 1000:.0f} mm"
-                self._stop_and_fail(data, plan, None, too_close, freeze_at=self._braking_from)
+                reason = (
+                    f"braking would come {brake_clearance * 1000:.0f} mm from the other arm (at least {needed:.0f} mm)"
+                )
+                self._stop_and_fail(data, plan, None, reason, freeze_at=self._braking_from)
                 return
             if self._too_close_to_an_arm(plan):
-                self._stop_and_fail(data, plan, brake)
+                distance = plan.clearance["arm"] * 1000
+                reason = (
+                    f"the {plan.kind} plan would come {distance:.0f} mm from the other arm (at least {needed:.0f} mm)"
+                )
+                self._stop_and_fail(data, plan, brake, reason)
+                return
+            if plan.kind != "home" and plan.pos_error > OUT_OF_REACH:
+                # A re-planned approach or place out of reach would close on nothing or let go outside
+                # the bucket; the checked braking still stops the arm.
+                reason = (
+                    f"the {plan.kind} plan misses its path by {plan.pos_error * 1000:.0f} mm "
+                    f"(at most {OUT_OF_REACH * 1000:.0f} mm): out of reach"
+                )
+                self._stop_and_fail(data, plan, brake, reason)
                 return
         if brake is not None and len(brake):
             # Prefix the braking ticks; the plan's own ticks shift by as many.

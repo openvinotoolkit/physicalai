@@ -11,6 +11,7 @@ holds still, and whole episodes in both autopilot modes.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 
 import mujoco
 import numpy as np
@@ -218,6 +219,62 @@ class TestDemonstrator:
         monkeypatch.setattr(demo, "plan_attempt", lambda *_args, **_kwargs: by_arm[demo._active])
         chosen = demo._plan_with_an_arm(snapshot, instruction, bd.DemoParams(), TICK_S, np.random.default_rng(0))
         assert chosen is missing and demo._active == 1
+
+    def test_the_first_plan_waits_until_an_arm_still_moving_comes_to_rest(self, scene: MuJoCoRobot) -> None:
+        """The autopilot takes over while an arm still follows an earlier command: no plan until it rests."""
+        if scene._profile.name != "franka_duo":
+            pytest.skip("one arm")
+        model, data = scene._sim.model, scene._sim.data
+        for _ in range(round(1.0 / TICK_S)):
+            scene.get_observation()  # the objects come to rest
+        joint = model.actuator("right_fr3_joint1").id
+        data.ctrl[joint] += 0.3  # an earlier client command the right arm is still on its way to
+        scene.get_observation()
+        demo = scene._automation.autopilot.demonstrator
+        scene._automation.set_autopilot("drive")
+        scene.get_observation()
+        assert demo.phase == "settle"
+        demo._episode.params = dataclasses.replace(demo._episode.params, start_pause_s=0.0)
+        waited = 0
+        for _ in range(round(5.0 / TICK_S)):
+            moving = [np.abs(data.qvel[p.ik.dof_adr]).max() for p in demo.planners]
+            scene.get_observation()
+            if demo.phase != "settle":
+                break
+            waited += 1
+        assert waited > 0, "planned while the right arm still moved"
+        assert max(moving) < bd.STILL_SPEED, moving
+
+    @pytest.mark.parametrize("what", ["object", "bucket"])
+    def test_a_replan_out_of_reach_stops_instead_of_running(self, scene: MuJoCoRobot, what: str) -> None:
+        """Dragged past both arms' reach, the object (before the grasp) or the bucket (in the carry) stops the arm."""
+        if scene._profile.name != "franka_duo":
+            pytest.skip("one arm")
+        model, data = scene._sim.model, scene._sim.data
+        scene._automation.set_autopilot("drive")
+        demo = scene._automation.autopilot.demonstrator
+        instruction = scene._sim.on_reset.instruction
+        phase = "approach" if what == "object" else "carry"
+        for _ in range(round(20.0 / TICK_S)):
+            scene.get_observation()
+            if demo.phase == phase:
+                break
+        assert demo.phase == phase
+        name = instruction.object if what == "object" else f"bucket_{instruction.bucket}"
+        joint = model.joint(f"{name}:joint")
+        adr, dof = int(joint.qposadr[0]), int(joint.dofadr[0])
+        data.qpos[adr : adr + 3] = (0.76, 0.80, data.qpos[adr + 2])  # the table's far corner, 1.1 m from either arm
+        data.qvel[dof : dof + 6] = 0.0
+        mujoco.mj_forward(model, data)
+        failure = None
+        for _ in range(round(3.0 / TICK_S)):
+            scene.get_observation()
+            failure = demo.status()["failure"] or failure
+            if failure:
+                break
+        assert demo.stats.replans >= 1
+        assert failure is not None and "out of reach" in failure, failure
+        assert demo.phase == "failed"
 
     def test_an_arm_the_probe_misses_still_plans_with_the_other_yaw_or_a_turned_release(self, robot: MuJoCoRobot) -> None:
         """Seed 1019: the probe misses both arms, yet the left arm's plan passes every check."""
