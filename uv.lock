@@ -1895,6 +1895,7 @@ notebooks = [
     { name = "matplotlib-inline" },
 ]
 observer-rerun = [
+    { name = "psutil" },
     { name = "rerun-sdk" },
 ]
 plugin-mujoco = [
@@ -1984,6 +1985,7 @@ requires-dist = [
     { name = "physicalai-trossen-plugin", marker = "(python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'darwin' and extra == 'plugin-trossen') or (python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'linux' and extra == 'plugin-trossen')", editable = "packages/physicalai-trossen-plugin" },
     { name = "physicalai-trossen-plugin", marker = "(python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'darwin' and extra == 'robots') or (python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'linux' and extra == 'robots')", editable = "packages/physicalai-trossen-plugin" },
     { name = "physicalai-trossen-plugin", marker = "(python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'darwin' and extra == 'trossen') or (python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'linux' and extra == 'trossen')", editable = "packages/physicalai-trossen-plugin" },
+    { name = "psutil", marker = "extra == 'observer-rerun'", specifier = ">=5.9" },
     { name = "pydantic", specifier = ">=2.5" },
     { name = "pynokhwa", specifier = "==0.1.4" },
     { name = "pypylon", marker = "extra == 'basler'" },

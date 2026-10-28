@@ -11,6 +11,7 @@ from collections import deque
 from typing import TYPE_CHECKING, Any, Literal
 
 from physicalai.config import export_config
+from physicalai.runtime.callbacks.system_monitor import LocalSystemMonitor
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -18,6 +19,8 @@ if TYPE_CHECKING:
     import numpy as np
 
     from physicalai.capture.frame import Frame
+    from physicalai.runtime.callbacks.gpu_stats import GpuStatsSample
+    from physicalai.runtime.callbacks.system_monitor import SystemMonitor
     from physicalai.runtime.events import InferenceEvent, LifecycleEvent, MetricsEvent, TickEvent
 
 logger = logging.getLogger(__name__)
@@ -34,6 +37,15 @@ class RerunCallback:
     carry no frames and are not counted). Camera names for the blueprint
     layout are discovered lazily from the first tick's ``camera_frames`` keys,
     so this callback never holds a ``Camera`` reference of its own.
+    Host CPU/RAM and process CPU/resident memory are sampled at most once per
+    second and shown alongside inference latency in one Monitoring sidebar. Both CPU
+    percentages are normalized across all host logical cores, so 100% means the
+    entire host CPU capacity. GPU utilization, memory, and temperature are queried
+    in the background using ``nvidia-smi`` / ``xpu-smi`` when available. Missing
+    tools, permissions, and unsupported counters do not prevent runtime use.
+    Pass ``system_monitor`` to replace collection with a custom nonblocking
+    :class:`~physicalai.runtime.callbacks.system_monitor.SystemMonitor`. The
+    callback resets it on session start and owns its cleanup via ``close()``.
 
     Do NOT wrap with :class:`AsyncCallback` — Rerun's SDK already batches I/O
     asynchronously.  The ``AsyncCallback`` guard (rejects inners with action
@@ -52,6 +64,7 @@ class RerunCallback:
         save_path: str | None = None,
         connect_addr: str = "127.0.0.1:9876",
         application_id: str = "physicalai-runtime",
+        system_monitor: SystemMonitor | None = None,
     ) -> None:
         if mode == "save" and save_path is None:
             msg = "mode='save' requires save_path"
@@ -77,10 +90,19 @@ class RerunCallback:
         self._blueprint_updated = False
         self._camera_names: list[str] | None = None
         self._latencies: deque[float] = deque(maxlen=200)
+        self._system_monitor = system_monitor if system_monitor is not None else LocalSystemMonitor()
+        self._system_stats_rows = ""
+        self._latency_stats_rows = ""
+        self._gpu_stats_rows = ""
 
     def on_lifecycle(self, event: LifecycleEvent) -> None:  # noqa: D102
         if event.event == "start":
             self._source_ticks = 0
+            self._system_monitor.reset()
+            self._system_stats_rows = ""
+            self._latency_stats_rows = ""
+            self._gpu_stats_rows = ""
+            self._latencies.clear()
             if not self._initialized:
                 self._init_rerun(event.session_id, event.metadata)
         self._log_lifecycle_marker(event)
@@ -101,6 +123,7 @@ class RerunCallback:
         rr.log("runtime/loop_duration_s", rr.Scalars(event.loop_duration_s))
         rr.log("runtime/sleep_time_s", rr.Scalars(event.sleep_time_s))
         rr.log("runtime/stale_obs", rr.Scalars(float(event.stale_obs)))
+        self._log_system_stats()
 
         if self._camera_names is None:
             # Discover camera names from the first tick's already-read frames —
@@ -174,7 +197,7 @@ class RerunCallback:
         rr.log("queue/inference", rr.Scalars(float(horizon)))
         rr.log("inference/latency_ms", rr.Scalars(event.latency_s * 1000.0))
 
-        # Inference latency stats as a live-updating table.
+        # Update the inference section without resampling system counters.
         self._latencies.append(event.latency_s)
         self._log_latency_table()
 
@@ -189,7 +212,7 @@ class RerunCallback:
         rr.init(application_id=self._application_id, recording_id=session_id)
         if self._mode == "spawn":
             rr.spawn()
-        elif self._mode == "save":
+        elif self._mode == "save" and self._save_path is not None:
             rr.save(self._save_path)
         elif self._mode == "connect":
             # Rerun 0.22+ uses gRPC. Address like "127.0.0.1:9876" is wrapped
@@ -244,9 +267,11 @@ class RerunCallback:
         # Queue: green line; inference: thin red vertical spikes
         rr.log("queue/remaining", rr.SeriesLines(widths=3.0, colors=[80, 200, 120, 255], names="queue"), static=True)
         rr.log("queue/inference", rr.SeriesLines(widths=1.5, colors=[220, 50, 50, 255], names="inference"), static=True)
+        rr.log("runtime/utilization/cpu/host", rr.SeriesLines(names="Host CPU (%)"), static=True)
+        rr.log("runtime/utilization/cpu/process", rr.SeriesLines(names="Process CPU (%)"), static=True)
 
     def _send_default_blueprint(self) -> None:
-        """Send a default blueprint: actions+predicted overlaid, queue, joints, cameras."""
+        """Send a default blueprint with robot plots, cameras, and live stats."""
         try:
             import rerun as rr  # noqa: PLC0415
             import rerun.blueprint as rrb  # noqa: PLC0415
@@ -270,22 +295,16 @@ class RerunCallback:
             end=rrb.TimeRangeBoundary.cursor_relative(seq=0),
         )
 
-        latency_view = rrb.TextDocumentView(
-            origin="/inference/stats",
-            name="Inference Latency",
+        monitoring_view = rrb.Tabs(
+            rrb.TextDocumentView(origin="/runtime/monitoring", name="Monitoring"),
+            rrb.TimeSeriesView(origin="/runtime/utilization/cpu", name="CPU %"),
+            rrb.TimeSeriesView(origin="/runtime/utilization/gpu", name="GPU %"),
+            active_tab="Monitoring",
         )
+        views: list[Any] = []
         if camera_names:
-            top_row = rrb.Grid(
-                contents=[
-                    *[rrb.Spatial2DView(origin=f"/camera/{n}", name=n) for n in camera_names],
-                    latency_view,
-                ],
-            )
-        else:
-            top_row = latency_view
-
-        views: list[Any] = [
-            top_row,
+            views.append(rrb.Grid(contents=[rrb.Spatial2DView(origin=f"/camera/{n}", name=n) for n in camera_names]))
+        views.extend([
             rrb.Tabs(
                 rrb.TimeSeriesView(
                     origin="/robot",
@@ -305,10 +324,10 @@ class RerunCallback:
                 name="Action Queue",
                 time_ranges=actions_range,
             ),
-        ]
+        ])
 
         blueprint = rrb.Blueprint(
-            rrb.Vertical(*views),
+            rrb.Horizontal(rrb.Vertical(*views), monitoring_view, column_shares=[3, 1]),
             rrb.SelectionPanel(state="collapsed"),
             rrb.TimePanel(state="expanded"),
         )
@@ -345,9 +364,37 @@ class RerunCallback:
             rr.TextLog(f"{event.event}: {event.metadata}"),
         )
 
+    def _log_system_stats(self) -> None:
+        import rerun as rr  # noqa: PLC0415
+
+        sample = self._system_monitor.poll()
+        if sample is None:
+            return
+        if sample.system is not None:
+            system = sample.system
+            rr.log("runtime/utilization/cpu/host", rr.Scalars(system.host_cpu_percent))
+            rr.log("runtime/utilization/cpu/process", rr.Scalars(system.process_cpu_percent))
+            self._system_stats_rows = (
+                f"| **Host CPU** | {system.host_cpu_percent:.1f}% |\n"
+                f"| **Host RAM** | {system.host_memory_percent:.1f}% "
+                f"({system.host_memory_used_bytes / 2**30:.2f} / {system.host_memory_total_bytes / 2**30:.2f} GiB) |\n"
+                f"| **Process CPU** | {system.process_cpu_percent:.1f}% |\n"
+                f"| **Process RAM (RSS)** | {system.process_rss_bytes / 2**20:.1f} MiB |"
+            )
+        if sample.gpu is not None:
+            self._gpu_stats_rows = _format_gpu_stats(sample.gpu)
+            for device in sample.gpu.devices:
+                if device.utilization is not None:
+                    rr.log(f"runtime/utilization/gpu/{device.device_id}", rr.Scalars(device.utilization))
+        if sample.system is not None or sample.gpu is not None:
+            self._log_monitoring()
+
+    def close(self) -> None:
+        """Close the owned system monitor without waiting for in-flight queries."""
+        self._system_monitor.close()
+
     def _log_latency_table(self) -> None:
         import numpy as np  # noqa: PLC0415
-        import rerun as rr  # noqa: PLC0415
 
         arr = np.array(self._latencies)
         p50 = float(np.percentile(arr, 50))
@@ -360,22 +407,49 @@ class RerunCallback:
         queue_time = self._pred_horizon / self._fps if self._pred_horizon else 0
         headroom = queue_time - p99
 
-        lines = [
-            "| Metric | Value |",
-            "|---|---|",
-            f"| **Last (round-trip)** | {last * 1000:.1f} ms |",
-            f"| **p50** | {p50 * 1000:.1f} ms |",
-            f"| **p95** | {p95 * 1000:.1f} ms |",
-            f"| **p99** | {p99 * 1000:.1f} ms |",
-        ]
+        self._latency_stats_rows = (
+            f"| **Last (round-trip)** | {last * 1000:.1f} ms |\n"
+            f"| **p50** | {p50 * 1000:.1f} ms |\n"
+            f"| **p95** | {p95 * 1000:.1f} ms |\n"
+            f"| **p99** | {p99 * 1000:.1f} ms |\n"
+            f"| **Queue headroom** | {headroom * 1000:.0f} ms |\n"
+            f"| Samples | {n} |"
+        )
+        self._log_monitoring()
 
-        lines.extend([
-            f"| **Queue headroom** | {headroom * 1000:.0f} ms |",
-            f"| Samples | {n} |",
+    def _log_monitoring(self) -> None:
+        import rerun as rr  # noqa: PLC0415
+
+        system = self._system_stats_rows or "| Status | Waiting for system sample |"
+        inference = self._latency_stats_rows or "| Status | Waiting for inference |"
+        gpu = self._gpu_stats_rows or "| Status | Waiting for GPU sample |"
+        header = "| Metric | Value |\n|--------|-------|\n"
+        md = (
+            f"### Inference Latency\n\n{header}{inference}\n\n"
+            f"### System\n\n{header}{system}\n\n"
+            f"### GPU\n\n{header}{gpu}"
+        )
+        rr.log("runtime/monitoring", rr.TextDocument(md, media_type=rr.MediaType.MARKDOWN))
+
+
+def _format_gpu_stats(sample: GpuStatsSample) -> str:
+    rows = []
+    for device in sample.devices:
+        memory = _format_metric(device.memory_used_mib, " MiB")
+        if device.memory_total_mib is not None or device.vendor == "NVIDIA":
+            memory += f" / {_format_metric(device.memory_total_mib, ' MiB')}"
+        rows.extend([
+            f"| **{device.vendor} GPU {device.index}** | |",
+            f"| Utilization | {_format_metric(device.utilization, '%')} |",
+            f"| Memory | {memory} |",
+            f"| Temperature | {_format_metric(device.temperature_c, ' °C')} |",
         ])
+    rows.extend(f"| {vendor} | {message} |" for vendor, message in sample.unavailable.items())
+    return "\n".join(rows)
 
-        md = "\n".join(lines)
-        rr.log("inference/stats", rr.TextDocument(md, media_type=rr.MediaType.MARKDOWN))
+
+def _format_metric(value: float | None, unit: str) -> str:
+    return f"{value:g}{unit}" if value is not None else "N/A"
 
 
 def _downsample_to_max_dim(data: np.ndarray, max_dim: int) -> np.ndarray:
