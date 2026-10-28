@@ -151,6 +151,11 @@ class UVCCamera(Camera):
     def device_id(self) -> str:
         return self._inner.device_id
 
+    @property
+    def payload_bytes_received(self) -> int | None:
+        """Return the selected backend's encoded-payload counter, if available."""
+        return self._inner.payload_bytes_received
+
     # ------------------------------------------------------------------
     # Discovery
     # ------------------------------------------------------------------

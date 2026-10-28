@@ -69,3 +69,25 @@ def test_per_node_capabilities_distinguish_metadata_from_capture(monkeypatch: py
     endpoint = Endpoint(id="metadata", path="fake", kind="video")
     video.probe_video(endpoint)
     assert endpoint.role == "metadata" and not endpoint.modes
+
+
+@pytest.mark.parametrize("format", ["YUYV", "MJPG"])
+def test_current_mode_is_read_only_and_never_treats_compressed_capacity_as_payload(format: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    from physicalai.diagnostics.platforms import video
+    from physicalai.diagnostics.models import Endpoint
+    calls = []
+    def query(fd, request, value):
+        calls.append(request)
+        if request == video.VIDIOC_G_FMT:
+            value.fmt.pix.width, value.fmt.pix.height = 640, 480
+            value.fmt.pix.pixelformat = int.from_bytes(format.encode(), "little")
+            value.fmt.pix.sizeimage = 700000
+        elif request == video.VIDIOC_G_PARM:
+            value.parm.capture.timeperframe.numerator = 1
+            value.parm.capture.timeperframe.denominator = 30
+    monkeypatch.setattr(video, "xioctl", query)
+    endpoint = Endpoint(id="capture", path="fake", kind="video", role="capture")
+    video._current_mode(12, endpoint)
+    assert calls == [video.VIDIOC_G_FMT, video.VIDIOC_G_PARM]
+    assert endpoint.current_mode is not None
+    assert endpoint.current_mode.frame_bytes == (700000 if format == "YUYV" else None)

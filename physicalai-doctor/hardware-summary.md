@@ -304,6 +304,31 @@ not isolate why. Within each run, adding the other selected stream did not produ
 a substantial extra frame-rate penalty. Do not attribute the across-run change to
 one device, setting, or cause without a controlled experiment.
 
+## Throughput-view validation after a topology change
+
+During the subsequent output/visualization work, passive enumeration found that
+the Hiwonder had moved to `3-4.1.4`, beside Orbbec at `3-4.1.2`. Both then shared
+the nested USB 2 hub `3-4.1` and its upstream hub `3-4`. The serial adapter
+previously at that slot was no longer present there. The obsolete Hiwonder
+port selector failed safely before any camera trial started.
+
+After matching the two cameras by their previously observed VID/PID/serials,
+the approved bounded camera-only test was repeated at the current port aliases.
+Encoded V4L2 payload counters (not decoded RGB sizes) measured approximately:
+
+| Camera   | Individual payload | Concurrent payload | Sampled target estimate at 30 FPS | Received FPS |
+| -------- | ------------------ | ------------------ | --------------------------------- | ------------ |
+| Hiwonder | 0.205 MB/s         | 0.205 MB/s         | 0.308 MB/s                        | 20.0         |
+| Orbbec   | 1.360 MB/s         | 1.359 MB/s         | 1.355 MB/s                        | 30.1         |
+
+The two concurrent streams together delivered about **1.56 MB/s**, compared with
+about **1.66 MB/s estimated target demand** for this sampled MJPEG content. These
+are selected application payloads, not complete USB traffic; compression varies,
+and headers/retries/unmeasured peers are excluded. The shared link's 480 Mb/s
+signaling rate corresponds to a **60 MB/s raw ceiling**, not available payload.
+Both cameras' previous wire modes were restored and verified. No robot port or
+kernel setting was changed; the ZED remained excluded.
+
 References:
 
 - [Orbbec Gemini 305 specifications](https://www.orbbec.com/gemini-305/).

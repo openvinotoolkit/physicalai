@@ -28,9 +28,17 @@ def build_parser() -> ArgumentParser:
     parser = ArgumentParser(prog="pai devices", description=HELP)
     parser.add_argument("operation", nargs="?", choices=["list", "inspect"], default="list")
     parser.add_argument("selector", nargs="?", help="Device ID, endpoint path, or unique alias for inspect.")
-    parser.add_argument("--tree", action="store_true", help="Show controllers, hubs, and shared upstream links.")
+    view = parser.add_mutually_exclusive_group()
+    view.add_argument("--tree", action="store_true", default=True, help="Show the USB branch tree (default).")
+    view.add_argument("--flat", action="store_true", help="Use a flat device list instead of the tree.")
     parser.add_argument("--all", action="store_true", help="Include empty hubs and detailed endpoint aliases.")
     parser.add_argument("--json", action="store_true", help="Print a versioned JSON inventory.")
+    parser.add_argument(
+        "--color",
+        choices=["auto", "always", "never"],
+        default="auto",
+        help="Emphasize USB generation and speeds; auto requires a TTY and honors NO_COLOR.",
+    )
     parser.add_argument(
         "--redact",
         action="store_true",
@@ -39,9 +47,12 @@ def build_parser() -> ArgumentParser:
     return parser
 
 
-def _inspect(inventory: Inventory, selector: str, *, redactor: Redactor | None, json_output: bool) -> None:
+def _inspect(
+    inventory: Inventory, selector: str, *, redactor: Redactor | None, json_output: bool, colored: bool = False
+) -> None:
     from physicalai.diagnostics.identity import alias_claims, resolve_endpoint  # noqa: PLC0415
     from physicalai.diagnostics.render import render_inspection  # noqa: PLC0415
+    from physicalai.diagnostics.styling import emphasize  # noqa: PLC0415
 
     matched = next((device for device in inventory.devices if device.id == selector), None)
     endpoint = None
@@ -82,7 +93,7 @@ def _inspect(inventory: Inventory, selector: str, *, redactor: Redactor | None, 
             )
         )
     else:
-        print(render_inspection(display, device, selected_endpoint))  # noqa: T201
+        print(emphasize(render_inspection(display, device, selected_endpoint), enabled=colored))  # noqa: T201
 
 
 def run(parser: ArgumentParser, cfg: Namespace) -> int:
@@ -93,6 +104,7 @@ def run(parser: ArgumentParser, cfg: Namespace) -> int:
     """
     from physicalai.diagnostics import collect_inventory  # noqa: PLC0415
     from physicalai.diagnostics.render import render_inventory  # noqa: PLC0415
+    from physicalai.diagnostics.styling import color_enabled, emphasize  # noqa: PLC0415
 
     if (cfg.operation == "inspect") != bool(cfg.selector):
         parser.error("Use 'pai devices inspect SELECTOR', or 'pai devices' without a selector.")
@@ -109,14 +121,19 @@ def run(parser: ArgumentParser, cfg: Namespace) -> int:
         redactor = None
     if cfg.operation == "inspect":
         try:
-            _inspect(inventory, cfg.selector, redactor=redactor, json_output=cfg.json)
+            _inspect(inventory, cfg.selector, redactor=redactor, json_output=cfg.json, colored=color_enabled(cfg.color))
         except ValueError as exc:
             parser.error(str(exc))
     elif cfg.json:
         print((redactor.model(inventory) if redactor else inventory).model_dump_json(indent=2))  # noqa: T201
     else:
         display = redactor.model(inventory) if redactor else inventory
-        print(render_inventory(display, tree=cfg.tree, details=cfg.all))  # noqa: T201
+        print(  # noqa: T201 - CLI human output
+            emphasize(
+                render_inventory(display, tree=cfg.tree and not cfg.flat, details=cfg.all),
+                enabled=color_enabled(cfg.color),
+            )
+        )
     return 3 if any(error.essential for error in inventory.errors) else 0
 
 

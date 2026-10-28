@@ -14,9 +14,10 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import Field
 
+from physicalai.diagnostics.bandwidth import frame_payload_bytes
 from physicalai.diagnostics.cameras import supported_modes
 from physicalai.diagnostics.identity import resolve_endpoint
-from physicalai.diagnostics.models import EvidenceModel, Finding
+from physicalai.diagnostics.models import EvidenceModel, Finding, VideoMode
 
 if TYPE_CHECKING:
     from multiprocessing.connection import Connection
@@ -48,6 +49,7 @@ def measure(camera: Camera, duration: float, *, stop: Event | None = None) -> di
     previous: float | None = None
     largest_gap = 0.0
     frames = 0
+    initial_bytes = getattr(camera, "payload_bytes_received", None)
     first_captured: float | None = None
     last_captured: float | None = None
     while time.monotonic() - started < duration and (stop is None or not stop.is_set()):
@@ -61,6 +63,12 @@ def measure(camera: Camera, duration: float, *, stop: Event | None = None) -> di
         previous = now
         frames += 1
     elapsed = time.monotonic() - started
+    final_bytes = getattr(camera, "payload_bytes_received", None)
+    received_bytes = (
+        final_bytes - initial_bytes
+        if (isinstance(initial_bytes, int) and isinstance(final_bytes, int) and final_bytes >= initial_bytes)
+        else None
+    )
     return {
         "frames": frames,
         "elapsed_s": elapsed,
@@ -69,6 +77,9 @@ def measure(camera: Camera, duration: float, *, stop: Event | None = None) -> di
         "timestamp_fps": (frames - 1) / (last_captured - first_captured)
         if first_captured is not None and last_captured is not None and last_captured > first_captured
         else None,
+        "payload_bytes": received_bytes,
+        "payload_bytes_per_second": received_bytes / elapsed if received_bytes is not None and elapsed > 0 else None,
+        "mean_frame_payload_bytes": received_bytes / frames if received_bytes is not None and frames else None,
     }
 
 
@@ -211,6 +222,23 @@ def _stream_findings(request: StreamRequest, label: str, result: dict[str, Any])
     outcome = error or f"{metrics.get('received_fps', 0):.1f} received FPS"
     if changed_mode:
         outcome += " (negotiated dimensions differ from request)"
+    target_mode = VideoMode(
+        width=request.width,
+        height=request.height,
+        fps=request.fps,
+        pixel_format="MJPG" if request.pixel_format == "mjpeg" else "YUYV",
+    )
+    frame_bytes = frame_payload_bytes(target_mode)
+    demand_basis = "uncompressed estimate"
+    sampled_size = metrics.get("mean_frame_payload_bytes")
+    if frame_bytes is None:
+        frame_bytes = sampled_size
+        demand_basis = "sampled compression estimate" if frame_bytes is not None else "unknown compressed size"
+    elif isinstance(sampled_size, (int, float)):
+        frame_bytes = max(frame_bytes, sampled_size)  # Account for observed uncompressed stride/padding.
+    if changed_mode or (actual.get("pixel_format") and actual["pixel_format"] != target_mode.pixel_format):
+        frame_bytes, demand_basis = None, "requested and negotiated wire modes differ"
+    demand = frame_bytes * request.fps if frame_bytes is not None else None
     findings = [
         Finding(
             check_id=f"stream.{label}",
@@ -231,6 +259,8 @@ def _stream_findings(request: StreamRequest, label: str, result: dict[str, Any])
                 "previous_mode": result.get("previous_mode"),
                 "restored": bool(result.get("restored")),
                 "error_type": result.get("error_type"),
+                "payload_demand_bytes_per_second": demand,
+                "payload_demand_basis": demand_basis,
             },
             action=_next_action(error),
             verification="Repeat the same selected modes and topology; these measurements are not USB utilization.",

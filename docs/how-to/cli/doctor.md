@@ -10,6 +10,71 @@ pai devices inspect /dev/ttyUSB0
 pai devices inspect /dev/video40
 ```
 
+## Read throughput and shared links first
+
+Human output starts with a compact throughput table and a USB branch tree.
+`devices` uses the tree by default; `--flat` selects an ungrouped device table.
+`doctor --verbose` expands routine checks, query errors, and raw endpoint details
+that the default view summarizes.
+
+```text
+USB topology
+└── USB host controller 0000:00:14.0
+    └── USB root hub usb3 — USB 2.0 / 480 Mb/s root capability; root ports independent
+        └── Port 4: USB2.0 Hub [usb:3-4] — USB 2.0 / 480 Mb/s link; 5 devices share uplink
+            └── Port 1: USB2.0 HUB [usb:3-4.1] — USB 2.0 / 480 Mb/s link; 4 devices share uplink
+                ├── Port 1: USB Serial — /dev/ttyUSB2; 12 Mb/s link
+                ├── Port 2: Orbbec Gemini 305 — /dev/video32, /dev/video34 +3 image nodes
+                ├── Port 3: Mouse — 12 Mb/s link
+                └── Port 4: USB Serial — /dev/ttyUSB0; 12 Mb/s link
+```
+
+Inspecting a node shows its selected path and shared branches, then explicitly
+lists the physical peers sharing **each upstream external hub**, including nested
+devices. A camera's metadata and image nodes do not count as separate devices.
+Other root-port branches are distinguished from the shared external uplink.
+
+The throughput table separates:
+
+- **Needs (payload):** estimated bytes/second for the configured uncompressed
+  wire format, including reported padding. For example, 640×480 YUYV at 30 FPS
+  needs about **18.43 MB/s**, not the larger decoded RGB array size. Configured
+  settings can be idle; rows are not proof that every endpoint runs concurrently.
+- **Getting (payload):** encoded frame bytes actually dequeued during an explicit
+  camera test, alongside received FPS. Passive commands say **not measured** rather
+  than opening streams or pretending the link rate is delivered throughput.
+- **USB ceiling:** signaling speed divided by eight, expressed in the same MB/s
+  units for comparison. A 480 Mb/s link has a 60 MB/s raw ceiling, **not 60 MB/s
+  of available payload**: USB overhead, scheduling, and other devices also matter.
+
+MJPEG is variable-size. Passive inspection does not estimate it from buffer
+capacity (`sizeimage`) or decoded RGB bytes. Explicit tests estimate target demand
+from the sampled encoded frame size at requested FPS, clearly marked as an
+estimate. Reported payload excludes USB headers/retries and traffic lost before
+the application dequeues frames. Shared-hub test summaries sum only streams from
+the same concurrent trial, never individual trials taken at different times;
+unmeasured peer traffic remains unknown.
+
+Robot/UART throughput depends on baud, protocol, and workload. It remains unknown
+without protocol measurements; the USB adapter's 12 Mb/s link is not UART baud.
+
+### Color and emphasis
+
+Interactive terminals use bold headings/rates and emphasize USB 2.0 in yellow and
+USB 3.x in cyan. These identify link generation, not a proven fault or a bandwidth
+reservation. Full-/low-speed device rates do not get mislabeled as USB 2.0 or 3.x.
+
+```bash
+pai devices --color always
+pai doctor --color never
+NO_COLOR=1 pai doctor
+```
+
+`--color auto` is the default: it requires a TTY, honors `NO_COLOR`, and disables
+ANSI for `TERM=dumb`. Explicit `always` overrides auto detection/`NO_COLOR` for
+color-aware pagers. JSON/NDJSON never includes presentation styling, even with
+`--color always`; redirected human output stays plain in auto mode.
+
 Passive commands enumerate OS evidence. On Linux they can open video nodes
 read-only to query capabilities and formats, but they do not start streams, open
 robot serial connections, ping robot endpoints, change USB settings, or authorize

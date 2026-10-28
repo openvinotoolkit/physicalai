@@ -34,6 +34,15 @@ def build_parser() -> ArgumentParser:
     )
     parser.add_argument("--strict", action="store_true", help="Return exit code 1 for warnings as well as failures.")
     parser.add_argument(
+        "--verbose", action="store_true", help="Expand per-check evidence, query errors, and raw endpoint details."
+    )
+    parser.add_argument(
+        "--color",
+        choices=["auto", "always", "never"],
+        default="auto",
+        help="Color/bold human output; auto requires a TTY and honors NO_COLOR.",
+    )
+    parser.add_argument(
         "--redact", action="store_true", help="Pseudonymize known serials, hostname, and home path for support reports."
     )
     parser.add_argument(
@@ -92,6 +101,7 @@ def _print_watch(events: Iterable[WatchEvent], cfg: Namespace) -> int:
     from physicalai.diagnostics.models import Report  # noqa: PLC0415
     from physicalai.diagnostics.redact import Redactor  # noqa: PLC0415
     from physicalai.diagnostics.render import render_event, render_report  # noqa: PLC0415
+    from physicalai.diagnostics.styling import color_enabled, emphasize  # noqa: PLC0415
 
     redactor = Redactor() if cfg.redact else None
     exit_code = 0
@@ -100,10 +110,16 @@ def _print_watch(events: Iterable[WatchEvent], cfg: Namespace) -> int:
         if cfg.json:
             print(event.model_dump_json(), flush=True)  # noqa: T201
         elif event.kind == "snapshot":
-            print(render_report(Report.model_validate(event.data)), flush=True)  # noqa: T201
-            print(render_event(event), flush=True)  # noqa: T201
+            print(  # noqa: T201 - CLI human output
+                emphasize(
+                    render_report(Report.model_validate(event.data), verbose=cfg.verbose),
+                    enabled=color_enabled(cfg.color),
+                ),
+                flush=True,
+            )
+            print(emphasize(render_event(event), enabled=color_enabled(cfg.color)), flush=True)  # noqa: T201
         else:
-            print(render_event(event), flush=True)  # noqa: T201
+            print(emphasize(render_event(event), enabled=color_enabled(cfg.color)), flush=True)  # noqa: T201
         if event.kind == "final":
             value = event.data["exit_code"]
             exit_code = value if isinstance(value, int) else 2
@@ -120,6 +136,7 @@ def run(parser: ArgumentParser, cfg: Namespace) -> int:
     from physicalai.diagnostics.config_check import inspect_config  # noqa: PLC0415
     from physicalai.diagnostics.platforms import create_collector  # noqa: PLC0415
     from physicalai.diagnostics.render import render_report  # noqa: PLC0415
+    from physicalai.diagnostics.styling import color_enabled, emphasize  # noqa: PLC0415
 
     _validate_options(parser, cfg)
 
@@ -148,7 +165,11 @@ def run(parser: ArgumentParser, cfg: Namespace) -> int:
             report.findings.extend(stream_findings)
         if redactor:
             report = redactor.model(report)
-        print(report.model_dump_json(indent=2) if cfg.json else render_report(report))  # noqa: T201
+        print(  # noqa: T201 - CLI report output
+            report.model_dump_json(indent=2)
+            if cfg.json
+            else emphasize(render_report(report, verbose=cfg.verbose), enabled=color_enabled(cfg.color))
+        )
         return report.exit_code(strict=cfg.strict)
     except KeyboardInterrupt:
         return 130

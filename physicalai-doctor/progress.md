@@ -143,7 +143,12 @@ macOS/Windows, and exported selectors work through the actual capture/robot back
 - [x] Save, restore, and verify previous camera wire formats after explicit tests.
 - [x] Keep robot handshake and motion outside camera streaming diagnostics.
 - [x] Record real-hardware results only after operator-approved experiments.
-- [ ] Add measured/estimated payload attribution and CPU profiling beyond rate comparisons.
+- [x] Add encoded V4L2 payload counters, configured uncompressed demand estimates,
+      sampled MJPEG target estimates, and same-window selected-stream hub summaries.
+- [x] Make the physical branch tree/throughput table the default, with focused
+      hub-peer inspection, compact findings, verbose details, and TTY-aware color/bold.
+- [ ] Add full USB overhead/dropped-traffic attribution, existing-application
+      monitoring, serial protocol accounting, and CPU profiling beyond rate comparisons.
 
 ## 8. Supportability and release readiness
 
@@ -160,6 +165,13 @@ macOS/Windows, and exported selectors work through the actual capture/robot back
 ## Decisions and evidence log
 
 ### Validation commands and current results
+
+Output/throughput follow-up: **1,851 root unit tests passed, 21 skipped**; focused
+CLI/capture/diagnostics coverage passed **416 tests**. Scoped type checks and Ruff
+pass. Camera-only validation confirmed encoded payload rates and restored modes
+on the currently shared USB 2 hub; see the hardware summary. Human output now has
+default trees, selected-path peer views, demand/delivery tables, and optional ANSI
+emphasis with plain JSON/redirected output.
 
 - Root unit suite, with optional test dependencies in a temporary uv environment
   and local SO-101/SDK source paths: **1,832 passed, 21 skipped**.

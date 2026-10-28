@@ -53,6 +53,11 @@ class VideoMode(EvidenceModel):
     height: int = Field(gt=0)
     fps: float = Field(gt=0, allow_inf_nan=False)
     pixel_format: str
+    frame_bytes: int | None = Field(
+        default=None,
+        gt=0,
+        description="Reported uncompressed frame size including padding; never a compressed payload measurement.",
+    )
 
 
 class ProcessInfo(EvidenceModel):
@@ -74,6 +79,7 @@ class Endpoint(EvidenceModel):
     readable: bool | None = None
     writable: bool | None = None
     modes: list[VideoMode] = Field(default_factory=list)
+    current_mode: VideoMode | None = None
     holders: list[ProcessInfo] = Field(default_factory=list)
     properties: dict[str, str] = Field(default_factory=dict)
 

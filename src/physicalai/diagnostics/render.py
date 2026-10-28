@@ -9,18 +9,13 @@ from collections import Counter, defaultdict
 from typing import TYPE_CHECKING
 
 from physicalai.diagnostics.identity import alias_claims
+from physicalai.diagnostics.overview import device_nodes, render_payloads, render_shared_links, render_tree
+from physicalai.diagnostics.text import safe_text, table
+
+__all__ = ["render_event", "render_inspection", "render_inventory", "render_report", "safe_text"]
 
 if TYPE_CHECKING:
-    from physicalai.diagnostics.models import Device, Endpoint, Inventory, Report, WatchEvent
-
-
-def safe_text(value: object) -> str:
-    """Escape terminal controls from device strings, log messages, and paths.
-
-    Returns:
-        Text that cannot inject terminal control sequences.
-    """
-    return "".join(char if char.isprintable() else repr(char)[1:-1] for char in str(value))
+    from physicalai.diagnostics.models import Device, Endpoint, Finding, Inventory, Report, WatchEvent
 
 
 def _label(device: Device) -> str:
@@ -30,24 +25,7 @@ def _label(device: Device) -> str:
     return safe_text(f"{device.name} [{device.id}]{vid_pid}{speed}{serial}")
 
 
-def _device_lines(device: Device, depth: int, *, details: bool) -> list[str]:
-    prefix = "  " * depth
-    lines = [prefix + _label(device)]
-    if device.location:
-        lines.append(prefix + "  location: " + safe_text(device.location))
-    if device.kind in {"virtual", "platform"} and not details:
-        lines.append(prefix + f"  {len(device.endpoints)} platform/virtual endpoints (use inspect for details)")
-    else:
-        for endpoint in device.endpoints:
-            if endpoint.kind == "usb" and len(device.endpoints) > 1 and not details:
-                continue
-            lines.append(prefix + f"  {safe_text(endpoint.path)} ({endpoint.kind}/{endpoint.role})")
-            if details:
-                lines.extend(prefix + f"    {alias.binding}: {safe_text(alias.path)}" for alias in endpoint.aliases)
-    return lines
-
-
-def render_inventory(inventory: Inventory, *, tree: bool = False, details: bool = False) -> str:
+def render_inventory(inventory: Inventory, *, tree: bool = True, details: bool = False) -> str:
     """Render grouped physical devices, not one pretend camera per video node.
 
     Returns:
@@ -56,35 +34,18 @@ def render_inventory(inventory: Inventory, *, tree: bool = False, details: bool 
     lines = [f"Hardware inventory · {inventory.platform} · {inventory.collected_at}"]
     if inventory.redacted:
         lines.append("REDACTED support report: displayed paths are not deployable configuration selectors.")
-    children: dict[str | None, list[Device]] = defaultdict(list)
-    for device in inventory.devices:
-        children[device.parent_id].append(device)
-
-    def append(device: Device, depth: int) -> None:
-        lines.extend(_device_lines(device, depth, details=details))
-        if tree:
-            for child in children[device.id]:
-                append(child, depth + 1)
-
+    lines.extend(["", render_payloads(inventory), ""])
     if tree:
-        known_ids = {device.id for device in inventory.devices}
-        for device in inventory.devices:
-            if device.parent_id not in known_ids:
-                append(device, 0)
+        lines.append(render_tree(inventory, details=details))
     else:
-        for device in inventory.devices:
-            if details or device.kind not in {"hub", "controller"}:
-                append(device, 0)
+        rows = [[d.name, device_nodes(d), d.location] for d in inventory.devices if details or d.kind == "device"]
+        lines.append(table(["Device", "Nodes", "Location"], rows))
     if not inventory.devices:
         lines.append("No devices enumerated. Inspect collection errors before concluding hardware is absent.")
     lines.append("Use 'pai devices inspect <device-id-or-endpoint>' for formats, access, and alias claims.")
     if inventory.errors:
-        counts = Counter(
-            error.source.split("/", 2)[1] if error.source.startswith("/") else error.source
-            for error in inventory.errors
-        )
         lines.append(
-            f"Collection limitations: {len(inventory.errors)} ({safe_text(dict(counts))}); see 'pai doctor' or --json."
+            f"Collection limitations: {len(inventory.errors)} queries incomplete; see doctor --verbose or --json."
         )
     return "\n".join(lines)
 
@@ -131,9 +92,29 @@ def render_inspection(inventory: Inventory, device: Device, endpoint: Endpoint |
     ]
     if inventory.redacted:
         lines.append("REDACTED support output; do not use displayed paths as configuration.")
+    lines.extend([
+        "",
+        render_payloads(inventory, endpoint=endpoint)
+        if endpoint
+        else render_payloads(inventory.model_copy(update={"devices": [device]})),
+        "",
+        render_tree(inventory, focus_id=device.id),
+        "",
+        render_shared_links(inventory, device.id),
+        "",
+        "Identity and endpoint details",
+    ])
     lines.extend(
         f"{name}: {safe_text(device.properties[name])}"
-        for name in ("controller", "usb_path", "bus_number", "device_number", "interface_drivers", "authorized")
+        for name in (
+            "controller",
+            "usb_path",
+            "bus_number",
+            "device_number",
+            "usb_version",
+            "interface_drivers",
+            "authorized",
+        )
         if device.properties.get(name)
     )
     claims = alias_claims(inventory)
@@ -149,7 +130,71 @@ def render_inspection(inventory: Inventory, device: Device, endpoint: Endpoint |
     return "\n".join(lines)
 
 
-def render_report(report: Report) -> str:
+def _affected(report: Report, finding: Finding) -> list[str]:
+    if finding.check_id == "identity.alias_collision":
+        return finding.evidence
+    for device in report.inventory.devices:
+        if finding.subject == device.id:
+            return [device_nodes(device) or device.id]
+        for endpoint in device.endpoints:
+            if finding.subject == endpoint.id:
+                return [endpoint.path]
+    return [finding.subject]
+
+
+def _show_finding(finding: Finding, comparisons: set[str], *, verbose: bool) -> bool:
+    if finding.severity == "SKIP" or finding.check_id == "collection.error":
+        return False
+    if verbose:
+        return True
+    if finding.check_id in {"access.available", "usb.usb2_camera", "usb.usbfs_memory"} or finding.severity == "PASS":
+        return False
+    if finding.severity == "INFO" and finding.check_id != "stream.comparison":
+        return False
+    return not (
+        finding.check_id in {"stream.individual", "stream.concurrent"}
+        and finding.severity != "FAIL"
+        and finding.subject in comparisons
+    )
+
+
+def _group_lines(report: Report, severity: str, check_id: str, findings: list[Finding], *, verbose: bool) -> list[str]:
+    lines: list[str] = []
+    affected = sorted({subject for finding in findings for subject in _affected(report, finding)})
+    summary = findings[0].summary
+    if check_id == "identity.alias_collision":
+        summary = f"{len(findings)} ambiguous alias name(s); do not use them to select a device."
+    elif check_id == "identity.no_serial":
+        summary = f"{len(findings)} device(s) have no reported serial; use port-bound selectors."
+    lines.extend([f"  {severity}: {safe_text(summary)}", "    Affects: " + safe_text(", ".join(affected))])
+    if not verbose and findings[0].action and check_id not in {"identity.alias_collision", "identity.no_serial"}:
+        lines.append("    Next: " + safe_text(findings[0].action))
+    if verbose:
+        for finding in findings:
+            lines.extend(f"    {safe_text(value)}" for value in finding.evidence)
+            if finding.action:
+                lines.append("    Next: " + safe_text(finding.action))
+            if finding.verification:
+                lines.append("    Verify: " + safe_text(finding.verification))
+    return lines
+
+
+def _attention(report: Report, *, verbose: bool) -> list[str]:
+    groups: dict[tuple[str, str], list[Finding]] = defaultdict(list)
+    comparisons = {f.subject for f in report.findings if f.check_id == "stream.comparison"}
+    for finding in report.findings:
+        if _show_finding(finding, comparisons, verbose=verbose):
+            groups[finding.severity, finding.check_id].append(finding)
+    lines = ["Needs attention" if not verbose else "All checks"]
+    order = {"FAIL": 0, "WARN": 1, "INFO": 2, "PASS": 3}
+    for (severity, check_id), findings in sorted(groups.items(), key=lambda item: (order[item[0][0]], item[0][1])):
+        lines.extend(_group_lines(report, severity, check_id, findings, verbose=verbose))
+    if len(lines) == 1:
+        lines.append("  No additional failed/warning checks; unavailable evidence is listed below.")
+    return lines
+
+
+def render_report(report: Report, *, verbose: bool = False) -> str:
     """Render findings, remedies, and an honest summary of incomplete checks.
 
     Returns:
@@ -160,29 +205,41 @@ def render_report(report: Report) -> str:
         if report.mode == "passive"
         else ("includes explicitly requested camera streaming tests; no robot connections")
     )
-    lines = [render_inventory(report.inventory), "", f"Health assessment ({scope})"]
-    collection = [f for f in report.findings if f.check_id == "collection.error"]
-    for finding in report.findings:
-        if finding.check_id == "collection.error":
-            continue
-        lines.append(f"{finding.severity:4}  {safe_text(finding.summary)} [{safe_text(finding.subject)}]")
-        lines.extend(f"      {safe_text(evidence)}" for evidence in finding.evidence)
-        if finding.action:
-            lines.append(f"      Next: {safe_text(finding.action)}")
-        if finding.verification:
-            lines.append(f"      Verify: {safe_text(finding.verification)}")
-    if collection:
-        lines.append(f"SKIP  {len(collection)} collection queries were incomplete (details in --json).")
-        lines.extend(f"      {safe_text(finding.subject)}: {safe_text(finding.summary)}" for finding in collection[:3])
-    if report.inventory.events:
+    counts = Counter(f.severity for f in report.findings)
+    headline = " · ".join(f"{counts[severity]} {severity}" for severity in ("FAIL", "WARN", "PASS", "SKIP"))
+    lines = [
+        f"Doctor: {headline}",
+        f"Scope: {scope}",
+        "",
+        render_payloads(report.inventory, report.findings),
+        "",
+        render_tree(report.inventory, details=verbose, findings=report.findings),
+        "",
+        *_attention(report, verbose=verbose),
+    ]
+    if report.inventory.redacted:
+        lines.insert(1, "REDACTED support report; displayed selectors are not deployable configuration.")
+    skipped = [finding for finding in report.findings if finding.severity == "SKIP"]
+    if skipped:
+        lines.append(
+            f"\nVisibility: {len(skipped)} checks/queries incomplete or unsupported; "
+            "use --verbose or --json for details."
+        )
+        if verbose:
+            lines.extend(f"  {safe_text(f.subject)}: {safe_text(f.summary)}" for f in skipped)
+    if verbose and report.inventory.events:
         lines.append("\nUSB-related system messages (temporal evidence, not proof of causation):")
         lines.extend(
             f"      {safe_text(event.timestamp)} {'[history]' if event.historical else '[new]'} "
             f"{safe_text(event.message)}"
             for event in report.inventory.events[-5:]
         )
-    counts = Counter(f.severity for f in report.findings)
-    lines.append("\n" + " · ".join(f"{count} {severity}" for severity, count in counts.items()))
+    if "usbfs_memory_mb" in report.inventory.settings:
+        lines.append(
+            f"\nHost usbfs buffer cap: {safe_text(report.inventory.settings['usbfs_memory_mb'])} MiB; "
+            "not USB link capacity."
+        )
+    lines.append("Details: pai devices inspect <image/serial-node> · Full findings: pai doctor --verbose")
     return "\n".join(lines)
 
 

@@ -204,6 +204,7 @@ class LinuxCollector:
                     "interface_classes": ",".join(classes),
                     "interface_drivers": ",".join(drivers),
                     "authorized": read_attribute(entry / "authorized"),
+                    "usb_version": read_attribute(entry / "version"),
                     "manufacturer": read_attribute(entry / "manufacturer"),
                     "power_control": read_attribute(entry / "power/control"),
                     "runtime_status": read_attribute(entry / "power/runtime_status"),

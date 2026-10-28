@@ -27,6 +27,7 @@ from physicalai.capture.cameras.uvc.v4l2._ioctl import (  # noqa: PLC2701
     v4l2_streamparm,
     xioctl,
 )
+from physicalai.diagnostics.bandwidth import frame_payload_bytes
 from physicalai.diagnostics.models import VideoMode
 
 if TYPE_CHECKING:
@@ -126,6 +127,32 @@ def _format_modes(fd: int, pixel_format: int, endpoint: Endpoint) -> Iterator[Vi
                 yield VideoMode(width=width, height=height, fps=denominator / numerator, pixel_format=fourcc)
 
 
+def _current_mode(fd: int, endpoint: Endpoint) -> None:
+    image_format = v4l2_format()
+    image_format.type = 1
+    parameters = v4l2_streamparm()
+    parameters.type = 1
+    try:
+        xioctl(fd, VIDIOC_G_FMT, image_format)
+        xioctl(fd, VIDIOC_G_PARM, parameters)
+        rate = parameters.parm.capture.timeperframe
+        if not rate.numerator or not rate.denominator:
+            endpoint.properties["current_mode_error"] = "The driver did not report a configured frame interval."
+            return
+        mode = VideoMode(
+            width=image_format.fmt.pix.width,
+            height=image_format.fmt.pix.height,
+            fps=rate.denominator / rate.numerator,
+            pixel_format=struct.pack("<I", image_format.fmt.pix.pixelformat).decode("ascii", errors="replace").strip(),
+        )
+        if frame_payload_bytes(mode) is not None:
+            mode.frame_bytes = image_format.fmt.pix.sizeimage or None
+        endpoint.current_mode = mode
+    except (OSError, ValueError) as exc:
+        # Optional current-mode queries must not hide advertised modes or nodes.
+        endpoint.properties["current_mode_error"] = str(exc)
+
+
 def probe_video(endpoint: Endpoint) -> None:
     """Populate capabilities and modes without allocating buffers or streaming.
 
@@ -133,7 +160,9 @@ def probe_video(endpoint: Endpoint) -> None:
         OSError: If access or a capability query fails.
     """
     endpoint.modes.clear()
+    endpoint.current_mode = None
     endpoint.properties.pop("mode_limitations", None)
+    endpoint.properties.pop("current_mode_error", None)
     fd = os.open(endpoint.path, os.O_RDONLY | os.O_NONBLOCK)
     try:
         cap = v4l2_capability()
@@ -144,6 +173,7 @@ def probe_video(endpoint: Endpoint) -> None:
         endpoint.properties["name"] = cap.card.decode(errors="replace").rstrip("\x00")
         if endpoint.role != "capture":
             return
+        _current_mode(fd, endpoint)
         for index in range(_ENUM_LIMIT):
             fmt = v4l2_fmtdesc()
             fmt.index, fmt.type = index, 1

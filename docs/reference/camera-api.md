@@ -60,3 +60,15 @@ location, not an authenticated physical unit. See
 | `async_read()`  | Provides an async wrapper around `read()`.                     |
 
 Camera instances are not thread-safe.
+
+## Optional Payload Accounting
+
+`camera.payload_bytes_received` returns the number of encoded frame bytes dequeued
+during the current connection when a backend supports it, otherwise `None`.
+V4L2 resets the counter on connect and includes frames discarded by `read_latest()`;
+the UVC facade forwards the selected backend's value. Sampling code should compare
+counter values around the measurement window, excluding warmup.
+
+This is not decoded `Frame.data.nbytes` and not complete USB traffic accounting:
+protocol headers, retries, and frames lost before dequeue are excluded. Existing
+backends need not implement the optional counter; unsupported does not mean zero.

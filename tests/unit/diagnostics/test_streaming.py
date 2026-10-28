@@ -107,3 +107,21 @@ def test_cooperative_stop_does_not_read_another_frame() -> None:
             return True
     metrics = streaming.measure(cast(Any, Camera()), 1, stop=cast(Any, Stop()))
     assert metrics["frames"] == 0
+
+
+def test_payload_rate_uses_counter_delta_not_decoded_image_size(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = [0.0]
+    class Camera:
+        payload_bytes_received = 123456  # Earlier warmup traffic must not enter this sample.
+        def read(self, **kwargs):
+            now[0] += 0.1
+            self.payload_bytes_received += 1000
+            return SimpleNamespace(timestamp=now[0], data=SimpleNamespace(nbytes=640 * 480 * 3))
+    monkeypatch.setattr(streaming.time, "monotonic", lambda: now[0])
+    metrics = streaming.measure(cast(Any, Camera()), 1)
+    assert metrics["payload_bytes_per_second"] == pytest.approx(10000)
+    assert metrics["mean_frame_payload_bytes"] == 1000
+    request = streaming.StreamRequest(selector="fake", width=640, height=480, fps=30, pixel_format="mjpeg")
+    finding = streaming._stream_findings(request, "individual", {"metrics": metrics})[0]
+    assert finding.details["payload_demand_bytes_per_second"] == 30000
+    assert finding.details["payload_demand_basis"] == "sampled compression estimate"

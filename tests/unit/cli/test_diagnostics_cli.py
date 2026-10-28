@@ -104,3 +104,22 @@ def test_run_hint_quotes_posix_shell_metacharacters(monkeypatch: pytest.MonkeyPa
     hint = _run_hint(path)
     command = hint.split("run: ", 1)[1]
     assert shlex.split(command) == ["pai", "run", "--config", str(path)]
+
+
+def test_color_can_be_forced_for_human_output_but_never_leaks_into_json(snapshot: Inventory, capsys: pytest.CaptureFixture) -> None:
+    assert main(["doctor", "--color", "always"]) == 0
+    assert "\x1b[" in capsys.readouterr().out
+    assert main(["doctor", "--color", "always", "--json"]) == 0
+    raw = capsys.readouterr().out
+    assert "\x1b[" not in raw and json.loads(raw)["schema_version"] == 1
+    assert main(["devices", "--color", "always", "--json"]) == 0
+    assert "\x1b[" not in capsys.readouterr().out
+    assert main(["devices", "--color", "never"]) == 0
+    assert "\x1b[" not in capsys.readouterr().out
+
+
+def test_tree_is_default_and_flat_is_an_explicit_alternative(snapshot: Inventory, capsys: pytest.CaptureFixture) -> None:
+    assert main(["devices"]) == 0
+    assert "└──" in capsys.readouterr().out
+    assert main(["devices", "--flat"]) == 0
+    assert "└──" not in capsys.readouterr().out
