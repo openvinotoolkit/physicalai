@@ -425,7 +425,7 @@ class MuJoCoRobot(OperatorControls):
             return
         if self._automation is not None and self._automation.drives_arm:
             if not self._ignored_action_logged:
-                logger.info("The autopilot drives the arm; ignoring actions until it is switched off")
+                logger.info("The autopilot drives the arm, or it waits at its reset pose; ignoring actions")
                 self._ignored_action_logged = True
             return
         self._ignored_action_logged = False

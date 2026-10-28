@@ -59,6 +59,12 @@ CONNECT_TIMEOUT_S = 30.0
 """Discovery (a few 3 s requests), the 5 s websocket open and Studio's first state all fit well inside."""
 START_TIMEOUT_S = 15.0
 SAVE_TIMEOUT_S = 120.0
+SUCCESS_HOLD_S = 1.0
+"""Simulated seconds a bucket_sort success must hold before the episode is saved: the object stays in
+its bucket, and the episode ends with the arm settling instead of on the tick the object landed."""
+SUCCESS_HOLD_TIMEOUT_S = 4.0
+"""Simulated seconds after the demonstrator's success the object may take to hold, then the episode is
+discarded; below the scene's 5 s success dwell, after which it starts the next layout."""
 
 KeepPolicy = Literal["all", "perfect"]
 RecorderPhase = Literal[
@@ -673,6 +679,10 @@ class BucketSortProgress:
     """The demonstrator's episode outcome: ``running``, ``success``, ``failed``, ``stalled`` or ``None``."""
     clean: bool | None = None
     """Whether no attempt of the episode went wrong."""
+    placed: bool = False
+    """Whether the task's success holds this tick (the named object resting in the named bucket)."""
+    sim_time: float = 0.0
+    """Simulated time in seconds, which the success hold counts in (the recorded episode's clock)."""
 
 
 @dataclass(frozen=True)
@@ -698,6 +708,10 @@ class BucketSortRecorder(_RecorderBase):
         super().__init__(link_factory, clock)
         self._task: str | None = None
         self._generation: tuple[int, int] | None = None
+        self._success_at: float | None = None
+        """When the demonstrator reported this episode's success."""
+        self._placed_since: float | None = None
+        """Since when the success holds without a break."""
 
     def enable(self, options: RecordingOptions) -> None:
         """Start recording episodes with `options` (its task is ignored: each instruction is the task)."""
@@ -782,6 +796,7 @@ class BucketSortRecorder(_RecorderBase):
     ) -> BucketSortDirective:
         if state.get("is_recording"):
             self._set_phase("recording", f"Recording episode {self._counters.saved + 1}: {self._task}")
+            self._success_at = self._placed_since = None
             return BucketSortDirective()
         if self._clock() - self._since > START_TIMEOUT_S:
             self._finish("error", "Studio did not start recording; is a dataset open?")
@@ -802,12 +817,33 @@ class BucketSortRecorder(_RecorderBase):
         elif not progress.leading:
             self._send_end(link, keep=False, message="The autopilot stopped leading. Discarding the episode...")
         elif progress.outcome == "success":
+            return self._hold_success(link, progress)
+        elif progress.outcome in {"failed", "stalled"}:
+            self._send_end(link, keep=False, message=f"Discarding a {progress.outcome} episode...")
+        else:
+            return BucketSortDirective()
+        return BucketSortDirective(hold_arm=True)
+
+    def _hold_success(self, link: StudioLinkLike, progress: BucketSortProgress) -> BucketSortDirective:
+        """End a success once it has held for `SUCCESS_HOLD_S`; the arm keeps moving meanwhile.
+
+        Returns:
+            Hold the arm once the episode ends, else let it move.
+        """
+        now = progress.sim_time
+        if self._success_at is None:
+            self._success_at = now
+        if not progress.placed:
+            self._placed_since = None
+        elif self._placed_since is None:
+            self._placed_since = now
+        if self._placed_since is not None and now - self._placed_since >= SUCCESS_HOLD_S:
             keep = self._options.keep == "all" or progress.clean is True
             self._send_end(
                 link, keep=keep, message="Saving the episode..." if keep else "Discarding a success with a retry..."
             )
-        elif progress.outcome in {"failed", "stalled"}:
-            self._send_end(link, keep=False, message=f"Discarding a {progress.outcome} episode...")
+        elif now - self._success_at > SUCCESS_HOLD_TIMEOUT_S:
+            self._send_end(link, keep=False, message="The object did not stay in its bucket. Discarding the episode...")
         else:
             return BucketSortDirective()
         return BucketSortDirective(hold_arm=True)

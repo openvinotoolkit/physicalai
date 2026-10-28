@@ -81,6 +81,10 @@ class ConveyorAutomation:
         self._bucket_task: BucketSortTask | None = None
         self._recorder_reset = False
         self._holds_feed = False
+        self._reset_pose: np.ndarray | None = None
+        """The arm's targets right after a scene reset while bucket_sort recording holds the arm: the
+        leader publishes them and client actions are ignored, so Studio's last action of the previous
+        episode cannot pull the arm back before the next episode starts."""
         self._lock = threading.Lock()
         self._leader_seq = 0
         self._leader: dict[str, object] = {"seq": 0, "joint_names": list(self._joint_names)}
@@ -102,8 +106,8 @@ class ConveyorAutomation:
 
     @property
     def drives_arm(self) -> bool:
-        """Whether the autopilot writes the actuators, so client actions must be ignored."""
-        return self.autopilot.drives_arm
+        """Whether to ignore client actions: the autopilot drives the arm, or it waits at its reset pose."""
+        return self.autopilot.drives_arm or self._reset_pose is not None
 
     # ------------------------------------------------------------------
     # Scene lifecycle
@@ -143,6 +147,7 @@ class ConveyorAutomation:
         self._conveyor = conveyor
         self._holds_feed = False  # a new conveyor starts unheld
         self._recorder_reset = False
+        self._reset_pose = None
         demonstrator, unavailable = _scene_demonstrator(
             model, conveyor, robots=robots, bucket_task=bucket_task, seed=seed
         )
@@ -168,10 +173,17 @@ class ConveyorAutomation:
         recorder, self._recorder_reset = self._recorder_reset, False
         return requested or recorder
 
-    def reset(self) -> None:
-        """Forget the autopilot's current pick and restart a Studio episode; call after a scene reset."""
+    def reset(self, arm_targets: np.ndarray | None = None) -> None:
+        """Forget the autopilot's current pick and restart a Studio episode; call after a scene reset.
+
+        Args:
+            arm_targets: The arm's targets after the reset, in model units; held until the next
+                bucket_sort episode Studio records starts.
+        """
         self.autopilot.reset()
         self.recorder.restart_episode("The scene was reset.")
+        if arm_targets is not None and self._bucket_task is not None and self.bucket_recorder.active:
+            self._reset_pose = np.array(arm_targets, dtype=np.float64)
 
     def close(self) -> None:
         """Detach from Studio; call when the simulation disconnects."""
@@ -253,17 +265,22 @@ class ConveyorAutomation:
                 self.autopilot.reset()
         hold_arm = False
         if self._bucket_task is not None:
-            bucket = self.bucket_recorder.update(self._bucket_progress())
+            bucket = self.bucket_recorder.update(self._bucket_progress(model, data))
             hold_arm = bucket.hold_arm
             self._recorder_reset = self._recorder_reset or bucket.reset_scene
+        if not hold_arm or not self.bucket_recorder.active:
+            self._reset_pose = None
         targets = None if hold_arm else self.autopilot.step(data, dt)
+        if targets is None and self._reset_pose is not None:
+            targets = self._reset_pose
         self._publish_leader(arm_targets if targets is None else targets)
 
-    def _bucket_progress(self) -> BucketSortProgress:
+    def _bucket_progress(self, model: object, data: object) -> BucketSortProgress:
         """Read what the bucket_sort recorder needs this tick.
 
         Returns:
-            The layout generation, the instruction and the autopilot's mode and episode outcome.
+            The layout generation, the instruction, the autopilot's mode and episode outcome, and
+            whether the task's success holds (evaluated only after the demonstrator's success).
         """
         task = self._bucket_task
         instruction = task.instruction if task is not None else None
@@ -275,6 +292,8 @@ class ConveyorAutomation:
             leading=self.autopilot.mode == "leader",
             outcome=outcome if isinstance(outcome, str) else None,
             clean=clean if isinstance(clean, bool) else None,
+            placed=outcome == "success" and task is not None and task.evaluate(model, data).success,
+            sim_time=float(data.time),  # type: ignore[attr-defined]
         )
 
     def _publish_leader(self, targets: np.ndarray) -> None:

@@ -329,7 +329,7 @@ class OperatorControls:
             return
         if self._episode_auto_reset is not None:
             self._episode_auto_reset.notify_manual_reset()
-        self._automation.reset()  # type: ignore[union-attr]
+        self._automation.reset(self._arm_targets())  # type: ignore[union-attr]
 
     def _handle_replay_command(self, command: SimCommand) -> bool:
         """Start or stop a replay, and end it before a command that edits the physics state.

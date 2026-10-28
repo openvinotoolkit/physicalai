@@ -16,6 +16,8 @@ from physicalai_mujoco_plugin.conveyor_automation import ConveyorAutomation
 from physicalai_mujoco_plugin.http_server import SetStudioRecordingCommand
 from physicalai_mujoco_plugin.robot import MuJoCoRobot
 from physicalai_mujoco_plugin.studio_recorder import (
+    SUCCESS_HOLD_S,
+    SUCCESS_HOLD_TIMEOUT_S,
     BucketSortProgress,
     BucketSortRecorder,
     RecordingOptions,
@@ -74,7 +76,13 @@ class FakeLink:
 
 
 def _progress(
-    reset: int = 0, outcome: str | None = None, *, clean: bool | None = None, leading: bool = True
+    reset: int = 0,
+    outcome: str | None = None,
+    *,
+    clean: bool | None = None,
+    leading: bool = True,
+    placed: bool | None = None,
+    sim_time: float = 0.0,
 ) -> BucketSortProgress:
     return BucketSortProgress(
         generation=(TASK_ID, reset),
@@ -82,14 +90,32 @@ def _progress(
         leading=leading,
         outcome=outcome,
         clean=clean,
+        placed=outcome == "success" if placed is None else placed,
+        sim_time=sim_time,
     )
+
+
+@dataclass
+class Clock:
+    now: float = 0.0
+
+    def __call__(self) -> float:
+        return self.now
 
 
 def _recorder(options: RecordingOptions | None = None) -> tuple[BucketSortRecorder, FakeLink]:
     link = FakeLink()
-    recorder = BucketSortRecorder(lambda: link)
+    recorder = BucketSortRecorder(lambda: link, clock=Clock())
     recorder.enable(options or RecordingOptions())
     return recorder, link
+
+
+def _succeed(recorder: BucketSortRecorder, link: FakeLink, reset: int, *, clean: bool = True) -> None:
+    """Report a success, then let it hold until the recorder ends the episode."""
+    sent = len(link.sent)
+    assert not recorder.update(_progress(reset, "success", clean=clean, sim_time=10.0)).hold_arm  # the arm settles
+    assert len(link.sent) == sent, "a success is not ended on its first tick"
+    assert recorder.update(_progress(reset, "success", clean=clean, sim_time=10.0 + SUCCESS_HOLD_S)).hold_arm
 
 
 def _start_episode(recorder: BucketSortRecorder, link: FakeLink, reset: int) -> None:
@@ -116,7 +142,7 @@ def test_records_each_episode_with_its_instruction_while_studio_teleoperates() -
     assert "put the CPU in the red bucket (1)" in recorder.status()["message"]
     assert not recorder.update(_progress(1, "running", clean=True)).hold_arm
 
-    assert recorder.update(_progress(1, "success", clean=True)).hold_arm
+    _succeed(recorder, link, 1)
     assert link.events()[-1] == "save_episode"
     link.ack_last()
     link.state = dict(TELEOP)
@@ -125,7 +151,7 @@ def test_records_each_episode_with_its_instruction_while_studio_teleoperates() -
     assert recorder.status()["saved"] == 1
 
     _start_episode(recorder, link, 2)
-    recorder.update(_progress(2, "success", clean=True))
+    _succeed(recorder, link, 2)
     link.ack_last()
     link.state = dict(TELEOP)
     assert not recorder.update(_progress(2, "success", clean=True)).hold_arm
@@ -144,7 +170,7 @@ def test_successes_are_kept_by_the_keep_rule(keep: str, clean: bool, expected: s
     recorder, link = _recorder(RecordingOptions(keep=keep))
     recorder.update(_progress())
     _start_episode(recorder, link, 1)
-    recorder.update(_progress(1, "success", clean=clean))
+    _succeed(recorder, link, 1, clean=clean)
     assert link.events()[-1] == expected
     link.ack_last()
     recorder.update(_progress(1))
@@ -197,6 +223,20 @@ def test_waits_until_studio_and_the_autopilot_are_ready(state: dict[str, Any], l
     assert not directive.reset_scene
     assert message in recorder.status()["message"]
     assert link.sent == []
+
+
+def test_a_success_that_does_not_hold_is_not_saved() -> None:
+    recorder, link = _recorder(RecordingOptions(keep="all"))
+    recorder.update(_progress())
+    _start_episode(recorder, link, 1)
+    recorder.update(_progress(1, "success", clean=True, sim_time=10.0))
+    recorder.update(_progress(1, "success", clean=True, placed=False, sim_time=10.5))  # it bounced out
+    assert not recorder.update(_progress(1, "success", clean=True, sim_time=11.1)).hold_arm  # the hold restarted
+    assert link.events()[-1] == "start_recording"
+    hold_timed_out = 10.0 + SUCCESS_HOLD_TIMEOUT_S + 0.1
+    assert recorder.update(_progress(1, "success", clean=True, placed=False, sim_time=hold_timed_out)).hold_arm
+    assert link.events()[-1] == "discard_episode"
+    assert recorder.status()["message"].startswith("The object did not stay in its bucket.")
 
 
 def test_switching_off_leaves_studio_teleoperating_and_leaving_teleop_stops() -> None:
@@ -315,6 +355,8 @@ def test_simulation_records_a_led_bucket_sort_episode_into_studio(studio: FakeSt
     task = robot._sim.on_reset  # noqa: SLF001
     gripper = robot.joint_names.index("gripper")
     recorded: list[tuple[float, float]] = []  # (action, state) of the gripper while Studio records
+    first_frames: list[tuple[np.ndarray, np.ndarray]] = []  # each episode's (action, state) arm joints, frame 0
+    recording = [False]
 
     def teleop_tick() -> None:
         """One tick of Studio's teleoperation: read the leader, send it as the follower's action."""
@@ -322,6 +364,9 @@ def test_simulation_records_a_led_bucket_sort_episode_into_studio(studio: FakeSt
         action = np.asarray(automation.leader_snapshot()["joint_positions"], dtype=np.float32)
         if studio.state.get("is_recording"):
             recorded.append((float(action[gripper]), float(state[gripper])))
+            if not recording[0]:
+                first_frames.append((action[:gripper].copy(), state[:gripper].copy()))
+        recording[0] = bool(studio.state.get("is_recording"))
         robot.send_action(action)
 
     try:
@@ -350,6 +395,13 @@ def test_simulation_records_a_led_bucket_sort_episode_into_studio(studio: FakeSt
         _wait(next_started)
         assert task.reset_count == resets + 2  # a fresh layout for the next episode
         assert automation.status()["studio"]["saved"] == 1
+        _wait(lambda: (teleop_tick(), len(first_frames) == 2)[1])
+        # Both episodes start at the reset pose, with the action where the arm is. Without holding the
+        # reset pose, Studio's last action of episode 1 pulls the arm back to where that episode ended.
+        (action1, state1), (action2, state2) = first_frames
+        assert np.max(np.abs(state2 - state1)) < 2.0, (state1, state2)  # degrees
+        assert np.max(np.abs(action1 - state1)) < 2.0
+        assert np.max(np.abs(action2 - state2)) < 2.0
 
         robot._commands.put(SetStudioRecordingCommand(options=None))  # noqa: SLF001
         robot.get_observation()
