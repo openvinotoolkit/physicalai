@@ -14,6 +14,7 @@ physicalai-rebot-b601-plugin = { workspace = true }
 physicalai-stararm-plugin = { workspace = true }
 physicalai-trossen-plugin = { workspace = true }
 physicalai-so101-plugin = { workspace = true }
+physicalai-ur5e-plugin = { workspace = true }
 
 [project]
 name = "physicalai"
@@ -72,7 +73,7 @@ capture = [
     "physicalai[genicam]",
     "physicalai[transport]",
 ]
-ur = []
+ur = ["physicalai-ur5e-plugin; python_version >= '3.12'"]
 abb = []
 franka = []
 observer-rerun = ["rerun-sdk>=0.22", "psutil>=5.9"]
@@ -89,6 +90,7 @@ robots = [
 # physicalai-lerobot-plugin is left out: it pulls in torch and downgrades shared
 # dependencies such as OpenCV.
 plugin-mujoco = ["physicalai-mujoco-plugin; python_version >= '3.12'"]
+plugin-ur5e = ["physicalai-ur5e-plugin; python_version >= '3.12'"]
 plugin-rebot-b601 = ["physicalai-rebot-b601-plugin; python_version >= '3.12'"]
 plugin-stararm = ["physicalai-stararm-plugin; python_version >= '3.12'"]
 plugin-so101 = ["physicalai-so101-plugin; python_version >= '3.12' and python_version < '3.14'"]
@@ -133,6 +135,7 @@ search-path = [
     "src",
     "packages/physicalai-studio-plugin/src",
     "packages/physicalai-mujoco-plugin/src",
+    "packages/physicalai-ur5e-plugin/src",
 ]
 project-includes = [
     "src",
@@ -140,6 +143,7 @@ project-includes = [
     "packages/physicalai-studio-plugin/src",
     "packages/physicalai-studio-plugin/tests",
     "packages/physicalai-mujoco-plugin/src",
+    "packages/physicalai-ur5e-plugin/src",
 ]
 ignore-missing-imports = ["*"]
 
@@ -252,6 +256,7 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "requires_download: marks tests that require downloading external datasets",
     "integration: marks tests as integration tests",
+    "ursim: opt-in test against an explicitly configured URSim instance",
     "v4l2: marks tests requiring V4L2 mocking (Linux only)",
     "transport: marks tests requiring iceoryx2",
     "ov_smoke: OpenVINO smoke tests — three-stage contract (load, tokenizer, predict) against published HF exports",

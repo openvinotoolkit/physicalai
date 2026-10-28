@@ -1,0 +1,20 @@
+Physical AI Universal Robots plugin
+Copyright (C) 2026 Intel Corporation
+
+Plugin source code is licensed under Apache-2.0 (see the repository LICENSE).
+
+Bundled robot descriptions and meshes originate from:
+https://github.com/UniversalRobots/Universal_Robots_ROS2_Description
+Revision: 81f7c9fe003c2f0e02eec5a7253f1b262ad38b61
+
+Those files are BSD-3-Clause, not Apache-2.0. Their original license,
+upstream README, and source revision are included in
+physicalai_ur5e_plugin/assets/. Generated URDFs retain upstream comments.
+Only meshes for ur3e, ur5e, ur10e, and ur16e are redistributed. The ur7e
+and ur12e descriptions reference ur5e and ur10e meshes respectively.
+No assets governed by UR's Graphical Documentation terms are included.
+
+ur_rtde is an independent MIT-licensed dependency from SDU Robotics:
+https://gitlab.com/sdurobotics/ur_rtde
+
+This integration is not certified or endorsed by Universal Robots.

@@ -1,0 +1,40 @@
+# Universal_Robots_ROS2_Description
+
+This repository contains description files and meshes for *Universal Robots* manipulators.
+
+## Build status
+
+ROS2 Distro | Branch | Build status | Released packages
+:---------: | :----: | :----------: | :---------------:
+**Humble** | [`humble`](https://github.com/UniversalRobots/Universal_Robots_ROS2_Description/tree/humble) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__ur_description__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__ur_description__ubuntu_jammy_amd64__binary/) | [ur_description](https://index.ros.org/p/ur_description/#humble)
+**Jazzy** | [`jazzy`](https://github.com/UniversalRobots/Universal_Robots_ROS2_Description/tree/jazzy) | [![Build Status](https://build.ros2.org/job/Jbin_uN64__ur_description__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_uN64__ur_description__ubuntu_noble_amd64__binary/) | [ur_description](https://index.ros.org/p/ur_description/#jazzy)
+**Kilted** | [`rolling`](https://github.com/UniversalRobots/Universal_Robots_ROS2_Description/tree/rolling) | [![Build Status](https://build.ros2.org/job/Kbin_uN64__ur_description__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Kbin_uN64__ur_description__ubuntu_noble_amd64__binary/) | [ur_description](https://index.ros.org/p/ur_description/#kilted)
+**Lyrical** | [`rolling`](https://github.com/UniversalRobots/Universal_Robots_ROS2_Description/tree/rolling) | [![Build Status](https://build.ros2.org/job/Lbin_uR64__ur_description__ubuntu_resolute_amd64__binary/badge/icon)](https://build.ros2.org/job/Lbin_uR64__ur_description__ubuntu_resolute_amd64__binary/) | [ur_description](https://index.ros.org/p/ur_description/#lyrical)
+**Rolling** | [`rolling`](https://github.com/UniversalRobots/Universal_Robots_ROS2_Description/tree/rolling) | [![Build Status](https://build.ros2.org/job/Rbin_uR64__ur_description__ubuntu_resolute_amd64__binary/badge/icon)](https://build.ros2.org/job/Rbin_uR64__ur_description__ubuntu_resolute_amd64__binary/) | [ur_description](https://index.ros.org/p/ur_description/#rolling)
+
+A more [detailed build status](ci_status.md) shows the state of all CI workflows inside this repo.
+Please note that the detailed view is intended for developers, while the one here should give end
+users an overview of the current released state.
+
+
+## License
+The [UR8LONG meshes](meshes/ur8long), [UR15 meshes](meshes/ur15), [UR18 meshes](meshes/ur18), [UR20 meshes](meshes/ur20), [UR30 meshes](meshes/ur30), [UR10g-1750 meshes](meshes/ur10g-1750), [UR17g-1300 meshes](meshes/ur17g-1300), [UR18g-950 meshes](meshes/ur18g-950) and [common Smart Panel meshes](meshes/common/smart_panel) constitutes “Graphical Documentation” the use of which is subject to and governed by our “[Terms and Conditions for use of Graphical Documentation](https://www.universal-robots.com/legal/terms-and-conditions/terms_and_conditions_for_use_of_graphical_documentation.txt)”.
+
+Universal Robots' [Terms and Conditions for use of Graphical Documentation](https://www.universal-robots.com/legal/terms-and-conditions/terms_and_conditions_for_use_of_graphical_documentation.txt) do not fully comply with [OSI's definition of Open Source](https://opensource.org/osd/), but they do allow you to use, modify and share “Graphical Documentation”, including [UR8LONG meshes](meshes/ur8long), [UR15 meshes](meshes/ur15), [UR18 meshes](meshes/ur18), [UR20](meshes/ur20), [UR30](meshes/ur30), [UR10g-1750](meshes/ur10g-1750), [UR17g-1300](meshes/ur17g-1300), [UR18g-950](meshes/ur18g-950) and [common Smart Panel](meshes/common/smart_panel) meshes, subject to certain restrictions.\
+If you have any questions regarding this license or if this license doesn't fit your use-case, please contact [legal@universal-robots.com](mailto:legal@universal-robots.com).
+
+All other content is licensed under the BSD-3-Clause license
+
+## Testing description of a manipulator
+
+To visualize the robot install this repository to you workspace and execute the following:
+
+``` bash
+ros2 launch ur_description view_ur.launch.xml ur_type:=ur5e
+```
+
+To test other descriptions change the `ur_type` argument.
+
+## Further documentation
+
+For further documentation about this description, please see [doc/index.rst](doc/index.rst).

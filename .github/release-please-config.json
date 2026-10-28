@@ -57,6 +57,11 @@
       "package-name": "physicalai-so101-plugin",
       "changelog-path": "CHANGELOG.md"
     },
+    "packages/physicalai-ur5e-plugin": {
+      "release-type": "python",
+      "package-name": "physicalai-ur5e-plugin",
+      "changelog-path": "CHANGELOG.md"
+    },
     "packages/physicalai-trossen-plugin": {
       "release-type": "python",
       "package-name": "physicalai-trossen-plugin",

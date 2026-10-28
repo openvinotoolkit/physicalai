@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling<1.30", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "physicalai-ur5e-plugin"
+dynamic = ["version"]
+description = "Universal Robots e-Series RTDE driver and Studio catalog for Physical AI"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0 AND BSD-3-Clause"
+dependencies = [
+    "physicalai>=0.3.0,<1.0",
+    "physicalai-studio-plugin>=0.4.0,<1.0",
+    "numpy>=1.24",
+    "pydantic>=2.12",
+    "loguru>=0.7",
+    "ur-rtde>=1.6.5,<1.7",
+]
+
+[project.optional-dependencies]
+tests = ["pytest"]
+
+[project.entry-points."physicalai.studio.catalog_plugins"]
+ur5e = "physicalai_ur5e_plugin.studio_catalog:register_physicalai_studio_plugin"
+
+[project.urls]
+Repository = "https://github.com/openvinotoolkit/physicalai"
+Issues = "https://github.com/openvinotoolkit/physicalai/issues"
+
+[tool.hatch.version]
+source = "vcs"
+tag-pattern = '^physicalai-ur5e-plugin-v(?P<version>\d+(?:\.\d+)*)$'
+raw-options = { search_parent_directories = true, git_describe_command = "git describe --dirty --tags --long --match physicalai-ur5e-plugin-v*", fallback_version = "0.1.0" }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/physicalai_ur5e_plugin"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"NOTICE" = "physicalai_ur5e_plugin/NOTICE"
+"src/physicalai_ur5e_plugin/assets/LICENSE-Apache-2.0" = "physicalai_ur5e_plugin/LICENSE"
+
+[tool.hatch.build.targets.sdist]
+include = ["src/**", "tests/**", "scripts/**", "README.md", "NOTICE", "pyproject.toml", "CHANGELOG.md"]
+
+[tool.hatch.build.targets.sdist.force-include]
+"../../LICENSE" = "LICENSE"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = ["ursim: opt-in test against an explicitly configured URSim instance"]
