@@ -10,9 +10,10 @@ which every tabletop scene runs. Dataset and experimental arms run two arms from
 before ``Follower`` for two robots, where ``<Profile>`` is the profile's display name without
 spaces and punctuation; ``MuJoCo_SO101_Follower`` and ``MuJoCo_SO101_Bimanual_Follower`` keep
 their types and payloads. Twins whose real robot has a Studio URDF reuse it (STU-2); the other
-entries have no asset and rely on the owner's viewer (``GET /viewer``, STU-3). The SO-101 virtual
-leader stays SO-101 specific (STU-6). Every follower entry's ``simulation`` tells Studio how to start
-its simulation: the scenes it runs in and the ``start`` command line (P3).
+entries have no asset and rely on the owner's viewer (``GET /viewer``, STU-3). One virtual leader
+leads every profile: it takes its joint names from the simulation (STU-6). Every follower entry's
+``simulation`` tells Studio how to start its simulation: the scenes it runs in and the ``start``
+command line (P3).
 
 Importing this module neither imports MuJoCo nor downloads a model: the joint names of a profile
 without channel overrides are derived from its model only when an entry is probed or built.
@@ -668,7 +669,7 @@ def _follower_definition(entry: CatalogEntry) -> RobotCatalogDefinition:
 
 
 def _definitions() -> list[RobotCatalogDefinition]:
-    """Return the generated follower entries, with the SO-101 virtual leader after the SO-101's.
+    """Return the generated follower entries, with the virtual leader after the SO-101's.
 
     Returns:
         The SO-101 followers, the virtual leader, then every other profile's followers.
@@ -677,12 +678,12 @@ def _definitions() -> list[RobotCatalogDefinition]:
     so101 = [_follower_definition(entry) for entry in entries if entry.profile is SO101_PROFILE]
     others = [_follower_definition(entry) for entry in entries if entry.profile is not SO101_PROFILE]
     leader = RobotCatalogDefinition(
-        type="MuJoCo_SO101_Virtual_Leader",
-        display_name="MuJoCo SO-101 Virtual Leader",
+        type="MuJoCo_Virtual_Leader",
+        display_name="MuJoCo Virtual Leader",
         role="leader",
         robot_builder=_build_virtual_leader,
         robot_payload=MuJoCoVirtualLeaderPayload,
-        asset=_MUJOCO_SO101_ASSET,
+        asset=None,  # it leads any profile; the follower's entry shows the arm
         probe=MuJoCoVirtualLeaderProbe(),
     )
     return [*so101, leader, *others]

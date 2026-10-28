@@ -437,10 +437,11 @@ class TestRegistration:
 class TestVirtualLeaderDefinition:
     def test_definition_contents(self) -> None:
         definition = _definitions()[2]
-        assert definition.type == "MuJoCo_SO101_Virtual_Leader"
+        assert definition.type == "MuJoCo_Virtual_Leader"
+        assert definition.display_name == "MuJoCo Virtual Leader"
         assert definition.role == "leader"
         assert definition.robot_payload is MuJoCoVirtualLeaderPayload
-        assert definition.asset is not None
+        assert definition.asset is None  # leads any profile
         assert definition.probe is not None
 
     def test_payload_bounds_the_port(self) -> None:
@@ -458,7 +459,7 @@ class TestVirtualLeaderDefinition:
         assert isinstance(built, MuJoCoVirtualLeader)
         assert built.http_port == 8123
         assert built.host == "127.0.0.1"
-        assert built.joint_names == list(SO101_JOINT_ORDER)
+        assert built.joint_names == []  # read from the simulation on connect, before the owner advertises them
 
     @pytest.mark.anyio
     async def test_probe_reports_offline_without_a_simulation(self) -> None:
@@ -608,7 +609,7 @@ class TestSimulationLaunch:
 
     def test_followers_offer_the_scenes_for_their_arm_count_and_the_leader_none(self) -> None:
         launches = {d.type: d.simulation for d in _definitions()}
-        assert launches.pop("MuJoCo_SO101_Virtual_Leader") is None
+        assert launches.pop("MuJoCo_Virtual_Leader") is None
         so101 = ["single_pick_place", "yahtzee", "conveyor_sort"]
         expected = {
             "MuJoCo_SO101_Follower": so101,

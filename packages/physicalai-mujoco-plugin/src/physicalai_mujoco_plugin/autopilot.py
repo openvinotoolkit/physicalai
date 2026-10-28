@@ -14,7 +14,7 @@ Two ways to use it:
   actions from clients are ignored. For demos and quick checks.
 - ``leader``: the demonstrator only publishes its targets, as a virtual leader
   arm (``GET /leader``). A teleoperation client, such as Physical AI Studio
-  with the *MuJoCo SO-101 Virtual Leader*, reads them and sends them back as
+  with the *MuJoCo Virtual Leader*, reads them and sends them back as
   follower actions, so the recorded actions are the demonstrator's commands.
 """
 

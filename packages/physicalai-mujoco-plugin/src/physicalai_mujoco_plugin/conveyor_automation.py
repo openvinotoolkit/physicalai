@@ -272,7 +272,7 @@ class ConveyorAutomation:
         return BucketSortProgress(
             generation=(id(task), task.reset_count if task is not None else 0),
             instruction=instruction.text if instruction is not None else None,
-            driving=self.autopilot.mode == "drive",
+            leading=self.autopilot.mode == "leader",
             outcome=outcome if isinstance(outcome, str) else None,
             clean=clean if isinstance(clean, bool) else None,
         )

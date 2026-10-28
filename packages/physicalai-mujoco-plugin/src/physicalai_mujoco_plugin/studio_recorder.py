@@ -19,16 +19,14 @@ browser sends. This module is that client, plus the episode logic around it:
    discard it when it had mistakes and only perfect episodes are kept).
 5. Repeat from 2 until switched off or the episode budget is used up.
 
-The bucket_sort scene (`BucketSortRecorder`) runs the same cycle with three
-differences. The autopilot drives the arm, so Studio sends no actions: the
-recorder switches Studio's follower source to ``observe`` (the same
-``set_follower_source`` command the browser sends for ``hold`` / ``teleop`` /
-``policy``), and Studio records the observed joint positions as the action. It
-resets the scene before each episode, and starts the Studio episode with that
-episode's worded instruction as the task. And it ends the episode on the
-demonstrator's outcome: a success is saved (``keep: "perfect"`` only when no
-attempt went wrong), a failure or a stall discarded. Stopping sets the follower
-source back to ``hold``.
+The bucket_sort scene (`BucketSortRecorder`) runs the same cycle, also through
+Studio's teleoperation with the virtual leader: the autopilot runs in ``leader``
+mode, so Studio records the demonstrator's commands as the actions, including a
+gripper closed past the object, not just where the fingers stopped. It differs
+in two ways. It resets the scene before each episode, and starts the Studio
+episode with that episode's worded instruction as the task. And it ends the
+episode on the demonstrator's outcome: a success is saved (``keep: "perfect"``
+only when no attempt went wrong), a failure or a stall discarded.
 
 The client never sends ``disconnect``: that would stop Studio's session. It
 sends ``camera_ids: []`` so attaching never restarts the session for cameras.
@@ -61,8 +59,6 @@ CONNECT_TIMEOUT_S = 30.0
 """Discovery (a few 3 s requests), the 5 s websocket open and Studio's first state all fit well inside."""
 START_TIMEOUT_S = 15.0
 SAVE_TIMEOUT_S = 120.0
-OBSERVE_TIMEOUT_S = 10.0
-"""How long Studio may take to switch its follower source to ``observe``."""
 
 KeepPolicy = Literal["all", "perfect"]
 RecorderPhase = Literal[
@@ -659,7 +655,7 @@ class AutoRecorder(_RecorderBase):
 
 
 # ----------------------------------------------------------------------
-# bucket_sort: the autopilot drives, Studio observes
+# bucket_sort: the autopilot leads Studio's teleoperation
 # ----------------------------------------------------------------------
 
 
@@ -671,8 +667,8 @@ class BucketSortProgress:
     """Identifies the scene layout: the task object and its reset count. A change means a reset."""
     instruction: str | None
     """The current episode's worded instruction, the Studio episode's task."""
-    driving: bool
-    """Whether the autopilot drives the arm (mode ``drive``)."""
+    leading: bool
+    """Whether the autopilot runs as Studio's virtual leader (mode ``leader``)."""
     outcome: str | None = None
     """The demonstrator's episode outcome: ``running``, ``success``, ``failed``, ``stalled`` or ``None``."""
     clean: bool | None = None
@@ -690,7 +686,7 @@ class BucketSortDirective:
 
 
 class BucketSortRecorder(_RecorderBase):
-    """Turn bucket_sort episodes that the autopilot drives into Studio episodes Studio observes.
+    """Turn bucket_sort episodes that the autopilot leads into Studio teleoperation episodes.
 
     Each Studio episode starts from a scene reset, with the episode's instruction as its task,
     and ends on the demonstrator's outcome. The arm waits (the autopilot is not stepped) whenever
@@ -702,14 +698,12 @@ class BucketSortRecorder(_RecorderBase):
         super().__init__(link_factory, clock)
         self._task: str | None = None
         self._generation: tuple[int, int] | None = None
-        self._observe_sent_at: float | None = None
 
     def enable(self, options: RecordingOptions) -> None:
         """Start recording episodes with `options` (its task is ignored: each instruction is the task)."""
         super().enable(options)
         self._task = None
         self._generation = None
-        self._observe_sent_at = None
 
     def status(self) -> dict[str, Any]:
         """Return a JSON-friendly snapshot for ``/health`` and the viewer; ``task`` is the episode's instruction."""
@@ -744,28 +738,17 @@ class BucketSortRecorder(_RecorderBase):
     # -- phases ---------------------------------------------------------
 
     def _update_waiting(
-        self, link: StudioLinkLike, state: Mapping[str, Any], progress: BucketSortProgress
+        self, _link: StudioLinkLike, state: Mapping[str, Any], progress: BucketSortProgress
     ) -> BucketSortDirective:
         if not state.get("dataset_loaded"):
             self._message = "Waiting for Studio: open a dataset in the recording view."
         elif state.get("is_recording"):
             self._message = "Waiting for Studio: save or discard the episode it is recording."
-        elif not progress.driving:
-            self._message = "Waiting for the autopilot: set it to 'Drive the arm'."
-        elif state.get("follower_source") != "observe":
-            if self._observe_sent_at is None:
-                link.send("set_follower_source", {"follower_source": "observe"})
-                self._observe_sent_at = self._clock()
-                self._message = "Switching Studio's follower to observe..."
-            elif self._clock() - self._observe_sent_at > OBSERVE_TIMEOUT_S:
-                self._finish(
-                    "error",
-                    "Studio did not switch its follower to observe; recording bucket_sort needs a Studio "
-                    "version with the observe follower source.",
-                )
-                return BucketSortDirective()
+        elif not progress.leading:
+            self._message = "Waiting for the autopilot: set it to 'Virtual leader (Studio teleop)'."
+        elif state.get("follower_source") != "teleop":
+            self._message = "Waiting for Studio: start teleoperation with the MuJoCo virtual leader."
         else:
-            self._observe_sent_at = None
             self._generation = progress.generation
             self._set_phase("resetting", "Resetting the scene for a new episode...")
             return BucketSortDirective(hold_arm=True, reset_scene=True)
@@ -811,13 +794,13 @@ class BucketSortRecorder(_RecorderBase):
         if not state.get("is_recording"):
             self._finish("stopped", "Studio stopped the recording, so automatic recording stopped too.")
             return BucketSortDirective()
-        if state.get("follower_source") != "observe":
-            self._finish("stopped", "Studio's follower left observe, so automatic recording stopped too.")
+        if state.get("follower_source") != "teleop":
+            self._finish("stopped", "Studio's follower left teleoperation, so automatic recording stopped too.")
             return BucketSortDirective()
         if progress.generation != self._generation:
             self._send_end(link, keep=False, message="The scene was reset. Discarding the episode in progress...")
-        elif not progress.driving:
-            self._send_end(link, keep=False, message="The autopilot stopped driving. Discarding the episode...")
+        elif not progress.leading:
+            self._send_end(link, keep=False, message="The autopilot stopped leading. Discarding the episode...")
         elif progress.outcome == "success":
             keep = self._options.keep == "all" or progress.clean is True
             self._send_end(
@@ -835,12 +818,3 @@ class BucketSortRecorder(_RecorderBase):
         if self._check_save(link) == "next":
             self._set_phase("waiting", "")
         return BucketSortDirective(hold_arm=self.active)
-
-    # -- helpers --------------------------------------------------------
-
-    def _close_link(self) -> None:
-        """Set Studio's follower back to hold, unless someone already moved it off observe; then detach."""
-        link = self._link
-        if link is not None and link.phase == "connected" and (link.state or {}).get("follower_source") == "observe":
-            link.send("set_follower_source", {"follower_source": "hold"})
-        super()._close_link()

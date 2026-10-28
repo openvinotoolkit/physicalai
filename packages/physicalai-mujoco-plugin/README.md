@@ -203,7 +203,7 @@ The same controls are available over HTTP (see [REST control API](#rest-control-
 
 In `conveyor_sort`, the scripted demonstrator can act as the leader arm, and the simulation can save each conveyor episode to the open dataset. No one has to teleoperate, and no one has to press **Accept** or **Start episode**.
 
-1. In Studio, add a robot of type **MuJoCo SO-101 Virtual Leader**. Its port is the simulation's `--http-port` (default `8080`). Use it as the leader of the MuJoCo environment.
+1. In Studio, add a robot of type **MuJoCo Virtual Leader**. Its port is the simulation's `--http-port` (default `8080`). Use it as the leader of the MuJoCo environment. The leader takes its joints from the simulation, so the same type leads any MuJoCo follower.
 2. In the viewer's **Autopilot** folder, set **Autopilot** to **Virtual leader (Studio teleop)**. The demonstrator now only publishes its joint targets (`GET /leader`); the arm moves once Studio sends them back as actions.
 3. In Studio, open the dataset's recording view and start teleoperation. The demonstrator's targets become the recorded actions.
 4. In the viewer, set **Task** and **Keep**, then tick **Record in Studio**. The simulation attaches to Studio's running session. For each episode it clears the belt, starts a recording with the task, and holds the belt when the tenth item is scored. Then it saves the episode, or discards it if **Keep** is **Perfect episodes only** and the episode had a wrong or missed item.
@@ -217,12 +217,13 @@ The simulation joins Studio's session the same way a second browser tab does. It
 
 #### Record the bucket_sort autopilot, with automatic episodes
 
-In `bucket_sort`, the demonstrator drives the arm and Studio only observes it. This needs a Studio version with the `observe` follower source, in which Studio sends no actions and records the observed joint positions as the actions.
+In `bucket_sort`, the demonstrator leads the MuJoCo FR3 follower the same way, as Studio's virtual leader. The recorded actions are the demonstrator's commands, so a grasp records the gripper closing past the object, which is what makes a position-controlled gripper squeeze. Recording the follower's reached positions instead would stop at the object's width.
 
-1. In Studio, open the MuJoCo FR3 follower's recording view (no leader is needed) with a dataset.
-2. In the viewer's **Autopilot** folder, set **Autopilot** to **Drive the arm**.
-3. Set **Keep** and **Episodes**, then tick **Record in Studio**. There is no **Task** field: each episode's worded instruction is its task. The simulation attaches to Studio's session and switches its follower source to `observe`. For each episode it resets the scene, starts a recording with that episode's instruction, and lets the arm move once Studio records. A success is saved as soon as it is detected; with **Perfect episodes only**, a success after a retry (`clean` false) is discarded. A failed or stalled episode, a reset during the episode, or switching the autopilot out of **Drive the arm** discards the episode.
-4. Untick **Record in Studio** to stop, or set **Episodes** to stop after that many saved episodes. Stopping sets Studio's follower source back to `hold`. Pressing stop in Studio, or moving its follower off `observe`, also stops the automation.
+1. In Studio, use the **MuJoCo Virtual Leader** as the leader of the MuJoCo FR3 environment, as in step 1 above.
+2. In the viewer's **Autopilot** folder, set **Autopilot** to **Virtual leader (Studio teleop)**.
+3. In Studio, open the dataset's recording view and start teleoperation.
+4. Set **Keep** and **Episodes**, then tick **Record in Studio**. There is no **Task** field: each episode's worded instruction is its task. For each episode the simulation resets the scene, starts a recording with that episode's instruction, and lets the demonstrator move once Studio records. A success is saved as soon as it is detected; with **Perfect episodes only**, a success after a retry (`clean` false) is discarded. A failed or stalled episode, a reset during the episode, or switching the autopilot out of **Virtual leader** discards the episode.
+5. Untick **Record in Studio** to stop, or set **Episodes** to stop after that many saved episodes. Pressing stop in Studio, or stopping teleoperation, also stops the automation.
 
 ### 5. Run a trained policy
 

@@ -856,7 +856,7 @@ class SimControlPanel:
                 initial_value=AUTOPILOT_LABELS.get(state.autopilot.get("mode", "off"), "Off"),
                 hint=(
                     "The scripted demonstrator sorts the belt. 'Drive the arm' moves it directly; "
-                    "'Virtual leader' only publishes targets for Studio's MuJoCo SO-101 Virtual Leader"
+                    "'Virtual leader' only publishes targets for Studio's MuJoCo Virtual Leader"
                     if conveyor
                     else "The scripted demonstrator carries out each instruction. 'Drive the arm' moves it "
                     "directly; 'Virtual leader' only publishes its targets on GET /leader"
@@ -875,15 +875,15 @@ class SimControlPanel:
                 initial_value=active,
                 hint="Save each conveyor episode to the dataset open in Studio's recording view"
                 if conveyor
-                else "Save each episode the autopilot drives to the dataset open in Studio's recording view; "
-                "Studio only observes the arm",
+                else "Save each episode the autopilot leads to the dataset open in Studio's recording view; "
+                "Studio teleoperates the arm with the MuJoCo virtual leader",
             )
             if conveyor:
                 task = gui.add_text("Task", initial_value=str(studio.get("task") or DEFAULT_TASK))
             else:
                 # The instruction is each episode's task, so there is no task to type.
                 task = None
-                gui.add_markdown("**Task:** each episode's instruction. Needs the autopilot on 'Drive the arm'.")
+                gui.add_markdown("**Task:** each episode's instruction. Needs the autopilot on 'Virtual leader'.")
             keep = gui.add_dropdown(
                 "Keep",
                 options=tuple(KEEP_LABELS.values()),

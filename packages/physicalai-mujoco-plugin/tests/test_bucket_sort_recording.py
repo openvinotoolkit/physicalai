@@ -1,4 +1,4 @@
-"""Automatic Studio recording of bucket_sort episodes: the autopilot drives, Studio observes."""
+"""Automatic Studio recording of bucket_sort episodes: the autopilot leads Studio's teleoperation."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from physicalai_mujoco_plugin.conveyor_automation import ConveyorAutomation
 from physicalai_mujoco_plugin.http_server import SetStudioRecordingCommand
 from physicalai_mujoco_plugin.robot import MuJoCoRobot
 from physicalai_mujoco_plugin.studio_recorder import (
-    OBSERVE_TIMEOUT_S,
     BucketSortProgress,
     BucketSortRecorder,
     RecordingOptions,
@@ -29,10 +28,11 @@ if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
 
 FOLLOWER = "0b6a3c5e-5d0e-4d8e-9f0c-1c3e8b1f9a11"
+LEADER = "3c1e9a7f-6b2d-4f0e-8a5c-9d7b2e4f1a33"
 PROJECT = "7f0e7b51-2b7a-4f57-8d4e-2c4b1f0e6a22"
-TARGET = StudioTarget(PROJECT, FOLLOWER, "Franka", None, None)
-READY = {"connected": True, "follower_source": "hold", "dataset_loaded": True, "is_recording": False}
-OBSERVING = {**READY, "follower_source": "observe"}
+TARGET = StudioTarget(PROJECT, FOLLOWER, "Franka", LEADER, "Autopilot")
+HOLDING = {"connected": True, "follower_source": "hold", "dataset_loaded": True, "is_recording": False}
+TELEOP = {**HOLDING, "follower_source": "teleop"}
 TASK_ID = 1
 """Stands in for the task object's id in a layout generation."""
 
@@ -47,7 +47,7 @@ class FakeLink:
     phase: str = "connected"
     error: str | None = None
     target: StudioTarget | None = TARGET
-    state: dict[str, Any] | None = field(default_factory=lambda: dict(READY))
+    state: dict[str, Any] | None = field(default_factory=lambda: dict(TELEOP))
     sent: list[tuple[str, Any, str | None]] = field(default_factory=list)
     acks: dict[str, dict[str, Any]] = field(default_factory=dict)
     closed: bool = False
@@ -74,12 +74,12 @@ class FakeLink:
 
 
 def _progress(
-    reset: int = 0, outcome: str | None = None, *, clean: bool | None = None, driving: bool = True
+    reset: int = 0, outcome: str | None = None, *, clean: bool | None = None, leading: bool = True
 ) -> BucketSortProgress:
     return BucketSortProgress(
         generation=(TASK_ID, reset),
         instruction=f"put the CPU in the red bucket ({reset})" if reset else "initial",
-        driving=driving,
+        leading=leading,
         outcome=outcome,
         clean=clean,
     )
@@ -94,7 +94,7 @@ def _recorder(options: RecordingOptions | None = None) -> tuple[BucketSortRecord
 
 def _start_episode(recorder: BucketSortRecorder, link: FakeLink, reset: int) -> None:
     """Drive the recorder from waiting to recording an episode that starts at layout *reset*."""
-    link.state = dict(OBSERVING)
+    link.state = dict(TELEOP)
     directive = recorder.update(_progress(reset - 1))
     assert directive.reset_scene, recorder.status()
     assert directive.hold_arm
@@ -102,18 +102,14 @@ def _start_episode(recorder: BucketSortRecorder, link: FakeLink, reset: int) -> 
     assert recorder.update(_progress(reset)).hold_arm  # the reset ran: start the Studio episode
     assert link.sent[-1][:2] == ("start_recording", {"task": f"put the CPU in the red bucket ({reset})"})
     assert recorder.update(_progress(reset)).hold_arm  # Studio has not confirmed yet
-    link.state = {**OBSERVING, "is_recording": True}
+    link.state = {**TELEOP, "is_recording": True}
     assert not recorder.update(_progress(reset)).hold_arm  # the arm moves once Studio records
     assert recorder.phase == "recording"
 
 
-def test_switches_studio_to_observe_then_records_each_episode_with_its_instruction() -> None:
+def test_records_each_episode_with_its_instruction_while_studio_teleoperates() -> None:
     recorder, link = _recorder(RecordingOptions(task="ignored", max_episodes=2))
     assert recorder.update(_progress()).hold_arm  # connecting -> waiting
-    assert recorder.update(_progress()).hold_arm
-    assert link.sent == [("set_follower_source", {"follower_source": "observe"}, None)]
-    assert recorder.update(_progress()).hold_arm  # no second request while Studio switches
-    assert link.events() == ["set_follower_source"]
 
     _start_episode(recorder, link, 1)
     assert recorder.status()["task"] == "put the CPU in the red bucket (1)"
@@ -123,7 +119,7 @@ def test_switches_studio_to_observe_then_records_each_episode_with_its_instructi
     assert recorder.update(_progress(1, "success", clean=True)).hold_arm
     assert link.events()[-1] == "save_episode"
     link.ack_last()
-    link.state = dict(OBSERVING)
+    link.state = dict(TELEOP)
     assert recorder.update(_progress(1, "success", clean=True)).hold_arm
     assert recorder.phase == "waiting"
     assert recorder.status()["saved"] == 1
@@ -131,11 +127,11 @@ def test_switches_studio_to_observe_then_records_each_episode_with_its_instructi
     _start_episode(recorder, link, 2)
     recorder.update(_progress(2, "success", clean=True))
     link.ack_last()
-    link.state = dict(OBSERVING)
+    link.state = dict(TELEOP)
     assert not recorder.update(_progress(2, "success", clean=True)).hold_arm
     assert recorder.phase == "done"
     assert recorder.status()["message"] == "Recorded 2 episodes."
-    assert link.sent[-1][:2] == ("set_follower_source", {"follower_source": "hold"})  # back to hold
+    assert "set_follower_source" not in link.events()  # Studio's teleoperation is the user's
     assert link.events().count("start_recording") == 2
     assert link.closed
 
@@ -163,7 +159,7 @@ def test_failed_or_stalled_episodes_are_discarded_and_a_fresh_one_starts(outcome
     recorder.update(_progress(1, outcome, clean=False))
     assert link.events()[-1] == "discard_episode"
     link.ack_last()
-    link.state = dict(OBSERVING)
+    link.state = dict(TELEOP)
     recorder.update(_progress(1))
     assert recorder.status()["discarded"] == 1
     assert recorder.status()["saved"] == 0
@@ -172,9 +168,9 @@ def test_failed_or_stalled_episodes_are_discarded_and_a_fresh_one_starts(outcome
 
 @pytest.mark.parametrize(
     ("change", "message"),
-    [({"reset": 5}, "The scene was reset."), ({"driving": False}, "The autopilot stopped driving.")],
+    [({"reset": 5}, "The scene was reset."), ({"leading": False}, "The autopilot stopped leading.")],
 )
-def test_a_reset_or_leaving_drive_discards_the_episode(change: dict[str, Any], message: str) -> None:
+def test_a_reset_or_leaving_leader_mode_discards_the_episode(change: dict[str, Any], message: str) -> None:
     recorder, link = _recorder()
     recorder.update(_progress())
     _start_episode(recorder, link, 1)
@@ -184,51 +180,37 @@ def test_a_reset_or_leaving_drive_discards_the_episode(change: dict[str, Any], m
 
 
 @pytest.mark.parametrize(
-    ("state", "driving", "message"),
+    ("state", "leading", "message"),
     [
-        ({**OBSERVING, "dataset_loaded": False}, True, "open a dataset"),
-        ({**OBSERVING, "is_recording": True}, True, "save or discard"),
-        (OBSERVING, False, "Drive the arm"),
+        ({**TELEOP, "dataset_loaded": False}, True, "open a dataset"),
+        ({**TELEOP, "is_recording": True}, True, "save or discard"),
+        (TELEOP, False, "Virtual leader"),
+        (HOLDING, True, "start teleoperation"),
     ],
 )
-def test_waits_until_studio_and_the_autopilot_are_ready(state: dict[str, Any], driving: bool, message: str) -> None:  # noqa: FBT001
+def test_waits_until_studio_and_the_autopilot_are_ready(state: dict[str, Any], leading: bool, message: str) -> None:  # noqa: FBT001
     recorder, link = _recorder()
     link.state = dict(state)
-    recorder.update(_progress(driving=driving))
-    directive = recorder.update(_progress(driving=driving))
+    recorder.update(_progress(leading=leading))
+    directive = recorder.update(_progress(leading=leading))
     assert directive.hold_arm
     assert not directive.reset_scene
     assert message in recorder.status()["message"]
     assert link.sent == []
 
 
-def test_a_studio_without_observe_is_an_error_not_a_silent_wait() -> None:
-    now = [0.0]
-    link = FakeLink()
-    recorder = BucketSortRecorder(lambda: link, clock=lambda: now[0])
-    recorder.enable(RecordingOptions())
-    recorder.update(_progress())
-    recorder.update(_progress())
-    assert link.events() == ["set_follower_source"]
-    now[0] = OBSERVE_TIMEOUT_S + 1.0
-    assert not recorder.update(_progress()).hold_arm
-    assert recorder.phase == "error"
-    assert "observe" in recorder.status()["message"]
-    assert link.events() == ["set_follower_source"], "Studio is not observing: leave its follower source alone"
-
-
-def test_switching_off_sets_studio_back_to_hold_unless_studio_already_left_observe() -> None:
+def test_switching_off_leaves_studio_teleoperating_and_leaving_teleop_stops() -> None:
     recorder, link = _recorder()
     recorder.update(_progress())
     _start_episode(recorder, link, 1)
     recorder.disable("Switched off.")
-    assert link.sent[-1][:2] == ("set_follower_source", {"follower_source": "hold"})
     assert recorder.phase == "off"
+    assert "set_follower_source" not in link.events()
 
     recorder, link = _recorder()
     recorder.update(_progress())
     _start_episode(recorder, link, 1)
-    link.state = {**OBSERVING, "is_recording": True, "follower_source": "teleop"}  # the user took over
+    link.state = {**TELEOP, "is_recording": True, "follower_source": "hold"}  # the user stopped teleoperation
     assert not recorder.update(_progress(1, "running")).hold_arm
     assert recorder.phase == "stopped"
     assert link.events()[-1] == "start_recording"
@@ -237,9 +219,10 @@ def test_switching_off_sets_studio_back_to_hold_unless_studio_already_left_obser
 def test_discovery_finds_a_follower_of_any_mujoco_profile() -> None:
     robots = [
         {"id": FOLLOWER, "name": "Franka", "type": "MuJoCo_FrankaResearch3_Follower", "payload": {"name": "sim"}},
+        {"id": LEADER, "name": "Autopilot", "type": "MuJoCo_Virtual_Leader", "payload": {"http_port": 8080}},
     ]
     routes = {
-        "/api/runtime/sessions": [{"follower_id": FOLLOWER, "status": "running", "leader_name": None}],
+        "/api/runtime/sessions": [{"follower_id": FOLLOWER, "status": "running", "leader_name": "Autopilot"}],
         "/api/projects": [{"id": PROJECT}],
         f"/api/projects/{PROJECT}/robots": robots,
     }
@@ -272,11 +255,11 @@ def test_recording_needs_the_conveyor_or_bucket_sort_scene() -> None:
 
 
 class FakeStudio:
-    """Speaks the runtime websocket protocol, with the ``observe`` follower source."""
+    """Speaks the runtime websocket protocol, teleoperating with a leader."""
 
     def __init__(self) -> None:
         self.received: list[dict[str, Any]] = []
-        self.state = dict(READY)
+        self.state = dict(TELEOP)
         self._server = serve(self._handle, "127.0.0.1", 0)
         self.port = int(self._server.socket.getsockname()[1])
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
@@ -322,7 +305,7 @@ def _wait(predicate: Any, timeout_s: float = 5.0) -> None:  # noqa: ANN401
 
 
 @pytest.mark.slow
-def test_simulation_records_a_driven_bucket_sort_episode_into_studio(studio: FakeStudio) -> None:
+def test_simulation_records_a_led_bucket_sort_episode_into_studio(studio: FakeStudio) -> None:
     robot = MuJoCoRobot("franka_fr3", scene="bucket_sort", cameras=[], http_port=0, seed=1)
     robot.connect()
     automation = robot._automation  # noqa: SLF001
@@ -330,25 +313,38 @@ def test_simulation_records_a_driven_bucket_sort_episode_into_studio(studio: Fak
         lambda: StudioLink(f"http://127.0.0.1:{studio.port}", "sim", discover=lambda _url, _owner: TARGET)
     )
     task = robot._sim.on_reset  # noqa: SLF001
+    gripper = robot.joint_names.index("gripper")
+    recorded: list[tuple[float, float]] = []  # (action, state) of the gripper while Studio records
+
+    def teleop_tick() -> None:
+        """One tick of Studio's teleoperation: read the leader, send it as the follower's action."""
+        state = robot.get_observation().joint_positions
+        action = np.asarray(automation.leader_snapshot()["joint_positions"], dtype=np.float32)
+        if studio.state.get("is_recording"):
+            recorded.append((float(action[gripper]), float(state[gripper])))
+        robot.send_action(action)
+
     try:
-        automation.set_autopilot("drive")
+        automation.set_autopilot("leader")
         robot._commands.put(SetStudioRecordingCommand(options=RecordingOptions(keep="all")))  # noqa: SLF001
         resets = task.reset_count
         deadline = time.monotonic() + 120.0
         while "save_episode" not in studio.events() and "discard_episode" not in studio.events():
             assert time.monotonic() < deadline, automation.status()
-            robot.get_observation()
-        assert studio.events() == ["set_follower_source", "start_recording", "save_episode"]
-        assert studio.received[0]["data"] == {"follower_source": "observe"}
+            teleop_tick()
+        assert studio.events() == ["start_recording", "save_episode"]
         # The recorder reset the scene and recorded that episode's instruction as the task.
         assert task.reset_count == resets + 1
-        assert studio.received[1]["data"] == {"task": task.instruction.text}
+        assert studio.received[0]["data"] == {"task": task.instruction.text}
         assert robot._http_status()["studio"]["task"] == task.instruction.text  # noqa: SLF001
         assert robot._http_status()["episode"]["success"]  # noqa: SLF001
         assert robot._http_status()["overview_locked"]  # noqa: SLF001
+        # The actions are the demonstrator's commands: the gripper closes past where the object stops it.
+        squeeze = min(action - state for action, state in recorded)
+        assert squeeze < -0.005, f"the recorded gripper never commanded past the fingers ({squeeze:.4f} m)"
 
         def next_started() -> bool:
-            robot.get_observation()
+            teleop_tick()
             return studio.events().count("start_recording") == 2
 
         _wait(next_started)
@@ -357,8 +353,7 @@ def test_simulation_records_a_driven_bucket_sort_episode_into_studio(studio: Fak
 
         robot._commands.put(SetStudioRecordingCommand(options=None))  # noqa: SLF001
         robot.get_observation()
-        _wait(lambda: studio.events()[-1] == "set_follower_source")
-        assert studio.received[-1]["data"] == {"follower_source": "hold"}
+        assert "set_follower_source" not in studio.events()
     finally:
         robot.disconnect()
 
