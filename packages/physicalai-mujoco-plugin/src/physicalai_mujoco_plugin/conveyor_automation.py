@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from physicalai_mujoco_plugin.autopilot import AutopilotMode
+    from physicalai_mujoco_plugin.bucket_sort import BucketSortTask
 
 
 class ConveyorAutomation:
@@ -98,6 +99,8 @@ class ConveyorAutomation:
         active: bool,
         robots: int = 1,
         robot_roots: tuple[int, ...] | None = None,
+        bucket_task: BucketSortTask | None = None,
+        seed: int | None = None,
     ) -> ConveyorSort | None:
         """Build the conveyor controller for a freshly loaded scene.
 
@@ -108,6 +111,8 @@ class ConveyorAutomation:
             robots: Number of arms in the scene; the autopilot drives a single one.
             robot_roots: Root body of every arm, for the held-item test; ``None`` takes a single
                 unprefixed SO-101.
+            bucket_task: The bucket_sort scene's task, which gets that scene's demonstrator.
+            seed: Seeds the bucket_sort demonstrator; ``None`` draws a fresh seed.
 
         Returns:
             The controller, or ``None`` for scenes without a belt.
@@ -119,12 +124,20 @@ class ConveyorAutomation:
             )
         self._conveyor = conveyor
         self._holds_feed = False  # a new conveyor starts unheld
-        self.autopilot.bind(model, conveyor, robots=robots)
+        self.autopilot.bind(model, conveyor, robots=robots, bucket_task=bucket_task, seed=seed)
         if conveyor is None and self.recorder.phase != "off":
             self.recorder.disable("Automatic recording needs the conveyor scene.")
         elif conveyor is not None:
             self.recorder.restart_episode("The scene was reloaded.")
         return conveyor
+
+    def take_reset_request(self) -> bool:
+        """Return whether the autopilot gave up on an episode and wants the scene reset, once.
+
+        Returns:
+            ``True`` once per failed bucket_sort episode.
+        """
+        return self.autopilot.take_reset_request()
 
     def reset(self) -> None:
         """Forget the autopilot's current pick and restart a Studio episode; call after a scene reset."""

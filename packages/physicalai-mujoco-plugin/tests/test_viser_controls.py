@@ -20,6 +20,7 @@ from physicalai_mujoco_plugin.http_server import (
     FrameBuffer,
     HomeCommand,
     ResetCommand,
+    SetAutopilotCommand,
     SetAutoResetCommand,
     SetObjectPoseCommand,
     SetOverviewCommand,
@@ -29,6 +30,7 @@ from physicalai_mujoco_plugin.http_server import (
     SwitchSceneCommand,
 )
 from physicalai_mujoco_plugin.viser_controls import (
+    AUTOPILOT_LABELS,
     CUSTOM_MODEL_LABEL,
     NO_FOLLOW_LABEL,
     OVERVIEW_HINT,
@@ -381,6 +383,61 @@ class TestEpisodeControls:
         assert "Autopilot" in server.gui.folders
         assert "Autopilot" not in server.gui.handles  # no mode dropdown
         assert server.gui.handles["markdown"].content == f"Off: {reason}"
+
+    @staticmethod
+    def _bucket_sort_state(**autopilot: Any) -> PanelState:  # noqa: ANN401
+        return make_state(
+            scene_id="bucket_sort",
+            episode={
+                "enabled": True,
+                "kind": "bucket_sort",
+                "active": True,
+                "phase": "idle",
+                "episode_count": 0,
+                "success_dwell_s": 5.0,
+                "countdown_s": None,
+                "instruction": {"object": "cpu", "bucket": "red", "text": "put the CPU in the red bucket"},
+            },
+            autopilot={"available": True, "unavailable_reason": None, "mode": "off", **autopilot},
+        )
+
+    def test_a_scene_with_a_demonstrator_gets_the_autopilot_dropdown(self) -> None:
+        """bucket_sort has a demonstrator but not the conveyor: its Episode folder is followed by the Autopilot one."""
+        _, server, commands = build_panel(self._bucket_sort_state())
+        assert server.gui.folders.index("Autopilot") == server.gui.folders.index("Episode") + 1
+        dropdown = server.gui.handles["Autopilot"]
+        assert dropdown.value == "Off"
+        assert dropdown.options == tuple(AUTOPILOT_LABELS.values())
+        assert "Record in Studio" not in server.gui.handles  # Studio recording runs conveyor episodes only
+        dropdown.fire(AUTOPILOT_LABELS["drive"])
+        dropdown.fire(AUTOPILOT_LABELS["leader"])
+        dropdown.fire(AUTOPILOT_LABELS["off"])
+        assert commands == [
+            SetAutopilotCommand(mode="drive"),
+            SetAutopilotCommand(mode="leader"),
+            SetAutopilotCommand(mode="off"),
+        ]
+
+    def test_a_scene_without_a_demonstrator_has_no_autopilot_folder(self) -> None:
+        _, server, _ = build_panel(make_state(autopilot={"available": False, "unavailable_reason": None, "mode": "off"}))
+        assert "Episode" in server.gui.folders
+        assert "Autopilot" not in server.gui.folders
+        _, server, _ = build_panel()  # no autopilot status at all
+        assert "Autopilot" not in server.gui.folders
+
+    def test_the_autopilot_dropdown_and_status_follow_the_demonstrator(self) -> None:
+        """A mode chosen over HTTP, or the demonstrator's own progress, shows in the panel."""
+        panel, server, commands = build_panel(self._bucket_sort_state())
+        running = {"mode": "drive", "phase": "carry", "attempt": 1, "max_attempts": 2, "outcome": "running"}
+        panel.refresh(self._bucket_sort_state(**running), now=1.0)
+        mode, status = panel._handles.autopilot_mode  # noqa: SLF001
+        assert (mode.value, server.gui.handles["Autopilot"].value) == (AUTOPILOT_LABELS["drive"],) * 2
+        assert status.content == "**Autopilot:** carry, attempt 1/2"
+        panel.refresh(self._bucket_sort_state(**{**running, "phase": "return", "outcome": "success"}), now=2.0)
+        assert status.content == "**Autopilot:** return, attempt 1/2, success"
+        panel.refresh(self._bucket_sort_state(), now=3.0)
+        assert (mode.value, status.content) == (AUTOPILOT_LABELS["off"], "**Autopilot:** off")
+        assert commands == []  # the refresh only mirrors; it never sends a command
 
     def test_hidden_when_the_scene_has_no_auto_reset(self) -> None:
         _, server, _ = build_panel(make_state(episode={"enabled": False}))
