@@ -2607,7 +2607,7 @@ class BucketSortDemonstrator:
             variants += [DemoParams.sample(rng, self.active_arm.heights) for _ in range(2)]
         best: JointPlan | None = None
         eligible: JointPlan | None = None
-        """With several arms, the best plan that may run at all (:meth:`_may_run`)."""
+        """Where :attr:`_gated`, the best plan that may run at all (:meth:`_may_run`)."""
         for variant in variants:
             for yaw in candidates:
                 planner.load(snapshot)
@@ -2625,11 +2625,7 @@ class BucketSortDemonstrator:
                     return plan
                 if best is None or _severity(plan) < _severity(best):
                     best = plan
-                if (
-                    len(self.arms) > 1
-                    and self._may_run(plan)
-                    and (eligible is None or _severity(plan) < _severity(eligible))
-                ):
+                if self._gated and self._may_run(plan) and (eligible is None or _severity(plan) < _severity(eligible)):
                     eligible = plan
         if eligible is not None:
             best = eligible  # a plan that would be refused must not hide one that may run
@@ -2637,9 +2633,18 @@ class BucketSortDemonstrator:
             self._report_problems(best)  # type: ignore[arg-type]
         return best  # type: ignore[return-value]
 
+    @property
+    def _gated(self) -> bool:
+        """Whether :meth:`_run` refuses best-effort plans out of reach: with several arms, or a leaning one.
+
+        :meth:`plan_attempt` then prefers a plan that may run (:meth:`_may_run`) to any it would refuse.
+        One Franka runs its best-effort plans as before.
+        """
+        return len(self.arms) > 1 or self.active_arm.max_tilt > 0.0
+
     @staticmethod
     def _may_run(plan: JointPlan) -> bool:
-        """Return whether a best-effort plan of several arms may run: near its path and clear of the other arm.
+        """Return whether a best-effort plan may run where :attr:`_gated`: near its path and clear of the other arm.
 
         Near is within :data:`OUT_OF_REACH`; clear is :data:`CLEARANCE` ``arm``.
 
@@ -2736,7 +2741,7 @@ class BucketSortDemonstrator:
                 )
                 self._stop_and_fail(data, plan.dt, brake, reason)
                 return
-        if len(self.arms) > 1 or self.active_arm.max_tilt > 0.0:
+        if self._gated:
             # A plan out of reach would close on nothing or let go outside the bucket: several arms
             # and the leaning arms refuse it (the checked braking still stops the arm); one Franka
             # runs its best-effort plans as before.

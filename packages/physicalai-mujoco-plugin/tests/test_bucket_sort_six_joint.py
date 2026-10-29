@@ -12,6 +12,7 @@ buckets, their grippers, and whole episodes in both autopilot modes.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 
 import mujoco
 import numpy as np
@@ -159,6 +160,36 @@ class TestDemonstrator:
             leader = np.asarray(scene._automation.leader_snapshot()["joint_positions"])
             arm = demo._active
             np.testing.assert_allclose(leader[7 * arm : 7 * arm + 6], np.degrees(demo._q), atol=1e-9)
+
+    def test_a_plan_that_may_run_beats_a_better_scored_one_run_refuses(
+        self, scene: MuJoCoRobot, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        demo = _demo(scene)
+        data = scene._sim.data
+        demo.step(data, TICK_S, apply=False)
+        planner, made = demo.planner, []
+        solve = planner.checked
+
+        def checked(*args: object, **kwargs: object) -> bd.JointPlan:
+            plan = solve(*args, **kwargs)  # type: ignore[arg-type]
+            if not made:  # 21 mm off its path: _run refuses it
+                plan = replace(plan, pos_error=0.021, problems=["IK residual 21.0 mm"])
+            else:  # 19 mm off and 5 mm short of the bucket clearance: it may run
+                short = {**plan.clearance, "bucket": bd.CLEARANCE["bucket"] - 0.005}
+                plan = replace(plan, pos_error=0.019, clearance=short, problems=["bucket clearance"])
+            made.append(plan)
+            return plan
+
+        monkeypatch.setattr(planner, "checked", checked)
+        params = bd.DemoParams.for_heights(demo.active_arm.heights)
+        instruction = scene._sim.on_reset.instruction
+        snapshot = bd.SceneSnapshot.take(data)
+        plan = demo.plan_attempt(snapshot, demo._q, demo._start_state(), instruction, params, TICK_S, report=False)
+        assert bd._severity(made[0]) < bd._severity(made[1])  # the refused one scores better ...
+        assert not demo._may_run(made[0])
+        assert plan is made[1]  # ... but the one that may run is picked
+        demo._run(plan, data)
+        assert demo.status()["failure"] is None
 
     def test_no_lean_short_of_reaching_runs(self, scene: MuJoCoRobot) -> None:
         planner = _demo(scene).planner
