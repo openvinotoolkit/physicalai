@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
 _PayloadT = TypeVar("_PayloadT", bound=BaseModel)
+_PayloadT_contra = TypeVar("_PayloadT_contra", bound=BaseModel, contravariant=True)
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,22 @@ class SimulationArgvBuilder(Protocol):
         ...
 
 
+class SimulationStandaloneArgvBuilder(Protocol[_PayloadT_contra]):
+    """Builds the command line a user runs to start a simulation; see :class:`SimulationLaunch`."""
+
+    def __call__(self, *, scene: str, payload: _PayloadT_contra, seed: int | None) -> Sequence[str]:
+        """Return the argv, executable first, that starts *scene* for the robot configured by *payload*.
+
+        Args:
+            scene: The id of one of the launch's scenes.
+            payload: The robot's payload; the simulation publishes its robot under the payload's owner
+                name and serves at the payload's addresses.
+            seed: Fixed seed for the scene's randomization, from 0 to the launch's ``max_seed``, or
+                ``None`` for random layouts.
+        """
+        ...
+
+
 @dataclass(frozen=True)
 class SimulationLaunch(Generic[_PayloadT]):
     """How Studio starts and supervises the simulation of a simulated robot type.
@@ -79,6 +96,13 @@ class SimulationLaunch(Generic[_PayloadT]):
       uses them for cameras and the embedded viewer) after ``ready``;
     - the process exits with a non-zero code when it fails.
 
+    :meth:`standalone_argv` is the command a user runs in a terminal to start the same simulation
+    themselves, for example to drive it from their own script. Studio attaches to it as it is,
+    as a simulation started outside Studio, so the command must publish under the payload's owner
+    name and serve at the payload's addresses, such as its HTTP server, rather than on free ports.
+    It leaves out the supervision contract above (JSON events, stopping on stdin end of file): it
+    runs until the user stops it.
+
     Parameterize it with the robot type's payload model, like ``RobotCatalogDefinition``.
 
     Attributes:
@@ -91,6 +115,8 @@ class SimulationLaunch(Generic[_PayloadT]):
             it takes no seed.
         labels: Short read-only facts about the simulated robot, such as its arm count, that
             Studio shows as chips in the start dialog, in order.
+        build_standalone_argv: Builds the command a user runs to start the simulation themselves for
+            a scene, a payload and an optional seed, or ``None`` when the plugin offers none.
     """
 
     scenes: tuple[SimulationScene, ...]
@@ -99,6 +125,7 @@ class SimulationLaunch(Generic[_PayloadT]):
     build_argv: SimulationArgvBuilder
     max_seed: int | None = None
     labels: tuple[str, ...] = ()
+    build_standalone_argv: SimulationStandaloneArgvBuilder[_PayloadT] | None = None
 
     def __post_init__(self) -> None:
         """Validate the scenes, the default scene, the seed range and the labels.
@@ -158,6 +185,48 @@ class SimulationLaunch(Generic[_PayloadT]):
                 (any seed when ``max_seed`` is ``None``), or ``build_argv`` returns an empty command
                 line.
         """
+        self._check_request(scene, seed)
+        argv = list(self.build_argv(scene=scene, owner_name=self.owner_name(payload), seed=seed))
+        if not argv:
+            msg = f"build_argv returned no command line for scene {scene!r}"
+            raise ValueError(msg)
+        return argv
+
+    def standalone_argv(self, scene: str, payload: _PayloadT, seed: int | None = None) -> list[str] | None:
+        """Return the command a user runs to start *scene* for the robot configured by *payload*.
+
+        Args:
+            scene: The id of one of ``scenes``.
+            payload: The robot's payload; the simulation runs under its :meth:`owner_name`, at its
+                addresses.
+            seed: Fixed seed from 0 to ``max_seed``, or ``None`` for random layouts.
+
+        Returns:
+            The argv from ``build_standalone_argv``, executable first, or ``None`` without a
+            ``build_standalone_argv``.
+
+        Raises:
+            ValueError: If the scene is unknown, the owner name is blank, the seed is out of range
+                (any seed when ``max_seed`` is ``None``), or ``build_standalone_argv`` returns an
+                empty command line.
+        """
+        if self.build_standalone_argv is None:
+            return None
+        self._check_request(scene, seed)
+        self.owner_name(payload)
+        argv = list(self.build_standalone_argv(scene=scene, payload=payload, seed=seed))
+        if not argv:
+            msg = f"build_standalone_argv returned no command line for scene {scene!r}"
+            raise ValueError(msg)
+        return argv
+
+    def _check_request(self, scene: str, seed: int | None) -> None:
+        """Check that *scene* is one of ``scenes`` and *seed* is in range.
+
+        Raises:
+            ValueError: If the scene is unknown or the seed is out of range (any seed when
+                ``max_seed`` is ``None``).
+        """
         if scene not in {known.id for known in self.scenes}:
             msg = f"Unknown scene {scene!r}; choose one of {[known.id for known in self.scenes]}"
             raise ValueError(msg)
@@ -168,8 +237,3 @@ class SimulationLaunch(Generic[_PayloadT]):
             if type(seed) is not int or not 0 <= seed <= self.max_seed:
                 msg = f"seed must be an integer from 0 to {self.max_seed}, got {seed!r}"
                 raise ValueError(msg)
-        argv = list(self.build_argv(scene=scene, owner_name=self.owner_name(payload), seed=seed))
-        if not argv:
-            msg = f"build_argv returned no command line for scene {scene!r}"
-            raise ValueError(msg)
-        return argv

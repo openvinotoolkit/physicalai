@@ -187,6 +187,11 @@ def _sim_argv(*, scene: str, owner_name: str, seed: int | None) -> list[str]:
     return argv if seed is None else [*argv, "--seed", str(seed)]
 
 
+def _sim_standalone_argv(*, scene: str, payload: SimPayload, seed: int | None) -> list[str]:
+    argv = ["sim", "start", "--scene", scene, f"--name=sim-{payload.sim_id}", "--host", payload.host]
+    return argv if seed is None else [*argv, "--seed", str(seed)]
+
+
 def _launch(**kwargs: Any) -> SimulationLaunch[SimPayload]:
     options: dict[str, Any] = {
         "scenes": _SCENES,
@@ -291,6 +296,68 @@ def test_simulation_launch_rejects_an_empty_argv() -> None:
 
     with pytest.raises(ValueError, match="no command line"):
         launch.argv("pick", SimPayload(sim_id="7"))
+
+
+def test_simulation_launch_defaults_to_no_standalone_command() -> None:
+    launch = _launch()
+
+    assert launch.build_standalone_argv is None
+    assert launch.standalone_argv("pick", SimPayload(sim_id="7")) is None
+    assert launch.standalone_argv("stack", SimPayload(sim_id="7"), seed=-1) is None
+
+
+def test_simulation_launch_builds_the_standalone_command_from_the_payload() -> None:
+    launch = _launch(build_standalone_argv=_sim_standalone_argv)
+    payload = SimPayload(sim_id="7", host="127.0.0.2")
+
+    assert launch.standalone_argv("fold", payload) == [
+        "sim",
+        "start",
+        "--scene",
+        "fold",
+        "--name=sim-7",
+        "--host",
+        "127.0.0.2",
+    ]
+    seeded = launch.standalone_argv("pick", payload, seed=2**32 - 1)
+    assert seeded is not None
+    assert seeded[-2:] == ["--seed", "4294967295"]
+
+
+@pytest.mark.parametrize(
+    ("scene", "sim_id", "seed", "message"),
+    [
+        ("stack", "7", None, "Unknown scene 'stack'"),
+        ("pick", " ", None, "payload_owner_name returned an empty owner name"),
+        ("pick", "7", 2**32, "seed must be an integer from 0 to 4294967295"),
+        ("pick", "7", True, "seed must be an integer"),
+    ],
+)
+def test_simulation_launch_standalone_argv_rejects_invalid_requests(
+    scene: str, sim_id: str, seed: Any, message: str
+) -> None:
+    launch = _launch(payload_owner_name=lambda payload: payload.sim_id, build_standalone_argv=_sim_standalone_argv)
+
+    with pytest.raises(ValueError, match=message):
+        launch.standalone_argv(scene, SimPayload(sim_id=sim_id), seed)
+
+
+def test_simulation_launch_standalone_argv_rejects_a_seed_when_it_takes_none() -> None:
+    launch = _launch(max_seed=None, build_standalone_argv=_sim_standalone_argv)
+
+    with pytest.raises(ValueError, match="this simulation takes no seed"):
+        launch.standalone_argv("pick", SimPayload(sim_id="7"), seed=0)
+
+
+def test_simulation_launch_rejects_an_empty_standalone_argv() -> None:
+    def no_argv(*, scene: str, payload: SimPayload, seed: int | None) -> list[str]:
+        _ = scene, payload, seed
+        return []
+
+    launch = _launch(build_standalone_argv=no_argv)
+
+    with pytest.raises(ValueError, match="build_standalone_argv returned no command line"):
+        launch.standalone_argv("pick", SimPayload(sim_id="7"))
 
 
 def test_generic_payload_linked_to_probe() -> None:

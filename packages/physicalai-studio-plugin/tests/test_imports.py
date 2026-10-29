@@ -18,6 +18,7 @@ def test_imports() -> None:
         SimulationArgvBuilder,
         SimulationLaunch,
         SimulationScene,
+        SimulationStandaloneArgvBuilder,
         shared_robot_name,
     )
 
@@ -37,6 +38,7 @@ def test_imports() -> None:
         SimulationArgvBuilder,
         SimulationLaunch,
         SimulationScene,
+        SimulationStandaloneArgvBuilder,
         shared_robot_name,
     )
-    assert len(exports) == 16
+    assert len(exports) == 17
