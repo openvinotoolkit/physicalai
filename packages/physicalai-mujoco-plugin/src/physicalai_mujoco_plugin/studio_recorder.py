@@ -777,9 +777,9 @@ class BucketSortRecorder(_RecorderBase):
         """
         super().__init__(link_factory, clock)
         if chance is None:
-            import random  # noqa: PLC0415
+            import numpy as np  # noqa: PLC0415
 
-            chance = random.Random().random  # noqa: S311 - which episodes start stuck, not a secret
+            chance = np.random.default_rng().random  # which episodes start stuck, not a secret
         self._chance = chance
         self._normal_start = False
         """The next start is normal: the stuck start of this episode disturbed the layout."""
