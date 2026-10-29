@@ -501,13 +501,13 @@ def _scene_demonstrator(
     if conveyor is None:
         if bucket_task is None:
             return None, None
-        from physicalai_mujoco_plugin.bucket_sort_arms import BUCKET_SORT_ARMS  # noqa: PLC0415
+        from physicalai_mujoco_plugin.bucket_sort_arms import BUCKET_SORT_ARMS, bucket_sort_arms  # noqa: PLC0415
         from physicalai_mujoco_plugin.bucket_sort_demo import BucketSortDemonstrator  # noqa: PLC0415
 
-        arms = BUCKET_SORT_ARMS.get(profile)
-        if arms is None or robots != 1:
+        arms = bucket_sort_arms(profile, robots)
+        if arms is None:
             names = ", ".join(BUCKET_SORT_ARMS)
-            return None, f"The bucket_sort autopilot drives one robot of these profiles: {names}."
+            return None, f"The bucket_sort autopilot drives one robot of these profiles ({names}) or two WidowX AI."
         demonstrator = BucketSortDemonstrator(
             model, bucket_task, arms=arms, rng=np.random.default_rng(seed), max_attempts=max_attempts
         )

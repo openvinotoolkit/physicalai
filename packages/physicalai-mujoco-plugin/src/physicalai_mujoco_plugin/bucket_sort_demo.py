@@ -54,8 +54,23 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 from loguru import logger
 
-from physicalai_mujoco_plugin.bucket_sort import BUCKET_COLORS, BUCKET_INTERIOR, OBJECT_Y, OBJECTS, bucket_containing
-from physicalai_mujoco_plugin.bucket_sort_arms import FINGER_JOINTS, FR3_ARM, FRANKA_GRIP_OPEN, FrankaArm
+from physicalai_mujoco_plugin.bucket_sort import (
+    BUCKET_COLORS,
+    BUCKET_INTERIOR,
+    DEFAULT_LAYOUT,
+    OBJECT_Y,
+    OBJECTS,
+    bucket_containing,
+)
+from physicalai_mujoco_plugin.bucket_sort_arms import (
+    FR3_ARM,
+    FRANKA_GRIP_OPEN,
+    FRANKA_HEIGHTS,
+    BucketSortArm,
+    Heights,
+)
+
+FrankaArm = BucketSortArm
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -116,6 +131,8 @@ IK_DAMPING = 0.03
 MAX_IK_STEP = 0.1
 """Largest joint change, in radians, of one IK iteration."""
 CHECK_EVERY = 2
+TILT_STEP = float(np.radians(5.0))
+"""Steps in which the planner tries leaning the hand further (``FrankaIK.least_tilt``)."""
 """Clearance is checked every this many ticks of a plan."""
 WRIST_PROBE_Z = 0.15
 """TCP height at which a tilted arm's joint 7 is estimated for a yaw over a point (:meth:`Planner.predicted_q7`)."""
@@ -248,8 +265,28 @@ class DemoParams:
     """Uniform draw that picks between two grasp yaws whose plans are about as good."""
 
     @classmethod
-    def sample(cls, rng: np.random.Generator) -> DemoParams:
-        """Draw a randomized set of parameters, every one inside what the scene allows.
+    def for_heights(cls, heights: Heights = FRANKA_HEIGHTS) -> DemoParams:
+        """Return the defaults, with the heights in the middle of *heights* for an arm other than a Franka.
+
+        Returns:
+            The parameters.
+        """
+        if heights == FRANKA_HEIGHTS:
+            return cls()
+
+        def mid(span: tuple[float, float]) -> float:
+            return (span[0] + span[1]) / 2.0
+
+        return cls(
+            pregrasp_height=mid(heights.pregrasp_height),
+            lift_height=mid(heights.lift_height),
+            carry_z=mid(heights.carry_z),
+            release_z=mid(heights.release_z),
+        )
+
+    @classmethod
+    def sample(cls, rng: np.random.Generator, heights: Heights = FRANKA_HEIGHTS) -> DemoParams:
+        """Draw a randomized set of parameters, every one inside what the scene allows (and *heights*).
 
         Returns:
             The parameters.
@@ -262,10 +299,10 @@ class DemoParams:
             lift_speed=float(u(0.12, 0.24)),
             yaw_speed=float(u(1.0, 2.0)),
             held_accel=float(u(0.7, 1.2)),
-            pregrasp_height=float(u(0.06, 0.13)),
-            lift_height=float(u(0.07, 0.13)),
-            carry_z=float(u(0.20, 0.27)),
-            release_z=float(u(0.12, 0.18)),
+            pregrasp_height=float(u(*heights.pregrasp_height)),
+            lift_height=float(u(*heights.lift_height)),
+            carry_z=float(u(*heights.carry_z)),
+            release_z=float(u(*heights.release_z)),
             grasp_offset=float(u(-0.006, 0.006)),
             grasp_dz=float(u(0.0, 0.004)),
             yaw_noise=float(np.radians(u(-7.0, 7.0))),
@@ -315,13 +352,13 @@ class _Move:
     duration: float
     delta: np.ndarray
     target: np.ndarray
-    """The state ``(x, y, z, yaw, grip)`` the script reaches once this move (and those before it) end."""
+    """The state ``(x, y, z, yaw, grip, tilt)`` the script reaches once this move (and those before it) end."""
     q_delta: np.ndarray | None = None
     """Change of the joint-space reference posture over this move (see :meth:`Planner.solve`)."""
 
 
 class MotionScript:
-    """A sum of minimum-jerk moves of the state ``(x, y, z, yaw, grip)``.
+    """A sum of minimum-jerk moves of the state ``(x, y, z, yaw, grip, tilt)``.
 
     Each move adds its displacement with a minimum-jerk profile; a move may start before the
     previous one ends (``blend``), which rounds the corner between them while keeping the speed,
@@ -329,7 +366,10 @@ class MotionScript:
     """
 
     def __init__(self, start: np.ndarray, slow: dict[str, float] | None = None) -> None:
-        """Start at *start*, ``(x, y, z, yaw, grip)``; moves of a phase in *slow* take that many times longer."""
+        """Start at *start*, ``(x, y, z, yaw, grip[, tilt])``; moves of a phase in *slow* take that many times longer.
+
+        The tilt (how far the hand leans outward, :func:`lean`) is in the state only when *start* has it.
+        """
         self.slow = dict(slow or {})
         self.start = np.asarray(start, dtype=np.float64).copy()
         self.end = self.start.copy()
@@ -345,8 +385,9 @@ class MotionScript:
         grip: float | None = None,
         duration: float,
         blend: float = 0.0,
+        tilt: float | None = None,
     ) -> None:
-        """Move to the given position, yaw and opening (the others keep their value) in *duration* seconds.
+        """Move to the given position, yaw, opening and tilt (the others keep their value) in *duration* seconds.
 
         Args:
             phase: The phase it reports while it runs.
@@ -355,6 +396,7 @@ class MotionScript:
             grip: Commanded opening.
             duration: Seconds.
             blend: Fraction of the previous move it overlaps.
+            tilt: How far the hand leans outward.
         """
         duration = float(duration) * self.slow.get(phase, 1.0)
         target = self.end.copy()
@@ -364,6 +406,8 @@ class MotionScript:
             target[3] = yaw
         if grip is not None:
             target[4] = grip
+        if tilt is not None:
+            target[5] = tilt  # a script of a leaning arm, whose state has the tilt
         last = self.moves[-1] if self.moves else None
         t0 = self.t_end
         if last is not None and blend > 0.0 and np.any(last.delta):
@@ -375,7 +419,7 @@ class MotionScript:
     def pause(self, phase: Phase, seconds: float) -> None:
         """Hold still for *seconds*, reporting *phase*."""
         if seconds > 0.0:
-            self.moves.append(_Move(phase, self.t_end, float(seconds), np.zeros(5), self.end.copy()))
+            self.moves.append(_Move(phase, self.t_end, float(seconds), np.zeros(len(self.end)), self.end.copy()))
             self.t_end += float(seconds)
 
     def at(self, t: np.ndarray) -> np.ndarray:
@@ -408,6 +452,11 @@ class MotionScript:
             out.append(self.moves[max(index, 0)].phase)
         return out
 
+    @property
+    def end_tilt(self) -> float:
+        """The tilt the script ends at; 0 for a script without one."""
+        return float(self.end[5]) if len(self.end) > 5 else 0.0  # noqa: PLR2004
+
     def first_time(self, phase: Phase) -> float:
         """Return when the first move of *phase* starts, or the end of the script.
 
@@ -432,6 +481,27 @@ def hand_rotation(yaw: float) -> np.ndarray:
     return np.array([[-s, c, 0.0], [c, s, 0.0], [0.0, 0.0, -1.0]])
 
 
+def lean(rotation: np.ndarray, outward: np.ndarray, tilt: float) -> np.ndarray:
+    """Return *rotation* turned by *tilt* about the level axis across *outward*: the fingers lean outward.
+
+    Args:
+        rotation: An orientation, its third column the approach axis (fingers down: straight down).
+        outward: The horizontal direction from the arm's base to the hand.
+        tilt: The angle, radians; positive turns the approach toward *outward*.
+
+    Returns:
+        The turned 3x3 rotation.
+    """
+    axis = np.array([outward[1], -outward[0], 0.0])
+    norm = float(np.linalg.norm(axis))
+    if norm < 1e-9 or abs(tilt) < 1e-12:  # noqa: PLR2004
+        return rotation
+    axis /= norm
+    cross = np.array([[0.0, -axis[2], axis[1]], [axis[2], 0.0, -axis[0]], [-axis[1], axis[0], 0.0]])
+    turn = np.eye(3) + np.sin(tilt) * cross + (1.0 - np.cos(tilt)) * cross @ cross
+    return turn @ rotation
+
+
 def wrap_near(angle: float, reference: float, period: float = 2.0 * np.pi) -> float:
     """Return *angle* plus a whole number of periods, as close as possible to *reference*.
 
@@ -452,8 +522,11 @@ class FrankaIK:
     the hardware limits; a joint pinned there drops out of the solve (an active set). It runs on a
     private ``MjData``, so the simulation is untouched.
 
-    The arm (:class:`~.bucket_sort_arms.FrankaArm`) names the joints, the hand and the home pose; it
-    defaults to the ``franka_fr3`` profile's FR3.
+    The arm (:class:`~.bucket_sort_arms.BucketSortArm`) names the joints, the tool and the home pose;
+    it defaults to the ``franka_fr3`` profile's FR3. A six-joint arm has no redundancy left. An arm
+    with a :attr:`~.bucket_sort_arms.BucketSortArm.max_tilt` may lean the hand outward from the base
+    (:func:`lean`) by a *tilt* the planner chooses, and its yaw is the closing axis' with the lean
+    taken out.
     """
 
     def __init__(self, model: object, arm: FrankaArm = FR3_ARM) -> None:
@@ -469,17 +542,42 @@ class FrankaIK:
         self.dof_adr = np.array([int(model.jnt_dofadr[j]) for j in joints])
         self.hard_lower = np.array([float(model.jnt_range[j][0]) for j in joints])
         self.hard_upper = np.array([float(model.jnt_range[j][1]) for j in joints])
-        self.lower = self.hard_lower + JOINT_MARGIN
-        self.upper = self.hard_upper - JOINT_MARGIN
+        margin = JOINT_MARGIN if arm.joint_margin is None else arm.joint_margin
+        self.lower = self.hard_lower + margin
+        self.upper = self.hard_upper - margin
         self._centre = (self.hard_lower + self.hard_upper) / 2.0
         self._half = (self.hard_upper - self.hard_lower) / 2.0
-        self.finger_adr = np.array([int(model.jnt_qposadr[model.joint(arm.name(name)).id]) for name in FINGER_JOINTS])
-        self.hand = int(model.body(arm.name(HAND_BODY)).id)
+        self.finger_adr = np.array([int(model.jnt_qposadr[model.joint(arm.name(name)).id]) for name in arm.fingers])
+        site_rotation = np.eye(3)
+        if arm.tool_site is not None:
+            site = int(model.site(arm.name(arm.tool_site)).id)
+            self.hand = int(model.site_bodyid[site])
+            self.tcp_local = np.array(model.site_pos[site], dtype=np.float64)
+            flat = np.zeros(9)
+            mujoco.mju_quat2Mat(flat, model.site_quat[site])
+            site_rotation = flat.reshape(3, 3)
+        else:
+            self.hand = int(model.body(arm.name(arm.tool_body)).id)
+            self.tcp_local = np.array(arm.tcp, dtype=np.float64)
+        approach = site_rotation @ np.asarray(arm.approach, dtype=np.float64)
+        closing = site_rotation @ np.asarray(arm.closing, dtype=np.float64)
+        self.tool_axes = np.column_stack([np.cross(closing, approach), closing, approach])
+        """The hand's axes in the tool body's frame, as :func:`hand_rotation` orders them: across, closing, approach."""
+        self.plain = arm.max_tilt <= 0.0 and np.array_equal(self.tool_axes, np.eye(3))
+        """Fingers always down on a Franka Hand: the orientation is the tool body's, unchanged."""
+        self.grip_open = float(arm.grip_open)
+        self._stiffness = np.array([-float(model.actuator(arm.name(a)).biasprm[1]) for a in arm.actuators])
+        """Each arm joint's position servo stiffness, N m/rad: how far gravity makes it sag (:meth:`sag`)."""
         self._jacp = np.zeros((3, model.nv))
         self._jacr = np.zeros((3, model.nv))
         self.damping = IK_DAMPING
         self.home = np.array(arm.home)
         """The arm's home pose: plans start and end there."""
+        self._sag_data = None
+        mujoco.mj_kinematics(model, self.data)
+        base = np.array(self.data.xpos[model.jnt_bodyid[joints[0]]][:2], dtype=np.float64)
+        self.base_xy = np.zeros(2) if np.allclose(base, 0.0, atol=1e-12) else base
+        """Where the base joint's axis meets the table: the hand leans outward from it."""
         self.home_yaw = float(arm.home_yaw) if arm.home_yaw is not None else self.fk(self.home)[1]
         """World yaw of the closing axis at :attr:`home`."""
 
@@ -487,18 +585,64 @@ class FrankaIK:
         """Put the private model's arm at *q* (and the fingers at half *grip* each) and update its kinematics."""
         self.data.qpos[self.qpos_adr] = q
         if grip is not None:
-            self.data.qpos[self.finger_adr] = min(max(grip, 0.0), GRIP_OPEN) / 2.0
+            self.data.qpos[self.finger_adr] = min(max(grip, 0.0), self.grip_open) / 2.0
         self._mujoco.mj_kinematics(self.model, self.data)
 
     def tcp(self, data: object | None = None) -> np.ndarray:
         """Return the TCP's world position (of *data*, by default the private one)."""
         data = self.data if data is None else data
-        return data.xpos[self.hand] + data.xmat[self.hand].reshape(3, 3) @ TCP_LOCAL
+        return data.xpos[self.hand] + data.xmat[self.hand].reshape(3, 3) @ self.tcp_local
+
+    def outward(self, pos: np.ndarray) -> np.ndarray:
+        """Return the horizontal unit direction from the base's axis to *pos* (zero over the base).
+
+        Returns:
+            ``(x, y)``.
+        """
+        out = np.asarray(pos[:2], dtype=np.float64) - self.base_xy
+        norm = float(np.linalg.norm(out))
+        return out / norm if norm > 1e-9 else np.zeros(2)  # noqa: PLR2004
+
+    def hand_axes(self, data: object | None = None) -> np.ndarray:
+        """Return the hand's world axes in :func:`hand_rotation`'s order: across, closing, approach.
+
+        Returns:
+            The 3x3 rotation.
+        """
+        data = self.data if data is None else data
+        return data.xmat[self.hand].reshape(3, 3) @ self.tool_axes
+
+    def tilt(self, data: object | None = None) -> float:
+        """Return how far the hand leans outward from fingers-down, radians.
+
+        Returns:
+            The angle; 0 for an arm that keeps its fingers down.
+        """
+        if self.plain:
+            return 0.0
+        data = self.data if data is None else data
+        approach = self.hand_axes(data)[:, 2]
+        out = self.outward(self.tcp(data))
+        return float(np.arctan2(approach[0] * out[0] + approach[1] * out[1], -approach[2]))
+
+    def target_rotation(self, pos: np.ndarray, yaw: float, tilt: float = 0.0) -> np.ndarray:
+        """Return the tool body's world orientation for the hand at *pos*, closing along *yaw*, leaning *tilt*.
+
+        Returns:
+            The 3x3 rotation.
+        """
+        if self.plain:
+            return hand_rotation(yaw)
+        return lean(hand_rotation(yaw), self.outward(pos), tilt) @ self.tool_axes.T
 
     def yaw(self, data: object | None = None) -> float:
-        """Return the closing axis' world yaw, in ``(-pi, pi]``."""
+        """Return the closing axis' world yaw, in ``(-pi, pi]``, with the hand's lean taken out."""
         data = self.data if data is None else data
-        axis = data.xmat[self.hand].reshape(3, 3)[:, 1]
+        if self.plain:
+            axis = data.xmat[self.hand].reshape(3, 3)[:, 1]
+        else:
+            axes = lean(self.hand_axes(data), self.outward(self.tcp(data)), -self.tilt(data))
+            axis = axes[:, 1]
         return float(np.arctan2(axis[1], axis[0]))
 
     def fk(self, q: np.ndarray) -> tuple[np.ndarray, float]:
@@ -513,16 +657,17 @@ class FrankaIK:
     def continuous_yaw(self, q: np.ndarray) -> float:
         """Return the closing-axis yaw at *q* on the branch the planner uses: home is :attr:`home_yaw`.
 
-        Turning the hand about the vertical turns joint 7 the other way, and the base joint turns it
-        along, so ``home_yaw + (q1 - q1_home) - (q7 - q7_home)`` tells which turn of the wrapped yaw
-        is meant. On a tilted base (the Duo's) the base joint turns the hand less than that, but far
-        less than the half turn that would pick the wrong branch.
+        Turning the hand about the vertical turns the wrist joint (joint 7 on a Franka arm) the other
+        way, and the base joint turns it along, so ``home_yaw + (q1 - q1_home) - (q7 - q7_home)``
+        tells which turn of the wrapped yaw is meant. On a tilted base (the Duo's) the base joint
+        turns the hand less than that, but far less than the half turn that would pick the wrong branch.
 
         Returns:
             The yaw in radians.
         """
         _, yaw = self.fk(q)
-        return wrap_near(yaw, self.home_yaw + float(q[0] - self.home[0]) - float(q[6] - self.home[6]))
+        w = self.arm.wrist
+        return wrap_near(yaw, self.home_yaw + float(q[0] - self.home[0]) - float(q[w] - self.home[w]))
 
     def limit_gradient(self, q: np.ndarray) -> np.ndarray:
         """Return the descent direction of ``sum(((q - centre) / half range) ** 6)``.
@@ -534,10 +679,34 @@ class FrankaIK:
         """
         x = (q - self._centre) / self._half
         gradient = -6.0 * x**5 / self._half
-        # Joint 2 near zero lines joints 1 and 3 up (a shoulder singularity): push it off zero.
-        width = SHOULDER_SINGULAR_WIDTH
-        gradient[1] += SHOULDER_SINGULAR_WEIGHT * 2.0 * q[1] / width**2 * np.exp(-((q[1] / width) ** 2))
+        if self.arm.shoulder_singularity:
+            # Joint 2 near zero lines joints 1 and 3 up (a shoulder singularity): push it off zero.
+            width = SHOULDER_SINGULAR_WIDTH
+            gradient[1] += SHOULDER_SINGULAR_WEIGHT * 2.0 * q[1] / width**2 * np.exp(-((q[1] / width) ** 2))
         return gradient
+
+    def sag(self, q: np.ndarray) -> np.ndarray:
+        """Return how far each joint's position servo sags at *q* under the arm's weight, radians.
+
+        Static: the gravity torque on each joint over its servo's stiffness. Zero for an arm without
+        :attr:`~.bucket_sort_arms.BucketSortArm.gravity_offset`. It uses a scratch ``MjData`` of its own.
+
+        Returns:
+            One value per joint.
+        """
+        if not self.arm.gravity_offset:
+            return np.zeros(len(q))
+        mujoco, model = self._mujoco, self.model
+        if self._sag_data is None:
+            self._sag_data = mujoco.MjData(model)
+        data = self._sag_data
+        data.qpos[self.qpos_adr] = q
+        mujoco.mj_kinematics(model, data)
+        mujoco.mj_comPos(model, data)
+        mujoco.mj_comVel(model, data)
+        bias = np.zeros(model.nv)
+        mujoco.mj_rne(model, data, 0, bias)
+        return bias[self.dof_adr] / self._stiffness
 
     def margin(self, q: np.ndarray) -> float:
         """Return the smallest distance (rad) of any joint to its hardware limit."""
@@ -555,8 +724,9 @@ class FrankaIK:
         limit_gain: float = 0.0,
         null_step: float = 0.05,
         tol: float = 2e-5,
+        tilt: float = 0.0,
     ) -> tuple[np.ndarray, float, float]:
-        """Return joint angles near *q0* that put the TCP at *pos*, fingers down, closing along *yaw*.
+        """Return joints near *q0* that put the TCP at *pos*, fingers down (or leaning *tilt*), closing along *yaw*.
 
         Args:
             q0: Seed.
@@ -568,13 +738,14 @@ class FrankaIK:
             limit_gain: Step along :meth:`limit_gradient` per iteration.
             null_step: Largest null-space change per iteration (rad).
             tol: Position tolerance (m) to stop early; rotation uses ten times it in radians.
+            tilt: How far the hand leans outward (:func:`lean`).
 
         Returns:
             ``(q, position error in m, orientation error in rad)``.
         """
         mujoco, model, data = self._mujoco, self.model, self.data
         q = np.clip(np.asarray(q0, dtype=np.float64).copy(), self.lower, self.upper)
-        r_des = hand_rotation(yaw)
+        r_des = self.target_rotation(pos, yaw, tilt)
         quat, e_rot = np.zeros(4), np.zeros(3)
         n = len(q)
         eye6, eye_n = np.eye(6), np.eye(n)
@@ -619,8 +790,10 @@ class FrankaIK:
             q = np.clip(q + dq, self.lower, self.upper)
         return q, pos_err, rot_err
 
-    def optimize(self, q0: np.ndarray, pos: np.ndarray, yaw: float, iters: int = 80) -> tuple[np.ndarray, float, float]:
-        """Solve for *pos* and *yaw*, then move along the null space away from the joint limits.
+    def optimize(
+        self, q0: np.ndarray, pos: np.ndarray, yaw: float, iters: int = 80, tilt: float = 0.0
+    ) -> tuple[np.ndarray, float, float]:
+        """Solve for *pos* and *yaw* (leaning *tilt*), then move along the null space away from the joint limits.
 
         The result stays on the seed's side of the null space, so consecutive key poses solved from
         each other connect without a jump.
@@ -628,12 +801,28 @@ class FrankaIK:
         Returns:
             ``(q, position error in m, orientation error in rad)``.
         """
-        q, e_pos, e_rot = self.solve(q0, pos, yaw, iters=30)
+        q, e_pos, e_rot = self.solve(q0, pos, yaw, iters=30, tilt=tilt)
         return (
-            self.solve(q, pos, yaw, iters=iters, limit_gain=0.02, null_step=0.03, tol=1e-6)
+            self.solve(q, pos, yaw, iters=iters, limit_gain=0.02, null_step=0.03, tol=1e-6, tilt=tilt)
             if iters
             else (q, e_pos, e_rot)
         )
+
+    def least_tilt(self, q0: np.ndarray, pos: np.ndarray, yaw: float) -> tuple[float, np.ndarray]:
+        """Return the smallest lean, in steps of :data:`TILT_STEP` up to the arm's ``max_tilt``, that reaches *pos*.
+
+        Returns:
+            ``(tilt, q)``: the lean (the largest when none reaches) and the joints there.
+        """
+        steps = int(np.floor(self.arm.max_tilt / TILT_STEP + 1e-9)) + 1
+        best = (0.0, np.asarray(q0, dtype=np.float64))
+        for k in range(steps):
+            tilt = k * TILT_STEP
+            q, e_pos, e_rot = self.optimize(q0, pos, yaw, iters=0, tilt=tilt)
+            best = (tilt, q)
+            if e_pos <= IK_POS_TOL / 2 and e_rot <= IK_ROT_TOL / 2:
+                break
+        return best
 
 
 # ----------------------------------------------------------------------
@@ -723,16 +912,14 @@ class _Clearance:
                 if int(model.geom_bodyid[g]) in bodies and (model.geom_contype[g] or model.geom_conaffinity[g])
             ])
 
-        hand = tuple(arm.name(body) for body in (HAND_BODY, "left_finger", "right_finger"))
+        hand = tuple(arm.name(body) for body in arm.hand_bodies)
         self.robot = collision_geoms((*hand, *(arm.name(link) for link in reversed(arm.links))))
-        self.fingers = collision_geoms(hand[1:])
+        self.fingers = collision_geoms(tuple(arm.name(body) for body in arm.finger_bodies))
         # The base (link 0) never moves: its distance from another arm's base is the mount's.
         moving = tuple(arm.name(link) for link in arm.arm_links[1:])
         self.arm = collision_geoms((*hand, *moving)) if others else None
         self.other_arms = (
-            collision_geoms(
-                tuple(o.name(b) for o in others for b in (*o.arm_links, HAND_BODY, "left_finger", "right_finger"))
-            )
+            collision_geoms(tuple(o.name(b) for o in others for b in (*o.arm_links, *o.hand_bodies)))
             if others
             else None
         )
@@ -794,7 +981,7 @@ class JointPlan:
     """Hand opening targets, ``(ticks,)``, metres."""
     phases: list[Phase]
     cartesian: np.ndarray
-    """The scripted ``(x, y, z, yaw, grip)`` per tick."""
+    """The scripted ``(x, y, z, yaw, grip, tilt)`` per tick."""
     lift_check: int | None = None
     """Tick at which the grasp is checked."""
     hold_until: int | None = None
@@ -833,7 +1020,7 @@ class JointPlan:
         """Return the targets of *tick*, clamped to the plan's ends.
 
         Returns:
-            Eight values: seven joints (rad) and the opening (m).
+            The joints (rad), then the opening (m).
         """
         tick = min(max(tick, 0), len(self.q) - 1)
         return np.array([*self.q[tick], self.grip[tick]])
@@ -990,7 +1177,7 @@ class Planner:
 
     def grasp_width(self, name: str, rotation: np.ndarray) -> float:
         """Return the width the hand closes on, at most the hand's opening."""
-        return min(GRIP_OPEN, self.grasp_axes(name, rotation)[2])
+        return min(self.ik.grip_open, self.grasp_axes(name, rotation)[2])
 
     def grasp_point(self, name: str, position: np.ndarray, rotation: np.ndarray, params: DemoParams) -> np.ndarray:
         """Return the TCP's grasp position: the centre, shifted along the long side, at a safe height.
@@ -1002,7 +1189,7 @@ class Planner:
         # Keep the fingers (2 cm wide) on the object.
         limit = self.shapes[name].half_length - 0.012
         point = position + along * float(np.clip(params.grasp_offset, -limit, limit))
-        point[2] = max(float(position[2]), MIN_TCP_Z) + params.grasp_dz
+        point[2] = max(float(position[2]), self.arm.min_tcp_z) + params.grasp_dz
         return point
 
     def predicted_q7(self, yaw: float, xy: np.ndarray) -> float:
@@ -1014,14 +1201,14 @@ class Planner:
         Returns:
             Radians.
         """
-        ik = self.ik
+        ik, w = self.ik, self.arm.wrist
         if self.arm.upright:
-            q1 = float(np.arctan2(xy[1], xy[0]))
-            return float(ik.home[6] + (q1 - ik.home[0]) - (yaw - ik.home_yaw))
+            q1 = float(np.arctan2(xy[1] - ik.base_xy[1], xy[0] - ik.base_xy[0]))
+            return float(ik.home[w] + (q1 - ik.home[0]) - (yaw - ik.home_yaw))
         key = (float(xy[0]), float(xy[1]))
         if self._wrist_probe is None or self._wrist_probe[0] != key:
             q, _, _ = ik.solve(ik.home, np.array([*key, WRIST_PROBE_Z]), ik.home_yaw, iters=30)
-            self._wrist_probe = (key, float(q[6]), ik.continuous_yaw(q))
+            self._wrist_probe = (key, float(q[w]), ik.continuous_yaw(q))
         _, q7, solved_yaw = self._wrist_probe
         return float(q7 - (yaw - solved_yaw))
 
@@ -1036,7 +1223,8 @@ class Planner:
         """
         base = wrap_near(axis_yaw, current, period)
         options = [base + k * period for k in (-2, -1, 0, 1, 2)]
-        limit_lo, limit_hi = self.ik.lower[6] + 0.1, self.ik.upper[6] - 0.1
+        w = self.arm.wrist
+        limit_lo, limit_hi = self.ik.lower[w] + 0.1, self.ik.upper[w] - 0.1
         feasible = [y for y in options if limit_lo <= self.predicted_q7(y, xy) <= limit_hi]
         feasible.sort(key=lambda y: abs(y - current))
         return feasible[:2] if feasible else [base]
@@ -1050,14 +1238,25 @@ class Planner:
         name = instruction.object
         position, rotation = self.object_pose(name)
         grasp = self.grasp_point(name, position, rotation, params)
-        key, _, _ = self.ik.optimize(q, grasp, yaw, iters=40)
+        key, _, _ = self.ik.optimize(q, grasp, yaw, iters=40, tilt=self.tilt_at(grasp, yaw) or 0.0)
         margin = self.ik.margin(key)
         bucket_pos, bucket_rot = self.bucket_pose(instruction.bucket)
         across = float(np.arctan2(bucket_rot[1, 0], bucket_rot[0, 0]))
         release_yaw = self.yaw_candidates(across, yaw, bucket_pos[:2])[0] if params.reorient else yaw
         over = np.array([bucket_pos[0], bucket_pos[1], params.release_z])
-        key, e_pos, _ = self.ik.optimize(key, over, release_yaw, iters=40)
+        tilt = self.tilt_at(over, release_yaw) or 0.0
+        key, e_pos, _ = self.ik.optimize(key, over, release_yaw, iters=40, tilt=tilt)
         return min(margin, self.ik.margin(key)) - (1.0 if e_pos > IK_POS_TOL else 0.0)
+
+    def tilt_at(self, pos: np.ndarray, yaw: float) -> float | None:
+        """Return how far the hand leans at *pos* closing along *yaw*: the least that reaches it.
+
+        Returns:
+            Radians, ``None`` for an arm that keeps its fingers down.
+        """
+        if self.arm.max_tilt <= 0.0:
+            return None
+        return self.ik.least_tilt(self.ik.home, pos, yaw)[0]
 
     # -- building ---------------------------------------------------------
 
@@ -1089,7 +1288,7 @@ class Planner:
         self.held_width = self.grasp_width(name, rotation)
         script = MotionScript(start, slow)
         x0 = start[:3]
-        open_width = min(GRIP_OPEN, self.held_width + p.open_margin)
+        open_width = min(self.ik.grip_open, self.held_width + p.open_margin)
         pre = grasp + np.array([0.0, 0.0, p.pregrasp_height])
         # Get up and clear first when starting low and away from the object (a retry).
         if x0[2] < pre[2] - 0.02 and np.linalg.norm(x0[:2] - grasp[:2]) > 0.03:  # noqa: PLR2004
@@ -1099,8 +1298,10 @@ class Planner:
                 pos=up,
                 grip=max(start[4], open_width),
                 duration=move_duration(up[2] - x0[2], p.lift_speed, 0.5),
+                tilt=self.tilt_at(up, float(script.end[3])),
             )
         here = script.end[:3]
+        tilt = self.tilt_at(pre, grasp_yaw)
         script.add(
             "approach",
             pos=pre,
@@ -1109,14 +1310,28 @@ class Planner:
             duration=max(
                 move_duration(float(np.linalg.norm(pre - here)), p.transit_speed, 0.8),
                 move_duration(grasp_yaw - script.end[3], p.yaw_speed, 0.8),
+                move_duration((tilt or 0.0) - script.end_tilt, p.yaw_speed, 0.8),
             ),
             blend=p.blend,
+            tilt=tilt,
         )
-        script.add("descend", pos=grasp, duration=move_duration(p.pregrasp_height, p.fine_speed, 0.6), blend=p.blend)
-        script.add("close", grip=0.0, duration=p.close_s)
+        script.add(
+            "descend",
+            pos=grasp,
+            duration=move_duration(p.pregrasp_height, p.fine_speed, 0.6),
+            blend=p.blend,
+            tilt=self.tilt_at(grasp, grasp_yaw),
+        )
+        squeeze = self.arm.squeeze
+        script.add("close", grip=0.0 if squeeze is None else max(0.0, self.held_width - squeeze), duration=p.close_s)
         script.pause("close", p.settle_s)
         lift = grasp + np.array([0.0, 0.0, p.lift_height])
-        script.add("lift", pos=lift, duration=move_duration(p.lift_height, p.lift_speed, 0.6, p.held_accel))
+        script.add(
+            "lift",
+            pos=lift,
+            duration=move_duration(p.lift_height, p.lift_speed, 0.6, p.held_accel),
+            tilt=self.tilt_at(lift, grasp_yaw),
+        )
 
         yaw_release = self._add_place(script, instruction, params, grasp_yaw, (position - grasp)[:2])
         self.add_return(script, p)
@@ -1145,10 +1360,12 @@ class Planner:
         script = MotionScript(start, slow)
         if start[2] < params.carry_z - REPLAN_SHIFT:  # re-planned on the way down into the bucket: rise first
             rise = params.carry_z - float(start[2])
+            up = np.array([start[0], start[1], params.carry_z])
             script.add(
                 "carry",
-                pos=np.array([start[0], start[1], params.carry_z]),
+                pos=up,
                 duration=move_duration(rise, params.lift_speed, 0.5),
+                tilt=self.tilt_at(up, float(start[3])),
             )
         yaw_release = self._add_place(script, instruction, params, float(start[3]), np.asarray(offset)[:2])
         self.add_return(script, params)
@@ -1175,6 +1392,7 @@ class Planner:
         c, s = np.cos(turn), np.sin(turn)
         offset = np.array([c * offset[0] - s * offset[1], s * offset[0] + c * offset[1]])
         over = np.array([place[0] - offset[0], place[1] - offset[1], p.carry_z])
+        tilt = self.tilt_at(over, yaw_release)
         script.add(
             "carry",
             pos=over,
@@ -1182,8 +1400,10 @@ class Planner:
             duration=max(
                 move_duration(float(np.linalg.norm(over - script.end[:3])), p.transit_speed, 0.8, p.held_accel),
                 move_duration(turn, p.yaw_speed, 0.8),
+                move_duration((tilt or 0.0) - script.end_tilt, p.yaw_speed, 0.8),
             ),
             blend=p.blend,
+            tilt=tilt,
         )
         release = np.array([over[0], over[1], p.release_z])
         script.add(
@@ -1191,22 +1411,42 @@ class Planner:
             pos=release,
             duration=move_duration(p.carry_z - p.release_z, p.fine_speed, 0.5, p.held_accel),
             blend=p.blend,
+            tilt=self.tilt_at(release, yaw_release),
         )
         script.pause("release", p.release_pause_s)
-        script.add("release", grip=min(GRIP_OPEN, self.held_width + p.release_margin), duration=0.45)
+        script.add("release", grip=min(self.ik.grip_open, self.held_width + p.release_margin), duration=0.45)
         script.pause("release", p.after_release_s)
         return yaw_release
 
-    @staticmethod
-    def add_return(script: MotionScript, p: DemoParams) -> None:
+    def add_return(self, script: MotionScript, p: DemoParams) -> None:
         """Add the retreat straight up; :meth:`solve` adds the joint-space way home after it."""
         here = script.end[:3]
-        retreat_z = max(here[2] + 0.06, 0.22)
+        retreat_z = max(here[2] + 0.06, self.arm.heights.retreat_z)
+        up = np.array([here[0], here[1], retreat_z])
         script.add(
             "retreat",
-            pos=np.array([here[0], here[1], retreat_z]),
+            pos=up,
             duration=move_duration(retreat_z - here[2], p.lift_speed, 0.5),
+            tilt=self.tilt_at(up, float(script.end[3])),
         )
+        if self.arm.max_tilt > 0.0:
+            # Home is low for a six-joint arm: go there in a straight line, over the buckets'
+            # rims, not in joint space, which dips the hand. The joint-space way home is then short.
+            ik = self.ik
+            home, _ = ik.fk(ik.home)
+            yaw = wrap_near(ik.continuous_yaw(ik.home), float(script.end[3]), np.pi)
+            script.add(
+                "retreat",
+                pos=home,
+                yaw=yaw,
+                tilt=ik.tilt(),
+                duration=max(
+                    move_duration(float(np.linalg.norm(home - up)), p.transit_speed, 0.8),
+                    move_duration(yaw - script.end[3], p.yaw_speed, 0.8),
+                    move_duration(script.end_tilt, p.yaw_speed, 0.8),
+                ),
+                blend=p.blend,
+            )
 
     def checked(
         self,
@@ -1328,7 +1568,7 @@ class Planner:
         extra = ticks - n_script
         q = np.vstack([q_script, np.repeat(q_script[-1:], extra, axis=0)]) + ramp[:, None] * delta
         cartesian = np.vstack([cartesian, np.repeat(cartesian[-1:], extra, axis=0)])
-        grip = cartesian[:, 4] + ramp * (GRIP_OPEN - cartesian[-1, 4])
+        grip = cartesian[:, 4] + ramp * (self.ik.grip_open - cartesian[-1, 4])
         home_tick = int(np.ceil(start / dt))
         all_phases: list[Phase] = [*phases, *([phases[-1]] * extra)]
         returning: list[Phase] = ["return"] * (ticks - home_tick)
@@ -1360,22 +1600,24 @@ class Planner:
         them like the hand does. The targets are then smoothed, and any first-tick correction fades in.
 
         Returns:
-            ``(targets (ticks, 7), largest position error, largest orientation error)``.
+            ``(targets (ticks, joints), largest position error, largest orientation error)``.
         """
         ik, data = self.ik, self.ik.data
         key = q_start
         for move in script.moves:
-            if not np.any(move.delta[:4]):
+            tilt = float(move.target[5]) if len(move.target) > 5 else 0.0  # noqa: PLR2004
+            if not np.any(move.delta[:4]) and not np.any(move.delta[5:]):
                 move.q_delta = None
                 continue
-            new_key, _, _ = ik.optimize(key, move.target[:3], float(move.target[3]))
+            new_key, _, _ = ik.optimize(key, move.target[:3], float(move.target[3]), tilt=tilt)
             move.q_delta = new_key - key
             key = new_key
         n_script = max(2, int(np.ceil(script.t_end / dt)) + 1)
         times = np.arange(n_script) * dt
         cartesian = script.at(times)
+        tilts = cartesian[:, 5] if cartesian.shape[1] > 5 else np.zeros(n_script)  # noqa: PLR2004
         reference = script.reference(times, q_start)
-        q_script = np.zeros((n_script, 7))
+        q_script = np.zeros((n_script, len(q_start)))
         current = q_start.copy()
         pos_error = rot_error = 0.0
         step_limit = MAX_TICK_SPEED * self.dq_max * dt
@@ -1384,6 +1626,7 @@ class Planner:
                 current,
                 cartesian[k, :3],
                 float(cartesian[k, 3]),
+                tilt=float(tilts[k]),
                 iters=self.tick_iters if k else 30,
                 posture=reference[k] if self.tick_null_step > 0.0 else None,
                 null_step=self.tick_null_step,
@@ -1407,7 +1650,8 @@ class Planner:
         # Measure the task again on the targets as they will run (after the fade-in).
         for k in range(int(np.ceil(START_BLEND_S / dt)), n_script, CHECK_EVERY):
             ik.set_arm(q_script[k])
-            rot = data.xmat[ik.hand].reshape(3, 3) @ hand_rotation(float(cartesian[k, 3])).T
+            target = ik.target_rotation(cartesian[k, :3], float(cartesian[k, 3]), float(tilts[k]))
+            rot = data.xmat[ik.hand].reshape(3, 3) @ target.T
             pos_error = max(pos_error, float(np.linalg.norm(cartesian[k, :3] - ik.tcp())))
             rot_error = max(rot_error, float(np.arccos(np.clip((np.trace(rot) - 1.0) / 2.0, -1.0, 1.0))))
         return q_script, pos_error, rot_error
@@ -1599,6 +1843,18 @@ class BucketSortDemonstrator:
             control_kind(model, int(a))[1] * float(model.actuator_gear[a, 0]) for a in self._actuators
         ])
         self._grip_per_width = np.array([arm.grip_per_width for arm in self.arms])
+        self._rows: list[tuple[int, int]] = []
+        """Each arm's first output and joint count: its joints, then its gripper."""
+        for arm in self.arms:
+            start = self._rows[-1][0] + self._rows[-1][1] + 1 if self._rows else 0
+            self._rows.append((start, len(arm.joints)))
+        self._grip_rows = np.array([start + count for start, count in self._rows])
+        self._followers = [
+            (int(row), int(model.actuator(arm.name(name)).id), float(self._ctrl_per_unit[row]))
+            for arm, row in zip(self.arms, self._grip_rows, strict=True)
+            for name in arm.gripper_followers
+        ]
+        """Actuators that take a gripper's target too (the reBot's second finger): output row, id, ctrl per unit."""
         self._hold: list[np.ndarray | None] = [None] * len(self.arms)
         self._still_since: float | None = None
         self._pinned_arm: int | None = None
@@ -1610,7 +1866,7 @@ class BucketSortDemonstrator:
         self._q: np.ndarray | None = None
         self._q_prev: np.ndarray | None = None
         self._braking_from = self.ik.home.copy()
-        self._grip = GRIP_OPEN
+        self._grip = self.arms[0].grip_open
         self._generation: int | None = None
         self._episode: _Episode | None = None
         self._plan: JointPlan | None = None
@@ -1727,7 +1983,7 @@ class BucketSortDemonstrator:
         """Start from the arms as they are: the working arm's joints, every other arm's targets."""
         # A scene reset puts the arm home: start from there, not from the last episode's targets.
         self._q = np.array(data.qpos[self.ik.qpos_adr])
-        self._grip = self._ctrl_targets(data, self._active)[7]
+        self._grip = self._ctrl_targets(data, self._active)[-1]
         self._hold = [None if i == self._active else self._ctrl_targets(data, i) for i in range(len(self.arms))]
 
     def _targets(self, q: np.ndarray, grip: float) -> np.ndarray:
@@ -1740,12 +1996,17 @@ class BucketSortDemonstrator:
             [*q, grip] if i == self._active else self._hold[i]  # type: ignore[list-item]
             for i in range(len(self.arms))
         ])
-        targets[7::8] *= self._grip_per_width
+        for i, (start, count) in enumerate(self._rows):
+            if self.arms[i].gravity_offset:  # command the sag back (FrankaIK.sag)
+                targets[start : start + count] += self.planners[i].ik.sag(targets[start : start + count])
+        targets[self._grip_rows] *= self._grip_per_width
         return targets
 
     def write_targets(self, data: object, targets: np.ndarray) -> None:
         """Write targets in model units (:meth:`step`'s) to the actuators."""
         data.ctrl[self._actuators] = targets * self._ctrl_per_unit
+        for row, actuator, per_unit in self._followers:
+            data.ctrl[actuator] = targets[row] * per_unit
 
     def stuck_start(self, data: object, dt: float, rng: np.random.Generator) -> StuckStart | None:
         """Plan the move to a pose a policy gets stuck in, for the episode about to start (after a reset).
@@ -1768,7 +2029,8 @@ class BucketSortDemonstrator:
         self.reset()
         self._take_targets(data)
         snapshot = SceneSnapshot.take(data)
-        params = DemoParams.sample(rng) if self.randomize else DemoParams()
+        heights = self.active_arm.heights
+        params = DemoParams.sample(rng, heights) if self.randomize else DemoParams.for_heights(heights)
         if len(self.arms) > 1:
             plan = self._plan_with_an_arm(snapshot, instruction, params, dt, rng)
         else:
@@ -1820,9 +2082,13 @@ class BucketSortDemonstrator:
         Returns:
             Eight values.
         """
-        rows = slice(8 * arm, 8 * arm + 8)
+        start, count = self._rows[arm]
+        rows = slice(start, start + count + 1)
         targets = np.array(data.ctrl[self._actuators[rows]]) / self._ctrl_per_unit[rows]
-        targets[7] = float(np.clip(targets[7] / self._grip_per_width[arm], 0.0, GRIP_OPEN))
+        opening = targets[count] / self._grip_per_width[arm]
+        targets[count] = float(np.clip(opening, 0.0, self.arms[arm].grip_open))
+        if self.arms[arm].gravity_offset:  # the joints the targets hold the arm at, the sag taken back out
+            targets[:count] -= self.planners[arm].ik.sag(targets[:count])
         return targets
 
     def _switch_arm(self, arm: int) -> None:
@@ -1833,7 +2099,8 @@ class BucketSortDemonstrator:
         self._hold[self._active] = np.array([*self._q, self._grip])
         self._hold[arm] = None
         self._active = arm
-        self._q, self._grip = hold[:7].copy(), float(hold[7])
+        count = self._rows[arm][1]
+        self._q, self._grip = hold[:count].copy(), float(hold[count])
         self._q_prev = self._q.copy()
         self._braking_from = self._q.copy()
 
@@ -1841,7 +2108,8 @@ class BucketSortDemonstrator:
         self._generation = self.task.reset_count
         seed = int(self._rng.integers(2**63))
         rng = np.random.default_rng(seed)
-        params = DemoParams.sample(rng) if self.randomize else DemoParams()
+        heights = self.active_arm.heights
+        params = DemoParams.sample(rng, heights) if self.randomize else DemoParams.for_heights(heights)
         self.stats.episodes += 1
         self._episode = _Episode(self.stats.episodes, self.task.instruction, rng, params, float(data.time))
         self._plan = None
@@ -1919,12 +2187,12 @@ class BucketSortDemonstrator:
         """
         if len(self.arms) == 1:
             return True
+        written = self._targets(self._q, self._grip)  # type: ignore[arg-type]
         for index, planner in enumerate(self.planners):
-            target = self._q if index == self._active else self._hold[index][:7]  # type: ignore[index]
-            targets = (
-                np.array(data.ctrl[self._actuators[8 * index : 8 * index + 7]])
-                / self._ctrl_per_unit[8 * index : 8 * index + 7]
-            )
+            start, count = self._rows[index]
+            rows = slice(start, start + count)
+            target = written[rows]
+            targets = np.array(data.ctrl[self._actuators[rows]]) / self._ctrl_per_unit[rows]
             moving = np.abs(np.array(data.qvel[planner.ik.dof_adr])).max() >= STILL_SPEED
             if moving or np.abs(targets - target).max() > TARGET_TOLERANCE:
                 self._still_since = None
@@ -1940,7 +2208,7 @@ class BucketSortDemonstrator:
         if self._lagging(data, plan, tick):
             return
         targets = plan.targets(tick)
-        self._q, self._grip = targets[:7], float(targets[7])
+        self._q, self._grip = targets[:-1], float(targets[-1])
         self._phase = plan.phases[tick]
         self._tick += 1
         if plan.kind == "home" or episode is None or episode.instruction is None:
@@ -2056,7 +2324,10 @@ class BucketSortDemonstrator:
     def _start_state(self) -> np.ndarray:
         q = self._q if self._q is not None else self.ik.home
         tcp, _ = self.ik.fk(q)
-        return np.array([*tcp, self.ik.continuous_yaw(q), self._grip])
+        yaw = self.ik.continuous_yaw(q)
+        if self.ik.plain:
+            return np.array([*tcp, yaw, self._grip])
+        return np.array([*tcp, yaw, self._grip, self.ik.tilt()])
 
     def _resting(self, data: object) -> bool:
         name = self._episode.instruction.object  # type: ignore[union-attr]
@@ -2072,9 +2343,14 @@ class BucketSortDemonstrator:
         body = self._object_body[name]
         position = data.xpos[body]
         rotation = data.xmat[body].reshape(3, 3)
+        area = self.task.area
+        retry_x, retry_y = RETRY_X, RETRY_Y
+        if area is not DEFAULT_LAYOUT:  # the same margins about the robot's own object area
+            retry_x = (area.object_x[0] - 0.06, area.object_x[1] + 0.04)
+            retry_y = (area.object_y[0] - 0.02, area.object_y[1] + 0.02)
         return bool(
-            RETRY_X[0] <= position[0] <= RETRY_X[1]
-            and RETRY_Y[0] <= position[1] <= RETRY_Y[1]
+            retry_x[0] <= position[0] <= retry_x[1]
+            and retry_y[0] <= position[1] <= retry_y[1]
             and position[2] < 0.05  # noqa: PLR2004
             and self.planner.shapes[name].grasp_axes(rotation) is not None
             and bucket_containing(self.model, data, position) is None
@@ -2092,7 +2368,7 @@ class BucketSortDemonstrator:
         logger.info("Demonstrator: {}; retrying", reason)
         self.stats.retries += 1
         if self.randomize:
-            episode.params = DemoParams.sample(episode.rng)
+            episode.params = DemoParams.sample(episode.rng, self.active_arm.heights)
         episode.retry_pending = True
         self._go_home(data, dt)
 
@@ -2117,7 +2393,7 @@ class BucketSortDemonstrator:
         brake = self._brake(dt)
         self.planner.load(SceneSnapshot.take(data))
         script = MotionScript(self._start_state())
-        script.add("release", grip=GRIP_OPEN, duration=0.4)
+        script.add("release", grip=self.ik.grip_open, duration=0.4)
         self.planner.add_return(script, episode.params)  # type: ignore[union-attr]
         plan = self.planner.solve(script, self._q, dt, kind="home", target=episode.instruction.object)  # type: ignore[union-attr]
         self._run(plan, data, brake)
@@ -2132,7 +2408,7 @@ class BucketSortDemonstrator:
             ``(ticks, 7)`` joint targets.
         """
         q = np.asarray(self._q, dtype=np.float64)
-        velocity = (q - self._q_prev) / dt if self._q_prev is not None else np.zeros(7)
+        velocity = (q - self._q_prev) / dt if self._q_prev is not None else np.zeros(len(q))
         t = np.arange(1, round(BRAKE_S / dt) + 1) * dt
         brake = q[None, :] + velocity[None, :] * (t - t**2 / (2.0 * BRAKE_S))[:, None]
         brake = np.clip(brake, self.ik.lower, self.ik.upper)
@@ -2312,13 +2588,16 @@ class BucketSortDemonstrator:
                 candidates = candidates if params.yaw_choice < 0.5 else candidates[::-1]  # noqa: PLR2004
             elif margins[1] > margins[0]:
                 candidates = candidates[::-1]
+        safer, safest = self.active_arm.heights.safe
         variants = [
             params,
-            replace(params, release_z=max(params.release_z, 0.15), carry_z=max(params.carry_z, 0.25)),
-            replace(params, release_z=0.16, carry_z=0.26, blend=0.0, place_offset=(0.0, -0.01), grasp_offset=0.0),
+            replace(params, release_z=max(params.release_z, safer[0]), carry_z=max(params.carry_z, safer[1])),
+            replace(
+                params, release_z=safest[0], carry_z=safest[1], blend=0.0, place_offset=(0.0, -0.01), grasp_offset=0.0
+            ),
         ]
         if rng is not None:
-            variants += [DemoParams.sample(rng) for _ in range(2)]
+            variants += [DemoParams.sample(rng, self.active_arm.heights) for _ in range(2)]
         best: JointPlan | None = None
         eligible: JointPlan | None = None
         """With several arms, the best plan that may run at all (:meth:`_may_run`)."""

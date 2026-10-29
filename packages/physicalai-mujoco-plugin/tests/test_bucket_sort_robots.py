@@ -64,10 +64,10 @@ class TestScene:
         offered = {entry.profile.name: entry.simulation_launch() for entry in list_catalog_entries()}
         for profile in ("franka_fr3", *NEW_PROFILES):
             assert "bucket_sort" in [scene.id for scene in offered[profile].scenes], profile
-        assert "bucket_sort" not in [scene.id for scene in offered["trossen_wxai"].scenes]
+        assert "bucket_sort" not in [scene.id for scene in offered["so101"].scenes]
 
-    def test_the_widowx_ai_is_not_offered(self) -> None:
-        assert not get_scene("bucket_sort").supports(get_profile("trossen_wxai"))
+    def test_the_so101_is_not_offered(self) -> None:
+        assert not get_scene("bucket_sort").supports(get_profile("so101"))
 
     def test_a_reset_puts_every_arm_at_its_home_fingers_down_and_open(self, scene: MuJoCoRobot) -> None:
         model, data = scene._sim.model, scene._sim.data

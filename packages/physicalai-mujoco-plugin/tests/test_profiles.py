@@ -166,7 +166,8 @@ def test_dataset_tier_arms_run_in_single_pick_place() -> None:
 def test_scenes_list_the_profiles_they_support(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert set(list_scenes_for(get_profile("ur5e"))) == {"single_pick_place"}
     assert set(list_scenes_for(SO101_PROFILE, 2)) == {"single_pick_place", "yahtzee", "conveyor_sort"}
-    assert set(list_scenes_for(get_profile("trossen_wxai"), 2)) == {"single_pick_place"}
+    assert set(list_scenes_for(get_profile("trossen_wxai"), 2)) == {"single_pick_place", "bucket_sort"}
+    assert set(list_scenes_for(get_profile("rebot_b601"), 2)) == {"single_pick_place"}
     assert list_scenes_for(get_profile("aloha"), 2) == {}
     assert list_scenes_for(get_profile("unitree_go2"), 2) == {}
     # Floor scenes take any floating-base robot, and only those (SCN-5); the unregistered robot is inline.
