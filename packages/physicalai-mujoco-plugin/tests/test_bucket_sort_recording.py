@@ -599,6 +599,49 @@ def test_an_episode_that_starts_stuck_is_recorded_from_the_stuck_pose(studio: Fa
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize("lost", ["autopilot off", "teleop stopped"])
+def test_losing_the_leader_or_teleop_mid_move_stops_the_stuck_start(lost: str) -> None:
+    """The unrecorded move stops at once: no more targets from it, no recording, client actions count again."""
+    robot = MuJoCoRobot("franka_fr3", scene="bucket_sort", cameras=[], http_port=0, seed=1)
+    robot.connect()
+    try:
+        link = FakeLink(state=dict(TELEOP))
+        automation = robot._automation  # noqa: SLF001
+        automation.bucket_recorder = BucketSortRecorder(lambda: link, chance=lambda: 0.0)
+        automation.set_autopilot("leader")
+        options = RecordingOptions(keep="all", recovery_fraction=MAX_RECOVERY_FRACTION)
+        robot._commands.put(SetStudioRecordingCommand(options=options))  # noqa: SLF001
+        for _ in range(500):
+            robot.get_observation()
+            stuck = automation._stuck  # noqa: SLF001
+            if stuck is not None and stuck.state == "moving" and stuck.tick > 5:  # noqa: PLR2004
+                break
+        else:
+            pytest.fail(f"no stuck start began: {automation.status()}")
+        if lost == "autopilot off":
+            automation.set_autopilot("off")
+        else:
+            link.state = {**TELEOP, "follower_source": "hold"}
+        robot.get_observation()
+        recorder = automation.bucket_recorder
+        assert recorder.phase == "waiting" and recorder.status()["message"].startswith("Waiting for")
+        assert automation._stuck is None and not automation.drives_arm  # noqa: SLF001
+        held = robot._arm_targets().copy()  # noqa: SLF001
+        for _ in range(20):
+            robot.get_observation()
+        np.testing.assert_array_equal(robot._arm_targets(), held)  # noqa: SLF001 - the move wrote nothing more
+        assert "start_recording" not in link.events()
+        action = robot.get_observation().joint_positions.astype(np.float32)
+        action[0] += 5.0  # degrees: a client moves the base joint
+        robot.send_action(action)
+        for _ in range(10):
+            robot.get_observation()
+        assert robot._arm_targets()[0] == pytest.approx(np.radians(action[0]), abs=1e-4)  # noqa: SLF001
+    finally:
+        robot.disconnect()
+
+
+@pytest.mark.slow
 def test_a_stuck_start_that_moves_the_layout_falls_back_to_a_normal_start(studio: FakeStudio, monkeypatch) -> None:
     monkeypatch.setattr(conveyor_automation, "STUCK_DISTURBANCE", -1.0)  # every move counts as disturbing
     robot = MuJoCoRobot("franka_fr3", scene="bucket_sort", cameras=[], http_port=0, seed=1)

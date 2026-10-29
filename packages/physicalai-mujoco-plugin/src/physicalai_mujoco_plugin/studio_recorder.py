@@ -40,7 +40,7 @@ import queue
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 from urllib.parse import urlsplit
 
@@ -738,6 +738,15 @@ class BucketSortDirective:
     """Reset the scene now, for a fresh episode (one tick only)."""
     stuck_start: bool = False
     """Move the arm to a stuck pose now, before the episode starts (one tick only; :class:`BucketSortProgress`)."""
+    abort_stuck_start: bool = False
+    """Stop the move to a stuck pose now and give the arm back to client actions (one tick only)."""
+
+
+def _studio_ready(state: Mapping[str, Any]) -> bool:
+    """Return whether Studio can start a bucket_sort episode: a dataset open, teleoperating, not recording."""
+    return (
+        bool(state.get("dataset_loaded")) and not state.get("is_recording") and state.get("follower_source") == "teleop"
+    )
 
 
 class BucketSortRecorder(_RecorderBase):
@@ -877,31 +886,37 @@ class BucketSortRecorder(_RecorderBase):
         return BucketSortDirective(hold_arm=True)
 
     def _update_positioning(
-        self, link: StudioLinkLike, _state: Mapping[str, Any], progress: BucketSortProgress
+        self, link: StudioLinkLike, state: Mapping[str, Any], progress: BucketSortProgress
     ) -> BucketSortDirective:
         """Wait for the move to the stuck pose; start there, or start normally.
 
+        The move stops, and the cycle waits again, as soon as the episode could not start: the
+        autopilot no longer leads, or Studio no longer teleoperates, has no dataset or records.
+
         Returns:
-            Hold the arm; reset the scene again when the move disturbed the layout or timed out.
+            Hold the arm; reset the scene again when the move disturbed the layout or timed out;
+            abort the move when the episode could not start.
         """
+        if not progress.leading or not _studio_ready(state):
+            self._set_phase("waiting", "")
+            return replace(self._update_waiting(link, state, progress), abort_stuck_start=True)
         if progress.generation != self._generation:
             self._set_phase("resetting", "The scene was reset. Resetting it again for a new episode...")
             return BucketSortDirective(hold_arm=True, reset_scene=True)
-        if progress.stuck_start == "ready":
-            self._stuck_starts += 1
+        if progress.stuck_start in {"ready", "unavailable"}:
+            # Unavailable: the arm did not move, so the episode starts normally as the scene stands.
+            self._stuck_starts += progress.stuck_start == "ready"
             return self._start(link, progress)
-        if progress.stuck_start == "unavailable":
-            return self._start(link, progress)  # the arm did not move: a normal start as it stands
         if progress.stuck_start == "disturbed":
             # A start with something knocked out of place is not a clean stuck state: lay it out anew.
-            self._normal_start = True
-            self._set_phase("resetting", "The move to the stuck pose disturbed the layout. Resetting the scene...")
-            return BucketSortDirective(hold_arm=True, reset_scene=True)
-        if self._clock() - self._since > START_TIMEOUT_S:
-            self._normal_start = True
-            self._set_phase("resetting", "The arm did not reach the stuck pose. Resetting the scene...")
-            return BucketSortDirective(hold_arm=True, reset_scene=True)
-        return BucketSortDirective(hold_arm=True)
+            message = "The move to the stuck pose disturbed the layout. Resetting the scene..."
+        elif self._clock() - self._since > START_TIMEOUT_S:
+            message = "The arm did not reach the stuck pose. Resetting the scene..."
+        else:
+            return BucketSortDirective(hold_arm=True)
+        self._normal_start = True
+        self._set_phase("resetting", message)
+        return BucketSortDirective(hold_arm=True, reset_scene=True)
 
     def _update_starting(
         self, _link: StudioLinkLike, state: Mapping[str, Any], _progress: BucketSortProgress

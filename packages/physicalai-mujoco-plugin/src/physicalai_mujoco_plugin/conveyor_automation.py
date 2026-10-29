@@ -343,6 +343,10 @@ class ConveyorAutomation:
             bucket = self.bucket_recorder.update(self._bucket_progress(model, data))
             hold_arm = bucket.hold_arm
             self._recorder_reset = self._recorder_reset or bucket.reset_scene
+            if bucket.abort_stuck_start:
+                # Nothing more is written to the arm, and client actions count again.
+                self._stuck = None
+                self._reset_pose = None
             if bucket.stuck_start:
                 self._begin_stuck_start(model, data, dt)
         if not hold_arm or not self.bucket_recorder.active:
