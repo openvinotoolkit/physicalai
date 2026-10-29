@@ -48,7 +48,15 @@ from physicalai_mujoco_plugin.http_server import (
     StopReplayCommand,
     SwitchSceneCommand,
 )
-from physicalai_mujoco_plugin.studio_recorder import DEFAULT_TASK, MAX_EPISODES, MAX_TASK_CHARS, RecordingOptions
+from physicalai_mujoco_plugin.studio_recorder import (
+    DEFAULT_MAX_ATTEMPTS,
+    DEFAULT_TASK,
+    MAX_ATTEMPTS,
+    MAX_EPISODES,
+    MAX_RECOVERY_FRACTION,
+    MAX_TASK_CHARS,
+    RecordingOptions,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -896,6 +904,25 @@ class SimControlPanel:
                 max=MAX_EPISODES,
                 step=1,
             )
+            recovery = attempts = None
+            if not conveyor:
+                recovery = gui.add_number(
+                    "Stuck starts",
+                    initial_value=float(studio.get("recovery_fraction") or 0.0),
+                    min=0.0,
+                    max=MAX_RECOVERY_FRACTION,
+                    step=0.05,
+                    hint="Share of episodes that start with the hand closed and empty where it would carry "
+                    "the object, so the policy learns to recover; the move there is not recorded",
+                )
+                attempts = gui.add_number(
+                    "Attempts per episode",
+                    initial_value=int(studio.get("max_attempts") or DEFAULT_MAX_ATTEMPTS),
+                    min=1,
+                    max=MAX_ATTEMPTS,
+                    step=1,
+                    hint="Tries the autopilot gets, retries included, before it gives the episode up",
+                )
             studio_status = gui.add_markdown(_studio_markdown(studio))
         self._handles.studio_toggle = toggle
         self._handles.studio_status = studio_status
@@ -909,7 +936,15 @@ class SimControlPanel:
             if toggle.value:
                 text = (str(task.value).strip()[:MAX_TASK_CHARS] if task is not None else "") or DEFAULT_TASK
                 episodes = min(max(int(budget.value), 0), MAX_EPISODES)
-                options = RecordingOptions(task=text, keep=_KEEP_BY_LABEL[str(keep.value)], max_episodes=episodes)
+                share = min(max(float(recovery.value), 0.0), MAX_RECOVERY_FRACTION) if recovery is not None else 0.0
+                tries = min(max(int(attempts.value), 1), MAX_ATTEMPTS) if attempts is not None else DEFAULT_MAX_ATTEMPTS
+                options = RecordingOptions(
+                    task=text,
+                    keep=_KEEP_BY_LABEL[str(keep.value)],
+                    max_episodes=episodes,
+                    recovery_fraction=share,
+                    max_attempts=tries,
+                )
             self._submit(SetStudioRecordingCommand(options=options))
 
     def _bind_autopilot_mode(self, mode: Any) -> None:  # noqa: ANN401 - a viser dropdown

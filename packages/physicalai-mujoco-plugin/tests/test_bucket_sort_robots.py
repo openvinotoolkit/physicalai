@@ -302,6 +302,40 @@ class TestDemonstrator:
         assert failure is not None and "out of reach" in failure, failure
         assert demo.phase == "failed"
 
+    def test_a_duo_stuck_start_moves_one_arm_clear_of_the_other(self, robot: MuJoCoRobot) -> None:
+        if robot._profile.name != "franka_duo":
+            pytest.skip("one arm")
+        robot._automation.set_autopilot("off")
+        model, data = robot._sim.model, robot._sim.data
+        demo = robot._automation.autopilot.demonstrator
+        moves = 0
+        for seed in range(1, 6):
+            robot._set_seed(seed)
+            robot._reset()
+            robot._set_seed(None)
+            snapshot = bd.SceneSnapshot.take(data)
+            before = np.array(data.ctrl)
+            move = demo.stuck_start(data, TICK_S, np.random.default_rng(seed))
+            if move is None:
+                continue
+            moves += 1
+            working, idle = move.arm, 1 - move.arm
+            rows = move.targets[:, 8 * working : 8 * working + 7]
+            assert demo.planners[working].arm_clearance(rows, snapshot) >= bd.CLEARANCE["arm"]
+            held = move.targets[:, 8 * idle : 8 * idle + 8]
+            np.testing.assert_array_equal(held, np.repeat(held[:1], len(held), axis=0))  # the other arm holds
+            assert held[0, :7] == pytest.approx(before[demo._actuators[8 * idle : 8 * idle + 7]])
+            assert move.targets[-1, 8 * working + 7] <= bd.STUCK_GRIP[1]  # closed, empty
+            arms = [{b for b in range(model.nbody) if model.body(b).name.startswith(side)} for side in ("left_", "right_")]
+            for targets in [*move.targets, *[move.targets[-1]] * 15]:
+                demo.write_targets(data, targets)
+                mujoco.mj_step(model, data, nstep=round(TICK_S / model.opt.timestep))
+                for contact in data.contact[: data.ncon]:
+                    bodies = {int(model.geom_bodyid[contact.geom1]), int(model.geom_bodyid[contact.geom2])}
+                    assert not (bodies & arms[0] and bodies & arms[1]), "the arms touched"
+            assert demo._pinned_arm == working  # it works the first attempt
+        assert moves >= 3, moves  # noqa: PLR2004
+
     def test_an_arm_the_probe_misses_still_plans_with_the_other_yaw_or_a_turned_release(self, robot: MuJoCoRobot) -> None:
         """Seed 1019: the probe misses both arms, yet the left arm's plan passes every check."""
         if robot._profile.name != "franka_duo":

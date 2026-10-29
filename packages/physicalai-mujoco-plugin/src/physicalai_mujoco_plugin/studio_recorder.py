@@ -52,6 +52,11 @@ if TYPE_CHECKING:
 DEFAULT_STUDIO_URL = "http://127.0.0.1:7860"
 MAX_TASK_CHARS = 200
 MAX_EPISODES = 10_000
+MAX_RECOVERY_FRACTION = 0.5
+"""Largest share of bucket_sort episodes that start from a stuck pose."""
+DEFAULT_MAX_ATTEMPTS = 2
+"""The demonstrator's attempts per episode by default (``bucket_sort_demo.DEFAULT_MAX_ATTEMPTS``)."""
+MAX_ATTEMPTS = 5
 FOLLOWER_TYPES = frozenset({"MuJoCo_SO101_Follower"})
 """Known follower types; any other ``MuJoCo_..._Follower`` (e.g. the bucket_sort FR3) matches too."""
 DEFAULT_TASK = "Sort the items: cracked or purple ones into reject, the others into the bin of their color."
@@ -68,7 +73,17 @@ discarded; below the scene's 5 s success dwell, after which it starts the next l
 
 KeepPolicy = Literal["all", "perfect"]
 RecorderPhase = Literal[
-    "off", "connecting", "waiting", "resetting", "starting", "recording", "saving", "done", "stopped", "error"
+    "off",
+    "connecting",
+    "waiting",
+    "resetting",
+    "positioning",
+    "starting",
+    "recording",
+    "saving",
+    "done",
+    "stopped",
+    "error",
 ]
 
 
@@ -405,13 +420,24 @@ class RecordingOptions:
     keep: KeepPolicy = "perfect"
     max_episodes: int = 0
     """Stop after this many saved episodes; ``0`` records until switched off."""
+    recovery_fraction: float = 0.0
+    """bucket_sort: the share of episodes that start from a stuck pose (0 to :data:`MAX_RECOVERY_FRACTION`)."""
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS
+    """bucket_sort: the demonstrator's attempts per episode, the retries included (1 to :data:`MAX_ATTEMPTS`)."""
 
     def __post_init__(self) -> None:
         """Reject values the HTTP layer would also reject.
 
         Raises:
-            ValueError: For an empty or overlong task, an unknown keep policy or a bad budget.
+            ValueError: For an empty or overlong task, an unknown keep policy, a bad budget, recovery
+                share or attempt count.
         """
+        if not 0.0 <= self.recovery_fraction <= MAX_RECOVERY_FRACTION:  # also rejects NaN
+            msg = f"recovery_fraction must be 0..{MAX_RECOVERY_FRACTION}"
+            raise ValueError(msg)
+        if not 1 <= self.max_attempts <= MAX_ATTEMPTS:
+            msg = f"max_attempts must be 1..{MAX_ATTEMPTS}"
+            raise ValueError(msg)
         if not self.task.strip() or len(self.task) > MAX_TASK_CHARS:
             msg = f"task must be 1..{MAX_TASK_CHARS} characters"
             raise ValueError(msg)
@@ -505,6 +531,8 @@ class _RecorderBase:
             "task": self._options.task,
             "keep": self._options.keep,
             "max_episodes": self._options.max_episodes,
+            "recovery_fraction": self._options.recovery_fraction,
+            "max_attempts": self._options.max_attempts,
             "saved": self._counters.saved,
             "discarded": self._counters.discarded,
             "follower": target.follower_name if target is not None else None,
@@ -691,6 +719,13 @@ class BucketSortProgress:
     """Whether the task's success holds this tick (the named object resting in the named bucket)."""
     sim_time: float = 0.0
     """Simulated time in seconds, which the success hold counts in (the recorded episode's clock)."""
+    stuck_start: StuckStartState | None = None
+    """How the move to a stuck start goes, after :attr:`BucketSortDirective.stuck_start`."""
+
+
+StuckStartState = Literal["moving", "ready", "disturbed", "unavailable"]
+"""``moving`` to the stuck pose; ``ready`` there; ``disturbed``: the move moved an object or a bucket
+more than 5 mm; ``unavailable``: no stuck pose for this layout (the arm did not move)."""
 
 
 @dataclass(frozen=True)
@@ -701,6 +736,8 @@ class BucketSortDirective:
     """Keep the autopilot paused (not stepped), so the arm waits for Studio."""
     reset_scene: bool = False
     """Reset the scene now, for a fresh episode (one tick only)."""
+    stuck_start: bool = False
+    """Move the arm to a stuck pose now, before the episode starts (one tick only; :class:`BucketSortProgress`)."""
 
 
 class BucketSortRecorder(_RecorderBase):
@@ -709,11 +746,35 @@ class BucketSortRecorder(_RecorderBase):
     Each Studio episode starts from a scene reset, with the episode's instruction as its task,
     and ends on the demonstrator's outcome. The arm waits (the autopilot is not stepped) whenever
     no Studio episode is recording, so every episode is recorded from its first move.
+
+    With ``recovery_fraction``, that share of episodes starts from a stuck pose: after the reset,
+    the scene moves the arm there (not recorded), and the episode starts once it is there. A move
+    that disturbed the layout resets the scene again for a normal start.
     """
 
-    def __init__(self, link_factory: Callable[[], StudioLinkLike], clock: Callable[[], float] = time.monotonic) -> None:
-        """Use `link_factory` to open a link each time recording is switched on."""
+    def __init__(
+        self,
+        link_factory: Callable[[], StudioLinkLike],
+        clock: Callable[[], float] = time.monotonic,
+        chance: Callable[[], float] | None = None,
+    ) -> None:
+        """Use `link_factory` to open a link each time recording is switched on.
+
+        Args:
+            link_factory: Opens a link to Studio.
+            clock: Wall-clock seconds, for the timeouts.
+            chance: Draws a number in [0, 1) per episode; below ``recovery_fraction`` the episode
+                starts stuck. ``None`` uses a fresh generator.
+        """
         super().__init__(link_factory, clock)
+        if chance is None:
+            import random  # noqa: PLC0415
+
+            chance = random.Random().random  # noqa: S311 - which episodes start stuck, not a secret
+        self._chance = chance
+        self._normal_start = False
+        """The next start is normal: the stuck start of this episode disturbed the layout."""
+        self._stuck_starts = 0
         self._task: str | None = None
         self._generation: tuple[int, int] | None = None
         self._success_at: float | None = None
@@ -726,10 +787,17 @@ class BucketSortRecorder(_RecorderBase):
         super().enable(options)
         self._task = None
         self._generation = None
+        self._normal_start = False
+        self._stuck_starts = 0
 
     def status(self) -> dict[str, Any]:
         """Return a JSON-friendly snapshot for ``/health`` and the viewer; ``task`` is the episode's instruction."""
-        return {**super().status(), "task": self._task, "task_source": "instruction"}
+        return {
+            **super().status(),
+            "task": self._task,
+            "task_source": "instruction",
+            "stuck_starts": self._stuck_starts,
+        }
 
     def update(self, progress: BucketSortProgress) -> BucketSortDirective:
         """Advance the cycle for one simulation tick.
@@ -751,6 +819,7 @@ class BucketSortRecorder(_RecorderBase):
         handler = {
             "waiting": self._update_waiting,
             "resetting": self._update_resetting,
+            "positioning": self._update_positioning,
             "starting": self._update_starting,
             "recording": self._update_recording,
             "saving": self._update_saving,
@@ -794,9 +863,44 @@ class BucketSortRecorder(_RecorderBase):
                 return BucketSortDirective()
             return BucketSortDirective(hold_arm=True)
         self._generation = progress.generation
-        self._task = progress.instruction[:MAX_TASK_CHARS]
+        fraction = self._options.recovery_fraction
+        if not self._normal_start and fraction > 0.0 and self._chance() < fraction:
+            self._set_phase("positioning", "Moving the arm to a stuck pose for a recovery episode...")
+            return BucketSortDirective(hold_arm=True, stuck_start=True)
+        self._normal_start = False
+        return self._start(link, progress)
+
+    def _start(self, link: StudioLinkLike, progress: BucketSortProgress) -> BucketSortDirective:
+        self._task = (progress.instruction or "")[:MAX_TASK_CHARS]
         link.send("start_recording", {"task": self._task})
         self._set_phase("starting", "Starting a Studio episode...")
+        return BucketSortDirective(hold_arm=True)
+
+    def _update_positioning(
+        self, link: StudioLinkLike, _state: Mapping[str, Any], progress: BucketSortProgress
+    ) -> BucketSortDirective:
+        """Wait for the move to the stuck pose; start there, or start normally.
+
+        Returns:
+            Hold the arm; reset the scene again when the move disturbed the layout or timed out.
+        """
+        if progress.generation != self._generation:
+            self._set_phase("resetting", "The scene was reset. Resetting it again for a new episode...")
+            return BucketSortDirective(hold_arm=True, reset_scene=True)
+        if progress.stuck_start == "ready":
+            self._stuck_starts += 1
+            return self._start(link, progress)
+        if progress.stuck_start == "unavailable":
+            return self._start(link, progress)  # the arm did not move: a normal start as it stands
+        if progress.stuck_start == "disturbed":
+            # A start with something knocked out of place is not a clean stuck state: lay it out anew.
+            self._normal_start = True
+            self._set_phase("resetting", "The move to the stuck pose disturbed the layout. Resetting the scene...")
+            return BucketSortDirective(hold_arm=True, reset_scene=True)
+        if self._clock() - self._since > START_TIMEOUT_S:
+            self._normal_start = True
+            self._set_phase("resetting", "The arm did not reach the stuck pose. Resetting the scene...")
+            return BucketSortDirective(hold_arm=True, reset_scene=True)
         return BucketSortDirective(hold_arm=True)
 
     def _update_starting(

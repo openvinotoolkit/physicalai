@@ -48,6 +48,7 @@ failing and resetting episodes that nobody runs.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from itertools import starmap
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
@@ -151,6 +152,16 @@ RETRY_Y = (OBJECT_Y[0] - 0.02, OBJECT_Y[1] + 0.02)
 """Where a retry picks the object up again: around the spawn area (``bucket_sort.OBJECT_X`` and
 ``OBJECT_Y``), with room for the nudge a missed grasp gives it."""
 MAX_REPLANS = 3
+DEFAULT_MAX_ATTEMPTS = 2
+"""Attempts per episode, the retry included, unless a recorder asks for others (``RecordingOptions``)."""
+STUCK_PHASES = frozenset({"carry", "lower", "release"})
+"""Where a stuck start puts the hand: on the way to the bucket or over it (``stuck_start``)."""
+STUCK_GRIP = (0.0, 0.03)
+"""The hand's opening at a stuck start, metres: closed or almost, as if it held the object."""
+STUCK_MOVE_S = (1.5, 2.5)
+"""How long the move to a stuck start takes, seconds."""
+STUCK_TRIES = 8
+"""Poses of the planned path tried before a stuck start gives up."""
 STILL_SPEED = 0.01
 """With several arms, an arm whose joints are all slower than this (rad/s) is still (``_arms_still``)."""
 STILL_S = 0.1
@@ -1484,6 +1495,26 @@ def _severity(plan: JointPlan) -> float:
     )
 
 
+@dataclass(frozen=True)
+class StuckStart:
+    """The move to a stuck start: targets for every control tick, model units in the channels' order."""
+
+    targets: np.ndarray
+    """``(ticks, channels)``: the working arm goes there, the others hold their targets."""
+    arm: int
+    """The arm that moves, and works the episode's first attempt."""
+
+
+def smoothstep(s: np.ndarray) -> np.ndarray:
+    """Return ``3 s^2 - 2 s^3`` of *s* clipped to [0, 1]: from rest to rest.
+
+    Returns:
+        The profile.
+    """
+    s = np.clip(np.asarray(s, dtype=np.float64), 0.0, 1.0)
+    return s * s * (3.0 - 2.0 * s)
+
+
 @dataclass
 class DemoStats:
     """Counters over the demonstrator's lifetime."""
@@ -1532,7 +1563,7 @@ class BucketSortDemonstrator:
         arms: tuple[FrankaArm, ...] = (FR3_ARM,),
         rng: np.random.Generator | None = None,
         randomize: bool = True,
-        max_attempts: int = 2,
+        max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         reset_on_failure: bool = True,
     ) -> None:
         """Bind to the scene model and its task.
@@ -1570,6 +1601,8 @@ class BucketSortDemonstrator:
         self._grip_per_width = np.array([arm.grip_per_width for arm in self.arms])
         self._hold: list[np.ndarray | None] = [None] * len(self.arms)
         self._still_since: float | None = None
+        self._pinned_arm: int | None = None
+        """The arm a stuck start moved, which works the episode's first attempt (several arms)."""
         """Since when every arm stands still on its targets (several arms)."""
         """The targets each arm that does not work holds, model units (seven joints and the opening in metres)."""
         self._object_body = {name: int(model.body(name).id) for name in OBJECTS}
@@ -1665,6 +1698,7 @@ class BucketSortDemonstrator:
         self._generation = None
         self._phase = "idle"
         self._reset_requested = False
+        self._pinned_arm = None
 
     # -- control ----------------------------------------------------------
 
@@ -1679,22 +1713,106 @@ class BucketSortDemonstrator:
         """
         new_episode = self._episode is None or self._generation != self.task.reset_count
         if self._q is None or new_episode:
-            # A scene reset puts the arm home: start from there, not from the last episode's targets.
-            self._q = np.array(data.qpos[self.ik.qpos_adr])
-            self._grip = self._ctrl_targets(data, self._active)[7]
-            self._hold = [None if i == self._active else self._ctrl_targets(data, i) for i in range(len(self.arms))]
+            self._take_targets(data)
         if new_episode:
             self._start_episode(data)
         self._q_prev = self._q.copy()
         self._advance(data, dt)
+        targets = self._targets(self._q, self._grip)  # type: ignore[arg-type]
+        if apply:
+            self.write_targets(data, targets)
+        return targets
+
+    def _take_targets(self, data: object) -> None:
+        """Start from the arms as they are: the working arm's joints, every other arm's targets."""
+        # A scene reset puts the arm home: start from there, not from the last episode's targets.
+        self._q = np.array(data.qpos[self.ik.qpos_adr])
+        self._grip = self._ctrl_targets(data, self._active)[7]
+        self._hold = [None if i == self._active else self._ctrl_targets(data, i) for i in range(len(self.arms))]
+
+    def _targets(self, q: np.ndarray, grip: float) -> np.ndarray:
+        """Return every channel's target, model units: the working arm at *q* and *grip* (m), the others holding.
+
+        Returns:
+            Eight values per arm.
+        """
         targets = np.concatenate([
-            [*self._q, self._grip] if i == self._active else self._hold[i]  # type: ignore[list-item]
+            [*q, grip] if i == self._active else self._hold[i]  # type: ignore[list-item]
             for i in range(len(self.arms))
         ])
         targets[7::8] *= self._grip_per_width
-        if apply:
-            data.ctrl[self._actuators] = targets * self._ctrl_per_unit
         return targets
+
+    def write_targets(self, data: object, targets: np.ndarray) -> None:
+        """Write targets in model units (:meth:`step`'s) to the actuators."""
+        data.ctrl[self._actuators] = targets * self._ctrl_per_unit
+
+    def stuck_start(self, data: object, dt: float, rng: np.random.Generator) -> StuckStart | None:
+        """Plan the move to a pose a policy gets stuck in, for the episode about to start (after a reset).
+
+        The pose comes from the attempt the demonstrator plans for this episode's instruction and
+        layout: a tick of its carry, its descent into the bucket or its release, where the hand would
+        hold the object. The hand gets there closed or almost (:data:`STUCK_GRIP`) and empty, by a
+        smoothstep move in joint space of :data:`STUCK_MOVE_S`. The planned attempt passed every check
+        (reach, joint limits and speed, clearance, and on the Duo the other arm's); the move is checked
+        for the hand's clearance from the buckets, the other objects, the table and the other arm.
+        With several arms, the planned arm moves and works the first attempt; the others hold.
+
+        Returns:
+            The move, or ``None`` when no instruction, no plan that passes every check, or no clear
+            move was found; the demonstrator then starts as usual.
+        """
+        instruction = self.task.instruction
+        if instruction is None:
+            return None
+        self.reset()
+        self._take_targets(data)
+        snapshot = SceneSnapshot.take(data)
+        params = DemoParams.sample(rng) if self.randomize else DemoParams()
+        if len(self.arms) > 1:
+            plan = self._plan_with_an_arm(snapshot, instruction, params, dt, rng)
+        else:
+            plan = self.plan_attempt(snapshot, self._q, self._start_state(), instruction, params, dt, rng, report=False)  # type: ignore[arg-type]
+        ticks = (
+            [] if plan is None or not plan.ok else [k for k, phase in enumerate(plan.phases) if phase in STUCK_PHASES]
+        )
+        move = self._stuck_move(snapshot, plan, ticks, dt, rng) if plan is not None and ticks else None
+        self.reset()  # the episode starts from the stuck pose, at the next step
+        if move is None:
+            return None
+        self._pinned_arm = self._active if len(self.arms) > 1 else None
+        logger.info(
+            "Demonstrator: a stuck start for the {}, {:.1f} s away", self.active_arm.label, len(move.targets) * dt
+        )
+        return move
+
+    def _stuck_move(
+        self, snapshot: SceneSnapshot, plan: JointPlan, ticks: list[int], dt: float, rng: np.random.Generator
+    ) -> StuckStart | None:
+        """Return a clear smoothstep move from the current targets to a stuck pose of *plan*, if one is found.
+
+        Returns:
+            The move, or ``None`` after :data:`STUCK_TRIES` poses whose move is not clear.
+        """
+        planner, instruction = self.planner, self.task.instruction
+        start, grip0 = np.asarray(self._q, dtype=np.float64), float(self._grip)
+        for _ in range(STUCK_TRIES):
+            goal = plan.q[int(rng.choice(ticks))]
+            grip = float(rng.uniform(*STUCK_GRIP))
+            count = max(2, round(float(rng.uniform(*STUCK_MOVE_S)) / dt))
+            s = smoothstep(np.arange(1, count + 1) / count)
+            q = start[None, :] + s[:, None] * (goal - start)[None, :]
+            opening = grip0 + s * (grip - grip0)
+            move = JointPlan(
+                kind="home", dt=dt, q=q, grip=opening, phases=["return"] * count, cartesian=np.zeros((count, 5))
+            )
+            planner.load(snapshot)
+            planner._check_clearance(move, instruction.object, None)  # noqa: SLF001  # type: ignore[union-attr]
+            if move.problems:
+                continue
+            targets = np.stack(list(starmap(self._targets, zip(q, opening, strict=True))))
+            return StuckStart(targets=targets, arm=self._active)
+        return None
 
     def _ctrl_targets(self, data: object, arm: int) -> np.ndarray:
         """Return arm *arm*'s current targets from ``ctrl``: seven joints and the opening in metres.
@@ -2083,6 +2201,11 @@ class BucketSortDemonstrator:
         """
         preference = {i: self._arm_preference(i, snapshot, instruction, params) for i in range(len(self.arms))}
         order = sorted(preference, key=lambda i: preference[i])
+        episode = self._episode
+        if self._pinned_arm is not None:
+            if episode is None or episode.attempt <= 1:
+                order = [self._pinned_arm]  # a stuck start's arm recovers on its own: it works the first attempt
+            self._pinned_arm = None
         best: tuple[int, JointPlan] | None = None
         """The best plan that may run (:meth:`_may_run`), and its arm."""
         closest: JointPlan | None = None

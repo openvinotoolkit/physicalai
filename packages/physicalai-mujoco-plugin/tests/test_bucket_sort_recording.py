@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import threading
 import time
@@ -15,7 +16,13 @@ from websockets.sync.server import serve
 from physicalai_mujoco_plugin.conveyor_automation import ConveyorAutomation
 from physicalai_mujoco_plugin.http_server import SetStudioRecordingCommand
 from physicalai_mujoco_plugin.robot import MuJoCoRobot
+from physicalai_mujoco_plugin import bucket_sort_demo as bd
+from physicalai_mujoco_plugin import conveyor_automation
+from physicalai_mujoco_plugin.http_server import StudioRecordingRequest
 from physicalai_mujoco_plugin.studio_recorder import (
+    DEFAULT_MAX_ATTEMPTS,
+    MAX_ATTEMPTS,
+    MAX_RECOVERY_FRACTION,
     SUCCESS_HOLD_S,
     SUCCESS_HOLD_TIMEOUT_S,
     BucketSortProgress,
@@ -175,6 +182,78 @@ def test_successes_are_kept_by_the_keep_rule(keep: str, clean: bool, expected: s
     link.ack_last()
     recorder.update(_progress(1))
     assert recorder.status()["saved" if expected == "save_episode" else "discarded"] == 1
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"recovery_fraction": -0.1},
+        {"recovery_fraction": MAX_RECOVERY_FRACTION + 0.01},
+        {"recovery_fraction": float("nan")},
+        {"max_attempts": 0},
+        {"max_attempts": MAX_ATTEMPTS + 1},
+    ],
+)
+def test_recovery_share_and_attempts_are_validated(fields: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match=next(iter(fields))):
+        RecordingOptions(**fields)
+    with pytest.raises(ValueError, match=next(iter(fields))):
+        StudioRecordingRequest(enabled=True, **fields)
+
+
+def test_recovery_and_attempts_default_to_the_demonstrators_behaviour() -> None:
+    options = RecordingOptions()
+    assert options.recovery_fraction == 0.0
+    assert options.max_attempts == DEFAULT_MAX_ATTEMPTS == bd.DEFAULT_MAX_ATTEMPTS
+    request = StudioRecordingRequest(enabled=True, recovery_fraction=0.15, max_attempts=3)
+    assert (request.recovery_fraction, request.max_attempts) == (0.15, 3)
+
+
+@pytest.mark.parametrize(("fraction", "stuck"), [(0.0, False), (MAX_RECOVERY_FRACTION, True)])
+def test_stuck_starts_follow_the_recovery_share(fraction: float, stuck: bool) -> None:  # noqa: FBT001
+    """A draw of 0 is below any share but 0: share 0 never starts stuck, the largest share (drawn 0) always does."""
+    link = FakeLink()
+    recorder = BucketSortRecorder(lambda: link, clock=Clock(), chance=lambda: 0.0)
+    recorder.enable(RecordingOptions(keep="all", recovery_fraction=fraction))
+    recorder.update(_progress())
+    for reset in range(1, 6):
+        link.state = dict(TELEOP)
+        assert recorder.update(_progress(reset - 1)).reset_scene
+        directive = recorder.update(_progress(reset))
+        assert directive.stuck_start is stuck and directive.hold_arm
+        if stuck:
+            assert recorder.phase == "positioning"
+            moving = dataclasses.replace(_progress(reset), stuck_start="moving")
+            assert recorder.update(moving).hold_arm and recorder.phase == "positioning"
+            assert link.events().count("start_recording") == reset - 1  # not before the arm is there
+            recorder.update(dataclasses.replace(_progress(reset), stuck_start="ready"))
+        assert link.sent[-1][:2] == ("start_recording", {"task": f"put the CPU in the red bucket ({reset})"})
+        link.state = {**TELEOP, "is_recording": True}
+        assert not recorder.update(_progress(reset)).hold_arm
+        recorder.update(_progress(reset, "failed", clean=False))
+        link.ack_last()
+        link.state = dict(TELEOP)
+        recorder.update(_progress(reset))
+    assert recorder.status()["stuck_starts"] == (5 if stuck else 0)
+
+
+@pytest.mark.parametrize("state", ["disturbed", "unavailable"])
+def test_a_stuck_start_that_disturbed_the_layout_resets_for_a_normal_start(state: str) -> None:
+    link = FakeLink()
+    recorder = BucketSortRecorder(lambda: link, clock=Clock(), chance=lambda: 0.0)
+    recorder.enable(RecordingOptions(recovery_fraction=MAX_RECOVERY_FRACTION))
+    recorder.update(_progress())
+    link.state = dict(TELEOP)
+    assert recorder.update(_progress(0)).reset_scene
+    assert recorder.update(_progress(1)).stuck_start
+    directive = recorder.update(dataclasses.replace(_progress(1), stuck_start=state))
+    if state == "unavailable":  # the arm did not move: a normal start, as the scene stands
+        assert not directive.reset_scene and link.events() == ["start_recording"]
+        return
+    assert directive.reset_scene and recorder.phase == "resetting" and "start_recording" not in link.events()
+    directive = recorder.update(_progress(2))
+    assert not directive.stuck_start and link.events() == ["start_recording"]  # a normal start, this once
+    assert recorder.status()["stuck_starts"] == 0
 
 
 @pytest.mark.parametrize("outcome", ["failed", "stalled"])
@@ -470,6 +549,74 @@ def test_simulation_records_a_led_bucket_sort_episode_into_studio(
         robot._commands.put(SetStudioRecordingCommand(options=None))  # noqa: SLF001
         robot.get_observation()
         assert "set_follower_source" not in studio.events()
+    finally:
+        robot.disconnect()
+
+
+def _stuck_recorder(robot: MuJoCoRobot, studio: FakeStudio, **fields: Any) -> BucketSortRecorder:  # noqa: ANN401
+    """Record with every episode starting stuck (a chance of 0 is below any share but 0)."""
+    automation = robot._automation  # noqa: SLF001
+    automation.bucket_recorder = BucketSortRecorder(
+        lambda: StudioLink(f"http://127.0.0.1:{studio.port}", "sim", discover=lambda _url, _owner: TARGET),
+        chance=lambda: 0.0,
+    )
+    automation.set_autopilot("leader")
+    options = RecordingOptions(keep="all", recovery_fraction=MAX_RECOVERY_FRACTION, max_attempts=3, **fields)
+    robot._commands.put(SetStudioRecordingCommand(options=options))  # noqa: SLF001
+    return automation.bucket_recorder
+
+
+@pytest.mark.slow
+def test_an_episode_that_starts_stuck_is_recorded_from_the_stuck_pose(studio: FakeStudio) -> None:
+    """The move to the stuck pose is not recorded: frame 0 is there, and the episode recovers and is saved."""
+    robot = MuJoCoRobot("franka_fr3", scene="bucket_sort", cameras=[], http_port=0, seed=1)
+    robot.connect()
+    try:
+        recorder = _stuck_recorder(robot, studio)
+        automation = robot._automation  # noqa: SLF001
+        gripper = robot.joint_names.index("gripper")
+        home = robot.get_observation().joint_positions.copy()
+        frames: list[tuple[np.ndarray, np.ndarray]] = []  # (action, state) while Studio records
+        deadline = time.monotonic() + 120.0
+        while "save_episode" not in studio.events() and "discard_episode" not in studio.events():
+            assert time.monotonic() < deadline, automation.status()
+            state = robot.get_observation().joint_positions
+            action = np.asarray(automation.leader_snapshot()["joint_positions"], dtype=np.float64)
+            if studio.state.get("is_recording"):
+                frames.append((action, np.asarray(state, dtype=np.float64)))
+            robot.send_action(action.astype(np.float32))
+        assert studio.events() == ["start_recording", "save_episode"], automation.status()
+        assert recorder.status()["stuck_starts"] == 1
+        assert automation.autopilot.demonstrator.max_attempts == 3  # noqa: PLR2004
+        action, state = frames[0]
+        np.testing.assert_allclose(action[:gripper], state[:gripper], atol=0.5)  # degrees: no jump at the start
+        assert np.abs(state[:gripper] - home[:gripper]).max() > 5.0  # noqa: PLR2004 - it started elsewhere than home
+        assert state[gripper] <= bd.STUCK_GRIP[1] + 0.002 and action[gripper] <= bd.STUCK_GRIP[1]  # closed, empty
+        squeeze = min(a[gripper] - s_[gripper] for a, s_ in frames)
+        assert squeeze < -0.005, f"the recorded gripper never commanded past the fingers ({squeeze:.4f} m)"
+    finally:
+        robot.disconnect()
+
+
+@pytest.mark.slow
+def test_a_stuck_start_that_moves_the_layout_falls_back_to_a_normal_start(studio: FakeStudio, monkeypatch) -> None:
+    monkeypatch.setattr(conveyor_automation, "STUCK_DISTURBANCE", -1.0)  # every move counts as disturbing
+    robot = MuJoCoRobot("franka_fr3", scene="bucket_sort", cameras=[], http_port=0, seed=1)
+    robot.connect()
+    try:
+        recorder = _stuck_recorder(robot, studio)
+        task = robot._sim.on_reset  # noqa: SLF001
+        resets = task.reset_count
+        home = robot.get_observation().joint_positions.copy()
+        deadline = time.monotonic() + 30.0
+        while "start_recording" not in studio.events():
+            assert time.monotonic() < deadline, robot._automation.status()  # noqa: SLF001
+            robot.get_observation()
+        assert task.reset_count == resets + 2  # the episode's reset, then one more after the disturbing move
+        assert recorder.status()["stuck_starts"] == 0
+        _wait(lambda: studio.state.get("is_recording"))
+        start = robot.get_observation().joint_positions
+        np.testing.assert_allclose(start, home, atol=0.5)  # a normal start: the arm at its reset pose
     finally:
         robot.disconnect()
 

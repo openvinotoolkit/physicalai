@@ -20,6 +20,7 @@ All methods except `leader_snapshot` and `status` run on the simulation thread.
 from __future__ import annotations
 
 import threading
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -28,6 +29,7 @@ from loguru import logger
 from physicalai_mujoco_plugin.autopilot import Autopilot
 from physicalai_mujoco_plugin.conveyor import DEFAULT_BELT_SPEED, ConveyorSort
 from physicalai_mujoco_plugin.studio_recorder import (
+    DEFAULT_MAX_ATTEMPTS,
     DEFAULT_STUDIO_URL,
     AutoRecorder,
     BucketSortProgress,
@@ -42,6 +44,35 @@ if TYPE_CHECKING:
 
     from physicalai_mujoco_plugin.autopilot import AutopilotMode, Demonstrator
     from physicalai_mujoco_plugin.bucket_sort import BucketSortEpisode, BucketSortTask
+    from physicalai_mujoco_plugin.bucket_sort_demo import BucketSortDemonstrator
+    from physicalai_mujoco_plugin.studio_recorder import StuckStartState
+
+STUCK_SETTLE_S = 0.3
+"""After the move to a stuck pose, how long the arm holds there before the layout is checked."""
+STUCK_DISTURBANCE = 0.005
+"""A move to a stuck pose that moved an object or a bucket further than this (m) is not a clean start."""
+STUCK_REST_SPEED = 0.005
+"""The move to a stuck pose waits until every object and bucket is slower than this (m/s), dropped at the reset."""
+STUCK_REST_TIMEOUT_S = 3.0
+
+
+@dataclass
+class _StuckMove:
+    """The move to a stuck start in progress (bucket_sort recording)."""
+
+    state: StuckStartState
+    targets: np.ndarray | None = None
+    """Model-unit targets per tick, every channel; ``None`` when unavailable."""
+    tick: int = 0
+    settle: int = 0
+    """Ticks to hold the last target before checking the layout."""
+    bodies: tuple[int, ...] = ()
+    """Every object and bucket."""
+    wait: int = 0
+    """Ticks left to wait for them to rest before the move; the move starts at the latest then."""
+    wait_total: int = 0
+    spawn: dict[int, np.ndarray] | None = None
+    """Every object's and bucket's position when the move starts, by body id."""
 
 
 class ConveyorAutomation:
@@ -83,6 +114,11 @@ class ConveyorAutomation:
         self._holds_feed = False
         self._bucket_episode: BucketSortEpisode | None = None
         """The bucket_sort scene's episode helper, whose success reset waits while the recorder owns episodes."""
+        self._bucket_demo: BucketSortDemonstrator | None = None
+        """The bucket_sort scene's demonstrator, which recording options and stuck starts reach."""
+        self._max_attempts = DEFAULT_MAX_ATTEMPTS
+        self._stuck: _StuckMove | None = None
+        self._stuck_rng = np.random.default_rng()
         self._reset_pose: np.ndarray | None = None
         """The arm's targets right after a scene reset while bucket_sort recording holds the arm: the
         leader publishes them and client actions are ignored, so Studio's last action of the previous
@@ -153,9 +189,20 @@ class ConveyorAutomation:
         self._recorder_reset = False
         self._reset_pose = None
         self._bucket_episode = None
+        self._stuck = None
+        self._stuck_rng = np.random.default_rng(None if seed is None else seed + 1)
         demonstrator, unavailable = _scene_demonstrator(
-            model, conveyor, robots=robots, bucket_task=bucket_task, seed=seed, profile=profile
+            model,
+            conveyor,
+            robots=robots,
+            bucket_task=bucket_task,
+            seed=seed,
+            profile=profile,
+            max_attempts=self._max_attempts,
         )
+        from physicalai_mujoco_plugin.bucket_sort_demo import BucketSortDemonstrator  # noqa: PLC0415
+
+        self._bucket_demo = demonstrator if isinstance(demonstrator, BucketSortDemonstrator) else None
         self.autopilot.bind(demonstrator, unavailable=unavailable)
         self._bucket_task = bucket_task if model is not None and conveyor is None else None
         if conveyor is None and self.recorder.phase != "off":
@@ -199,6 +246,7 @@ class ConveyorAutomation:
         """
         self.autopilot.reset()
         self.recorder.restart_episode("The scene was reset.")
+        self._stuck = None
         if arm_targets is not None and self._bucket_task is not None and self.bucket_recorder.active:
             self._reset_pose = np.array(arm_targets, dtype=np.float64)
             # Before the next tick, which may start the Studio episode: Studio must already read this pose.
@@ -248,15 +296,23 @@ class ConveyorAutomation:
         """
         if options is None:
             self.studio_recorder.disable("Switched off.")
+            self._set_max_attempts(DEFAULT_MAX_ATTEMPTS)
             return True
         if self._conveyor is not None:
             self.recorder.enable(options)
             return True
         if self._bucket_task is not None:
+            self._set_max_attempts(options.max_attempts)
             self.bucket_recorder.enable(options)
             return True
         logger.warning("Automatic Studio recording needs the conveyor or bucket_sort scene")
         return False
+
+    def _set_max_attempts(self, attempts: int) -> None:
+        """Give the bucket_sort demonstrator *attempts* per episode, now and for a reloaded scene."""
+        self._max_attempts = attempts
+        if self._bucket_demo is not None:
+            self._bucket_demo.max_attempts = attempts
 
     # ------------------------------------------------------------------
     # Per control tick
@@ -287,14 +343,72 @@ class ConveyorAutomation:
             bucket = self.bucket_recorder.update(self._bucket_progress(model, data))
             hold_arm = bucket.hold_arm
             self._recorder_reset = self._recorder_reset or bucket.reset_scene
+            if bucket.stuck_start:
+                self._begin_stuck_start(model, data, dt)
         if not hold_arm or not self.bucket_recorder.active:
             self._reset_pose = None
+            self._stuck = None
+        elif self._stuck is not None:
+            self._advance_stuck_start(model, data)
         if self._bucket_episode is not None:
             self._bucket_episode.suspend_resets(self.bucket_recorder.active)
         targets = None if hold_arm else self.autopilot.step(data, dt)
         if targets is None and self._reset_pose is not None:
             targets = self._reset_pose
         self._publish_leader(arm_targets if targets is None else targets)
+
+    def _begin_stuck_start(self, model: object, data: object, dt: float) -> None:
+        """Plan the move to a stuck start (:meth:`~.bucket_sort_demo.BucketSortDemonstrator.stuck_start`)."""
+        from physicalai_mujoco_plugin.bucket_sort import BUCKET_COLORS, OBJECTS  # noqa: PLC0415
+
+        demo = self._bucket_demo
+        move = demo.stuck_start(data, dt, self._stuck_rng) if demo is not None else None
+        if move is None:
+            self._stuck = _StuckMove(state="unavailable")
+            return
+        names = (*OBJECTS, *(f"bucket_{color}" for color in BUCKET_COLORS))
+        self._stuck = _StuckMove(
+            state="moving",
+            targets=move.targets,
+            settle=max(1, round(STUCK_SETTLE_S / dt)),
+            bodies=tuple(int(model.body(name).id) for name in names),  # type: ignore[attr-defined]
+            wait=max(1, round(STUCK_REST_TIMEOUT_S / dt)),
+            wait_total=max(1, round(STUCK_REST_TIMEOUT_S / dt)),
+        )
+
+    def _advance_stuck_start(self, model: object, data: object) -> None:  # noqa: ARG002
+        """Drive the arm one tick along the move to the stuck pose, then check that nothing moved.
+
+        The move starts once the objects and buckets the reset dropped rest (or after
+        :data:`STUCK_REST_TIMEOUT_S`); the arm holds its reset targets meanwhile.
+
+        Client actions are ignored meanwhile (:attr:`drives_arm`), and the leader publishes the arm's
+        targets: when the episode starts, it already publishes the stuck pose.
+        """
+        stuck, demo = self._stuck, self._bucket_demo
+        if stuck is None or stuck.state != "moving" or stuck.targets is None or demo is None:
+            return
+        if stuck.spawn is None:
+            # The reset dropped the objects: measure the layout once it rests, then move.
+            # They start at rest just above the table, so give them STUCK_SETTLE_S to land first.
+            speed = max(float(np.linalg.norm(data.cvel[body][3:])) for body in stuck.bodies)  # type: ignore[attr-defined]
+            stuck.wait -= 1
+            landed = stuck.wait <= stuck.wait_total - stuck.settle
+            if (not landed or speed > STUCK_REST_SPEED) and stuck.wait > 0:
+                return
+            stuck.spawn = {body: np.array(data.xpos[body]) for body in stuck.bodies}  # type: ignore[attr-defined]
+        targets = stuck.targets[min(stuck.tick, len(stuck.targets) - 1)]
+        demo.write_targets(data, targets)
+        self._reset_pose = np.array(targets)
+        if stuck.tick < len(stuck.targets):
+            stuck.tick += 1
+            return
+        stuck.settle -= 1
+        if stuck.settle > 0:
+            return
+        moved = max(float(np.linalg.norm(data.xpos[body] - start)) for body, start in (stuck.spawn or {}).items())  # type: ignore[attr-defined]
+        stuck.state = "disturbed" if moved > STUCK_DISTURBANCE else "ready"
+        logger.info("Stuck start {}: the layout moved {:.1f} mm", stuck.state, moved * 1000)
 
     def _bucket_progress(self, model: object, data: object) -> BucketSortProgress:
         """Read what the bucket_sort recorder needs this tick.
@@ -315,6 +429,7 @@ class ConveyorAutomation:
             clean=clean if isinstance(clean, bool) else None,
             placed=outcome == "success" and task is not None and task.evaluate(model, data).success,
             sim_time=float(data.time),  # type: ignore[attr-defined]
+            stuck_start=self._stuck.state if self._stuck is not None else None,
         )
 
     def _publish_leader(self, targets: np.ndarray) -> None:
@@ -365,6 +480,7 @@ def _scene_demonstrator(
     bucket_task: BucketSortTask | None,
     seed: int | None,
     profile: str = "franka_fr3",
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
 ) -> tuple[Demonstrator | None, str | None]:
     """Pick the demonstrator for a freshly loaded scene.
 
@@ -388,7 +504,10 @@ def _scene_demonstrator(
         if arms is None or robots != 1:
             names = ", ".join(BUCKET_SORT_ARMS)
             return None, f"The bucket_sort autopilot drives one robot of these profiles: {names}."
-        return BucketSortDemonstrator(model, bucket_task, arms=arms, rng=np.random.default_rng(seed)), None
+        demonstrator = BucketSortDemonstrator(
+            model, bucket_task, arms=arms, rng=np.random.default_rng(seed), max_attempts=max_attempts
+        )
+        return demonstrator, None
     if robots != 1:
         return None, f"The conveyor autopilot drives one SO-101 arm; this simulation has {robots} arms."
     from physicalai_mujoco_plugin.conveyor_demo import ConveyorDemonstrator  # noqa: PLC0415
