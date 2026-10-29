@@ -133,6 +133,8 @@ MAX_IK_STEP = 0.1
 CHECK_EVERY = 2
 TILT_STEP = float(np.radians(5.0))
 """Steps in which the planner tries leaning the hand further (``FrankaIK.least_tilt``)."""
+GRASP_TILT = float(np.radians(15.0))
+"""The most the hand leans at the grasp (over the object, down to it, closing): nearly fingers-down."""
 """Clearance is checked every this many ticks of a plan."""
 WRIST_PROBE_Z = 0.15
 """TCP height at which a tilted arm's joint 7 is estimated for a yaw over a point (:meth:`Planner.predicted_q7`)."""
@@ -566,14 +568,11 @@ class FrankaIK:
         self.plain = arm.max_tilt <= 0.0 and np.array_equal(self.tool_axes, np.eye(3))
         """Fingers always down on a Franka Hand: the orientation is the tool body's, unchanged."""
         self.grip_open = float(arm.grip_open)
-        self._stiffness = np.array([-float(model.actuator(arm.name(a)).biasprm[1]) for a in arm.actuators])
-        """Each arm joint's position servo stiffness, N m/rad: how far gravity makes it sag (:meth:`sag`)."""
         self._jacp = np.zeros((3, model.nv))
         self._jacr = np.zeros((3, model.nv))
         self.damping = IK_DAMPING
         self.home = np.array(arm.home)
         """The arm's home pose: plans start and end there."""
-        self._sag_data = None
         mujoco.mj_kinematics(model, self.data)
         base = np.array(self.data.xpos[model.jnt_bodyid[joints[0]]][:2], dtype=np.float64)
         self.base_xy = np.zeros(2) if np.allclose(base, 0.0, atol=1e-12) else base
@@ -685,29 +684,6 @@ class FrankaIK:
             gradient[1] += SHOULDER_SINGULAR_WEIGHT * 2.0 * q[1] / width**2 * np.exp(-((q[1] / width) ** 2))
         return gradient
 
-    def sag(self, q: np.ndarray) -> np.ndarray:
-        """Return how far each joint's position servo sags at *q* under the arm's weight, radians.
-
-        Static: the gravity torque on each joint over its servo's stiffness. Zero for an arm without
-        :attr:`~.bucket_sort_arms.BucketSortArm.gravity_offset`. It uses a scratch ``MjData`` of its own.
-
-        Returns:
-            One value per joint.
-        """
-        if not self.arm.gravity_offset:
-            return np.zeros(len(q))
-        mujoco, model = self._mujoco, self.model
-        if self._sag_data is None:
-            self._sag_data = mujoco.MjData(model)
-        data = self._sag_data
-        data.qpos[self.qpos_adr] = q
-        mujoco.mj_kinematics(model, data)
-        mujoco.mj_comPos(model, data)
-        mujoco.mj_comVel(model, data)
-        bias = np.zeros(model.nv)
-        mujoco.mj_rne(model, data, 0, bias)
-        return bias[self.dof_adr] / self._stiffness
-
     def margin(self, q: np.ndarray) -> float:
         """Return the smallest distance (rad) of any joint to its hardware limit."""
         return float(min((q - self.hard_lower).min(), (self.hard_upper - q).min()))
@@ -808,21 +784,34 @@ class FrankaIK:
             else (q, e_pos, e_rot)
         )
 
-    def least_tilt(self, q0: np.ndarray, pos: np.ndarray, yaw: float) -> tuple[float, np.ndarray]:
-        """Return the smallest lean, in steps of :data:`TILT_STEP` up to the arm's ``max_tilt``, that reaches *pos*.
+    def least_tilt(
+        self, q0: np.ndarray, pos: np.ndarray, yaw: float, max_tilt: float | None = None
+    ) -> tuple[float, np.ndarray] | None:
+        """Return the smallest lean, in steps of :data:`TILT_STEP` up to *max_tilt*, that reaches *pos*.
+
+        Args:
+            q0: Joints to solve from.
+            pos: The TCP's position.
+            yaw: The closing yaw.
+            max_tilt: The most the hand may lean; ``None`` is the arm's ``max_tilt``.
+
+        The first lean the IK reaches within half its tolerances wins; failing that, the most allowed
+        lean if it reaches within them.
 
         Returns:
-            ``(tilt, q)``: the lean (the largest when none reaches) and the joints there.
+            ``(tilt, q)``: the lean and the joints there; ``None`` when no lean up to *max_tilt* reaches.
         """
-        steps = int(np.floor(self.arm.max_tilt / TILT_STEP + 1e-9)) + 1
-        best = (0.0, np.asarray(q0, dtype=np.float64))
+        limit = self.arm.max_tilt if max_tilt is None else min(max_tilt, self.arm.max_tilt)
+        steps = int(np.floor(limit / TILT_STEP + 1e-9)) + 1
+        tilt, (q, e_pos, e_rot) = 0.0, (np.asarray(q0, dtype=np.float64), np.inf, np.inf)
         for k in range(steps):
             tilt = k * TILT_STEP
             q, e_pos, e_rot = self.optimize(q0, pos, yaw, iters=0, tilt=tilt)
-            best = (tilt, q)
             if e_pos <= IK_POS_TOL / 2 and e_rot <= IK_ROT_TOL / 2:
-                break
-        return best
+                return tilt, q
+        if e_pos <= IK_POS_TOL and e_rot <= IK_ROT_TOL:
+            return tilt, q
+        return None
 
 
 # ----------------------------------------------------------------------
@@ -1002,6 +991,8 @@ class JointPlan:
     peak_accel_ratio: float = 0.0
     """Largest joint acceleration as a fraction of the FR3's limit."""
     problems: list[str] = field(default_factory=list)
+    unreached: bool = False
+    """A pose no allowed lean of the hand reaches (``Planner.tilt_at``): the plan never runs."""
 
     @property
     def ok(self) -> bool:
@@ -1103,6 +1094,8 @@ class Planner:
         self._bucket_body = {color: int(model.body(f"bucket_{color}").id) for color in BUCKET_COLORS}
         self.held_width = 0.04
         """The width the last attempt script grasps; the place re-plan and the clearance use it."""
+        self.unreached = False
+        """Whether the script being built has a pose no allowed lean reaches (:meth:`tilt_at`)."""
         self.tick_null_step = 0.01
         """Largest null-space change per IK iteration while following the reference posture."""
         self.tick_limit_gain = 0.0
@@ -1238,7 +1231,7 @@ class Planner:
         name = instruction.object
         position, rotation = self.object_pose(name)
         grasp = self.grasp_point(name, position, rotation, params)
-        key, _, _ = self.ik.optimize(q, grasp, yaw, iters=40, tilt=self.tilt_at(grasp, yaw) or 0.0)
+        key, _, _ = self.ik.optimize(q, grasp, yaw, iters=40, tilt=self.tilt_at(grasp, yaw, grasp=True) or 0.0)
         margin = self.ik.margin(key)
         bucket_pos, bucket_rot = self.bucket_pose(instruction.bucket)
         across = float(np.arctan2(bucket_rot[1, 0], bucket_rot[0, 0]))
@@ -1248,19 +1241,28 @@ class Planner:
         key, e_pos, _ = self.ik.optimize(key, over, release_yaw, iters=40, tilt=tilt)
         return min(margin, self.ik.margin(key)) - (1.0 if e_pos > IK_POS_TOL else 0.0)
 
-    def tilt_at(self, pos: np.ndarray, yaw: float) -> float | None:
+    def tilt_at(self, pos: np.ndarray, yaw: float, *, grasp: bool = False) -> float | None:
         """Return how far the hand leans at *pos* closing along *yaw*: the least that reaches it.
+
+        At the *grasp* (over the object and down to it) the hand leans :data:`GRASP_TILT` at most.
+        When no lean reaches, the script uses the most allowed and :attr:`unreached` marks it, so
+        :meth:`checked` fails the plan and it never runs.
 
         Returns:
             Radians, ``None`` for an arm that keeps its fingers down.
         """
         if self.arm.max_tilt <= 0.0:
             return None
-        return self.ik.least_tilt(self.ik.home, pos, yaw)[0]
+        limit = min(GRASP_TILT, self.arm.max_tilt) if grasp else self.arm.max_tilt
+        found = self.ik.least_tilt(self.ik.home, pos, yaw, limit)
+        if found is None:
+            self.unreached = True
+            return limit
+        return found[0]
 
     # -- building ---------------------------------------------------------
 
-    def attempt_script(
+    def attempt_script(  # noqa: PLR0914
         self,
         start: np.ndarray,
         instruction: Instruction,
@@ -1300,8 +1302,8 @@ class Planner:
                 duration=move_duration(up[2] - x0[2], p.lift_speed, 0.5),
                 tilt=self.tilt_at(up, float(script.end[3])),
             )
-        here = script.end[:3]
-        tilt = self.tilt_at(pre, grasp_yaw)
+        here, leaning = script.end[:3], script.end_tilt
+        tilt = self.tilt_at(pre, grasp_yaw, grasp=True)
         script.add(
             "approach",
             pos=pre,
@@ -1315,12 +1317,14 @@ class Planner:
             blend=p.blend,
             tilt=tilt,
         )
+        # The descent starts once the approach has leaned the hand to its grasp tilt: blended into
+        # a lean that is still changing, it would lean more than GRASP_TILT on the way down.
         script.add(
             "descend",
             pos=grasp,
             duration=move_duration(p.pregrasp_height, p.fine_speed, 0.6),
-            blend=p.blend,
-            tilt=self.tilt_at(grasp, grasp_yaw),
+            blend=0.0 if tilt is not None and abs(tilt - leaning) > 1e-9 else p.blend,  # noqa: PLR2004
+            tilt=self.tilt_at(grasp, grasp_yaw, grasp=True),
         )
         squeeze = self.arm.squeeze
         script.add("close", grip=0.0 if squeeze is None else max(0.0, self.held_width - squeeze), duration=p.close_s)
@@ -1477,6 +1481,7 @@ class Planner:
         plan: JointPlan | None = None
         bucket_pos, bucket_rot = self.bucket_pose(bucket)
         for _ in range(4):
+            self.unreached = False
             script, yaw_release = build(slow)
             start = script.first_time("lift") + 0.1 if held_from is None else held_from
             release = next((m.t0 for m in script.moves if m.phase == "release"), script.t_end)
@@ -1501,6 +1506,13 @@ class Planner:
         assert plan is not None  # noqa: S101 - the loop runs at least once
         plan.bucket_pose = (bucket_pos, float(np.arctan2(bucket_rot[1, 0], bucket_rot[0, 0])))
         self._annotate(plan)
+        if self.unreached:
+            plan.unreached = True
+            limit = np.degrees(min(GRASP_TILT, self.arm.max_tilt))
+            plan.problems.append(
+                f"no lean reaches a key pose (at most {limit:.0f} deg at the grasp, "
+                f"{np.degrees(self.arm.max_tilt):.0f} deg elsewhere)"
+            )
         return plan
 
     @staticmethod
@@ -1732,7 +1744,8 @@ def _severity(plan: JointPlan) -> float:
         A score; lower is better.
     """
     return (
-        max(0.0, plan.pos_error - IK_POS_TOL) * 1000.0
+        (1e6 if plan.unreached else 0.0)  # after any plan that may run
+        + max(0.0, plan.pos_error - IK_POS_TOL) * 1000.0
         + max(0.0, plan.peak_speed_ratio - SPEED_FRACTION)
         + max(0.0, plan.peak_accel_ratio - ACCEL_FRACTION)
         + sum(max(0.0, CLEARANCE[key] - value) * 1000.0 for key, value in plan.clearance.items())
@@ -1996,9 +2009,6 @@ class BucketSortDemonstrator:
             [*q, grip] if i == self._active else self._hold[i]  # type: ignore[list-item]
             for i in range(len(self.arms))
         ])
-        for i, (start, count) in enumerate(self._rows):
-            if self.arms[i].gravity_offset:  # command the sag back (FrankaIK.sag)
-                targets[start : start + count] += self.planners[i].ik.sag(targets[start : start + count])
         targets[self._grip_rows] *= self._grip_per_width
         return targets
 
@@ -2087,8 +2097,6 @@ class BucketSortDemonstrator:
         targets = np.array(data.ctrl[self._actuators[rows]]) / self._ctrl_per_unit[rows]
         opening = targets[count] / self._grip_per_width[arm]
         targets[count] = float(np.clip(opening, 0.0, self.arms[arm].grip_open))
-        if self.arms[arm].gravity_offset:  # the joints the targets hold the arm at, the sag taken back out
-            targets[:count] -= self.planners[arm].ik.sag(targets[:count])
         return targets
 
     def _switch_arm(self, arm: int) -> None:
@@ -2187,11 +2195,10 @@ class BucketSortDemonstrator:
         """
         if len(self.arms) == 1:
             return True
-        written = self._targets(self._q, self._grip)  # type: ignore[arg-type]
         for index, planner in enumerate(self.planners):
             start, count = self._rows[index]
+            target = self._q if index == self._active else self._hold[index][:count]  # type: ignore[index]
             rows = slice(start, start + count)
-            target = written[rows]
             targets = np.array(data.ctrl[self._actuators[rows]]) / self._ctrl_per_unit[rows]
             moving = np.abs(np.array(data.qvel[planner.ik.dof_adr])).max() >= STILL_SPEED
             if moving or np.abs(targets - target).max() > TARGET_TOLERANCE:
@@ -2639,7 +2646,11 @@ class BucketSortDemonstrator:
         Returns:
             ``True`` for a plan that misses some check but neither of these.
         """
-        return plan.pos_error <= OUT_OF_REACH and plan.clearance.get("arm", np.inf) >= CLEARANCE["arm"]
+        return (
+            not plan.unreached
+            and plan.pos_error <= OUT_OF_REACH
+            and plan.clearance.get("arm", np.inf) >= CLEARANCE["arm"]
+        )
 
     def _too_close_to_an_arm(self, plan: JointPlan) -> bool:
         """Return whether *plan* brings the working arm closer than :data:`CLEARANCE` ``arm`` to an arm holding still.
@@ -2725,9 +2736,14 @@ class BucketSortDemonstrator:
                 )
                 self._stop_and_fail(data, plan.dt, brake, reason)
                 return
+        if len(self.arms) > 1 or self.active_arm.max_tilt > 0.0:
+            # A plan out of reach would close on nothing or let go outside the bucket: several arms
+            # and the leaning arms refuse it (the checked braking still stops the arm); one Franka
+            # runs its best-effort plans as before.
+            if plan.unreached:
+                self._stop_and_fail(data, plan.dt, brake, f"no lean of the hand reaches the {plan.kind} plan's poses")
+                return
             if plan.kind != "home" and plan.pos_error > OUT_OF_REACH:
-                # A re-planned approach or place out of reach would close on nothing or let go outside
-                # the bucket; the checked braking still stops the arm.
                 reason = (
                     f"the {plan.kind} plan misses its path by {plan.pos_error * 1000:.0f} mm "
                     f"(at most {OUT_OF_REACH * 1000:.0f} mm): out of reach"

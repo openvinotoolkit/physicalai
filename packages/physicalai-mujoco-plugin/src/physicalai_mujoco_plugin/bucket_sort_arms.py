@@ -125,10 +125,6 @@ class BucketSortArm:
     """The full opening, metres."""
     min_tcp_z: float = 0.013
     """Lowest grasp height of the tool point: the Franka Hand's pads reach 9 mm below it."""
-    gravity_offset: bool = False
-    """Command each joint as much past its planned angle as its position servo sags under the arm's
-    weight there, so the arm stands where planned: for the WidowX AI, whose servos are soft enough
-    to sag 2 to 3 cm at the finger tips."""
     squeeze: float | None = None
     """Close the hand this far (m) narrower than the object, not all the way: a stiff gripper with no
     force limit would otherwise crush the object out of its grasp. ``None`` closes fully (the Franka
@@ -246,7 +242,6 @@ WXAI_ARM = BucketSortArm(
     heights=SIX_JOINT_HEIGHTS,
     max_tilt=radians(50.0),
     joint_margin=radians(3.0),
-    gravity_offset=True,
 )
 """The WidowX AI: Menagerie's ``ee_gripper_link`` site at the finger tips, the fingers along its x,
 closing along its y; each carriage moves half the opening, 0 to 0.045 m."""
@@ -272,7 +267,6 @@ REBOT_ARM = BucketSortArm(
     grip_open=0.10,
     min_tcp_z=0.006,
     squeeze=0.006,
-    gravity_offset=True,
     wrist=5,
     shoulder_singularity=False,
     heights=SIX_JOINT_HEIGHTS,

@@ -138,6 +138,36 @@ class TestDemonstrator:
         assert max(carry) <= np.degrees(demo.active_arm.max_tilt) + 1e-6
         assert tilt["close"] <= 15.0  # noqa: PLR2004 - the grasp from nearly straight above
 
+    def test_the_widowx_servos_hold_the_targets_the_leader_publishes(self, scene: MuJoCoRobot) -> None:
+        model, data = scene._sim.model, scene._sim.data
+        if scene._profile.name != "trossen_wxai":
+            assert not model.body_gravcomp.any()  # the WidowX AI's soft servos only
+            return
+        demo = _demo(scene)
+        for _ in range(round(1.0 / TICK_S)):
+            scene.get_observation()
+        leader = np.asarray(scene._automation.leader_snapshot()["joint_positions"])
+        for i, planner in enumerate(demo.planners):
+            ik = planner.ik
+            # The leader (and so Studio's actions) holds the nominal home, without any gravity offset...
+            np.testing.assert_allclose(leader[7 * i : 7 * i + 6], np.degrees(ik.home), atol=1e-9)
+            # ... and the arm stands there under gravity: the plant compensates its weight.
+            np.testing.assert_allclose(data.qpos[ik.qpos_adr], ik.home, atol=np.radians(0.1))
+        scene._automation.set_autopilot("drive")
+        for _ in range(round(4.0 / TICK_S)):
+            scene.get_observation()
+            leader = np.asarray(scene._automation.leader_snapshot()["joint_positions"])
+            arm = demo._active
+            np.testing.assert_allclose(leader[7 * arm : 7 * arm + 6], np.degrees(demo._q), atol=1e-9)
+
+    def test_no_lean_short_of_reaching_runs(self, scene: MuJoCoRobot) -> None:
+        planner = _demo(scene).planner
+        far = np.array([1.2, 0.0, 0.1])
+        assert planner.ik.least_tilt(planner.ik.home, far, 0.0) is None
+        planner.unreached = False
+        assert planner.tilt_at(far, 0.0, grasp=True) == pytest.approx(bd.GRASP_TILT)
+        assert planner.unreached
+
     def test_drive_writes_both_grippers_the_target_the_leader_publishes(self, scene: MuJoCoRobot) -> None:
         model, data = scene._sim.model, scene._sim.data
         scene._automation.set_autopilot("drive")
@@ -195,3 +225,38 @@ class TestEpisodes:
         # Moved by contacts and gravity only: let go 0.16 m up, it falls into the bucket at up to 1.8 m/s,
         # 3.6 cm a tick; nothing teleports it further.
         assert result["jump"] < 0.04, result  # noqa: PLR2004
+
+
+def test_the_rebot_grasps_lean_15_degrees_at_most() -> None:
+    """The review's case (layout and demonstrator seed 36): the grasp once leaned the full 50 degrees."""
+    robot = MuJoCoRobot("rebot_b601", scene="bucket_sort", cameras=[], http_port=0, seed=3)
+    robot.connect()
+    try:
+        robot._set_seed(36)
+        robot._reset()
+        robot._set_seed(None)
+        robot._automation.set_autopilot("drive")
+        demo = _demo(robot)
+        demo._rng = np.random.default_rng(36)
+        plans: list[bd.JointPlan] = []
+        run = demo._run
+
+        def record(plan: bd.JointPlan, data: object, brake: np.ndarray | None = None) -> None:
+            plans.append(plan)
+            run(plan, data, brake)
+
+        demo._run = record  # type: ignore[method-assign]
+        for _ in range(round(45.0 / TICK_S)):
+            robot.get_observation()
+            if demo.status()["outcome"] in {"success", "failed", "stalled"}:
+                break
+        assert demo.status()["outcome"] == "success", demo.status()
+        attempts = [plan for plan in plans if plan.kind == "attempt"]
+        assert attempts
+        for plan in attempts:
+            assert not plan.unreached
+            grasp = [k for k, phase in enumerate(plan.phases) if phase in {"descend", "close"}]
+            assert np.degrees(plan.cartesian[grasp, 5]).max() <= np.degrees(bd.GRASP_TILT) + 1e-6
+            assert plan.pos_error <= bd.OUT_OF_REACH
+    finally:
+        robot.disconnect()
