@@ -309,6 +309,8 @@ The browser viewer has no `X-Frame-Options` or `Content-Security-Policy` header,
 
 Studio gets this command line from the catalog: every simulated follower's `simulation` field (a [`SimulationLaunch`](https://github.com/openvinotoolkit/physicalai/blob/main/packages/physicalai-studio-plugin/README.md#simulationlaunch)) lists the scenes that entry runs in, with the profile's default scene preselected, labels the entry with its arm count and tier, and builds `python -m physicalai_mujoco_plugin start --profile <profile> [--bimanual] --scene <scene> --name=<payload name> --status-json --exit-with-parent --http-port 0 --viser-port 0 --viewer-theme studio [--seed <n>]` in Studio's own Python. Building it loads no robot model and downloads nothing; the `fetch` phase does that.
 
+The start dialog also shows the command that starts the same simulation in a terminal, for a simulation that keeps running when Studio stops and that your own scripts can drive: `physicalai-mujoco start --profile <profile> [--bimanual] --scene <scene> --name=<payload name> --http-port <port of the payload's http_url> --viser-port 0 [--seed <n>]`, with `--http-host` when the payload's host is not `127.0.0.1` and `--allow-remote` when the payload allows remote connections or its host is another machine. Studio attaches to it as a simulation started outside Studio, through the robot's own address, and finds its viewer through `GET /viewer`.
+
 ## Joint units
 
 The simulation reports and accepts joint values in the same units as the real SO-101 (`physicalai.robot.SO101`):

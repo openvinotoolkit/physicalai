@@ -17,6 +17,7 @@ from physicalai_mujoco_plugin.constants import (
     DEFAULT_MUJOCO_OWNER_NAME,
     MAX_SEED,
     SO101_JOINT_ORDER,
+    default_owner_name,
 )
 from physicalai_mujoco_plugin.profiles import PROFILES, SO101_PROFILE
 from physicalai_mujoco_plugin.scene_registry import check_arm_count, get_scene
@@ -673,6 +674,106 @@ class TestSimulationLaunch:
         )
         assert (args.status_json, args.exit_with_parent, args.http_port, args.viser_port) == (True, True, 0, 0)
         assert args.viewer_theme == "studio"
+
+    @pytest.mark.parametrize(
+        ("entry_type", "seed", "extra"),
+        [
+            ("MuJoCo_SO101_Follower", None, []),
+            ("MuJoCo_WidowXAI_Bimanual_Follower", 7, ["--bimanual"]),
+            ("MuJoCo_UnitreeGo2_Follower", MAX_SEED, []),
+        ],
+    )
+    def test_standalone_argv_starts_the_same_simulation_at_the_payloads_address(
+        self, entry_type: str, seed: int | None, extra: list[str]
+    ) -> None:
+        from physicalai_mujoco_plugin import __main__ as cli  # noqa: PLC0415
+
+        entry = {entry.type: entry for entry in list_catalog_entries()}[entry_type]
+        launch = entry.simulation_launch()
+        assert launch is not None
+        payload = _payload_model(entry)(name="-my sim", http_url="http://127.0.0.1:8765")
+        argv = launch.standalone_argv(launch.default_scene, payload, seed)
+        assert argv is not None
+        assert argv[:4] == ["physicalai-mujoco", "start", "--profile", entry.profile.name]
+        assert argv[4 : 4 + len(extra)] == extra
+        args = cli._build_parser().parse_args(argv[1:])  # noqa: SLF001
+        assert (args.profile, args.bimanual, args.scene, args.name, args.seed) == (
+            entry.profile.name,
+            entry.bimanual,
+            launch.default_scene,
+            "-my sim",
+            seed,
+        )
+        assert (args.http_host, args.http_port, args.viser_port, args.allow_remote) == ("127.0.0.1", 8765, 0, False)
+        # Not Studio's supervision contract: the user's simulation runs until they stop it.
+        assert (args.status_json, args.exit_with_parent, args.viewer_theme) == (False, False, "default")
+
+    def test_standalone_argv_for_the_franka_on_bucket_sort(self) -> None:
+        launches = {d.type: d.simulation for d in _definitions()}
+        fr3, duo = launches["MuJoCo_FrankaResearch3_Follower"], launches["MuJoCo_FrankaDuo_Follower"]
+        assert fr3 is not None
+        assert duo is not None
+        payload = {"name": "mujoco-franka_fr3-follow", "http_url": "http://127.0.0.1:8765"}
+        assert fr3.standalone_argv("bucket_sort", payload) == [  # type: ignore[arg-type]
+            "physicalai-mujoco",
+            "start",
+            "--profile",
+            "franka_fr3",
+            "--scene",
+            "bucket_sort",
+            "--name=mujoco-franka_fr3-follow",
+            "--http-port",
+            "8765",
+            "--viser-port",
+            "0",
+        ]
+        assert duo.standalone_argv("bucket_sort", {"http_url": "http://127.0.0.1:8765"}, 3) == [  # type: ignore[arg-type]
+            "physicalai-mujoco",
+            "start",
+            "--profile",
+            "franka_duo",
+            "--scene",
+            "bucket_sort",
+            f"--name={default_owner_name('franka_duo')}",
+            "--http-port",
+            "8765",
+            "--viser-port",
+            "0",
+            "--seed",
+            "3",
+        ]
+
+    @pytest.mark.parametrize(
+        ("http_url", "allow_remote", "expected"),
+        [
+            ("http://127.0.0.1:8080", False, ["--http-port", "8080", "--viser-port", "0"]),
+            ("http://127.0.0.1", False, ["--http-port", "80", "--viser-port", "0"]),
+            ("http://localhost:8123/", False, ["--http-host", "localhost", "--http-port", "8123", "--viser-port", "0"]),
+            ("http://[::1]:8123", False, ["--http-host", "::1", "--http-port", "8123", "--viser-port", "0"]),
+            ("http://127.0.0.1:8123", True, ["--http-port", "8123", "--viser-port", "0", "--allow-remote"]),
+            (
+                "http://10.0.0.5:8081",
+                False,
+                ["--http-host", "10.0.0.5", "--http-port", "8081", "--viser-port", "0", "--allow-remote"],
+            ),
+        ],
+    )
+    def test_standalone_argv_serves_where_the_payload_points(
+        self, http_url: str, allow_remote: bool, expected: list[str]
+    ) -> None:
+        launch = SO101_ENTRY.simulation_launch()
+        assert launch is not None
+        payload = MuJoCoSO101Payload(http_url=http_url, allow_remote=allow_remote)
+        argv = launch.standalone_argv("yahtzee", payload)
+        assert argv is not None
+        assert argv[argv.index(f"--name={DEFAULT_MUJOCO_OWNER_NAME}") + 1 :] == expected
+
+    @pytest.mark.parametrize("http_url", ["http://127.0.0.1:notaport", "http://127.0.0.1:0", "127.0.0.1:8080", ""])
+    def test_standalone_argv_needs_a_host_and_a_fixed_port(self, http_url: str) -> None:
+        launch = SO101_ENTRY.simulation_launch()
+        assert launch is not None
+        with pytest.raises(ValueError, match="port|host"):
+            launch.standalone_argv("yahtzee", MuJoCoSO101Payload(http_url=http_url))
 
     def test_the_seed_range_matches_post_seed(self) -> None:
         launch = SO101_ENTRY.simulation_launch()
