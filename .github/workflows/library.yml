@@ -6,6 +6,11 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+    inputs:
+      rosbag_studio_smoke:
+        description: Run the pinned Studio import and CPU training smoke test
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -46,6 +51,7 @@ jobs:
               - tests/**
               - packages/**/src/**
               - packages/**/tests/**
+              - packages/physicalai-rosbag-plugin/examples/**
               - packages/**/urdf/**
               - packages/**/pyproject.toml
               - .gitattributes
@@ -129,7 +135,14 @@ jobs:
       - name: Run python unit tests
         env:
           MENAGERIE_CACHE_DIR: ${{ runner.temp }}/menagerie-cache
-        run: uv run pytest --import-mode=importlib tests/unit packages/*/tests
+        run: |
+          plugin_tests=()
+          for path in packages/*/tests; do
+            if [[ "$path" != "packages/physicalai-rosbag-plugin/tests" ]]; then
+              plugin_tests+=("$path")
+            fi
+          done
+          uv run pytest --import-mode=importlib tests/unit "${plugin_tests[@]}"
 
       # Every supported MuJoCo robot profile in its default scene, and every arm's reach (no rendering), on the cached models.
       - name: Run MuJoCo profile smoke matrix and reachability checks
@@ -137,12 +150,50 @@ jobs:
           MENAGERIE_CACHE_DIR: ${{ runner.temp }}/menagerie-cache
         run: uv run pytest --import-mode=importlib -m mujoco_smoke packages/physicalai-mujoco-plugin/tests
 
+  rosbag-tests:
+    name: ROS bag converter (Python 3.12, CPU)
+    runs-on: ubuntu-latest
+    needs: check-paths
+    if: needs.check-paths.outputs.run_tests == 'true'
+    permissions:
+      contents: read
+    steps:
+      - *checkout
+      - *set-up-python
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Install isolated converter dependencies
+        run: |
+          uv venv --python 3.12 .venv-rosbag
+          uv pip install --no-sources --python .venv-rosbag/bin/python -e . -e 'packages/physicalai-rosbag-plugin[tests]' 'torch==2.11.0+cpu' 'torchvision==0.26.0+cpu' --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match
+          uv pip check --python .venv-rosbag/bin/python
+      - name: Test converter and CLI
+        run: |
+          uv run --no-project --python .venv-rosbag/bin/python python -m pytest --import-mode=importlib -q packages/physicalai-rosbag-plugin/tests
+          .venv-rosbag/bin/physicalai rosbag --help
+          .venv-rosbag/bin/pyrefly check --config packages/physicalai-rosbag-plugin/pyproject.toml
+      - name: Build release artifacts
+        run: uv build packages/physicalai-rosbag-plugin --out-dir dist/rosbag
+
+  rosbag-studio-smoke:
+    name: ROS bag Studio integration (opt-in)
+    if: github.event_name == 'workflow_dispatch' && inputs.rosbag_studio_smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - *checkout
+      - *set-up-python
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Run pinned Studio integration
+        run: bash packages/physicalai-rosbag-plugin/examples/studio_smoke.sh "$RUNNER_TEMP/rosbag-studio"
+
   required-check:
     name: Required Check library
     needs:
       - check-paths
       - code-quality
       - unit-tests
+      - rosbag-tests
     runs-on: ubuntu-latest
     env:
       CHECKS: ${{ join(needs.*.result, ' ') }}
