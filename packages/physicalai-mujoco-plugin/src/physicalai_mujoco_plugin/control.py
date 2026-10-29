@@ -704,6 +704,7 @@ class OperatorControls:
                 object_bodies=dict(self._objects.joint_bodies),
                 view_center=tuple(float(v) for v in model.stat.center) if model is not None else (0.0, 0.0, 0.0),  # type: ignore[arg-type]
                 view_extent=float(model.stat.extent) if model is not None else 1.0,
+                view=self._scene_config.viewer_view if self._scene_config is not None else None,
                 timing=self._timing_status(),
                 profile=self._profile.name,
                 tier=self._profile.tier,
