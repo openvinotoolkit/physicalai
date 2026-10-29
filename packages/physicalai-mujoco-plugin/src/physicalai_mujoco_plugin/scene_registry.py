@@ -122,6 +122,16 @@ class FrontOverride:
 
 
 @dataclass(frozen=True)
+class ViewerView:
+    """Where the browser viewer's camera starts, and where Reset View returns it, in world metres."""
+
+    position: tuple[float, float, float]
+    look_at: tuple[float, float, float]
+    fov_deg: float = 60.0
+    """Vertical field of view."""
+
+
+@dataclass(frozen=True)
 class SceneConfig:
     """Metadata and reset configuration for a simulation scene."""
 
@@ -197,6 +207,8 @@ class SceneConfig:
     the table's height when it stands on a table. A robot's stand (the Duo's column) rests on the floor."""
     profile_front_overrides: tuple[tuple[str, FrontOverride], ...] = ()
     """Per profile: changes to the derived ``front`` camera pose (:class:`FrontOverride`)."""
+    viewer_view: ViewerView | None = None
+    """The browser viewer's starting view; ``None``: mjviser's default angle on the whole model."""
 
     def arm_counts_for(self, profile_name: str) -> tuple[int, ...]:
         """Return the arm counts the scene runs *profile_name* with: ``profile_arm_counts``, else ``arm_counts``.
@@ -749,6 +761,9 @@ _SCENES: dict[str, SceneConfig] = {
         two_arm_overview_rigs=(
             ("trossen_wxai", OverviewRig(pos=(-0.17, 0.0, 0.90), quat=(0.679809, 0.194577, -0.194577, -0.679809))),
         ),
+        # From the front-left corner, close on the table: the arm, the objects and the buckets fill the
+        # view instead of a small robot in the middle of the floor.
+        viewer_view=ViewerView(position=(-0.25, 1.42, 1.00), look_at=(0.32, 0.0, 0.22), fov_deg=51.6),
     ),
     "floor_flat": SceneConfig(
         scene_id="floor_flat",

@@ -258,9 +258,9 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=get_args(ViewerTheme),
         default="default",
         help=(
-            "Browser viewer chrome: studio hides the Share and Shutdown buttons, for a viewer embedded in "
-            "Physical AI Studio, which stops the simulation itself; compact does the same and starts with the "
-            "control panel minimized, for a viewer next to its own controls (default: default)"
+            "Browser viewer chrome: compact hides the Share and Shutdown buttons and starts with the control "
+            "panel minimized, for a viewer next to its own controls; studio is compact in dark mode, for a "
+            "viewer embedded in Physical AI Studio, which stops the simulation itself (default: default)"
         ),
     )
     start.add_argument(
