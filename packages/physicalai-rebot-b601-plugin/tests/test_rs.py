@@ -89,11 +89,15 @@ _RAW_CONTROL: dict[str, Any] = {
 }
 
 
-def _create_robot(mock_motorbridge: MagicMock, *, raw: bool = True, **kwargs: Any) -> Any:
+def _create_robot(mock_motorbridge: MagicMock, *, raw: bool = True, hold: bool = False, **kwargs: Any) -> Any:
     from physicalai_rebot_b601_plugin import ReBotB601RS
 
     _ = mock_motorbridge
-    return ReBotB601RS(**({**_RAW_CONTROL, **kwargs} if raw else kwargs))
+    robot = ReBotB601RS(**({**_RAW_CONTROL, **kwargs} if raw else kwargs))
+    if not hold:
+        # Skip the hold command sent on enable, so tests see only the commands they send.
+        robot._hold_after_enable = robot._reset_control_state
+    return robot
 
 
 class TestReBotB601RSConstruction:

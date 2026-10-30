@@ -76,6 +76,9 @@ _APPROACH_DONE_DEG = 0.5
 _JUMP_SPEED_DEG_S = 480.0
 _JUMP_MAX_DT_S = 0.05
 _JUMP_MIN_DEG = 10.0
+# Reading the pose to hold right after enabling torque: attempts and the pause between them.
+_HOLD_READ_ATTEMPTS = 3
+_HOLD_READ_RETRY_S = 0.01
 # Rest-pose (park) move: command rate, minimum duration per stage, and hold time at the end.
 _PARK_RATE_HZ = 50.0
 _PARK_MIN_STAGE_S = 1.0
@@ -473,7 +476,30 @@ class ReBotB601DM:
 
         controller.enable_all()
         self._torque_enabled = True
+        self._hold_after_enable()
+
+    def _hold_after_enable(self) -> None:
+        """Hold the measured pose right after the motors are enabled.
+
+        An enabled motor runs its last command, which is zero stiffness and zero torque after power-up:
+        until the first action arrives the arm would hang limp and could fall. Holding the measured
+        pose (with gravity feedforward) keeps it where it is; the first action then eases in from there.
+        """
         self._reset_control_state()
+        present = None
+        for _ in range(_HOLD_READ_ATTEMPTS):
+            try:
+                present = self._measured_public_deg()
+                break
+            except ConnectionError:
+                time.sleep(_HOLD_READ_RETRY_S)
+        if present is None:
+            logger.warning("No motor feedback right after enabling torque; the arm is not held until the first command")
+            return
+        self._send_command(present, _NOMINAL_COMMAND_DT_S, goal_time=_NOMINAL_COMMAND_DT_S)
+        self._reference_velocity_deg_s = np.zeros(self.NUM_JOINTS)
+        self._approaching = self._approach_speed is not None
+        self._approach_progress_speed = 0.0
 
     def disable_torque(self) -> None:
         """Disable torque (brake) on all motors."""
@@ -482,10 +508,10 @@ class ReBotB601DM:
         self._reset_control_state()
 
     def enable_torque(self) -> None:
-        """Enable torque on all motors; the next command eases in from the measured pose."""
+        """Enable torque on all motors and hold the measured pose; the next command eases in from it."""
         self._require_controller().enable_all()
         self._torque_enabled = True
-        self._reset_control_state()
+        self._hold_after_enable()
 
     def configure_position_control(self) -> None:
         """Reconfigure all motors to their position-control modes."""

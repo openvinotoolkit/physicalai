@@ -87,11 +87,15 @@ _RAW_CONTROL: dict[str, Any] = {
 }
 
 
-def _create_robot(mock_motorbridge: MagicMock, *, raw: bool = True, **kwargs: Any) -> Any:
+def _create_robot(mock_motorbridge: MagicMock, *, raw: bool = True, hold: bool = False, **kwargs: Any) -> Any:
     from physicalai_rebot_b601_plugin import ReBotB601DM
 
     _ = mock_motorbridge
-    return ReBotB601DM(**({**_RAW_CONTROL, **kwargs} if raw else kwargs))
+    robot = ReBotB601DM(**({**_RAW_CONTROL, **kwargs} if raw else kwargs))
+    if not hold:
+        # Skip the hold command sent on enable, so tests see only the commands they send.
+        robot._hold_after_enable = robot._reset_control_state
+    return robot
 
 
 class TestReBotB601DMConstruction:
@@ -619,6 +623,49 @@ class TestReBotB601DMControl:
         robot.send_action(np.array([-20.0, 0, 0, 0, 0, 0, 0], dtype=np.float32))
 
         assert 19.0 < math.degrees(motors[0].send_mit.call_args.args[0]) < 20.0
+
+    @pytest.mark.parametrize("control_mode", ["mit", "pos_vel"])
+    def test_enabling_torque_holds_the_measured_pose(self, mock_motorbridge: MagicMock, control_mode: str) -> None:
+        robot = _create_robot(mock_motorbridge, hold=True, control_mode=control_mode, gravity_compensation=True)
+        motors = _dm_motors(mock_motorbridge)
+
+        robot.connect()
+
+        send = "send_mit" if control_mode == "mit" else "send_pos_vel"
+        for index, motor in enumerate(motors[:6], 1):
+            # The mock motors report index * 10 degrees; without this hold the arm would hang limp.
+            assert getattr(motor, send).call_args.args[0] == pytest.approx(math.radians(index * 10.0))
+        if control_mode == "mit":
+            assert motors[2].send_mit.call_args.args[1] == 0.0  # no velocity feedforward
+            assert motors[2].send_mit.call_args.args[4] != 0.0  # gravity feedforward
+
+        robot.disable_torque()
+        for motor in motors:
+            motor.reset_mock()
+        robot.enable_torque()
+        assert getattr(motors[0], send).call_args.args[0] == pytest.approx(math.radians(10.0))
+
+    def test_first_command_after_the_hold_eases_in(self, mock_motorbridge: MagicMock, clock: _FakeClock) -> None:
+        robot = _create_robot(mock_motorbridge, hold=True, control_mode="mit", approach_speed=30.0)
+        motors = _dm_motors(mock_motorbridge)
+        for motor in motors:
+            motor.get_state.return_value = _MotorState(pos=0.0)
+        _follow_commands(motors)
+        robot.connect()
+
+        robot.send_action(np.array([60.0, 0, 0, 0, 0, 0, 0], dtype=np.float32))
+
+        assert 0.0 < math.degrees(motors[0].send_mit.call_args.args[0]) < 1.0
+
+    def test_enable_without_feedback_does_not_fail(self, mock_motorbridge: MagicMock, clock: _FakeClock) -> None:
+        robot = _create_robot(mock_motorbridge, hold=True, control_mode="mit")
+        motors = _dm_motors(mock_motorbridge)
+        motors[3].get_state.return_value = None
+
+        robot.connect()
+
+        assert robot.is_connected()
+        motors[0].send_mit.assert_not_called()
 
     @pytest.mark.parametrize("control_mode", ["mit", "pos_vel"])
     def test_disconnect_parks_in_two_stages(

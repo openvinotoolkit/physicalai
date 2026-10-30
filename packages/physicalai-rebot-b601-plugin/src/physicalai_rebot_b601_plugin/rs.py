@@ -196,7 +196,7 @@ class ReBotB601RS(ReBotB601DM):
             motor.ensure_mode(Mode.MIT)
         controller.enable_all()
         self._torque_enabled = True
-        self._reset_control_state()
+        self._hold_after_enable()
 
     def _reset_control_state(self) -> None:
         super()._reset_control_state()

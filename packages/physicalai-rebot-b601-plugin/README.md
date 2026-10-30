@@ -49,7 +49,11 @@ The drivers fill both feedforward terms, the way Trossen's controller does for t
 Both apply to MIT mode only: `ReBotB601RS` always, `ReBotB601DM` with `control_mode="mit"`. DM's
 POS_VEL mode runs the motor's own position loop, which has no feedforward input.
 
-Two more behaviours apply to both modes:
+Three more behaviours apply to both modes:
+
+- **Hold on enable**: when torque is enabled (on connect, or by `enable_torque()`), the driver
+  immediately commands the measured pose. An enabled motor otherwise runs its power-up command of
+  zero stiffness and torque, and the arm would hang limp until the first action arrives.
 
 - **Start-up approach** (`approach_speed`, default 30 °/s): after torque is enabled, the first
   command eases the arm from where it is to the commanded pose along a straight joint-space line,
