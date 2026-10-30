@@ -1057,6 +1057,40 @@ class TestHttpServer:
         finally:
             blocker.close()
 
+    def test_busy_port_falls_back_to_the_fallback_port(self, model_path) -> None:
+        import http.client
+        import socket
+
+        port, fallback = self._free_port(), self._free_port()
+        blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        blocker.bind(("127.0.0.1", port))
+        blocker.listen(1)
+        try:
+            robot = so101(model_path, http_port=port, http_fallback_port=fallback)
+            robot.connect()
+            conn = http.client.HTTPConnection("127.0.0.1", fallback, timeout=5)
+            try:
+                assert robot._http_server is not None  # noqa: SLF001
+                assert robot._http_server.url == f"http://127.0.0.1:{fallback}"  # noqa: SLF001
+                conn.request("GET", "/health")
+                assert conn.getresponse().status == 200
+            finally:
+                conn.close()
+                robot.disconnect()
+        finally:
+            blocker.close()
+
+    def test_a_free_port_is_used_before_the_fallback(self, model_path) -> None:
+        port, fallback = self._free_port(), self._free_port()
+        robot = so101(model_path, http_port=port, http_fallback_port=fallback)
+        robot.connect()
+        try:
+            assert robot._http_server is not None  # noqa: SLF001
+            assert robot._http_server.url == f"http://127.0.0.1:{port}"  # noqa: SLF001
+        finally:
+            robot.disconnect()
+        assert robot.__getstate__()["http_fallback_port"] == fallback
+
     def test_http_disabled_by_default(self, robot) -> None:
         assert robot._http_server is None  # noqa: SLF001
 
