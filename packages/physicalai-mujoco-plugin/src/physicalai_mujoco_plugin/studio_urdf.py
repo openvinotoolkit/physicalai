@@ -58,7 +58,7 @@ from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import TYPE_CHECKING
-from xml.sax.saxutils import quoteattr
+from xml.sax.saxutils import quoteattr  # nosec B406 - escapes the attribute values written here; nothing is parsed
 
 import numpy as np
 from loguru import logger
