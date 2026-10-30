@@ -23,6 +23,7 @@ class _ServoFactoryFn:
 
 
 class _StararmPackageModule:
+    _stararm102: object
     stararm102fl: object
 
 
@@ -34,26 +35,30 @@ def _make_mock_smart_servo() -> MagicMock:
 
     servo_angles = [0.0, 10.0, -10.0, 30.0, 40.0, 50.0, 60.0]
 
-    def read_angle_side_effect(servo_id: int, *, multi_turn: bool = True) -> MagicMock:
-        _ = multi_turn
-        sample = MagicMock()
-        sample.raw_deg = cast("_ServoFactoryFn", _make_mock_smart_servo).servo_angles[servo_id]
-        sample.filtered_deg = cast("_ServoFactoryFn", _make_mock_smart_servo).servo_angles[servo_id]
-        sample.reliable = True
-        return sample
+    def sync_monitor_side_effect(servo_ids: list[int]) -> dict[int, MagicMock]:
+        monitors = {}
+        for servo_id in servo_ids:
+            monitor = MagicMock()
+            monitor.angle_deg = cast("_ServoFactoryFn", _make_mock_smart_servo).servo_angles[servo_id]
+            monitor.reliable = True
+            monitors[servo_id] = monitor
+        return monitors
 
     cast("_ServoFactoryFn", _make_mock_smart_servo).servo_angles = servo_angles
 
-    bus.read_angle.side_effect = read_angle_side_effect
+    bus.sync_monitor.side_effect = sync_monitor_side_effect
     return module
 
 
 @pytest.fixture
 def mock_smart_servo(monkeypatch: pytest.MonkeyPatch) -> Generator[MagicMock]:
     module = _make_mock_smart_servo()
+    sys.modules.pop("physicalai_stararm_plugin._stararm102", None)
     sys.modules.pop("physicalai_stararm_plugin.stararm102fl", None)
     sys.modules.pop("physicalai_stararm_plugin", None)
     pkg = sys.modules.get("physicalai_stararm_plugin")
+    if pkg is not None and hasattr(pkg, "_stararm102"):
+        del cast("_StararmPackageModule", pkg)._stararm102
     if pkg is not None and hasattr(pkg, "stararm102fl"):
         del cast("_StararmPackageModule", pkg).stararm102fl
     # setitem restores only this key; patch.dict(sys.modules) would also drop
@@ -61,6 +66,7 @@ def mock_smart_servo(monkeypatch: pytest.MonkeyPatch) -> Generator[MagicMock]:
     monkeypatch.setitem(sys.modules, "motorbridge_smart_servo", module)
     import_module("physicalai_stararm_plugin.stararm102fl")
     yield module
+    sys.modules.pop("physicalai_stararm_plugin._stararm102", None)
     sys.modules.pop("physicalai_stararm_plugin.stararm102fl", None)
     sys.modules.pop("physicalai_stararm_plugin", None)
 
@@ -97,6 +103,17 @@ class TestStarArm102FLFollowerConstruction:
             StarArm102FLFollower(baudrate=0)
         with pytest.raises(ValueError, match="command_interval_ms"):
             StarArm102FLFollower(command_interval_ms=-1)
+
+    def test_exposes_only_follower_behavior(self, mock_smart_servo: MagicMock) -> None:
+        from physicalai.robot.interface import Robot
+        from physicalai_stararm_plugin import StarArm102FLFollower
+
+        robot = StarArm102FLFollower()
+
+        assert isinstance(robot, Robot)
+        assert not hasattr(robot, "follower_profile")
+        assert not hasattr(robot, "control_mode")
+        assert not hasattr(robot, "is_holding")
 
 
 class TestStarArm102FLFollowerLifecycle:
@@ -153,6 +170,7 @@ class TestStarArm102FLFollowerActionObservation:
         assert obs.sensor_data is not None
         assert "raw_positions" in obs.sensor_data
         assert "reliable" in obs.sensor_data
+        mock_smart_servo.FashionStarServo.return_value.sync_monitor.assert_called_once_with([0, 1, 2, 3, 4, 5, 6])
 
     def test_send_action_calls_set_angle(self, mock_smart_servo: MagicMock) -> None:
         robot = _create_robot(mock_smart_servo, command_interval_ms=10)
@@ -172,3 +190,9 @@ class TestStarArm102FLFollowerActionObservation:
 
         with pytest.raises(ValueError, match="Expected action shape"):
             robot.send_action(np.zeros(6, dtype=np.float32))
+
+    def test_send_action_requires_connection(self, mock_smart_servo: MagicMock) -> None:
+        robot = _create_robot(mock_smart_servo)
+
+        with pytest.raises(ConnectionError, match="not connected"):
+            robot.send_action(np.zeros(7, dtype=np.float32))

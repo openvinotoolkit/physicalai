@@ -15,5 +15,6 @@ runtime:
         init_args:
           port: /dev/ttyUSB0 # CHANGE_ME: LD leader serial port
           baudrate: 1000000
+          follower_profile: null # Keep native Star Arm ranges when driving an FL follower
 
   fps: 30.0
