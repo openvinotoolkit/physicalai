@@ -36,9 +36,9 @@ class StarArm102LDLeader(StarArm102HDLeader):
             unlock_on_connect: Unlock every servo when connecting.
             reset_multi_turn_on_connect: Reset each servo's accumulated turn count when connecting.
             zero_on_connect: Store the current servo positions as their origins when connecting.
-            follower_profile: Optional follower whose reachable ranges constrain observations. The
-                ``"b601"`` profile clips the gripper to 45 degrees without changing signs or units;
-                ``None`` preserves native Star Arm ranges.
+            follower_profile: Optional follower frame for observations. The ``"b601"`` profile
+                applies the reBot B601's LeRobot-style joint directions, scales the gripper by
+                ``-6`` and clips to the B601 limits; ``None`` preserves native Star Arm values.
 
         Raises:
             ValueError: If the baud rate or follower profile is invalid.
