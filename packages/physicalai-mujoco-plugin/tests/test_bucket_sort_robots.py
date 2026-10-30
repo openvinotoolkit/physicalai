@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+from typing import TYPE_CHECKING
 
 import mujoco
 import numpy as np
@@ -25,6 +26,9 @@ from physicalai_mujoco_plugin.profiles import get_profile
 from physicalai_mujoco_plugin.robot import MuJoCoRobot
 from physicalai_mujoco_plugin.scene_registry import get_scene, list_scenes_naming
 from physicalai_mujoco_plugin.studio_catalog import list_catalog_entries
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 TICK_S = 0.02
 NEW_PROFILES = ("franka_panda", "franka_duo")
@@ -46,6 +50,20 @@ def scene(robot: MuJoCoRobot) -> MuJoCoRobot:
     robot._reset()
     robot._set_seed(None)
     return robot
+
+
+def _ticks(robot: MuJoCoRobot, seconds: float) -> Iterator[None]:
+    """Run control ticks for *seconds* of simulated time, not counting the ones the demonstrator plans in.
+
+    It plans on its own thread for as long as that takes (the Duo's attempts, seconds), while the
+    simulation ticks on.
+    """
+    demo = robot._automation.autopilot.demonstrator
+    ticks = 0
+    while ticks < round(seconds / TICK_S):
+        robot.get_observation()
+        ticks += not demo.planning
+        yield
 
 
 def _arm_qpos(robot: MuJoCoRobot, arm: int) -> np.ndarray:
@@ -281,8 +299,7 @@ class TestDemonstrator:
         demo = scene._automation.autopilot.demonstrator
         instruction = scene._sim.on_reset.instruction
         phase = "approach" if what == "object" else "carry"
-        for _ in range(round(20.0 / TICK_S)):
-            scene.get_observation()
+        for _ in _ticks(scene, 20.0):
             if demo.phase == phase:
                 break
         assert demo.phase == phase
@@ -293,8 +310,7 @@ class TestDemonstrator:
         data.qvel[dof : dof + 6] = 0.0
         mujoco.mj_forward(model, data)
         failure = None
-        for _ in range(round(3.0 / TICK_S)):
-            scene.get_observation()
+        for _ in _ticks(scene, 3.0):
             failure = demo.status()["failure"] or failure
             if failure:
                 break
@@ -365,8 +381,7 @@ class TestDemonstrator:
         mujoco.mj_forward(model, data)
         scene._automation.set_autopilot("drive")
         demo = scene._automation.autopilot.demonstrator
-        for _ in range(round(4.0 / TICK_S)):
-            scene.get_observation()
+        for _ in _ticks(scene, 4.0):
             if demo.status()["outcome"] == "failed":
                 break
         assert demo.status()["outcome"] == "failed"

@@ -316,6 +316,8 @@ class TestReplan:
         mujoco.mj_forward(model, data)
         axis = demo.planner.grasp_axis_yaw(name, data.xmat[model.body(name).id].reshape(3, 3))
         scene.get_observation()
+        while demo.planning:  # on its own thread
+            scene.get_observation()
         assert demo.stats.replans == 1
         assert wrap_near(demo._planned_axis, axis, np.pi) == pytest.approx(axis, abs=1e-3)
 

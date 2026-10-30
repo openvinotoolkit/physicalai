@@ -40,6 +40,12 @@ the objects', from ``qpos`` into every plan.
 In ``leader`` mode nothing but a client sends the targets back. When the arm does not reach a
 plan's last target within :data:`CATCH_UP_S`, the demonstrator stops (``stalled``) instead of
 failing and resetting episodes that nobody runs.
+
+Planning an attempt takes from a tenth of a second (an FR3) to several seconds (a leaning arm, or
+two arms). With ``background_planning`` (as the autopilot runs it), :meth:`BucketSortDemonstrator.step`
+plans on a thread of its own, from a copy of the simulation's data, so the control tick never waits
+for it: meanwhile the phase reads ``planning`` and the arm brakes to a stop or holds its targets,
+and the simulation (with the virtual leader it publishes) keeps ticking.
 """
 
 # MuJoCo model/data attributes are supplied by the C extension at runtime.
@@ -47,6 +53,8 @@ failing and resetting episodes that nobody runs.
 
 from __future__ import annotations
 
+import threading
+import time
 from dataclasses import dataclass, field, replace
 from itertools import starmap
 from typing import TYPE_CHECKING, Literal
@@ -191,9 +199,18 @@ OUT_OF_REACH = 0.02
 """With several arms, a best-effort plan whose IK misses by more than this (m), or that comes too close
 to an arm holding still, does not run: the episode fails instead (no arm reaches it)."""
 
+PLAN_WAIT_S = 0.02
+"""Background planning: how long the tick that starts a plan waits for it before the arm holds.
+
+A plan done by then runs from this tick, exactly as planned in the tick; a longer one runs from the
+first tick after it is done."""
+PLAN_YIELD_S = 0.0005
+"""Background planning: the planner lets the control thread run (releases the GIL) this often."""
+
 Phase = Literal[
     "idle",
     "settle",
+    "planning",
     "approach",
     "descend",
     "close",
@@ -513,6 +530,96 @@ def wrap_near(angle: float, reference: float, period: float = 2.0 * np.pi) -> fl
     return float(angle + period * np.round((reference - angle) / period))
 
 
+# ----------------------------------------------------------------------
+# Planning off the control tick
+# ----------------------------------------------------------------------
+
+
+class PlanCancelledError(Exception):
+    """A plan on its own thread was cancelled: the demonstrator was reset while it planned."""
+
+
+_planning = threading.local()
+"""``job``: the :class:`_PlanJob` whose thread this is, on a planning thread."""
+
+
+def _checkpoint() -> None:
+    """On a planning thread, let the control thread run now and then, and stop a cancelled plan.
+
+    The planner calls it in its inner loops. Planning is mostly short Python and NumPy calls that
+    hold the GIL; a thread that holds it hands it over only every ``sys.getswitchinterval()``
+    (5 ms), and the control tick needs it after each physics step, so without these pauses a tick
+    takes ten times as long. Elsewhere it does nothing. A cancelled plan stops here, by
+    :class:`PlanCancelledError`.
+    """
+    job = getattr(_planning, "job", None)
+    if job is not None:
+        job.checkpoint()
+
+
+class _PlanJob:
+    """One plan on its own thread, which has the demonstrator's state to itself until it ends.
+
+    Meanwhile the control thread only outputs :attr:`hold`, and the demonstrator's
+    :meth:`~BucketSortDemonstrator.reset` marks the job :attr:`cancelled` instead of resetting; the
+    control thread collects the job once :attr:`done` is set (``BucketSortDemonstrator._finish``).
+    """
+
+    def __init__(
+        self, work: Callable[[], object], hold: np.ndarray | None, brake_ticks: int, after: _PlanJob | None
+    ) -> None:
+        self.hold = hold
+        """Targets per tick while it plans, model units: where the arm is, then its braking; the last holds.
+        ``None``: hold the actuators' targets."""
+        self.brake_ticks = brake_ticks
+        """Braking ticks in :attr:`hold` (after its first row), which the plan starts with."""
+        self.ticks = 0
+        """Control ticks since the one that started it."""
+        self.cancelled = False
+        self.status: dict[str, object] | None = None
+        """The demonstrator's status when it started, which it reports meanwhile."""
+        self.result: object = None
+        self.error: Exception | None = None
+        self.done = threading.Event()
+        self._work = work
+        self._after = after
+        self._yielded = 0.0
+        self.thread = threading.Thread(target=self._main, name="bucket-sort-planner", daemon=True)
+
+    def start(self) -> None:
+        """Start planning."""
+        self.thread.start()
+
+    def checkpoint(self) -> None:
+        """Release the GIL every :data:`PLAN_YIELD_S`; raise once cancelled.
+
+        Raises:
+            PlanCancelledError: When the plan was cancelled.
+        """
+        if self.cancelled:
+            raise PlanCancelledError
+        now = time.perf_counter()
+        if now - self._yielded >= PLAN_YIELD_S:
+            # sleep(0) keeps the GIL on macOS; any real sleep hands it to a waiting thread.
+            time.sleep(1e-6)
+            self._yielded = time.perf_counter()
+
+    def _main(self) -> None:
+        _planning.job = self
+        try:
+            if self._after is not None:
+                self._after.thread.join()  # a cancelled plan still on its way out
+            self._yielded = time.perf_counter()
+            self.result = self._work()
+        except PlanCancelledError:
+            self.cancelled = True
+        except Exception as exc:  # noqa: BLE001 - handed to the control thread
+            self.error = exc
+        finally:
+            _planning.job = None
+            self.done.set()
+
+
 class FrankaIK:
     """Damped least-squares IK of a Franka arm's TCP: a position, fingers down, the closing axis at a yaw.
 
@@ -727,6 +834,7 @@ class FrankaIK:
         eye6, eye_n = np.eye(6), np.eye(n)
         pos_err, rot_err = np.inf, np.inf
         for it in range(iters + 1):
+            _checkpoint()
             data.qpos[self.qpos_adr] = q
             mujoco.mj_kinematics(model, data)
             mujoco.mj_comPos(model, data)
@@ -993,6 +1101,8 @@ class JointPlan:
     problems: list[str] = field(default_factory=list)
     unreached: bool = False
     """A pose no allowed lean of the hand reaches (``Planner.tilt_at``): the plan never runs."""
+    brake_ticks: int = 0
+    """Ticks of braking in front of the plan (:meth:`BucketSortDemonstrator._run`)."""
 
     @property
     def ok(self) -> bool:
@@ -1696,6 +1806,7 @@ class Planner:
         self.load(snapshot)
         worst = float(np.inf)
         for row in np.atleast_2d(q):
+            _checkpoint()
             self.ik.set_arm(row)
             worst = min(worst, clearance._min_distance(clearance.arm, clearance.other_arms))  # noqa: SLF001
         return worst
@@ -1710,6 +1821,7 @@ class Planner:
         worst: dict[str, float] = dict.fromkeys(CLEARANCE, float(np.inf))
         quat = np.zeros(4)
         for k in range(0, len(plan.q), CHECK_EVERY):
+            _checkpoint()
             holding = held is not None and held[0] <= k < held[1]
             ik.set_arm(plan.q[k], self.held_width if holding else float(plan.grip[k]))
             if holding:
@@ -1810,9 +1922,18 @@ class BucketSortDemonstrator:
     With several arms (the Duo's), one works an attempt while the others hold their targets: each
     attempt goes to the arm that reaches both the object and the bucket, the nearer one first, and
     its plans keep clear of the arms that hold still.
+
+    With *background_planning*, a plan that :meth:`step` starts (an attempt, a re-plan, the way
+    home) runs on a thread of its own, from a copy of the data (``mujoco.mj_copyData``); the live
+    data stays the control thread's. Until it is done, :attr:`phase` reads ``planning`` and
+    :meth:`step` outputs where the arm was, then the braking the plan starts with, then holds; the
+    plan then runs from the tick it is done, past the braking already output. A plan done within
+    :data:`PLAN_WAIT_S` runs from the tick that started it, as without a thread. :meth:`reset`
+    while it plans discards it. :meth:`stuck_start` has :meth:`begin_stuck_start` for the same.
+    Called directly, the other methods plan in the calling thread.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0915 - one field per piece of state, each documented
         self,
         model: object,
         task: BucketSortTask,
@@ -1822,6 +1943,7 @@ class BucketSortDemonstrator:
         randomize: bool = True,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         reset_on_failure: bool = True,
+        background_planning: bool = False,
     ) -> None:
         """Bind to the scene model and its task.
 
@@ -1834,6 +1956,7 @@ class BucketSortDemonstrator:
             randomize: Draw each attempt's parameters (:meth:`DemoParams.sample`); otherwise the defaults.
             max_attempts: Attempts per episode, the retry included.
             reset_on_failure: Ask for a scene reset after a failed episode (:meth:`take_reset_request`).
+            background_planning: Plan on a thread of its own, so :meth:`step` returns at once.
         """
         from physicalai_mujoco_plugin.profiles.derive import control_kind  # noqa: PLC0415
 
@@ -1895,6 +2018,16 @@ class BucketSortDemonstrator:
         self._reset_requested = False
         self.plans: list[JointPlan] = []
         """Every plan of the current episode, for diagnostics."""
+        self.background_planning = background_planning
+        self._job: _PlanJob | None = None
+        """The plan on its own thread, until the control thread collects it (:meth:`_finish`)."""
+        self._scratch: object | None = None
+        """The planning thread's copy of the data."""
+        self._deferring = False
+        """Inside :meth:`step` with background planning: plans go to a thread."""
+        self._last_call: float | None = None
+        """When :meth:`step` (or :meth:`poll_stuck_start`) last returned, monotonic seconds."""
+        self._stuck_result: StuckStart | None = None
 
     # -- readouts ---------------------------------------------------------
 
@@ -1915,14 +2048,31 @@ class BucketSortDemonstrator:
 
     @property
     def phase(self) -> Phase:
-        """What the demonstrator is doing."""
+        """What the demonstrator is doing: ``planning`` while a plan runs on its own thread."""
+        job = self._job
+        if job is not None:
+            return "idle" if job.cancelled else "planning"
         return self._phase
+
+    @property
+    def planning(self) -> bool:
+        """Whether a planning thread runs (or ran, and its plan waits for the next tick)."""
+        return self._job is not None
 
     @property
     def target(self) -> str | None:
         """The object of the current instruction, if any."""
-        episode = self._episode
+        episode = self._current_episode()
         return episode.instruction.object if episode is not None and episode.instruction is not None else None
+
+    def _current_episode(self) -> _Episode | None:
+        """Return the episode in progress; none once :meth:`reset` cancelled the plan in flight.
+
+        Returns:
+            The episode, or ``None``.
+        """
+        job = self._job
+        return None if job is not None and job.cancelled else self._episode
 
     @property
     def last_plan(self) -> JointPlan | None:
@@ -1937,8 +2087,13 @@ class BucketSortDemonstrator:
         attempt went wrong (a miss, a slip, a drop), even when the episode still succeeds, for
         example by a dropped object landing in the bucket; a recorder that keeps only smooth
         demonstrations keeps clean successes.
+
+        While a plan runs on its own thread, the status is the one from when it started.
         """
-        episode = self._episode
+        job = self._job
+        if job is not None and not job.cancelled and job.status is not None:
+            return dict(job.status)
+        episode = self._current_episode()
         return {
             "clean": not episode.reasons if episode is not None else None,
             "instruction": episode.instruction.text if episode is not None and episode.instruction else None,
@@ -1955,11 +2110,32 @@ class BucketSortDemonstrator:
         Returns:
             ``True`` once per failed episode.
         """
+        if self._job is not None:
+            return False  # the planning thread has the state
         requested, self._reset_requested = self._reset_requested, False
         return requested
 
     def reset(self) -> None:
-        """Forget the episode in progress; the next :meth:`step` starts a new one from the arm's pose."""
+        """Forget the episode in progress; the next :meth:`step` starts a new one from the arm's pose.
+
+        A plan in flight is discarded: the reset takes effect once its thread ends, within a few
+        milliseconds (:func:`_checkpoint`); until then :meth:`step` holds the actuators' targets.
+        """
+        job = self._job
+        if job is not None and not job.done.is_set():
+            job.cancelled = True
+            return
+        self._job = None
+        self._reset_state()
+
+    def close(self, timeout_s: float = 2.0) -> None:
+        """Cancel a plan in flight and wait for its thread (the scene is unloaded)."""
+        job = self._job
+        if job is not None:
+            job.cancelled = True
+            job.thread.join(timeout_s)
+
+    def _reset_state(self) -> None:
         self._q = None
         self._q_prev = None
         self._plan = None
@@ -1980,17 +2156,135 @@ class BucketSortDemonstrator:
             Eight targets per arm in model units, the channels' order (``ACTUATORS`` for the FR3): the
             seven arm joints (radians) and the hand's actuator (the FR3's opening in metres).
         """
-        new_episode = self._episode is None or self._generation != self.task.reset_count
-        if self._q is None or new_episode:
-            self._take_targets(data)
-        if new_episode:
-            self._start_episode(data)
-        self._q_prev = self._q.copy()
-        self._advance(data, dt)
-        targets = self._targets(self._q, self._grip)  # type: ignore[arg-type]
+        job = self._job
+        targets = self._while_planning(job, data, dt) if job is not None else None
+        if targets is None:
+            new_episode = self._episode is None or self._generation != self.task.reset_count
+            if self._q is None or new_episode:
+                self._take_targets(data)
+            if new_episode:
+                self._start_episode(data)
+            self._q_prev = self._q.copy()
+            self._deferring = self.background_planning
+            try:
+                self._advance(data, dt)
+            finally:
+                self._deferring = False
+            job = self._job
+            # A plan just went to its thread, which has the state now: output where the arm is.
+            targets = job.hold[0].copy() if job is not None else self._targets(self._q, self._grip)  # type: ignore[index, arg-type]
+        self._last_call = time.monotonic()
         if apply:
             self.write_targets(data, targets)
         return targets
+
+    # -- planning off the control tick ------------------------------------
+
+    def _while_planning(self, job: _PlanJob, data: object, dt: float) -> np.ndarray | None:
+        """Return this tick's targets while *job* plans; ``None`` once it is collected, and the tick runs as usual.
+
+        The tick waits for the plan up to the rest of a control period since the last one returned
+        (:meth:`_pace`), so a loop faster than real time slows to it while it plans.
+
+        Returns:
+            The held or braking targets, model units.
+        """
+        job.ticks += 1
+        if not job.done.wait(self._pace(dt)):
+            if job.cancelled or job.hold is None:
+                return self._actuator_targets(data)  # the reset put the arm elsewhere
+            return job.hold[min(job.ticks, len(job.hold) - 1)].copy()
+        self._finish(job)
+        return None
+
+    def _pace(self, dt: float) -> float:
+        """Return how long to wait for a plan this tick: what is left of *dt* since the last call returned.
+
+        Returns:
+            Seconds, at most *dt*.
+        """
+        if self._last_call is None:
+            return 0.0
+        return min(dt, max(0.0, dt - (time.monotonic() - self._last_call)))
+
+    def _finish(self, job: _PlanJob) -> None:
+        """Collect a finished *job*: discard it after a reset, else skip the braking ticks already output.
+
+        What the planning thread raised is raised here, as if it had planned in this thread.
+        """
+        self._job = None
+        if job.cancelled:
+            self._reset_state()
+            self._stuck_result = None
+            return
+        if job.error is not None:
+            raise job.error
+        played = min(job.ticks - 1, job.brake_ticks)
+        plan = self._plan
+        if played > 0 and plan is not None and plan.brake_ticks == job.brake_ticks:
+            self._tick = played
+            targets = plan.targets(played - 1)
+            self._q, self._grip = targets[:-1], float(targets[-1])
+
+    def _actuator_targets(self, data: object) -> np.ndarray:
+        """Return every arm's actuator targets in model units, as :meth:`step` returns them.
+
+        Returns:
+            Eight values per arm.
+        """
+        targets = np.concatenate([self._ctrl_targets(data, arm) for arm in range(len(self.arms))])
+        targets[self._grip_rows] *= self._grip_per_width
+        return targets
+
+    def _plan_then(self, data: object, dt: float, brake: np.ndarray | None, work: Callable[[object], None]) -> None:
+        """Run *work* on *data*: plan, then start the plan (:meth:`_run`), after *brake*.
+
+        Within :meth:`step` with background planning, *work* runs on a thread with a copy of
+        *data*; meanwhile the arm brakes along *brake* and then holds. The braking's clearance from
+        the arms holding still is checked first, here, since it runs before the plan is done.
+        """
+        if not self._deferring or getattr(_planning, "job", None) is not None:
+            work(data)
+            return
+        braking = brake is not None and len(brake) > 0
+        if braking:
+            reason = self._brake_blocked(data, brake)  # type: ignore[arg-type]
+            if reason is not None:
+                self._stop_and_fail(data, dt, None, reason, freeze_at=self._braking_from)
+                return
+        rows = [self._braking_from, *brake] if braking else [self._q]  # type: ignore[misc]
+        hold = np.stack([self._targets(q, self._grip) for q in rows])  # type: ignore[arg-type]
+        self._dispatch(data, work, hold, len(rows) - 1)
+
+    def _dispatch(
+        self, data: object, work: Callable[[object], object], hold: np.ndarray | None, brake_ticks: int
+    ) -> None:
+        """Start *work* on its own thread with a copy of *data*; collect it if done within :data:`PLAN_WAIT_S`.
+
+        A cancelled plan still on its way out finishes first; its thread has the scratch data, so this
+        one gets its own.
+        """
+        import mujoco  # noqa: PLC0415
+
+        previous = self._job  # cancelled, on its way out: the new thread waits for it
+        if previous is not None:
+            previous.cancelled = True
+        if self._scratch is None or previous is not None:
+            self._scratch = mujoco.MjData(self.model)
+        scratch = self._scratch
+        mujoco.mj_copyData(scratch, self.model, data)
+
+        def run() -> object:
+            if previous is not None:
+                self._reset_state()  # what collecting the cancelled plan would have done
+            return work(scratch)
+
+        job = _PlanJob(run, hold, brake_ticks, previous)
+        job.status = self.status()  # before it is the job in flight: a cancelled one reports the reset
+        self._job = job
+        job.start()
+        if job.done.wait(PLAN_WAIT_S):
+            self._finish(job)
 
     def _take_targets(self, data: object) -> None:
         """Start from the arms as they are: the working arm's joints, every other arm's targets."""
@@ -2036,7 +2330,7 @@ class BucketSortDemonstrator:
         instruction = self.task.instruction
         if instruction is None:
             return None
-        self.reset()
+        self._reset_state()
         self._take_targets(data)
         snapshot = SceneSnapshot.take(data)
         heights = self.active_arm.heights
@@ -2049,7 +2343,7 @@ class BucketSortDemonstrator:
             [] if plan is None or not plan.ok else [k for k, phase in enumerate(plan.phases) if phase in STUCK_PHASES]
         )
         move = self._stuck_move(snapshot, plan, ticks, dt, rng) if plan is not None and ticks else None
-        self.reset()  # the episode starts from the stuck pose, at the next step
+        self._reset_state()  # the episode starts from the stuck pose, at the next step
         if move is None:
             return None
         self._pinned_arm = self._active if len(self.arms) > 1 else None
@@ -2057,6 +2351,39 @@ class BucketSortDemonstrator:
             "Demonstrator: a stuck start for the {}, {:.1f} s away", self.active_arm.label, len(move.targets) * dt
         )
         return move
+
+    def begin_stuck_start(self, data: object, dt: float, rng: np.random.Generator) -> None:
+        """Start :meth:`stuck_start`; with background planning on its own thread. :meth:`poll_stuck_start` returns it.
+
+        The autopilot must not step meanwhile; a :meth:`reset` discards the move.
+        """
+        self._stuck_result = None
+        if not self.background_planning:
+            self._stuck_result = self.stuck_start(data, dt, rng)
+            return
+
+        def work(copy: object) -> None:
+            self._stuck_result = self.stuck_start(copy, dt, rng)
+
+        self._dispatch(data, work, None, 0)
+
+    def poll_stuck_start(self, dt: float) -> tuple[bool, StuckStart | None]:
+        """Return whether the stuck start of :meth:`begin_stuck_start` still plans, else its move (once).
+
+        While it plans, the call waits up to the rest of a control period of *dt* (as :meth:`step` does).
+
+        Returns:
+            ``(True, None)`` while it plans, then ``(False, move)``; the move is ``None`` when there is none.
+        """
+        job = self._job
+        if job is not None:
+            if not job.done.wait(self._pace(dt)):
+                self._last_call = time.monotonic()
+                return True, None
+            self._finish(job)
+        self._last_call = time.monotonic()
+        move, self._stuck_result = self._stuck_result, None
+        return False, move
 
     def _stuck_move(
         self, snapshot: SceneSnapshot, plan: JointPlan, ticks: list[int], dt: float, rng: np.random.Generator
@@ -2396,8 +2723,11 @@ class BucketSortDemonstrator:
         The arm may be moving when an attempt is abandoned: the targets first slow to a stop at a
         constant deceleration over :data:`BRAKE_S`, so no joint jumps from speed to rest.
         """
-        episode = self._episode
         brake = self._brake(dt)
+        self._plan_then(data, dt, brake, lambda live: self._go_home_after(live, dt, brake))
+
+    def _go_home_after(self, data: object, dt: float, brake: np.ndarray) -> None:
+        episode = self._episode
         self.planner.load(SceneSnapshot.take(data))
         script = MotionScript(self._start_state())
         script.add("release", grip=self.ik.grip_open, duration=0.4)
@@ -2450,6 +2780,10 @@ class BucketSortDemonstrator:
         if new_attempt or episode.attempt == 0:
             episode.attempt += 1
             self.stats.attempts += 1
+        self._plan_then(data, dt, brake, lambda live: self._plan_and_run_attempt(live, dt, brake))
+
+    def _plan_and_run_attempt(self, data: object, dt: float, brake: np.ndarray | None) -> None:
+        episode = self._episode
         snapshot = SceneSnapshot.take(data)
         if brake is None and len(self.arms) > 1:
             plan = self._plan_with_an_arm(snapshot, episode.instruction, episode.params, dt, episode.rng)
@@ -2539,6 +2873,9 @@ class BucketSortDemonstrator:
 
     def _begin_place(self, data: object, dt: float, brake: np.ndarray | None = None) -> None:
         """Plan the carry and the release again, with the object in the hand, and start it."""
+        self._plan_then(data, dt, brake, lambda live: self._plan_and_run_place(live, dt, brake))
+
+    def _plan_and_run_place(self, data: object, dt: float, brake: np.ndarray | None) -> None:
         episode = self._episode
         instruction = episode.instruction  # type: ignore[union-attr]
         self.planner.load(SceneSnapshot.take(data))
@@ -2696,6 +3033,7 @@ class BucketSortDemonstrator:
             grip=np.full(ticks, self._grip),
             phases=["failed"] * ticks,
             cartesian=np.repeat(state[None, :], ticks, axis=0),
+            brake_ticks=len(brake) if brake is not None else 0,
         )
         if episode is not None:
             if episode.outcome != "failed":  # a failed episode on its way home keeps its reason
@@ -2711,6 +3049,22 @@ class BucketSortDemonstrator:
         self._lift_check_since = None
         self._set_phase("failed", data)
 
+    def _brake_blocked(self, data: object, brake: np.ndarray | None) -> str | None:
+        """Return why *brake* must not run, with several arms: it would reach into an arm holding still.
+
+        The arm then stops on the last target instead, which a checked plan (or the hold) put there.
+
+        Returns:
+            The reason, or ``None`` when the braking is clear (or there is none, or one arm).
+        """
+        if len(self.arms) == 1 or brake is None or not len(brake):
+            return None
+        clearance = self.planner.arm_clearance(brake, SceneSnapshot.take(data))
+        if clearance >= CLEARANCE["arm"]:
+            return None
+        needed = CLEARANCE["arm"] * 1000
+        return f"braking would come {clearance * 1000:.0f} mm from the other arm (at least {needed:.0f} mm)"
+
     def _report_problems(self, plan: JointPlan) -> None:
         self.stats.plan_problems += 1
         logger.warning("Demonstrator: no plan passed every check ({}); running the best one", "; ".join(plan.problems))
@@ -2723,15 +3077,9 @@ class BucketSortDemonstrator:
         (:meth:`_stop_and_fail`). One arm runs its plans as before: the FR3's best-effort plans included.
         """
         if len(self.arms) > 1:
-            braking = brake is not None and len(brake) > 0
-            brake_clearance = self.planner.arm_clearance(brake, SceneSnapshot.take(data)) if braking else np.inf
             needed = CLEARANCE["arm"] * 1000
-            if brake_clearance < CLEARANCE["arm"]:
-                # Braking along the current speed would reach into the other arm: stop on the last
-                # target instead, which a checked plan (or the hold) put there.
-                reason = (
-                    f"braking would come {brake_clearance * 1000:.0f} mm from the other arm (at least {needed:.0f} mm)"
-                )
+            reason = self._brake_blocked(data, brake)
+            if reason is not None:
                 self._stop_and_fail(data, plan.dt, None, reason, freeze_at=self._braking_from)
                 return
             if self._too_close_to_an_arm(plan):
@@ -2758,6 +3106,7 @@ class BucketSortDemonstrator:
         if brake is not None and len(brake):
             # Prefix the braking ticks; the plan's own ticks shift by as many.
             n = len(brake)
+            plan.brake_ticks = n
             plan.q = np.vstack([brake, plan.q])
             plan.grip = np.concatenate([np.full(n, self._grip), plan.grip])
             plan.cartesian = np.vstack([np.repeat(plan.cartesian[:1], n, axis=0), plan.cartesian])

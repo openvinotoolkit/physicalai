@@ -61,6 +61,8 @@ class _StuckMove:
     """The move to a stuck start in progress (bucket_sort recording)."""
 
     state: StuckStartState
+    dt: float = 0.0
+    """Control period, for the move once it is planned."""
     targets: np.ndarray | None = None
     """Model-unit targets per tick, every channel; ``None`` when unavailable."""
     tick: int = 0
@@ -147,6 +149,11 @@ class ConveyorAutomation:
         """Whether to ignore client actions: the autopilot drives the arm, or it waits at its reset pose."""
         return self.autopilot.drives_arm or self._reset_pose is not None
 
+    @property
+    def planning(self) -> bool:
+        """Whether the bucket_sort demonstrator plans on its own thread, which reads the model."""
+        return self._bucket_demo is not None and self._bucket_demo.planning
+
     # ------------------------------------------------------------------
     # Scene lifecycle
     # ------------------------------------------------------------------
@@ -202,6 +209,8 @@ class ConveyorAutomation:
         )
         from physicalai_mujoco_plugin.bucket_sort_demo import BucketSortDemonstrator  # noqa: PLC0415
 
+        if self._bucket_demo is not None:
+            self._bucket_demo.close()  # its scene is gone: stop a plan in flight
         self._bucket_demo = demonstrator if isinstance(demonstrator, BucketSortDemonstrator) else None
         self.autopilot.bind(demonstrator, unavailable=unavailable)
         self._bucket_task = bucket_task if model is not None and conveyor is None else None
@@ -253,9 +262,11 @@ class ConveyorAutomation:
             self._publish_leader(self._reset_pose)
 
     def close(self) -> None:
-        """Detach from Studio; call when the simulation disconnects."""
+        """Detach from Studio and stop a plan in flight; call when the simulation disconnects."""
         self.recorder.disable()
         self.bucket_recorder.disable()
+        if self._bucket_demo is not None:
+            self._bucket_demo.close()
 
     # ------------------------------------------------------------------
     # Commands
@@ -345,13 +356,13 @@ class ConveyorAutomation:
             self._recorder_reset = self._recorder_reset or bucket.reset_scene
             if bucket.abort_stuck_start:
                 # Nothing more is written to the arm, and client actions count again.
-                self._stuck = None
+                self._drop_stuck_start()
                 self._reset_pose = None
             if bucket.stuck_start:
                 self._begin_stuck_start(model, data, dt)
         if not hold_arm or not self.bucket_recorder.active:
             self._reset_pose = None
-            self._stuck = None
+            self._drop_stuck_start()
         elif self._stuck is not None:
             self._advance_stuck_start(model, data)
         if self._bucket_episode is not None:
@@ -361,18 +372,43 @@ class ConveyorAutomation:
             targets = self._reset_pose
         self._publish_leader(arm_targets if targets is None else targets)
 
+    def _drop_stuck_start(self) -> None:
+        """Forget the stuck start; one still being planned is cancelled."""
+        if self._stuck is not None and self._stuck.state == "planning" and self._bucket_demo is not None:
+            self._bucket_demo.reset()
+        self._stuck = None
+
     def _begin_stuck_start(self, model: object, data: object, dt: float) -> None:
-        """Plan the move to a stuck start (:meth:`~.bucket_sort_demo.BucketSortDemonstrator.stuck_start`)."""
+        """Plan the move to a stuck start (:meth:`~.bucket_sort_demo.BucketSortDemonstrator.stuck_start`).
+
+        The demonstrator plans on its own thread; the state is ``planning`` until it is done.
+        """
+        demo = self._bucket_demo
+        if demo is None:
+            self._stuck = _StuckMove(state="unavailable")
+            return
+        demo.begin_stuck_start(data, dt, self._stuck_rng)
+        self._stuck = _StuckMove(state="planning", dt=dt)
+        self._take_stuck_plan(model)
+
+    def _take_stuck_plan(self, model: object) -> None:
+        """Once the move to the stuck pose is planned, start it (``moving``), or report none (``unavailable``)."""
         from physicalai_mujoco_plugin.bucket_sort import BUCKET_COLORS, OBJECTS  # noqa: PLC0415
 
-        demo = self._bucket_demo
-        move = demo.stuck_start(data, dt, self._stuck_rng) if demo is not None else None
+        stuck, demo = self._stuck, self._bucket_demo
+        if stuck is None or stuck.state != "planning" or demo is None:
+            return
+        planning, move = demo.poll_stuck_start(stuck.dt)
+        if planning:
+            return
         if move is None:
             self._stuck = _StuckMove(state="unavailable")
             return
+        dt = stuck.dt
         names = (*OBJECTS, *(f"bucket_{color}" for color in BUCKET_COLORS))
         self._stuck = _StuckMove(
             state="moving",
+            dt=dt,
             targets=move.targets,
             settle=max(1, round(STUCK_SETTLE_S / dt)),
             bodies=tuple(int(model.body(name).id) for name in names),  # type: ignore[attr-defined]
@@ -380,15 +416,16 @@ class ConveyorAutomation:
             wait_total=max(1, round(STUCK_REST_TIMEOUT_S / dt)),
         )
 
-    def _advance_stuck_start(self, model: object, data: object) -> None:  # noqa: ARG002
+    def _advance_stuck_start(self, model: object, data: object) -> None:
         """Drive the arm one tick along the move to the stuck pose, then check that nothing moved.
 
-        The move starts once the objects and buckets the reset dropped rest (or after
-        :data:`STUCK_REST_TIMEOUT_S`); the arm holds its reset targets meanwhile.
+        The move starts once it is planned and the objects and buckets the reset dropped rest (or
+        after :data:`STUCK_REST_TIMEOUT_S`); the arm holds its reset targets meanwhile.
 
         Client actions are ignored meanwhile (:attr:`drives_arm`), and the leader publishes the arm's
         targets: when the episode starts, it already publishes the stuck pose.
         """
+        self._take_stuck_plan(model)
         stuck, demo = self._stuck, self._bucket_demo
         if stuck is None or stuck.state != "moving" or stuck.targets is None or demo is None:
             return
@@ -509,7 +546,12 @@ def _scene_demonstrator(
             names = ", ".join(BUCKET_SORT_ARMS)
             return None, f"The bucket_sort autopilot drives one robot of these profiles ({names}) or two WidowX AI."
         demonstrator = BucketSortDemonstrator(
-            model, bucket_task, arms=arms, rng=np.random.default_rng(seed), max_attempts=max_attempts
+            model,
+            bucket_task,
+            arms=arms,
+            rng=np.random.default_rng(seed),
+            max_attempts=max_attempts,
+            background_planning=True,  # plans take up to seconds: the control tick must not wait
         )
         return demonstrator, None
     if robots != 1:
