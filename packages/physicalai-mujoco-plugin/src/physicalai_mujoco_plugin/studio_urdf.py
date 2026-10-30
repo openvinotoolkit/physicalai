@@ -11,7 +11,7 @@ model the simulation compiles, so the 3D model is the simulated robot.
 The URDF is built from the robot alone, attached the way its simulation attaches it: one robot at
 the origin, two at the mounts of the profile's default scene. Every body is one link, every hinge
 and slide joint one ``revolute`` or ``prismatic`` joint (with its axis, its offset from the body
-origin and its range), and every body without one hangs from its parent by a ``fixed`` joint. Its
+origin), and every body without one hangs from its parent by a ``fixed`` joint. Its
 visual geometry is the geoms MuJoCo draws (groups 0 to 2, not transparent): meshes as binary STL
 from the compiled model's vertices, boxes, spheres and cylinders as URDF primitives, capsules as
 a cylinder and two spheres, with their colour.
@@ -21,10 +21,19 @@ Each public channel (``shoulder_pan``, ``gripper``) is a virtual ``prismatic`` j
 unit conversion as multiplier and offset. Studio passes a prismatic joint's value through unchanged,
 so each joint takes the position the simulation gives it: degrees become radians, a Franka Hand's
 opening width becomes each finger's half, and joints that follow another through a joint equality
-(the second finger) follow it here too. ``joint_map`` then maps each observation Studio records
-(``shoulder_pan.pos``) to its channel's virtual joint, and is known from the channel names alone.
+(the second finger) follow it here too. The passive joints of a closed linkage (the xArm7
+gripper's fingers and inner knuckles, held by ``connect`` equalities) follow the channel that moves
+them, with the line fitted through their solved positions across its range. ``joint_map`` then
+maps each observation Studio records (``shoulder_pan.pos``) to its channel's virtual joint, and is
+known from the channel names alone.
 The virtual joints are not named after the observations, so Studio's joint panel, which matches
 URDF joints to observations by name, does not read their placeholder limits as joint ranges.
+
+MuJoCo's joint limits are soft, so a recorded position can lie just past one, while Studio's
+urdf-loader clamps ``revolute`` and ``prismatic`` joints to their ``<limit>``. Hinges are therefore
+``continuous`` joints, which it never clamps, with their range in ``<limit>``; slides keep a
+``<limit>`` a full range (at least 0.1 m) wider than theirs. Every joint's MuJoCo range is also its
+``<safety_controller>`` soft limits.
 
 Generation compiles the model once, when Studio first asks for the URDF (``root_resolver``), and
 the result is cached on disk per generator, plugin, Menagerie and MuJoCo version.
@@ -45,7 +54,7 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass
-from functools import cache, lru_cache
+from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -80,12 +89,26 @@ DEFAULT_PAIR_SEPARATION_M = 0.4
 """Distance between two robots whose default scene lays out no pair."""
 _CHANNEL_LIMIT = 1e9
 """Limits of a channel's virtual joint: wide enough never to clamp a public value."""
+_SLIDE_LIMIT_MARGIN_M = 0.1
+"""Least distance past its range at which a slide joint's URDF limit clamps it."""
 _UNLIMITED_SLIDE_M = 10.0
 """Limits of a slide joint without a range; a prismatic URDF joint always clamps to its limits."""
 _VISIBLE_GROUPS = 3
 """Geom groups MuJoCo draws by default (0, 1, 2); groups 3 to 5 are collision and helper geoms."""
 _DEFAULT_GEOM_RGBA = (0.5, 0.5, 0.5, 1.0)
 """A geom's compiled rgba when it sets none; its material's colour then shows."""
+_LINKAGE_ITERATIONS = 200
+"""Gauss-Newton steps that place a linkage's passive joints."""
+_LINKAGE_TOLERANCE = 1e-10
+"""Largest loop-closing residual (metres, radians) a placed linkage keeps."""
+_LINKAGE_SAMPLES = 17
+_LINKAGE_MAX_STEP = 0.05
+"""Largest change of a passive joint (radians, metres) in one Gauss-Newton step."""
+"""Channel values a linkage fit is sampled at."""
+_LINKAGE_MIN_TRAVEL = 1e-6
+"""Least travel of a passive joint over a channel's range that makes it follow the channel."""
+_LINKAGE_FIT_WARNING = 1e-3
+"""Fit error (radians, metres) above which a linear linkage follower is logged."""
 _TEXTURE_ROLE_RGB = 1
 """``mjtTextureRole.mjTEXROLE_RGB``: a material's colour texture."""
 _ELLIPSOID_SEGMENTS = (16, 10)
@@ -210,14 +233,23 @@ def models_available(profile: RobotProfile) -> bool:
         return False
 
 
-@cache
+_DERIVED_NAMES: dict[RobotProfile, tuple[str, ...]] = {}
+"""Channel names read from model files; only found ones, so a model downloaded later is read then."""
+
+
 def _derived_names(profile: RobotProfile) -> tuple[str, ...] | None:
     """Return the channel names a profile without overrides derives from its model, without compiling it.
+
+    A model that is not downloaded yet is looked for again on the next call, so the names appear
+    once ``physicalai-mujoco prefetch`` or a first simulation start has fetched it.
 
     Returns:
         One name per actuator, as :func:`~.profiles.derive.derive_profile` names it, or ``None``
         when the model would have to be downloaded or does not load.
     """
+    cached = _DERIVED_NAMES.get(profile)
+    if cached is not None:
+        return cached
     if not models_available(profile):
         return None
     import mujoco  # noqa: PLC0415
@@ -239,7 +271,8 @@ def _derived_names(profile: RobotProfile) -> tuple[str, ...] | None:
             if joint is not None and joint.type in moving:
                 name = actuator.target
         names.append(name or f"actuator_{index}")
-    return tuple(names)
+    _DERIVED_NAMES[profile] = tuple(names)
+    return _DERIVED_NAMES[profile]
 
 
 def public_names(profile: RobotProfile, prefixes: tuple[str, ...]) -> tuple[str, ...] | None:
@@ -449,6 +482,7 @@ def joint_drives(model: mujoco.MjModel, channels: tuple[Channel, ...]) -> dict[i
                 for joint_id, share in _tendon_shares(model, int(model.actuator_trnid[member.actuator_id, 0])):
                     drive(joint_id, name, slope * scale * share, intercept * scale * share)
     _follow_joint_equalities(model, drives, mujoco.mjtEq.mjEQ_JOINT)
+    _fit_linkages(model, drives)
     return drives
 
 
@@ -488,6 +522,142 @@ def _follow_joint_equalities(model: mujoco.MjModel, drives: dict[int, JointDrive
                 lead = drives[follower]
                 drives[leader] = JointDrive(lead.channel, lead.multiplier / c1, (lead.offset - c0) / c1)
                 changed = True
+
+
+def _linkage_equalities(model: mujoco.MjModel) -> set[int]:
+    """Return the active ``connect`` and ``weld`` equalities that close a loop within the robot.
+
+    A weld to the world (a spawned robot's base hold) closes none.
+
+    Returns:
+        Their ids.
+    """
+    import mujoco  # noqa: PLC0415
+
+    linkage = set()
+    for equality in range(model.neq):
+        kind = int(model.eq_type[equality])
+        if kind not in {mujoco.mjtEq.mjEQ_CONNECT, mujoco.mjtEq.mjEQ_WELD} or not bool(model.eq_active0[equality]):
+            continue
+        bodies = [int(model.eq_obj1id[equality]), int(model.eq_obj2id[equality])]
+        if int(model.eq_objtype[equality]) == mujoco.mjtObj.mjOBJ_SITE:
+            bodies = [int(model.site_bodyid[site]) if site >= 0 else 0 for site in bodies]
+        if 0 not in bodies:
+            linkage.add(equality)
+    return linkage
+
+
+def _channel_span(model: mujoco.MjModel, drives: dict[int, JointDrive], channel: str) -> tuple[float, float]:
+    """Return the public values that keep every limited joint *channel* drives within its range.
+
+    Returns:
+        ``(low, high)``; ``(-1, 1)`` when no driven joint is limited.
+    """
+    low, high = -math.inf, math.inf
+    for joint, drive in drives.items():
+        if drive.channel != channel or not drive.multiplier or not bool(model.jnt_limited[joint]):
+            continue
+        qpos0 = float(model.qpos0[model.jnt_qposadr[joint]])
+        ends = sorted((float(end) - qpos0 - drive.offset) / drive.multiplier for end in model.jnt_range[joint])
+        low, high = max(low, ends[0]), min(high, ends[1])
+    if not (math.isfinite(low) and math.isfinite(high) and low < high):
+        return -1.0, 1.0
+    return low, high
+
+
+class _LinkageSolver:
+    """Place a model's passive joints where its loop-closing equalities put them, for given channel values.
+
+    The passive joints are solved by Gauss-Newton on the equalities' residuals, with contacts and
+    limits off: the pose a settled simulation reaches, without simulating.
+    """
+
+    def __init__(self, model: mujoco.MjModel, drives: dict[int, JointDrive], equalities: set[int]) -> None:
+        import copy  # noqa: PLC0415
+
+        import mujoco  # noqa: PLC0415
+
+        self.model = copy.copy(model)
+        self.model.opt.disableflags |= int(mujoco.mjtDisableBit.mjDSBL_CONTACT) | int(mujoco.mjtDisableBit.mjDSBL_LIMIT)
+        self.model.opt.jacobian = mujoco.mjtJacobian.mjJAC_DENSE
+        self.data = mujoco.MjData(self.model)
+        self.drives = drives
+        self.equalities = equalities
+        moving = {mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE}
+        self.passive = [j for j in range(model.njnt) if int(model.jnt_type[j]) in moving and j not in drives]
+
+    def solve(self, channels: dict[str, float], start: np.ndarray | None = None) -> np.ndarray:
+        """Return each passive joint's value from its zero pose, with the driven joints at *channels*.
+
+        The solve starts from *start* (passive values, default the zero pose) and takes short steps,
+        so sweeping a channel in small increments stays on one branch of the linkage.
+        """
+        import mujoco  # noqa: PLC0415
+
+        model, data = self.model, self.data
+        data.qpos[:] = model.qpos0
+        for joint, drive in self.drives.items():
+            address = model.jnt_qposadr[joint]
+            data.qpos[address] = (
+                model.qpos0[address] + drive.multiplier * channels.get(drive.channel, 0.0) + drive.offset
+            )
+        addresses = np.array([model.jnt_qposadr[j] for j in self.passive])
+        dofs = np.array([model.jnt_dofadr[j] for j in self.passive])
+        if start is not None:
+            data.qpos[addresses] = model.qpos0[addresses] + start
+        for _ in range(_LINKAGE_ITERATIONS):
+            mujoco.mj_forward(model, data)
+            rows = [
+                row
+                for row in range(data.nefc)
+                if int(data.efc_type[row]) == mujoco.mjtConstraint.mjCNSTR_EQUALITY
+                and int(data.efc_id[row]) in self.equalities
+            ]
+            residual = data.efc_pos[rows]
+            if not rows or float(np.abs(residual).max()) < _LINKAGE_TOLERANCE:
+                break
+            jacobian = data.efc_J.reshape(data.nefc, model.nv)[rows][:, dofs]
+            step = np.linalg.lstsq(jacobian, residual, rcond=None)[0]
+            largest = float(np.abs(step).max())
+            if largest > _LINKAGE_MAX_STEP:
+                step *= _LINKAGE_MAX_STEP / largest
+            data.qpos[addresses] -= step
+        return data.qpos[addresses] - model.qpos0[addresses]
+
+
+def _fit_linkages(model: mujoco.MjModel, drives: dict[int, JointDrive]) -> None:
+    """Drive the passive joints of closed linkages (the xArm7 gripper's fingers and inner knuckles).
+
+    Each channel is swept across its range; a passive joint the sweep moves follows that channel
+    with the straight line fitted through the solved positions, the best a URDF ``mimic`` can do.
+    """
+    equalities = _linkage_equalities(model)
+    if not equalities:
+        return
+    solver = _LinkageSolver(model, drives, equalities)
+    if not solver.passive:
+        return
+    fitted: dict[int, tuple[float, JointDrive]] = {}
+    for channel in dict.fromkeys(drive.channel for drive in drives.values()):
+        low, high = _channel_span(model, drives, channel)
+        samples = np.linspace(low, high, _LINKAGE_SAMPLES)
+        # Continue from each solution to the next; start from the zero pose's nearest end.
+        order = range(len(samples)) if abs(low) <= abs(high) else range(len(samples) - 1, -1, -1)
+        solved = np.zeros((len(samples), len(solver.passive)))
+        previous = None
+        for index in order:
+            previous = solved[index] = solver.solve({channel: float(samples[index])}, previous)
+        for index, joint in enumerate(solver.passive):
+            travel = float(np.ptp(solved[:, index]))
+            if travel < _LINKAGE_MIN_TRAVEL or (joint in fitted and fitted[joint][0] >= travel):
+                continue
+            slope, intercept = np.polyfit(samples, solved[:, index], 1)
+            error = float(np.abs(slope * samples + intercept - solved[:, index]).max())
+            if error > _LINKAGE_FIT_WARNING:
+                logger.debug("{} follows {} within {:.4f} only", model.joint(joint).name, channel, error)
+            fitted[joint] = (travel, JointDrive(channel, float(slope), float(intercept)))
+    for joint, (_, drive) in fitted.items():
+        drives[joint] = drive
 
 
 # ----------------------------------------------------------------------
@@ -728,16 +898,24 @@ class _UrdfWriter:
         hinge = int(model.jnt_type[joint]) == mujoco.mjtJoint.mjJNT_HINGE
         qpos0 = float(model.qpos0[model.jnt_qposadr[joint]])
         limited = bool(model.jnt_limited[joint])
-        if hinge and not limited:
-            kind, limit = "continuous", ""
-        else:
-            lower, upper = (
-                (float(model.jnt_range[joint, 0]) - qpos0, float(model.jnt_range[joint, 1]) - qpos0)
-                if limited
-                else (-_UNLIMITED_SLIDE_M, _UNLIMITED_SLIDE_M)
+        # MuJoCo's limits are soft and a recording can sit just past one, but urdf-loader clamps every
+        # revolute and prismatic joint to its <limit>. Hinges are continuous (never clamped) and keep
+        # their range in <limit>; slides clamp only well outside theirs. Both keep it as soft limits.
+        limit = safety = ""
+        if limited:
+            lower, upper = float(model.jnt_range[joint, 0]) - qpos0, float(model.jnt_range[joint, 1]) - qpos0
+            safety = (
+                f'\n    <safety_controller soft_lower_limit="{_fmt(lower)}" soft_upper_limit="{_fmt(upper)}"'
+                ' k_velocity="0"/>'
             )
-            kind = "revolute" if hinge else "prismatic"
+            if not hinge:
+                margin = max(upper - lower, _SLIDE_LIMIT_MARGIN_M)
+                lower, upper = lower - margin, upper + margin
+        else:
+            lower, upper = -_UNLIMITED_SLIDE_M, _UNLIMITED_SLIDE_M
+        if limited or not hinge:
             limit = f'\n    <limit lower="{_fmt(lower)}" upper="{_fmt(upper)}" effort="0" velocity="0"/>'
+        kind = "continuous" if hinge else "prismatic"
         drive = drives.get(joint)
         mimic = (
             ""
@@ -748,7 +926,8 @@ class _UrdfWriter:
         return (
             f'  <joint name={quoteattr(self.joint_names[joint])} type="{kind}">\n'
             f"    <parent link={quoteattr(parent)}/>\n    <child link={quoteattr(child)}/>\n"
-            f'    {_origin(pos, rotation)}\n    <axis xyz="{_vec(model.jnt_axis[joint])}"/>{limit}{mimic}\n  </joint>'
+            f'    {_origin(pos, rotation)}\n    <axis xyz="{_vec(model.jnt_axis[joint])}"/>'
+            f"{limit}{safety}{mimic}\n  </joint>"
         )
 
     def _link(self, body: int) -> str:

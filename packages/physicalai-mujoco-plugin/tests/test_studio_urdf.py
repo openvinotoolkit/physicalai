@@ -175,12 +175,12 @@ def test_the_urdf_has_a_link_per_body_and_a_joint_per_model_joint(name: str, gen
         element = joints[model.joint(joint).name]
         hinge = model.jnt_type[joint] == mujoco.mjtJoint.mjJNT_HINGE
         limited = bool(model.jnt_limited[joint])
-        assert element.get("type") == ("prismatic" if not hinge else "revolute" if limited else "continuous")
+        assert element.get("type") == ("continuous" if hinge else "prismatic")
         np.testing.assert_allclose(_floats(element.find("axis").get("xyz"), ()), model.jnt_axis[joint], atol=1e-9)
-        if limited:
-            limit = element.find("limit")
+        if limited:  # the MuJoCo range is kept as soft limits
+            soft = element.find("safety_controller")
             qpos0 = model.qpos0[model.jnt_qposadr[joint]]
-            lower, upper = float(limit.get("lower")), float(limit.get("upper"))
+            lower, upper = float(soft.get("soft_lower_limit")), float(soft.get("soft_upper_limit"))
             np.testing.assert_allclose((lower, upper), model.jnt_range[joint] - qpos0, atol=1e-9)
     # One virtual joint per public channel, named after the observation Studio records.
     for channel in entry.joint_names():
@@ -439,3 +439,156 @@ def test_joint_drives_cover_every_channel() -> None:
     model, robots = compose_robot(entry.profile, entry.prefixes)
     drives = joint_drives(model, bind_channels(model, robots, entry.profile))
     assert {drive.channel for drive in drives.values()} == {f"{name}_channel" for name in entry.joint_names()}
+
+
+def _settled(entry: CatalogEntry, fraction: float) -> tuple[mujoco.MjModel, mujoco.MjData, dict[str, float]]:
+    """Simulate *entry*'s robot alone with each gripper commanded *fraction* of the way across its range.
+
+    Returns:
+        The model, its data once settled, and the observations Studio would record then.
+    """
+    model, robots = compose_robot(entry.profile, entry.prefixes)
+    data = mujoco.MjData(model)
+    arms = [ArmChannels(model, data, layout, entry.profile, prefix=prefix) for prefix, layout in robots]
+    channels = [channel for arm in arms for channel in arm.channels]
+    drives = joint_drives(model, tuple(channels))
+    mujoco.mj_forward(model, data)
+    for arm in arms:
+        action = arm.read_positions()
+        for index, channel in enumerate(arm.channels):
+            if channel.name.endswith("gripper"):
+                low, high = studio_urdf._channel_span(model, drives, f"{channel.name}_channel")  # noqa: SLF001
+                action[index] = low + fraction * (high - low)
+        arm.write(action)
+    for _ in range(int(3.0 / model.opt.timestep)):
+        for arm in arms:
+            arm.apply_pd()
+        mujoco.mj_step(model, data)
+    mujoco.mj_kinematics(model, data)
+    observed = {
+        f"{name}_channel": float(value)
+        for arm in arms
+        for name, value in zip(arm.names, arm.read_positions(), strict=True)
+    }
+    return model, data, observed
+
+
+GRIPPERS = (
+    "MuJoCo_UFACTORYxArm7_Follower",
+    "MuJoCo_FrankaResearch3_Follower",
+    "MuJoCo_FrankaEmikaPanda_Follower",
+    "MuJoCo_reBotB601_Follower",
+    "MuJoCo_WidowXAI_Follower",
+    "MuJoCo_ALOHA_Follower",
+    "MuJoCo_AgileXPiPER_Follower",
+    "MuJoCo_Koch_Follower",
+    "MuJoCo_SOARM100_Follower",
+)
+"""Single-robot entries with a gripper channel; the xArm7's is a closed linkage of passive joints."""
+GRIPPER_TOLERANCE_M = 2e-3
+
+
+@pytest.mark.parametrize("name", GRIPPERS)
+@pytest.mark.parametrize("fraction", [0.2, 0.8])
+def test_grippers_match_a_settled_simulation(name: str, fraction: float, tmp_path: Path) -> None:
+    """Driven by what Studio records, every link, the fingers of a linkage gripper included, is where the
+    settled simulation has its body."""
+    entry = ENTRIES[name]
+    write_robot_urdf(entry.profile, entry.prefixes, tmp_path)
+    model, data, observed = _settled(entry, fraction)
+    root = _root(tmp_path)
+    poses = urdf_forward_kinematics(root, _joint_values(root, observed, None))
+    position, _ = _bodies_error(model, data, poses)
+    assert position < GRIPPER_TOLERANCE_M
+
+
+def test_the_xarm7_linkage_follows_its_gripper(tmp_path: Path) -> None:
+    """Menagerie's xArm7 closes its gripper's four-bar linkages with connect equalities: the fingers
+    and inner knuckles are passive, and the URDF drives them from the gripper channel."""
+    entry = ENTRIES["MuJoCo_UFACTORYxArm7_Follower"]
+    write_robot_urdf(entry.profile, entry.prefixes, tmp_path)
+    joints = {joint.get("name"): joint for joint in _root(tmp_path).findall("joint")}
+    for name in ("left_finger_joint", "left_inner_knuckle_joint", "right_finger_joint", "right_inner_knuckle_joint"):
+        assert joints[name].find("mimic").get("joint") == "gripper_channel"
+    model, data, observed = _settled(entry, 0.8)
+    finger = model.joint("left_finger_joint")
+    assert abs(data.qpos[finger.qposadr[0]]) > 0.1  # the settled linkage really moved
+
+
+@pytest.mark.parametrize("name", CHECKED)
+def test_observations_past_a_soft_limit_are_shown_unclamped(name: str, generated: dict[str, Path]) -> None:
+    """urdf-loader clamps a ``revolute`` or ``prismatic`` joint to its ``<limit>`` (``URDFJoint.setJointValue``),
+    a mimic joint included. MuJoCo's limits are soft, so a recording can sit just past one: hinges are
+    ``continuous`` (never clamped), slides clamp only a full range (at least 0.1 m) beyond theirs."""
+    for joint in _root(generated[name]).findall("joint"):
+        if joint.find("mimic") is None:
+            continue
+        assert joint.get("type") in {"continuous", "prismatic"}
+        soft = joint.find("safety_controller")
+        if joint.get("type") == "prismatic" and soft is not None:
+            limit = joint.find("limit")
+            low, high = float(soft.get("soft_lower_limit")), float(soft.get("soft_upper_limit"))
+            margin = max(high - low, 0.1)
+            assert float(limit.get("lower")) <= low - margin + 1e-12
+            assert float(limit.get("upper")) >= high + margin - 1e-12
+
+
+_URDF_LOADER_SCRIPT = """
+import { JSDOM } from 'jsdom';
+import * as THREE from 'three';
+import URDFLoader from 'urdf-loader';
+import { readFileSync } from 'node:fs';
+
+const { window } = new JSDOM('');
+Object.assign(globalThis, { DOMParser: window.DOMParser, Document: window.Document, Element: window.Element });
+const [path, channel, value, joint] = process.argv.slice(2);
+const loader = new URDFLoader();
+loader.loadMeshCb = (_url, _manager, _material, done) => done(new THREE.Object3D());
+const robot = loader.parse(readFileSync(path, 'utf8'));
+robot.setJointValue(channel, Number(value));
+console.log(JSON.stringify(robot.joints[joint].jointValue[0]));
+"""
+
+
+def test_urdf_loader_does_not_clamp_a_joint_past_its_range(tmp_path: Path, generated: dict[str, Path]) -> None:
+    """Run Studio's urdf-loader on a generated URDF (set ``URDF_LOADER_NODE_MODULES`` to a ``node_modules`` with
+    urdf-loader, three and jsdom, e.g. Studio's ``application/ui/node_modules``)."""
+    import os  # noqa: PLC0415
+    import shutil  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+
+    modules = os.environ.get("URDF_LOADER_NODE_MODULES")
+    node = shutil.which("node")
+    if not modules or node is None:
+        pytest.skip("needs node and URDF_LOADER_NODE_MODULES")
+    script = tmp_path / "node_modules"
+    script.symlink_to(modules)
+    (tmp_path / "check.mjs").write_text(_URDF_LOADER_SCRIPT)
+    urdf = generated["MuJoCo_FrankaResearch3_Follower"] / URDF_FILE
+    model, _ = compose_robot(ENTRIES["MuJoCo_FrankaResearch3_Follower"].profile, ("",))
+    upper = math.degrees(float(model.joint("fr3_joint1").range[1]))
+    cases = (("fr3_joint1_channel", upper + 2.0, "fr3_joint1", math.radians(upper + 2.0)), ("gripper_channel", 0.09, "finger_joint1", 0.045))
+    for channel, value, joint, expected in cases:
+        result = subprocess.run(  # noqa: S603
+            [node, str(tmp_path / "check.mjs"), str(urdf), channel, str(value), joint],
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+        )
+        assert float(result.stdout) == pytest.approx(expected)
+
+
+def test_a_model_downloaded_later_fills_the_joint_map(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A catalog listed before the Panda's model is downloaded has no joint names; once it is, the next listing has them."""
+    monkeypatch.setattr(studio_urdf, "_DERIVED_NAMES", {})
+    available = {"value": False}
+    monkeypatch.setattr(studio_urdf, "models_available", lambda _profile: available["value"])
+    asset = {d.type: d for d in _definitions()}["MuJoCo_FrankaEmikaPanda_Follower"].asset
+    assert asset is not None
+    assert asset.joint_map == {}
+    available["value"] = True
+    expected = {f"{name}.pos": [f"{name}_channel"] for name in ENTRIES["MuJoCo_FrankaEmikaPanda_Follower"].joint_names()}
+    assert asset.joint_map == expected
+    available["value"] = False  # found names stay
+    assert asset.joint_map == expected

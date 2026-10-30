@@ -159,8 +159,9 @@ class _GeneratedRobotAsset(RobotAsset):
     The ``joint_map`` needs only the channel names: each observation drives its channel's virtual
     joint (:mod:`~physicalai_mujoco_plugin.studio_urdf`). A profile without channel overrides
     reads them from its model file, without compiling it, the first time Studio lists the catalog,
-    so registering the entries imports no MuJoCo. A model that is not downloaded yet leaves the map
-    empty until Studio restarts.
+    so registering the entries imports no MuJoCo. Studio reads ``joint_map`` on every catalog listing,
+    so a model that is not downloaded yet leaves it empty only until a listing after the download
+    (in the UI, the next page load); found names are kept.
     """
 
     _entry: CatalogEntry
@@ -183,7 +184,7 @@ class _GeneratedRobotAsset(RobotAsset):
     @property
     def joint_map(self) -> dict[str, list[str]]:  # type: ignore[override]
         """Observation name to URDF joints: ``{"shoulder_pan.pos": ["shoulder_pan_channel"], ...}``."""
-        if self._names is None:
+        if self._names is None:  # not found yet: look again, the model may have been downloaded since
             object.__setattr__(self, "_names", public_names(self._entry.profile, self._entry.prefixes))  # noqa: PLC2801
         return {} if self._names is None else joint_map(self._names)
 
