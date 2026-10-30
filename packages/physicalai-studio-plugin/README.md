@@ -104,8 +104,9 @@ async def _build_my_robot(
 class MyRobotProbe:
     """Structurally implements RobotProbe[MyRobotPayload]."""
 
-    async def discover(self, manager: PortScanner) -> list[SerialPortInfo]:
-        await manager.find_robots()
+    async def discover(self, manager: PortScanner, *, passive: bool = False) -> list[SerialPortInfo]:
+        if not passive:
+            await manager.find_robots()
         return manager.robots
 
     async def identify(
@@ -114,9 +115,11 @@ class MyRobotProbe:
         pass
 
     async def is_online(
-        self, payload: MyRobotPayload, manager: PortScanner | None = None
+        self, payload: MyRobotPayload, manager: PortScanner | None = None, *, passive: bool = False
     ) -> bool:
-        return True
+        if manager is None:
+            raise NotImplementedError("Provide a cached OS port scanner for this presence check")
+        return any(port.serial_number == payload.serial_number for port in manager.robots)
 
 
 def _definitions() -> list[RobotCatalogDefinition[MyRobotPayload]]:
@@ -176,20 +179,22 @@ class RobotCatalogDefinition(Generic[_PayloadT]):
     probe: RobotProbe[_PayloadT] | None = None
     zero_calibration: RobotZeroCalibration | None = None
     simulation: SimulationLaunch | None = None
+    config_exporter: ExportRobotCallable | None = None
 ```
 
-| Field              | Description                                                                                         |
-| ------------------ | --------------------------------------------------------------------------------------------------- |
-| `type`             | Stable identifier used in DB storage and API paths. Must be unique across all plugins.              |
-| `display_name`     | Human-readable name shown in the Studio UI.                                                         |
-| `role`             | Either `"follower"` (executes actions) or `"leader"` (provides demonstrations).                     |
-| `robot_builder`    | Async callable that receives a robot payload and factory, then returns a `PhysicalAIRobot`.         |
-| `robot_payload`    | Pydantic model defining this robot type's configuration fields.                                     |
-| `asset`            | Optional URDF and package maps for 3D visualization.                                                |
-| `adapter_options`  | Controls velocity, timing, and effort-forwarding behavior.                                          |
-| `probe`            | Optional [`RobotProbe[_PayloadT]`](#robotprobe) for device interaction.                             |
-| `zero_calibration` | Optional [`RobotZeroCalibration`](#robotzerocalibration) for Studio's guided zero-pose calibration. |
-| `simulation`       | Optional [`SimulationLaunch`](#simulationlaunch) that Studio uses to start a simulated robot.       |
+| Field              | Description                                                                                                         |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `type`             | Stable identifier used in DB storage and API paths. Must be unique across all plugins.                              |
+| `display_name`     | Human-readable name shown in the Studio UI.                                                                         |
+| `role`             | Either `"follower"` (executes actions) or `"leader"` (provides demonstrations).                                     |
+| `robot_builder`    | Async callable that receives a robot payload and factory, then returns a `PhysicalAIRobot`.                         |
+| `robot_payload`    | Pydantic model defining this robot type's configuration fields.                                                     |
+| `asset`            | Optional URDF and package maps for 3D visualization.                                                                |
+| `adapter_options`  | Controls velocity, timing, and effort-forwarding behavior.                                                          |
+| `probe`            | Optional [`RobotProbe[_PayloadT]`](#robotprobe) for device interaction.                                             |
+| `zero_calibration` | Optional [`RobotZeroCalibration`](#robotzerocalibration) for Studio's guided zero-pose calibration.                 |
+| `simulation`       | Optional [`SimulationLaunch`](#simulationlaunch) that Studio uses to start a simulated robot.                       |
+| `config_exporter`  | Optional passive `CatalogRobot -> physicalai.config.Config` hook for CLI setup; must not construct/connect drivers. |
 
 ### `RobotAdapterOptions`
 
@@ -321,16 +326,35 @@ simulation = SimulationLaunch[MySimPayload](
 ```python
 @runtime_checkable
 class RobotProbe(Protocol[_PayloadT]):
-    async def discover(self, manager: PortScanner) -> list[SerialPortInfo]: ...
+    async def discover(self, manager: PortScanner, *, passive: bool = False) -> list[SerialPortInfo]: ...
     async def identify(
         self, payload: _PayloadT, manager: PortScanner | None, joint: str | None = None
     ) -> None: ...
     async def is_online(
-        self, payload: _PayloadT, manager: PortScanner | None = None
+        self, payload: _PayloadT, manager: PortScanner | None = None, *, passive: bool = False
     ) -> bool: ...
 ```
 
 Generic protocol over your robot's payload model. Implement it structurally — your class receives the typed payload directly instead of a raw dict. The `_PayloadT` type parameter is automatically inferred from `identify` / `is_online` signatures; you do not need to explicitly inherit from `RobotProbe`.
+
+`passive=False` preserves existing behavior. With `passive=True`, use only OS or
+cached evidence: do not open serial connections, ping network endpoints, connect
+drivers, or move hardware. Raise `NotImplementedError` if passive discovery or
+status cannot be established; do not report an untested device offline. Passive
+serial enumeration produces candidates, not verified robot models.
+
+`pai discover` passes `passive=True` explicitly. Legacy probes without that named
+keyword argument remain usable by existing Studio callers, but doctor skips them
+and reports the limitation. `identify()` remains a separate explicit action and
+is never invoked by passive discovery or watch mode.
+
+`config_exporter` receives the same typed payload descriptor as a robot builder
+and returns a Runtime `Config` without instantiating hardware. Validate the payload,
+map the selected connection and driver arguments, and keep defaults in the plugin.
+CLI setup must not call `robot_builder` as a substitute for this hook. The initial
+implementation provides exporters for all three StarArm configurations; other
+plugins remain discoverable and need an exporter before the wizard can export
+their Runtime recipes.
 
 ### `PortScanner`
 

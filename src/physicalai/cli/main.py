@@ -29,6 +29,9 @@ from typing import TYPE_CHECKING
 
 from jsonargparse import ArgumentParser
 
+from physicalai.cli import devices as devices_cmd
+from physicalai.cli import discover as discover_cmd
+from physicalai.cli import doctor as doctor_cmd
 from physicalai.cli import inference as inference_cmd
 from physicalai.cli import robot as robot_cmd
 from physicalai.cli import run as run_cmd
@@ -46,12 +49,18 @@ logger = logging.getLogger(__name__)
 # its ``register()`` callable; help text is kept alongside so the top-level
 # ``--help`` listing never has to build (or import) a parser.
 _BUILTINS: dict[str, Callable[[], SubcommandSpec]] = {
+    "devices": devices_cmd.register,
+    "discover": discover_cmd.register,
+    "doctor": doctor_cmd.register,
     "inference": inference_cmd.register,
     "run": run_cmd.register,
     "robot": robot_cmd.register,
 }
 _BUILTIN_HELP: dict[str, str] = {
     "completion": "Print a shell completion script.",
+    "devices": devices_cmd.HELP,
+    "discover": discover_cmd.HELP,
+    "doctor": doctor_cmd.HELP,
     "inference": inference_cmd.HELP,
     "run": run_cmd.HELP,
     "robot": robot_cmd.HELP,

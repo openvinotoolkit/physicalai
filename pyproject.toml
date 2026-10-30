@@ -55,6 +55,7 @@ physicalai = "physicalai.cli.main:main"
 pai = "physicalai.cli.main:main"
 
 [project.optional-dependencies]
+doctor = ["pyserial>=3.5"]
 tests = ["pytest", "mypy"]
 notebooks = ["matplotlib", "matplotlib-inline", "ipykernel", "ipywidgets", "jupyterlab"]
 realsense = [

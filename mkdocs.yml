@@ -43,6 +43,7 @@ nav:
           - Instantiate Components: how-to/config/instantiate-components.md
       - CLI:
           - Run: how-to/cli/run.md
+          - Diagnose Hardware Connections: how-to/cli/doctor.md
   - Explanation:
       - Overview: explanation/README.md
       - Architecture: explanation/architecture.md

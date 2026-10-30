@@ -70,6 +70,39 @@ def test_register_physicalai_studio_plugin() -> None:
     assert len(registry.definitions) == 3
 
 
+def test_passive_recipe_export_does_not_construct_driver(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+    import physicalai_stararm_plugin.studio_catalog as module
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("passive export must not construct a driver")
+
+    monkeypatch.setattr(module, "StarArm102HDLeader", forbidden)
+    monkeypatch.setattr(module, "StarArm102LDLeader", forbidden)
+    monkeypatch.setattr(module, "StarArm102FLFollower", forbidden)
+    registry = _FakeRegistry()
+    module.register_physicalai_studio_plugin(registry)
+    for definition in registry.definitions:
+        payload = definition.robot_payload(connection_string="/dev/serial/by-path/arm")
+        config = definition.config_exporter(SimpleNamespace(type=definition.type, payload=payload))
+        assert config.init_args["port"] == "/dev/serial/by-path/arm"
+        assert "connection_string" not in config.init_args
+        assert "serial_number" not in config.init_args
+        assert config.class_path.startswith("physicalai_stararm_plugin.")
+
+
+def test_probe_discovery_accepts_explicit_passive_mode() -> None:
+    import asyncio
+    from physicalai_stararm_plugin.studio_catalog import StarArmProbe
+
+    class Scanner:
+        robots = []
+        async def find_robots(self):
+            pytest.fail("passive discovery must not trigger the scanner's active refresh")
+
+    assert asyncio.run(StarArmProbe().discover(cast(Any, Scanner()), passive=True)) == []
+
+
 def test_ld_leader_structure() -> None:
     from physicalai_stararm_plugin.studio_catalog import _definitions
 

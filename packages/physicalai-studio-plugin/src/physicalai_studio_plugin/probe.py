@@ -40,8 +40,20 @@ class RobotProbe(Protocol[_PayloadT_contra]):
     payload model (a pydantic ``BaseModel`` subclass).
     """
 
-    async def discover(self, manager: PortScanner) -> list[SerialPortInfo]:
-        """Discover robots and return current connection metadata."""
+    async def discover(self, manager: PortScanner, *, passive: bool = False) -> list[SerialPortInfo]:
+        """Discover robot candidates and return current connection metadata.
+
+        With ``passive=True``, only enumerate OS/cached evidence: do not open
+        serial connections, ping network endpoints, connect drivers, or move
+        hardware. Return candidates, not an assertion of their robot models.
+        The default preserves existing plugin behavior.
+
+        Returns:
+            Available connection candidates.
+
+        Raises:
+            NotImplementedError: If passive discovery cannot be provided safely.
+        """
 
     async def identify(
         self,
@@ -55,5 +67,18 @@ class RobotProbe(Protocol[_PayloadT_contra]):
         self,
         payload: _PayloadT_contra,
         manager: PortScanner | None = None,
+        *,
+        passive: bool = False,
     ) -> bool:
-        """Return whether the robot appears online."""
+        """Return whether the robot appears online using the requested evidence.
+
+        With ``passive=True``, use only OS/cached evidence and never initiate
+        hardware or network I/O. If such evidence cannot establish status,
+        raise ``NotImplementedError`` instead of returning a misleading false.
+
+        Returns:
+            Whether the requested connection appears online.
+
+        Raises:
+            NotImplementedError: If passive status cannot be established.
+        """

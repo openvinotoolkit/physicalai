@@ -579,14 +579,15 @@ def _make_teleop_builder(
 class LeRobotProbe(RobotProbe[BaseModel]):
     """Probe implementation for LeRobot-adapted serial devices."""
 
-    async def discover(self, manager: PortScanner) -> list[SerialPortInfo]:
+    async def discover(self, manager: PortScanner, *, passive: bool = False) -> list[SerialPortInfo]:
         """Discover available serial devices.
 
         Returns:
             list[SerialPortInfo]: Detected serial devices.
         """
         _ = self
-        await manager.find_robots()
+        if not passive:
+            await manager.find_robots()
         return manager.robots
 
     async def identify(
@@ -598,7 +599,7 @@ class LeRobotProbe(RobotProbe[BaseModel]):
         """Request a visual identify action, if supported."""
         _ = self, payload, manager, joint
 
-    async def is_online(self, payload: BaseModel, manager: PortScanner | None = None) -> bool:
+    async def is_online(self, payload: BaseModel, manager: PortScanner | None = None, *, passive: bool = False) -> bool:
         """Check whether the configured robot endpoint is online.
 
         Returns:
@@ -608,6 +609,9 @@ class LeRobotProbe(RobotProbe[BaseModel]):
         _ = self
         configured_ports = set(_iter_port_values(payload))
         if not configured_ports:
+            if passive:
+                msg = "Passive online status requires an enumerable serial connection."
+                raise NotImplementedError(msg)
             return True
 
         if manager is not None:

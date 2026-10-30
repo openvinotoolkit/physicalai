@@ -78,6 +78,42 @@ def _device_key(info: omni_camera.CameraInfo, usb: dict[int, _UsbIdentity | None
     return identity.devpath if identity else str(info.index)
 
 
+def _linux_port_index(device_path: str) -> int:
+    """Resolve a physical-port alias without converting its persisted selector.
+
+    Returns:
+        The current video-node index.
+
+    Raises:
+        CaptureError: If the alias is missing or does not select a video node.
+    """
+    try:
+        target = Path(device_path).resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        msg = f"Camera port path is unavailable: {device_path}"
+        raise CaptureError(msg) from exc
+    suffix = target.name.removeprefix("video")
+    if target.parent != Path("/dev") or not target.name.startswith("video") or not suffix.isdecimal():
+        msg = f"Camera port path does not resolve to a video endpoint: {device_path}"
+        raise CaptureError(msg)
+    return int(suffix)
+
+
+def _checked_video_index(infos: list[omni_camera.CameraInfo], index: int) -> int:
+    """Check a live index without resolving potentially colliding SDK identities.
+
+    Returns:
+        The requested index, unchanged.
+
+    Raises:
+        CaptureError: If discovery did not enumerate this index.
+    """
+    if not any(candidate.index == index for candidate in infos):
+        msg = f"No camera found at index {index}"
+        raise CaptureError(msg)
+    return index
+
+
 class OmniCamera(Camera):
     _POLL_INTERVAL_S = 0.001
 
@@ -199,10 +235,12 @@ class OmniCamera(Camera):
             raise CaptureError(msg)
 
         if isinstance(device_id, int):
-            if not any(candidate.index == device_id for candidate in infos):
-                msg = f"No camera found at index {device_id}"
-                raise CaptureError(msg)
-            return device_id
+            return _checked_video_index(infos, device_id)
+
+        if sys.platform.startswith("linux") and device_id.startswith("/dev/v4l/by-path/"):
+            # Resolve at each connect, not when saving configuration. Passing the
+            # live index bypasses nokhwa's potentially colliding by-id metadata.
+            return OmniCamera._resolve_open_target(infos, _linux_port_index(device_id))
 
         # ``index:N`` is the backend's own spelling of a video index; it is
         # what a persisted device_id falls back to for a camera that reports
@@ -233,10 +271,7 @@ class OmniCamera(Camera):
             )
             raise CaptureError(msg)
 
-        if not any(candidate.index == index for candidate in infos):
-            msg = f"No camera found at index {index}"
-            raise CaptureError(msg)
-        return index
+        return _checked_video_index(infos, index)
 
     def _resolve_format(self) -> omni_camera.CameraFormat:
         if self._cam is None:

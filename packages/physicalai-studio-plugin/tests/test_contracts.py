@@ -31,7 +31,7 @@ class TestPayload(BaseModel):
 class TestProbe:
     """Structurally implements RobotProbe[TestPayload]."""
 
-    async def discover(self, manager: PortScanner) -> list[SerialPortInfo]:
+    async def discover(self, manager: PortScanner, *, passive: bool = False) -> list[SerialPortInfo]:
         return []
 
     async def identify(
@@ -46,6 +46,8 @@ class TestProbe:
         self,
         payload: TestPayload,
         manager: PortScanner | None = None,
+        *,
+        passive: bool = False,
     ) -> bool:
         return payload.serial_number != ""
 

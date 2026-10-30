@@ -59,6 +59,34 @@ name, class, host, and joint count, followed by the result count and elapsed dis
 time. JSON mode writes exactly one array to stdout; empty discovery is successful and
 writes `[]`.
 
+## Hardware diagnostics and setup
+
+```bash
+physicalai doctor [--json] [--strict] [--redact] [--verbose] [--color auto|always|never] [--config runtime.yaml]
+physicalai doctor --watch [--duration 60] [--interval 1] [--json]
+physicalai devices [--tree|--flat] [--all] [--json] [--redact] [--color auto|always|never]
+physicalai devices inspect SELECTOR [--json] [--redact]
+physicalai discover [--output runtime.yaml] [--format yaml|json] [--components-only]
+```
+
+`doctor` and `devices` inspect OS evidence without starting robot connections or
+camera streams. `discover` interactively exports passive component recipes or a
+complete configuration for `physicalai run`; it does not execute the configuration.
+These commands discover physical hardware, unlike `robot discover`, which discovers
+shared robot services.
+
+Human output uses a USB branch tree by default and separates payload demand,
+measured delivery, and raw link ceilings. Device inspection includes upstream hub
+peers. Terminal color/bold emphasis is automatic on a TTY, disabled by `NO_COLOR`,
+and configurable with `--color`; JSON remains unstyled.
+
+Explicit Linux camera tests use `doctor --stream --camera SELECTOR --duration 5`;
+repeat `--camera` to compare individual and concurrent capture. This option starts
+camera streams and attempts to restore their previous wire modes afterward.
+
+See [Diagnose Hardware Connections](../how-to/cli/doctor.md) for safety boundaries,
+platform coverage, JSON/NDJSON schemas, exit codes, and export limitations.
+
 ## Shell Completion
 
 Shell completion scripts can be printed directly from the CLI and sourced in

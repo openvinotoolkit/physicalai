@@ -307,6 +307,7 @@ def test_read_sequence_increments() -> None:
 
     assert f1.sequence == 0
     assert f2.sequence == 1
+    assert cam.payload_bytes_received == 2 * len(frame_data)
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +353,7 @@ def test_read_latest_drains_buffers() -> None:
 
     assert isinstance(frame, Frame)
     assert frame.data.shape == (480, 640, 3)
+    assert cam.payload_bytes_received == 2 * len(frame_data)
 
 
 # ---------------------------------------------------------------------------

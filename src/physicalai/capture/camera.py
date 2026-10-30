@@ -147,6 +147,17 @@ class Camera(ABC):
         return self._color_mode
 
     @property
+    def payload_bytes_received(self) -> int | None:
+        """Encoded frame bytes dequeued during this connection, when supported.
+
+        Excludes USB/protocol headers, retransmissions, and frames lost before
+        dequeue. Includes frames discarded by ``read_latest()``. ``None`` means
+        this backend cannot measure transport payload; decoded image sizes must
+        not be used as a substitute. Backends reset the counter on connection.
+        """
+        return None
+
+    @property
     def _executor(self) -> ThreadPoolExecutor:
         """Lazy-initialised per-camera executor for async reads."""
         if self.__executor is None:

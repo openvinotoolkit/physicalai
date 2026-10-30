@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Generic, Literal, Protocol, TypeVar
 
 from pydantic import BaseModel
 
+from physicalai.config import Config
 from physicalai.robot.interface import Robot as PhysicalAIRobot
 
 from .factory import CatalogRobotFactory
@@ -74,6 +75,10 @@ fails the build with ``ConfigError``.
 """
 
 
+ExportRobotCallable = Callable[[CatalogRobot[Any]], Config]
+"""Build a passive Runtime recipe without constructing or connecting a driver."""
+
+
 @dataclass
 class RobotCatalogDefinition(Generic[_PayloadT]):
     """Complete definition of a plugin robot type for Studio registration."""
@@ -95,6 +100,8 @@ class RobotCatalogDefinition(Generic[_PayloadT]):
     zero_calibration: RobotZeroCalibration[Any] | None = None
     simulation: SimulationLaunch[_PayloadT] | None = None
     """How Studio starts the simulation a simulated robot type attaches to; ``None`` for real robots."""
+    config_exporter: ExportRobotCallable | None = None
+    """Optional passive recipe builder for CLI discovery; never a hardware builder."""
 
 
 class RobotCatalogRegistry(Protocol):

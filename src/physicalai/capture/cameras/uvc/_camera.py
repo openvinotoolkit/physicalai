@@ -7,8 +7,8 @@ This module exposes :class:`~physicalai.capture.cameras.uvc.UVCCamera` as the
 user-facing entry point for "standard USB video cameras" (UVC devices).
 
 Internally it delegates to one of:
-  - :class:`~physicalai.capture.cameras.uvc.v4l2.V4L2Camera` on Linux
-  - :class:`~physicalai.capture.cameras.uvc._omnicamera.OmniCamera` elsewhere
+  - :class:`~physicalai.capture.cameras.uvc.v4l2.V4L2Camera` when explicitly selected on Linux
+  - :class:`~physicalai.capture.cameras.uvc._omnicamera.OmniCamera` (portable default)
 """
 
 from __future__ import annotations
@@ -37,6 +37,8 @@ class UVCCamera(Camera):
             - An identity dict (e.g. ``{"uuid": ...}``, ``{"serial": ...}``) picks
               a camera by its reported metadata. Values are ``str`` or ``int`` and
               are kept as given, so ``"0x21230000c456366"`` stays a string.
+            - On Linux, ``/dev/v4l/by-path/...`` selects a physical port/interface.
+              Both backends resolve this path when connecting, not when exporting.
         width: Requested frame width in pixels.
         height: Requested frame height in pixels.
         fps: Requested frames per second.
@@ -148,6 +150,11 @@ class UVCCamera(Camera):
     @property
     def device_id(self) -> str:
         return self._inner.device_id
+
+    @property
+    def payload_bytes_received(self) -> int | None:
+        """Return the selected backend's encoded-payload counter, if available."""
+        return self._inner.payload_bytes_received
 
     # ------------------------------------------------------------------
     # Discovery

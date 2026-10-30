@@ -80,6 +80,7 @@ class V4L2Camera(Camera):
 
         self._connected: bool = False
         self._sequence: int = 0
+        self._payload_bytes_received = 0
         self._fd: int | None = None
         self._buffers: list[tuple[mmap.mmap, int]] = []
         self._jpeg: TurboJPEG | None = None
@@ -92,6 +93,11 @@ class V4L2Camera(Camera):
     @property
     def device_id(self) -> str:
         return self._device_path
+
+    @property
+    def payload_bytes_received(self) -> int:
+        """Return encoded bytes dequeued, including discarded latest-frame reads."""
+        return self._payload_bytes_received
 
     def connect(self, timeout: float = 5.0) -> None:
         fd = -1
@@ -143,6 +149,7 @@ class V4L2Camera(Camera):
 
             self._connected = True
             self._sequence = 0
+            self._payload_bytes_received = 0
             self._controls = V4L2CameraControls(self._device_path, fd=self._fd)
 
             for ctrl_id, ctrl_value in self._initial_controls.items():
@@ -218,6 +225,7 @@ class V4L2Camera(Camera):
 
             mm, _ = self._buffers[buf.index]
             raw = bytes(mm[: buf.bytesused])
+            self._payload_bytes_received += len(raw)
             xioctl(self._fd, VIDIOC_QBUF, buf)
 
             decoded = self._decode(raw)
@@ -259,6 +267,7 @@ class V4L2Camera(Camera):
 
                 mm, _ = self._buffers[buf.index]
                 latest_raw = bytes(mm[: buf.bytesused])
+                self._payload_bytes_received += len(latest_raw)
 
                 xioctl(self._fd, VIDIOC_QBUF, buf)
 

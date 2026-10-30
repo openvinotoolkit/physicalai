@@ -7,6 +7,7 @@ from .assets import RobotAsset
 from .catalog import (
     BuildRobotCallable,
     CatalogRobot,
+    ExportRobotCallable,
     PayloadContainer,
     RobotAdapterOptions,
     RobotCatalogDefinition,
@@ -38,6 +39,7 @@ __all__ = [
     "BuildRobotCallable",
     "CatalogRobot",
     "CatalogRobotFactory",
+    "ExportRobotCallable",
     "PayloadContainer",
     "PortScanner",
     "RobotAdapterOptions",

@@ -409,6 +409,7 @@ VIDIOC_QBUF = _IOWR("V", 15, v4l2_buffer)
 VIDIOC_DQBUF = _IOWR("V", 17, v4l2_buffer)
 VIDIOC_STREAMON = _IOW("V", 18, ctypes.c_int)
 VIDIOC_STREAMOFF = _IOW("V", 19, ctypes.c_int)
+VIDIOC_G_PARM = _IOWR("V", 21, v4l2_streamparm)
 VIDIOC_S_PARM = _IOWR("V", 22, v4l2_streamparm)
 VIDIOC_G_CTRL = _IOWR("V", 27, v4l2_control)
 VIDIOC_S_CTRL = _IOWR("V", 28, v4l2_control)
@@ -472,6 +473,7 @@ __all__ = [
     "VIDIOC_ENUM_FMT",
     "VIDIOC_G_CTRL",
     "VIDIOC_G_FMT",
+    "VIDIOC_G_PARM",
     "VIDIOC_QBUF",
     "VIDIOC_QUERYBUF",
     "VIDIOC_QUERYCAP",
