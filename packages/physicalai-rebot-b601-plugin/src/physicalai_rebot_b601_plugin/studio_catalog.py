@@ -31,9 +31,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 import physicalai_rebot_b601_plugin
 from physicalai_rebot_b601_plugin import ReBotB601DM, ReBotB601RS, get_urdf_path
 from physicalai_rebot_b601_plugin.constants import (
+    REBOT_B601_MIT_GAIN_LIMITS,
     REBOT_B601_RS_GRIPPER_MAX_TORQUE_NM,
     REBOT_B601_RS_MIT_KD,
     REBOT_B601_RS_MIT_KP,
+    REBOT_B601_RS_MOTOR_MODELS,
 )
 
 if TYPE_CHECKING:
@@ -90,7 +92,60 @@ _REBOT_B601_RS_ASSET = RobotAsset(
 )
 
 
-class ReBotB601DMPayload(BaseModel):
+def _validate_speed(value: float) -> float:
+    if -1.0 < value <= 0.0:
+        msg = "speed must be -1 or a finite positive value in degrees per second"
+        raise ValueError(msg)
+    return value
+
+
+class _ReBotMotionPayload(BaseModel):
+    """Feedforward and motion-shaping settings shared by both B601 followers."""
+
+    gravity_compensation: bool = Field(  # pyrefly: ignore [bad-argument-type, no-matching-overload]
+        default=True,
+        title="Gravity compensation",
+        description=(
+            "Send the arm's modelled gravity torque with every MIT command, so it holds its pose "
+            "instead of sagging. MIT mode only."
+        ),
+        json_schema_extra=robot_field_ui({"advanced_configuration": True}),
+    )
+    velocity_feedforward: bool = Field(  # pyrefly: ignore [bad-argument-type, no-matching-overload]
+        default=True,
+        title="Velocity feedforward",
+        description=(
+            "Send the velocity of the commanded motion with every MIT command, so the damping gain "
+            "does not make the arm lag behind a moving leader or policy. MIT mode only."
+        ),
+        json_schema_extra=robot_field_ui({"advanced_configuration": True}),
+    )
+    approach_speed: float = Field(  # pyrefly: ignore [bad-argument-type, no-matching-overload]
+        default=30.0,
+        ge=-1.0,
+        allow_inf_nan=False,
+        title="Start-up speed (degrees/s)",
+        description=(
+            "Peak joint speed for the first move after torque is enabled, and after a command jumps: the "
+            "arm eases from where it is to the commanded pose. Set to -1 to jump straight there."
+        ),
+        json_schema_extra=robot_field_ui({"advanced_configuration": True}),
+    )
+    park_on_disconnect: bool = Field(  # pyrefly: ignore [bad-argument-type, no-matching-overload]
+        default=True,
+        title="Fold into rest pose on disconnect",
+        description="Move the arm into its folded rest pose before releasing torque, so it does not fall.",
+        json_schema_extra=robot_field_ui({"advanced_configuration": True}),
+    )
+
+    @field_validator("approach_speed")
+    @classmethod
+    def _validate_approach_speed(cls, value: float) -> float:
+        _ = cls
+        return _validate_speed(value)
+
+
+class ReBotB601DMPayload(_ReBotMotionPayload):
     """Connection payload for a ReBot B601 DM follower arm."""
 
     connection_string: str = ""
@@ -250,6 +305,10 @@ async def _build_rebot_b601_dm_driver(
         control_mode=validated.control_mode,
         gripper_control_mode=validated.gripper_control_mode,
         max_relative_target=validated.max_relative_target,
+        gravity_compensation=validated.gravity_compensation,
+        velocity_feedforward=validated.velocity_feedforward,
+        approach_speed=validated.approach_speed,
+        park_on_disconnect=validated.park_on_disconnect,
     )
 
 
@@ -272,7 +331,7 @@ class ReBotB601RSJointGains(BaseModel):
     wrist_roll: _Gain
 
 
-class ReBotB601RSPayload(BaseModel):
+class ReBotB601RSPayload(_ReBotMotionPayload):
     """Connection payload for a ReBot B601 RS follower arm on a SocketCAN interface."""
 
     connection_string: str = Field(
@@ -343,6 +402,18 @@ class ReBotB601RSPayload(BaseModel):
             raise ValueError(msg)
         return value
 
+    @model_validator(mode="after")
+    def _validate_gain_ranges(self) -> Self:
+        for index, gains in enumerate((self.mit_kp, self.mit_kd)):
+            label = "kp" if index == 0 else "kd"
+            for joint, value in gains.model_dump().items():
+                model = REBOT_B601_RS_MOTOR_MODELS[joint]
+                limit = REBOT_B601_MIT_GAIN_LIMITS[model][index]
+                if value > limit:
+                    msg = f"{joint} {label} {value} exceeds the {model} motor's MIT limit of {limit}"
+                    raise ValueError(msg)
+        return self
+
 
 class ReBotRSProbe(RobotProbe[ReBotB601RSPayload]):
     """Online check for ReBot RS arms, based on the SocketCAN interface state."""
@@ -402,6 +473,10 @@ async def _build_rebot_b601_rs_driver(  # noqa: RUF029 - Studio awaits every rob
         gripper_mit_kd=validated.gripper_mit_kd,
         gripper_mit_torque_limit=validated.gripper_mit_torque_limit,
         gripper_mit_hold_torque_limit=validated.gripper_mit_hold_torque_limit,
+        gravity_compensation=validated.gravity_compensation,
+        velocity_feedforward=validated.velocity_feedforward,
+        approach_speed=validated.approach_speed,
+        park_on_disconnect=validated.park_on_disconnect,
     )
 
 

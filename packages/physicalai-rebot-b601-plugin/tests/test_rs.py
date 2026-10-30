@@ -80,16 +80,26 @@ def mock_motorbridge(monkeypatch: pytest.MonkeyPatch) -> Generator[MagicMock]:
     sys.modules.pop("physicalai_rebot_b601_plugin", None)
 
 
-def _create_robot(mock_motorbridge: MagicMock, **kwargs: Any) -> Any:
+# Turns off the feedforward and motion shaping so tests can check the raw command mapping.
+_RAW_CONTROL: dict[str, Any] = {
+    "gravity_compensation": False,
+    "velocity_feedforward": False,
+    "approach_speed": None,
+    "park_on_disconnect": False,
+}
+
+
+def _create_robot(mock_motorbridge: MagicMock, *, raw: bool = True, **kwargs: Any) -> Any:
     from physicalai_rebot_b601_plugin import ReBotB601RS
 
     _ = mock_motorbridge
-    return ReBotB601RS(**kwargs)
+    return ReBotB601RS(**({**_RAW_CONTROL, **kwargs} if raw else kwargs))
 
 
 class TestReBotB601RSConstruction:
     def test_defaults(self, mock_motorbridge: MagicMock) -> None:
-        robot = _create_robot(mock_motorbridge)
+        robot = _create_robot(mock_motorbridge, raw=False)
+
 
         assert robot.port == "can0"
         assert robot.can_adapter == "socketcan"
@@ -139,7 +149,7 @@ class TestReBotB601RSConstruction:
             _create_robot(mock_motorbridge, **{name: REBOT_B601_RS_GRIPPER_MAX_TORQUE_NM + 0.1})
 
     def test_exports_recipe_and_device_identity(self, mock_motorbridge: MagicMock) -> None:
-        robot = _create_robot(mock_motorbridge, port="can1", mit_kp={"shoulder_lift": 40.0})
+        robot = _create_robot(mock_motorbridge, raw=False, port="can1", mit_kp={"shoulder_lift": 40.0})
 
         assert robot.device_ids == ("rebot-rs:socketcan:can1",)
         assert Config.from_instance(robot)["init_args"] == {
@@ -456,7 +466,7 @@ class TestReBotB601RSAction:
                 "elbow_flex": 3.0,
                 "wrist_flex": 4.0,
                 "wrist_yaw": 5.0,
-                "wrist_roll": 6.0,
+                "wrist_roll": 0.5,
             },
         )
         robot.connect()
@@ -465,9 +475,9 @@ class TestReBotB601RSAction:
 
         robot.send_action(np.zeros(7, dtype=np.float32))
 
-        for index, motor in enumerate(motors[:6]):
+        for motor, expected_kd in zip(motors[:6], (1.0, 2.0, 3.0, 4.0, 5.0, 0.5), strict=True):
             _target, _vel, kp, kd, _tau = motor.send_mit.call_args.args
-            assert (kp, kd) == (40.0, float(index + 1))
+            assert (kp, kd) == (40.0, expected_kd)
 
     def test_partial_mit_gain_dict_uses_defaults_for_other_joints(self, mock_motorbridge: MagicMock) -> None:
         robot = _create_robot(mock_motorbridge, mit_kp={"shoulder_lift": 40.0, "elbow_flex": 45.0})
@@ -479,3 +489,91 @@ class TestReBotB601RSAction:
 
         kps = [motor.send_mit.call_args.args[2] for motor in motors[:6]]
         assert kps == [50.0, 40.0, 45.0, 50.0, 50.0, 50.0]
+
+
+class TestReBotB601RSControl:
+    def test_gain_limits_follow_the_motor_model(self, mock_motorbridge: MagicMock) -> None:
+        # RS-06 joints encode damping up to 100, RS-00 joints only up to 5.
+        _create_robot(mock_motorbridge, mit_kd={"shoulder_lift": 20.0})
+        with pytest.raises(ValueError, match="exceeds the rs-00 MIT limit"):
+            _create_robot(mock_motorbridge, mit_kd={"wrist_flex": 6.0})
+        with pytest.raises(ValueError, match="exceeds the rs-00 MIT limit"):
+            _create_robot(mock_motorbridge, mit_kp=600.0)
+
+    def test_gravity_torque_is_sent_in_the_motor_frame(self, mock_motorbridge: MagicMock) -> None:
+        from physicalai_rebot_b601_plugin import get_urdf_path
+        from physicalai_rebot_b601_plugin.constants import REBOT_B601_RS_GRAVITY_URDF, REBOT_B601_URDF_ARM_JOINTS
+        from physicalai_rebot_b601_plugin.gravity import GravityModel
+
+        robot = _create_robot(mock_motorbridge, gravity_compensation=True)
+        robot.connect()
+        motors = list(mock_motorbridge.Controller.return_value.mock_motors)
+        pose = np.array([0.0, -40.0, -80.0, 30.0, 0.0, 0.0, 0.0], dtype=np.float32)
+
+        robot.send_action(pose)
+
+        public = GravityModel(get_urdf_path() / REBOT_B601_RS_GRAVITY_URDF, REBOT_B601_URDF_ARM_JOINTS).torques(
+            np.radians(pose[:6]),
+        )
+        for name, motor, torque in zip(REBOT_B601_RS_JOINT_ORDER, motors[:6], public, strict=False):
+            # Motor angles are -1 x public angles, so motor torques are -1 x public torques too.
+            assert motor.send_mit.call_args.args[4] == pytest.approx(torque / REBOT_B601_RS_JOINT_DIRECTIONS[name])
+        assert abs(public[2]) > 1.0
+
+    def test_observation_torques_are_in_the_public_frame(self, mock_motorbridge: MagicMock) -> None:
+        robot = _create_robot(mock_motorbridge)
+        robot.connect()
+        motors = list(mock_motorbridge.Controller.return_value.mock_motors)
+        motors[1].get_state.return_value = _MotorState(pos=0.0, torq=2.5)
+
+        obs = robot.get_observation()
+
+        assert obs.sensor_data is not None
+        assert obs.sensor_data["torques"][1] == pytest.approx(-2.5)
+
+    def test_velocity_feedforward_uses_the_motor_frame(self, mock_motorbridge: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+        from physicalai_rebot_b601_plugin import dm
+
+        now = [10.0]
+        fake_time = MagicMock()
+        fake_time.monotonic.side_effect = lambda: now[0]
+        monkeypatch.setattr(dm, "time", fake_time)
+        robot = _create_robot(mock_motorbridge, velocity_feedforward=True)
+        robot.connect()
+        motors = list(mock_motorbridge.Controller.return_value.mock_motors)
+
+        robot.send_action(np.zeros(7, dtype=np.float32))
+        now[0] += 0.02
+        robot.send_action(np.array([0.0, -1.0, 0, 0, 0, 0, 0], dtype=np.float32))
+
+        # Public -1 degree in 20 ms is -50 deg/s; the motor turns the other way. Filtered by half.
+        assert motors[1].send_mit.call_args.args[1] == pytest.approx(0.5 * math.radians(50.0))
+
+    def test_gripper_uses_the_measured_command_interval(
+        self,
+        mock_motorbridge: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from physicalai_rebot_b601_plugin import rs
+
+        now = [10.0]
+        fake_time = MagicMock()
+        fake_time.monotonic.side_effect = lambda: now[0]
+        monkeypatch.setattr(rs, "time", fake_time)
+        robot = _create_robot(
+            mock_motorbridge,
+            gripper_mit_kp=0.0,
+            gripper_mit_kd=1.0,
+            gripper_mit_torque_limit=REBOT_B601_RS_GRIPPER_MAX_TORQUE_NM,
+            gripper_mit_hold_torque_limit=REBOT_B601_RS_GRIPPER_MAX_TORQUE_NM,
+        )
+        robot.connect()
+        gripper = mock_motorbridge.Controller.return_value.mock_motors[6]
+        gripper.get_state.return_value = _MotorState(pos=0.0, vel=0.0)
+
+        robot.send_action(np.zeros(7, dtype=np.float32))
+        now[0] += 0.05
+        robot.send_action(np.array([0, 0, 0, 0, 0, 0, -math.degrees(0.05)], dtype=np.float32))
+
+        # The motor target moved +0.05 rad in 50 ms: 1 rad/s, filtered by 0.3 -> 0.3 rad/s, times kd 1.
+        assert gripper.send_mit.call_args.args[4] == pytest.approx(0.3)

@@ -14,6 +14,11 @@ runtime:
       port: can0 # CHANGE_ME: SocketCAN channel
       can_adapter: socketcan
       max_relative_target: -1 # No per-command step limit
+      # Gravity and velocity feedforward are on by default. After torque is
+      # enabled the arm eases into the leader's pose at approach_speed, and on
+      # exit it folds into its rest pose before torque is released.
+      approach_speed: 30.0 # degrees/s; -1 jumps straight to the leader
+      park_on_disconnect: true
 
   action_source:
     class_path: physicalai.runtime.TeleopSource

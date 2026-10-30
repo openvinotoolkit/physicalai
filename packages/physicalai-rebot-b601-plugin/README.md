@@ -9,6 +9,8 @@ Third-party Seeed reBot B601 robot arm plugin for [PhysicalAI](https://github.co
 
 - Concrete implementations of the `Robot` protocol — no inheritance or registration required
 - B601-DM (Damiao) and B601-RS (RobStride) follower drivers
+- Gravity and velocity feedforward in MIT mode, a smooth start-up move, and a fold into the rest
+  pose on disconnect (see [Control](#control))
 - Optional Star Arm leader → follower teleoperation
 - Bundled URDFs for gravity compensation and kinematics
 
@@ -22,10 +24,59 @@ matching LeRobot's RS defaults, which do not provide POS_VEL velocity settings.
 
 ## Hardware
 
-| Class         | Arm              | Motors                        | Protocol                     |
-| ------------- | ---------------- | ----------------------------- | ---------------------------- |
-| `ReBotB601DM` | B601-DM follower | Damiao (via `motorbridge`)    | POS_VEL / FORCE_POS          |
-| `ReBotB601RS` | B601-RS follower | RobStride (via `motorbridge`) | MIT mode + gripper impedance |
+| Class         | Arm              | Motors                        | Protocol                              |
+| ------------- | ---------------- | ----------------------------- | ------------------------------------- |
+| `ReBotB601DM` | B601-DM follower | Damiao (via `motorbridge`)    | POS_VEL / FORCE_POS (default), or MIT |
+| `ReBotB601RS` | B601-RS follower | RobStride (via `motorbridge`) | MIT mode + gripper impedance          |
+
+## Control
+
+In MIT mode every motor runs a PD law at its own rate:
+
+```text
+tau = kp * (q_ref - q) + kd * (dq_ref - dq) + tau_ff
+```
+
+A plain PD law sags under gravity by `gravity / kp` and lags a moving target by `kd / kp` seconds.
+The drivers fill both feedforward terms, the way Trossen's controller does for the WidowX AI:
+
+- **Gravity compensation** (`gravity_compensation`, default on): `tau_ff` is the gravity torque of
+  the commanded pose, computed from the bundled URDF's link masses. Weight the URDF does not include
+  (a wrist camera, a grasped object) is left to the PD gains.
+- **Velocity feedforward** (`velocity_feedforward`, default on): `dq_ref` is the smoothed velocity of
+  the commanded targets, so `kd` damps tracking errors instead of holding the arm back.
+
+Both apply to MIT mode only: `ReBotB601RS` always, `ReBotB601DM` with `control_mode="mit"`. DM's
+POS_VEL mode runs the motor's own position loop, which has no feedforward input.
+
+Two more behaviours apply to both modes:
+
+- **Start-up approach** (`approach_speed`, default 30 °/s): after torque is enabled, the first
+  command eases the arm from where it is to the commanded pose along a straight joint-space line,
+  then the driver tracks commands directly. A command that jumps further than any real motion
+  (faster than 480 °/s, or more than 24° at once) eases in the same way. Set `-1` to jump straight
+  there.
+- **Park on disconnect** (`park_on_disconnect`, default on): before torque is released, the arm
+  folds into its rest (zero) pose in two smooth stages at up to 30 °/s: the base
+  and wrist first, then the shoulder and elbow. It is skipped while torque is already off and
+  stops early if a joint is blocked. Without it, the arm falls when torque is released.
+
+The default MIT gains:
+
+| Joint         | RS `kp`               | RS `kd` | DM `kp` | DM `kd` |
+| ------------- | --------------------- | ------- | ------- | ------- |
+| shoulder_pan  | 50                    | 3       | 120     | 5       |
+| shoulder_lift | 150                   | 10      | 120     | 5       |
+| elbow_flex    | 150                   | 10      | 120     | 5       |
+| wrist_flex    | 50                    | 5       | 30      | 2       |
+| wrist_yaw     | 50                    | 4       | 30      | 2       |
+| wrist_roll    | 50                    | 4       | 30      | 2       |
+| gripper       | impedance (12 / 0.05) |         | 8       | 1       |
+
+The RS gains are Seeed's and LeRobot's RobStride defaults. The DM gains are Seeed's Damiao values
+with the shoulder and elbow damping capped at 5 and the wrists stiffened from 18 to 30. A Damiao
+MIT frame (and an RS-00 one) cannot encode damping above 5, and the drivers reject gains above a
+motor's range instead of letting `motorbridge` clamp them silently.
 
 ## Screenshots
 
@@ -114,9 +165,10 @@ rs_urdf = urdf_dir / "rebot-b601-rs" / "urdf" / "00-arm-rs_asm-v3.urdf"
 | `rebot-b601-dm` | B601-DM (fixend) | Gravity compensation for `ReBotB601DM` |
 | `rebot-b601-rs` | B601-RS v3       | Kinematics for `ReBotB601RS`           |
 
-`rebot-b601-rs/urdf/00-arm-rs_asm-v3_joint_frame.urdf` is a copy of the RS URDF with the
-`elbow_flex`, `wrist_flex` and `wrist_yaw` axes reversed to match the joint frame `ReBotB601RS`
-reports. Studio uses it for the 3D preview.
+`rebot-b601-rs/urdf/00-arm-rs_asm-v3_joint_frame.urdf` is a copy of the RS URDF with every arm
+axis reversed to match the joint frame `ReBotB601RS` reports. Studio uses it for the 3D preview and
+the driver for gravity compensation. The RS link masses are the ones Seeed corrected and checked
+against holding torques measured on a real arm (reBotArm_control_py, July 2026).
 
 ## Development
 

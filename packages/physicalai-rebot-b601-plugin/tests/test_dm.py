@@ -78,16 +78,25 @@ def mock_motorbridge(monkeypatch: pytest.MonkeyPatch) -> Generator[MagicMock]:
     sys.modules.pop("physicalai_rebot_b601_plugin", None)
 
 
-def _create_robot(mock_motorbridge: MagicMock, **kwargs: Any) -> Any:
+# Turns off the feedforward and motion shaping so tests can check the raw command mapping.
+_RAW_CONTROL: dict[str, Any] = {
+    "gravity_compensation": False,
+    "velocity_feedforward": False,
+    "approach_speed": None,
+    "park_on_disconnect": False,
+}
+
+
+def _create_robot(mock_motorbridge: MagicMock, *, raw: bool = True, **kwargs: Any) -> Any:
     from physicalai_rebot_b601_plugin import ReBotB601DM
 
     _ = mock_motorbridge
-    return ReBotB601DM(**kwargs)
+    return ReBotB601DM(**({**_RAW_CONTROL, **kwargs} if raw else kwargs))
 
 
 class TestReBotB601DMConstruction:
     def test_defaults(self, mock_motorbridge: MagicMock) -> None:
-        robot = _create_robot(mock_motorbridge)
+        robot = _create_robot(mock_motorbridge, raw=False)
 
         assert robot.port == "/dev/ttyACM0"
         assert robot.can_adapter == "damiao"
@@ -105,7 +114,7 @@ class TestReBotB601DMConstruction:
         ]
 
     def test_exports_recipe_and_device_identity(self, mock_motorbridge: MagicMock) -> None:
-        robot = _create_robot(mock_motorbridge, port="/dev/ttyACM1", can_adapter="socketcan")
+        robot = _create_robot(mock_motorbridge, raw=False, port="/dev/ttyACM1", can_adapter="socketcan")
 
         assert robot.device_ids == ("rebot-dm:socketcan:/dev/ttyACM1",)
         assert Config.from_instance(robot)["init_args"] == {
@@ -430,3 +439,247 @@ class TestReBotB601DMAction:
 
         robot.enable_torque()
         controller.enable_all.assert_called()
+
+
+class _FakeClock:
+    """Stands in for the driver module's ``time``: ``sleep`` only advances ``monotonic``."""
+
+    def __init__(self) -> None:
+        self.now = 100.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += max(seconds, 0.0)
+
+
+@pytest.fixture
+def clock(mock_motorbridge: MagicMock, monkeypatch: pytest.MonkeyPatch) -> _FakeClock:
+    fake = _FakeClock()
+    monkeypatch.setattr(sys.modules["physicalai_rebot_b601_plugin.dm"], "time", fake)
+    return fake
+
+
+def _follow_commands(motors: list[MagicMock]) -> None:
+    """Make every mock motor report the last position it was commanded, like an ideal servo."""
+    for motor in motors:
+        state = {"pos": motor.get_state.return_value.pos}
+
+        def remember(pos: float, *_args: float, _state: dict[str, float] = state) -> None:
+            _state["pos"] = pos
+
+        motor.send_mit.side_effect = remember
+        motor.send_pos_vel.side_effect = remember
+        motor.send_force_pos.side_effect = remember
+        motor.get_state.side_effect = lambda _state=state: _MotorState(pos=_state["pos"])
+
+
+def _dm_motors(mock_motorbridge: MagicMock) -> list[MagicMock]:
+    return list(mock_motorbridge.Controller.from_dm_serial.return_value.mock_motors)
+
+
+class TestReBotB601DMControl:
+    @pytest.mark.parametrize(("gain_name", "gain"), [("mit_kd", 10.0), ("mit_kp", 600.0)])
+    def test_gain_above_encodable_range_raises(self, mock_motorbridge: MagicMock, gain_name: str, gain: float) -> None:
+        with pytest.raises(ValueError, match="exceeds the 4340P MIT limit"):
+            _create_robot(mock_motorbridge, **{gain_name: gain})
+
+    def test_default_mit_gains_are_encodable(self) -> None:
+        from physicalai_rebot_b601_plugin.constants import REBOT_B601_DM_MOTOR_MODELS, REBOT_B601_MIT_GAIN_LIMITS
+
+        for joint, model in REBOT_B601_DM_MOTOR_MODELS.items():
+            kp_limit, kd_limit = REBOT_B601_MIT_GAIN_LIMITS[model]
+            assert REBOT_B601_DM_MIT_KP[joint] <= kp_limit
+            assert REBOT_B601_DM_MIT_KD[joint] <= kd_limit
+
+    def test_mit_sends_gravity_torque_of_the_commanded_pose(self, mock_motorbridge: MagicMock) -> None:
+        from physicalai_rebot_b601_plugin import get_urdf_path
+        from physicalai_rebot_b601_plugin.constants import REBOT_B601_DM_GRAVITY_URDF, REBOT_B601_URDF_ARM_JOINTS
+        from physicalai_rebot_b601_plugin.gravity import GravityModel
+
+        robot = _create_robot(
+            mock_motorbridge,
+            control_mode="mit",
+            gripper_control_mode="mit",
+            gravity_compensation=True,
+        )
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        pose = np.array([10.0, -60.0, -90.0, 20.0, 5.0, -30.0, -100.0], dtype=np.float32)
+
+        robot.send_action(pose)
+
+        expected = GravityModel(get_urdf_path() / REBOT_B601_DM_GRAVITY_URDF, REBOT_B601_URDF_ARM_JOINTS).torques(
+            np.radians(pose[:6]),
+        )
+        assert np.abs(expected[1:4]).max() > 1.0  # the pose loads the shoulder, elbow and wrist
+        for motor, torque in zip(motors[:6], expected, strict=True):
+            assert motor.send_mit.call_args.args[4] == pytest.approx(torque, abs=1e-6)
+        assert motors[6].send_mit.call_args.args[4] == 0.0
+
+    def test_velocity_feedforward_follows_the_commanded_targets(
+        self,
+        mock_motorbridge: MagicMock,
+        clock: _FakeClock,
+    ) -> None:
+        from physicalai_rebot_b601_plugin.dm import _VELOCITY_FILTER_ALPHA
+
+        robot = _create_robot(mock_motorbridge, control_mode="mit", velocity_feedforward=True)
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+
+        robot.send_action(np.zeros(7, dtype=np.float32))
+        assert motors[0].send_mit.call_args.args[1] == 0.0
+        clock.sleep(0.02)
+        robot.send_action(np.array([1.0, 0, 0, 0, 0, 0, 0], dtype=np.float32))
+
+        assert motors[0].send_mit.call_args.args[1] == pytest.approx(_VELOCITY_FILTER_ALPHA * math.radians(50.0))
+        assert motors[1].send_mit.call_args.args[1] == 0.0
+
+    def test_first_command_eases_in_from_the_measured_pose(
+        self,
+        mock_motorbridge: MagicMock,
+        clock: _FakeClock,
+    ) -> None:
+        robot = _create_robot(mock_motorbridge, control_mode="mit", approach_speed=30.0)
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        for motor in motors:
+            motor.get_state.return_value = _MotorState(pos=0.0)
+        _follow_commands(motors)
+        target = np.array([60.0, -30.0, 0.0, 0.0, 0.0, 0.0, -200.0], dtype=np.float32)
+
+        pan = []
+        for _ in range(200):
+            robot.send_action(target)
+            pan.append(math.degrees(motors[0].send_mit.call_args.args[0]))
+            clock.sleep(1 / 30)
+
+        steps = np.diff([0.0, *pan])
+        assert 0.0 < pan[0] < 1.0
+        assert steps.min() >= 0.0
+        assert steps.max() <= 30.0 / 30 + 1e-6
+        assert pan[-1] == pytest.approx(60.0)
+        lift = math.degrees(motors[1].send_mit.call_args.args[0])
+        assert lift == pytest.approx(-30.0)
+        # The gripper is not slowed down: it gets its target on the first command.
+        assert motors[6].send_force_pos.call_args_list[0].args[0] == pytest.approx(math.radians(-200.0))
+
+    def test_jump_after_tracking_eases_in_again(self, mock_motorbridge: MagicMock, clock: _FakeClock) -> None:
+        robot = _create_robot(mock_motorbridge, control_mode="mit", approach_speed=30.0)
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        for motor in motors:
+            motor.get_state.return_value = _MotorState(pos=0.0)
+        _follow_commands(motors)
+        for _ in range(3):
+            robot.send_action(np.zeros(7, dtype=np.float32))
+            clock.sleep(1 / 30)
+        # A 5-degree step is a fast but real motion: tracked directly.
+        robot.send_action(np.array([5.0, 0, 0, 0, 0, 0, 0], dtype=np.float32))
+        assert math.degrees(motors[0].send_mit.call_args.args[0]) == pytest.approx(5.0)
+        clock.sleep(1 / 30)
+
+        robot.send_action(np.array([45.0, 0, 0, 0, 0, 0, 0], dtype=np.float32))
+
+        assert 5.0 < math.degrees(motors[0].send_mit.call_args.args[0]) < 6.0
+
+    def test_large_step_after_a_pause_eases_in(self, mock_motorbridge: MagicMock, clock: _FakeClock) -> None:
+        robot = _create_robot(mock_motorbridge, control_mode="mit", approach_speed=30.0)
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        for motor in motors:
+            motor.get_state.return_value = _MotorState(pos=0.0)
+        _follow_commands(motors)
+        for _ in range(3):
+            robot.send_action(np.zeros(7, dtype=np.float32))
+            clock.sleep(1 / 30)
+        clock.sleep(2.0)  # the command stream stalls
+
+        robot.send_action(np.array([0, -30.0, 0, 0, 0, 0, 0], dtype=np.float32))
+
+        # Accelerating from rest over the (capped) 0.1 s interval moves the joint under 2 degrees.
+        assert -2.0 < math.degrees(motors[1].send_mit.call_args.args[0]) < 0.0
+
+    def test_enable_torque_eases_in_again(self, mock_motorbridge: MagicMock, clock: _FakeClock) -> None:
+        robot = _create_robot(mock_motorbridge, control_mode="mit", approach_speed=30.0)
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        for motor in motors:
+            motor.get_state.return_value = _MotorState(pos=0.0)
+        _follow_commands(motors)
+        for _ in range(60):
+            robot.send_action(np.array([20.0, 0, 0, 0, 0, 0, 0], dtype=np.float32))
+            clock.sleep(1 / 30)
+        assert math.degrees(motors[0].send_mit.call_args.args[0]) == pytest.approx(20.0)
+
+        robot.disable_torque()
+        robot.enable_torque()
+        robot.send_action(np.array([-20.0, 0, 0, 0, 0, 0, 0], dtype=np.float32))
+
+        assert 19.0 < math.degrees(motors[0].send_mit.call_args.args[0]) < 20.0
+
+    @pytest.mark.parametrize("control_mode", ["mit", "pos_vel"])
+    def test_disconnect_parks_in_two_stages(
+        self,
+        mock_motorbridge: MagicMock,
+        clock: _FakeClock,
+        control_mode: str,
+    ) -> None:
+        robot = _create_robot(mock_motorbridge, control_mode=control_mode, park_on_disconnect=True)
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        start = [30.0, -60.0, -90.0, 20.0, 10.0, -40.0, -100.0]
+        for motor, degrees in zip(motors, start, strict=True):
+            motor.get_state.return_value = _MotorState(pos=math.radians(degrees))
+        _follow_commands(motors)
+        send = "send_mit" if control_mode == "mit" else "send_pos_vel"
+        t0 = clock.now
+
+        robot.disconnect()
+
+        calls = [getattr(motor, send).call_args_list for motor in motors[:6]]
+        trace = np.degrees([[joint[k].args[0] for joint in calls] for k in range(len(calls[0]))])
+        stage_one = trace[:, [0, 3, 4, 5]]
+        stage_two = trace[:, [1, 2]]
+        first_stage_end = int(np.argmax(np.all(np.abs(stage_one) < 1e-6, axis=1)))
+        assert np.allclose(stage_two[: first_stage_end + 1], [-60.0, -90.0])  # shoulder and elbow wait
+        assert np.allclose(trace[-1], 0.0, atol=1e-6)
+        assert np.abs(np.diff(trace, axis=0)).max() <= 30.0 / 50 + 1e-6  # peaks at 30 deg/s
+        assert clock.now - t0 >= 2 * 1.0  # each stage takes at least a second
+        mock_motorbridge.Controller.from_dm_serial.return_value.disable_all.assert_called()
+
+    def test_disconnect_skips_park_while_torque_is_off(self, mock_motorbridge: MagicMock, clock: _FakeClock) -> None:
+        robot = _create_robot(mock_motorbridge, control_mode="mit", park_on_disconnect=True)
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        robot.disable_torque()
+
+        robot.disconnect()
+
+        for motor in motors:
+            motor.send_mit.assert_not_called()
+
+    def test_park_stops_when_a_joint_is_blocked(self, mock_motorbridge: MagicMock, clock: _FakeClock) -> None:
+        robot = _create_robot(mock_motorbridge, control_mode="mit", park_on_disconnect=True)
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        for motor in motors:
+            motor.get_state.return_value = _MotorState(pos=math.radians(-90.0))  # never moves
+
+        robot.disconnect()
+
+        last = [math.degrees(m.send_mit.call_args.args[0]) for m in motors[:6]]
+        assert last[0] > -90.0 + 1.0
+        assert last[0] < 0.0  # stopped before reaching the rest pose
+        mock_motorbridge.Controller.from_dm_serial.return_value.disable_all.assert_called()
+
+    @pytest.mark.parametrize("speed", [0.0, -5.0, math.inf, math.nan])
+    def test_invalid_speeds_raise(self, mock_motorbridge: MagicMock, speed: float) -> None:
+        with pytest.raises(ValueError, match="approach_speed"):
+            _create_robot(mock_motorbridge, approach_speed=speed)
+        robot = _create_robot(mock_motorbridge)
+        robot.connect()
+        with pytest.raises(ValueError, match="speed must be a finite positive value"):
+            robot.park(speed=speed)

@@ -271,6 +271,10 @@ def test_rebot_b601_rs_payload_rejects_invalid_interface_names(interface: str) -
         {"gripper_mit_hold_torque_limit": 14.1},
         {"gripper_mit_kp": float("nan")},
         {"mit_kp": {"shoulder_pan": -1.0, "shoulder_lift": 1, "elbow_flex": 1, "wrist_flex": 1, "wrist_yaw": 1, "wrist_roll": 1}},
+        # RS-00 wrist motors cannot encode damping above 5 N·m·s/rad.
+        {"mit_kd": {"shoulder_pan": 3, "shoulder_lift": 10, "elbow_flex": 10, "wrist_flex": 6, "wrist_yaw": 4, "wrist_roll": 4}},
+        {"approach_speed": 0.0},
+        {"approach_speed": -2.0},
     ],
 )
 def test_rebot_b601_rs_payload_rejects_invalid_settings(overrides: dict[str, Any]) -> None:
@@ -405,3 +409,45 @@ async def test_rebot_calibration_releases_torque_then_sets_zero(robot_type: str)
 
     robot.disable_torque.assert_called_once_with()
     robot.set_zero_position.assert_called_once_with()
+
+
+def test_payloads_default_to_feedforward_and_safe_motion() -> None:
+    from physicalai_rebot_b601_plugin.studio_catalog import ReBotB601DMPayload, ReBotB601RSPayload
+
+    for payload in (ReBotB601RSPayload(), ReBotB601DMPayload(connection_string="/dev/ttyACM0")):
+        assert payload.gravity_compensation is True
+        assert payload.velocity_feedforward is True
+        assert payload.approach_speed == 30.0
+        assert payload.park_on_disconnect is True
+
+
+@pytest.mark.anyio
+async def test_builders_pass_motion_settings_to_the_drivers() -> None:
+    from physicalai.config import Config
+
+    from physicalai_rebot_b601_plugin.studio_catalog import (
+        ReBotB601DMPayload,
+        ReBotB601RSPayload,
+        _build_rebot_b601_dm_driver,
+        _build_rebot_b601_rs_driver,
+    )
+
+    settings = {
+        "gravity_compensation": False,
+        "velocity_feedforward": False,
+        "approach_speed": -1.0,
+        "park_on_disconnect": False,
+    }
+    rs = await _build_rebot_b601_rs_driver(
+        _StubRobot(ReBotB601RSPayload.model_validate(settings)),
+        cast(Any, _StubFactory(port=None)),
+    )
+    dm = await _build_rebot_b601_dm_driver(
+        _StubRobot(ReBotB601DMPayload.model_validate({"connection_string": "/dev/ttyACM0", **settings})),
+        cast(Any, _StubFactory()),
+    )
+
+    for driver in (rs, dm):
+        init_args = Config.from_instance(driver)["init_args"]
+        for key, value in settings.items():
+            assert init_args[key] == value
