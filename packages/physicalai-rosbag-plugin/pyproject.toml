@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling<1.30", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "physicalai-rosbag-plugin"
+dynamic = ["version"]
+description = "Convert ROS 2 recordings into Studio-compatible LeRobot v3 datasets"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+dependencies = [
+    "physicalai>=0.3.0,<1",
+    "rosbags>=0.11.9,<0.12",
+    "lerobot[dataset]==0.6.0",
+    "numpy>=1.24",
+    "opencv-python-headless>=4.10",
+    "pillow>=10",
+    "pydantic>=2.12",
+    "pyyaml>=6",
+    "loguru>=0.7",
+]
+
+[project.optional-dependencies]
+tests = ["pytest", "mcap>=1.2", "pyrefly==1.2.0"]
+
+[project.entry-points."physicalai.cli.subcommands"]
+rosbag = "physicalai_rosbag_plugin.cli:register"
+
+[tool.hatch.version]
+source = "vcs"
+tag-pattern = '^physicalai-rosbag-plugin-v(?P<version>\d+(?:\.\d+)*)$'
+raw-options = { search_parent_directories = true, git_describe_command = "git describe --dirty --tags --long --match physicalai-rosbag-plugin-v*", fallback_version = "0.1.0" }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/physicalai_rosbag_plugin"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/**", "tests/**", "examples/**", "README.md", "RESEARCH.md", "pyproject.toml"]
+
+[tool.hatch.build.targets.sdist.force-include]
+"../../LICENSE" = "LICENSE"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = ["--strict-markers", "-ra"]
+
+[tool.pyrefly]
+python-version = "3.12"
+project-includes = ["src"]
+search-path = ["src", "../../src"]
+ignore-missing-imports = ["*"]

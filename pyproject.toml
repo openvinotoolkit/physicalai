@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [tool.uv.workspace]
 members = ["packages/*"]
-exclude = ["packages/physicalai-lerobot-plugin"]
+exclude = ["packages/physicalai-lerobot-plugin", "packages/physicalai-rosbag-plugin"]
 
 [tool.uv.sources]
 physicalai = { workspace = true }
