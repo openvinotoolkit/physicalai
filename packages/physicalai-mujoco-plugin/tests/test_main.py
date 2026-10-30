@@ -9,6 +9,7 @@ import json
 import os
 import shlex
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -760,6 +761,7 @@ def _launch(  # noqa: PLR0913
     on_connect: Callable[[], None] | None = None,
     fetch: bool = False,
     stdout: io.StringIO | None = None,
+    serves: Callable[[dict, int], bool] | None = None,
 ) -> _Launch:
     """Run ``start`` with the owner mocked.
 
@@ -773,6 +775,8 @@ def _launch(  # noqa: PLR0913
         on_connect: Runs inside ``connect``, after the owner took its name.
         fetch: Run the real ``fetch_profile`` instead of a no-op.
         stdout: Where the events go (a new buffer by default).
+        serves: Whether the owner's HTTP server answers on a port, given the owner's ``init_args``
+            (every port by default).
     """
     args = cli._build_parser().parse_args(["start", "--name", "my-sim", *argv])
     launch = _Launch(stdout=stdout or io.StringIO(), connected=False, exit_code=None)
@@ -799,7 +803,13 @@ def _launch(  # noqa: PLR0913
         )
         stack.enter_context(patch.object(cli, "_spawned_owner", return_value=spawned))
         launch.http_json = stack.enter_context(
-            patch.object(cli, "_http_json", side_effect=lambda _host, _port, path: responses[path])
+            patch.object(
+                cli,
+                "_http_json",
+                side_effect=lambda _host, port, path: (
+                    responses[path] if serves is None or serves(launch.init_args, port) else None
+                ),
+            )
         )
         launch.wait = stack.enter_context(patch.object(cli, "_wait_for_owner_shutdown"))
         launch.http_stop = stack.enter_context(patch.object(cli, "_stop_owner_over_http", return_value=True))
@@ -869,6 +879,18 @@ class TestStatusJson:
         launch = _launch(["--no-gui"])
         assert launch.stdout.getvalue() == ""
         launch.http_json.assert_not_called()
+
+    @pytest.mark.parametrize(("argv", "says_how_to_stop"), [([], True), (["--status-json"], False)])
+    def test_a_simulation_run_by_hand_says_how_to_stop_it(self, argv: list[str], says_how_to_stop: bool) -> None:
+        from loguru import logger  # noqa: PLC0415
+
+        lines: list[str] = []
+        sink = logger.add(lines.append, format="{message}")
+        try:
+            _launch([*argv, "--no-gui"])
+        finally:
+            logger.remove(sink)
+        assert any("Press Ctrl+C to stop the simulation" in line for line in lines) is says_how_to_stop
 
     def test_without_http_there_are_no_streams_and_the_viewer_url_is_the_configured_one(self) -> None:
         launch = _launch(["--status-json", "--no-http", "--viser-port", "9191"])
@@ -1094,6 +1116,12 @@ class TestDownloadProgress:
         assert cached[:4] == PHASES
 
 
+def _unused_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 class TestPorts:
     """``--http-port 0`` / ``--viser-port 0`` pick free ports; ``--no-http`` is what disables HTTP (P4)."""
 
@@ -1131,6 +1159,48 @@ class TestPorts:
         with pytest.raises(SystemExit) as exit_info:
             cli._build_parser().parse_args(["start", flag, value])
         assert exit_info.value.code == 2
+
+    def test_fallback_keeps_a_free_port_and_reserves_another_for_a_race(self) -> None:
+        port = _unused_port()
+        launch = _launch(["--status-json", "--no-gui", "--http-port", str(port), "--http-port-fallback"])
+        assert launch.init_args["http_port"] == port
+        assert 0 < launch.init_args["http_fallback_port"] != port
+        assert launch.events[-1]["http_url"] == f"http://127.0.0.1:{port}"
+
+    def test_fallback_takes_a_free_port_when_the_port_is_taken(self) -> None:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as blocker:
+            blocker.bind(("127.0.0.1", 0))
+            blocker.listen(1)
+            taken = blocker.getsockname()[1]
+            launch = _launch(["--status-json", "--no-gui", "--http-port", str(taken), "--http-port-fallback"])
+        http_port = launch.init_args["http_port"]
+        assert 0 < http_port != taken
+        assert launch.events[-1]["http_url"] == f"http://127.0.0.1:{http_port}"
+
+    def test_without_fallback_a_fixed_port_is_kept_and_has_no_fallback(self) -> None:
+        init_args = _launch(["--http-port", "8123"]).init_args
+        assert (init_args["http_port"], init_args["http_fallback_port"]) == (8123, None)
+
+    def test_a_port_taken_after_the_check_is_served_on_the_fallback_and_reported(self) -> None:
+        """Another process took the port before the owner bound it: the owner serves on the fallback."""
+        port = _unused_port()
+        launch = _launch(
+            ["--status-json", "--no-gui", "--http-port", str(port), "--http-port-fallback"],
+            serves=lambda init_args, probed: probed == init_args["http_fallback_port"],
+        )
+        fallback = launch.init_args["http_fallback_port"]
+        assert launch.exit_code is None
+        assert launch.events[-1]["http_url"] == f"http://127.0.0.1:{fallback}"
+        launch.http_json.assert_any_call("127.0.0.1", fallback, "/health")
+
+    def test_bound_socket_reports_a_taken_port(self) -> None:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as blocker:
+            blocker.bind(("127.0.0.1", 0))
+            blocker.listen(1)
+            assert cli._bound_socket("127.0.0.1", blocker.getsockname()[1]) is None  # noqa: SLF001
+        held = cli._bound_socket("127.0.0.1", 0)  # noqa: SLF001
+        assert held is not None
+        held.close()
 
     @pytest.mark.parametrize(("url_host", "expected"), [("0.0.0.0", "127.0.0.1"), ("::", "[::1]"), ("::1", "[::1]")])  # noqa: S104
     def test_local_url_reaches_bind_all_hosts_on_loopback(self, url_host: str, expected: str) -> None:
