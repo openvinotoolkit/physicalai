@@ -22,14 +22,13 @@ from physicalai_mujoco_plugin import bucket_sort_demo as bd
 from physicalai_mujoco_plugin.robot import MuJoCoRobot
 
 TICK_S = 0.02
-WORST_TICK_S = 0.15
-"""The longest a control tick may take while the demonstrator plans.
+WORST_TICK_S = 1.0
+"""The longest a control tick may take while the demonstrator plans: a third of the 3 s after which
+Studio gives up on a leader that stops advancing.
 
-A tick takes about 25 ms on a laptop: 1 to 5 ms of physics, and while it plans up to
-:data:`~.bucket_sort_demo.PLAN_WAIT_S` (20 ms) waiting for the plan in a loop that runs faster than
-real time. 150 ms leaves room for a loaded CI machine yet stays far below the plans themselves (the
-reBot's first attempt takes 0.2 to 3 s, an FR3's 0.1 to 0.5 s) and below the 3 s after which
-Studio gives up on the leader."""
+A tick takes about 25 ms on a laptop, and up to about 200 ms on a loaded CI runner, where the planning
+thread competes for the GIL. A plan made inside the tick would take as long as the plan itself, so the
+test also checks the worst tick against the longest plan."""
 
 
 def _robot(profile: str) -> MuJoCoRobot:
@@ -108,9 +107,11 @@ def test_no_tick_waits_for_a_plan(profile: str, seeds: range, longest_plan_s: fl
                     longest, since = max(longest, time.perf_counter() - since), None
                 if robot._http_status()["episode"]["episode_count"] != count:
                     break
-        assert worst < WORST_TICK_S, f"a tick took {worst * 1000:.0f} ms (plans took up to {longest:.1f} s)"
-        # Planned inside a tick, the worst tick was the longest plan.
+        took = f"a tick took {worst * 1000:.0f} ms (plans took up to {longest:.1f} s)"
         assert longest > longest_plan_s, "the episodes did not plan as long as they should test"
+        assert worst < WORST_TICK_S, took
+        # Planned inside a tick, the worst tick would be the longest plan.
+        assert worst < longest / 2, took
     finally:
         robot.disconnect()
 
