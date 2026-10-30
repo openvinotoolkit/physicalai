@@ -150,9 +150,9 @@ class ConveyorAutomation:
         return self.autopilot.drives_arm or self._reset_pose is not None
 
     @property
-    def planning(self) -> bool:
-        """Whether the bucket_sort demonstrator plans on its own thread, which reads the model."""
-        return self._bucket_demo is not None and self._bucket_demo.planning
+    def planner_running(self) -> bool:
+        """Whether the bucket_sort demonstrator's planning thread runs, which reads the model."""
+        return self._bucket_demo is not None and self._bucket_demo.planner_running
 
     # ------------------------------------------------------------------
     # Scene lifecycle
@@ -339,6 +339,8 @@ class ConveyorAutomation:
             arm_targets: The arm's current actuator targets in radians, published as the
                 leader pose while the autopilot is off.
         """
+        if self._bucket_demo is not None:
+            self._bucket_demo.reap()  # a plan cancelled while the autopilot is off is never stepped
         conveyor = self._conveyor
         if conveyor is not None:
             status = conveyor.status()

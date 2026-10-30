@@ -207,6 +207,50 @@ def test_a_reset_discards_the_plan_in_flight(scene: MuJoCoRobot, monkeypatch: py
     release.set()
 
 
+def test_camera_edits_wait_for_a_plan_switched_off_only_until_it_stops(
+    scene: MuJoCoRobot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Model edits wait while the planner reads the model; the autopilot switched off, only until its thread stops.
+
+    Nothing steps the demonstrator once the autopilot is off, so the cancelled plan must not keep
+    blocking the overview switch and the scene XML camera edits for good.
+    """
+    demo = _demo(scene)
+    watcher = scene._watcher
+    assert watcher is not None
+    model, data = scene._sim.model, scene._sim.data
+    camera = model.camera("overview").id
+    shoulder = data.cam_xpos[camera].copy()
+    release = threading.Event()
+    _slow_planner(monkeypatch, demo, release)
+    scene._automation.set_autopilot("leader")
+    _until_planning(scene)
+    try:
+        assert scene._set_overview("front")
+        _tick(scene)
+        np.testing.assert_array_equal(data.cam_xpos[camera], shoulder)  # the planner reads the model: it waits
+        job = demo._job
+        scene._automation.set_autopilot("off")
+        job.thread.join(1.0)  # cancelled: it stops at its next checkpoint
+        assert not job.thread.is_alive()
+        for _ in range(3):
+            _tick(scene)
+        assert not np.allclose(data.cam_xpos[camera], shoulder), "the overview switch never applied"
+        applied = []
+        apply = watcher.apply
+        monkeypatch.setattr(watcher, "apply", lambda *args: applied.append(apply(*args)))
+        monkeypatch.setattr(watcher, "_snapshot", lambda: {"scene.xml": 1.0})  # a camera edit on disk
+        watcher._next_check = 0.0
+        _tick(scene)
+        assert applied, "the camera edit never applied"
+        assert not demo.planning and demo._job is None and demo.phase == "idle"
+    finally:
+        release.set()
+        monkeypatch.undo()
+        scene._set_overview("shoulder")
+        _tick(scene)
+
+
 def test_a_finished_plan_a_reset_overtook_is_dropped(scene: MuJoCoRobot, monkeypatch: pytest.MonkeyPatch) -> None:
     """A plan that finished while nothing collected it (the autopilot off) never runs."""
     demo = _demo(scene)

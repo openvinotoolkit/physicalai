@@ -2056,8 +2056,28 @@ class BucketSortDemonstrator:
 
     @property
     def planning(self) -> bool:
-        """Whether a planning thread runs (or ran, and its plan waits for the next tick)."""
-        return self._job is not None
+        """Whether a plan is in flight: its thread runs, or ran and the plan waits for the next tick.
+
+        A plan :meth:`reset` cancelled is not in flight.
+        """
+        job = self._job
+        return job is not None and not job.cancelled
+
+    @property
+    def planner_running(self) -> bool:
+        """Whether a planning thread still runs, and reads the model: a cancelled one until it stops."""
+        job = self._job
+        return job is not None and not job.done.is_set()
+
+    def reap(self) -> None:
+        """Collect a cancelled plan whose thread has stopped, and apply the reset that waited for it.
+
+        :meth:`step` collects plans too, but a cancelled one may never see another step (the
+        autopilot switched off): the control loop calls this every tick.
+        """
+        job = self._job
+        if job is not None and job.cancelled and job.done.is_set():
+            self._finish(job)
 
     @property
     def target(self) -> str | None:
@@ -2134,6 +2154,7 @@ class BucketSortDemonstrator:
         if job is not None:
             job.cancelled = True
             job.thread.join(timeout_s)
+            self.reap()
 
     def _reset_state(self) -> None:
         self._q = None
