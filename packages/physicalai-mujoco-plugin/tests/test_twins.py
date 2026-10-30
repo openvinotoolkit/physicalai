@@ -145,8 +145,8 @@ class TestProfiles:
         assert (REBOT_B601_GRIPPER_SCALE * 0.05, 0.0) == pytest.approx((lower, upper))
 
     def test_scenes_list_the_twins(self) -> None:
-        assert set(list_scenes_naming("trossen_wxai")) == {"single_pick_place"}
-        assert set(list_scenes_naming("rebot_b601")) == {"single_pick_place"}
+        assert set(list_scenes_naming("trossen_wxai")) == {"single_pick_place", "bucket_sort"}
+        assert set(list_scenes_naming("rebot_b601")) == {"single_pick_place", "bucket_sort"}
         for name in ("so101", "trossen_wxai", "rebot_b601"):
             assert supported_arm_counts(get_profile(name)) == (1, 2)
 

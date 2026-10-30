@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Save conveyor episodes into a Physical AI Studio dataset automatically.
+"""Save conveyor and bucket_sort episodes into a Physical AI Studio dataset automatically.
 
 Studio has no episode REST API; its recording view drives a runtime session
 over ``/api/projects/{project}/runtime/ws``. A second client that sends the
@@ -19,6 +19,15 @@ browser sends. This module is that client, plus the episode logic around it:
    discard it when it had mistakes and only perfect episodes are kept).
 5. Repeat from 2 until switched off or the episode budget is used up.
 
+The bucket_sort scene (`BucketSortRecorder`) runs the same cycle, also through
+Studio's teleoperation with the virtual leader: the autopilot runs in ``leader``
+mode, so Studio records the demonstrator's commands as the actions, including a
+gripper closed past the object, not just where the fingers stopped. It differs
+in two ways. It resets the scene before each episode, and starts the Studio
+episode with that episode's worded instruction as the task. And it ends the
+episode on the demonstrator's outcome: a success is saved (``keep: "perfect"``
+only when no attempt went wrong), a failure or a stall discarded.
+
 The client never sends ``disconnect``: that would stop Studio's session. It
 sends ``camera_ids: []`` so attaching never restarts the session for cameras.
 """
@@ -31,7 +40,7 @@ import queue
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 from urllib.parse import urlsplit
 
@@ -43,15 +52,39 @@ if TYPE_CHECKING:
 DEFAULT_STUDIO_URL = "http://127.0.0.1:7860"
 MAX_TASK_CHARS = 200
 MAX_EPISODES = 10_000
+MAX_RECOVERY_FRACTION = 0.5
+"""Largest share of bucket_sort episodes that start from a stuck pose."""
+DEFAULT_MAX_ATTEMPTS = 2
+"""The demonstrator's attempts per episode by default (``bucket_sort_demo.DEFAULT_MAX_ATTEMPTS``)."""
+MAX_ATTEMPTS = 5
 FOLLOWER_TYPES = frozenset({"MuJoCo_SO101_Follower"})
+"""Known follower types; any other ``MuJoCo_..._Follower`` (e.g. the bucket_sort FR3) matches too."""
 DEFAULT_TASK = "Sort the items: cracked or purple ones into reject, the others into the bin of their color."
 CONNECT_TIMEOUT_S = 30.0
 """Discovery (a few 3 s requests), the 5 s websocket open and Studio's first state all fit well inside."""
 START_TIMEOUT_S = 15.0
 SAVE_TIMEOUT_S = 120.0
+SUCCESS_HOLD_S = 1.0
+"""Simulated seconds a bucket_sort success must hold before the episode is saved: the object stays in
+its bucket, and the episode ends with the arm settling instead of on the tick the object landed."""
+SUCCESS_HOLD_TIMEOUT_S = 4.0
+"""Simulated seconds after the demonstrator's success the object may take to hold, then the episode is
+discarded; below the scene's 5 s success dwell, after which it starts the next layout."""
 
 KeepPolicy = Literal["all", "perfect"]
-RecorderPhase = Literal["off", "connecting", "waiting", "starting", "recording", "saving", "done", "stopped", "error"]
+RecorderPhase = Literal[
+    "off",
+    "connecting",
+    "waiting",
+    "resetting",
+    "positioning",
+    "starting",
+    "recording",
+    "saving",
+    "done",
+    "stopped",
+    "error",
+]
 
 
 class StudioError(RuntimeError):
@@ -105,6 +138,13 @@ def _get_json(base_url: str, path: str, timeout_s: float = 3.0) -> Any:  # noqa:
         raise StudioError(msg) from exc
 
 
+def _is_mujoco_follower(robot_type: object) -> bool:
+    """Return whether *robot_type* is a MuJoCo follower of the plugin's Studio catalog."""
+    return isinstance(robot_type, str) and (
+        robot_type in FOLLOWER_TYPES or (robot_type.startswith("MuJoCo_") and robot_type.endswith("_Follower"))
+    )
+
+
 @dataclass(frozen=True)
 class StudioTarget:
     """The Studio project, follower and leader of the live session to join."""
@@ -144,7 +184,7 @@ def discover_session(
         for robot in robots:
             session = sessions.get(str(robot.get("id")))
             payload = robot.get("payload") or {}
-            if session is None or robot.get("type") not in FOLLOWER_TYPES or payload.get("name") != owner_name:
+            if session is None or not _is_mujoco_follower(robot.get("type")) or payload.get("name") != owner_name:
                 continue
             leader_name = session.get("leader_name")
             leader_id = None
@@ -339,16 +379,20 @@ class StudioLink:
 
     def _pump(self, ws: Any) -> None:  # noqa: ANN401 - a websockets connection
         while not self._stop.is_set():
-            while True:
-                try:
-                    ws.send(json.dumps(self._outgoing.get_nowait()))
-                except queue.Empty:
-                    break
+            self._flush(ws)
             try:
                 raw = ws.recv(timeout=0.05)
             except TimeoutError:
                 continue
             self._handle(json.loads(raw))
+        self._flush(ws)  # a command queued just before close, such as the switch back to hold
+
+    def _flush(self, ws: Any) -> None:  # noqa: ANN401 - a websockets connection
+        while True:
+            try:
+                ws.send(json.dumps(self._outgoing.get_nowait()))
+            except queue.Empty:
+                return
 
     def _handle(self, message: Mapping[str, Any]) -> None:
         event = message.get("event")
@@ -376,13 +420,24 @@ class RecordingOptions:
     keep: KeepPolicy = "perfect"
     max_episodes: int = 0
     """Stop after this many saved episodes; ``0`` records until switched off."""
+    recovery_fraction: float = 0.0
+    """bucket_sort: the share of episodes that start from a stuck pose (0 to :data:`MAX_RECOVERY_FRACTION`)."""
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS
+    """bucket_sort: the demonstrator's attempts per episode, the retries included (1 to :data:`MAX_ATTEMPTS`)."""
 
     def __post_init__(self) -> None:
         """Reject values the HTTP layer would also reject.
 
         Raises:
-            ValueError: For an empty or overlong task, an unknown keep policy or a bad budget.
+            ValueError: For an empty or overlong task, an unknown keep policy, a bad budget, recovery
+                share or attempt count.
         """
+        if not 0.0 <= self.recovery_fraction <= MAX_RECOVERY_FRACTION:  # also rejects NaN
+            msg = f"recovery_fraction must be 0..{MAX_RECOVERY_FRACTION}"
+            raise ValueError(msg)
+        if not 1 <= self.max_attempts <= MAX_ATTEMPTS:
+            msg = f"max_attempts must be 1..{MAX_ATTEMPTS}"
+            raise ValueError(msg)
         if not self.task.strip() or len(self.task) > MAX_TASK_CHARS:
             msg = f"task must be 1..{MAX_TASK_CHARS} characters"
             raise ValueError(msg)
@@ -411,8 +466,8 @@ class _Counters:
     scores: list[dict[str, int]] = field(default_factory=list)
 
 
-class AutoRecorder:
-    """Turn conveyor episodes into Studio episodes, one tick at a time."""
+class _RecorderBase:
+    """The link, the options, the phase and the counters every scene's recorder shares."""
 
     def __init__(self, link_factory: Callable[[], StudioLinkLike], clock: Callable[[], float] = time.monotonic) -> None:
         """Use `link_factory` to open a link each time recording is switched on."""
@@ -452,13 +507,89 @@ class AutoRecorder:
         self._link.start()
         self._set_phase("connecting", "Looking for Studio's session...")
 
-    def disable(self, message: str = "") -> None:
-        """Stop recording; an episode Studio is still recording stays for the user to save or discard."""
+    def disable(self, message: str = "", *, discard: bool = False) -> None:
+        """Stop recording; an episode Studio is still recording stays for the user to save or discard.
+
+        Args:
+            message: Shown in the viewer and ``/health``.
+            discard: Discard the episode Studio records instead, when the scene it shows is gone.
+        """
+        link = self._link
+        if discard and link is not None and link.phase == "connected" and self._phase in {"starting", "recording"}:
+            link.send("discard_episode", request_id=uuid.uuid4().hex)  # sent before the link closes
+        self._close_link()
+        if self._phase not in {"done", "stopped", "error"} or message:
+            self._set_phase("off", message)
+
+    def status(self) -> dict[str, Any]:
+        """Return a JSON-friendly snapshot for ``/health`` and the viewer."""
+        link = self._link
+        target = link.target if link is not None else None
+        return {
+            "phase": self._phase,
+            "message": self._message,
+            "task": self._options.task,
+            "keep": self._options.keep,
+            "max_episodes": self._options.max_episodes,
+            "recovery_fraction": self._options.recovery_fraction,
+            "max_attempts": self._options.max_attempts,
+            "saved": self._counters.saved,
+            "discarded": self._counters.discarded,
+            "follower": target.follower_name if target is not None else None,
+            "leader": target.leader_name if target is not None else None,
+        }
+
+    # -- helpers --------------------------------------------------------
+
+    def _set_phase(self, phase: RecorderPhase, message: str) -> None:
+        self._phase, self._message, self._since = phase, message, self._clock()
+
+    def _finish(self, phase: RecorderPhase, message: str) -> None:
+        logger.info("Studio recording {}: {}", phase, message)
+        self._close_link()
+        self._set_phase(phase, message)
+
+    def _close_link(self) -> None:
         if self._link is not None:
             self._link.close()
         self._link = None
-        if self._phase not in {"done", "stopped", "error"} or message:
-            self._set_phase("off", message)
+
+    def _check_save(self, link: StudioLinkLike) -> Literal["pending", "ended", "next"]:
+        """Count Studio's answer to the save or discard in flight.
+
+        Returns:
+            ``pending`` while Studio has not answered, ``ended`` once the run stopped (an error or
+            the episode budget used up), ``next`` to start the next episode.
+        """
+        ack = link.take_ack(self._request_id or "")
+        if ack is None:
+            if self._clock() - self._since > SAVE_TIMEOUT_S:
+                self._finish("error", "Studio did not confirm saving the episode.")
+                return "ended"
+            return "pending"
+        if not ack.get("ok"):
+            self._finish("error", f"Studio could not save the episode: {ack.get('error') or 'unknown error'}")
+            return "ended"
+        if self._pending_keep:
+            self._counters.saved += 1
+        else:
+            self._counters.discarded += 1
+        budget = self._options.max_episodes
+        if budget and self._counters.saved >= budget:
+            self._finish("done", f"Recorded {self._counters.saved} episodes.")
+            return "ended"
+        return "next"
+
+    def _send_end(self, link: StudioLinkLike, *, keep: bool, message: str) -> None:
+        """Ask Studio to save (`keep`) or discard the episode it records, and wait for its answer."""
+        self._request_id = uuid.uuid4().hex
+        self._pending_keep = keep
+        link.send("save_episode" if keep else "discard_episode", request_id=self._request_id)
+        self._set_phase("saving", message)
+
+
+class AutoRecorder(_RecorderBase):
+    """Turn conveyor episodes into Studio episodes, one tick at a time."""
 
     def restart_episode(self, reason: str) -> None:
         """Discard the Studio episode being recorded, because the scene jumped (a reset or a reload).
@@ -505,22 +636,6 @@ class AutoRecorder:
             "saving": self._update_saving,
         }[self._phase]
         return handler(link, state, episode_count, last_episode)
-
-    def status(self) -> dict[str, Any]:
-        """Return a JSON-friendly snapshot for ``/health`` and the viewer."""
-        link = self._link
-        target = link.target if link is not None else None
-        return {
-            "phase": self._phase,
-            "message": self._message,
-            "task": self._options.task,
-            "keep": self._options.keep,
-            "max_episodes": self._options.max_episodes,
-            "saved": self._counters.saved,
-            "discarded": self._counters.discarded,
-            "follower": target.follower_name if target is not None else None,
-            "leader": target.leader_name if target is not None else None,
-        }
 
     # -- phases ---------------------------------------------------------
 
@@ -573,34 +688,301 @@ class AutoRecorder:
     def _update_saving(
         self, link: StudioLinkLike, _state: Mapping[str, Any], _count: int, _last: Mapping[str, int] | None
     ) -> RecorderDirective:
-        ack = link.take_ack(self._request_id or "")
-        if ack is None:
-            if self._clock() - self._since > SAVE_TIMEOUT_S:
-                self._finish("error", "Studio did not confirm saving the episode.")
-                return RecorderDirective()
-            return RecorderDirective(hold_feed=True)
-        if not ack.get("ok"):
-            self._finish("error", f"Studio could not save the episode: {ack.get('error') or 'unknown error'}")
+        result = self._check_save(link)
+        if result == "ended":
             return RecorderDirective()
-        if self._pending_keep:
-            self._counters.saved += 1
-        else:
-            self._counters.discarded += 1
-        budget = self._options.max_episodes
-        if budget and self._counters.saved >= budget:
-            self._finish("done", f"Recorded {self._counters.saved} episodes.")
-            return RecorderDirective()
-        self._set_phase("waiting", "")
+        if result == "next":
+            self._set_phase("waiting", "")
         return RecorderDirective(hold_feed=True)
 
-    # -- helpers --------------------------------------------------------
 
-    def _set_phase(self, phase: RecorderPhase, message: str) -> None:
-        self._phase, self._message, self._since = phase, message, self._clock()
+# ----------------------------------------------------------------------
+# bucket_sort: the autopilot leads Studio's teleoperation
+# ----------------------------------------------------------------------
 
-    def _finish(self, phase: RecorderPhase, message: str) -> None:
-        logger.info("Studio recording {}: {}", phase, message)
-        if self._link is not None:
-            self._link.close()
-        self._link = None
-        self._set_phase(phase, message)
+
+@dataclass(frozen=True)
+class BucketSortProgress:
+    """What the bucket_sort recorder reads from the scene each tick."""
+
+    generation: tuple[int, int]
+    """Identifies the scene layout: the task object and its reset count. A change means a reset."""
+    instruction: str | None
+    """The current episode's worded instruction, the Studio episode's task."""
+    leading: bool
+    """Whether the autopilot runs as Studio's virtual leader (mode ``leader``)."""
+    outcome: str | None = None
+    """The demonstrator's episode outcome: ``running``, ``success``, ``failed``, ``stalled`` or ``None``."""
+    clean: bool | None = None
+    """Whether no attempt of the episode went wrong."""
+    placed: bool = False
+    """Whether the task's success holds this tick (the named object resting in the named bucket)."""
+    sim_time: float = 0.0
+    """Simulated time in seconds, which the success hold counts in (the recorded episode's clock)."""
+    stuck_start: StuckStartState | None = None
+    """How the move to a stuck start goes, after :attr:`BucketSortDirective.stuck_start`."""
+
+
+StuckStartState = Literal["planning", "moving", "ready", "disturbed", "unavailable"]
+"""``planning`` the move (on its own thread; not counted against the timeout); ``moving`` to the stuck pose;
+``ready`` there; ``disturbed``: the move moved an object or a bucket
+more than 5 mm; ``unavailable``: no stuck pose for this layout (the arm did not move)."""
+
+
+@dataclass(frozen=True)
+class BucketSortDirective:
+    """What the bucket_sort scene must do this tick."""
+
+    hold_arm: bool = False
+    """Keep the autopilot paused (not stepped), so the arm waits for Studio."""
+    reset_scene: bool = False
+    """Reset the scene now, for a fresh episode (one tick only)."""
+    stuck_start: bool = False
+    """Move the arm to a stuck pose now, before the episode starts (one tick only; :class:`BucketSortProgress`)."""
+    abort_stuck_start: bool = False
+    """Stop the move to a stuck pose now and give the arm back to client actions (one tick only)."""
+
+
+def _studio_ready(state: Mapping[str, Any]) -> bool:
+    """Return whether Studio can start a bucket_sort episode: a dataset open, teleoperating, not recording."""
+    return (
+        bool(state.get("dataset_loaded")) and not state.get("is_recording") and state.get("follower_source") == "teleop"
+    )
+
+
+class BucketSortRecorder(_RecorderBase):
+    """Turn bucket_sort episodes that the autopilot leads into Studio teleoperation episodes.
+
+    Each Studio episode starts from a scene reset, with the episode's instruction as its task,
+    and ends on the demonstrator's outcome. The arm waits (the autopilot is not stepped) whenever
+    no Studio episode is recording, so every episode is recorded from its first move.
+
+    With ``recovery_fraction``, that share of episodes starts from a stuck pose: after the reset,
+    the scene moves the arm there (not recorded), and the episode starts once it is there. A move
+    that disturbed the layout resets the scene again for a normal start.
+    """
+
+    def __init__(
+        self,
+        link_factory: Callable[[], StudioLinkLike],
+        clock: Callable[[], float] = time.monotonic,
+        chance: Callable[[], float] | None = None,
+    ) -> None:
+        """Use `link_factory` to open a link each time recording is switched on.
+
+        Args:
+            link_factory: Opens a link to Studio.
+            clock: Wall-clock seconds, for the timeouts.
+            chance: Draws a number in [0, 1) per episode; below ``recovery_fraction`` the episode
+                starts stuck. ``None`` uses a fresh generator.
+        """
+        super().__init__(link_factory, clock)
+        if chance is None:
+            import numpy as np  # noqa: PLC0415
+
+            chance = np.random.default_rng().random  # which episodes start stuck, not a secret
+        self._chance = chance
+        self._normal_start = False
+        """The next start is normal: the stuck start of this episode disturbed the layout."""
+        self._stuck_starts = 0
+        self._task: str | None = None
+        self._generation: tuple[int, int] | None = None
+        self._success_at: float | None = None
+        """When the demonstrator reported this episode's success."""
+        self._placed_since: float | None = None
+        """Since when the success holds without a break."""
+
+    def enable(self, options: RecordingOptions) -> None:
+        """Start recording episodes with `options` (its task is ignored: each instruction is the task)."""
+        super().enable(options)
+        self._task = None
+        self._generation = None
+        self._normal_start = False
+        self._stuck_starts = 0
+
+    def status(self) -> dict[str, Any]:
+        """Return a JSON-friendly snapshot for ``/health`` and the viewer; ``task`` is the episode's instruction."""
+        return {
+            **super().status(),
+            "task": self._task,
+            "task_source": "instruction",
+            "stuck_starts": self._stuck_starts,
+        }
+
+    def update(self, progress: BucketSortProgress) -> BucketSortDirective:
+        """Advance the cycle for one simulation tick.
+
+        Returns:
+            Whether to keep the arm waiting and whether to reset the scene now.
+        """
+        link = self._link
+        if link is None or not self.active:
+            return BucketSortDirective()
+        if link.phase in {"error", "closed"}:
+            self._finish("error", link.error or "Studio closed the connection.")
+            return BucketSortDirective()
+        state = link.state
+        if self._phase == "connecting":
+            return self._update_connecting(link)
+        if state is None:
+            return BucketSortDirective(hold_arm=True)
+        handler = {
+            "waiting": self._update_waiting,
+            "resetting": self._update_resetting,
+            "positioning": self._update_positioning,
+            "starting": self._update_starting,
+            "recording": self._update_recording,
+            "saving": self._update_saving,
+        }[self._phase]
+        return handler(link, state, progress)
+
+    # -- phases ---------------------------------------------------------
+
+    def _update_waiting(
+        self, _link: StudioLinkLike, state: Mapping[str, Any], progress: BucketSortProgress
+    ) -> BucketSortDirective:
+        if not state.get("dataset_loaded"):
+            self._message = "Waiting for Studio: open a dataset in the recording view."
+        elif state.get("is_recording"):
+            self._message = "Waiting for Studio: save or discard the episode it is recording."
+        elif not progress.leading:
+            self._message = "Waiting for the autopilot: set it to 'Virtual leader (Studio teleop)'."
+        elif state.get("follower_source") != "teleop":
+            self._message = "Waiting for Studio: start teleoperation with the MuJoCo virtual leader."
+        else:
+            self._generation = progress.generation
+            self._set_phase("resetting", "Resetting the scene for a new episode...")
+            return BucketSortDirective(hold_arm=True, reset_scene=True)
+        return BucketSortDirective(hold_arm=True)
+
+    def _update_connecting(self, link: StudioLinkLike) -> BucketSortDirective:
+        if link.phase == "connected" and link.state is not None:
+            self._set_phase("waiting", "")
+        elif self._clock() - self._since > CONNECT_TIMEOUT_S:
+            reason = "sent no session state" if link.phase == "connected" else "did not answer in time"
+            self._finish("error", f"Studio {reason}; is the robot session running?")
+            return BucketSortDirective()
+        return BucketSortDirective(hold_arm=True)
+
+    def _update_resetting(
+        self, link: StudioLinkLike, _state: Mapping[str, Any], progress: BucketSortProgress
+    ) -> BucketSortDirective:
+        if progress.generation == self._generation or not progress.instruction:
+            if self._clock() - self._since > START_TIMEOUT_S:
+                self._finish("error", "The scene did not reset for a new episode.")
+                return BucketSortDirective()
+            return BucketSortDirective(hold_arm=True)
+        self._generation = progress.generation
+        fraction = self._options.recovery_fraction
+        if not self._normal_start and fraction > 0.0 and self._chance() < fraction:
+            self._set_phase("positioning", "Moving the arm to a stuck pose for a recovery episode...")
+            return BucketSortDirective(hold_arm=True, stuck_start=True)
+        self._normal_start = False
+        return self._start(link, progress)
+
+    def _start(self, link: StudioLinkLike, progress: BucketSortProgress) -> BucketSortDirective:
+        self._task = (progress.instruction or "")[:MAX_TASK_CHARS]
+        link.send("start_recording", {"task": self._task})
+        self._set_phase("starting", "Starting a Studio episode...")
+        return BucketSortDirective(hold_arm=True)
+
+    def _update_positioning(
+        self, link: StudioLinkLike, state: Mapping[str, Any], progress: BucketSortProgress
+    ) -> BucketSortDirective:
+        """Wait for the move to the stuck pose; start there, or start normally.
+
+        The move stops, and the cycle waits again, as soon as the episode could not start: the
+        autopilot no longer leads, or Studio no longer teleoperates, has no dataset or records.
+
+        Returns:
+            Hold the arm; reset the scene again when the move disturbed the layout or timed out;
+            abort the move when the episode could not start.
+        """
+        if not progress.leading or not _studio_ready(state):
+            self._set_phase("waiting", "")
+            return replace(self._update_waiting(link, state, progress), abort_stuck_start=True)
+        if progress.generation != self._generation:
+            self._set_phase("resetting", "The scene was reset. Resetting it again for a new episode...")
+            return BucketSortDirective(hold_arm=True, reset_scene=True)
+        if progress.stuck_start in {"ready", "unavailable"}:
+            # Unavailable: the arm did not move, so the episode starts normally as the scene stands.
+            self._stuck_starts += progress.stuck_start == "ready"
+            return self._start(link, progress)
+        if progress.stuck_start == "planning":
+            # Planning takes up to seconds on its own thread: the timeout counts from when it is done.
+            self._since = self._clock()
+            return BucketSortDirective(hold_arm=True)
+        if progress.stuck_start == "disturbed":
+            # A start with something knocked out of place is not a clean stuck state: lay it out anew.
+            message = "The move to the stuck pose disturbed the layout. Resetting the scene..."
+        elif self._clock() - self._since > START_TIMEOUT_S:
+            message = "The arm did not reach the stuck pose. Resetting the scene..."
+        else:
+            return BucketSortDirective(hold_arm=True)
+        self._normal_start = True
+        self._set_phase("resetting", message)
+        return BucketSortDirective(hold_arm=True, reset_scene=True)
+
+    def _update_starting(
+        self, _link: StudioLinkLike, state: Mapping[str, Any], _progress: BucketSortProgress
+    ) -> BucketSortDirective:
+        if state.get("is_recording"):
+            self._set_phase("recording", f"Recording episode {self._counters.saved + 1}: {self._task}")
+            self._success_at = self._placed_since = None
+            return BucketSortDirective()
+        if self._clock() - self._since > START_TIMEOUT_S:
+            self._finish("error", "Studio did not start recording; is a dataset open?")
+            return BucketSortDirective()
+        return BucketSortDirective(hold_arm=True)
+
+    def _update_recording(
+        self, link: StudioLinkLike, state: Mapping[str, Any], progress: BucketSortProgress
+    ) -> BucketSortDirective:
+        if not state.get("is_recording"):
+            self._finish("stopped", "Studio stopped the recording, so automatic recording stopped too.")
+            return BucketSortDirective()
+        if state.get("follower_source") != "teleop":
+            self._finish("stopped", "Studio's follower left teleoperation, so automatic recording stopped too.")
+            return BucketSortDirective()
+        if progress.generation != self._generation:
+            self._send_end(link, keep=False, message="The scene was reset. Discarding the episode in progress...")
+        elif not progress.leading:
+            self._send_end(link, keep=False, message="The autopilot stopped leading. Discarding the episode...")
+        elif progress.outcome == "success":
+            return self._hold_success(link, progress)
+        elif progress.outcome in {"failed", "stalled"}:
+            self._send_end(link, keep=False, message=f"Discarding a {progress.outcome} episode...")
+        else:
+            return BucketSortDirective()
+        return BucketSortDirective(hold_arm=True)
+
+    def _hold_success(self, link: StudioLinkLike, progress: BucketSortProgress) -> BucketSortDirective:
+        """End a success once it has held for `SUCCESS_HOLD_S`; the arm keeps moving meanwhile.
+
+        Returns:
+            Hold the arm once the episode ends, else let it move.
+        """
+        now = progress.sim_time
+        if self._success_at is None:
+            self._success_at = now
+        if not progress.placed:
+            self._placed_since = None
+        elif self._placed_since is None:
+            self._placed_since = now
+        if self._placed_since is not None and now - self._placed_since >= SUCCESS_HOLD_S:
+            keep = self._options.keep == "all" or progress.clean is True
+            self._send_end(
+                link, keep=keep, message="Saving the episode..." if keep else "Discarding a success with a retry..."
+            )
+        elif now - self._success_at > SUCCESS_HOLD_TIMEOUT_S:
+            self._send_end(link, keep=False, message="The object did not stay in its bucket. Discarding the episode...")
+        else:
+            return BucketSortDirective()
+        return BucketSortDirective(hold_arm=True)
+
+    def _update_saving(
+        self, link: StudioLinkLike, _state: Mapping[str, Any], _progress: BucketSortProgress
+    ) -> BucketSortDirective:
+        if self._check_save(link) == "next":
+            self._set_phase("waiting", "")
+        return BucketSortDirective(hold_arm=self.active)

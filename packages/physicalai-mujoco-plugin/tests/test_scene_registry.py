@@ -131,7 +131,7 @@ class TestArmCompatibility:
 
     def test_every_tabletop_scene_runs_one_or_two_arms(self) -> None:
         single, bimanual = list_scenes_for_arms(1), list_scenes_for_arms(2)
-        # Floor scenes spawn floating-base robots, never SO-101 arms; bucket_sort is for one Franka FR3.
+        # Floor scenes spawn floating-base robots, never SO-101 arms; bucket_sort is for Franka arms.
         assert set(single) == set(bimanual) == set(list_scenes()) - {"floor_flat", "bucket_sort"}
         assert get_scene("floor_flat").arm_counts == (1,)
         assert list_scenes_for_arms(3) == {}

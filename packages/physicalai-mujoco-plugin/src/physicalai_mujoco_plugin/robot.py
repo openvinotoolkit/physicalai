@@ -109,6 +109,7 @@ class MuJoCoRobot(OperatorControls):
         seed: int | None = None,
         exit_with_pid: int | None = None,
         grip_force_n: float | None = None,
+        http_fallback_port: int | None = None,
     ) -> None:
         """Create a disconnected simulation.
 
@@ -147,6 +148,9 @@ class MuJoCoRobot(OperatorControls):
                 ``physicalai-mujoco start --exit-with-parent`` passes its own PID.
             grip_force_n: The Franka Hand's grasp force per finger in newtons, above 0 and at most
                 140; ``None`` keeps the real hand's 70 N. Only the Franka profiles have the hand.
+            http_fallback_port: Port for the HTTP server when ``http_port`` is taken, so the server
+                still starts when another process took ``http_port`` after it was found free;
+                ``None`` runs without the server then.
 
         Raises:
             ValueError: If ``unit``, ``torque_mode``, ``rate_hz``, ``substeps``, ``overview``,
@@ -179,7 +183,7 @@ class MuJoCoRobot(OperatorControls):
             "overview": overview, "enable_viewer": enable_viewer, "viser_host": viser_host, "viser_port": viser_port,
             "viewer_theme": viewer_theme, "http_host": http_host, "http_port": http_port, "owner_name": owner_name,
             "studio_url": studio_url, "seed": seed, "exit_with_pid": exit_with_pid,
-            "grip_force_n": grip_force_n,
+            "grip_force_n": grip_force_n, "http_fallback_port": http_fallback_port,
         }  # fmt: skip
         """Constructor arguments, for pickling (``__getstate__``)."""
         self._profile: RobotProfile = get_profile(profile)
@@ -199,6 +203,7 @@ class MuJoCoRobot(OperatorControls):
         self._viser_host, self._viser_port = viser_host, viser_port
         self._viewer_theme: ViewerTheme = viewer_theme
         self._http_host, self._http_port = http_host, http_port
+        self._http_fallback_port = http_fallback_port
         self._owner_name = owner_name
         self._studio_url = studio_url
         self._seed = seed
@@ -426,7 +431,7 @@ class MuJoCoRobot(OperatorControls):
             return
         if self._automation is not None and self._automation.drives_arm:
             if not self._ignored_action_logged:
-                logger.info("The autopilot drives the arm; ignoring actions until it is switched off")
+                logger.info("The autopilot drives the arm, or it waits at its reset pose; ignoring actions")
                 self._ignored_action_logged = True
             return
         self._ignored_action_logged = False
@@ -749,7 +754,7 @@ class MuJoCoRobot(OperatorControls):
             if self._episode_auto_reset is not None:
                 self._episode_auto_reset.update(model, data)
             if self._automation.take_reset_request():  # type: ignore[union-attr]
-                logger.info("The autopilot gave up on the episode; resetting the scene")
+                logger.info("Resetting the scene for the autopilot or for Studio recording")
                 self._reset()
             self._objects.apply_held(model, data)
         self._objects.publish(data)
@@ -777,6 +782,8 @@ class MuJoCoRobot(OperatorControls):
         # The native viewer's render thread waits on the viewer lock meanwhile.
         # A retry only checks whether the thread has finished, so a stuck render cannot stall
         # every tick.
+        if self._automation is not None and self._automation.planner_running:
+            return  # the bucket_sort planner reads the model on its own thread: the edit stays pending
         restart = self._cameras.on_thread
         timeout_s = _EDIT_RETRY_STOP_TIMEOUT_S if self._scene_edit_deferred else _CAMERA_STOP_TIMEOUT_S
         if restart and not self._cameras.stop(timeout_s):

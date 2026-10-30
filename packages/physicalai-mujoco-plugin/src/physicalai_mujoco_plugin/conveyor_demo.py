@@ -240,6 +240,22 @@ class ConveyorDemonstrator:
         self._plan = _Plan()
         self._q = None
 
+    def status(self) -> dict[str, object]:  # noqa: PLR6301 - part of the Demonstrator interface
+        """Return no extra status fields: the conveyor reports its score itself.
+
+        Returns:
+            An empty dict.
+        """
+        return {}
+
+    def take_reset_request(self) -> bool:  # noqa: PLR6301 - part of the Demonstrator interface
+        """Return ``False``: the conveyor keeps feeding items, so a missed pick needs no reset.
+
+        Returns:
+            Always ``False``.
+        """
+        return False
+
     # ------------------------------------------------------------------
     # Grasp geometry
     # ------------------------------------------------------------------

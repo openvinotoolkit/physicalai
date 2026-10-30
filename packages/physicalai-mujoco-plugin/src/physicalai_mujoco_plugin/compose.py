@@ -121,6 +121,8 @@ class SceneLayout:
     mounts: tuple[tuple[str, MountPose], ...] | None = None
     """The robot mounts by prefix, replacing the scene's ``robot_mount`` frames after scaling, for an arm
     count the scene file does not lay out; ``None`` keeps the scene's frames."""
+    floor_depth: float = 0.0
+    """How far below the robot mounts the floor is, for a robot's stand (``RobotProfile.stand``)."""
 
 
 @dataclass(frozen=True)
@@ -304,7 +306,9 @@ def _option_fields(option: object) -> tuple[str, ...]:
     )
 
 
-def attach_robot(scene: mujoco.MjSpec, profile: RobotProfile, prefix: str, kind: AnchorKind = "mount") -> None:
+def attach_robot(
+    scene: mujoco.MjSpec, profile: RobotProfile, prefix: str, kind: AnchorKind = "mount", floor_depth: float = 0.0
+) -> None:
     """Attach a fresh copy of the profile's robot at the scene frame ``{prefix}robot_mount`` or ``robot_spawn``.
 
     The scene is the single source of physics options (``<option>``): MuJoCo keeps the parent's
@@ -318,6 +322,8 @@ def attach_robot(scene: mujoco.MjSpec, profile: RobotProfile, prefix: str, kind:
     body moves to that pose before compiling, so ``qpos0`` is the start pose and the base-hold weld
     added here takes it as its reference (SCN-8). The hold always lasts until the first action;
     there is no permanent or disabled hold.
+
+    A robot with a stand (``RobotProfile.stand``) gets it lowered by *floor_depth*, onto the floor.
 
     Raises:
         ValueError: If the anchor does not fit the robot's base: a floating base at a mount frame,
@@ -348,6 +354,9 @@ def attach_robot(scene: mujoco.MjSpec, profile: RobotProfile, prefix: str, kind:
         logger.debug("{} options overridden by the scene: {}", profile.name, ", ".join(overridden))
     for key in list(robot.keys):
         robot.delete(key)
+    if profile.stand is not None and floor_depth:
+        stand = robot.body(profile.stand)
+        stand.pos = [*stand.pos[:2], float(stand.pos[2]) - floor_depth]
     if kind == "mount":
         scene.attach(robot, frame=scene.frame(f"{prefix}{ROBOT_MOUNT_FRAME}"), prefix=prefix)
         return
@@ -465,8 +474,9 @@ def _compose(xml_path: str | Path, profile: RobotProfile, scene_layout: SceneLay
         apply_layout(scene, scene_layout)
     anchors = scene_anchors(scene)
     if anchors:
+        floor_depth = scene_layout.floor_depth if scene_layout is not None else 0.0
         for prefix, kind in anchors:
-            attach_robot(scene, profile, prefix, kind)
+            attach_robot(scene, profile, prefix, kind, floor_depth)
         check_camera_names(scene, xml_path)
         model = scene.compile()
         layout = robot_layout(profile)

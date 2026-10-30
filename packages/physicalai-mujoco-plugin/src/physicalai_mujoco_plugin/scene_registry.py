@@ -16,8 +16,15 @@ import numpy as np
 
 from physicalai_mujoco_plugin._urdf import get_urdf_path
 from physicalai_mujoco_plugin.bucket_sort import BUCKET_JOINTS as BUCKET_SORT_BUCKET_JOINTS
+from physicalai_mujoco_plugin.bucket_sort import DEFAULT_LAYOUT, BucketSortTask, TaskLayout
 from physicalai_mujoco_plugin.bucket_sort import OBJECTS as BUCKET_SORT_OBJECTS
-from physicalai_mujoco_plugin.bucket_sort import BucketSortTask
+from physicalai_mujoco_plugin.bucket_sort_arms import (
+    BUCKET_SORT_ARMS,
+    SIX_JOINT_LAYOUT,
+    WXAI_PAIR_LAYOUT,
+    WXAI_PAIR_SEPARATION,
+    bucket_sort_home,
+)
 from physicalai_mujoco_plugin.compose import (
     MountPose,
     OverviewRig,
@@ -149,6 +156,8 @@ class SceneConfig:
     arm_counts: tuple[int, ...] = (1, 2)
     """Arm counts the scene supports. The file's anchor frames lay out ``written_arms``; another count
     takes its ``mounts``, else two arms are derived from the file's single mount (``two_arm_style``)."""
+    profile_arm_counts: tuple[tuple[str, tuple[int, ...]], ...] = ()
+    """Per profile: the arm counts that replace ``arm_counts`` (:meth:`arm_counts_for`)."""
     two_arm_style: TwoArmStyle = "side_by_side"
     """How two arms stand when derived from the single mount, which must be at the origin facing +x.
 
@@ -167,6 +176,13 @@ class SceneConfig:
     derived two-arm layout. Prefixes follow :func:`arm_prefixes`."""
     home_qpos: tuple[tuple[str, float], ...] = ()
     """Home joint positions of each arm in radians, without the arm's prefix; unlisted joints use the model default."""
+    profile_home_qpos: tuple[tuple[str, tuple[tuple[str, float], ...]], ...] = ()
+    """Per profile: home joint positions that replace ``home_qpos``, for arms with other joint names."""
+    two_arm_home_qpos: tuple[tuple[str, tuple[tuple[str, float], ...]], ...] = ()
+    """Per profile: both arms' home with two of them, by full (prefixed) name, where they differ."""
+    profile_task_layouts: tuple[tuple[str, int, TaskLayout], ...] = ()
+    """bucket_sort, per profile and arm count: where the buckets and objects stand
+    (:class:`~.bucket_sort.TaskLayout`), for an arm that reaches less far than the Franka arms."""
     auto_reset_on_fall: bool = False
     """Reset when a floating base has fallen (DRV-9); off so a policy can see its fall."""
     layout: Literal["fixed", "reach"] = "fixed"
@@ -179,15 +195,37 @@ class SceneConfig:
     profile_spawn_centers: tuple[tuple[str, tuple[float, float]], ...] = ()
     """Per profile: a spawn centre that replaces ``spawn_center`` before scaling, for robots whose
     arms are not at the mount (ALOHA's two arms face each other across it)."""
+    two_arm_overview_rigs: tuple[tuple[str, OverviewRig], ...] = ()
+    """Per profile: the overview rig's pose with two arms, where it differs from ``profile_overview_rigs``."""
     profile_overview_rigs: tuple[tuple[str, OverviewRig], ...] = ()
     """Per profile: the overview rig's pose after scaling, for arms whose home pose the scaled
     camera does not frame (an elbow folded behind the base, ALOHA's second arm)."""
     front_view: FrontView | None = None
     """The ``front`` overview style's camera placement; ``None``: the scene offers only its own (``shoulder``)."""
+    floor_depth: float = 0.0
+    """How far the floor lies below the robot mount, in metres: 0 when the robot stands on the floor,
+    the table's height when it stands on a table. A robot's stand (the Duo's column) rests on the floor."""
     profile_front_overrides: tuple[tuple[str, FrontOverride], ...] = ()
     """Per profile: changes to the derived ``front`` camera pose (:class:`FrontOverride`)."""
     viewer_view: ViewerView | None = None
     """The browser viewer's starting view; ``None``: mjviser's default angle on the whole model."""
+
+    def arm_counts_for(self, profile_name: str) -> tuple[int, ...]:
+        """Return the arm counts the scene runs *profile_name* with: ``profile_arm_counts``, else ``arm_counts``.
+
+        Returns:
+            The counts.
+        """
+        return dict(self.profile_arm_counts).get(profile_name, self.arm_counts)
+
+    def task_layout(self, profile: RobotProfile, arms: int = 1) -> TaskLayout:
+        """Return where *arms* arms of *profile* get their buckets and objects (bucket_sort).
+
+        Returns:
+            The profile's :class:`~.bucket_sort.TaskLayout`, else the default (the Franka arms').
+        """
+        layouts = {(name, count): layout for name, count, layout in self.profile_task_layouts}
+        return layouts.get((profile.name, arms), DEFAULT_LAYOUT)
 
     @property
     def scene_xml_path(self) -> Path:
@@ -256,9 +294,12 @@ class SceneConfig:
         else:
             # One rig per profile frames either arm count (tests/test_compose.py checks both).
             rig = dict(self.profile_overview_rigs).get(profile.name)
-        if scale == 1.0 and rig is None and mounts is None:  # noqa: RUF069 - layout_scale returns exactly 1.0 for the SO-101
+            if arms == 2:  # noqa: PLR2004
+                rig = dict(self.two_arm_overview_rigs).get(profile.name, rig)
+        floor_depth = self.floor_depth if profile.stand is not None else 0.0
+        if scale == 1.0 and rig is None and mounts is None and not floor_depth:  # noqa: RUF069 - layout_scale returns exactly 1.0 for the SO-101
             return None
-        return SceneLayout(scale=scale, overview_rig=rig, mounts=mounts)
+        return SceneLayout(scale=scale, overview_rig=rig, mounts=mounts, floor_depth=floor_depth)
 
     def front_overview_rig(
         self,
@@ -363,13 +404,18 @@ class SceneConfig:
             spawn_max_r=self.spawn_max_r * scale,
         )
 
-    def home_pose(self, arms: int = 1) -> tuple[tuple[str, float], ...]:
-        """Return the scene's home pose for *arms* arms, by full joint name.
+    def home_pose(self, arms: int = 1, profile: RobotProfile | None = None) -> tuple[tuple[str, float], ...]:
+        """Return the scene's home pose for *arms* arms of *profile*, by full joint name.
 
         Returns:
-            ``home_qpos`` for each arm with its prefix.
+            ``home_qpos`` (or the profile's ``profile_home_qpos``) for each arm with its prefix.
         """
-        return tuple((f"{prefix}{joint}", value) for prefix in arm_prefixes(arms) for joint, value in self.home_qpos)
+        home = self.home_qpos
+        if profile is not None:
+            if arms == 2 and profile.name in dict(self.two_arm_home_qpos):  # noqa: PLR2004
+                return dict(self.two_arm_home_qpos)[profile.name]
+            home = dict(self.profile_home_qpos).get(profile.name, home)
+        return tuple((f"{prefix}{joint}", value) for prefix in arm_prefixes(arms) for joint, value in home)
 
     def load_model(
         self, profile: RobotProfile = SO101_PROFILE, arms: int | None = None, overview: OverviewStyle = "shoulder"
@@ -394,19 +440,10 @@ _CONVEYOR_SORT_HOME: tuple[tuple[str, float], ...] = (
 
 
 # Franka's "ready" pose: the hand 0.49 m above the table over the objects, fingers down and open.
-# The profile's home stretches the forearm out over the buckets.
-_BUCKET_SORT_HOME: tuple[tuple[str, float], ...] = (
-    ("fr3_joint1", 0.0),
-    ("fr3_joint2", float(np.radians(-45.0))),
-    ("fr3_joint3", 0.0),
-    ("fr3_joint4", float(np.radians(-135.0))),
-    ("fr3_joint5", 0.0),
-    ("fr3_joint6", float(np.radians(90.0))),
-    ("fr3_joint7", float(np.radians(45.0))),
-    ("finger_joint1", 0.04),
-    ("finger_joint2", 0.04),
-    ("gripper", 0.08),
-)
+# The profile's home stretches the forearm out over the buckets. The Panda takes the same pose; the
+# Duo's arms each hover over their side of the table (bucket_sort_arms).
+_BUCKET_SORT_HOME = bucket_sort_home("franka_fr3")
+_BUCKET_SORT_FRONT = FrontOverride(direction=(0.38, -0.60))
 
 
 # ---------------------------------------------------------------------------
@@ -559,13 +596,17 @@ def _drop_dice(  # noqa: PLR0914
     mujoco.mj_forward(model, data)
 
 
-def _bucket_sort_reset(home: tuple[tuple[str, float], ...], robot_roots: tuple[int, ...]) -> BucketSortTask:
+def _bucket_sort_reset(
+    home: tuple[tuple[str, float], ...], robot_roots: tuple[int, ...], layout: TaskLayout = DEFAULT_LAYOUT
+) -> BucketSortTask:
     """Build the bucket sort reset: the arms at *home*, then a new layout and instruction (:mod:`.bucket_sort`).
 
     Returns:
         The task, which is the scene's reset callback and holds its instruction.
     """
-    return BucketSortTask(place_home=lambda model, data: _set_arm_pose(model, data, home), robot_roots=robot_roots)
+    return BucketSortTask(
+        place_home=lambda model, data: _set_arm_pose(model, data, home), robot_roots=robot_roots, layout=layout
+    )
 
 
 def _conveyor_sort_reset(home: tuple[tuple[str, float], ...]) -> ResetFn:
@@ -684,9 +725,20 @@ _SCENES: dict[str, SceneConfig] = {
         scene_xml_relpath="scenes/bucket_sort/scene.xml",
         # The objects, then the buckets: the viewer's drag gizmos and POST /objects/{joint}/pose move both.
         free_joints=(*(f"{name}:joint" for name in BUCKET_SORT_OBJECTS), *BUCKET_SORT_BUCKET_JOINTS),
-        robots=("franka_fr3",),
+        # The robots the demonstrator drives (bucket_sort_arms); the WidowX AI also as a pair.
+        robots=tuple(BUCKET_SORT_ARMS),
         arm_counts=(1,),
+        profile_arm_counts=(("trossen_wxai", (1, 2)),),
+        two_arm_separations=(("trossen_wxai", WXAI_PAIR_SEPARATION),),
+        # The six-joint arms reach less far: their buckets and objects stand closer in.
+        profile_task_layouts=(
+            ("trossen_wxai", 1, SIX_JOINT_LAYOUT),
+            ("trossen_wxai", 2, WXAI_PAIR_LAYOUT),
+            ("rebot_b601", 1, SIX_JOINT_LAYOUT),
+        ),
         home_qpos=_BUCKET_SORT_HOME,
+        profile_home_qpos=tuple((name, bucket_sort_home(name)) for name in BUCKET_SORT_ARMS if name != "franka_fr3"),
+        two_arm_home_qpos=(("trossen_wxai", bucket_sort_home("trossen_wxai", 2)),),
         # A D435 RGB on a short pole clamped to the front edge: eye (0.83, -0.80, 0.90),
         # aimed at (0.45, -0.20, 0.05). Like the rear pole in the XML, this frames the task,
         # not the whole arm. The off-axis direction keeps the pole on the table edge.
@@ -695,7 +747,20 @@ _SCENES: dict[str, SceneConfig] = {
             aim=(0.45, -0.20, 0.05),
             elevation_deg=float(np.degrees(np.arctan2(0.85, np.hypot(0.38, 0.60)))),
         ),
-        profile_front_overrides=(("franka_fr3", FrontOverride(direction=(0.38, -0.60))),),
+        profile_front_overrides=tuple((name, _BUCKET_SORT_FRONT) for name in BUCKET_SORT_ARMS),
+        # The table top is the robot mount's plane; the floor is 0.75 m below (scene.xml).
+        floor_depth=0.75,
+        # The rear pole's camera, at the same height, stands behind the Duo instead of behind its left
+        # arm, which from there hides about half the objects and buckets at home: eye (-0.17, 0, 0.90)
+        # aimed at (0.45, 0, 0.05) (compose.aim_overview_rig).
+        profile_overview_rigs=(
+            ("franka_duo", OverviewRig(pos=(-0.17, 0.0, 0.90), quat=(0.672293, 0.219139, -0.219139, -0.672293))),
+        ),
+        # The same for two WidowX AI: behind the left one it hides half the layout. Eye (-0.17, 0, 0.90),
+        # aimed at (0.36, 0, 0.05), the middle of their layout.
+        two_arm_overview_rigs=(
+            ("trossen_wxai", OverviewRig(pos=(-0.17, 0.0, 0.90), quat=(0.679809, 0.194577, -0.194577, -0.679809))),
+        ),
         # From the front-left corner, close on the table: the arm, the objects and the buckets fill the
         # view instead of a small robot in the middle of the floor.
         viewer_view=ViewerView(position=(-0.25, 1.42, 1.00), look_at=(0.32, 0.0, 0.22), fov_deg=51.6),
@@ -714,12 +779,14 @@ _SCENES: dict[str, SceneConfig] = {
 _FREEJOINT_SPAWN_SCENES = ("single_pick_place",)
 """Scenes whose reset respawns their free objects in the spawn arc laid out for the robot."""
 
-_RESET_FUNCTIONS: dict[str, Callable[[SceneConfig, int, tuple[int, ...]], ResetFn]] = {
-    "yahtzee": lambda _scene, _arms, roots: _yahtzee_reset(roots),
-    "conveyor_sort": lambda scene, arms, _roots: _conveyor_sort_reset(scene.home_pose(arms)),
-    "bucket_sort": lambda scene, arms, roots: _bucket_sort_reset(scene.home_pose(arms), roots),
+_RESET_FUNCTIONS: dict[str, Callable[[SceneConfig, RobotProfile, int, tuple[int, ...]], ResetFn]] = {
+    "yahtzee": lambda _scene, _profile, _arms, roots: _yahtzee_reset(roots),
+    "conveyor_sort": lambda scene, profile, arms, _roots: _conveyor_sort_reset(scene.home_pose(arms, profile)),
+    "bucket_sort": lambda scene, profile, arms, roots: _bucket_sort_reset(
+        scene.home_pose(arms, profile), roots, scene.task_layout(profile, arms)
+    ),
 }
-"""Reset builders by scene id, for the scene, its number of arms and the root body of every robot."""
+"""Reset builders by scene id, for the scene, the profile, its number of arms and the root body of every robot."""
 
 
 def get_scene(scene_id: str) -> SceneConfig:
@@ -764,7 +831,7 @@ def get_reset_fn(
         height = ARM_FOOTPRINT_HEIGHT * scene.layout_scale(profile)
         return _freejoint_spawn_reset(scene.for_profile(profile, arms), robot_roots, height)
     build = _RESET_FUNCTIONS.get(scene_id)
-    return build(scene, arms, robot_roots) if build is not None else None
+    return build(scene, profile, arms, robot_roots) if build is not None else None
 
 
 def list_scenes_naming(profile_name: str) -> dict[str, SceneConfig]:
@@ -824,8 +891,9 @@ def check_arm_count(scene: SceneConfig, profile: RobotProfile, arms: int) -> Non
             "and a fixed-base arm"
         )
         raise ValueError(msg)
-    if arms not in scene.arm_counts:
-        msg = f"Scene {scene.scene_id!r} runs {' or '.join(map(str, scene.arm_counts))} arm(s), not {arms}"
+    counts = scene.arm_counts_for(profile.name)
+    if arms not in counts:
+        msg = f"Scene {scene.scene_id!r} runs {' or '.join(map(str, counts))} arm(s), not {arms}"
         raise ValueError(msg)
 
 
@@ -860,5 +928,5 @@ def list_scenes_for(profile: RobotProfile, num_arms: int | None = None) -> dict[
     return {
         scene_id: scene
         for scene_id, scene in _SCENES.items()
-        if scene.supports(profile) and (num_arms is None or num_arms in scene.arm_counts)
+        if scene.supports(profile) and (num_arms is None or num_arms in scene.arm_counts_for(profile.name))
     }

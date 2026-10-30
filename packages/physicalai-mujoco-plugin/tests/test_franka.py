@@ -21,13 +21,17 @@ from physicalai_mujoco_plugin.profiles.franka import (
     FRANKA_DUO_ARM_Y,
     FRANKA_DUO_HEIGHT,
     FRANKA_DUO_HOME_DEG,
+    FRANKA_DUO_MOUNT_X,
     FRANKA_DUO_PROFILE,
     FRANKA_DUO_RPY,
     FRANKA_FR3_PROFILE,
     FRANKA_HAND_WIDTH_M,
+    SPINE_MAX_TRAVEL,
+    SPINE_TRAVEL,
     with_grip_force,
 )
-from physicalai_mujoco_plugin.scene_registry import supported_arm_counts
+from physicalai_mujoco_plugin.robot import MuJoCoRobot
+from physicalai_mujoco_plugin.scene_registry import get_scene, list_scenes_naming, supported_arm_counts
 from physicalai_mujoco_plugin.studio_catalog import list_catalog_entries
 
 ARM_NAMES = tuple(f"fr3_joint{index}" for index in range(1, 8))
@@ -162,12 +166,56 @@ def test_duo_arms_stand_on_frankas_duo_mount() -> None:
     roll, pitch, yaw = FRANKA_DUO_RPY
     for side, sign in (("left", 1.0), ("right", -1.0)):
         base = data.body(f"{side}_base")
-        np.testing.assert_allclose(base.xpos, (0.0, sign * FRANKA_DUO_ARM_Y, FRANKA_DUO_HEIGHT), atol=1e-9)
+        np.testing.assert_allclose(
+            base.xpos, (FRANKA_DUO_MOUNT_X, sign * FRANKA_DUO_ARM_Y, FRANKA_DUO_HEIGHT), atol=1e-9
+        )
         r, y = (-roll, -yaw) if side == "left" else (roll, yaw)
         rx = np.array([[1, 0, 0], [0, math.cos(r), -math.sin(r)], [0, math.sin(r), math.cos(r)]])
         ry = np.array([[math.cos(pitch), 0, math.sin(pitch)], [0, 1, 0], [-math.sin(pitch), 0, math.cos(pitch)]])
         rz = np.array([[math.cos(y), -math.sin(y), 0], [math.sin(y), math.cos(y), 0], [0, 0, 1]])
         np.testing.assert_allclose(base.xmat.reshape(3, 3), rz @ ry @ rx, atol=1e-6)
+
+
+def test_duo_stands_on_frankas_mount_and_column() -> None:
+    """fr3_duo_mount_v0_3 on the carriage of franka_spine_v0_1, whose foot is on the mount's plane."""
+    model = _model(FRANKA_DUO_PROFILE)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    # The mount's mounting point: 37 mm behind and 50 mm below the arm bases (kinematics.yaml).
+    np.testing.assert_allclose(data.body("duo_mount").xpos, (FRANKA_DUO_MOUNT_X - 0.037, 0.0, FRANKA_DUO_HEIGHT - 0.05))
+    # The column's carriage: 266.711 mm in front of its foot and 100 mm up plus the travel.
+    carriage = data.body("duo_spine").xpos + (0.266711, 0.0, 0.1 + SPINE_TRAVEL)
+    np.testing.assert_allclose(carriage, data.body("duo_mount").xpos, atol=1e-9)
+    assert data.body("duo_spine").xpos[2] == 0.0
+    assert 0.0 <= SPINE_TRAVEL <= SPINE_MAX_TRAVEL
+    for body in ("duo_mount", "duo_spine"):
+        geoms = [g for g in range(model.ngeom) if model.geom_bodyid[g] == model.body(body).id]
+        assert any(model.geom_contype[g] for g in geoms), f"{body} has no collision geometry"
+        assert any(model.geom_group[g] == 2 for g in geoms), f"{body} has no visual geometry"  # noqa: PLR2004
+
+
+@pytest.mark.parametrize("scene_id", list(list_scenes_naming("franka_duo")))
+def test_duo_column_stands_on_each_scenes_floor_clear_of_its_table(scene_id: str) -> None:
+    scene = get_scene(scene_id)
+    robot = MuJoCoRobot("franka_duo", scene=scene_id, cameras=[], http_port=0, substeps=1)
+    robot.connect()
+    try:
+        model, data = robot._sim.model, robot._sim.data  # noqa: SLF001
+        mujoco.mj_forward(model, data)
+        foot = data.body("duo_spine").xpos
+        assert foot[2] == pytest.approx(-scene.floor_depth)
+        assert SPINE_TRAVEL + scene.floor_depth <= SPINE_MAX_TRAVEL + 1e-9  # the carriage reaches the mount
+        stand = {model.body("duo_mount").id, model.body("duo_spine").id}
+        for contact in data.contact[: data.ncon]:
+            bodies = {int(model.geom_bodyid[contact.geom1]), int(model.geom_bodyid[contact.geom2])}
+            assert not bodies & stand, f"the stand touches {[model.body(b).name for b in bodies]} at home"
+        if scene_id == "bucket_sort":
+            table = model.geom("table_top").id
+            spine = [g for g in range(model.ngeom) if model.geom_bodyid[g] == model.body("duo_spine").id]
+            distance = min(mujoco.mj_geomDistance(model, data, g, table, 0.1, None) for g in spine)
+            assert distance > 0.0, distance
+    finally:
+        robot.disconnect()
 
 
 def test_duo_home_is_frankas_home_mirrored_with_hands_open() -> None:

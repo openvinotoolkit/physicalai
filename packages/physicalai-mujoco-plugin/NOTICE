@@ -6,6 +6,12 @@ packages/physicalai-mujoco-plugin, at commit
 The source repository distributes this package under Apache-2.0.
 The original release history is preserved in CHANGELOG.md.
 
+urdf/franka_duo/assets/*.msh are built by scripts/build_franka_duo_meshes.py from the FR3 Duo
+mount (accessories/fr3_duo_mount_v0_3) and the column (accessories/franka_spine_v0_1) meshes of
+franka_description by Franka Robotics GmbH, https://github.com/frankarobotics/franka_description
+at commit 7aeeddc449edf8d62b594f9e36a81da53e7796f9, released under Apache-2.0. They are decimated
+and converted to MuJoCo's MSH format.
+
 urdf/scenes/yahtzee/assets/wood_19.png is Wood_19-512x512.png from
 "Tiny Texture Pack 2" by Screaming Brain Studios, released under CC0 1.0:
 https://opengameart.org/content/tiny-texture-pack-2

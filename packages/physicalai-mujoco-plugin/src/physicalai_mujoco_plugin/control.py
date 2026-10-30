@@ -114,6 +114,7 @@ class OperatorControls:
     _http_server: HttpServer | None
     _http_host: str
     _http_port: int
+    _http_fallback_port: int | None
     _owner_name: str
     _base_status: tuple[BaseStatus, ...]
     _viewer: ViewerService | None
@@ -186,7 +187,7 @@ class OperatorControls:
         Returns:
             The reason, or ``None``.
         """
-        if self._automation is not None and self._automation.recorder.active:
+        if self._automation is not None and self._automation.recording_active:
             return (
                 "Automatic Studio recording is on, and a dataset keeps the view it was recorded with; "
                 "switch recording off to move the overview camera"
@@ -329,7 +330,7 @@ class OperatorControls:
             return
         if self._episode_auto_reset is not None:
             self._episode_auto_reset.notify_manual_reset()
-        self._automation.reset()  # type: ignore[union-attr]
+        self._automation.reset(self._arm_targets())  # type: ignore[union-attr]
 
     def _handle_replay_command(self, command: SimCommand) -> bool:
         """Start or stop a replay, and end it before a command that edits the physics state.
@@ -462,7 +463,7 @@ class OperatorControls:
 
         sim = self._sim
         scene = self._scene_config
-        scene_home = dict(scene.home_pose(len(sim.bindings))) if scene is not None else {}  # type: ignore[union-attr]
+        scene_home = dict(scene.home_pose(len(sim.bindings), self._profile)) if scene is not None else {}  # type: ignore[union-attr]
         for binding, channels in zip(sim.bindings, sim.channels, strict=True):  # type: ignore[union-attr]
             home = {joint: values[0] for joint, values in binding.layout.home_qpos.items() if len(values) == 1}
             home.update({joint: value for joint, value in scene_home.items() if joint in home})
@@ -522,11 +523,13 @@ class OperatorControls:
             robot_roots=self._sim.robot_roots,  # type: ignore[union-attr]
             bucket_task=task if isinstance(task, BucketSortTask) else None,
             seed=self._seed,
+            profile=self._profile.name,
         )
         if helper is None and isinstance(task, BucketSortTask):
             helper = BucketSortEpisode(
                 task, self._run_scene_reset, success_dwell_s=self._auto_reset_dwell_s, active=self._auto_reset_active
             )
+            self._automation.bind_bucket_episode(helper)  # type: ignore[union-attr]
         if helper is None:
             area = self._area
             helper = EpisodeAutoReset.maybe_create(
@@ -562,14 +565,17 @@ class OperatorControls:
             check_replay=self._replay_problem,
             get_leader=self._automation.leader_snapshot,  # type: ignore[union-attr]
         )
-        server = HttpServer(app, self._http_host, self._http_port)
-        try:
-            server.start()
-        except (OSError, RuntimeError) as exc:
-            logger.warning("Failed to start HTTP server on {}:{}: {}", self._http_host, self._http_port, exc)
+        # The fallback port covers a port that another process took after `start` found it free.
+        for port in dict.fromkeys(p for p in (self._http_port, self._http_fallback_port) if p):
+            server = HttpServer(app, self._http_host, port)
+            try:
+                server.start()
+            except (OSError, RuntimeError) as exc:
+                logger.warning("Failed to start HTTP server on {}:{}: {}", self._http_host, port, exc)
+                continue
+            self._http_server = server
+            logger.info("HTTP camera server running at {}", server.url)
             return
-        self._http_server = server
-        logger.info("HTTP camera server running at {}", server.url)
 
     def _start_process_watch(self) -> None:
         """Shut the owner down, as ``POST /shutdown`` does, once its parent ``exit_with_pid`` is gone.

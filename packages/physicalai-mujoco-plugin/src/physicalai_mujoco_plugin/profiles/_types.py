@@ -131,6 +131,11 @@ class RobotProfile:
     default_scene: str | None = None
     end_effectors: tuple[EndEffector, ...] = ()
     """Tool frame of each arm, in the model's arm order; ALOHA's one model lists both arms."""
+    stand: str | None = None
+    """Body of the robot's stand that rests on the floor (the Duo's column), by its unprefixed name.
+
+    Built standing on the robot mount's plane; a scene whose floor lies below the mount (a table,
+    ``SceneConfig.floor_depth``) moves it down onto that floor, and nothing else of the robot moves."""
     reach: float | None = None
     """Reach from above in metres; ``layout="reach"`` scenes scale with ``reach / SO-101 reach`` (SCN-6).
 

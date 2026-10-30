@@ -44,7 +44,7 @@ READY = {"connected": True, "follower_source": "teleop", "dataset_loaded": True,
 def _studio_rest(sessions: list[dict[str, Any]]) -> Any:  # noqa: ANN401
     robots = [
         {"id": FOLLOWER, "name": "Mary Jane", "type": "MuJoCo_SO101_Follower", "payload": {"name": "mujoco-so101-follow"}},
-        {"id": LEADER, "name": "Autopilot", "type": "MuJoCo_SO101_Virtual_Leader", "payload": {"http_port": 8080}},
+        {"id": LEADER, "name": "Autopilot", "type": "MuJoCo_Virtual_Leader", "payload": {"http_port": 8080}},
     ]
     routes = {
         "/api/runtime/sessions": sessions,

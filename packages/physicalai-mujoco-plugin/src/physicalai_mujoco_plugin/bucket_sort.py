@@ -248,8 +248,81 @@ def _far_apart(a: tuple[float, float], b: tuple[float, float], reach: float) -> 
 
 
 _BUCKET_RADIUS = float(np.hypot(BUCKET_SIZE[0], BUCKET_SIZE[1]) / 2.0)
-_HAND_RADIUS = float(np.hypot(*HAND_HALF_SIZE))
-_FINGER_RADIUS = float(np.hypot(*FINGER_HALF_SIZE))
+
+
+@dataclass(frozen=True)
+class TaskLayout:
+    """Where one robot's layouts put the buckets and the objects (:func:`sample_layout`).
+
+    The objects and buckets keep their size; only where they may stand changes per robot. The
+    default is the Franka arms' layout, the module's constants; a smaller arm gets its areas and
+    reach closer in (``scene_registry``'s ``profile_task_layouts``).
+    """
+
+    bucket_x: tuple[float, float] = BUCKET_X
+    bucket_y: tuple[float, float] = BUCKET_Y
+    object_x: tuple[float, float] = OBJECT_X
+    object_y: tuple[float, float] = OBJECT_Y
+    reach: tuple[float, float] = REACH_RADIUS
+    """Distance from an arm's base axis at which it reaches every object centre."""
+    bucket_reach: tuple[float, float] = REACH_RADIUS
+    """Distance from an arm's base axis at which it reaches every point of :data:`BUCKET_REACH_POINTS`."""
+    bases: tuple[tuple[float, float], ...] = ((0.0, 0.0),)
+    """The arms' base axes on the table; an object or bucket point must be in reach of one of them."""
+    hand_half_size: tuple[float, float] = HAND_HALF_SIZE
+    """Half the hand's footprint about the grasp point (:data:`HAND_HALF_SIZE`)."""
+    finger_half_size: tuple[float, float] = FINGER_HALF_SIZE
+    face_bases: bool = False
+    """Turn each bucket's open end toward its nearest base (plus the usual turn either way), not toward -x."""
+    objects_reach_all: bool = False
+    """Every object in reach of every base, not just one: with two arms, whichever arm reaches the
+    named bucket also reaches the named object."""
+
+    @property
+    def hand_radius(self) -> float:
+        """The radius of the circle around :attr:`hand_half_size`."""
+        return float(np.hypot(*self.hand_half_size))
+
+    @property
+    def finger_radius(self) -> float:
+        """The radius of the circle around :attr:`finger_half_size`."""
+        return float(np.hypot(*self.finger_half_size))
+
+    def nearest_base(self, x: float, y: float) -> tuple[float, float]:
+        """Return the base nearest to ``(x, y)``.
+
+        Returns:
+            Its position.
+        """
+        return min(self.bases, key=lambda base: (x - base[0]) ** 2 + (y - base[1]) ** 2)
+
+
+DEFAULT_LAYOUT = TaskLayout()
+"""The Franka arms' layout: a base at the origin and the areas of the module's constants."""
+
+
+def _current(layout: TaskLayout) -> TaskLayout:
+    """Return *layout*, or for :data:`DEFAULT_LAYOUT` the module's constants as they are now.
+
+    Returns:
+        The layout to use.
+    """
+    if layout is not DEFAULT_LAYOUT:
+        return layout
+    return TaskLayout(
+        bucket_x=BUCKET_X,
+        bucket_y=BUCKET_Y,
+        object_x=OBJECT_X,
+        object_y=OBJECT_Y,
+        reach=REACH_RADIUS,
+        bucket_reach=REACH_RADIUS,
+        hand_half_size=HAND_HALF_SIZE,
+        finger_half_size=FINGER_HALF_SIZE,
+    )
+
+
+_HAND_RADIUS = DEFAULT_LAYOUT.hand_radius
+_FINGER_RADIUS = DEFAULT_LAYOUT.finger_radius
 
 
 def bucket_footprint(pose: Pose2D) -> np.ndarray:
@@ -266,17 +339,29 @@ def _grasp_rectangle(pose: Pose2D, footprint: ObjectFootprint, half: tuple[float
     return _rectangle(pose, half, pose.yaw + footprint.closing_yaw)
 
 
-def _in_reach(x: float, y: float) -> bool:
-    return REACH_RADIUS[0] ** 2 <= x * x + y * y <= REACH_RADIUS[1] ** 2
+def _in_reach(
+    x: float,
+    y: float,
+    radius: tuple[float, float] = REACH_RADIUS,
+    bases: tuple[tuple[float, float], ...] = ((0.0, 0.0),),
+) -> bool:
+    for base_x, base_y in bases:
+        dx, dy = x - base_x, y - base_y
+        if radius[0] ** 2 <= dx * dx + dy * dy <= radius[1] ** 2:
+            return True
+    return False
 
 
-def bucket_problems(pose: Pose2D, others: Iterable[Pose2D] = (), *, first: bool = False) -> list[str]:
+def bucket_problems(
+    pose: Pose2D, others: Iterable[Pose2D] = (), *, first: bool = False, layout: TaskLayout = DEFAULT_LAYOUT
+) -> list[str]:
     """Return what keeps a bucket at *pose* out of a layout with the buckets *others*.
 
     Args:
         pose: The bucket's pose.
         others: The buckets placed before it.
         first: Stop at the first problem.
+        layout: The robot's layout, for the reach.
 
     Returns:
         The problems; empty when the pose is fine.
@@ -293,8 +378,10 @@ def bucket_problems(pose: Pose2D, others: Iterable[Pose2D] = (), *, first: bool 
         problems.append("table edge")
         if first:
             return problems
+    layout = _current(layout)
     turn = _rotation(pose.yaw)
-    if not all(_in_reach(*(np.array([pose.x, pose.y]) + turn @ point)) for point in BUCKET_REACH_POINTS):
+    points = [np.array([pose.x, pose.y]) + turn @ point for point in BUCKET_REACH_POINTS]
+    if not all(_in_reach(float(x), float(y), layout.bucket_reach, layout.bases) for x, y in points):
         problems.append("reach")
         if first:
             return problems
@@ -315,6 +402,7 @@ def object_problems(
     others: Mapping[str, Pose2D] | None = None,
     *,
     first: bool = False,
+    layout: TaskLayout = DEFAULT_LAYOUT,
 ) -> list[str]:
     """Return what keeps object *name* at *pose* out of a layout with *buckets* and the objects *others*.
 
@@ -325,23 +413,34 @@ def object_problems(
         buckets: The buckets' poses.
         others: The objects placed before it.
         first: Stop at the first problem.
+        layout: The robot's layout, for the reach and the hand's footprint.
 
     Returns:
         The problems, sorted; empty when the pose is fine.
     """
     problems: set[str] = set()
+    default = layout is DEFAULT_LAYOUT
+    layout = _current(layout)
     shape = footprints[name]
     centre = (pose.x, pose.y)
-    if not _in_reach(pose.x, pose.y):
+    in_reach = (
+        all(_in_reach(pose.x, pose.y, layout.reach, (base,)) for base in layout.bases)
+        if layout.objects_reach_all
+        else _in_reach(pose.x, pose.y, layout.reach, layout.bases)
+    )
+    if not in_reach:
         problems.add("reach")
         if first:
             return sorted(problems)
-    hand = _grasp_rectangle(pose, shape, HAND_HALF_SIZE)
+    hand_radius, finger_radius = (
+        (_HAND_RADIUS, _FINGER_RADIUS) if default else (layout.hand_radius, layout.finger_radius)
+    )
+    hand = _grasp_rectangle(pose, shape, layout.hand_half_size)
     for bucket in buckets:
         if _far_apart(
             centre,
             (bucket.x, bucket.y),
-            _BUCKET_RADIUS + max(shape.radius + OBJECT_BUCKET_GAP, _HAND_RADIUS + HAND_BUCKET_GAP),
+            _BUCKET_RADIUS + max(shape.radius + OBJECT_BUCKET_GAP, hand_radius + HAND_BUCKET_GAP),
         ):
             continue
         corners = bucket_footprint(bucket)
@@ -351,17 +450,17 @@ def object_problems(
             problems.add("hand near bucket")
         if first and problems:
             return sorted(problems)
-    fingers = _grasp_rectangle(pose, shape, FINGER_HALF_SIZE)
+    fingers = _grasp_rectangle(pose, shape, layout.finger_half_size)
     for other, other_pose in (others or {}).items():
         other_shape = footprints[other]
         other_centre = (other_pose.x, other_pose.y)
         if not _far_apart(centre, other_centre, shape.radius + other_shape.radius + OBJECT_GAP):
             problems.add("object gap")
         elif not _far_apart(
-            centre, other_centre, _FINGER_RADIUS + max(shape.radius, other_shape.radius) + FINGER_OBJECT_GAP
+            centre, other_centre, finger_radius + max(shape.radius, other_shape.radius) + FINGER_OBJECT_GAP
         ) and (
             circle_gap(other_centre, other_shape.radius, fingers) < FINGER_OBJECT_GAP
-            or circle_gap(centre, shape.radius, _grasp_rectangle(other_pose, other_shape, FINGER_HALF_SIZE))
+            or circle_gap(centre, shape.radius, _grasp_rectangle(other_pose, other_shape, layout.finger_half_size))
             < FINGER_OBJECT_GAP
         ):
             problems.add("fingers near object")
@@ -370,7 +469,9 @@ def object_problems(
     return sorted(problems)
 
 
-def sample_layout(rng: np.random.Generator, footprints: Mapping[str, ObjectFootprint]) -> Layout:
+def sample_layout(
+    rng: np.random.Generator, footprints: Mapping[str, ObjectFootprint], layout: TaskLayout = DEFAULT_LAYOUT
+) -> Layout:
     """Draw a layout of the buckets and the objects that passes every check.
 
     The colours, then the objects, are placed in a random order, each drawn uniformly in its area
@@ -381,22 +482,28 @@ def sample_layout(rng: np.random.Generator, footprints: Mapping[str, ObjectFootp
     Args:
         rng: The generator.
         footprints: Each object's :class:`ObjectFootprint` (:func:`object_footprint`).
+        layout: Where the robot's buckets and objects may stand.
 
     Returns:
         The layout; :data:`FALLBACK_LAYOUT` when :data:`LAYOUT_RESTARTS` layouts all failed.
     """
     draws = 0
+    default = layout is DEFAULT_LAYOUT
+    layout = _current(layout)
     for _ in range(LAYOUT_RESTARTS):
         buckets: dict[str, Pose2D] = {}
         for index in rng.permutation(len(BUCKET_COLORS)):
             for _ in range(LAYOUT_DRAWS):
                 draws += 1
-                pose = Pose2D(
-                    float(rng.uniform(*BUCKET_X)),
-                    float(rng.uniform(*BUCKET_Y)),
-                    BUCKET_YAW + float(rng.uniform(-BUCKET_YAW_RANGE, BUCKET_YAW_RANGE)),
-                )
-                if not bucket_problems(pose, buckets.values(), first=True):
+                x, y = float(rng.uniform(*layout.bucket_x)), float(rng.uniform(*layout.bucket_y))
+                yaw = BUCKET_YAW
+                if layout.face_bases:
+                    base_x, base_y = layout.nearest_base(x, y)
+                    yaw += float(np.arctan2(y - base_y, x - base_x))
+                pose = Pose2D(x, y, yaw + float(rng.uniform(-BUCKET_YAW_RANGE, BUCKET_YAW_RANGE)))
+                if not bucket_problems(
+                    pose, buckets.values(), first=True, layout=DEFAULT_LAYOUT if default else layout
+                ):
                     buckets[BUCKET_COLORS[int(index)]] = pose
                     break
             else:
@@ -409,9 +516,12 @@ def sample_layout(rng: np.random.Generator, footprints: Mapping[str, ObjectFootp
             for _ in range(LAYOUT_DRAWS):
                 draws += 1
                 pose = Pose2D(
-                    float(rng.uniform(*OBJECT_X)), float(rng.uniform(*OBJECT_Y)), float(rng.uniform(0.0, 2.0 * np.pi))
+                    float(rng.uniform(*layout.object_x)),
+                    float(rng.uniform(*layout.object_y)),
+                    float(rng.uniform(0.0, 2.0 * np.pi)),
                 )
-                if not object_problems(name, pose, footprints, buckets.values(), objects, first=True):
+                area = DEFAULT_LAYOUT if default else layout
+                if not object_problems(name, pose, footprints, buckets.values(), objects, first=True, layout=area):
                     objects[name] = pose
                     break
             else:
@@ -686,6 +796,7 @@ class BucketSortTask:
         place_home: Callable[[object, object], None] | None = None,
         robot_roots: tuple[int, ...] = (),
         vary_text: bool | None = None,
+        layout: TaskLayout = DEFAULT_LAYOUT,
     ) -> None:
         """Create the task; nothing is laid out until the first reset.
 
@@ -696,11 +807,14 @@ class BucketSortTask:
             robot_roots: Root body of every robot: objects touching them are held, not resting.
             vary_text: Word instructions at random, or always use the canonical sentence;
                 ``None`` follows :data:`VARY_INSTRUCTION_TEXT` at each reset.
+            layout: Where the robot's buckets and objects may stand.
         """
         self._allowed = check_pairs(allowed_pairs)
         self._place_home = place_home
         self._robot_roots = tuple(robot_roots)
         self._vary_text = vary_text
+        self.area = layout
+        """Where the robot's buckets and objects may stand (:class:`TaskLayout`)."""
         self._footprints: tuple[object, dict[str, ObjectFootprint]] | None = None
         self.instruction: Instruction | None = None
         """The current instruction; ``None`` before the first reset."""
@@ -753,7 +867,7 @@ class BucketSortTask:
         if self._place_home is not None:
             self._place_home(model, data)
         footprints = self.footprints(model)
-        layout = sample_layout(rng, footprints)
+        layout = sample_layout(rng, footprints, self.area)
         for color, pose in layout.buckets.items():
             _set_free_pose(model, data, f"bucket_{color}:joint", (pose.x, pose.y, 0.0), pose.yaw)
         for name, pose in layout.objects.items():
@@ -944,6 +1058,7 @@ class BucketSortEpisode:
         self._active = active
         self._phase: Phase = "idle"
         self._success_since: float | None = None
+        self._resets_suspended = False
         self._countdown_s: float | None = None
         self._episode_count = 0
         self._state: TaskState | None = None
@@ -991,11 +1106,21 @@ class BucketSortEpisode:
             "buckets": dict(state.buckets) if state is not None else {},
         }
 
+    def suspend_resets(self, suspended: bool) -> None:  # noqa: FBT001
+        """Keep evaluating the task but never reset the scene, while something else owns the episodes.
+
+        Automatic Studio recording ends and resets each episode itself; :attr:`active` and the
+        dwell stay as the user set them for afterwards.
+        """
+        if suspended and not self._resets_suspended:
+            self.notify_manual_reset()  # drop a success countdown in progress
+        self._resets_suspended = suspended
+
     def update(self, model: object, data: object) -> None:
         """Evaluate the task for one tick, and reset the scene once a success has held for the dwell."""
         state = self.task.evaluate(model, data)
         self._state = state
-        if not self._active:
+        if not self._active or self._resets_suspended:
             return
         if not state.success:
             if self._phase == "success_hold":
@@ -1047,6 +1172,7 @@ __all__ = [
     "BUCKET_Y",
     "BUCKET_YAW",
     "BUCKET_YAW_RANGE",
+    "DEFAULT_LAYOUT",
     "OBJECTS",
     "OBJECT_LABELS",
     "OBJECT_X",
@@ -1061,6 +1187,7 @@ __all__ = [
     "Layout",
     "ObjectFootprint",
     "Pose2D",
+    "TaskLayout",
     "TaskState",
     "bucket_containing",
     "bucket_footprint",
