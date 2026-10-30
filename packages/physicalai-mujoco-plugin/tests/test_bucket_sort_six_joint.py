@@ -12,7 +12,9 @@ buckets, their grippers, and whole episodes in both autopilot modes.
 from __future__ import annotations
 
 import argparse
+import time
 from dataclasses import replace
+from typing import TYPE_CHECKING
 
 import mujoco
 import numpy as np
@@ -27,7 +29,12 @@ from physicalai_mujoco_plugin.robot import MuJoCoRobot
 from physicalai_mujoco_plugin.scene_registry import get_scene
 from physicalai_mujoco_plugin.studio_catalog import list_catalog_entries
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 TICK_S = 0.02
+PLAN_CAP_S = 300.0
+"""The longest :func:`_ticks` waits for the demonstrator's plans, wall seconds."""
 SETUPS = [("trossen_wxai", False), ("trossen_wxai", True), ("rebot_b601", False)]
 
 
@@ -48,6 +55,24 @@ def scene(robot: MuJoCoRobot) -> MuJoCoRobot:
     robot._reset()
     robot._set_seed(None)
     return robot
+
+
+def _ticks(robot: MuJoCoRobot, seconds: float) -> Iterator[None]:
+    """Run control ticks for *seconds* of simulated time, not counting the ones the demonstrator plans in.
+
+    It plans on its own thread for as long as that takes in wall time (the Duo's and the WidowX AI
+    pair's attempts take seconds, more on a slow machine), while the simulation ticks on. Planning
+    longer than :data:`PLAN_CAP_S` in all fails the test.
+    """
+    demo = robot._automation.autopilot.demonstrator
+    ticks, deadline = 0, time.monotonic() + PLAN_CAP_S
+    while ticks < round(seconds / TICK_S):
+        robot.get_observation()
+        if demo.planning:
+            assert time.monotonic() < deadline, f"the demonstrator planned for over {PLAN_CAP_S:.0f} s"
+        else:
+            ticks += 1
+        yield
 
 
 def _demo(robot: MuJoCoRobot) -> bd.BucketSortDemonstrator:
@@ -155,8 +180,9 @@ class TestDemonstrator:
             # ... and the arm stands there under gravity: the plant compensates its weight.
             np.testing.assert_allclose(data.qpos[ik.qpos_adr], ik.home, atol=np.radians(0.1))
         scene._automation.set_autopilot("drive")
-        for _ in range(round(4.0 / TICK_S)):
-            scene.get_observation()
+        for _ in _ticks(scene, 4.0):
+            if demo.planning:
+                continue  # the planning thread has the demonstrator's state; the leader holds
             leader = np.asarray(scene._automation.leader_snapshot()["joint_positions"])
             arm = demo._active
             np.testing.assert_allclose(leader[7 * arm : 7 * arm + 6], np.degrees(demo._q), atol=1e-9)
@@ -229,8 +255,7 @@ class TestEpisodes:
         count = robot._http_status()["episode"]["episode_count"]
         succeeded, jump = False, 0.0
         previous = data.xpos[body].copy()
-        for _ in range(round(45.0 / TICK_S)):
-            robot.get_observation()
+        for _ in _ticks(robot, 45.0):
             if mode == "leader":
                 robot.send_action(np.asarray(robot._automation.leader_snapshot()["joint_positions"], dtype=np.float32))
             episode = robot._http_status()["episode"]
@@ -277,8 +302,7 @@ def test_the_rebot_grasps_lean_15_degrees_at_most() -> None:
             run(plan, data, brake)
 
         demo._run = record  # type: ignore[method-assign]
-        for _ in range(round(45.0 / TICK_S)):
-            robot.get_observation()
+        for _ in _ticks(robot, 45.0):
             if demo.status()["outcome"] in {"success", "failed", "stalled"}:
                 break
         assert demo.status()["outcome"] == "success", demo.status()
