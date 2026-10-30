@@ -9,14 +9,16 @@ which every tabletop scene runs. Dataset and experimental arms run two arms from
 (``physicalai-mujoco start --bimanual``). Its type is ``MuJoCo_<Profile>_Follower``, with ``Bimanual_``
 before ``Follower`` for two robots, where ``<Profile>`` is the profile's display name without
 spaces and punctuation; ``MuJoCo_SO101_Follower`` and ``MuJoCo_SO101_Bimanual_Follower`` keep
-their types and payloads. Twins whose real robot has a Studio URDF reuse it (STU-2); the other
-entries have no asset and rely on the owner's viewer (``GET /viewer``, STU-3). One virtual leader
+their types and payloads. The SO-101 entries show the plugin's hand-made SO-101 URDFs (STU-2); every
+other entry shows a URDF generated from the robot model its simulation runs, on first use
+(:mod:`~physicalai_mujoco_plugin.studio_urdf`). One virtual leader
 leads every profile: it takes its joint names from the simulation (STU-6). Every follower entry's
 ``simulation`` tells Studio how to start its simulation: the scenes it runs in and the ``start``
 command line (P3).
 
 Importing this module neither imports MuJoCo nor downloads a model: the joint names of a profile
-without channel overrides are derived from its model only when an entry is probed or built.
+without channel overrides are derived from its model only when an entry is probed or built, and
+read from its model file (without compiling it) when Studio first lists the 3D models' joint maps.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ import re
 import shlex
 import sys
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
@@ -56,13 +59,20 @@ from physicalai_mujoco_plugin.constants import (
     default_owner_name,
 )
 from physicalai_mujoco_plugin.profiles import PROFILES, SO101_PROFILE, RobotProfile
-from physicalai_mujoco_plugin.profiles.trossen_wxai import TROSSEN_WXAI_PROFILE
 from physicalai_mujoco_plugin.scene_registry import (
     BIMANUAL_PREFIXES,
     get_scene,
     list_scenes,
     list_scenes_naming,
     supported_arm_counts,
+)
+from physicalai_mujoco_plugin.studio_urdf import (
+    URDF_FILE,
+    ensure_robot_urdf,
+    entry_key,
+    joint_map,
+    package_name,
+    public_names,
 )
 from physicalai_mujoco_plugin.virtual_leader import DEFAULT_HTTP_PORT, MuJoCoVirtualLeader
 
@@ -139,28 +149,59 @@ _MUJOCO_SO101_BIMANUAL_ASSET = RobotAsset(
     root_resolver=_get_mujoco_urdf_root,
 )
 
-# Studio's own WidowX AI URDF, the one its real WidowX AI entries use, names Trossen's joints; the
-# gripper opening moves both carriages. No root resolver: the URDF ships with Studio.
-_MUJOCO_WXAI_ASSET = RobotAsset(
-    urdf_relative_path=Path("widowx/urdf/generated/wxai/wxai_follower.urdf"),
-    packages={"trossen_arm_description": Path("widowx")},
-    joint_map={
-        "shoulder_pan.pos": ["joint_0"],
-        "shoulder_lift.pos": ["joint_1"],
-        "elbow_flex.pos": ["joint_2"],
-        "wrist_flex.pos": ["joint_3"],
-        "wrist_yaw.pos": ["joint_4"],
-        "wrist_roll.pos": ["joint_5"],
-        "gripper.pos": ["left_carriage_joint", "right_carriage_joint"],
-    },
-)
+_SO101_ASSETS: dict[int, RobotAsset] = {1: _MUJOCO_SO101_ASSET, 2: _MUJOCO_SO101_BIMANUAL_ASSET}
+"""The SO-101 entries' hand-made URDFs by number of robots (STU-2)."""
 
-_ASSETS: dict[tuple[str, int], RobotAsset] = {
-    (SO101_PROFILE.name, 1): _MUJOCO_SO101_ASSET,
-    (SO101_PROFILE.name, 2): _MUJOCO_SO101_BIMANUAL_ASSET,
-    (TROSSEN_WXAI_PROFILE.name, 1): _MUJOCO_WXAI_ASSET,
-}
-"""Studio URDFs of twin entries by ``(profile, number of robots)`` (STU-2); other entries have none."""
+
+class _GeneratedRobotAsset(RobotAsset):
+    """The asset of a URDF generated from an entry's robot model when Studio first asks for it.
+
+    The ``joint_map`` needs only the channel names: each observation drives its channel's virtual
+    joint (:mod:`~physicalai_mujoco_plugin.studio_urdf`). A profile without channel overrides
+    reads them from its model file, without compiling it, the first time Studio lists the catalog,
+    so registering the entries imports no MuJoCo. A model that is not downloaded yet leaves the map
+    empty until Studio restarts.
+    """
+
+    _entry: CatalogEntry
+    _names: tuple[str, ...] | None
+
+    def __init__(self, entry: CatalogEntry) -> None:
+        arms = len(entry.prefixes)
+        key = entry_key(entry.profile, arms)
+        # RobotAsset is frozen: set its fields the way its own __init__ does.
+        fields = {
+            "urdf_relative_path": Path(key) / URDF_FILE,
+            "packages": {package_name(entry.profile, arms): Path(key)},
+            "root_resolver": partial(ensure_robot_urdf, entry.profile, entry.prefixes),
+            "_entry": entry,
+            "_names": None,
+        }
+        for name, value in fields.items():
+            object.__setattr__(self, name, value)
+
+    @property
+    def joint_map(self) -> dict[str, list[str]]:  # type: ignore[override]
+        """Observation name to URDF joints: ``{"shoulder_pan.pos": ["shoulder_pan_channel"], ...}``."""
+        if self._names is None:
+            object.__setattr__(self, "_names", public_names(self._entry.profile, self._entry.prefixes))  # noqa: PLC2801
+        return {} if self._names is None else joint_map(self._names)
+
+
+def _entry_asset(entry: CatalogEntry) -> RobotAsset:
+    """Return the entry's 3D model: the SO-101's hand-made URDF, else one generated from its robot model.
+
+    The WidowX AI's is generated too, although ``physicalai-trossen-plugin`` ships Trossen's URDF with
+    the same joint names, axes and origins: the generated one follows the simulation's joint limits
+    (the carriages travel -0.01 to 0.045 m there, 0 to 0.044 m in Trossen's) and needs no other
+    plugin, and two arms stand where the simulation puts them.
+
+    Returns:
+        The asset.
+    """
+    if entry.profile is SO101_PROFILE:
+        return _SO101_ASSETS[len(entry.prefixes)]
+    return _GeneratedRobotAsset(entry)
 
 
 class MuJoCoRobotPayload(BaseModel):
@@ -737,7 +778,7 @@ def _follower_definition(entry: CatalogEntry) -> RobotCatalogDefinition:
         role="follower",
         robot_builder=_mujoco_robot_builder(entry),
         robot_payload=_payload_model(entry),
-        asset=_ASSETS.get((entry.profile.name, len(entry.prefixes))),
+        asset=_entry_asset(entry),
         probe=MuJoCoRobotProbe(entry),
         simulation=entry.simulation_launch(),
     )

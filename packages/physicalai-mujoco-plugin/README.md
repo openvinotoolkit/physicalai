@@ -188,6 +188,8 @@ For the bimanual simulation, start it with `--bimanual` (in any tabletop scene, 
 
 Other robots work the same way: start the simulation with `--profile` and choose the matching follower, for example **MuJoCo WidowX AI Follower** for `--profile trossen_wxai`, whose default name is `mujoco-trossen_wxai-follow` (`mujoco-<profile>-follow`, or `mujoco-<profile>-bimanual-follow` for two robots). A twin takes its real robot's leader, for example a WidowX AI leader arm. Each follower's advanced settings also hold the simulation's HTTP address (`http_url`, default `http://127.0.0.1:8080`), where its cameras and its 3D viewer (`/viewer`) are served.
 
+Studio's 3D model of a MuJoCo follower, on the robot page and in dataset playback, is the simulated robot itself. The SO-101 followers use the plugin's SO-101 URDFs. For every other follower, the plugin builds a URDF from the robot's MuJoCo model the first time Studio shows it: one link per body, the model's joints with their ranges, and the meshes MuJoCo draws, as STL files. Two robots stand where the profile's default scene puts them. It takes under a second and is cached in the per-user cache directory (`~/Library/Caches/physicalai_mujoco` on macOS, `~/.cache/physicalai_mujoco` on Linux, `%LOCALAPPDATA%\physicalai_mujoco\Cache` on Windows; `PHYSICALAI_MUJOCO_CACHE_DIR` overrides it), with one directory per plugin, Menagerie and MuJoCo version. A robot whose Menagerie model is not downloaded yet has no 3D model until it is (`physicalai-mujoco prefetch`).
+
 ### 4. Teleoperate and record datasets
 
 Record from the dataset page as with a real robot (**Add episode**, **Start episode**, then **Accept** or **Discard**). Use the viewer in place of resetting a physical scene:

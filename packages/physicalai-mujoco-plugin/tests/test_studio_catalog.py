@@ -552,15 +552,17 @@ class TestGeneratedEntries:
             payload_model.model_rebuild(raise_errors=True)
             assert payload_model.model_validate({"name": "x"}).name == "x"
 
-    def test_widowx_reuses_studios_urdf_and_others_rely_on_the_viewer(self) -> None:
-        definitions = {definition.type: definition for definition in _definitions()}
+    def test_so101_entries_keep_their_urdfs_and_the_others_get_generated_ones(self) -> None:
+        """STU-2: every follower has a 3D model; the WidowX AI's too is generated (tests/test_studio_urdf.py)."""
+        from physicalai_mujoco_plugin.studio_urdf import ensure_robot_urdf  # noqa: PLC0415
+
+        definitions = {definition.type: definition for definition in _definitions() if definition.role == "follower"}
+        assert all(definition.asset is not None for definition in definitions.values())
         asset = definitions["MuJoCo_WidowXAI_Follower"].asset
-        assert asset is not None
-        assert asset.root_resolver is None  # Studio's built-in WidowX AI URDF
-        assert str(asset.urdf_relative_path) == "widowx/urdf/generated/wxai/wxai_follower.urdf"
-        assert set(asset.joint_map) == {f"{name}.pos" for name in list_catalog_entries()[2].joint_names()}
-        for name in ("MuJoCo_WidowXAI_Bimanual_Follower", "MuJoCo_reBotB601_Follower", "MuJoCo_UnitreeG1_Follower"):
-            assert definitions[name].asset is None
+        assert str(asset.urdf_relative_path) == "trossen_wxai-1/robot.urdf"
+        assert asset.root_resolver.func is ensure_robot_urdf
+        assert asset.joint_map == {f"{name}.pos": [f"{name}_channel"] for name in list_catalog_entries()[2].joint_names()}
+        assert str(definitions["MuJoCo_SO101_Follower"].asset.urdf_relative_path) == "so101/so101_new_calib.urdf"
 
     def test_only_twins_get_a_bimanual_entry(self) -> None:
         """D2: two-arm entries for the robots with real bimanual leaders; other arms run two from the CLI only."""
