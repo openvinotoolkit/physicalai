@@ -582,6 +582,49 @@ class TestModelPathResolution:
         with pytest.raises(FileNotFoundError, match="No .* model file found"):
             InferenceModel(export_dir, backend="onnx")._get_model_path()
 
+    @staticmethod
+    def _make_export_dir(tmp_path: Path, declared: str, files: list[str]) -> Path:
+        export_dir = tmp_path / "exports"
+        export_dir.mkdir()
+        manifest = {
+            "format": "policy_package",
+            "version": "1.0",
+            "policy": {"name": "act", "source": {"class_path": "physicalai.policies.act.ACT"}},
+            "model": {"artifacts": {"onnx": declared}},
+        }
+        with (export_dir / "manifest.json").open("w") as f:
+            json.dump(manifest, f)
+        for name in files:
+            (export_dir / name).touch()
+        return export_dir
+
+    def test_declared_artifact_is_loaded_over_other_files(self, tmp_path: Path) -> None:
+        # Both files exist; the manifest names model.onnx, so the extra act.onnx must not win.
+        export_dir = self._make_export_dir(tmp_path, "model.onnx", ["act.onnx", "model.onnx"])
+        assert InferenceModel(export_dir, backend="onnx")._get_model_path() == export_dir / "model.onnx"
+
+    def test_declared_artifact_missing_raises(self, tmp_path: Path) -> None:
+        # The declared file is absent; loading an unrelated file instead would be silent and wrong.
+        export_dir = self._make_export_dir(tmp_path, "act.onnx", ["zz_unreviewed.onnx"])
+        with pytest.raises(FileNotFoundError, match="declared in the manifest is missing"):
+            InferenceModel(export_dir, backend="onnx")
+
+    def test_declared_artifact_cannot_escape_export_dir(self, tmp_path: Path) -> None:
+        export_dir = self._make_export_dir(tmp_path, "../evil.onnx", ["act.onnx"])
+        (tmp_path / "evil.onnx").touch()
+        with pytest.raises(ValueError, match="escapes the export directory"):
+            InferenceModel(export_dir, backend="onnx")
+
+    def test_glob_fallback_is_deterministic(self, tmp_path: Path) -> None:
+        # No declared artifact and a policy name that matches no file, so the lookup falls
+        # through to the directory search, which must be stable and not in filesystem order.
+        export_dir = tmp_path / "exports"
+        export_dir.mkdir()
+        for name in ("c.onnx", "a.onnx", "b.onnx"):
+            (export_dir / name).touch()
+        path = InferenceModel(export_dir, policy_name="missing", backend="onnx")._get_model_path()
+        assert path == export_dir / "a.onnx"
+
 
 @pytest.mark.usefixtures("_patch_adapter")
 class TestRepr:
