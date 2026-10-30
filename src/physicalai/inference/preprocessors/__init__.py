@@ -15,6 +15,7 @@ from physicalai.inference.preprocessors.lambda_processor import LambdaPreprocess
 from physicalai.inference.preprocessors.molmoact2 import MolmoAct2ModelInputs, MolmoAct2Preprocessor
 from physicalai.inference.preprocessors.new_line import NewLinePreprocessor
 from physicalai.inference.preprocessors.ov_tokenizer import OVTokenizer
+from physicalai.inference.preprocessors.patch_policy import PatchPolicyPreprocessor
 from physicalai.inference.preprocessors.pi05 import Pi05Preprocessor
 from physicalai.inference.preprocessors.resize import ResizeMode, ResizePreprocessor
 from physicalai.inference.preprocessors.rldx1 import Rldx1Preprocessor, Rldx1RopePreprocessor, Rldx1TokenComposer
@@ -32,6 +33,7 @@ __all__ = [
     "MolmoAct2Preprocessor",
     "NewLinePreprocessor",
     "OVTokenizer",
+    "PatchPolicyPreprocessor",
     "Pi05Preprocessor",
     "Preprocessor",
     "ResizeMode",
