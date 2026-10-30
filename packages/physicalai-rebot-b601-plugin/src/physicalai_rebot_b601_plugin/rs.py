@@ -223,6 +223,7 @@ class ReBotB601RS(ReBotB601DM):
         *,
         velocity_rad_s: float = 0.0,
         torque_nm: float = 0.0,
+        kp_scale: float = 1.0,
     ) -> None:
         _ = goal_time
         motor = self._motors[name]
@@ -230,7 +231,8 @@ class ReBotB601RS(ReBotB601DM):
             tau = self._gripper_output_torque(target_rad)
             motor.send_mit(0.0, 0.0, 0.0, _GRIPPER_DAMPING, tau)
             return
-        motor.send_mit(target_rad, velocity_rad_s, self._mit_gain(name, "kp"), self._mit_gain(name, "kd"), torque_nm)
+        kp = kp_scale * self._mit_gain(name, "kp")
+        motor.send_mit(target_rad, velocity_rad_s, kp, self._mit_gain(name, "kd"), torque_nm)
 
     def _gripper_control_dt(self) -> float:
         now = time.monotonic()

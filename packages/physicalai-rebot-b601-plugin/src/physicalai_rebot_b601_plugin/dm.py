@@ -83,6 +83,14 @@ _HOLD_READ_RETRY_S = 0.01
 _PARK_RATE_HZ = 50.0
 _PARK_MIN_STAGE_S = 1.0
 _PARK_SETTLE_S = 0.3
+# Soft release at the end of the park move (MIT mode): fade stiffness and gravity feedforward over
+# this long, then let the arm settle on damping alone before torque is released:
+_RELEASE_FADE_S = 1.0
+# ...then wait until every arm joint has been slower than _RELEASE_STILL_DEG_S for _RELEASE_STILL_S,
+# for at most _RELEASE_SETTLE_MAX_S.
+_RELEASE_STILL_DEG_S = 2.0
+_RELEASE_STILL_S = 0.3
+_RELEASE_SETTLE_MAX_S = 4.0
 # Abort the park move if a joint lags its command by more than this (e.g. a collision).
 _PARK_MAX_ERROR_DEG = 25.0
 
@@ -723,22 +731,33 @@ class ReBotB601DM:
         command[arm] = last[arm] + fraction * delta
         return command
 
-    def _send_command(self, command_deg: np.ndarray, dt: float, goal_time: float) -> None:
-        """Send public-frame targets with velocity and gravity feedforward, and remember them."""
+    def _send_command(self, command_deg: np.ndarray, dt: float, goal_time: float, *, hold_scale: float = 1.0) -> None:
+        """Send public-frame targets with velocity and gravity feedforward, and remember them.
+
+        ``hold_scale`` scales the MIT stiffness and gravity feedforward of the arm joints (damping is
+        kept); the soft release fades it to zero.
+        """
         last = self._last_command_deg
         velocity = np.zeros(self.NUM_JOINTS)
         if self._velocity_feedforward and last is not None:
             raw = (command_deg - last) / dt
             velocity = _VELOCITY_FILTER_ALPHA * raw + (1.0 - _VELOCITY_FILTER_ALPHA) * self._reference_velocity_deg_s
         self._reference_velocity_deg_s = velocity
-        torques = self._gravity_torques(command_deg)
+        torques = hold_scale * self._gravity_torques(command_deg)
 
         for i, name in enumerate(self.JOINT_ORDER):
             direction = self.JOINT_DIRECTIONS[name]
             target_rad = math.radians(self._public_to_motor_position(name, float(command_deg[i])))
             velocity_rad_s = math.radians(float(velocity[i]) * direction)
             torque_nm = float(torques[i]) / direction
-            self._send_joint(name, target_rad, goal_time, velocity_rad_s=velocity_rad_s, torque_nm=torque_nm)
+            self._send_joint(
+                name,
+                target_rad,
+                goal_time,
+                velocity_rad_s=velocity_rad_s,
+                torque_nm=torque_nm,
+                kp_scale=hold_scale,
+            )
         self._last_command_deg = command_deg.copy()
 
     def _gravity_torques(self, command_deg: np.ndarray) -> np.ndarray:
@@ -767,6 +786,7 @@ class ReBotB601DM:
         *,
         velocity_rad_s: float = 0.0,
         torque_nm: float = 0.0,
+        kp_scale: float = 1.0,
     ) -> None:
         motor = self._motors[name]
         if name == "gripper":
@@ -780,7 +800,7 @@ class ReBotB601DM:
             motor.send_mit(
                 target_rad,
                 velocity_rad_s,
-                self._mit_gain(name, "kp"),
+                kp_scale * self._mit_gain(name, "kp"),
                 self._mit_gain(name, "kd"),
                 torque_nm,
             )
@@ -821,6 +841,37 @@ class ReBotB601DM:
                 return
             start = goal
         time.sleep(_PARK_SETTLE_S)
+        self._release_softly()
+
+    def _release_softly(self) -> None:
+        """Fade stiffness and gravity feedforward to zero while keeping damping (MIT mode only).
+
+        The rest pose does not support every link (the wrist, for one, rests on whatever is below the
+        gripper). Fading the holding torque under damping lets such a link sink onto its support at a
+        walking pace, ``gravity torque / kd``, instead of dropping when torque is released.
+        """
+        if self._control_mode != "mit" or self._last_command_deg is None:
+            return
+        command = self._last_command_deg.copy()
+        steps = max(1, round(_RELEASE_FADE_S * _PARK_RATE_HZ))
+        for step in range(1, steps + 1):
+            self._send_command(
+                command, 1.0 / _PARK_RATE_HZ, goal_time=1.0 / _PARK_RATE_HZ, hold_scale=1.0 - step / steps
+            )
+            time.sleep(1.0 / _PARK_RATE_HZ)
+        self._wait_until_still()
+
+    def _wait_until_still(self) -> None:
+        """Wait (up to ``_RELEASE_SETTLE_MAX_S``) until every arm joint has been still for a moment."""
+        dt = 1.0 / _PARK_RATE_HZ
+        still_for = 0.0
+        waited = 0.0
+        while waited < _RELEASE_SETTLE_MAX_S and still_for < _RELEASE_STILL_S:
+            time.sleep(dt)
+            waited += dt
+            states = self._read_motor_states()[:REBOT_B601_ARM_JOINT_COUNT]
+            moving = max(abs(math.degrees(float(state.vel))) for state in states) > _RELEASE_STILL_DEG_S
+            still_for = 0.0 if moving else still_for + dt
 
     def _move_to(self, start: np.ndarray, goal: np.ndarray, speed: float) -> bool:
         """Stream a minimum-jerk move from ``start`` to ``goal`` peaking at ``speed`` degrees per second.

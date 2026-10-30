@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import math
 import sys
 from dataclasses import dataclass
@@ -696,6 +697,42 @@ class TestReBotB601DMControl:
         assert np.abs(np.diff(trace, axis=0)).max() <= 30.0 / 50 + 1e-6  # peaks at 30 deg/s
         assert clock.now - t0 >= 2 * 1.0  # each stage takes at least a second
         mock_motorbridge.Controller.from_dm_serial.return_value.disable_all.assert_called()
+
+    def test_park_ends_with_a_damped_soft_release(self, mock_motorbridge: MagicMock, clock: _FakeClock) -> None:
+        robot = _create_robot(mock_motorbridge, control_mode="mit", gravity_compensation=True, park_on_disconnect=True)
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        _follow_commands(motors)
+
+        robot.disconnect()
+
+        elbow = [c.args for c in motors[2].send_mit.call_args_list]
+        kps = [args[2] for args in elbow]
+        assert kps[-1] == 0.0  # stiffness faded out
+        assert elbow[-1][4] == 0.0  # gravity feedforward faded out
+        assert elbow[-1][3] == REBOT_B601_DM_MIT_KD["elbow_flex"]  # damping kept until torque is released
+        fade = kps[kps.index(REBOT_B601_DM_MIT_KP["elbow_flex"], len(kps) - 60) :]
+        assert all(a >= b for a, b in itertools.pairwise(fade))
+
+    def test_soft_release_waits_for_the_arm_to_settle(self, mock_motorbridge: MagicMock, clock: _FakeClock) -> None:
+        from physicalai_rebot_b601_plugin import dm
+
+        robot = _create_robot(mock_motorbridge, control_mode="mit")
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        for motor in motors:
+            motor.get_state.return_value = _MotorState(pos=0.0)
+        robot._last_command_deg = np.zeros(7)
+        motors[3].get_state.return_value = _MotorState(pos=0.0, vel=0.5)  # the wrist keeps sinking
+        start = clock.now
+
+        robot._release_softly()
+
+        assert clock.now - start == pytest.approx(dm._RELEASE_FADE_S + dm._RELEASE_SETTLE_MAX_S, abs=0.05)
+        motors[3].get_state.return_value = _MotorState(pos=0.0)
+        start = clock.now
+        robot._release_softly()
+        assert clock.now - start < dm._RELEASE_FADE_S + 2 * dm._RELEASE_STILL_S
 
     def test_disconnect_skips_park_while_torque_is_off(self, mock_motorbridge: MagicMock, clock: _FakeClock) -> None:
         robot = _create_robot(mock_motorbridge, control_mode="mit", park_on_disconnect=True)

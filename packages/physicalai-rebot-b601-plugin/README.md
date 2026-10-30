@@ -62,7 +62,9 @@ Three more behaviours apply to both modes:
   there.
 - **Park on disconnect** (`park_on_disconnect`, default on): before torque is released, the arm
   folds into its rest (zero) pose in two smooth stages at up to 30 °/s: the base
-  and wrist first, then the shoulder and elbow. It is skipped while torque is already off and
+  and wrist first, then the shoulder and elbow. In MIT mode it then fades stiffness and gravity
+  feedforward out over a second while keeping damping, so a link the rest pose does not support
+  (such as the wrist) sinks onto its support slowly. It is skipped while torque is already off and
   stops early if a joint is blocked. Without it, the arm falls when torque is released.
 
 The default MIT gains:
