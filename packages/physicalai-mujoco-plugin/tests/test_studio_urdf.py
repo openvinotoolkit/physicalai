@@ -411,6 +411,22 @@ class TestCache:
         assert "menagerie" in version
         assert "mujoco" in version
 
+    def test_an_entry_of_an_older_generator_is_not_served(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """A checkout updated in place keeps its package version; the generator version still moves the cache."""
+        monkeypatch.setenv(CACHE_DIR_ENV, str(tmp_path))
+        entry = ENTRIES["MuJoCo_reBotB601_Follower"]
+        roots = []
+        for generator in (studio_urdf.GENERATOR_VERSION - 1, studio_urdf.GENERATOR_VERSION):
+            monkeypatch.setattr(studio_urdf, "GENERATOR_VERSION", generator)
+            monkeypatch.setattr(studio_urdf, "_READY", set())
+            studio_urdf.cache_version.cache_clear()
+            roots.append(ensure_robot_urdf(entry.profile, entry.prefixes))
+        studio_urdf.cache_version.cache_clear()
+        old, new = roots
+        assert old != new
+        assert old.name.startswith(f"v{studio_urdf.GENERATOR_VERSION - 1}-")
+        assert (new / entry_key(entry.profile, 1) / URDF_FILE).is_file()
+
     def test_a_model_that_needs_a_download_is_left_out(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """Studio answers 404 rather than downloading a model inside a request."""
         monkeypatch.setenv(CACHE_DIR_ENV, str(tmp_path))

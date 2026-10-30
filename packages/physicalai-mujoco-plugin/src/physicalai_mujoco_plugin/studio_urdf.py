@@ -73,7 +73,7 @@ if TYPE_CHECKING:
     from physicalai_mujoco_plugin.profiles import RobotProfile
     from physicalai_mujoco_plugin.profiles.derive import DerivedLayout
 
-GENERATOR_VERSION = 1
+GENERATOR_VERSION = 2
 """Bump when the generated files change, so caches of older generators are not served."""
 URDF_FILE = "robot.urdf"
 """The URDF's name in its entry directory."""
