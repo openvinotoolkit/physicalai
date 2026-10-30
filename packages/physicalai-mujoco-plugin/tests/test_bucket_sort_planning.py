@@ -338,3 +338,21 @@ def test_a_stuck_start_planned_on_the_thread_matches_one_planned_in_the_tick(sce
     assert (move is None) == (inline is None)
     if inline is not None:
         np.testing.assert_array_equal(move.targets, inline.targets)
+
+
+@pytest.mark.parametrize("background", [True, False])
+def test_a_reset_discards_a_stuck_start_not_polled_yet(scene: MuJoCoRobot, background: bool) -> None:  # noqa: FBT001
+    """Planned for the layout before the reset, the move must not come back from a later poll."""
+    demo = _demo(scene)
+    data = scene._sim.data
+    demo.background_planning = background
+    try:
+        demo.begin_stuck_start(data, TICK_S, np.random.default_rng(2))
+        job = demo._job
+        if job is not None:
+            job.thread.join(10.0)
+            assert job.done.is_set()  # done, and not polled
+        demo.reset()
+        assert demo.poll_stuck_start(TICK_S) == (False, None)
+    finally:
+        demo.background_planning = True

@@ -2140,12 +2140,14 @@ class BucketSortDemonstrator:
 
         A plan in flight is discarded: the reset takes effect once its thread ends, within a few
         milliseconds (:func:`_checkpoint`); until then :meth:`step` holds the actuators' targets.
+        A finished plan not collected yet, and a stuck start not polled yet, are discarded too.
         """
         job = self._job
         if job is not None and not job.done.is_set():
             job.cancelled = True
             return
         self._job = None
+        self._stuck_result = None
         self._reset_state()
 
     def close(self, timeout_s: float = 2.0) -> None:
