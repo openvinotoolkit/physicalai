@@ -6,9 +6,9 @@
 This module exposes :class:`~physicalai.capture.cameras.uvc.UVCCamera` as the
 user-facing entry point for "standard USB video cameras" (UVC devices).
 
-Internally it delegates to one of:
-  - :class:`~physicalai.capture.cameras.uvc.v4l2.V4L2Camera` on Linux
-  - :class:`~physicalai.capture.cameras.uvc._omnicamera.OmniCamera` elsewhere
+The default backend is :class:`~physicalai.capture.cameras.uvc._omnicamera.OmniCamera`
+on every platform. Linux callers can explicitly select ``backend="v4l2"`` to use
+:class:`~physicalai.capture.cameras.uvc.v4l2.V4L2Camera`.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ class UVCCamera(Camera):
         height: Requested frame height in pixels.
         fps: Requested frames per second.
         color_mode: Pixel format for returned frames.
-        backend: ``"v4l2"``, or ``"omnicamera"``.
+        backend: ``"omnicamera"`` (default on every platform), or ``"v4l2"`` on Linux.
         backend_options: Backend-specific overrides forwarded to the selected
             backend constructor.
     """
@@ -67,7 +67,7 @@ class UVCCamera(Camera):
         if isinstance(device, int) or (isinstance(device, str) and device.isdecimal()):
             self._device_path: str = f"/dev/video{device}"
         elif isinstance(device, str):
-            self._device_path: str = device
+            self._device_path = device
         elif isinstance(device, dict):
             index = device.get("index", "0")
             self._device_path = f"/dev/video{index}"
@@ -85,7 +85,7 @@ class UVCCamera(Camera):
             elif isinstance(device, dict):
                 device_path = f"/dev/video{device.get('index', '0')}"
             else:
-                device_path = str(device)
+                device_path = device
 
             # Forward V4L2-specific overrides (e.g. num_buffers, pixel_format).
             # The facade's ``device`` maps to V4L2's ``device_path``.
@@ -111,10 +111,10 @@ class UVCCamera(Camera):
                 **opts,
             )
         elif backend == "opencv":
-            msg = "The 'opencv' backend has been removed. Use backend='omnicamera' or backend='auto' instead."
+            msg = "The 'opencv' backend has been removed. Use backend='omnicamera' or backend='v4l2' on Linux."
             raise ValueError(msg)
         else:
-            msg = f"Unknown backend {backend!r}. Use 'auto', 'v4l2', or 'omnicamera'."
+            msg = f"Unknown backend {backend!r}. Use 'omnicamera', or 'v4l2' on Linux."
             raise ValueError(msg)
 
     # ------------------------------------------------------------------

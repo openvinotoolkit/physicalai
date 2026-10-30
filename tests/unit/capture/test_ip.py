@@ -1,11 +1,14 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
-# ruff: noqa: S101, PLR2004
+# ruff: noqa: S101, SLF001, PLR2004
 
 from __future__ import annotations
 
 import os
+import queue
+import threading
 import time
+from collections.abc import Iterator
 from unittest import mock
 
 import cv2
@@ -21,415 +24,352 @@ URL = "rtsp://cam.example.internal:554/stream"
 
 
 def _bgr_frame(height: int = 480, width: int = 640) -> np.ndarray:
-    """A frame with distinct B/G/R channel values so conversion is checkable."""
-    frame = np.zeros((height, width, 3), dtype=np.uint8)
-    frame[..., 0] = 10  # B
-    frame[..., 1] = 20  # G
-    frame[..., 2] = 30  # R
+    frame = np.empty((height, width, 3), dtype=np.uint8)
+    frame[:] = (10, 20, 30)
     return frame
 
 
 @pytest.fixture
-def mock_cap():  # noqa: ANN201
-    """A MagicMock standing in for cv2.VideoCapture — the only network I/O boundary.
-
-    cv2.cvtColor / cv2.resize are the real OpenCV implementations (a core
-    dependency here, unlike the vendor SDKs used by other camera backends),
-    so conversion/resize correctness is verified against the real math.
-    """
+def mock_cap() -> Iterator[mock.MagicMock]:
+    """Only fake the native I/O boundary; use real conversion/resize."""
     cap = mock.MagicMock()
     cap.isOpened.return_value = True
-    cap.read.return_value = (True, _bgr_frame())
-    cap.set.return_value = True
-    # Patch the cv2 reference already bound inside the module under test, not
-    # the global "cv2" import — other tests in this suite that fake out cv2
-    # entirely (e.g. test_basler.py) pop it from sys.modules in teardown,
-    # which would otherwise leave a stale/mismatched patch target depending
-    # on test execution order.
-    with mock.patch(
-        "physicalai.capture.cameras.ip._camera.cv2.VideoCapture",
-        return_value=cap,
-    ) as video_capture:
-        cap.video_capture_mock = video_capture
-        try:
-            yield cap
-        finally:
-            # connect() sets this real process-global env var for rtsp://
-            # URLs (see IPCamera's "RTSP transport" docstring section); don't
-            # leak it into other tests/files in this process.
-            os.environ.pop("OPENCV_FFMPEG_CAPTURE_OPTIONS", None)
+
+    def read() -> tuple[bool, np.ndarray]:
+        time.sleep(0.005)
+        return True, _bgr_frame()
+
+    cap.read.side_effect = read
+    with mock.patch("physicalai.capture.cameras.ip._camera.cv2.VideoCapture", return_value=cap) as constructor:
+        cap.video_capture_mock = constructor
+        yield cap
 
 
-def test_connect_opens_stream_and_reads_first_frame(mock_cap: mock.MagicMock) -> None:
-    camera = IPCamera(url=URL)
-    camera.connect()
+@pytest.fixture(autouse=True)
+def close_cameras(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    cameras: list[IPCamera] = []
+    init = IPCamera.__init__
+
+    def tracked_init(
+        camera: IPCamera,
+        *,
+        url: str,
+        fps: int = 30,
+        width: int | None = None,
+        height: int | None = None,
+        color_mode: ColorMode = ColorMode.RGB,
+    ) -> None:
+        init(camera, url=url, fps=fps, width=width, height=height, color_mode=color_mode)
+        cameras.append(camera)
+
+    monkeypatch.setattr(IPCamera, "__init__", tracked_init)
+    yield
+    for camera in cameras:
+        camera.disconnect()
+
+
+def test_open_parameters_and_fps(mock_cap: mock.MagicMock) -> None:
+    camera = IPCamera(url=URL, fps=15)
+    camera.connect(timeout=4.0)
     assert camera.is_connected
-    mock_cap.video_capture_mock.assert_called_once()
-    call_args = mock_cap.video_capture_mock.call_args
-    assert call_args[0][0] == URL
-    assert call_args[0][1] == cv2.CAP_FFMPEG
-
-
-def test_connect_constructor_params_only_include_open_timeout(mock_cap: mock.MagicMock) -> None:
-    """Regression test for a real (non-mocked) OpenCV incompatibility: passing
-    CAP_PROP_READ_TIMEOUT_MSEC and/or CAP_PROP_BUFFERSIZE in the VideoCapture
-    constructor's params array made a real opencv-python-headless build (5.x,
-    FFmpeg backend) reject the whole array and fail to open *any* stream,
-    valid or not — "unsupported parameters in .open(), ... Bailout". Verified
-    against the real library, not just this mock. Only
-    CAP_PROP_OPEN_TIMEOUT_MSEC may go in the constructor; the others must be
-    applied via cap.set() after a successful open.
-    """
-    camera = IPCamera(url=URL)
-    camera.connect(timeout=5.0)
-    call_args = mock_cap.video_capture_mock.call_args
-    params = call_args[0][2]
-    assert params == [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000]
+    mock_cap.video_capture_mock.assert_called_once_with(
+        URL,
+        cv2.CAP_FFMPEG,
+        [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 4000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 1000],
+    )
     mock_cap.set.assert_any_call(cv2.CAP_PROP_BUFFERSIZE, 1)
+    mock_cap.set.assert_any_call(cv2.CAP_PROP_FPS, 15)
+    # READ_TIMEOUT is open-only on real FFmpeg, not a cap.set() property.
+    assert all(call.args[0] != cv2.CAP_PROP_READ_TIMEOUT_MSEC for call in mock_cap.set.call_args_list)
 
 
-def test_connect_forces_tcp_transport_for_rtsp_urls(
+@pytest.mark.parametrize("previous", [None, "some_other_option;value"])
+def test_rtsp_options_are_scoped_to_open(
     mock_cap: mock.MagicMock,
     monkeypatch: pytest.MonkeyPatch,
+    previous: str | None,
 ) -> None:
-    """Regression test for a real-camera failure (Reolink): without forcing
-    TCP, FFmpeg's default RTSP media transport is UDP on many builds, which
-    routers/NAT frequently drop — the session opens fine (isOpened() True)
-    but no frame data ever arrives, and every read blocks until it gives up.
-    Forcing TCP (matching the documented `ffprobe -rtsp_transport tcp`
-    pre-flight check) fixed this against the real camera.
-    """
-    monkeypatch.delenv("OPENCV_FFMPEG_CAPTURE_OPTIONS", raising=False)
-    seen_options: list[str | None] = []
+    if previous is None:
+        monkeypatch.delenv("OPENCV_FFMPEG_CAPTURE_OPTIONS", raising=False)
+    else:
+        monkeypatch.setenv("OPENCV_FFMPEG_CAPTURE_OPTIONS", previous)
+    seen: list[str | None] = []
 
-    def _capture_env(*_args: object, **_kwargs: object) -> mock.MagicMock:
-        seen_options.append(os.environ.get("OPENCV_FFMPEG_CAPTURE_OPTIONS"))
+    def capture(*_args: object) -> mock.MagicMock:
+        seen.append(os.environ.get("OPENCV_FFMPEG_CAPTURE_OPTIONS"))
         return mock_cap
 
-    mock_cap.video_capture_mock.side_effect = _capture_env
-
-    camera = IPCamera(url=URL)
-    camera.connect(timeout=4.0)
-
-    assert len(seen_options) == 1
-    options = seen_options[0]
-    assert options is not None
-    assert "rtsp_transport;tcp" in options
-    assert "stimeout;4000000" in options
+    mock_cap.video_capture_mock.side_effect = capture
+    IPCamera(url=URL).connect(timeout=4.0)
+    assert seen == ["rtsp_transport;tcp|stimeout;4000000"]
+    assert os.environ.get("OPENCV_FFMPEG_CAPTURE_OPTIONS") == previous
 
 
-def test_connect_restores_previous_env_var_after_opening(
-    mock_cap: mock.MagicMock,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """connect() must not leak its temporary env var past the VideoCapture()
-    call — otherwise it silently affects unrelated cv2.VideoCapture() opens
-    elsewhere in the process for the rest of its lifetime.
-    """
-    monkeypatch.setenv("OPENCV_FFMPEG_CAPTURE_OPTIONS", "some_other_option;value")
-    camera = IPCamera(url=URL)
-    camera.connect(timeout=4.0)
-    assert os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] == "some_other_option;value"
-
-
-def test_connect_clears_env_var_after_opening_when_previously_unset(
-    mock_cap: mock.MagicMock,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_http_does_not_set_rtsp_options(mock_cap: mock.MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENCV_FFMPEG_CAPTURE_OPTIONS", raising=False)
-    camera = IPCamera(url=URL)
-    camera.connect(timeout=4.0)
+    IPCamera(url="http://cam.example.internal/stream.mjpg").connect()
     assert "OPENCV_FFMPEG_CAPTURE_OPTIONS" not in os.environ
 
 
-def test_connect_does_not_set_rtsp_options_for_non_rtsp_urls(
-    mock_cap: mock.MagicMock,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("OPENCV_FFMPEG_CAPTURE_OPTIONS", raising=False)
-    camera = IPCamera(url="http://cam.example.internal/stream.mjpg")
-    camera.connect()
-    assert "OPENCV_FFMPEG_CAPTURE_OPTIONS" not in os.environ
-
-
-def test_connect_raises_capture_error_when_not_opened(mock_cap: mock.MagicMock) -> None:
+def test_open_failure_releases_handle(mock_cap: mock.MagicMock) -> None:
     mock_cap.isOpened.return_value = False
-    camera = IPCamera(url=URL)
     with pytest.raises(CaptureError, match="Failed to open"):
-        camera.connect()
+        IPCamera(url=URL).connect()
     mock_cap.release.assert_called_once()
 
 
-def test_connect_timeout_raises_capture_timeout(mock_cap: mock.MagicMock) -> None:
+def test_open_exception_redacts_url(mock_cap: mock.MagicMock) -> None:
+    mock_cap.video_capture_mock.side_effect = RuntimeError("native failure")
+    with pytest.raises(CaptureError, match="Failed to open") as exc:
+        IPCamera(url="rtsp://user:secret@cam.example.internal/stream").connect()
+    assert "secret" not in str(exc.value)
+
+
+def test_connect_timeout_releases_and_joins(mock_cap: mock.MagicMock) -> None:
+    mock_cap.read.side_effect = None
     mock_cap.read.return_value = (False, None)
     camera = IPCamera(url=URL)
     with pytest.raises(CaptureTimeoutError):
-        camera.connect(timeout=0.05)
+        camera.connect(timeout=0.03)
+    assert camera._reader is None
+    assert not camera.is_connected
+    mock_cap.release.assert_called_once()
+    assert mock_cap.read.call_count < 100  # failed reads back off, not busy-spin
 
 
-def test_connect_releases_capture_when_first_frame_conversion_fails(
-    mock_cap: mock.MagicMock,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """If reading/converting the first frame raises unexpectedly, the
-    VideoCapture handle assigned to self._cap before this point must still
-    be released — otherwise it leaks and orphans on a subsequent connect().
-    """
+def test_reader_start_failure_releases_handle(mock_cap: mock.MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(threading.Thread, "start", mock.Mock(side_effect=RuntimeError("cannot start thread")))
+    camera = IPCamera(url=URL)
+    with pytest.raises(CaptureError, match="Failed to start"):
+        camera.connect()
+    mock_cap.release.assert_called_once()
+    assert camera._reader is None
+    assert not camera.is_connected
+
+
+def test_conversion_failure_releases_and_joins(mock_cap: mock.MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
     camera = IPCamera(url=URL)
     monkeypatch.setattr(camera, "_convert", mock.Mock(side_effect=RuntimeError("bad channel layout")))
-    with pytest.raises(CaptureError, match="Failed to read first frame"):
+    with pytest.raises(CaptureError, match="acquisition failed"):
         camera.connect()
     mock_cap.release.assert_called_once()
-    assert not camera.is_connected
+    assert camera._reader is None
 
 
-def test_connect_total_timeout_is_not_doubled(mock_cap: mock.MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
-    """connect()'s overall wait must not exceed ~timeout, even if opening the
-    stream itself consumes most of the budget (CAP_PROP_OPEN_TIMEOUT_MSEC
-    only bounds the constructor call, not the first-frame wait after it).
-    """
+def test_connect_uses_remaining_deadline(mock_cap: mock.MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
     times = iter([0.0, 10.0])
-    monkeypatch.setattr(
-        "physicalai.capture.cameras.ip._camera.time.monotonic",
-        lambda: next(times, 10.0),
-    )
-    camera = IPCamera(url=URL)
+    monkeypatch.setattr("physicalai.capture.cameras.ip._camera.time.monotonic", lambda: next(times, 10.0))
     with pytest.raises(CaptureTimeoutError):
-        camera.connect(timeout=5.0)
-    # The single monotonic() check inside _wait_first_frame's loop condition
-    # already saw a time past the deadline computed at the top of connect(),
-    # so the read loop body never ran — proving both phases share one budget.
-    mock_cap.read.assert_not_called()
+        IPCamera(url=URL).connect(timeout=5.0)
 
 
-def test_connect_clamps_read_timeout_to_remaining_budget(
-    mock_cap: mock.MagicMock,
+@pytest.mark.parametrize("first_timestamp", [0.99, 1.02])
+def test_first_frame_deadline_uses_first_acquisition_not_latest(
     monkeypatch: pytest.MonkeyPatch,
+    first_timestamp: float,
 ) -> None:
-    """Each cap.read() attempt inside the first-frame wait must be bounded by
-    whatever time is actually left before connect()'s deadline, not the full
-    original timeout configured at construction — otherwise a slow open
-    followed by one blocked read could overrun the caller's timeout.
-    """
-    # deadline = 0.0 + 5.0 = 5.0; the loop then sees 4.0s elapsed, i.e. 1.0s
-    # left, and must clamp the read timeout to 1000ms, not the original 5000ms.
-    times = iter([0.0, 4.0])
-    monkeypatch.setattr(
-        "physicalai.capture.cameras.ip._camera.time.monotonic",
-        lambda: next(times, 4.0),
-    )
     camera = IPCamera(url=URL)
-    camera.connect(timeout=5.0)
-    mock_cap.set.assert_any_call(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 1000.0)
+    camera._first_timestamp = first_timestamp
+    # The reader overwrote the slot before the waiter resumed.
+    camera._latest_frame = Frame(_bgr_frame(), timestamp=1.02, sequence=1)
+    monkeypatch.setattr("physicalai.capture.cameras.ip._camera.time.monotonic", lambda: 1.03)
+    if first_timestamp <= 1.0:
+        camera._wait_first_frame(deadline=1.0)
+    else:
+        with pytest.raises(CaptureTimeoutError):
+            camera._wait_first_frame(deadline=1.0)
 
 
-def test_connect_sets_fps_best_effort(mock_cap: mock.MagicMock) -> None:
-    camera = IPCamera(url=URL, fps=15)
-    camera.connect()
-    mock_cap.set.assert_any_call(cv2.CAP_PROP_FPS, 15)
-
-
-def test_disconnect_releases_capture(mock_cap: mock.MagicMock) -> None:
+def test_disconnect_and_reconnect(mock_cap: mock.MagicMock) -> None:
     camera = IPCamera(url=URL)
     camera.connect()
+    reader = camera._reader
+    camera.connect()  # idempotent, no second native owner
+    assert camera._reader is reader
     camera.disconnect()
+    assert reader is not None and not reader.is_alive()
     mock_cap.release.assert_called_once()
     assert not camera.is_connected
-
-
-def test_disconnect_without_connect_is_safe() -> None:
-    camera = IPCamera(url=URL)
+    camera.connect()
+    assert camera._reader is not reader
+    assert camera.read_latest().sequence < 3
     camera.disconnect()
+    assert mock_cap.release.call_count == 2
 
 
-def test_read_returns_rgb_frame_with_correct_shape_and_dtype(mock_cap: mock.MagicMock) -> None:
+def test_blocked_reader_retains_handle_and_prevents_reopen(mock_cap: mock.MagicMock) -> None:
+    resume = threading.Event()
+    blocked = threading.Event()
+    first_read = True
+
+    def read() -> tuple[bool, np.ndarray | None]:
+        nonlocal first_read
+        if first_read:
+            first_read = False
+            return True, _bgr_frame(height=2, width=2)
+        blocked.set()
+        resume.wait()
+        return False, None
+
+    mock_cap.read.side_effect = read
     camera = IPCamera(url=URL)
+    try:
+        camera.connect()
+        reader = camera._reader
+        assert reader is not None and blocked.wait(1)
+        # Skip the actual join delay while the native read remains blocked.
+        with mock.patch.object(reader, "join") as join:
+            for operation in (camera.disconnect, camera.connect):
+                with pytest.raises(CaptureError, match="did not stop"):
+                    operation()
+                assert camera._reader is reader and reader.is_alive()
+                assert camera._cap is mock_cap
+                assert not camera.is_connected
+                mock_cap.release.assert_not_called()
+                mock_cap.video_capture_mock.assert_called_once()
+            assert join.call_args_list == [mock.call(timeout=camera._IO_TIMEOUT_S + 1.0)] * 2
+    finally:
+        resume.set()
+        camera.disconnect()
+    assert camera._reader is None and camera._cap is None
+    assert not reader.is_alive()
+    mock_cap.release.assert_called_once()
+
+
+def test_disconnect_without_connect() -> None:
+    IPCamera(url=URL).disconnect()
+
+
+@pytest.mark.parametrize("method", ["read", "read_latest"])
+def test_not_connected(method: str) -> None:
+    with pytest.raises(NotConnectedError):
+        getattr(IPCamera(url=URL), method)()
+
+
+@pytest.mark.parametrize(
+    ("mode", "width", "height", "shape", "pixel"),
+    [
+        (ColorMode.RGB, None, None, (480, 640, 3), (30, 20, 10)),
+        (ColorMode.BGR, None, None, (480, 640, 3), (10, 20, 30)),
+        (ColorMode.GRAY, None, None, (480, 640), None),
+        (ColorMode.RGB, 320, 240, (240, 320, 3), (30, 20, 10)),
+        (ColorMode.RGB, 320, None, (480, 320, 3), (30, 20, 10)),
+        (ColorMode.RGB, None, 240, (240, 640, 3), (30, 20, 10)),
+    ],
+)
+def test_conversion(
+    mock_cap: mock.MagicMock,
+    mode: ColorMode,
+    width: int | None,
+    height: int | None,
+    shape: tuple[int, ...],
+    pixel: tuple[int, ...] | None,
+) -> None:
+    camera = IPCamera(url=URL, color_mode=mode, width=width, height=height)
     camera.connect()
     frame = camera.read()
-    assert isinstance(frame, Frame)
-    assert frame.data.shape == (480, 640, 3)
+    assert frame.data.shape == shape
     assert frame.data.dtype == np.uint8
-    # BGR (10, 20, 30) -> RGB (30, 20, 10)
-    assert tuple(frame.data[0, 0]) == (30, 20, 10)
+    if pixel is not None:
+        assert tuple(frame.data[0, 0]) == pixel
 
 
-def test_read_increments_sequence(mock_cap: mock.MagicMock) -> None:
+def test_read_sequence_advances(mock_cap: mock.MagicMock) -> None:
     camera = IPCamera(url=URL)
     camera.connect()
-    f1 = camera.read()
-    f2 = camera.read()
-    f3 = camera.read()
-    assert f1.sequence == 1
-    assert f2.sequence == 2
-    assert f3.sequence == 3
+    first_timestamp = camera._first_timestamp
+    frames = [camera.read() for _ in range(3)]
+    assert frames[0].sequence < frames[1].sequence < frames[2].sequence
+    assert camera._first_timestamp == first_timestamp
+    assert first_timestamp is not None
+    assert first_timestamp < frames[-1].timestamp
 
 
-def test_read_timeout_reports_capture_timeout(mock_cap: mock.MagicMock) -> None:
+def test_stall_keeps_metadata_and_consumer_timeout_bounded(mock_cap: mock.MagicMock) -> None:
+    # Block native acquisition independently of consumer calls.
+    frames: queue.Queue[np.ndarray | Exception] = queue.Queue()
+    frames.put(_bgr_frame())
+
+    def read() -> tuple[bool, np.ndarray | None]:
+        try:
+            frame = frames.get(timeout=0.05)
+        except queue.Empty:
+            return False, None
+        if isinstance(frame, Exception):
+            raise frame
+        return True, frame
+
+    mock_cap.read.side_effect = read
     camera = IPCamera(url=URL)
     camera.connect()
-    mock_cap.read.return_value = (False, None)
+    first = camera.read_latest()
+    before_calls = mock_cap.read.call_count
+    for _ in range(100):
+        latest = camera.read_latest()
+        assert latest is first
+        assert latest.sequence == first.sequence
+        assert latest.timestamp == first.timestamp
+    assert mock_cap.read.call_count <= before_calls + 1
     with pytest.raises(CaptureTimeoutError):
-        camera.read(timeout=0.05)
-
-
-def test_read_clamps_timeout_to_remaining_budget(
-    mock_cap: mock.MagicMock,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A failed first attempt must shrink the read timeout used for the next
-    one to whatever's actually left, not keep re-applying the original full
-    timeout on every retry.
-    """
-    camera = IPCamera(url=URL)
-    camera.connect()
-    mock_cap.set.reset_mock()
-    mock_cap.read.side_effect = [(False, None), (True, _bgr_frame())]
-    times = iter([0.0, 0.0, 1.0, 1.0])
-    monkeypatch.setattr(
-        "physicalai.capture.cameras.ip._camera.time.monotonic",
-        lambda: next(times, 1.0),
-    )
-    camera.read(timeout=2.0)
-    mock_cap.set.assert_any_call(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 2000.0)
-    mock_cap.set.assert_any_call(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 1000.0)
-
-
-def test_read_sleeps_between_failed_attempts_instead_of_busy_spinning(
-    mock_cap: mock.MagicMock,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A dropped connection where cap.read() fails immediately (no network
-    block) must not pin a CPU core in a tight loop — each failed attempt
-    should back off by _POLL_INTERVAL_S.
-    """
-    camera = IPCamera(url=URL)
-    camera.connect()
-    mock_cap.read.side_effect = [(False, None), (False, None), (True, _bgr_frame())]
-    sleep_mock = mock.MagicMock()
-    monkeypatch.setattr("physicalai.capture.cameras.ip._camera.time.sleep", sleep_mock)
-    camera.read()
-    assert sleep_mock.call_args_list == [mock.call(IPCamera._POLL_INTERVAL_S)] * 2  # noqa: SLF001
-
-
-def test_read_not_connected_raises() -> None:
-    camera = IPCamera(url=URL)
-    with pytest.raises(NotConnectedError):
+        camera.read(timeout=0.01)
+    frames.put(_bgr_frame())
+    assert camera.read().sequence > first.sequence
+    frames.put(RuntimeError("native error containing credentials"))
+    with pytest.raises(CaptureError, match="acquisition failed"):
         camera.read()
-
-
-def test_read_latest_returns_cached_when_no_new_frame(mock_cap: mock.MagicMock) -> None:
-    camera = IPCamera(url=URL)
+    with pytest.raises(CaptureError, match="acquisition failed"):
+        camera.read_latest()
+    assert not camera.is_connected
+    frames.put(_bgr_frame())
     camera.connect()
-    first = camera.read()
-    mock_cap.read.return_value = (False, None)
-    latest = camera.read_latest()
-    assert latest.sequence == first.sequence
-    np.testing.assert_array_equal(latest.data, first.data)
+    assert camera.is_connected
+    assert camera.read_latest().sequence == 0
 
 
-def test_read_latest_falls_back_to_connect_time_frame_with_valid_timestamp(
+def test_release_failure_never_escapes_reader(
     mock_cap: mock.MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The frame captured during connect() (cached as the read_latest()
-    fallback) must have a real timestamp, not the 0.0 sentinel default —
-    otherwise calling read_latest() right after connect(), before any
-    read()/read_latest() has ever succeeded live, returns a Frame that looks
-    like it was captured at process start rather than just now.
-    """
-    before = time.monotonic()
+    escaped: list[object] = []
+    monkeypatch.setattr(threading, "excepthook", escaped.append)
+    mock_cap.release.side_effect = RuntimeError("rtsp://user:secret@cam.example.internal/stream")
     camera = IPCamera(url=URL)
     camera.connect()
+    camera.disconnect()
+    assert escaped == []
+    assert camera._reader is None
+
+
+def test_disconnect_wakes_waiting_consumer(mock_cap: mock.MagicMock) -> None:
+    camera = IPCamera(url=URL)
+    camera.connect()
+    mock_cap.read.side_effect = None
     mock_cap.read.return_value = (False, None)
-    latest = camera.read_latest()
-    assert latest.timestamp >= before
-    assert latest.timestamp > 0.0
-
-
-def test_read_latest_uses_minimal_read_timeout_not_read_timeout(mock_cap: mock.MagicMock) -> None:
-    """read_latest() must not inherit whatever multi-second timeout a prior
-    read()/connect() call configured on the capture object — otherwise a
-    stalled stream blocks the control loop instead of returning the cached
-    frame promptly.
-    """
-    camera = IPCamera(url=URL)
-    camera.connect()
-    camera.read(timeout=5.0)  # leaves a 5s read timeout configured on cap
-    mock_cap.set.reset_mock()
+    # Consume any frame already in flight before starting the blocked read.
+    time.sleep(0.02)
     camera.read_latest()
-    mock_cap.set.assert_called_once_with(cv2.CAP_PROP_READ_TIMEOUT_MSEC, IPCamera._LATEST_READ_TIMEOUT_MS)  # noqa: SLF001
+    errors: list[Exception] = []
+    started = threading.Event()
+
+    def consume() -> None:
+        started.set()
+        try:
+            camera.read(timeout=10)
+        except CaptureError as exc:
+            errors.append(exc)
+
+    consumer = threading.Thread(target=consume)
+    consumer.start()
+    assert started.wait(1)
+    camera.disconnect()
+    consumer.join(timeout=1)
+    assert not consumer.is_alive()
+    assert len(errors) == 1 and isinstance(errors[0], NotConnectedError)
 
 
-def test_read_latest_not_connected_raises() -> None:
-    camera = IPCamera(url=URL)
-    with pytest.raises(NotConnectedError):
-        camera.read_latest()
-
-
-def test_read_latest_raises_when_never_connected_frame(mock_cap: mock.MagicMock) -> None:
-    mock_cap.read.side_effect = [(True, _bgr_frame())] + [(False, None)] * 5
-    camera = IPCamera(url=URL)
-    camera.connect()
-    camera._last_frame_data = None  # simulate no cached frame available  # noqa: SLF001
-    with pytest.raises(CaptureError, match="No frame available"):
-        camera.read_latest()
-
-
-def test_color_mode_bgr_skips_conversion(mock_cap: mock.MagicMock) -> None:
-    camera = IPCamera(url=URL, color_mode=ColorMode.BGR)
-    camera.connect()
-    frame = camera.read()
-    assert tuple(frame.data[0, 0]) == (10, 20, 30)
-
-
-def test_color_mode_gray(mock_cap: mock.MagicMock) -> None:
-    camera = IPCamera(url=URL, color_mode=ColorMode.GRAY)
-    camera.connect()
-    frame = camera.read()
-    assert frame.data.shape == (480, 640)
-    assert frame.data.dtype == np.uint8
-
-
-def test_resize_applied_when_dimensions_requested(mock_cap: mock.MagicMock) -> None:
-    camera = IPCamera(url=URL, width=320, height=240)
-    camera.connect()
-    frame = camera.read()
-    assert frame.data.shape == (240, 320, 3)
-
-
-def test_resize_applied_when_only_width_requested(mock_cap: mock.MagicMock) -> None:
-    """Requesting only one dimension must still resize that axis, not
-    silently no-op both (native frame is 480x640)."""
-    camera = IPCamera(url=URL, width=320)
-    camera.connect()
-    frame = camera.read()
-    assert frame.data.shape == (480, 320, 3)
-
-
-def test_resize_applied_when_only_height_requested(mock_cap: mock.MagicMock) -> None:
-    camera = IPCamera(url=URL, height=240)
-    camera.connect()
-    frame = camera.read()
-    assert frame.data.shape == (240, 640, 3)
-
-
-def test_resize_skipped_when_dimensions_not_requested(mock_cap: mock.MagicMock) -> None:
-    camera = IPCamera(url=URL)
-    camera.connect()
-    frame = camera.read()
-    assert frame.data.shape == (480, 640, 3)
-
-
-def test_device_id_redacts_credentials(mock_cap: mock.MagicMock) -> None:
-    camera = IPCamera(url="rtsp://admin:s3cr3t@10.0.0.5:554/stream")
-    assert "s3cr3t" not in camera.device_id
-    assert "admin" not in camera.device_id
-    assert camera.device_id == "ip:rtsp://***@10.0.0.5:554/stream"
-
-
-def test_device_id_without_credentials_unchanged(mock_cap: mock.MagicMock) -> None:
-    camera = IPCamera(url=URL)
-    assert camera.device_id == f"ip:{URL}"
-
-
-def test_discover_returns_empty_list() -> None:
+def test_identity_redaction_and_discovery() -> None:
+    assert IPCamera(url="rtsp://user:secret@cam.example.internal/stream").device_id == (
+        "ip:rtsp://***@cam.example.internal/stream"
+    )
+    assert IPCamera(url=URL).device_id == f"ip:{URL}"
     assert IPCamera.discover() == []
