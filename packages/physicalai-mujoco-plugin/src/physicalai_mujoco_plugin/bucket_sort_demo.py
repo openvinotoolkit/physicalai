@@ -40,6 +40,12 @@ the objects', from ``qpos`` into every plan.
 In ``leader`` mode nothing but a client sends the targets back. When the arm does not reach a
 plan's last target within :data:`CATCH_UP_S`, the demonstrator stops (``stalled``) instead of
 failing and resetting episodes that nobody runs.
+
+Planning an attempt takes from a tenth of a second (an FR3) to several seconds (a leaning arm, or
+two arms). With ``background_planning`` (as the autopilot runs it), :meth:`BucketSortDemonstrator.step`
+plans on a thread of its own, from a copy of the simulation's data, so the control tick never waits
+for it: meanwhile the phase reads ``planning`` and the arm brakes to a stop or holds its targets,
+and the simulation (with the virtual leader it publishes) keeps ticking.
 """
 
 # MuJoCo model/data attributes are supplied by the C extension at runtime.
@@ -47,6 +53,8 @@ failing and resetting episodes that nobody runs.
 
 from __future__ import annotations
 
+import threading
+import time
 from dataclasses import dataclass, field, replace
 from itertools import starmap
 from typing import TYPE_CHECKING, Literal
@@ -54,8 +62,23 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 from loguru import logger
 
-from physicalai_mujoco_plugin.bucket_sort import BUCKET_COLORS, BUCKET_INTERIOR, OBJECT_Y, OBJECTS, bucket_containing
-from physicalai_mujoco_plugin.bucket_sort_arms import FINGER_JOINTS, FR3_ARM, FRANKA_GRIP_OPEN, FrankaArm
+from physicalai_mujoco_plugin.bucket_sort import (
+    BUCKET_COLORS,
+    BUCKET_INTERIOR,
+    DEFAULT_LAYOUT,
+    OBJECT_Y,
+    OBJECTS,
+    bucket_containing,
+)
+from physicalai_mujoco_plugin.bucket_sort_arms import (
+    FR3_ARM,
+    FRANKA_GRIP_OPEN,
+    FRANKA_HEIGHTS,
+    BucketSortArm,
+    Heights,
+)
+
+FrankaArm = BucketSortArm
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -116,6 +139,10 @@ IK_DAMPING = 0.03
 MAX_IK_STEP = 0.1
 """Largest joint change, in radians, of one IK iteration."""
 CHECK_EVERY = 2
+TILT_STEP = float(np.radians(5.0))
+"""Steps in which the planner tries leaning the hand further (``FrankaIK.least_tilt``)."""
+GRASP_TILT = float(np.radians(15.0))
+"""The most the hand leans at the grasp (over the object, down to it, closing): nearly fingers-down."""
 """Clearance is checked every this many ticks of a plan."""
 WRIST_PROBE_Z = 0.15
 """TCP height at which a tilted arm's joint 7 is estimated for a yaw over a point (:meth:`Planner.predicted_q7`)."""
@@ -172,9 +199,18 @@ OUT_OF_REACH = 0.02
 """With several arms, a best-effort plan whose IK misses by more than this (m), or that comes too close
 to an arm holding still, does not run: the episode fails instead (no arm reaches it)."""
 
+PLAN_WAIT_S = 0.02
+"""Background planning: how long the tick that starts a plan waits for it before the arm holds.
+
+A plan done by then runs from this tick, exactly as planned in the tick; a longer one runs from the
+first tick after it is done."""
+PLAN_YIELD_S = 0.0005
+"""Background planning: the planner lets the control thread run (releases the GIL) this often."""
+
 Phase = Literal[
     "idle",
     "settle",
+    "planning",
     "approach",
     "descend",
     "close",
@@ -248,8 +284,28 @@ class DemoParams:
     """Uniform draw that picks between two grasp yaws whose plans are about as good."""
 
     @classmethod
-    def sample(cls, rng: np.random.Generator) -> DemoParams:
-        """Draw a randomized set of parameters, every one inside what the scene allows.
+    def for_heights(cls, heights: Heights = FRANKA_HEIGHTS) -> DemoParams:
+        """Return the defaults, with the heights in the middle of *heights* for an arm other than a Franka.
+
+        Returns:
+            The parameters.
+        """
+        if heights == FRANKA_HEIGHTS:
+            return cls()
+
+        def mid(span: tuple[float, float]) -> float:
+            return (span[0] + span[1]) / 2.0
+
+        return cls(
+            pregrasp_height=mid(heights.pregrasp_height),
+            lift_height=mid(heights.lift_height),
+            carry_z=mid(heights.carry_z),
+            release_z=mid(heights.release_z),
+        )
+
+    @classmethod
+    def sample(cls, rng: np.random.Generator, heights: Heights = FRANKA_HEIGHTS) -> DemoParams:
+        """Draw a randomized set of parameters, every one inside what the scene allows (and *heights*).
 
         Returns:
             The parameters.
@@ -262,10 +318,10 @@ class DemoParams:
             lift_speed=float(u(0.12, 0.24)),
             yaw_speed=float(u(1.0, 2.0)),
             held_accel=float(u(0.7, 1.2)),
-            pregrasp_height=float(u(0.06, 0.13)),
-            lift_height=float(u(0.07, 0.13)),
-            carry_z=float(u(0.20, 0.27)),
-            release_z=float(u(0.12, 0.18)),
+            pregrasp_height=float(u(*heights.pregrasp_height)),
+            lift_height=float(u(*heights.lift_height)),
+            carry_z=float(u(*heights.carry_z)),
+            release_z=float(u(*heights.release_z)),
             grasp_offset=float(u(-0.006, 0.006)),
             grasp_dz=float(u(0.0, 0.004)),
             yaw_noise=float(np.radians(u(-7.0, 7.0))),
@@ -315,13 +371,13 @@ class _Move:
     duration: float
     delta: np.ndarray
     target: np.ndarray
-    """The state ``(x, y, z, yaw, grip)`` the script reaches once this move (and those before it) end."""
+    """The state ``(x, y, z, yaw, grip, tilt)`` the script reaches once this move (and those before it) end."""
     q_delta: np.ndarray | None = None
     """Change of the joint-space reference posture over this move (see :meth:`Planner.solve`)."""
 
 
 class MotionScript:
-    """A sum of minimum-jerk moves of the state ``(x, y, z, yaw, grip)``.
+    """A sum of minimum-jerk moves of the state ``(x, y, z, yaw, grip, tilt)``.
 
     Each move adds its displacement with a minimum-jerk profile; a move may start before the
     previous one ends (``blend``), which rounds the corner between them while keeping the speed,
@@ -329,7 +385,10 @@ class MotionScript:
     """
 
     def __init__(self, start: np.ndarray, slow: dict[str, float] | None = None) -> None:
-        """Start at *start*, ``(x, y, z, yaw, grip)``; moves of a phase in *slow* take that many times longer."""
+        """Start at *start*, ``(x, y, z, yaw, grip[, tilt])``; moves of a phase in *slow* take that many times longer.
+
+        The tilt (how far the hand leans outward, :func:`lean`) is in the state only when *start* has it.
+        """
         self.slow = dict(slow or {})
         self.start = np.asarray(start, dtype=np.float64).copy()
         self.end = self.start.copy()
@@ -345,8 +404,9 @@ class MotionScript:
         grip: float | None = None,
         duration: float,
         blend: float = 0.0,
+        tilt: float | None = None,
     ) -> None:
-        """Move to the given position, yaw and opening (the others keep their value) in *duration* seconds.
+        """Move to the given position, yaw, opening and tilt (the others keep their value) in *duration* seconds.
 
         Args:
             phase: The phase it reports while it runs.
@@ -355,6 +415,7 @@ class MotionScript:
             grip: Commanded opening.
             duration: Seconds.
             blend: Fraction of the previous move it overlaps.
+            tilt: How far the hand leans outward.
         """
         duration = float(duration) * self.slow.get(phase, 1.0)
         target = self.end.copy()
@@ -364,6 +425,8 @@ class MotionScript:
             target[3] = yaw
         if grip is not None:
             target[4] = grip
+        if tilt is not None:
+            target[5] = tilt  # a script of a leaning arm, whose state has the tilt
         last = self.moves[-1] if self.moves else None
         t0 = self.t_end
         if last is not None and blend > 0.0 and np.any(last.delta):
@@ -375,7 +438,7 @@ class MotionScript:
     def pause(self, phase: Phase, seconds: float) -> None:
         """Hold still for *seconds*, reporting *phase*."""
         if seconds > 0.0:
-            self.moves.append(_Move(phase, self.t_end, float(seconds), np.zeros(5), self.end.copy()))
+            self.moves.append(_Move(phase, self.t_end, float(seconds), np.zeros(len(self.end)), self.end.copy()))
             self.t_end += float(seconds)
 
     def at(self, t: np.ndarray) -> np.ndarray:
@@ -408,6 +471,11 @@ class MotionScript:
             out.append(self.moves[max(index, 0)].phase)
         return out
 
+    @property
+    def end_tilt(self) -> float:
+        """The tilt the script ends at; 0 for a script without one."""
+        return float(self.end[5]) if len(self.end) > 5 else 0.0  # noqa: PLR2004
+
     def first_time(self, phase: Phase) -> float:
         """Return when the first move of *phase* starts, or the end of the script.
 
@@ -432,6 +500,27 @@ def hand_rotation(yaw: float) -> np.ndarray:
     return np.array([[-s, c, 0.0], [c, s, 0.0], [0.0, 0.0, -1.0]])
 
 
+def lean(rotation: np.ndarray, outward: np.ndarray, tilt: float) -> np.ndarray:
+    """Return *rotation* turned by *tilt* about the level axis across *outward*: the fingers lean outward.
+
+    Args:
+        rotation: An orientation, its third column the approach axis (fingers down: straight down).
+        outward: The horizontal direction from the arm's base to the hand.
+        tilt: The angle, radians; positive turns the approach toward *outward*.
+
+    Returns:
+        The turned 3x3 rotation.
+    """
+    axis = np.array([outward[1], -outward[0], 0.0])
+    norm = float(np.linalg.norm(axis))
+    if norm < 1e-9 or abs(tilt) < 1e-12:  # noqa: PLR2004
+        return rotation
+    axis /= norm
+    cross = np.array([[0.0, -axis[2], axis[1]], [axis[2], 0.0, -axis[0]], [-axis[1], axis[0], 0.0]])
+    turn = np.eye(3) + np.sin(tilt) * cross + (1.0 - np.cos(tilt)) * cross @ cross
+    return turn @ rotation
+
+
 def wrap_near(angle: float, reference: float, period: float = 2.0 * np.pi) -> float:
     """Return *angle* plus a whole number of periods, as close as possible to *reference*.
 
@@ -439,6 +528,96 @@ def wrap_near(angle: float, reference: float, period: float = 2.0 * np.pi) -> fl
         The shifted angle.
     """
     return float(angle + period * np.round((reference - angle) / period))
+
+
+# ----------------------------------------------------------------------
+# Planning off the control tick
+# ----------------------------------------------------------------------
+
+
+class PlanCancelledError(Exception):
+    """A plan on its own thread was cancelled: the demonstrator was reset while it planned."""
+
+
+_planning = threading.local()
+"""``job``: the :class:`_PlanJob` whose thread this is, on a planning thread."""
+
+
+def _checkpoint() -> None:
+    """On a planning thread, let the control thread run now and then, and stop a cancelled plan.
+
+    The planner calls it in its inner loops. Planning is mostly short Python and NumPy calls that
+    hold the GIL; a thread that holds it hands it over only every ``sys.getswitchinterval()``
+    (5 ms), and the control tick needs it after each physics step, so without these pauses a tick
+    takes ten times as long. Elsewhere it does nothing. A cancelled plan stops here, by
+    :class:`PlanCancelledError`.
+    """
+    job = getattr(_planning, "job", None)
+    if job is not None:
+        job.checkpoint()
+
+
+class _PlanJob:
+    """One plan on its own thread, which has the demonstrator's state to itself until it ends.
+
+    Meanwhile the control thread only outputs :attr:`hold`, and the demonstrator's
+    :meth:`~BucketSortDemonstrator.reset` marks the job :attr:`cancelled` instead of resetting; the
+    control thread collects the job once :attr:`done` is set (``BucketSortDemonstrator._finish``).
+    """
+
+    def __init__(
+        self, work: Callable[[], object], hold: np.ndarray | None, brake_ticks: int, after: _PlanJob | None
+    ) -> None:
+        self.hold = hold
+        """Targets per tick while it plans, model units: where the arm is, then its braking; the last holds.
+        ``None``: hold the actuators' targets."""
+        self.brake_ticks = brake_ticks
+        """Braking ticks in :attr:`hold` (after its first row), which the plan starts with."""
+        self.ticks = 0
+        """Control ticks since the one that started it."""
+        self.cancelled = False
+        self.status: dict[str, object] | None = None
+        """The demonstrator's status when it started, which it reports meanwhile."""
+        self.result: object = None
+        self.error: Exception | None = None
+        self.done = threading.Event()
+        self._work = work
+        self._after = after
+        self._yielded = 0.0
+        self.thread = threading.Thread(target=self._main, name="bucket-sort-planner", daemon=True)
+
+    def start(self) -> None:
+        """Start planning."""
+        self.thread.start()
+
+    def checkpoint(self) -> None:
+        """Release the GIL every :data:`PLAN_YIELD_S`; raise once cancelled.
+
+        Raises:
+            PlanCancelledError: When the plan was cancelled.
+        """
+        if self.cancelled:
+            raise PlanCancelledError
+        now = time.perf_counter()
+        if now - self._yielded >= PLAN_YIELD_S:
+            # sleep(0) keeps the GIL on macOS; any real sleep hands it to a waiting thread.
+            time.sleep(1e-6)
+            self._yielded = time.perf_counter()
+
+    def _main(self) -> None:
+        _planning.job = self
+        try:
+            if self._after is not None:
+                self._after.thread.join()  # a cancelled plan still on its way out
+            self._yielded = time.perf_counter()
+            self.result = self._work()
+        except PlanCancelledError:
+            self.cancelled = True
+        except Exception as exc:  # noqa: BLE001 - handed to the control thread
+            self.error = exc
+        finally:
+            _planning.job = None
+            self.done.set()
 
 
 class FrankaIK:
@@ -452,8 +631,11 @@ class FrankaIK:
     the hardware limits; a joint pinned there drops out of the solve (an active set). It runs on a
     private ``MjData``, so the simulation is untouched.
 
-    The arm (:class:`~.bucket_sort_arms.FrankaArm`) names the joints, the hand and the home pose; it
-    defaults to the ``franka_fr3`` profile's FR3.
+    The arm (:class:`~.bucket_sort_arms.BucketSortArm`) names the joints, the tool and the home pose;
+    it defaults to the ``franka_fr3`` profile's FR3. A six-joint arm has no redundancy left. An arm
+    with a :attr:`~.bucket_sort_arms.BucketSortArm.max_tilt` may lean the hand outward from the base
+    (:func:`lean`) by a *tilt* the planner chooses, and its yaw is the closing axis' with the lean
+    taken out.
     """
 
     def __init__(self, model: object, arm: FrankaArm = FR3_ARM) -> None:
@@ -469,17 +651,39 @@ class FrankaIK:
         self.dof_adr = np.array([int(model.jnt_dofadr[j]) for j in joints])
         self.hard_lower = np.array([float(model.jnt_range[j][0]) for j in joints])
         self.hard_upper = np.array([float(model.jnt_range[j][1]) for j in joints])
-        self.lower = self.hard_lower + JOINT_MARGIN
-        self.upper = self.hard_upper - JOINT_MARGIN
+        margin = JOINT_MARGIN if arm.joint_margin is None else arm.joint_margin
+        self.lower = self.hard_lower + margin
+        self.upper = self.hard_upper - margin
         self._centre = (self.hard_lower + self.hard_upper) / 2.0
         self._half = (self.hard_upper - self.hard_lower) / 2.0
-        self.finger_adr = np.array([int(model.jnt_qposadr[model.joint(arm.name(name)).id]) for name in FINGER_JOINTS])
-        self.hand = int(model.body(arm.name(HAND_BODY)).id)
+        self.finger_adr = np.array([int(model.jnt_qposadr[model.joint(arm.name(name)).id]) for name in arm.fingers])
+        site_rotation = np.eye(3)
+        if arm.tool_site is not None:
+            site = int(model.site(arm.name(arm.tool_site)).id)
+            self.hand = int(model.site_bodyid[site])
+            self.tcp_local = np.array(model.site_pos[site], dtype=np.float64)
+            flat = np.zeros(9)
+            mujoco.mju_quat2Mat(flat, model.site_quat[site])
+            site_rotation = flat.reshape(3, 3)
+        else:
+            self.hand = int(model.body(arm.name(arm.tool_body)).id)
+            self.tcp_local = np.array(arm.tcp, dtype=np.float64)
+        approach = site_rotation @ np.asarray(arm.approach, dtype=np.float64)
+        closing = site_rotation @ np.asarray(arm.closing, dtype=np.float64)
+        self.tool_axes = np.column_stack([np.cross(closing, approach), closing, approach])
+        """The hand's axes in the tool body's frame, as :func:`hand_rotation` orders them: across, closing, approach."""
+        self.plain = arm.max_tilt <= 0.0 and np.array_equal(self.tool_axes, np.eye(3))
+        """Fingers always down on a Franka Hand: the orientation is the tool body's, unchanged."""
+        self.grip_open = float(arm.grip_open)
         self._jacp = np.zeros((3, model.nv))
         self._jacr = np.zeros((3, model.nv))
         self.damping = IK_DAMPING
         self.home = np.array(arm.home)
         """The arm's home pose: plans start and end there."""
+        mujoco.mj_kinematics(model, self.data)
+        base = np.array(self.data.xpos[model.jnt_bodyid[joints[0]]][:2], dtype=np.float64)
+        self.base_xy = np.zeros(2) if np.allclose(base, 0.0, atol=1e-12) else base
+        """Where the base joint's axis meets the table: the hand leans outward from it."""
         self.home_yaw = float(arm.home_yaw) if arm.home_yaw is not None else self.fk(self.home)[1]
         """World yaw of the closing axis at :attr:`home`."""
 
@@ -487,18 +691,64 @@ class FrankaIK:
         """Put the private model's arm at *q* (and the fingers at half *grip* each) and update its kinematics."""
         self.data.qpos[self.qpos_adr] = q
         if grip is not None:
-            self.data.qpos[self.finger_adr] = min(max(grip, 0.0), GRIP_OPEN) / 2.0
+            self.data.qpos[self.finger_adr] = min(max(grip, 0.0), self.grip_open) / 2.0
         self._mujoco.mj_kinematics(self.model, self.data)
 
     def tcp(self, data: object | None = None) -> np.ndarray:
         """Return the TCP's world position (of *data*, by default the private one)."""
         data = self.data if data is None else data
-        return data.xpos[self.hand] + data.xmat[self.hand].reshape(3, 3) @ TCP_LOCAL
+        return data.xpos[self.hand] + data.xmat[self.hand].reshape(3, 3) @ self.tcp_local
+
+    def outward(self, pos: np.ndarray) -> np.ndarray:
+        """Return the horizontal unit direction from the base's axis to *pos* (zero over the base).
+
+        Returns:
+            ``(x, y)``.
+        """
+        out = np.asarray(pos[:2], dtype=np.float64) - self.base_xy
+        norm = float(np.linalg.norm(out))
+        return out / norm if norm > 1e-9 else np.zeros(2)  # noqa: PLR2004
+
+    def hand_axes(self, data: object | None = None) -> np.ndarray:
+        """Return the hand's world axes in :func:`hand_rotation`'s order: across, closing, approach.
+
+        Returns:
+            The 3x3 rotation.
+        """
+        data = self.data if data is None else data
+        return data.xmat[self.hand].reshape(3, 3) @ self.tool_axes
+
+    def tilt(self, data: object | None = None) -> float:
+        """Return how far the hand leans outward from fingers-down, radians.
+
+        Returns:
+            The angle; 0 for an arm that keeps its fingers down.
+        """
+        if self.plain:
+            return 0.0
+        data = self.data if data is None else data
+        approach = self.hand_axes(data)[:, 2]
+        out = self.outward(self.tcp(data))
+        return float(np.arctan2(approach[0] * out[0] + approach[1] * out[1], -approach[2]))
+
+    def target_rotation(self, pos: np.ndarray, yaw: float, tilt: float = 0.0) -> np.ndarray:
+        """Return the tool body's world orientation for the hand at *pos*, closing along *yaw*, leaning *tilt*.
+
+        Returns:
+            The 3x3 rotation.
+        """
+        if self.plain:
+            return hand_rotation(yaw)
+        return lean(hand_rotation(yaw), self.outward(pos), tilt) @ self.tool_axes.T
 
     def yaw(self, data: object | None = None) -> float:
-        """Return the closing axis' world yaw, in ``(-pi, pi]``."""
+        """Return the closing axis' world yaw, in ``(-pi, pi]``, with the hand's lean taken out."""
         data = self.data if data is None else data
-        axis = data.xmat[self.hand].reshape(3, 3)[:, 1]
+        if self.plain:
+            axis = data.xmat[self.hand].reshape(3, 3)[:, 1]
+        else:
+            axes = lean(self.hand_axes(data), self.outward(self.tcp(data)), -self.tilt(data))
+            axis = axes[:, 1]
         return float(np.arctan2(axis[1], axis[0]))
 
     def fk(self, q: np.ndarray) -> tuple[np.ndarray, float]:
@@ -513,16 +763,17 @@ class FrankaIK:
     def continuous_yaw(self, q: np.ndarray) -> float:
         """Return the closing-axis yaw at *q* on the branch the planner uses: home is :attr:`home_yaw`.
 
-        Turning the hand about the vertical turns joint 7 the other way, and the base joint turns it
-        along, so ``home_yaw + (q1 - q1_home) - (q7 - q7_home)`` tells which turn of the wrapped yaw
-        is meant. On a tilted base (the Duo's) the base joint turns the hand less than that, but far
-        less than the half turn that would pick the wrong branch.
+        Turning the hand about the vertical turns the wrist joint (joint 7 on a Franka arm) the other
+        way, and the base joint turns it along, so ``home_yaw + (q1 - q1_home) - (q7 - q7_home)``
+        tells which turn of the wrapped yaw is meant. On a tilted base (the Duo's) the base joint
+        turns the hand less than that, but far less than the half turn that would pick the wrong branch.
 
         Returns:
             The yaw in radians.
         """
         _, yaw = self.fk(q)
-        return wrap_near(yaw, self.home_yaw + float(q[0] - self.home[0]) - float(q[6] - self.home[6]))
+        w = self.arm.wrist
+        return wrap_near(yaw, self.home_yaw + float(q[0] - self.home[0]) - float(q[w] - self.home[w]))
 
     def limit_gradient(self, q: np.ndarray) -> np.ndarray:
         """Return the descent direction of ``sum(((q - centre) / half range) ** 6)``.
@@ -534,9 +785,10 @@ class FrankaIK:
         """
         x = (q - self._centre) / self._half
         gradient = -6.0 * x**5 / self._half
-        # Joint 2 near zero lines joints 1 and 3 up (a shoulder singularity): push it off zero.
-        width = SHOULDER_SINGULAR_WIDTH
-        gradient[1] += SHOULDER_SINGULAR_WEIGHT * 2.0 * q[1] / width**2 * np.exp(-((q[1] / width) ** 2))
+        if self.arm.shoulder_singularity:
+            # Joint 2 near zero lines joints 1 and 3 up (a shoulder singularity): push it off zero.
+            width = SHOULDER_SINGULAR_WIDTH
+            gradient[1] += SHOULDER_SINGULAR_WEIGHT * 2.0 * q[1] / width**2 * np.exp(-((q[1] / width) ** 2))
         return gradient
 
     def margin(self, q: np.ndarray) -> float:
@@ -555,8 +807,9 @@ class FrankaIK:
         limit_gain: float = 0.0,
         null_step: float = 0.05,
         tol: float = 2e-5,
+        tilt: float = 0.0,
     ) -> tuple[np.ndarray, float, float]:
-        """Return joint angles near *q0* that put the TCP at *pos*, fingers down, closing along *yaw*.
+        """Return joints near *q0* that put the TCP at *pos*, fingers down (or leaning *tilt*), closing along *yaw*.
 
         Args:
             q0: Seed.
@@ -568,18 +821,20 @@ class FrankaIK:
             limit_gain: Step along :meth:`limit_gradient` per iteration.
             null_step: Largest null-space change per iteration (rad).
             tol: Position tolerance (m) to stop early; rotation uses ten times it in radians.
+            tilt: How far the hand leans outward (:func:`lean`).
 
         Returns:
             ``(q, position error in m, orientation error in rad)``.
         """
         mujoco, model, data = self._mujoco, self.model, self.data
         q = np.clip(np.asarray(q0, dtype=np.float64).copy(), self.lower, self.upper)
-        r_des = hand_rotation(yaw)
+        r_des = self.target_rotation(pos, yaw, tilt)
         quat, e_rot = np.zeros(4), np.zeros(3)
         n = len(q)
         eye6, eye_n = np.eye(6), np.eye(n)
         pos_err, rot_err = np.inf, np.inf
         for it in range(iters + 1):
+            _checkpoint()
             data.qpos[self.qpos_adr] = q
             mujoco.mj_kinematics(model, data)
             mujoco.mj_comPos(model, data)
@@ -619,8 +874,10 @@ class FrankaIK:
             q = np.clip(q + dq, self.lower, self.upper)
         return q, pos_err, rot_err
 
-    def optimize(self, q0: np.ndarray, pos: np.ndarray, yaw: float, iters: int = 80) -> tuple[np.ndarray, float, float]:
-        """Solve for *pos* and *yaw*, then move along the null space away from the joint limits.
+    def optimize(
+        self, q0: np.ndarray, pos: np.ndarray, yaw: float, iters: int = 80, tilt: float = 0.0
+    ) -> tuple[np.ndarray, float, float]:
+        """Solve for *pos* and *yaw* (leaning *tilt*), then move along the null space away from the joint limits.
 
         The result stays on the seed's side of the null space, so consecutive key poses solved from
         each other connect without a jump.
@@ -628,12 +885,41 @@ class FrankaIK:
         Returns:
             ``(q, position error in m, orientation error in rad)``.
         """
-        q, e_pos, e_rot = self.solve(q0, pos, yaw, iters=30)
+        q, e_pos, e_rot = self.solve(q0, pos, yaw, iters=30, tilt=tilt)
         return (
-            self.solve(q, pos, yaw, iters=iters, limit_gain=0.02, null_step=0.03, tol=1e-6)
+            self.solve(q, pos, yaw, iters=iters, limit_gain=0.02, null_step=0.03, tol=1e-6, tilt=tilt)
             if iters
             else (q, e_pos, e_rot)
         )
+
+    def least_tilt(
+        self, q0: np.ndarray, pos: np.ndarray, yaw: float, max_tilt: float | None = None
+    ) -> tuple[float, np.ndarray] | None:
+        """Return the smallest lean, in steps of :data:`TILT_STEP` up to *max_tilt*, that reaches *pos*.
+
+        Args:
+            q0: Joints to solve from.
+            pos: The TCP's position.
+            yaw: The closing yaw.
+            max_tilt: The most the hand may lean; ``None`` is the arm's ``max_tilt``.
+
+        The first lean the IK reaches within half its tolerances wins; failing that, the most allowed
+        lean if it reaches within them.
+
+        Returns:
+            ``(tilt, q)``: the lean and the joints there; ``None`` when no lean up to *max_tilt* reaches.
+        """
+        limit = self.arm.max_tilt if max_tilt is None else min(max_tilt, self.arm.max_tilt)
+        steps = int(np.floor(limit / TILT_STEP + 1e-9)) + 1
+        tilt, (q, e_pos, e_rot) = 0.0, (np.asarray(q0, dtype=np.float64), np.inf, np.inf)
+        for k in range(steps):
+            tilt = k * TILT_STEP
+            q, e_pos, e_rot = self.optimize(q0, pos, yaw, iters=0, tilt=tilt)
+            if e_pos <= IK_POS_TOL / 2 and e_rot <= IK_ROT_TOL / 2:
+                return tilt, q
+        if e_pos <= IK_POS_TOL and e_rot <= IK_ROT_TOL:
+            return tilt, q
+        return None
 
 
 # ----------------------------------------------------------------------
@@ -723,16 +1009,14 @@ class _Clearance:
                 if int(model.geom_bodyid[g]) in bodies and (model.geom_contype[g] or model.geom_conaffinity[g])
             ])
 
-        hand = tuple(arm.name(body) for body in (HAND_BODY, "left_finger", "right_finger"))
+        hand = tuple(arm.name(body) for body in arm.hand_bodies)
         self.robot = collision_geoms((*hand, *(arm.name(link) for link in reversed(arm.links))))
-        self.fingers = collision_geoms(hand[1:])
+        self.fingers = collision_geoms(tuple(arm.name(body) for body in arm.finger_bodies))
         # The base (link 0) never moves: its distance from another arm's base is the mount's.
         moving = tuple(arm.name(link) for link in arm.arm_links[1:])
         self.arm = collision_geoms((*hand, *moving)) if others else None
         self.other_arms = (
-            collision_geoms(
-                tuple(o.name(b) for o in others for b in (*o.arm_links, HAND_BODY, "left_finger", "right_finger"))
-            )
+            collision_geoms(tuple(o.name(b) for o in others for b in (*o.arm_links, *o.hand_bodies)))
             if others
             else None
         )
@@ -794,7 +1078,7 @@ class JointPlan:
     """Hand opening targets, ``(ticks,)``, metres."""
     phases: list[Phase]
     cartesian: np.ndarray
-    """The scripted ``(x, y, z, yaw, grip)`` per tick."""
+    """The scripted ``(x, y, z, yaw, grip, tilt)`` per tick."""
     lift_check: int | None = None
     """Tick at which the grasp is checked."""
     hold_until: int | None = None
@@ -815,6 +1099,10 @@ class JointPlan:
     peak_accel_ratio: float = 0.0
     """Largest joint acceleration as a fraction of the FR3's limit."""
     problems: list[str] = field(default_factory=list)
+    unreached: bool = False
+    """A pose no allowed lean of the hand reaches (``Planner.tilt_at``): the plan never runs."""
+    brake_ticks: int = 0
+    """Ticks of braking in front of the plan (:meth:`BucketSortDemonstrator._run`)."""
 
     @property
     def ok(self) -> bool:
@@ -833,7 +1121,7 @@ class JointPlan:
         """Return the targets of *tick*, clamped to the plan's ends.
 
         Returns:
-            Eight values: seven joints (rad) and the opening (m).
+            The joints (rad), then the opening (m).
         """
         tick = min(max(tick, 0), len(self.q) - 1)
         return np.array([*self.q[tick], self.grip[tick]])
@@ -916,6 +1204,8 @@ class Planner:
         self._bucket_body = {color: int(model.body(f"bucket_{color}").id) for color in BUCKET_COLORS}
         self.held_width = 0.04
         """The width the last attempt script grasps; the place re-plan and the clearance use it."""
+        self.unreached = False
+        """Whether the script being built has a pose no allowed lean reaches (:meth:`tilt_at`)."""
         self.tick_null_step = 0.01
         """Largest null-space change per IK iteration while following the reference posture."""
         self.tick_limit_gain = 0.0
@@ -990,7 +1280,7 @@ class Planner:
 
     def grasp_width(self, name: str, rotation: np.ndarray) -> float:
         """Return the width the hand closes on, at most the hand's opening."""
-        return min(GRIP_OPEN, self.grasp_axes(name, rotation)[2])
+        return min(self.ik.grip_open, self.grasp_axes(name, rotation)[2])
 
     def grasp_point(self, name: str, position: np.ndarray, rotation: np.ndarray, params: DemoParams) -> np.ndarray:
         """Return the TCP's grasp position: the centre, shifted along the long side, at a safe height.
@@ -1002,7 +1292,7 @@ class Planner:
         # Keep the fingers (2 cm wide) on the object.
         limit = self.shapes[name].half_length - 0.012
         point = position + along * float(np.clip(params.grasp_offset, -limit, limit))
-        point[2] = max(float(position[2]), MIN_TCP_Z) + params.grasp_dz
+        point[2] = max(float(position[2]), self.arm.min_tcp_z) + params.grasp_dz
         return point
 
     def predicted_q7(self, yaw: float, xy: np.ndarray) -> float:
@@ -1014,14 +1304,14 @@ class Planner:
         Returns:
             Radians.
         """
-        ik = self.ik
+        ik, w = self.ik, self.arm.wrist
         if self.arm.upright:
-            q1 = float(np.arctan2(xy[1], xy[0]))
-            return float(ik.home[6] + (q1 - ik.home[0]) - (yaw - ik.home_yaw))
+            q1 = float(np.arctan2(xy[1] - ik.base_xy[1], xy[0] - ik.base_xy[0]))
+            return float(ik.home[w] + (q1 - ik.home[0]) - (yaw - ik.home_yaw))
         key = (float(xy[0]), float(xy[1]))
         if self._wrist_probe is None or self._wrist_probe[0] != key:
             q, _, _ = ik.solve(ik.home, np.array([*key, WRIST_PROBE_Z]), ik.home_yaw, iters=30)
-            self._wrist_probe = (key, float(q[6]), ik.continuous_yaw(q))
+            self._wrist_probe = (key, float(q[w]), ik.continuous_yaw(q))
         _, q7, solved_yaw = self._wrist_probe
         return float(q7 - (yaw - solved_yaw))
 
@@ -1036,7 +1326,8 @@ class Planner:
         """
         base = wrap_near(axis_yaw, current, period)
         options = [base + k * period for k in (-2, -1, 0, 1, 2)]
-        limit_lo, limit_hi = self.ik.lower[6] + 0.1, self.ik.upper[6] - 0.1
+        w = self.arm.wrist
+        limit_lo, limit_hi = self.ik.lower[w] + 0.1, self.ik.upper[w] - 0.1
         feasible = [y for y in options if limit_lo <= self.predicted_q7(y, xy) <= limit_hi]
         feasible.sort(key=lambda y: abs(y - current))
         return feasible[:2] if feasible else [base]
@@ -1050,18 +1341,38 @@ class Planner:
         name = instruction.object
         position, rotation = self.object_pose(name)
         grasp = self.grasp_point(name, position, rotation, params)
-        key, _, _ = self.ik.optimize(q, grasp, yaw, iters=40)
+        key, _, _ = self.ik.optimize(q, grasp, yaw, iters=40, tilt=self.tilt_at(grasp, yaw, grasp=True) or 0.0)
         margin = self.ik.margin(key)
         bucket_pos, bucket_rot = self.bucket_pose(instruction.bucket)
         across = float(np.arctan2(bucket_rot[1, 0], bucket_rot[0, 0]))
         release_yaw = self.yaw_candidates(across, yaw, bucket_pos[:2])[0] if params.reorient else yaw
         over = np.array([bucket_pos[0], bucket_pos[1], params.release_z])
-        key, e_pos, _ = self.ik.optimize(key, over, release_yaw, iters=40)
+        tilt = self.tilt_at(over, release_yaw) or 0.0
+        key, e_pos, _ = self.ik.optimize(key, over, release_yaw, iters=40, tilt=tilt)
         return min(margin, self.ik.margin(key)) - (1.0 if e_pos > IK_POS_TOL else 0.0)
+
+    def tilt_at(self, pos: np.ndarray, yaw: float, *, grasp: bool = False) -> float | None:
+        """Return how far the hand leans at *pos* closing along *yaw*: the least that reaches it.
+
+        At the *grasp* (over the object and down to it) the hand leans :data:`GRASP_TILT` at most.
+        When no lean reaches, the script uses the most allowed and :attr:`unreached` marks it, so
+        :meth:`checked` fails the plan and it never runs.
+
+        Returns:
+            Radians, ``None`` for an arm that keeps its fingers down.
+        """
+        if self.arm.max_tilt <= 0.0:
+            return None
+        limit = min(GRASP_TILT, self.arm.max_tilt) if grasp else self.arm.max_tilt
+        found = self.ik.least_tilt(self.ik.home, pos, yaw, limit)
+        if found is None:
+            self.unreached = True
+            return limit
+        return found[0]
 
     # -- building ---------------------------------------------------------
 
-    def attempt_script(
+    def attempt_script(  # noqa: PLR0914
         self,
         start: np.ndarray,
         instruction: Instruction,
@@ -1089,7 +1400,7 @@ class Planner:
         self.held_width = self.grasp_width(name, rotation)
         script = MotionScript(start, slow)
         x0 = start[:3]
-        open_width = min(GRIP_OPEN, self.held_width + p.open_margin)
+        open_width = min(self.ik.grip_open, self.held_width + p.open_margin)
         pre = grasp + np.array([0.0, 0.0, p.pregrasp_height])
         # Get up and clear first when starting low and away from the object (a retry).
         if x0[2] < pre[2] - 0.02 and np.linalg.norm(x0[:2] - grasp[:2]) > 0.03:  # noqa: PLR2004
@@ -1099,8 +1410,10 @@ class Planner:
                 pos=up,
                 grip=max(start[4], open_width),
                 duration=move_duration(up[2] - x0[2], p.lift_speed, 0.5),
+                tilt=self.tilt_at(up, float(script.end[3])),
             )
-        here = script.end[:3]
+        here, leaning = script.end[:3], script.end_tilt
+        tilt = self.tilt_at(pre, grasp_yaw, grasp=True)
         script.add(
             "approach",
             pos=pre,
@@ -1109,14 +1422,30 @@ class Planner:
             duration=max(
                 move_duration(float(np.linalg.norm(pre - here)), p.transit_speed, 0.8),
                 move_duration(grasp_yaw - script.end[3], p.yaw_speed, 0.8),
+                move_duration((tilt or 0.0) - script.end_tilt, p.yaw_speed, 0.8),
             ),
             blend=p.blend,
+            tilt=tilt,
         )
-        script.add("descend", pos=grasp, duration=move_duration(p.pregrasp_height, p.fine_speed, 0.6), blend=p.blend)
-        script.add("close", grip=0.0, duration=p.close_s)
+        # The descent starts once the approach has leaned the hand to its grasp tilt: blended into
+        # a lean that is still changing, it would lean more than GRASP_TILT on the way down.
+        script.add(
+            "descend",
+            pos=grasp,
+            duration=move_duration(p.pregrasp_height, p.fine_speed, 0.6),
+            blend=0.0 if tilt is not None and abs(tilt - leaning) > 1e-9 else p.blend,  # noqa: PLR2004
+            tilt=self.tilt_at(grasp, grasp_yaw, grasp=True),
+        )
+        squeeze = self.arm.squeeze
+        script.add("close", grip=0.0 if squeeze is None else max(0.0, self.held_width - squeeze), duration=p.close_s)
         script.pause("close", p.settle_s)
         lift = grasp + np.array([0.0, 0.0, p.lift_height])
-        script.add("lift", pos=lift, duration=move_duration(p.lift_height, p.lift_speed, 0.6, p.held_accel))
+        script.add(
+            "lift",
+            pos=lift,
+            duration=move_duration(p.lift_height, p.lift_speed, 0.6, p.held_accel),
+            tilt=self.tilt_at(lift, grasp_yaw),
+        )
 
         yaw_release = self._add_place(script, instruction, params, grasp_yaw, (position - grasp)[:2])
         self.add_return(script, p)
@@ -1145,10 +1474,12 @@ class Planner:
         script = MotionScript(start, slow)
         if start[2] < params.carry_z - REPLAN_SHIFT:  # re-planned on the way down into the bucket: rise first
             rise = params.carry_z - float(start[2])
+            up = np.array([start[0], start[1], params.carry_z])
             script.add(
                 "carry",
-                pos=np.array([start[0], start[1], params.carry_z]),
+                pos=up,
                 duration=move_duration(rise, params.lift_speed, 0.5),
+                tilt=self.tilt_at(up, float(start[3])),
             )
         yaw_release = self._add_place(script, instruction, params, float(start[3]), np.asarray(offset)[:2])
         self.add_return(script, params)
@@ -1175,6 +1506,7 @@ class Planner:
         c, s = np.cos(turn), np.sin(turn)
         offset = np.array([c * offset[0] - s * offset[1], s * offset[0] + c * offset[1]])
         over = np.array([place[0] - offset[0], place[1] - offset[1], p.carry_z])
+        tilt = self.tilt_at(over, yaw_release)
         script.add(
             "carry",
             pos=over,
@@ -1182,8 +1514,10 @@ class Planner:
             duration=max(
                 move_duration(float(np.linalg.norm(over - script.end[:3])), p.transit_speed, 0.8, p.held_accel),
                 move_duration(turn, p.yaw_speed, 0.8),
+                move_duration((tilt or 0.0) - script.end_tilt, p.yaw_speed, 0.8),
             ),
             blend=p.blend,
+            tilt=tilt,
         )
         release = np.array([over[0], over[1], p.release_z])
         script.add(
@@ -1191,22 +1525,42 @@ class Planner:
             pos=release,
             duration=move_duration(p.carry_z - p.release_z, p.fine_speed, 0.5, p.held_accel),
             blend=p.blend,
+            tilt=self.tilt_at(release, yaw_release),
         )
         script.pause("release", p.release_pause_s)
-        script.add("release", grip=min(GRIP_OPEN, self.held_width + p.release_margin), duration=0.45)
+        script.add("release", grip=min(self.ik.grip_open, self.held_width + p.release_margin), duration=0.45)
         script.pause("release", p.after_release_s)
         return yaw_release
 
-    @staticmethod
-    def add_return(script: MotionScript, p: DemoParams) -> None:
+    def add_return(self, script: MotionScript, p: DemoParams) -> None:
         """Add the retreat straight up; :meth:`solve` adds the joint-space way home after it."""
         here = script.end[:3]
-        retreat_z = max(here[2] + 0.06, 0.22)
+        retreat_z = max(here[2] + 0.06, self.arm.heights.retreat_z)
+        up = np.array([here[0], here[1], retreat_z])
         script.add(
             "retreat",
-            pos=np.array([here[0], here[1], retreat_z]),
+            pos=up,
             duration=move_duration(retreat_z - here[2], p.lift_speed, 0.5),
+            tilt=self.tilt_at(up, float(script.end[3])),
         )
+        if self.arm.max_tilt > 0.0:
+            # Home is low for a six-joint arm: go there in a straight line, over the buckets'
+            # rims, not in joint space, which dips the hand. The joint-space way home is then short.
+            ik = self.ik
+            home, _ = ik.fk(ik.home)
+            yaw = wrap_near(ik.continuous_yaw(ik.home), float(script.end[3]), np.pi)
+            script.add(
+                "retreat",
+                pos=home,
+                yaw=yaw,
+                tilt=ik.tilt(),
+                duration=max(
+                    move_duration(float(np.linalg.norm(home - up)), p.transit_speed, 0.8),
+                    move_duration(yaw - script.end[3], p.yaw_speed, 0.8),
+                    move_duration(script.end_tilt, p.yaw_speed, 0.8),
+                ),
+                blend=p.blend,
+            )
 
     def checked(
         self,
@@ -1237,6 +1591,7 @@ class Planner:
         plan: JointPlan | None = None
         bucket_pos, bucket_rot = self.bucket_pose(bucket)
         for _ in range(4):
+            self.unreached = False
             script, yaw_release = build(slow)
             start = script.first_time("lift") + 0.1 if held_from is None else held_from
             release = next((m.t0 for m in script.moves if m.phase == "release"), script.t_end)
@@ -1261,6 +1616,13 @@ class Planner:
         assert plan is not None  # noqa: S101 - the loop runs at least once
         plan.bucket_pose = (bucket_pos, float(np.arctan2(bucket_rot[1, 0], bucket_rot[0, 0])))
         self._annotate(plan)
+        if self.unreached:
+            plan.unreached = True
+            limit = np.degrees(min(GRASP_TILT, self.arm.max_tilt))
+            plan.problems.append(
+                f"no lean reaches a key pose (at most {limit:.0f} deg at the grasp, "
+                f"{np.degrees(self.arm.max_tilt):.0f} deg elsewhere)"
+            )
         return plan
 
     @staticmethod
@@ -1328,7 +1690,7 @@ class Planner:
         extra = ticks - n_script
         q = np.vstack([q_script, np.repeat(q_script[-1:], extra, axis=0)]) + ramp[:, None] * delta
         cartesian = np.vstack([cartesian, np.repeat(cartesian[-1:], extra, axis=0)])
-        grip = cartesian[:, 4] + ramp * (GRIP_OPEN - cartesian[-1, 4])
+        grip = cartesian[:, 4] + ramp * (self.ik.grip_open - cartesian[-1, 4])
         home_tick = int(np.ceil(start / dt))
         all_phases: list[Phase] = [*phases, *([phases[-1]] * extra)]
         returning: list[Phase] = ["return"] * (ticks - home_tick)
@@ -1360,22 +1722,24 @@ class Planner:
         them like the hand does. The targets are then smoothed, and any first-tick correction fades in.
 
         Returns:
-            ``(targets (ticks, 7), largest position error, largest orientation error)``.
+            ``(targets (ticks, joints), largest position error, largest orientation error)``.
         """
         ik, data = self.ik, self.ik.data
         key = q_start
         for move in script.moves:
-            if not np.any(move.delta[:4]):
+            tilt = float(move.target[5]) if len(move.target) > 5 else 0.0  # noqa: PLR2004
+            if not np.any(move.delta[:4]) and not np.any(move.delta[5:]):
                 move.q_delta = None
                 continue
-            new_key, _, _ = ik.optimize(key, move.target[:3], float(move.target[3]))
+            new_key, _, _ = ik.optimize(key, move.target[:3], float(move.target[3]), tilt=tilt)
             move.q_delta = new_key - key
             key = new_key
         n_script = max(2, int(np.ceil(script.t_end / dt)) + 1)
         times = np.arange(n_script) * dt
         cartesian = script.at(times)
+        tilts = cartesian[:, 5] if cartesian.shape[1] > 5 else np.zeros(n_script)  # noqa: PLR2004
         reference = script.reference(times, q_start)
-        q_script = np.zeros((n_script, 7))
+        q_script = np.zeros((n_script, len(q_start)))
         current = q_start.copy()
         pos_error = rot_error = 0.0
         step_limit = MAX_TICK_SPEED * self.dq_max * dt
@@ -1384,6 +1748,7 @@ class Planner:
                 current,
                 cartesian[k, :3],
                 float(cartesian[k, 3]),
+                tilt=float(tilts[k]),
                 iters=self.tick_iters if k else 30,
                 posture=reference[k] if self.tick_null_step > 0.0 else None,
                 null_step=self.tick_null_step,
@@ -1407,7 +1772,8 @@ class Planner:
         # Measure the task again on the targets as they will run (after the fade-in).
         for k in range(int(np.ceil(START_BLEND_S / dt)), n_script, CHECK_EVERY):
             ik.set_arm(q_script[k])
-            rot = data.xmat[ik.hand].reshape(3, 3) @ hand_rotation(float(cartesian[k, 3])).T
+            target = ik.target_rotation(cartesian[k, :3], float(cartesian[k, 3]), float(tilts[k]))
+            rot = data.xmat[ik.hand].reshape(3, 3) @ target.T
             pos_error = max(pos_error, float(np.linalg.norm(cartesian[k, :3] - ik.tcp())))
             rot_error = max(rot_error, float(np.arccos(np.clip((np.trace(rot) - 1.0) / 2.0, -1.0, 1.0))))
         return q_script, pos_error, rot_error
@@ -1440,6 +1806,7 @@ class Planner:
         self.load(snapshot)
         worst = float(np.inf)
         for row in np.atleast_2d(q):
+            _checkpoint()
             self.ik.set_arm(row)
             worst = min(worst, clearance._min_distance(clearance.arm, clearance.other_arms))  # noqa: SLF001
         return worst
@@ -1454,6 +1821,7 @@ class Planner:
         worst: dict[str, float] = dict.fromkeys(CLEARANCE, float(np.inf))
         quat = np.zeros(4)
         for k in range(0, len(plan.q), CHECK_EVERY):
+            _checkpoint()
             holding = held is not None and held[0] <= k < held[1]
             ik.set_arm(plan.q[k], self.held_width if holding else float(plan.grip[k]))
             if holding:
@@ -1488,7 +1856,8 @@ def _severity(plan: JointPlan) -> float:
         A score; lower is better.
     """
     return (
-        max(0.0, plan.pos_error - IK_POS_TOL) * 1000.0
+        (1e6 if plan.unreached else 0.0)  # after any plan that may run
+        + max(0.0, plan.pos_error - IK_POS_TOL) * 1000.0
         + max(0.0, plan.peak_speed_ratio - SPEED_FRACTION)
         + max(0.0, plan.peak_accel_ratio - ACCEL_FRACTION)
         + sum(max(0.0, CLEARANCE[key] - value) * 1000.0 for key, value in plan.clearance.items())
@@ -1553,9 +1922,18 @@ class BucketSortDemonstrator:
     With several arms (the Duo's), one works an attempt while the others hold their targets: each
     attempt goes to the arm that reaches both the object and the bucket, the nearer one first, and
     its plans keep clear of the arms that hold still.
+
+    With *background_planning*, a plan that :meth:`step` starts (an attempt, a re-plan, the way
+    home) runs on a thread of its own, from a copy of the data (``mujoco.mj_copyData``); the live
+    data stays the control thread's. Until it is done, :attr:`phase` reads ``planning`` and
+    :meth:`step` outputs where the arm was, then the braking the plan starts with, then holds; the
+    plan then runs from the tick it is done, past the braking already output. A plan done within
+    :data:`PLAN_WAIT_S` runs from the tick that started it, as without a thread. :meth:`reset`
+    while it plans discards it. :meth:`stuck_start` has :meth:`begin_stuck_start` for the same.
+    Called directly, the other methods plan in the calling thread.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0915 - one field per piece of state, each documented
         self,
         model: object,
         task: BucketSortTask,
@@ -1565,6 +1943,7 @@ class BucketSortDemonstrator:
         randomize: bool = True,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         reset_on_failure: bool = True,
+        background_planning: bool = False,
     ) -> None:
         """Bind to the scene model and its task.
 
@@ -1577,6 +1956,7 @@ class BucketSortDemonstrator:
             randomize: Draw each attempt's parameters (:meth:`DemoParams.sample`); otherwise the defaults.
             max_attempts: Attempts per episode, the retry included.
             reset_on_failure: Ask for a scene reset after a failed episode (:meth:`take_reset_request`).
+            background_planning: Plan on a thread of its own, so :meth:`step` returns at once.
         """
         from physicalai_mujoco_plugin.profiles.derive import control_kind  # noqa: PLC0415
 
@@ -1599,6 +1979,18 @@ class BucketSortDemonstrator:
             control_kind(model, int(a))[1] * float(model.actuator_gear[a, 0]) for a in self._actuators
         ])
         self._grip_per_width = np.array([arm.grip_per_width for arm in self.arms])
+        self._rows: list[tuple[int, int]] = []
+        """Each arm's first output and joint count: its joints, then its gripper."""
+        for arm in self.arms:
+            start = self._rows[-1][0] + self._rows[-1][1] + 1 if self._rows else 0
+            self._rows.append((start, len(arm.joints)))
+        self._grip_rows = np.array([start + count for start, count in self._rows])
+        self._followers = [
+            (int(row), int(model.actuator(arm.name(name)).id), float(self._ctrl_per_unit[row]))
+            for arm, row in zip(self.arms, self._grip_rows, strict=True)
+            for name in arm.gripper_followers
+        ]
+        """Actuators that take a gripper's target too (the reBot's second finger): output row, id, ctrl per unit."""
         self._hold: list[np.ndarray | None] = [None] * len(self.arms)
         self._still_since: float | None = None
         self._pinned_arm: int | None = None
@@ -1610,7 +2002,7 @@ class BucketSortDemonstrator:
         self._q: np.ndarray | None = None
         self._q_prev: np.ndarray | None = None
         self._braking_from = self.ik.home.copy()
-        self._grip = GRIP_OPEN
+        self._grip = self.arms[0].grip_open
         self._generation: int | None = None
         self._episode: _Episode | None = None
         self._plan: JointPlan | None = None
@@ -1626,6 +2018,16 @@ class BucketSortDemonstrator:
         self._reset_requested = False
         self.plans: list[JointPlan] = []
         """Every plan of the current episode, for diagnostics."""
+        self.background_planning = background_planning
+        self._job: _PlanJob | None = None
+        """The plan on its own thread, until the control thread collects it (:meth:`_finish`)."""
+        self._scratch: object | None = None
+        """The planning thread's copy of the data."""
+        self._deferring = False
+        """Inside :meth:`step` with background planning: plans go to a thread."""
+        self._last_call: float | None = None
+        """When :meth:`step` (or :meth:`poll_stuck_start`) last returned, monotonic seconds."""
+        self._stuck_result: StuckStart | None = None
 
     # -- readouts ---------------------------------------------------------
 
@@ -1646,14 +2048,51 @@ class BucketSortDemonstrator:
 
     @property
     def phase(self) -> Phase:
-        """What the demonstrator is doing."""
+        """What the demonstrator is doing: ``planning`` while a plan runs on its own thread."""
+        job = self._job
+        if job is not None:
+            return "idle" if job.cancelled else "planning"
         return self._phase
+
+    @property
+    def planning(self) -> bool:
+        """Whether a plan is in flight: its thread runs, or ran and the plan waits for the next tick.
+
+        A plan :meth:`reset` cancelled is not in flight.
+        """
+        job = self._job
+        return job is not None and not job.cancelled
+
+    @property
+    def planner_running(self) -> bool:
+        """Whether a planning thread still runs, and reads the model: a cancelled one until it stops."""
+        job = self._job
+        return job is not None and not job.done.is_set()
+
+    def reap(self) -> None:
+        """Collect a cancelled plan whose thread has stopped, and apply the reset that waited for it.
+
+        :meth:`step` collects plans too, but a cancelled one may never see another step (the
+        autopilot switched off): the control loop calls this every tick.
+        """
+        job = self._job
+        if job is not None and job.cancelled and job.done.is_set():
+            self._finish(job)
 
     @property
     def target(self) -> str | None:
         """The object of the current instruction, if any."""
-        episode = self._episode
+        episode = self._current_episode()
         return episode.instruction.object if episode is not None and episode.instruction is not None else None
+
+    def _current_episode(self) -> _Episode | None:
+        """Return the episode in progress; none once :meth:`reset` cancelled the plan in flight.
+
+        Returns:
+            The episode, or ``None``.
+        """
+        job = self._job
+        return None if job is not None and job.cancelled else self._episode
 
     @property
     def last_plan(self) -> JointPlan | None:
@@ -1668,8 +2107,13 @@ class BucketSortDemonstrator:
         attempt went wrong (a miss, a slip, a drop), even when the episode still succeeds, for
         example by a dropped object landing in the bucket; a recorder that keeps only smooth
         demonstrations keeps clean successes.
+
+        While a plan runs on its own thread, the status is the one from when it started.
         """
-        episode = self._episode
+        job = self._job
+        if job is not None and not job.cancelled and job.status is not None:
+            return dict(job.status)
+        episode = self._current_episode()
         return {
             "clean": not episode.reasons if episode is not None else None,
             "instruction": episode.instruction.text if episode is not None and episode.instruction else None,
@@ -1686,11 +2130,35 @@ class BucketSortDemonstrator:
         Returns:
             ``True`` once per failed episode.
         """
+        if self._job is not None:
+            return False  # the planning thread has the state
         requested, self._reset_requested = self._reset_requested, False
         return requested
 
     def reset(self) -> None:
-        """Forget the episode in progress; the next :meth:`step` starts a new one from the arm's pose."""
+        """Forget the episode in progress; the next :meth:`step` starts a new one from the arm's pose.
+
+        A plan in flight is discarded: the reset takes effect once its thread ends, within a few
+        milliseconds (:func:`_checkpoint`); until then :meth:`step` holds the actuators' targets.
+        A finished plan not collected yet, and a stuck start not polled yet, are discarded too.
+        """
+        job = self._job
+        if job is not None and not job.done.is_set():
+            job.cancelled = True
+            return
+        self._job = None
+        self._stuck_result = None
+        self._reset_state()
+
+    def close(self, timeout_s: float = 2.0) -> None:
+        """Cancel a plan in flight and wait for its thread (the scene is unloaded)."""
+        job = self._job
+        if job is not None:
+            job.cancelled = True
+            job.thread.join(timeout_s)
+            self.reap()
+
+    def _reset_state(self) -> None:
         self._q = None
         self._q_prev = None
         self._plan = None
@@ -1711,23 +2179,141 @@ class BucketSortDemonstrator:
             Eight targets per arm in model units, the channels' order (``ACTUATORS`` for the FR3): the
             seven arm joints (radians) and the hand's actuator (the FR3's opening in metres).
         """
-        new_episode = self._episode is None or self._generation != self.task.reset_count
-        if self._q is None or new_episode:
-            self._take_targets(data)
-        if new_episode:
-            self._start_episode(data)
-        self._q_prev = self._q.copy()
-        self._advance(data, dt)
-        targets = self._targets(self._q, self._grip)  # type: ignore[arg-type]
+        job = self._job
+        targets = self._while_planning(job, data, dt) if job is not None else None
+        if targets is None:
+            new_episode = self._episode is None or self._generation != self.task.reset_count
+            if self._q is None or new_episode:
+                self._take_targets(data)
+            if new_episode:
+                self._start_episode(data)
+            self._q_prev = self._q.copy()
+            self._deferring = self.background_planning
+            try:
+                self._advance(data, dt)
+            finally:
+                self._deferring = False
+            job = self._job
+            # A plan just went to its thread, which has the state now: output where the arm is.
+            targets = job.hold[0].copy() if job is not None else self._targets(self._q, self._grip)  # type: ignore[index, arg-type]
+        self._last_call = time.monotonic()
         if apply:
             self.write_targets(data, targets)
         return targets
+
+    # -- planning off the control tick ------------------------------------
+
+    def _while_planning(self, job: _PlanJob, data: object, dt: float) -> np.ndarray | None:
+        """Return this tick's targets while *job* plans; ``None`` once it is collected, and the tick runs as usual.
+
+        The tick waits for the plan up to the rest of a control period since the last one returned
+        (:meth:`_pace`), so a loop faster than real time slows to it while it plans.
+
+        Returns:
+            The held or braking targets, model units.
+        """
+        job.ticks += 1
+        if not job.done.wait(self._pace(dt)):
+            if job.cancelled or job.hold is None:
+                return self._actuator_targets(data)  # the reset put the arm elsewhere
+            return job.hold[min(job.ticks, len(job.hold) - 1)].copy()
+        self._finish(job)
+        return None
+
+    def _pace(self, dt: float) -> float:
+        """Return how long to wait for a plan this tick: what is left of *dt* since the last call returned.
+
+        Returns:
+            Seconds, at most *dt*.
+        """
+        if self._last_call is None:
+            return 0.0
+        return min(dt, max(0.0, dt - (time.monotonic() - self._last_call)))
+
+    def _finish(self, job: _PlanJob) -> None:
+        """Collect a finished *job*: discard it after a reset, else skip the braking ticks already output.
+
+        What the planning thread raised is raised here, as if it had planned in this thread.
+        """
+        self._job = None
+        if job.cancelled:
+            self._reset_state()
+            self._stuck_result = None
+            return
+        if job.error is not None:
+            raise job.error
+        played = min(job.ticks - 1, job.brake_ticks)
+        plan = self._plan
+        if played > 0 and plan is not None and plan.brake_ticks == job.brake_ticks:
+            self._tick = played
+            targets = plan.targets(played - 1)
+            self._q, self._grip = targets[:-1], float(targets[-1])
+
+    def _actuator_targets(self, data: object) -> np.ndarray:
+        """Return every arm's actuator targets in model units, as :meth:`step` returns them.
+
+        Returns:
+            Eight values per arm.
+        """
+        targets = np.concatenate([self._ctrl_targets(data, arm) for arm in range(len(self.arms))])
+        targets[self._grip_rows] *= self._grip_per_width
+        return targets
+
+    def _plan_then(self, data: object, dt: float, brake: np.ndarray | None, work: Callable[[object], None]) -> None:
+        """Run *work* on *data*: plan, then start the plan (:meth:`_run`), after *brake*.
+
+        Within :meth:`step` with background planning, *work* runs on a thread with a copy of
+        *data*; meanwhile the arm brakes along *brake* and then holds. The braking's clearance from
+        the arms holding still is checked first, here, since it runs before the plan is done.
+        """
+        if not self._deferring or getattr(_planning, "job", None) is not None:
+            work(data)
+            return
+        braking = brake is not None and len(brake) > 0
+        if braking:
+            reason = self._brake_blocked(data, brake)  # type: ignore[arg-type]
+            if reason is not None:
+                self._stop_and_fail(data, dt, None, reason, freeze_at=self._braking_from)
+                return
+        rows = [self._braking_from, *brake] if braking else [self._q]  # type: ignore[misc]
+        hold = np.stack([self._targets(q, self._grip) for q in rows])  # type: ignore[arg-type]
+        self._dispatch(data, work, hold, len(rows) - 1)
+
+    def _dispatch(
+        self, data: object, work: Callable[[object], object], hold: np.ndarray | None, brake_ticks: int
+    ) -> None:
+        """Start *work* on its own thread with a copy of *data*; collect it if done within :data:`PLAN_WAIT_S`.
+
+        A cancelled plan still on its way out finishes first; its thread has the scratch data, so this
+        one gets its own.
+        """
+        import mujoco  # noqa: PLC0415
+
+        previous = self._job  # cancelled, on its way out: the new thread waits for it
+        if previous is not None:
+            previous.cancelled = True
+        if self._scratch is None or previous is not None:
+            self._scratch = mujoco.MjData(self.model)
+        scratch = self._scratch
+        mujoco.mj_copyData(scratch, self.model, data)
+
+        def run() -> object:
+            if previous is not None:
+                self._reset_state()  # what collecting the cancelled plan would have done
+            return work(scratch)
+
+        job = _PlanJob(run, hold, brake_ticks, previous)
+        job.status = self.status()  # before it is the job in flight: a cancelled one reports the reset
+        self._job = job
+        job.start()
+        if job.done.wait(PLAN_WAIT_S):
+            self._finish(job)
 
     def _take_targets(self, data: object) -> None:
         """Start from the arms as they are: the working arm's joints, every other arm's targets."""
         # A scene reset puts the arm home: start from there, not from the last episode's targets.
         self._q = np.array(data.qpos[self.ik.qpos_adr])
-        self._grip = self._ctrl_targets(data, self._active)[7]
+        self._grip = self._ctrl_targets(data, self._active)[-1]
         self._hold = [None if i == self._active else self._ctrl_targets(data, i) for i in range(len(self.arms))]
 
     def _targets(self, q: np.ndarray, grip: float) -> np.ndarray:
@@ -1740,12 +2326,14 @@ class BucketSortDemonstrator:
             [*q, grip] if i == self._active else self._hold[i]  # type: ignore[list-item]
             for i in range(len(self.arms))
         ])
-        targets[7::8] *= self._grip_per_width
+        targets[self._grip_rows] *= self._grip_per_width
         return targets
 
     def write_targets(self, data: object, targets: np.ndarray) -> None:
         """Write targets in model units (:meth:`step`'s) to the actuators."""
         data.ctrl[self._actuators] = targets * self._ctrl_per_unit
+        for row, actuator, per_unit in self._followers:
+            data.ctrl[actuator] = targets[row] * per_unit
 
     def stuck_start(self, data: object, dt: float, rng: np.random.Generator) -> StuckStart | None:
         """Plan the move to a pose a policy gets stuck in, for the episode about to start (after a reset).
@@ -1765,10 +2353,11 @@ class BucketSortDemonstrator:
         instruction = self.task.instruction
         if instruction is None:
             return None
-        self.reset()
+        self._reset_state()
         self._take_targets(data)
         snapshot = SceneSnapshot.take(data)
-        params = DemoParams.sample(rng) if self.randomize else DemoParams()
+        heights = self.active_arm.heights
+        params = DemoParams.sample(rng, heights) if self.randomize else DemoParams.for_heights(heights)
         if len(self.arms) > 1:
             plan = self._plan_with_an_arm(snapshot, instruction, params, dt, rng)
         else:
@@ -1777,7 +2366,7 @@ class BucketSortDemonstrator:
             [] if plan is None or not plan.ok else [k for k, phase in enumerate(plan.phases) if phase in STUCK_PHASES]
         )
         move = self._stuck_move(snapshot, plan, ticks, dt, rng) if plan is not None and ticks else None
-        self.reset()  # the episode starts from the stuck pose, at the next step
+        self._reset_state()  # the episode starts from the stuck pose, at the next step
         if move is None:
             return None
         self._pinned_arm = self._active if len(self.arms) > 1 else None
@@ -1785,6 +2374,39 @@ class BucketSortDemonstrator:
             "Demonstrator: a stuck start for the {}, {:.1f} s away", self.active_arm.label, len(move.targets) * dt
         )
         return move
+
+    def begin_stuck_start(self, data: object, dt: float, rng: np.random.Generator) -> None:
+        """Start :meth:`stuck_start`; with background planning on its own thread. :meth:`poll_stuck_start` returns it.
+
+        The autopilot must not step meanwhile; a :meth:`reset` discards the move.
+        """
+        self._stuck_result = None
+        if not self.background_planning:
+            self._stuck_result = self.stuck_start(data, dt, rng)
+            return
+
+        def work(copy: object) -> None:
+            self._stuck_result = self.stuck_start(copy, dt, rng)
+
+        self._dispatch(data, work, None, 0)
+
+    def poll_stuck_start(self, dt: float) -> tuple[bool, StuckStart | None]:
+        """Return whether the stuck start of :meth:`begin_stuck_start` still plans, else its move (once).
+
+        While it plans, the call waits up to the rest of a control period of *dt* (as :meth:`step` does).
+
+        Returns:
+            ``(True, None)`` while it plans, then ``(False, move)``; the move is ``None`` when there is none.
+        """
+        job = self._job
+        if job is not None:
+            if not job.done.wait(self._pace(dt)):
+                self._last_call = time.monotonic()
+                return True, None
+            self._finish(job)
+        self._last_call = time.monotonic()
+        move, self._stuck_result = self._stuck_result, None
+        return False, move
 
     def _stuck_move(
         self, snapshot: SceneSnapshot, plan: JointPlan, ticks: list[int], dt: float, rng: np.random.Generator
@@ -1820,9 +2442,11 @@ class BucketSortDemonstrator:
         Returns:
             Eight values.
         """
-        rows = slice(8 * arm, 8 * arm + 8)
+        start, count = self._rows[arm]
+        rows = slice(start, start + count + 1)
         targets = np.array(data.ctrl[self._actuators[rows]]) / self._ctrl_per_unit[rows]
-        targets[7] = float(np.clip(targets[7] / self._grip_per_width[arm], 0.0, GRIP_OPEN))
+        opening = targets[count] / self._grip_per_width[arm]
+        targets[count] = float(np.clip(opening, 0.0, self.arms[arm].grip_open))
         return targets
 
     def _switch_arm(self, arm: int) -> None:
@@ -1833,7 +2457,8 @@ class BucketSortDemonstrator:
         self._hold[self._active] = np.array([*self._q, self._grip])
         self._hold[arm] = None
         self._active = arm
-        self._q, self._grip = hold[:7].copy(), float(hold[7])
+        count = self._rows[arm][1]
+        self._q, self._grip = hold[:count].copy(), float(hold[count])
         self._q_prev = self._q.copy()
         self._braking_from = self._q.copy()
 
@@ -1841,7 +2466,8 @@ class BucketSortDemonstrator:
         self._generation = self.task.reset_count
         seed = int(self._rng.integers(2**63))
         rng = np.random.default_rng(seed)
-        params = DemoParams.sample(rng) if self.randomize else DemoParams()
+        heights = self.active_arm.heights
+        params = DemoParams.sample(rng, heights) if self.randomize else DemoParams.for_heights(heights)
         self.stats.episodes += 1
         self._episode = _Episode(self.stats.episodes, self.task.instruction, rng, params, float(data.time))
         self._plan = None
@@ -1920,11 +2546,10 @@ class BucketSortDemonstrator:
         if len(self.arms) == 1:
             return True
         for index, planner in enumerate(self.planners):
-            target = self._q if index == self._active else self._hold[index][:7]  # type: ignore[index]
-            targets = (
-                np.array(data.ctrl[self._actuators[8 * index : 8 * index + 7]])
-                / self._ctrl_per_unit[8 * index : 8 * index + 7]
-            )
+            start, count = self._rows[index]
+            target = self._q if index == self._active else self._hold[index][:count]  # type: ignore[index]
+            rows = slice(start, start + count)
+            targets = np.array(data.ctrl[self._actuators[rows]]) / self._ctrl_per_unit[rows]
             moving = np.abs(np.array(data.qvel[planner.ik.dof_adr])).max() >= STILL_SPEED
             if moving or np.abs(targets - target).max() > TARGET_TOLERANCE:
                 self._still_since = None
@@ -1940,7 +2565,7 @@ class BucketSortDemonstrator:
         if self._lagging(data, plan, tick):
             return
         targets = plan.targets(tick)
-        self._q, self._grip = targets[:7], float(targets[7])
+        self._q, self._grip = targets[:-1], float(targets[-1])
         self._phase = plan.phases[tick]
         self._tick += 1
         if plan.kind == "home" or episode is None or episode.instruction is None:
@@ -2056,7 +2681,10 @@ class BucketSortDemonstrator:
     def _start_state(self) -> np.ndarray:
         q = self._q if self._q is not None else self.ik.home
         tcp, _ = self.ik.fk(q)
-        return np.array([*tcp, self.ik.continuous_yaw(q), self._grip])
+        yaw = self.ik.continuous_yaw(q)
+        if self.ik.plain:
+            return np.array([*tcp, yaw, self._grip])
+        return np.array([*tcp, yaw, self._grip, self.ik.tilt()])
 
     def _resting(self, data: object) -> bool:
         name = self._episode.instruction.object  # type: ignore[union-attr]
@@ -2072,9 +2700,14 @@ class BucketSortDemonstrator:
         body = self._object_body[name]
         position = data.xpos[body]
         rotation = data.xmat[body].reshape(3, 3)
+        area = self.task.area
+        retry_x, retry_y = RETRY_X, RETRY_Y
+        if area is not DEFAULT_LAYOUT:  # the same margins about the robot's own object area
+            retry_x = (area.object_x[0] - 0.06, area.object_x[1] + 0.04)
+            retry_y = (area.object_y[0] - 0.02, area.object_y[1] + 0.02)
         return bool(
-            RETRY_X[0] <= position[0] <= RETRY_X[1]
-            and RETRY_Y[0] <= position[1] <= RETRY_Y[1]
+            retry_x[0] <= position[0] <= retry_x[1]
+            and retry_y[0] <= position[1] <= retry_y[1]
             and position[2] < 0.05  # noqa: PLR2004
             and self.planner.shapes[name].grasp_axes(rotation) is not None
             and bucket_containing(self.model, data, position) is None
@@ -2092,7 +2725,7 @@ class BucketSortDemonstrator:
         logger.info("Demonstrator: {}; retrying", reason)
         self.stats.retries += 1
         if self.randomize:
-            episode.params = DemoParams.sample(episode.rng)
+            episode.params = DemoParams.sample(episode.rng, self.active_arm.heights)
         episode.retry_pending = True
         self._go_home(data, dt)
 
@@ -2113,11 +2746,14 @@ class BucketSortDemonstrator:
         The arm may be moving when an attempt is abandoned: the targets first slow to a stop at a
         constant deceleration over :data:`BRAKE_S`, so no joint jumps from speed to rest.
         """
-        episode = self._episode
         brake = self._brake(dt)
+        self._plan_then(data, dt, brake, lambda live: self._go_home_after(live, dt, brake))
+
+    def _go_home_after(self, data: object, dt: float, brake: np.ndarray) -> None:
+        episode = self._episode
         self.planner.load(SceneSnapshot.take(data))
         script = MotionScript(self._start_state())
-        script.add("release", grip=GRIP_OPEN, duration=0.4)
+        script.add("release", grip=self.ik.grip_open, duration=0.4)
         self.planner.add_return(script, episode.params)  # type: ignore[union-attr]
         plan = self.planner.solve(script, self._q, dt, kind="home", target=episode.instruction.object)  # type: ignore[union-attr]
         self._run(plan, data, brake)
@@ -2132,7 +2768,7 @@ class BucketSortDemonstrator:
             ``(ticks, 7)`` joint targets.
         """
         q = np.asarray(self._q, dtype=np.float64)
-        velocity = (q - self._q_prev) / dt if self._q_prev is not None else np.zeros(7)
+        velocity = (q - self._q_prev) / dt if self._q_prev is not None else np.zeros(len(q))
         t = np.arange(1, round(BRAKE_S / dt) + 1) * dt
         brake = q[None, :] + velocity[None, :] * (t - t**2 / (2.0 * BRAKE_S))[:, None]
         brake = np.clip(brake, self.ik.lower, self.ik.upper)
@@ -2167,6 +2803,10 @@ class BucketSortDemonstrator:
         if new_attempt or episode.attempt == 0:
             episode.attempt += 1
             self.stats.attempts += 1
+        self._plan_then(data, dt, brake, lambda live: self._plan_and_run_attempt(live, dt, brake))
+
+    def _plan_and_run_attempt(self, data: object, dt: float, brake: np.ndarray | None) -> None:
+        episode = self._episode
         snapshot = SceneSnapshot.take(data)
         if brake is None and len(self.arms) > 1:
             plan = self._plan_with_an_arm(snapshot, episode.instruction, episode.params, dt, episode.rng)
@@ -2256,6 +2896,9 @@ class BucketSortDemonstrator:
 
     def _begin_place(self, data: object, dt: float, brake: np.ndarray | None = None) -> None:
         """Plan the carry and the release again, with the object in the hand, and start it."""
+        self._plan_then(data, dt, brake, lambda live: self._plan_and_run_place(live, dt, brake))
+
+    def _plan_and_run_place(self, data: object, dt: float, brake: np.ndarray | None) -> None:
         episode = self._episode
         instruction = episode.instruction  # type: ignore[union-attr]
         self.planner.load(SceneSnapshot.take(data))
@@ -2312,16 +2955,19 @@ class BucketSortDemonstrator:
                 candidates = candidates if params.yaw_choice < 0.5 else candidates[::-1]  # noqa: PLR2004
             elif margins[1] > margins[0]:
                 candidates = candidates[::-1]
+        safer, safest = self.active_arm.heights.safe
         variants = [
             params,
-            replace(params, release_z=max(params.release_z, 0.15), carry_z=max(params.carry_z, 0.25)),
-            replace(params, release_z=0.16, carry_z=0.26, blend=0.0, place_offset=(0.0, -0.01), grasp_offset=0.0),
+            replace(params, release_z=max(params.release_z, safer[0]), carry_z=max(params.carry_z, safer[1])),
+            replace(
+                params, release_z=safest[0], carry_z=safest[1], blend=0.0, place_offset=(0.0, -0.01), grasp_offset=0.0
+            ),
         ]
         if rng is not None:
-            variants += [DemoParams.sample(rng) for _ in range(2)]
+            variants += [DemoParams.sample(rng, self.active_arm.heights) for _ in range(2)]
         best: JointPlan | None = None
         eligible: JointPlan | None = None
-        """With several arms, the best plan that may run at all (:meth:`_may_run`)."""
+        """Where :attr:`_gated`, the best plan that may run at all (:meth:`_may_run`)."""
         for variant in variants:
             for yaw in candidates:
                 planner.load(snapshot)
@@ -2339,11 +2985,7 @@ class BucketSortDemonstrator:
                     return plan
                 if best is None or _severity(plan) < _severity(best):
                     best = plan
-                if (
-                    len(self.arms) > 1
-                    and self._may_run(plan)
-                    and (eligible is None or _severity(plan) < _severity(eligible))
-                ):
+                if self._gated and self._may_run(plan) and (eligible is None or _severity(plan) < _severity(eligible)):
                     eligible = plan
         if eligible is not None:
             best = eligible  # a plan that would be refused must not hide one that may run
@@ -2351,16 +2993,29 @@ class BucketSortDemonstrator:
             self._report_problems(best)  # type: ignore[arg-type]
         return best  # type: ignore[return-value]
 
+    @property
+    def _gated(self) -> bool:
+        """Whether :meth:`_run` refuses best-effort plans out of reach: with several arms, or a leaning one.
+
+        :meth:`plan_attempt` then prefers a plan that may run (:meth:`_may_run`) to any it would refuse.
+        One Franka runs its best-effort plans as before.
+        """
+        return len(self.arms) > 1 or self.active_arm.max_tilt > 0.0
+
     @staticmethod
     def _may_run(plan: JointPlan) -> bool:
-        """Return whether a best-effort plan of several arms may run: near its path and clear of the other arm.
+        """Return whether a best-effort plan may run where :attr:`_gated`: near its path and clear of the other arm.
 
         Near is within :data:`OUT_OF_REACH`; clear is :data:`CLEARANCE` ``arm``.
 
         Returns:
             ``True`` for a plan that misses some check but neither of these.
         """
-        return plan.pos_error <= OUT_OF_REACH and plan.clearance.get("arm", np.inf) >= CLEARANCE["arm"]
+        return (
+            not plan.unreached
+            and plan.pos_error <= OUT_OF_REACH
+            and plan.clearance.get("arm", np.inf) >= CLEARANCE["arm"]
+        )
 
     def _too_close_to_an_arm(self, plan: JointPlan) -> bool:
         """Return whether *plan* brings the working arm closer than :data:`CLEARANCE` ``arm`` to an arm holding still.
@@ -2401,6 +3056,7 @@ class BucketSortDemonstrator:
             grip=np.full(ticks, self._grip),
             phases=["failed"] * ticks,
             cartesian=np.repeat(state[None, :], ticks, axis=0),
+            brake_ticks=len(brake) if brake is not None else 0,
         )
         if episode is not None:
             if episode.outcome != "failed":  # a failed episode on its way home keeps its reason
@@ -2416,6 +3072,22 @@ class BucketSortDemonstrator:
         self._lift_check_since = None
         self._set_phase("failed", data)
 
+    def _brake_blocked(self, data: object, brake: np.ndarray | None) -> str | None:
+        """Return why *brake* must not run, with several arms: it would reach into an arm holding still.
+
+        The arm then stops on the last target instead, which a checked plan (or the hold) put there.
+
+        Returns:
+            The reason, or ``None`` when the braking is clear (or there is none, or one arm).
+        """
+        if len(self.arms) == 1 or brake is None or not len(brake):
+            return None
+        clearance = self.planner.arm_clearance(brake, SceneSnapshot.take(data))
+        if clearance >= CLEARANCE["arm"]:
+            return None
+        needed = CLEARANCE["arm"] * 1000
+        return f"braking would come {clearance * 1000:.0f} mm from the other arm (at least {needed:.0f} mm)"
+
     def _report_problems(self, plan: JointPlan) -> None:
         self.stats.plan_problems += 1
         logger.warning("Demonstrator: no plan passed every check ({}); running the best one", "; ".join(plan.problems))
@@ -2428,15 +3100,9 @@ class BucketSortDemonstrator:
         (:meth:`_stop_and_fail`). One arm runs its plans as before: the FR3's best-effort plans included.
         """
         if len(self.arms) > 1:
-            braking = brake is not None and len(brake) > 0
-            brake_clearance = self.planner.arm_clearance(brake, SceneSnapshot.take(data)) if braking else np.inf
             needed = CLEARANCE["arm"] * 1000
-            if brake_clearance < CLEARANCE["arm"]:
-                # Braking along the current speed would reach into the other arm: stop on the last
-                # target instead, which a checked plan (or the hold) put there.
-                reason = (
-                    f"braking would come {brake_clearance * 1000:.0f} mm from the other arm (at least {needed:.0f} mm)"
-                )
+            reason = self._brake_blocked(data, brake)
+            if reason is not None:
                 self._stop_and_fail(data, plan.dt, None, reason, freeze_at=self._braking_from)
                 return
             if self._too_close_to_an_arm(plan):
@@ -2446,9 +3112,14 @@ class BucketSortDemonstrator:
                 )
                 self._stop_and_fail(data, plan.dt, brake, reason)
                 return
+        if self._gated:
+            # A plan out of reach would close on nothing or let go outside the bucket: several arms
+            # and the leaning arms refuse it (the checked braking still stops the arm); one Franka
+            # runs its best-effort plans as before.
+            if plan.unreached:
+                self._stop_and_fail(data, plan.dt, brake, f"no lean of the hand reaches the {plan.kind} plan's poses")
+                return
             if plan.kind != "home" and plan.pos_error > OUT_OF_REACH:
-                # A re-planned approach or place out of reach would close on nothing or let go outside
-                # the bucket; the checked braking still stops the arm.
                 reason = (
                     f"the {plan.kind} plan misses its path by {plan.pos_error * 1000:.0f} mm "
                     f"(at most {OUT_OF_REACH * 1000:.0f} mm): out of reach"
@@ -2458,6 +3129,7 @@ class BucketSortDemonstrator:
         if brake is not None and len(brake):
             # Prefix the braking ticks; the plan's own ticks shift by as many.
             n = len(brake)
+            plan.brake_ticks = n
             plan.q = np.vstack([brake, plan.q])
             plan.grip = np.concatenate([np.full(n, self._grip), plan.grip])
             plan.cartesian = np.vstack([np.repeat(plan.cartesian[:1], n, axis=0), plan.cartesian])

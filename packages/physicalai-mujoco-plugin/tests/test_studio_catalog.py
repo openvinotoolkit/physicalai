@@ -627,8 +627,9 @@ class TestSimulationLaunch:
         expected = {
             "MuJoCo_SO101_Follower": so101,
             "MuJoCo_SO101_Bimanual_Follower": so101,
-            "MuJoCo_WidowXAI_Follower": ["single_pick_place"],
-            "MuJoCo_WidowXAI_Bimanual_Follower": ["single_pick_place"],
+            "MuJoCo_WidowXAI_Follower": ["single_pick_place", "bucket_sort"],
+            "MuJoCo_WidowXAI_Bimanual_Follower": ["single_pick_place", "bucket_sort"],
+            "MuJoCo_reBotB601_Follower": ["single_pick_place", "bucket_sort"],
             **dict.fromkeys(
                 ["MuJoCo_FrankaResearch3_Follower", "MuJoCo_FrankaEmikaPanda_Follower", "MuJoCo_FrankaDuo_Follower"],
                 ["single_pick_place", "bucket_sort"],

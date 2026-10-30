@@ -23,6 +23,7 @@ from physicalai_mujoco_plugin.studio_recorder import (
     DEFAULT_MAX_ATTEMPTS,
     MAX_ATTEMPTS,
     MAX_RECOVERY_FRACTION,
+    START_TIMEOUT_S,
     SUCCESS_HOLD_S,
     SUCCESS_HOLD_TIMEOUT_S,
     BucketSortProgress,
@@ -254,6 +255,29 @@ def test_a_stuck_start_that_disturbed_the_layout_resets_for_a_normal_start(state
     directive = recorder.update(_progress(2))
     assert not directive.stuck_start and link.events() == ["start_recording"]  # a normal start, this once
     assert recorder.status()["stuck_starts"] == 0
+
+
+def test_planning_a_stuck_start_does_not_count_against_the_positioning_timeout() -> None:
+    """The demonstrator plans the move on its own thread, up to seconds: the timeout counts from the plan."""
+    link, clock = FakeLink(), Clock()
+    recorder = BucketSortRecorder(lambda: link, clock=clock, chance=lambda: 0.0)
+    recorder.enable(RecordingOptions(recovery_fraction=0.2))
+    recorder.update(_progress())
+    link.state = dict(TELEOP)
+    assert recorder.update(_progress(0)).reset_scene
+    assert recorder.update(_progress(1)).stuck_start
+
+    def progress(state: str) -> BucketSortProgress:
+        return dataclasses.replace(_progress(1), stuck_start=state)
+
+    for _ in range(3):  # planning for three timeouts
+        clock.now += START_TIMEOUT_S
+        directive = recorder.update(progress("planning"))
+        assert directive.hold_arm and not directive.reset_scene and recorder.phase == "positioning"
+    clock.now += START_TIMEOUT_S - 1.0  # moving, short of the timeout since the plan was done
+    assert not recorder.update(progress("moving")).reset_scene and recorder.phase == "positioning"
+    clock.now += 2.0
+    assert recorder.update(progress("moving")).reset_scene  # past it
 
 
 @pytest.mark.parametrize("outcome", ["failed", "stalled"])

@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import time
+from typing import TYPE_CHECKING
 
 import mujoco
 import numpy as np
@@ -26,7 +28,12 @@ from physicalai_mujoco_plugin.robot import MuJoCoRobot
 from physicalai_mujoco_plugin.scene_registry import get_scene, list_scenes_naming
 from physicalai_mujoco_plugin.studio_catalog import list_catalog_entries
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 TICK_S = 0.02
+PLAN_CAP_S = 300.0
+"""The longest :func:`_ticks` waits for the demonstrator's plans, wall seconds."""
 NEW_PROFILES = ("franka_panda", "franka_duo")
 
 
@@ -48,6 +55,24 @@ def scene(robot: MuJoCoRobot) -> MuJoCoRobot:
     return robot
 
 
+def _ticks(robot: MuJoCoRobot, seconds: float) -> Iterator[None]:
+    """Run control ticks for *seconds* of simulated time, not counting the ones the demonstrator plans in.
+
+    It plans on its own thread for as long as that takes in wall time (the Duo's and the WidowX AI
+    pair's attempts take seconds, more on a slow machine), while the simulation ticks on. Planning
+    longer than :data:`PLAN_CAP_S` in all fails the test.
+    """
+    demo = robot._automation.autopilot.demonstrator
+    ticks, deadline = 0, time.monotonic() + PLAN_CAP_S
+    while ticks < round(seconds / TICK_S):
+        robot.get_observation()
+        if demo.planning:
+            assert time.monotonic() < deadline, f"the demonstrator planned for over {PLAN_CAP_S:.0f} s"
+        else:
+            ticks += 1
+        yield
+
+
 def _arm_qpos(robot: MuJoCoRobot, arm: int) -> np.ndarray:
     demo = robot._automation.autopilot.demonstrator
     return np.array(robot._sim.data.qpos[demo.planners[arm].ik.qpos_adr])
@@ -64,10 +89,10 @@ class TestScene:
         offered = {entry.profile.name: entry.simulation_launch() for entry in list_catalog_entries()}
         for profile in ("franka_fr3", *NEW_PROFILES):
             assert "bucket_sort" in [scene.id for scene in offered[profile].scenes], profile
-        assert "bucket_sort" not in [scene.id for scene in offered["trossen_wxai"].scenes]
+        assert "bucket_sort" not in [scene.id for scene in offered["so101"].scenes]
 
-    def test_the_widowx_ai_is_not_offered(self) -> None:
-        assert not get_scene("bucket_sort").supports(get_profile("trossen_wxai"))
+    def test_the_so101_is_not_offered(self) -> None:
+        assert not get_scene("bucket_sort").supports(get_profile("so101"))
 
     def test_a_reset_puts_every_arm_at_its_home_fingers_down_and_open(self, scene: MuJoCoRobot) -> None:
         model, data = scene._sim.model, scene._sim.data
@@ -116,8 +141,7 @@ class TestDemonstrator:
             pytest.skip("one arm")
         scene._automation.set_autopilot("drive")
         demo = scene._automation.autopilot.demonstrator
-        for _ in range(round(12.0 / TICK_S)):
-            scene.get_observation()
+        for _ in _ticks(scene, 12.0):
             if demo.phase in {"lift", "carry"}:
                 break
         assert demo.phase in {"lift", "carry"}
@@ -133,8 +157,7 @@ class TestDemonstrator:
         model, data = scene._sim.model, scene._sim.data
         scene._automation.set_autopilot("drive")
         demo = scene._automation.autopilot.demonstrator
-        for _ in range(round(10.0 / TICK_S)):
-            scene.get_observation()
+        for _ in _ticks(scene, 10.0):
             if demo.phase == "approach":
                 break
         assert demo.phase == "approach"
@@ -146,8 +169,7 @@ class TestDemonstrator:
         mujoco.mj_forward(model, data)
         arms = [{int(b) for b in range(model.nbody) if model.body(b).name.startswith(side)} for side in ("left_", "right_")]
         episode, failure, resets = demo.status()["episode"], None, scene._sim.on_reset.reset_count
-        for _ in range(round(4.0 / TICK_S)):
-            scene.get_observation()
+        for _ in _ticks(scene, 4.0):
             for contact in data.contact[: data.ncon]:
                 bodies = {int(model.geom_bodyid[contact.geom1]), int(model.geom_bodyid[contact.geom2])}
                 assert not (bodies & arms[0] and bodies & arms[1]), "the arms touched"
@@ -166,8 +188,7 @@ class TestDemonstrator:
         data = scene._sim.data
         scene._automation.set_autopilot("drive")
         demo = scene._automation.autopilot.demonstrator
-        for _ in range(round(10.0 / TICK_S)):
-            scene.get_observation()
+        for _ in _ticks(scene, 10.0):
             if demo.phase == "approach":
                 break
         assert demo.phase == "approach"
@@ -281,8 +302,7 @@ class TestDemonstrator:
         demo = scene._automation.autopilot.demonstrator
         instruction = scene._sim.on_reset.instruction
         phase = "approach" if what == "object" else "carry"
-        for _ in range(round(20.0 / TICK_S)):
-            scene.get_observation()
+        for _ in _ticks(scene, 20.0):
             if demo.phase == phase:
                 break
         assert demo.phase == phase
@@ -293,8 +313,7 @@ class TestDemonstrator:
         data.qvel[dof : dof + 6] = 0.0
         mujoco.mj_forward(model, data)
         failure = None
-        for _ in range(round(3.0 / TICK_S)):
-            scene.get_observation()
+        for _ in _ticks(scene, 3.0):
             failure = demo.status()["failure"] or failure
             if failure:
                 break
@@ -365,8 +384,7 @@ class TestDemonstrator:
         mujoco.mj_forward(model, data)
         scene._automation.set_autopilot("drive")
         demo = scene._automation.autopilot.demonstrator
-        for _ in range(round(4.0 / TICK_S)):
-            scene.get_observation()
+        for _ in _ticks(scene, 4.0):
             if demo.status()["outcome"] == "failed":
                 break
         assert demo.status()["outcome"] == "failed"
@@ -399,8 +417,7 @@ class TestEpisodes:
         succeeded, jump, idle_move = False, 0.0, 0.0
         previous = data.xpos[body].copy()
         homes = [_arm_qpos(robot, arm) for arm in range(len(demo.arms))]
-        for _ in range(round(45.0 / TICK_S)):
-            robot.get_observation()
+        for _ in _ticks(robot, 45.0):
             if mode == "leader":
                 robot.send_action(np.asarray(robot._automation.leader_snapshot()["joint_positions"], dtype=np.float32))
             episode = robot._http_status()["episode"]

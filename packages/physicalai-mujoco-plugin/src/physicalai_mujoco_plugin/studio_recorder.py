@@ -723,8 +723,9 @@ class BucketSortProgress:
     """How the move to a stuck start goes, after :attr:`BucketSortDirective.stuck_start`."""
 
 
-StuckStartState = Literal["moving", "ready", "disturbed", "unavailable"]
-"""``moving`` to the stuck pose; ``ready`` there; ``disturbed``: the move moved an object or a bucket
+StuckStartState = Literal["planning", "moving", "ready", "disturbed", "unavailable"]
+"""``planning`` the move (on its own thread; not counted against the timeout); ``moving`` to the stuck pose;
+``ready`` there; ``disturbed``: the move moved an object or a bucket
 more than 5 mm; ``unavailable``: no stuck pose for this layout (the arm did not move)."""
 
 
@@ -907,6 +908,10 @@ class BucketSortRecorder(_RecorderBase):
             # Unavailable: the arm did not move, so the episode starts normally as the scene stands.
             self._stuck_starts += progress.stuck_start == "ready"
             return self._start(link, progress)
+        if progress.stuck_start == "planning":
+            # Planning takes up to seconds on its own thread: the timeout counts from when it is done.
+            self._since = self._clock()
+            return BucketSortDirective(hold_arm=True)
         if progress.stuck_start == "disturbed":
             # A start with something knocked out of place is not a clean stuck state: lay it out anew.
             message = "The move to the stuck pose disturbed the layout. Resetting the scene..."

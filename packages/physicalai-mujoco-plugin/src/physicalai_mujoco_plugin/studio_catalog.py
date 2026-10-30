@@ -271,7 +271,9 @@ class CatalogEntry:
         """
         arms = len(self.prefixes)
         offered = {
-            scene_id for scene_id, scene in list_scenes_naming(self.profile.name).items() if arms in scene.arm_counts
+            scene_id
+            for scene_id, scene in list_scenes_naming(self.profile.name).items()
+            if arms in scene.arm_counts_for(self.profile.name)
         }
         if self.profile.default_scene is not None:
             offered.add(self.profile.default_scene)

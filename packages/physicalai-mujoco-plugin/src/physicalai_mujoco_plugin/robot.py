@@ -782,6 +782,8 @@ class MuJoCoRobot(OperatorControls):
         # The native viewer's render thread waits on the viewer lock meanwhile.
         # A retry only checks whether the thread has finished, so a stuck render cannot stall
         # every tick.
+        if self._automation is not None and self._automation.planner_running:
+            return  # the bucket_sort planner reads the model on its own thread: the edit stays pending
         restart = self._cameras.on_thread
         timeout_s = _EDIT_RETRY_STOP_TIMEOUT_S if self._scene_edit_deferred else _CAMERA_STOP_TIMEOUT_S
         if restart and not self._cameras.stop(timeout_s):

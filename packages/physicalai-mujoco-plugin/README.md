@@ -12,7 +12,7 @@ Simulate robot arms, humanoids and quadrupeds from [MuJoCo Menagerie](https://gi
 - Built-in task scenes
 - Automatic cube respawn after a configurable success dwell (five seconds by default) in `single_pick_place`
 - A conveyor-belt sorting cell (`conveyor_sort`) with an adjustable belt speed, a continuous item feed, and per-episode scoring
-- A language-conditioned sorting task for the Franka FR3, Panda and Duo (`bucket_sort`): an instruction such as "put the CPU in the red bucket", randomized bucket colours, and a success flag
+- A language-conditioned sorting task for the Franka FR3, Panda and Duo, the WidowX AI (alone or a pair) and the reBot B601 (`bucket_sort`): an instruction such as "put the CPU in the red bucket", randomized bucket colours, and a success flag
 
 ## What this is for
 
@@ -338,8 +338,8 @@ Every robot comes from MuJoCo Menagerie and is described by a _profile_: what th
 | Profile                | Robot                                                   | Tier           | Scenes                                     | Arms | Units        |
 | ---------------------- | ------------------------------------------------------- | -------------- | ------------------------------------------ | ---- | ------------ |
 | `so101`                | SO-101, matching the real `SO101` driver                | `twin`         | all tabletop scenes                        | 1, 2 | `normalized` |
-| `trossen_wxai`         | Trossen WidowX AI, matching Runtime's `WidowXAI` driver | `twin`         | `single_pick_place`                        | 1, 2 | `degrees`    |
-| `rebot_b601`           | Seeed reBot B601-RS, `ReBotB601RS` names (provisional)  | `twin`         | `single_pick_place`                        | 1, 2 | `degrees`    |
+| `trossen_wxai`         | Trossen WidowX AI, matching Runtime's `WidowXAI` driver | `twin`         | `single_pick_place`, `bucket_sort`         | 1, 2 | `degrees`    |
+| `rebot_b601`           | Seeed reBot B601-RS, `ReBotB601RS` names (provisional)  | `twin`         | `single_pick_place`, `bucket_sort` (1 arm) | 1, 2 | `degrees`    |
 | `franka_fr3`           | Franka Research 3 with hand, matching `FrankaFR3`       | `twin`         | `single_pick_place`, `bucket_sort` (1 arm) | 1, 2 | `degrees`    |
 | `franka_duo`           | Franka FR3 Duo, both arms as one robot (16 channels)    | `twin`         | `single_pick_place`, `bucket_sort`         | 1    | `degrees`    |
 | `ur5e`                 | Universal Robots UR5e (no gripper)                      | `dataset`      | `single_pick_place`                        | 1, 2 | `degrees`    |
@@ -576,7 +576,7 @@ The plugin ships with built-in scenes that provide different environments for th
 | `single_pick_place` (default) | One block and a target disc              | 1 cube       | target disc | 1, 2 |
 | `yahtzee`                     | Six dice and a cup                       | 6 dice       | cup         | 1, 2 |
 | `conveyor_sort`               | Sort items off a moving belt into bins   | 24-item pool | 4 bins      | 1, 2 |
-| `bucket_sort` (Franka arms)   | Put the named object in the named bucket | 3 objects    | 3 buckets   | 1    |
+| `bucket_sort` (arms)          | Put the named object in the named bucket | 3 objects    | 3 buckets   | 1, 2 |
 | `floor_flat`                  | A flat floor for a floating-base robot   | none         | none        | 1    |
 
 Start with a specific scene:
@@ -617,7 +617,9 @@ Measured over 3 seeds of 3 episodes (90 items per speed): 99–100% of items sor
 
 `bucket_sort` is a language-conditioned sorting task for one Franka FR3 with its hand (`start --profile franka_fr3 --scene bucket_sort`). The arm stands on a 1.8 m x 1.0 m table whose top is the robot's base plane, with the floor 0.75 m below.
 
-It also runs the Franka Panda (`--profile franka_panda`) and the FR3 Duo (`--profile franka_duo`, on its column behind the table, no `--bimanual`); the layout and the cameras stay the FR3's, but for the Duo the rear pole camera stands behind the Duo instead of behind its left arm. The Duo works with one arm per attempt, the one that reaches the object and the bucket, while the other holds its ready pose; layouts that neither arm reaches fail and reset (5 of 40 seeded layouts; the FR3 and the Panda did all 40). The WidowX AI does not run it: from the table edge its fingers-down reach (0.35 m at the release height) falls short of the nearest bucket (0.50 m).
+It also runs the Franka Panda (`--profile franka_panda`) and the FR3 Duo (`--profile franka_duo`, on its column behind the table, no `--bimanual`); the layout and the cameras stay the FR3's, but for the Duo the rear pole camera stands behind the Duo instead of behind its left arm. The Duo works with one arm per attempt, the one that reaches the object and the bucket, while the other holds its ready pose; layouts that neither arm reaches fail and reset (5 of 40 seeded layouts; the FR3 and the Panda did all 40).
+
+The WidowX AI (`--profile trossen_wxai`, alone or with `--bimanual`) and the reBot B601 (`--profile rebot_b601`) run it with the buckets and objects closer in, full size on the same table (`bucket_sort_arms.SIX_JOINT_LAYOUT`, `WXAI_PAIR_LAYOUT`): the objects 0.22 to 0.42 m from the base, the buckets 0.40 to 0.52 m out with their open ends toward it, and the hand leaning outward up to 50 degrees to reach over the rims, the grasp as near fingers-down as the arm allows and 15 degrees off it at most; an attempt no allowed lean reaches does not run. The WidowX AI twin's soft servos carry the arm's weight through gravity compensation in the model, so the targets the autopilot and Studio send are the real arm's. The two WidowX AI stand 0.44 m apart with the objects between them, each turned 30 degrees away from the other at home; one works an attempt, as on the Duo. The SO-101 does not run it.
 
 Both **Overview camera** choices in Viser model a D435 **RGB** camera on a short, table-clamped pole: nominal 42° vertical FOV, not the depth sensor's 58°. Choose **Shoulder** (the default, rear-side) or **Front**, or start with `--overview shoulder` / `--overview front`. Neither is mandatory. Both are task-focused views that intentionally crop the upper arm; keep the same POV for recording and deployment.
 
