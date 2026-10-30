@@ -298,6 +298,37 @@ def test_simulation_launch_rejects_an_empty_argv() -> None:
         launch.argv("pick", SimPayload(sim_id="7"))
 
 
+def test_simulation_launch_builds_the_argv_from_the_payload() -> None:
+    def payload_argv(*, scene: str, payload: SimPayload, seed: int | None) -> list[str]:
+        argv = ["sim", "start", "--scene", scene, f"--name=sim-{payload.sim_id}", "--host", payload.host]
+        return argv if seed is None else [*argv, "--seed", str(seed)]
+
+    launch = _launch(build_argv=None, build_payload_argv=payload_argv)
+    payload = SimPayload(sim_id="7", host="127.0.0.2")
+
+    assert launch.argv("fold", payload) == ["sim", "start", "--scene", "fold", "--name=sim-7", "--host", "127.0.0.2"]
+    assert launch.argv("pick", payload, seed=3)[-2:] == ["--seed", "3"]
+    with pytest.raises(ValueError, match="Unknown scene 'stack'"):
+        launch.argv("stack", payload)
+    with pytest.raises(ValueError, match="payload_owner_name returned an empty owner name"):
+        _launch(build_argv=None, build_payload_argv=payload_argv, payload_owner_name=lambda _: " ").argv("pick", payload)
+
+
+@pytest.mark.parametrize("build_payload_argv", [None, _sim_standalone_argv])
+def test_simulation_launch_needs_exactly_one_argv_builder(build_payload_argv: Any) -> None:
+    build_argv = None if build_payload_argv is None else _sim_argv
+
+    with pytest.raises(ValueError, match="set exactly one of build_argv and build_payload_argv"):
+        _launch(build_argv=build_argv, build_payload_argv=build_payload_argv)
+
+
+def test_simulation_launch_rejects_an_empty_payload_argv() -> None:
+    launch = _launch(build_argv=None, build_payload_argv=lambda **_: [])
+
+    with pytest.raises(ValueError, match="no command line"):
+        launch.argv("pick", SimPayload(sim_id="7"))
+
+
 def test_simulation_launch_defaults_to_no_standalone_command() -> None:
     launch = _launch()
 

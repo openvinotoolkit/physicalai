@@ -262,7 +262,7 @@ class SimulationArgvBuilder(Protocol):
     def __call__(self, *, scene: str, owner_name: str, seed: int | None) -> Sequence[str]: ...
 
 
-class SimulationStandaloneArgvBuilder(Protocol[_PayloadT]):
+class SimulationPayloadArgvBuilder(Protocol[_PayloadT]):
     def __call__(self, *, scene: str, payload: _PayloadT, seed: int | None) -> Sequence[str]: ...
 
 
@@ -271,10 +271,11 @@ class SimulationLaunch(Generic[_PayloadT]):
     scenes: tuple[SimulationScene, ...]
     default_scene: str
     payload_owner_name: Callable[[_PayloadT], str]
-    build_argv: SimulationArgvBuilder
+    build_argv: SimulationArgvBuilder | None = None
     max_seed: int | None = None
     labels: tuple[str, ...] = ()
-    build_standalone_argv: SimulationStandaloneArgvBuilder[_PayloadT] | None = None
+    build_standalone_argv: SimulationPayloadArgvBuilder[_PayloadT] | None = None
+    build_payload_argv: SimulationPayloadArgvBuilder[_PayloadT] | None = None
 
     def owner_name(self, payload: _PayloadT) -> str: ...
     def argv(self, scene: str, payload: _PayloadT, seed: int | None = None) -> list[str]: ...
@@ -285,10 +286,11 @@ For simulated robot types whose `robot_builder` attaches to a running simulation
 
 - The start dialog shows `labels` (short facts such as the arm count) as chips and `scenes` in their order, with `default_scene` preselected.
 - Studio runs `argv(scene, payload, seed)` for the robot's payload as a child process. `payload_owner_name` maps the payload to the name the robot attaches to; `build_argv` gets that name, and `owner_name(payload)` returns it so Studio can check `ready.name`.
+- Set `build_payload_argv` instead of `build_argv` when the command line needs more of the payload than the owner name, for example to reuse the payload's HTTP port when it is free. That keeps the robot's cameras, the standalone command and runtime exports on the same address across starts. Set exactly one of the two.
 - `seed` is `None` for random scene layouts, or a fixed seed from `0` to `max_seed`. With `max_seed=None` the simulation takes no seed and Studio offers none.
 - With `build_standalone_argv`, the start dialog also shows `standalone_argv(scene, payload, seed)`: the command a user runs in a terminal to start the same simulation themselves, for example to drive it from their own script. Studio attaches to that simulation as it is, as one started outside Studio, so the command must publish under the payload's owner name and serve at the payload's addresses (not on free ports), and it leaves out the process contract below: it runs until the user stops it. Without `build_standalone_argv`, `standalone_argv` returns `None` and Studio shows no command.
 
-`SimulationLaunch` rejects an empty `scenes`, duplicate scene ids, a `default_scene` that is not one of them, a negative `max_seed` and blank labels; `argv` and `standalone_argv` reject an unknown scene, a blank owner name and an out-of-range seed with `ValueError`.
+`SimulationLaunch` rejects an empty `scenes`, duplicate scene ids, a `default_scene` that is not one of them, a negative `max_seed`, blank labels, and both or neither of `build_argv` and `build_payload_argv`; `argv` and `standalone_argv` reject an unknown scene, a blank owner name and an out-of-range seed with `ValueError`.
 
 The command line must follow this process contract:
 

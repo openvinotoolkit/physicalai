@@ -17,8 +17,8 @@ def test_imports() -> None:
         SerialPortInfo,
         SimulationArgvBuilder,
         SimulationLaunch,
+        SimulationPayloadArgvBuilder,
         SimulationScene,
-        SimulationStandaloneArgvBuilder,
         shared_robot_name,
     )
 
@@ -37,8 +37,8 @@ def test_imports() -> None:
         SerialPortInfo,
         SimulationArgvBuilder,
         SimulationLaunch,
+        SimulationPayloadArgvBuilder,
         SimulationScene,
-        SimulationStandaloneArgvBuilder,
         shared_robot_name,
     )
     assert len(exports) == 17
