@@ -9,6 +9,34 @@
 * **mujoco:** Every MuJoCo follower in Studio has a 3D model. The SO-101s keep their URDFs; the others, the WidowX AI's included, get a URDF built from the robot's MuJoCo model on first use and cached per user, so the robot page and dataset playback no longer wait forever on "Loading robot model...".
 * **mujoco:** Studio's MuJoCo follower probes report an owner as online only when it drives that entry's joints, so the single-arm entry no longer attaches to a bimanual simulation or the other way round.
 
+## [0.5.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-mujoco-plugin-v0.4.0...physicalai-mujoco-plugin-v0.5.0) (2026-10-30)
+
+
+### ✨ Features
+
+* **mujoco:** add a scripted demonstrator for bucket_sort ([#400](https://github.com/openvinotoolkit/physicalai/issues/400)) ([3f0869f](https://github.com/openvinotoolkit/physicalai/commit/3f0869f3f4a3bcd189390cd16491fcb2bf445929))
+* **mujoco:** add the bucket_sort scene for the Franka FR3 ([#398](https://github.com/openvinotoolkit/physicalai/issues/398)) ([06df4b0](https://github.com/openvinotoolkit/physicalai/commit/06df4b07e15205848f8b8345c7a6b707038bf416))
+* **mujoco:** Franka FR3 with hand and FR3 Duo twins, ease streamed actions ([#393](https://github.com/openvinotoolkit/physicalai/issues/393)) ([ab545d8](https://github.com/openvinotoolkit/physicalai/commit/ab545d868754fbb5bb4d61449da7239c1f944f11))
+* **mujoco:** record bucket_sort in Studio, run it on more arms, and give every robot a 3D model ([#404](https://github.com/openvinotoolkit/physicalai/issues/404)) ([70a360b](https://github.com/openvinotoolkit/physicalai/commit/70a360b15c749a64b8460cdbd3157a2b8726f925))
+* **mujoco:** start Studio's viewer dark and close on the bucket_sort table ([#415](https://github.com/openvinotoolkit/physicalai/issues/415)) ([3c92c1f](https://github.com/openvinotoolkit/physicalai/commit/3c92c1f18527afc7feb019bdd255cc64d27c729b))
+
+
+### 🐛 Bug Fixes
+
+* **mujoco-plugin:** write the README for a PyPI install ([#389](https://github.com/openvinotoolkit/physicalai/issues/389)) ([a3b1359](https://github.com/openvinotoolkit/physicalai/commit/a3b1359be93a180d2b3e5696afe93069339a9034))
+* **mujoco:** require physicalai-studio-plugin 0.5.0 ([#423](https://github.com/openvinotoolkit/physicalai/issues/423)) ([ca89a35](https://github.com/openvinotoolkit/physicalai/commit/ca89a35bcf4a2da824749d9e24f6e8bd190c06e1))
+* **mujoco:** show camera previews in the viewer on first start ([#399](https://github.com/openvinotoolkit/physicalai/issues/399)) ([e93eb9c](https://github.com/openvinotoolkit/physicalai/commit/e93eb9c575c01672873540098c4fa3320e092577))
+
+
+### 📚 Documentation
+
+* add a tutorial that runs a policy in the MuJoCo simulation ([#380](https://github.com/openvinotoolkit/physicalai/issues/380)) ([7308fcc](https://github.com/openvinotoolkit/physicalai/commit/7308fcc45ebd624110d0c3a50fce4a06cf87dae8))
+
+
+### 🔧 Chores
+
+* deprecate `RobotAdapterOptions` ([#374](https://github.com/openvinotoolkit/physicalai/issues/374)) ([0ca5b8e](https://github.com/openvinotoolkit/physicalai/commit/0ca5b8e06c132aa2c83aa7a92bc6dfb79a7b231f))
+
 ## [0.4.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-mujoco-plugin-v0.3.1...physicalai-mujoco-plugin-v0.4.0) (2026-10-20)
 
 
