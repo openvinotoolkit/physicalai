@@ -87,6 +87,10 @@ SEPARATE_BIMANUAL_PROFILES = frozenset({"franka_fr3"})
 """Twins whose real two-arm setup is its own profile (the FR3 pair is ``franka_duo``): no side-by-side entry."""
 DEFAULT_HTTP_URL = f"http://127.0.0.1:{DEFAULT_HTTP_PORT}"
 """The owner's camera and control server under ``physicalai-mujoco start``'s defaults."""
+_CLI_NAME = "physicalai-mujoco"
+"""The plugin's console script."""
+_DEFAULT_HTTP_HOST = "127.0.0.1"
+"""``physicalai-mujoco start --http-host``'s default."""
 _LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 """Hosts of a payload ``http_url`` that mean the simulation runs on Studio's machine."""
 _NO_OWNER_ERROR = "no owner found for "
@@ -236,30 +240,27 @@ class CatalogEntry:
     def start_hint(self, owner_name: str, http_url: str = DEFAULT_HTTP_URL) -> str:
         """Return how to start the simulation that a follower of this entry attaches to (P2).
 
+        The same command as the start dialog's (:meth:`standalone_argv`), in the profile's default
+        scene.
+
         Args:
-            owner_name: The payload's owner name; ``--name`` is added when it is not the default.
-            http_url: The payload's HTTP address: a local port other than the default adds
-                ``--http-port``, and another host adds ``--http-host`` and ``--allow-remote`` and
-                says where to run it. An address without a host is left out.
+            owner_name: The payload's owner name.
+            http_url: The payload's HTTP address; another host adds ``--http-host`` and
+                ``--allow-remote`` and says where to run it. An address without a host or a fixed
+                port is left out.
 
         Returns:
-            ``Start it with: uv run physicalai-mujoco start --profile <profile> ...``.
+            ``Start it with: physicalai-mujoco start --profile <profile> ...``.
         """
-        command = f"uv run physicalai-mujoco start --profile {self.profile.name}"
-        if self.bimanual:
-            command += " --bimanual"
-        if owner_name != self.owner_name:
-            # One token, so a name that starts with "-" is not taken for an option.
-            command += f" --name={shlex.quote(owner_name)}"
+        payload_model = _payload_model(self)
+        payload = payload_model(name=owner_name, http_url=http_url)
         try:
-            url = urlsplit(http_url)
-            host, port = url.hostname, url.port or (443 if url.scheme == "https" else 80)
+            argv = self._start_command(self.profile.default_scene, payload, None)
         except ValueError:
-            host, port = None, DEFAULT_HTTP_PORT
-        if host is None or host in _LOCAL_HOSTS:
-            return f"Start it with: {command}" + (f" --http-port {port}" if port != DEFAULT_HTTP_PORT else "")
-        command += f" --http-host {shlex.quote(host)} --http-port {port} --allow-remote"
-        return f"Start it on {host} with: {command}"
+            argv = self._start_command(self.profile.default_scene, payload_model(name=owner_name), None)
+        host = argv[argv.index("--http-host") + 1] if "--http-host" in argv else _DEFAULT_HTTP_HOST
+        where = "" if host in _LOCAL_HOSTS else f" on {host}"
+        return f"Start it{where} with: {shlex.join(argv)}"
 
     def scene_ids(self) -> tuple[str, ...]:
         """Return the scenes a simulation of this entry can start in, without loading a model (P3).
@@ -276,20 +277,30 @@ class CatalogEntry:
             offered.add(self.profile.default_scene)
         return tuple(scene_id for scene_id in list_scenes() if scene_id in offered)
 
-    def start_argv(self, *, scene: str, owner_name: str, seed: int | None) -> list[str]:
+    def start_argv(self, *, scene: str, payload: MuJoCoRobotPayload, seed: int | None) -> list[str]:
         """Return the command line that Studio runs to start and supervise this entry's simulation (P3).
 
         ``python -m physicalai_mujoco_plugin start`` in Studio's interpreter, with JSON startup events,
-        shutdown on stdin end of file, free ports and the viewer theme for embedding (P4-P6).
+        shutdown on stdin end of file and the viewer theme for embedding (P4-P6). The HTTP server
+        reuses the port of the payload's ``http_url`` when it is free and takes a free one when it is
+        not (``--http-port-fallback``), so the robot's cameras, the standalone command and runtime
+        exports keep their address; the viewer takes a free port.
 
         Args:
             scene: One of :meth:`scene_ids`; :meth:`SimulationLaunch.argv` checks it.
-            owner_name: The payload's owner name, passed as one ``--name=`` token.
+            payload: The robot's payload: its owner name, passed as one ``--name=`` token, and its
+                ``http_url``, whose port a free one replaces when it has none.
             seed: Fixed reset seed (``start --seed``), or ``None`` for random layouts.
 
         Returns:
             The argv, ``sys.executable`` first.
         """
+        validated = self._validated_payload(payload)
+        try:
+            host, port = _http_address(validated.http_url)
+        except ValueError:
+            host, port = None, 0
+        http_port = port if host is not None else 0
         argv = [sys.executable, "-m", "physicalai_mujoco_plugin", "start", "--profile", self.profile.name]
         if self.bimanual:
             argv.append("--bimanual")
@@ -297,16 +308,63 @@ class CatalogEntry:
             "--scene",
             scene,
             # One token, so a name that starts with "-" is not taken for an option.
-            f"--name={owner_name}",
+            f"--name={validated.name}",
             "--status-json",
             "--exit-with-parent",
             "--http-port",
-            "0",
+            str(http_port),
+            *(["--http-port-fallback"] if http_port else []),
             "--viser-port",
             "0",
             "--viewer-theme",
             "studio",
         ]
+        if seed is not None:
+            argv += ["--seed", str(seed)]
+        return argv
+
+    def standalone_argv(self, *, scene: str, payload: MuJoCoRobotPayload, seed: int | None) -> list[str]:
+        """Return the command a user runs in a terminal to start this entry's simulation for *payload*.
+
+        ``physicalai-mujoco start`` under the payload's ``name`` and at its ``http_url``, so Studio
+        attaches the robot and its cameras as they are. The viewer takes a free port: Studio finds it
+        through ``GET /viewer``, and ``start`` logs it. It runs until stopped, with the default viewer
+        theme, whose Shutdown button stops it.
+
+        Args:
+            scene: One of :meth:`scene_ids`; :meth:`SimulationLaunch.standalone_argv` checks it.
+            payload: The robot's payload; a raw payload is validated with the entry's payload model.
+            seed: Fixed reset seed (``start --seed``), or ``None`` for random layouts.
+
+        Returns:
+            The argv, ``physicalai-mujoco`` first. A ``http_url`` host other than ``127.0.0.1`` adds
+            ``--http-host``; one off this machine, or ``allow_remote``, adds ``--allow-remote``. A
+            ``http_url`` without a host or a fixed port raises ``ValueError``.
+        """
+        return self._start_command(scene, self._validated_payload(payload), seed)
+
+    def _start_command(self, scene: str | None, payload: MuJoCoRobotPayload, seed: int | None) -> list[str]:
+        """Return :meth:`standalone_argv` for a validated payload; ``None`` leaves out ``--scene``.
+
+        Raises:
+            ValueError: If the payload's ``http_url`` has no host, port ``0`` or an invalid port.
+        """
+        host, port = _http_address(payload.http_url)
+        if host is None or port == 0:
+            msg = f"http_url {payload.http_url!r} needs a host and a fixed port"
+            raise ValueError(msg)
+        argv = [_CLI_NAME, "start", "--profile", self.profile.name]
+        if self.bimanual:
+            argv.append("--bimanual")
+        if scene is not None:
+            argv += ["--scene", scene]
+        # One token, so a name that starts with "-" is not taken for an option.
+        argv.append(f"--name={payload.name}")
+        if host != _DEFAULT_HTTP_HOST:
+            argv += ["--http-host", host]
+        argv += ["--http-port", str(port), "--viser-port", "0"]
+        if payload.allow_remote or host not in _LOCAL_HOSTS:
+            argv.append("--allow-remote")
         if seed is not None:
             argv += ["--seed", str(seed)]
         return argv
@@ -317,9 +375,12 @@ class CatalogEntry:
         Returns:
             The payload's owner name; a raw payload is validated with the entry's payload model first.
         """
+        return self._validated_payload(payload).name
+
+    def _validated_payload(self, payload: MuJoCoRobotPayload) -> MuJoCoRobotPayload:
+        """Return *payload* as the entry's payload model, validating a raw payload."""
         payload_model = _payload_model(self)
-        validated = payload if isinstance(payload, payload_model) else payload_model.model_validate(payload)
-        return validated.name
+        return payload if isinstance(payload, payload_model) else payload_model.model_validate(payload)
 
     def launch_labels(self) -> tuple[str, ...]:
         """Return the start dialog's chips: the arm count (or the body kind), the tier, then ``provisional``.
@@ -343,7 +404,8 @@ class CatalogEntry:
 
         Returns:
             The entry's scenes, its profile's default scene, the payload's ``name`` as the owner name,
-            :meth:`start_argv`, ``start --seed``'s range and :meth:`launch_labels`.
+            :meth:`start_argv`, ``start --seed``'s range, :meth:`launch_labels` and
+            :meth:`standalone_argv`.
         """
         if self.profile.default_scene is None:
             return None
@@ -355,9 +417,10 @@ class CatalogEntry:
             scenes=scenes,
             default_scene=self.profile.default_scene,
             payload_owner_name=self.payload_owner_name,
-            build_argv=self.start_argv,
+            build_payload_argv=self.start_argv,
             max_seed=MAX_SEED,
             labels=self.launch_labels(),
+            build_standalone_argv=self.standalone_argv,
         )
 
     def joint_names(self) -> tuple[str, ...]:
@@ -375,6 +438,18 @@ class CatalogEntry:
 
             names = list(robot_layout(self.profile).joint_names)
         return tuple(f"{prefix}{name}" for prefix in self.prefixes for name in names)
+
+
+def _http_address(http_url: str) -> tuple[str | None, int]:
+    """Return the host and port of a payload ``http_url``; a port that is not a number raises ``ValueError``.
+
+    Returns:
+        The host, ``None`` for an address without one, and the port, the scheme's default when
+        the address names none.
+    """
+    url = urlsplit(http_url)
+    port = url.port
+    return url.hostname, (443 if url.scheme == "https" else 80) if port is None else port
 
 
 def list_catalog_entries() -> tuple[CatalogEntry, ...]:

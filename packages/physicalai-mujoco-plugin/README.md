@@ -303,11 +303,15 @@ With `--status-json` or `--exit-with-parent`, `start` only runs a simulation it 
 
 `--http-port 0` and `--viser-port 0` pick free ports; `ready` reports the ports in use. `start` picks them before the owner binds them, so another process could take one in between.
 
+`--http-port <port> --http-port-fallback` uses that port when it is free and a free one when it is taken, instead of running without the HTTP server. `start` also reserves a second free port, which the owner uses when another process takes the first one before the owner binds it. The log and `ready` give the port in use.
+
 `--exit-with-parent` makes `start` read stdin and shut down at end of file, as on `SIGTERM`. A parent keeps the write end of a pipe to `start`'s stdin open and never writes to it; when the parent exits or crashes, the operating system closes the pipe (macOS and Linux). The owner process watches `start` too, from the moment it starts loading, and shuts down if `start` itself is killed. Don't use `--exit-with-parent` with stdin at `/dev/null`: that is end of file at once.
 
 The browser viewer has no `X-Frame-Options` or `Content-Security-Policy` header, so a page can embed `viewer_url` in an iframe.
 
-Studio gets this command line from the catalog: every simulated follower's `simulation` field (a [`SimulationLaunch`](https://github.com/openvinotoolkit/physicalai/blob/main/packages/physicalai-studio-plugin/README.md#simulationlaunch)) lists the scenes that entry runs in, with the profile's default scene preselected, labels the entry with its arm count and tier, and builds `python -m physicalai_mujoco_plugin start --profile <profile> [--bimanual] --scene <scene> --name=<payload name> --status-json --exit-with-parent --http-port 0 --viser-port 0 --viewer-theme studio [--seed <n>]` in Studio's own Python. Building it loads no robot model and downloads nothing; the `fetch` phase does that.
+Studio gets this command line from the catalog: every simulated follower's `simulation` field (a [`SimulationLaunch`](https://github.com/openvinotoolkit/physicalai/blob/main/packages/physicalai-studio-plugin/README.md#simulationlaunch)) lists the scenes that entry runs in, with the profile's default scene preselected, labels the entry with its arm count and tier, and builds `python -m physicalai_mujoco_plugin start --profile <profile> [--bimanual] --scene <scene> --name=<payload name> --status-json --exit-with-parent --http-port <port of the payload's http_url> --http-port-fallback --viser-port 0 --viewer-theme studio [--seed <n>]` in Studio's own Python, from the robot's payload (`build_payload_argv`). Reusing the payload's port while it is free keeps the robot's cameras, the standalone command below and runtime exports on one address across starts; a payload without a usable port gets `--http-port 0`. Building it loads no robot model and downloads nothing; the `fetch` phase does that.
+
+The start dialog also shows the command that starts the same simulation in a terminal, for a simulation that keeps running when Studio stops and that your own scripts can drive: `physicalai-mujoco start --profile <profile> [--bimanual] --scene <scene> --name=<payload name> --http-port <port of the payload's http_url> --viser-port 0 [--seed <n>]`, with `--http-host` when the payload's host is not `127.0.0.1` and `--allow-remote` when the payload allows remote connections or its host is another machine. Studio attaches to it as a simulation started outside Studio, through the robot's own address, and finds its viewer through `GET /viewer`.
 
 ## Joint units
 
@@ -553,7 +557,7 @@ These warnings are typically non-fatal on Wayland and can be ignored if simulati
 
 ### Studio shows the MuJoCo robot as offline
 
-- Start the simulation first, then reload the robot in Studio. A session on a follower whose simulation is not running fails with `No MuJoCo simulation named '<name>' is running. Start it with: uv run physicalai-mujoco start --profile <profile> [--bimanual] [--name=<name>] [--http-port <port>]`, built from the follower's name and `http_url`. For an `http_url` on another host, it says to start it there with `--http-host`, `--http-port` and `--allow-remote`.
+- Start the simulation first, then reload the robot in Studio. A session on a follower whose simulation is not running fails with `No MuJoCo simulation named '<name>' is running. Start it with: physicalai-mujoco start --profile <profile> [--bimanual] --scene <default scene> --name=<name> --http-port <port> --viser-port 0`, the start dialog's command for the follower's name and `http_url` in the profile's default scene. For an `http_url` on another host, it says to start it there with `--http-host` and `--allow-remote`.
 - Check that the robot name in Studio matches the owner name printed by `start` (default `mujoco-so101-follow`).
 - Run Studio and the simulation on the same machine, or enable remote connections on both sides.
 

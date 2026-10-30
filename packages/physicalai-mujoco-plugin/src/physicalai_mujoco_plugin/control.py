@@ -114,6 +114,7 @@ class OperatorControls:
     _http_server: HttpServer | None
     _http_host: str
     _http_port: int
+    _http_fallback_port: int | None
     _owner_name: str
     _base_status: tuple[BaseStatus, ...]
     _viewer: ViewerService | None
@@ -564,14 +565,17 @@ class OperatorControls:
             check_replay=self._replay_problem,
             get_leader=self._automation.leader_snapshot,  # type: ignore[union-attr]
         )
-        server = HttpServer(app, self._http_host, self._http_port)
-        try:
-            server.start()
-        except (OSError, RuntimeError) as exc:
-            logger.warning("Failed to start HTTP server on {}:{}: {}", self._http_host, self._http_port, exc)
+        # The fallback port covers a port that another process took after `start` found it free.
+        for port in dict.fromkeys(p for p in (self._http_port, self._http_fallback_port) if p):
+            server = HttpServer(app, self._http_host, port)
+            try:
+                server.start()
+            except (OSError, RuntimeError) as exc:
+                logger.warning("Failed to start HTTP server on {}:{}: {}", self._http_host, port, exc)
+                continue
+            self._http_server = server
+            logger.info("HTTP camera server running at {}", server.url)
             return
-        self._http_server = server
-        logger.info("HTTP camera server running at {}", server.url)
 
     def _start_process_watch(self) -> None:
         """Shut the owner down, as ``POST /shutdown`` does, once its parent ``exit_with_pid`` is gone.
