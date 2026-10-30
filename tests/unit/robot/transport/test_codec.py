@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import msgpack
 import numpy as np
 import pytest
 
@@ -14,9 +15,13 @@ from physicalai.robot.transport._codec import (
     decode_action,
     decode_metadata,
     decode_state,
+    decode_torque_request,
+    decode_torque_response,
     encode_action,
     encode_metadata,
     encode_state,
+    encode_torque_request,
+    encode_torque_response,
 )
 from physicalai.transport._codec import decode_payload as decode_shared_payload
 from physicalai.transport._codec import encode_numpy, pack_msgpack, unpack_msgpack
@@ -110,6 +115,26 @@ class TestActionRoundtrip:
         decoded, _, _ = decode_action(encode_action(action, goal_time=0.1))
         assert decoded.shape == ()
         assert bool(decoded) == bool(action)
+
+
+class TestTorqueRoundtrip:
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_request_roundtrip(self, enabled: bool) -> None:
+        assert decode_torque_request(encode_torque_request(enabled=enabled)) is enabled
+
+    @pytest.mark.parametrize("enabled", [None, 0, 1, "true"])
+    def test_request_rejects_non_boolean(self, enabled: object) -> None:
+        with pytest.raises(TypeError, match="boolean"):
+            decode_torque_request(msgpack.packb({"enabled": enabled}))
+
+    @pytest.mark.parametrize("error", [None, "servo write failed"])
+    def test_response_roundtrip(self, error: str | None) -> None:
+        assert decode_torque_response(encode_torque_response(error)) == error
+
+    @pytest.mark.parametrize("record", [{}, {"ok": 1}, {"ok": True, "error": "failed"}, {"ok": False}])
+    def test_response_rejects_malformed_result(self, record: dict) -> None:
+        with pytest.raises(ValueError, match="malformed"):
+            decode_torque_response(msgpack.packb(record))
 
 
 class TestMetadataRoundtrip:

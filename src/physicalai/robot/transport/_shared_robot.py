@@ -46,8 +46,16 @@ from physicalai.robot.errors import (
     RobotTransportError,
 )
 
-from ._codec import ROBOT_TRANSPORT_PROTOCOL_VERSION, TransportObservation, decode_metadata, decode_state, encode_action
-from ._ids import KEY_PREFIX, METADATA_WILDCARD, action_key, metadata_key, state_key, validate_name
+from ._codec import (
+    ROBOT_TRANSPORT_PROTOCOL_VERSION,
+    TransportObservation,
+    decode_metadata,
+    decode_state,
+    decode_torque_response,
+    encode_action,
+    encode_torque_request,
+)
+from ._ids import KEY_PREFIX, METADATA_WILDCARD, action_key, metadata_key, state_key, torque_key, validate_name
 from ._lock import active_owner_device_ids, registered_owner_names
 from ._owner_config import DEFAULT_RATE_HZ, coerce_robot_config_input, normalize_robot_config
 from ._session import open_session
@@ -57,12 +65,14 @@ if TYPE_CHECKING:
 
     from physicalai.config._types import ConfigExportable
     from physicalai.robot import RobotObservation
+    from physicalai.robot.handover import HandoverCapabilities
 
 
 _PROBE_TIMEOUT = 1.0
 _RACE_RETRY_TIMEOUT = 5.0
 _RETRY_INTERVAL = 0.2
 _FIRST_STATE_TIMEOUT = 5.0
+_TORQUE_QUERY_TIMEOUT = 12.0
 
 
 def _query_metadata(session: Any, key: str, timeout: float) -> dict[str, Any] | None:  # noqa: ANN401
@@ -362,6 +372,15 @@ class SharedRobot:
         return list(self._metadata["joint_names"])
 
     @property
+    def handover_capabilities(self) -> HandoverCapabilities | None:
+        """Validated owner declarations, or None before connection or on older owners."""
+        if self._metadata is None or self._metadata.get("handover_capabilities") is None:
+            return None
+        from physicalai.robot.handover import validate_handover_capabilities  # noqa: PLC0415
+
+        return validate_handover_capabilities(self._metadata["handover_capabilities"], num_joints=len(self.joint_names))
+
+    @property
     def metadata(self) -> dict[str, Any] | None:
         """The owner's ``/metadata`` record (None before connect)."""
         return self._metadata
@@ -521,6 +540,14 @@ class SharedRobot:
         if malformed:
             msg = f"owner of {self._name!r} published malformed /metadata: {metadata!r}"
             raise RobotTransportError(msg)
+        if metadata.get("handover_capabilities") is not None:
+            from physicalai.robot.handover import validate_handover_capabilities  # noqa: PLC0415
+
+            try:
+                validate_handover_capabilities(metadata["handover_capabilities"], num_joints=len(joint_names))
+            except ValueError as exc:
+                msg = f"owner of {self._name!r} published malformed handover capabilities: {exc}"
+                raise RobotTransportError(msg) from exc
 
         if self._robot is not None:
             expected = self._robot["class_path"]
@@ -611,6 +638,33 @@ class SharedRobot:
             raise RobotTransportError(msg)
         return self._latest
 
+    def get_fresh_observation(self) -> RobotObservation:
+        """Request a new capture on the owner's driver thread, not the stream cache.
+
+        A capture starts only after the owner dequeues this request. An observation
+        already being read when the request arrives cannot satisfy it.
+
+        Returns:
+            The requested observation, independent of the subscriber's stream cache.
+
+        Raises:
+            RobotNotConnectedError: If not connected.
+            RobotTransportError: If the owner rejects, fails, or does not answer.
+        """
+        if not self._connected or self._session is None:
+            msg = "SharedRobot is not connected. Call connect() first."
+            raise RobotNotConnectedError(msg)
+        try:
+            replies = self._session.get(state_key(self._name), timeout=_FIRST_STATE_TIMEOUT)
+            sample = next((reply.ok for reply in replies if reply.ok is not None), None)
+            if sample is not None:
+                return decode_state(sample.payload.to_bytes())
+        except Exception as exc:
+            msg = f"fresh observation request to owner of {self._name!r} failed: {exc}"
+            raise RobotTransportError(msg) from exc
+        msg = f"owner of {self._name!r} did not return a fresh observation"
+        raise RobotTransportError(msg)
+
     def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None:
         """Publish an absolute joint target, fire-and-forget.
 
@@ -629,6 +683,47 @@ class SharedRobot:
             msg = "SharedRobot is not connected. Call connect() first."
             raise RobotNotConnectedError(msg)
         self._action_pub.put(encode_action(action, goal_time))
+
+    def set_torque(self, *, enabled: bool) -> None:
+        """Synchronously ask the owner to enable or disable robot torque.
+
+        The owner applies this request on its driver-owning control thread and
+        replies only after the driver call succeeds or fails. Drivers without
+        a ``set_torque(enabled=...)`` method return a clear transport error.
+
+        Raises:
+            RobotNotConnectedError: If called before :meth:`connect`.
+            RobotTransportError: If the owner rejects, cannot apply, or does
+                not reply to the torque-control request.
+            TypeError: If *enabled* is not a boolean.
+        """
+        if not isinstance(enabled, bool):
+            msg = f"enabled must be a bool, got {type(enabled).__name__}"
+            raise TypeError(msg)
+        if not self._connected or self._session is None:
+            msg = "SharedRobot is not connected. Call connect() first."
+            raise RobotNotConnectedError(msg)
+        request = encode_torque_request(enabled=enabled)
+        try:
+            replies = self._session.get(torque_key(self._name), payload=request, timeout=_TORQUE_QUERY_TIMEOUT)
+            sample = next((reply.ok for reply in replies if reply.ok is not None), None)
+        except Exception as exc:
+            msg = f"torque-control request to owner of {self._name!r} failed; torque state may be uncertain: {exc}"
+            raise RobotTransportError(msg) from exc
+        if sample is None:
+            msg = (
+                f"owner of {self._name!r} did not reply to the torque-control request; "
+                "torque state may be uncertain because it is unreachable or uses an older physicalai transport"
+            )
+            raise RobotTransportError(msg)
+        try:
+            error = decode_torque_response(sample.payload.to_bytes())
+        except Exception as exc:
+            msg = f"owner of {self._name!r} returned an invalid torque-control response: {exc}"
+            raise RobotTransportError(msg) from exc
+        if error is not None:
+            msg = f"owner of {self._name!r} could not set torque: {error}"
+            raise RobotTransportError(msg)
 
     def disconnect(self) -> None:
         """Close this subscriber's own Zenoh session only.

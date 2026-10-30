@@ -10,9 +10,11 @@ left/right specialization used by two-arm integrations.
 
 from __future__ import annotations
 
+import json
 from contextlib import suppress
+from copy import deepcopy
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Generic, TypeVar, TypeVarTuple
+from typing import TYPE_CHECKING, Generic, TypeVar, TypeVarTuple, cast
 
 import numpy as np
 
@@ -23,6 +25,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
     from physicalai.capture.frame import Frame
+    from physicalai.robot.handover import HandoverCapabilities
 
 
 RobotTs = TypeVarTuple("RobotTs")
@@ -36,7 +39,7 @@ class CompositeRobotObservation:
 
     Attributes:
         joint_positions: Concatenated component joint positions in component order.
-        timestamp: Timestamp from the first component observation.
+        timestamp: First component's capture time when every component last advanced.
         sensor_data: Sensor arrays shared by every component, concatenated in
             component order.
         images: Always ``None``. External cameras belong on ``RobotRuntime``;
@@ -78,6 +81,7 @@ class CompositeRobot(Generic[*RobotTs]):
             raise ValueError(msg)
 
         self._robots = dict(robots)
+        self._last_complete_observation: tuple[tuple[float, ...], CompositeRobotObservation] | None = None
         for name, robot in self._robots.items():
             if not isinstance(name, str) or not name or name.strip() != name:
                 msg = f"Component names must be non-empty strings without surrounding whitespace; got {name!r}."
@@ -122,6 +126,69 @@ class CompositeRobot(Generic[*RobotTs]):
                 joint_names.append(aggregate)
         return joint_names
 
+    @property
+    def handover_capabilities(self) -> HandoverCapabilities | None:
+        """Compose declared coordinate conventions and per-joint limits in order."""
+        from physicalai.robot.handover import HandoverCapabilities, validate_handover_capabilities  # noqa: PLC0415
+
+        capabilities = []
+        for name, robot in self._robots.items():
+            capability = validate_handover_capabilities(
+                getattr(robot, "handover_capabilities", None), num_joints=len(robot.joint_names)
+            )
+            if capability is None:
+                return None
+            capabilities.append((name, capability))
+        return HandoverCapabilities(
+            position_space=json.dumps([(name, item.position_space) for name, item in capabilities]),
+            position_tolerance=tuple(value for _, item in capabilities for value in item.position_tolerance),
+            max_position_step=tuple(value for _, item in capabilities for value in item.max_position_step),
+            supports_alignment=(
+                all(item.supports_alignment for _, item in capabilities)
+                and all(callable(getattr(robot, "set_torque", None)) for robot in self._robots.values())
+            ),
+        )
+
+    def set_torque(self, *, enabled: bool) -> None:
+        """Set every component's torque, rolling back a partial enable.
+
+        Component write failures propagate.
+
+        Args:
+            enabled: Whether to enable torque.
+
+        Raises:
+            TypeError: If enabled is not boolean.
+            NotImplementedError: If a component lacks torque control.
+            RuntimeError: If torque enable and its rollback both fail.
+        """
+        if not isinstance(enabled, bool):
+            msg = "enabled must be a bool"
+            raise TypeError(msg)
+        methods = [getattr(robot, "set_torque", None) for robot in self._robots.values()]
+        if enabled and not all(callable(method) for method in methods):
+            msg = "Every component must support torque control before enabling torque"
+            raise NotImplementedError(msg)
+        errors: list[Exception] = []
+        for method in methods:
+            if not callable(method):
+                errors.append(NotImplementedError("A component does not support torque control"))
+                continue
+            try:
+                method(enabled=enabled)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+                if enabled:
+                    break
+        if errors:
+            if enabled:
+                try:
+                    self.set_torque(enabled=False)
+                except Exception as exc:  # noqa: BLE001
+                    msg = f"Torque enable failed: {errors[0]}; rollback also failed: {exc}"
+                    raise RuntimeError(msg) from errors[0]
+            raise errors[0]
+
     def connect(self) -> None:
         """Connect every component, rolling back components connected by this call."""
         self._connect_with_rollback()
@@ -146,6 +213,8 @@ class CompositeRobot(Generic[*RobotTs]):
                 with suppress(Exception):
                     rollback()
             raise
+        if rollbacks:
+            self._last_complete_observation = None
         return rollbacks
 
     @staticmethod
@@ -170,6 +239,7 @@ class CompositeRobot(Generic[*RobotTs]):
             except Exception as exc:  # noqa: BLE001 # pragma: no cover - defensive against hardware failures
                 if first_error is None:
                     first_error = exc
+        self._last_complete_observation = None
         if first_error is not None:
             raise first_error
 
@@ -178,12 +248,42 @@ class CompositeRobot(Generic[*RobotTs]):
         return all(robot.is_connected() for robot in self._robots.values())
 
     def get_observation(self) -> RobotObservation:
-        """Read and merge component observations in declared component order.
+        """Read components, retaining the last complete snapshot while any is stale.
 
         Returns:
             A merged composite observation.
         """
-        observations = [robot.get_observation() for robot in self._robots.values()]
+        return self._get_observation(fresh=False)
+
+    def get_fresh_observation(self) -> RobotObservation:
+        """Capture each component after this call, including nested shared owners.
+
+        Returns:
+            A merged observation from fresh component reads. Capture failures propagate.
+        """
+        return self._get_observation(fresh=True)
+
+    def _get_observation(self, *, fresh: bool) -> RobotObservation:
+        """Read and merge components in order.
+
+        Returns:
+            A merged composite observation.
+
+        Raises:
+            ConnectionError: If a requested fresh component capture did not advance.
+        """
+        observations: list[RobotObservation] = []
+        for robot in self._robots.values():
+            capture = getattr(robot, "get_fresh_observation", None) if fresh else None
+            observations.append(cast("RobotObservation", capture() if callable(capture) else robot.get_observation()))
+        timestamps = tuple(float(observation.timestamp) for observation in observations)
+        if self._last_complete_observation is not None:
+            previous_timestamps, previous_observation = self._last_complete_observation
+            if not all(current > previous for current, previous in zip(timestamps, previous_timestamps, strict=True)):
+                if fresh:
+                    msg = "A component's fresh capture did not advance"
+                    raise ConnectionError(msg)
+                return deepcopy(previous_observation)
         positions = np.concatenate([observation.joint_positions for observation in observations])
 
         sensor_data: dict[str, np.ndarray] | None = None
@@ -202,11 +302,13 @@ class CompositeRobot(Generic[*RobotTs]):
                 if key in shared_keys
             }
 
-        return CompositeRobotObservation(
+        observation = CompositeRobotObservation(
             joint_positions=positions,
-            timestamp=observations[0].timestamp,
+            timestamp=timestamps[0],
             sensor_data=sensor_data,
         )
+        self._last_complete_observation = timestamps, deepcopy(observation)
+        return observation
 
     def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None:
         """Split an exact-size action vector and send each slice to its component.

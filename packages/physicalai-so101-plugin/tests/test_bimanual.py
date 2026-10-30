@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, ClassVar, Literal
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -349,6 +350,29 @@ class TestBimanualSO101Action:
 
         with pytest.raises(ValueError, match="Expected action shape"):
             robot.send_action(np.zeros(6, dtype=np.float32))
+
+    def test_both_leaders_must_acknowledge_torque_before_either_moves(self) -> None:
+        from physicalai_so101_plugin.bimanual_so101 import BimanualSO101
+
+        left = _StubSO101(role="leader")
+        right = _StubSO101(role="leader")
+        left.send_action = MagicMock()
+        right.send_action = MagicMock()
+        left._torque_enabled = True
+        robot = BimanualSO101(left=left, right=right)
+        capability = robot.handover_capabilities
+        assert capability is not None
+        assert capability.supports_alignment
+        assert len(capability.position_tolerance) == 12
+        with pytest.raises(RuntimeError, match="torque disabled"):
+            robot.send_action(np.zeros(12, dtype=np.float32))
+        left.send_action.assert_not_called()
+        right.send_action.assert_not_called()
+
+        right._torque_enabled = True
+        robot.send_action(np.zeros(12, dtype=np.float32))
+        left.send_action.assert_called_once()
+        right.send_action.assert_called_once()
 
     def test_leader_send_action_raises(self) -> None:
         from physicalai_so101_plugin.bimanual_so101 import BimanualSO101

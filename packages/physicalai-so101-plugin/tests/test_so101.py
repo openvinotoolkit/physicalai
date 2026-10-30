@@ -75,10 +75,13 @@ def _make_mock_sdk() -> MagicMock:
 def mock_sdk() -> Generator[MagicMock, None, None]:
     """Provide a mock scservo_sdk patched onto the SO101 module."""
     sdk = _make_mock_sdk()
-    sys.modules.pop("physicalai_so101_plugin.so101", None)
-    sys.modules.pop("physicalai_so101_plugin", None)
-    with patch.dict(sys.modules, {"scservo_sdk": sdk}):
-        import_module("physicalai_so101_plugin.so101")
+    with patch.multiple(
+        import_module("physicalai_so101_plugin.so101"),
+        PortHandler=sdk.PortHandler,
+        PacketHandler=sdk.PacketHandler,
+        GroupSyncRead=sdk.GroupSyncRead,
+        GroupSyncWrite=sdk.GroupSyncWrite,
+    ):
         yield sdk
 
 
@@ -123,6 +126,34 @@ def _create_robot(
 
 class TestSO101Construction:
     """Tests for SO101.__init__."""
+
+    @pytest.mark.parametrize("mode", ["normalized", "uncalibrated"])
+    def test_handover_requires_calibrated_normalized_coordinates(self, mock_sdk: MagicMock, mode: str) -> None:
+        from physicalai_so101_plugin import SO101
+
+        robot = (
+            SO101.uncalibrated(port="/dev/ttyUSB0")
+            if mode == "uncalibrated"
+            else _create_robot(mock_sdk)
+        )
+        capability = robot.handover_capabilities
+        if mode == "normalized":
+            assert capability is not None
+            assert capability.position_space == "so101.normalized.v1"
+            assert capability.supports_alignment
+            assert len(capability.max_position_step) == robot.NUM_JOINTS
+        else:
+            assert capability is None
+
+    def test_older_runtime_omits_capabilities_without_breaking_the_driver(
+        self, mock_sdk: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        robot = _create_robot(mock_sdk)
+        monkeypatch.setitem(sys.modules, "physicalai.robot.handover", None)
+        assert robot.handover_capabilities is None
+        robot.connect()
+        assert robot.get_observation().joint_positions.shape == (6,)
+        robot.disconnect()
 
     def test_invalid_role_raises(self, mock_sdk: MagicMock) -> None:
         """An invalid role string raises ValueError at construction."""
@@ -270,9 +301,10 @@ class TestSO101Lifecycle:
         assert all(v == 1 for v in final_torque_values)
 
     def test_leader_disables_torque(self, mock_sdk: MagicMock) -> None:
-        """Leader role disables torque on connect."""
+        """Leader role starts with torque disabled."""
         robot = _create_robot(mock_sdk, role="leader")
         robot.connect()
+        assert robot._torque_enabled is False  # noqa: SLF001
 
         # Filter to torque writes only (address 40 = TORQUE_ENABLE)
         calls = mock_sdk.PacketHandler.return_value.write1ByteTxRx.call_args_list
@@ -296,6 +328,19 @@ class TestSO101Lifecycle:
 
         with pytest.raises(ConnectionError, match="did not respond"):
             robot.connect()
+
+    def test_follower_disconnect_keeps_acknowledged_torque_without_reenabling(self, mock_sdk: MagicMock) -> None:
+        robot = _create_robot(mock_sdk)
+        robot.connect()
+        packet = mock_sdk.PacketHandler.return_value
+        packet.write1ByteTxRx.reset_mock()
+        packet.write1ByteTxRx.return_value = (2, 0)
+
+        robot.disconnect()
+
+        packet.write1ByteTxRx.assert_not_called()
+        mock_sdk.PortHandler.return_value.closePort.assert_called_once()
+        assert robot.torque_enabled
 
     def test_set_torque_delegates_to_internal_impl(self, mock_sdk: MagicMock) -> None:
         """Public set_torque forwards to internal torque implementation."""
@@ -420,13 +465,210 @@ class TestSO101Action:
 
         mock_sdk.GroupSyncWrite.return_value.txPacket.assert_called_once()
 
-    def test_send_action_leader_raises(self, mock_sdk: MagicMock) -> None:
-        """Leader raises RuntimeError on send_action()."""
+    @pytest.mark.parametrize("role", ["leader", "follower"])
+    def test_commands_and_disconnect_preserve_servo_speeds(
+        self, mock_sdk: MagicMock, role: Literal["leader", "follower"]
+    ) -> None:
+        from physicalai_so101_plugin import SO101
+
+        robot = SO101.uncalibrated(port="/dev/ttyUSB0", role=role)
+        robot.connect()
+        if role == "leader":
+            robot.set_torque(enabled=True)
+        robot.send_action(np.full(6, 2648, dtype=np.float32), goal_time=3.0)
+        robot.send_action(np.full(6, 2348, dtype=np.float32))
+        robot.disconnect()
+
+        mock_sdk.GroupSyncWrite.assert_called_once_with(
+            mock_sdk.PortHandler.return_value, mock_sdk.PacketHandler.return_value, 42, 2
+        )
+        assert all(len(call.args[1]) == 2 for call in mock_sdk.GroupSyncWrite.return_value.addParam.call_args_list)
+        assert all(call.args[2] != 46 for call in mock_sdk.PacketHandler.return_value.write2ByteTxRx.call_args_list)
+
+    def test_goal_time_writes_only_positions(self, mock_sdk: MagicMock) -> None:
+        from physicalai_so101_plugin import SO101
+
+        robot = SO101.uncalibrated(port="/dev/ttyUSB0")
+        robot.connect()
+        target = np.array([1600, 1400, 2048, 3003, 1000, 1800], dtype=np.float32)
+
+        robot.send_action(target, goal_time=3.0)
+
+        mock_sdk.GroupSyncWrite.assert_called_once_with(
+            mock_sdk.PortHandler.return_value, mock_sdk.PacketHandler.return_value, 42, 2
+        )
+        writes = mock_sdk.GroupSyncWrite.return_value.addParam.call_args_list
+        for index in range(6):
+            position = int(target[index])
+            assert writes[index].args == (
+                index + 1,
+                [position & 0xFF, (position >> 8) & 0xFF],
+            )
+        mock_sdk.GroupSyncWrite.return_value.txPacket.assert_called_once()
+        mock_sdk.GroupSyncRead.return_value.txRxPacket.assert_not_called()
+
+    @pytest.mark.parametrize("goal_time", [0.0, -1.0, np.nan, np.inf, -np.inf])
+    def test_invalid_goal_time_does_not_send_a_command(self, mock_sdk: MagicMock, goal_time: float) -> None:
+        robot = _create_robot(mock_sdk)
+        robot.connect()
+
+        with pytest.raises(ValueError, match="goal_time"):
+            robot.send_action(np.zeros(6, dtype=np.float32), goal_time=goal_time)
+
+        mock_sdk.GroupSyncRead.return_value.txRxPacket.assert_not_called()
+        mock_sdk.GroupSyncWrite.return_value.txPacket.assert_not_called()
+
+    @pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
+    def test_nonfinite_action_does_not_send_a_command(self, mock_sdk: MagicMock, value: float) -> None:
+        robot = _create_robot(mock_sdk)
+        robot.connect()
+
+        with pytest.raises(ValueError, match="finite"):
+            robot.send_action(np.full(6, value, dtype=np.float32), goal_time=3.0)
+
+        mock_sdk.GroupSyncRead.return_value.txRxPacket.assert_not_called()
+        mock_sdk.GroupSyncWrite.return_value.txPacket.assert_not_called()
+
+    def test_goal_time_uses_calibration_and_clamped_targets(self, mock_sdk: MagicMock) -> None:
+        robot = _create_robot(mock_sdk)
+        robot.connect()
+        robot.send_action(np.full(6, 1000.0, dtype=np.float32), goal_time=3.0)
+
+        writes = mock_sdk.GroupSyncWrite.return_value.addParam.call_args_list
+        for index, calibration in enumerate(SAMPLE_CALIBRATION.values()):
+            payload = writes[index].args[1]
+            assert payload[0] | (payload[1] << 8) == calibration["range_max"]
+            assert len(payload) == 2
+
+    @pytest.mark.parametrize("position", [-1, 4096, 65535])
+    def test_invalid_encoder_position_is_rejected(self, mock_sdk: MagicMock, position: int) -> None:
+        robot = _create_robot(mock_sdk)
+        robot.connect()
+        mock_sdk.GroupSyncRead.return_value.getData.return_value = position
+
+        with pytest.raises(ConnectionError, match="encoder range"):
+            robot.get_observation()
+
+        mock_sdk.GroupSyncWrite.return_value.txPacket.assert_not_called()
+
+    def test_failed_parameter_preparation_does_not_transmit(self, mock_sdk: MagicMock) -> None:
+        robot = _create_robot(mock_sdk)
+        robot.connect()
+        mock_sdk.GroupSyncWrite.return_value.addParam.return_value = False
+
+        with pytest.raises(ConnectionError, match="sync write"):
+            robot.send_action(np.zeros(6, dtype=np.float32), goal_time=3.0)
+
+        mock_sdk.GroupSyncWrite.return_value.txPacket.assert_not_called()
+
+    def test_position_write_failure_is_reported(self, mock_sdk: MagicMock) -> None:
+        robot = _create_robot(mock_sdk)
+        robot.connect()
+        mock_sdk.GroupSyncWrite.return_value.txPacket.return_value = 2
+
+        with pytest.raises(ConnectionError, match="Sync write failed"):
+            robot.send_action(np.zeros(6, dtype=np.float32), goal_time=3.0)
+
+    def test_position_read_failure_is_reported(self, mock_sdk: MagicMock) -> None:
+        robot = _create_robot(mock_sdk)
+        robot.connect()
+        mock_sdk.GroupSyncRead.return_value.txRxPacket.return_value = 2
+
+        with pytest.raises(ConnectionError, match="Sync read failed"):
+            robot.get_observation()
+
+        mock_sdk.GroupSyncWrite.return_value.txPacket.assert_not_called()
+
+    def test_send_action_leader_raises_while_torque_is_off(self, mock_sdk: MagicMock) -> None:
+        """Leader motion is rejected unless torque has been explicitly enabled."""
         robot = _create_robot(mock_sdk, role="leader")
         robot.connect()
 
-        with pytest.raises(RuntimeError, match="Cannot send actions to a leader arm"):
+        with pytest.raises(RuntimeError, match="torque is disabled"):
             robot.send_action(np.zeros(6, dtype=np.float32))
+
+    def test_leader_enable_latches_current_pose_before_powering_servos(self, mock_sdk: MagicMock) -> None:
+        robot = _create_robot(mock_sdk, role="leader")
+        robot.connect()
+        trace = MagicMock()
+        trace.attach_mock(mock_sdk.GroupSyncRead.return_value, "read")
+        trace.attach_mock(mock_sdk.GroupSyncWrite.return_value, "write")
+        trace.attach_mock(mock_sdk.PacketHandler.return_value, "packet")
+
+        robot.set_torque(enabled=True)
+
+        operations = [entry[0] for entry in trace.mock_calls]
+        assert operations.index("write.txPacket") < operations.index("packet.write1ByteTxRx")
+        assert robot.torque_enabled
+
+    def test_leader_can_move_only_between_torque_enable_and_disable(self, mock_sdk: MagicMock) -> None:
+        robot = _create_robot(mock_sdk, role="leader")
+        robot.connect()
+        action = np.zeros(6, dtype=np.float32)
+
+        robot.set_torque(enabled=True)
+        assert robot._torque_enabled is True  # noqa: SLF001
+        mock_sdk.GroupSyncWrite.return_value.reset_mock()
+        robot.send_action(action)
+        mock_sdk.GroupSyncWrite.return_value.txPacket.assert_called_once()
+
+        robot.set_torque(enabled=False)
+        assert robot._torque_enabled is False  # noqa: SLF001
+        with pytest.raises(RuntimeError, match="torque is disabled"):
+            robot.send_action(action)
+
+    @pytest.mark.parametrize(
+        ("write_result", "expected_error"),
+        [((2, 0), "communication result 2"), ((0, 4), "servo error 4")],
+    )
+    def test_torque_write_failure_is_reported_and_does_not_enable_software_state(
+        self,
+        mock_sdk: MagicMock,
+        write_result: tuple[int, int],
+        expected_error: str,
+    ) -> None:
+        robot = _create_robot(mock_sdk, role="leader")
+        robot.connect()
+        mock_sdk.PacketHandler.return_value.write1ByteTxRx.side_effect = [(0, 0), write_result, *[(0, 0)] * 6]
+
+        with pytest.raises(ConnectionError, match=expected_error):
+            robot.set_torque(enabled=True)
+
+        assert robot._torque_enabled is False  # noqa: SLF001
+        torque_writes = [
+            call for call in mock_sdk.PacketHandler.return_value.write1ByteTxRx.call_args_list if call.args[2] == 40
+        ]
+        assert [call.args[3] for call in torque_writes[-6:]] == [0] * 6
+        with pytest.raises(RuntimeError, match="torque is disabled"):
+            robot.send_action(np.zeros(6, dtype=np.float32))
+
+    def test_torque_disable_attempts_every_servo_and_locks_out_leader_motion(self, mock_sdk: MagicMock) -> None:
+        robot = _create_robot(mock_sdk, role="leader")
+        robot.connect()
+        robot.set_torque(enabled=True)
+        mock_sdk.PacketHandler.return_value.write1ByteTxRx.side_effect = [(0, 4), *[(0, 0)] * 5]
+
+        with pytest.raises(ConnectionError, match="servo error 4"):
+            robot.set_torque(enabled=False)
+
+        torque_writes = [
+            call for call in mock_sdk.PacketHandler.return_value.write1ByteTxRx.call_args_list if call.args[2] == 40
+        ]
+        assert [call.args[3] for call in torque_writes[-6:]] == [0] * 6
+        assert robot._torque_enabled is False  # noqa: SLF001
+        with pytest.raises(RuntimeError, match="torque is disabled"):
+            robot.send_action(np.zeros(6, dtype=np.float32))
+
+    def test_leader_disconnect_disables_torque_after_explicit_enable(self, mock_sdk: MagicMock) -> None:
+        robot = _create_robot(mock_sdk, role="leader")
+        robot.connect()
+        robot.set_torque(enabled=True)
+        robot.disconnect()
+
+        assert robot._torque_enabled is False  # noqa: SLF001
+        calls = mock_sdk.PacketHandler.return_value.write1ByteTxRx.call_args_list
+        torque_writes = [call for call in calls if call.args[2] == 40]
+        assert [call.args[3] for call in torque_writes[-6:]] == [0] * 6
 
     def test_send_action_wrong_shape_raises(self, mock_sdk: MagicMock) -> None:
         """ValueError on wrong action shape."""

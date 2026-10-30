@@ -14,7 +14,7 @@ Requires the ``feetech-servo-sdk`` package::
 The driver supports two roles:
 
 * **follower** (default) — torque enabled, used for inference / deployment.
-* **leader** — torque disabled, used for teleoperation (read-only).
+* **leader** — torque defaults off; position actions require explicit torque enable.
 
 Calibration data can be loaded from a JSON file so that joint positions are
 reported in calibrated normalized units rather than raw servo ticks.
@@ -59,6 +59,7 @@ from physicalai_so101_plugin.constants import (
 
 if TYPE_CHECKING:
     from physicalai.capture.frame import Frame
+    from physicalai.robot.handover import HandoverCapabilities
     from physicalai.robot.interface import RobotObservation
 
 SO101Unit = Literal["ticks", "normalized"]
@@ -104,7 +105,7 @@ class SO101(Robot):
         port: Serial port path, e.g. ``"/dev/ttyUSB0"`` or ``"/dev/ttyACM0"``.
         baudrate: Serial baudrate. Defaults to 1 000 000 (STS3215 factory default).
         role: ``"follower"`` (torque enabled, full control) or ``"leader"``
-            (torque disabled, read-only for teleoperation).
+            (torque defaults off; position actions require explicit torque enable).
         calibration: SO-101 calibration object or calibration JSON path.
             This is required for normal operation.
         unit: Joint-space command/observation unit. Defaults to ``"normalized"``.
@@ -181,6 +182,8 @@ class SO101(Robot):
         # Connection state (set during connect()) --------------------------
         self._connection: _SO101Connection | None = None
 
+        # Authorize leader motion only after every torque-enable write succeeds.
+        self._torque_enabled = False
         # Torque ON/OFF behavior on disconnect (default: True for follower, False for leader)
         self._torque_on_disconnect: bool = role == "follower"
 
@@ -216,6 +219,33 @@ class SO101(Robot):
     def joint_names(self) -> list[str]:
         """List of joint names in the order they appear in state/action arrays."""
         return self.JOINT_ORDER
+
+    @property
+    def torque_enabled(self) -> bool:
+        """Whether the most recent torque enable was acknowledged by every servo."""
+        return self._torque_enabled
+
+    @property
+    def handover_capabilities(self) -> HandoverCapabilities | None:
+        """Advertise only calibrated normalized coordinates for handover.
+
+        Raises:
+            ModuleNotFoundError: If a required dependency of the capability interface is missing.
+        """
+        if self._calibration is None or self.unit != "normalized":
+            return None
+        try:
+            from physicalai.robot.handover import HandoverCapabilities  # noqa: PLC0415
+        except ModuleNotFoundError as exc:
+            if exc.name != "physicalai.robot.handover":
+                raise
+            return None
+        return HandoverCapabilities(
+            position_space="so101.normalized.v1",
+            position_tolerance=(0.5,) * self.NUM_JOINTS,
+            max_position_step=(0.5,) * self.NUM_JOINTS,
+            supports_alignment=True,
+        )
 
     @property
     def device_ids(self) -> tuple[str, ...]:
@@ -363,6 +393,8 @@ class SO101(Robot):
         if self.is_connected():
             return  # already connected
 
+        self._torque_enabled = False
+
         # Open port ---------------------------------------------------------
         port_handler = PortHandler(self.port)
         if not port_handler.openPort():
@@ -461,11 +493,13 @@ class SO101(Robot):
             return  # not connected
 
         try:
-            if self._torque_on_disconnect:
+            if self.role == "leader":
+                self._set_torque(enabled=False)
+            elif self._torque_on_disconnect:
                 self._hold_position()
         except (OSError, RuntimeError):
             logger.exception(
-                "Failed to hold position while disconnecting SO-101; proceeding to close port.",
+                "Failed to set the safe state while disconnecting SO-101; proceeding to close port.",
             )
         finally:
             self._connection = None
@@ -513,29 +547,37 @@ class SO101(Robot):
         )
 
     def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None:
-        """Send joint position commands to all servos.
+        """Send synchronized positions without changing servo speed settings.
 
         Args:
-            action: Array of shape ``(6,)`` with target joint positions in
-                the configured :attr:`unit`, or raw ticks in explicit uncalibrated mode.
-            goal_time: Optional minimum time (seconds) to reach target.
-                SO101 currently ignores this value.
+            action: Target positions in configured units, ordered by ``joint_names``.
+            goal_time: Finite positive duration for protocol compatibility. Callers
+                must pace intermediate targets; this driver does not set servo timing.
 
         Raises:
-            RuntimeError: If the robot is in ``"leader"`` role.
-            ValueError: If the action shape does not match ``(6,)``.
+            RuntimeError: If the robot is a leader with torque disabled.
+            ValueError: If the action or goal time is invalid.
         """
-        _ = goal_time
-        if self.role == "leader":
-            msg = "Cannot send actions to a leader arm. Leader arms are read-only for teleoperation."
+        if self.role == "leader" and not self._torque_enabled:
+            msg = "Cannot send actions to a leader arm while torque is disabled. Enable torque first."
             raise RuntimeError(msg)
 
         expected_shape = (self.NUM_JOINTS,)
         if action.shape != expected_shape:
             msg = f"Expected action shape {expected_shape}, got {action.shape}"
             raise ValueError(msg)
+        if not np.all(np.isfinite(action)):
+            msg = "Action must contain only finite joint positions"
+            raise ValueError(msg)
+        if not np.isfinite(goal_time) or goal_time <= 0:
+            msg = "goal_time must be finite and positive"
+            raise ValueError(msg)
 
-        ticks = self._unit_to_ticks(action) if self._calibration is not None else np.round(action).astype(np.int32)
+        ticks = (
+            self._unit_to_ticks(action)
+            if self._calibration is not None
+            else np.round(np.clip(action, 0, TICKS_PER_REVOLUTION - 1)).astype(np.int32)
+        )
         self._write_joint_positions(ticks)
 
     def is_connected(self) -> bool:
@@ -690,27 +732,73 @@ class SO101(Robot):
             if error != 0:
                 logger.warning(f"Servo '{name}' (ID {servo_id}) returned error: {error}")
 
-    def _set_torque(self, *, enabled: bool) -> None:
-        """Enable or disable torque on all servos."""
-        conn = self._require_connection()
+    @staticmethod
+    def _write_torque_register(conn: _SO101Connection, servo_id: int, name: str, *, enabled: bool) -> None:
+        """Write one servo's torque register and require an acknowledgment.
 
-        value = 1 if enabled else 0
-        for name, servo_id in self.servo_ids.items():
-            comm_result, error = conn.packet_handler.write1ByteTxRx(
-                conn.port_handler,
-                servo_id,
-                STS3215Addr.TORQUE_ENABLE,
-                value,
-            )
+        Raises:
+            ConnectionError: If the servo reports a communication or device error.
+        """
+        comm_result, error = conn.packet_handler.write1ByteTxRx(
+            conn.port_handler, servo_id, STS3215Addr.TORQUE_ENABLE, int(enabled)
+        )
+        if comm_result != 0 or error != 0:
+            details = []
             if comm_result != 0:
-                logger.warning(f"Failed to set torque on servo '{name}' (ID {servo_id}): comm={comm_result}")
+                details.append(f"communication result {comm_result}")
             if error != 0:
-                logger.warning(f"Torque write error on servo '{name}' (ID {servo_id}): err={error}")
+                details.append(f"servo error {error}")
+            msg = f"Failed to set torque on servo '{name}' (ID {servo_id}): {'; '.join(details)}"
+            raise ConnectionError(msg)
+
+    def _rollback_failed_torque_enable(self, conn: _SO101Connection) -> None:
+        """Attempt torque-off on every servo after a partial enable."""
+        for name, servo_id in self.servo_ids.items():
+            try:
+                SO101._write_torque_register(conn, servo_id, name, enabled=False)
+            except Exception:  # noqa: BLE001
+                logger.exception(f"Failed to roll back torque on servo '{name}' (ID {servo_id})")
+
+    def _set_torque(self, *, enabled: bool) -> None:
+        """Set every servo's torque state, propagating write failures.
+
+        Raises:
+            ConnectionError: If a servo reports a communication or device error.
+            TypeError: If enabled is not a boolean.
+        """
+        if not isinstance(enabled, bool):
+            msg = f"enabled must be a bool, got {type(enabled).__name__}"
+            raise TypeError(msg)
+        conn = self._require_connection()
+        if enabled and self.role == "leader" and not self._torque_enabled:
+            # A free leader may have moved far from its previous goal while torque was off.
+            self._write_joint_positions(self._read_joint_positions())
+        self._torque_enabled = False
+        if enabled:
+            try:
+                for name, servo_id in self.servo_ids.items():
+                    SO101._write_torque_register(conn, servo_id, name, enabled=True)
+            except Exception:
+                self._rollback_failed_torque_enable(conn)
+                raise
+            self._torque_enabled = True
+            return
+
+        errors = []
+        for name, servo_id in self.servo_ids.items():
+            try:
+                SO101._write_torque_register(conn, servo_id, name, enabled=False)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{name} (ID {servo_id}): {exc}")
+        if errors:
+            msg = f"Failed to disable torque on all servos: {'; '.join(errors)}"
+            raise ConnectionError(msg)
 
     def set_torque(self, *, enabled: bool) -> None:
-        """Enable or disable torque on all servos.
+        """Set torque on all servos; acknowledgment failures propagate.
 
-        Public wrapper for adapter-level torque control.
+        Args:
+            enabled: Whether to enable torque.
         """
         self._set_torque(enabled=enabled)
 
@@ -723,7 +811,8 @@ class SO101(Robot):
         """
         raw = self._read_joint_positions()
         self._write_joint_positions(raw.astype(np.int32))
-        self._set_torque(enabled=True)
+        if not self._torque_enabled:
+            self._set_torque(enabled=True)
 
     def _read_joint_positions(self) -> np.ndarray:
         """Bulk-read present positions from all servos via sync read.
@@ -756,6 +845,9 @@ class SO101(Robot):
                 STS3215Addr.PRESENT_POSITION,
                 STS3215Len.PRESENT_POSITION,
             )
+        if np.any(positions < 0) or np.any(positions >= TICKS_PER_REVOLUTION):
+            msg = "Servo returned a position outside the encoder range"
+            raise ConnectionError(msg)
         return positions
 
     def _write_joint_positions(self, ticks: np.ndarray) -> None:
