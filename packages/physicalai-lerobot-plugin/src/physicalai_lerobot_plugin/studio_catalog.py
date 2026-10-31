@@ -398,18 +398,25 @@ def _make_payload_model(config_cls: type[Any]) -> type[BaseModel]:
     field_defs: dict[str, tuple[Any, Any]] = {}
     for f in dataclasses.fields(config_cls):
         pydantic_type, default_val = _resolve_field_type(f)
+        description = f.name
         ui_options: RobotFieldUiOptions = {}
         if f.name == "id":
             ui_options["required"] = True
+            description = (
+                "LeRobot identifier used to select saved calibration files, not the Studio robot ID. "
+                "For a single arm, enter the calibration filename without .json "
+                "(for example, leader for leader.json). "
+                "Files are loaded from Calibration directory, or LeRobot's default directory when unset."
+            )
         if any(marker in f.name for marker in _ADVANCED_CONFIGURATION_NAME_MARKERS):
             ui_options["advanced_configuration"] = True
         extra = robot_field_ui(ui_options) if ui_options else None
         if default_val is _REQUIRED_SENTINEL:
-            field_defs[f.name] = (pydantic_type, Field(..., description=f.name, json_schema_extra=extra))
+            field_defs[f.name] = (pydantic_type, Field(..., description=description, json_schema_extra=extra))
         else:
             field_defs[f.name] = (
                 pydantic_type,
-                Field(default=default_val, description=f.name, json_schema_extra=extra),
+                Field(default=default_val, description=description, json_schema_extra=extra),
             )
 
     payload_model = create_model(
