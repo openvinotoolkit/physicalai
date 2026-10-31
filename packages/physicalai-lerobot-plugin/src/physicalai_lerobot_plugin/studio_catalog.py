@@ -34,6 +34,7 @@ from physicalai_studio_plugin import (
 from pydantic import BaseModel, ConfigDict, Field, create_model
 from serial.tools import list_ports
 
+from physicalai_lerobot_plugin._calibration import build_device
 from physicalai_lerobot_plugin.constants import trust_unverified_plugins
 
 if TYPE_CHECKING:
@@ -511,7 +512,7 @@ def _make_builder(
         lerobot_config = _materialize_dataclass(config_cls, payload_data)
         await _resolve_ports_in_dataclass(lerobot_config, factory)
         config_kwargs = _config_to_kwargs(lerobot_config)
-        lerobot_robot = make_robot_from_config(lerobot_config)
+        lerobot_robot = build_device(make_robot_from_config, lerobot_config)
         return LeRobotAdapter(
             config_type,
             config_kwargs,
@@ -562,7 +563,7 @@ def _make_teleop_builder(
         teleop_config = _materialize_dataclass(config_cls, payload_data)
         await _resolve_ports_in_dataclass(teleop_config, factory)
         config_kwargs = _config_to_kwargs(teleop_config)
-        teleoperator = make_teleoperator_from_config(teleop_config)
+        teleoperator = build_device(make_teleoperator_from_config, teleop_config)
         return LeRobotTeleoperatorAdapter(
             config_type,
             config_kwargs,

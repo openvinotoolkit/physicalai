@@ -37,6 +37,26 @@ The example uses the `so101_follower` / `so101_leader` pair; set `config_type`
 and `config_kwargs` to any of the bundled follower/leader types below. Press
 `Ctrl+C` to stop.
 
+## Calibration
+
+Adapter connections are non-interactive, including CLI connections. Calibrate
+the robot using LeRobot's terminal workflow before connecting from Studio or
+the PhysicalAI runtime. The adapters do not automatically recalibrate or write
+saved calibration values to motors when they differ.
+
+LeRobot selects `<id>.json` beneath `calibration_dir`. With a null directory,
+it uses its environment-dependent default and the device's internal name;
+that name can differ from the registered config type (for example,
+`so101_leader` uses `so_leader` in LeRobot 0.6). To reuse an existing file,
+set `calibration_dir` to its containing directory and `id` to its filename
+without `.json`.
+
+Missing, invalid, empty, or mismatched calibration raises a structured
+`RobotCalibrationError`. Missing and mismatched calibration include the
+device's resolved file path when available. Studio reports these as
+`robot_calibration_required` with setup guidance instead of a generic
+connection failure. Calibration-free devices remain supported.
+
 ## Third-party LeRobot extensions
 
 Install this package first, then install a LeRobot extension into the same
