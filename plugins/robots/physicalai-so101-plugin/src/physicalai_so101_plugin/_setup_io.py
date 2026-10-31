@@ -53,7 +53,10 @@ class _SetupPort:
         self.port.ser.reset_input_buffer()
 
     def writePort(self, packet: list[int]) -> int:  # noqa: N802 - SDK transmit interface
-        return int(self.port.ser.write(bytes(packet)))
+        written = self.port.ser.write(bytes(packet))
+        # A missing count must become a failed SDK transmit, not false success
+        # or an unclassified TypeError during serial cleanup.
+        return 0 if written is None else written
 
 
 class _SetupIO:
