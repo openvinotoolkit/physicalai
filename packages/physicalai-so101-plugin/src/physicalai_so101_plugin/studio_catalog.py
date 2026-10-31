@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from loguru import logger
 from physicalai_studio_plugin import (
@@ -24,7 +24,7 @@ from physicalai_studio_plugin import (
     robot_field_ui,
     robot_payload_ui,
 )
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 from serial.tools import list_ports
 
 from physicalai_so101_plugin import SO101, SO101Calibration, SO101JointCalibration, get_urdf_path
@@ -53,41 +53,78 @@ class SO101RobotPayload(BaseModel):
         default="",
         description="USB serial number of the robot (when available)",
     )
+    unit: Literal["normalized", "degrees"] = Field(
+        default="normalized",
+        title="Joint units",
+        description=(
+            "Normalized maps body joints to [-100, 100]. Degrees reports body angles relative to the "
+            "calibrated range midpoint. The gripper uses [0, 100] in both modes. Degrees requires calibration. "
+            "Use matching units for leader and follower arms and match the units used to train your policy."
+        ),
+        json_schema_extra=cast(
+            "dict[str, JsonValue]",
+            robot_field_ui({
+                "info": {
+                    "title": "Choosing joint units",
+                    "description": (
+                        "Normalized (default): body joints use [-100, 100] across their calibrated ranges. "
+                        "Degrees: body joints use LeRobot-style angles with zero at the calibrated range midpoint, "
+                        "not absolute URDF angles. The gripper remains [0, 100] in both modes. "
+                        "Choose matching units for leader and follower arms and for your trained policy. "
+                        "Degrees requires calibration; the setup wizard still streams normalized preview values."
+                    ),
+                    "variant": "help",
+                },
+            }),
+        ),
+    )
     calibration: dict[str, SO101JointCalibration] | None = Field(
         default=None,
         description=(
             "Provide SO101 calibration values. Studio uses these values as-is: it does not overwrite "
             "calibration on the control board and it skips the guided manual calibration flow."
         ),
-        json_schema_extra=robot_field_ui({
-            "advanced_configuration": True,
-            "info": {
-                "title": "Calibration values",
-                "description": (
-                    "Upload a calibration JSON exported for this SO101. If provided, Studio uses these "
-                    "values as-is, does not overwrite control-board calibration, and skips guided manual "
-                    "calibration."
-                ),
-                "variant": "help",
-            },
-        }),
+        json_schema_extra=cast(
+            "dict[str, JsonValue]",
+            robot_field_ui({
+                "advanced_configuration": True,
+                "info": {
+                    "title": "Calibration values",
+                    "description": (
+                        "Upload a calibration JSON exported for this SO101. If provided, Studio uses these "
+                        "values as-is, does not overwrite control-board calibration, and skips guided manual "
+                        "calibration."
+                    ),
+                    "variant": "help",
+                },
+            }),
+        ),
     )
 
     model_config = ConfigDict(
-        json_schema_extra={
-            "example": {"connection_string": "", "serial_number": "SO101-2024-001", "calibration": None},
-            **robot_payload_ui([
-                {
-                    "kind": "connection",
-                    "label": "Connection",
-                    "device_discovery": True,
-                    "identify": True,
-                    "manual_entry": True,
-                    "bind": {"connection": "connection_string", "serial_number": "serial_number"},
+        json_schema_extra=cast(
+            "dict[str, JsonValue]",
+            {
+                "example": {
+                    "connection_string": "",
+                    "serial_number": "SO101-2024-001",
+                    "calibration": None,
+                    "unit": "normalized",
                 },
-                {"kind": "calibration", "name": "calibration"},
-            ]),
-        },
+                **robot_payload_ui([
+                    {
+                        "kind": "connection",
+                        "label": "Connection",
+                        "device_discovery": True,
+                        "identify": True,
+                        "manual_entry": True,
+                        "bind": {"connection": "connection_string", "serial_number": "serial_number"},
+                    },
+                    {"kind": "field", "name": "unit"},
+                    {"kind": "calibration", "name": "calibration"},
+                ]),
+            },
+        ),
     )
 
     @model_validator(mode="after")
@@ -148,6 +185,9 @@ async def _build_so101_driver(robot: CatalogRobot[SO101RobotPayload], factory: C
 
     role = "follower" if robot.type == "SO101_Follower" else "leader"
     if payload.calibration is None:
+        if payload.unit == "degrees":
+            msg = "SO101 degree units require calibration; complete setup or provide calibration values first"
+            raise ValueError(msg)
         logger.warning(
             "SO101 {} has no calibration; building in raw-ticks mode. "
             "Positions are not normalized and must not be used for policy inference.",
@@ -159,7 +199,7 @@ async def _build_so101_driver(robot: CatalogRobot[SO101RobotPayload], factory: C
         port=port,
         calibration=SO101Calibration(joints=payload.calibration),
         role=role,
-        unit="normalized",
+        unit=payload.unit,
     )
 
 
