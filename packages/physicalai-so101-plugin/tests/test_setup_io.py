@@ -132,6 +132,13 @@ def test_every_sdk_reopen_reapplies_serial_timeouts(io):
         io.set_baudrate(57_600)
 
 
+def test_missing_serial_write_count_is_a_communication_failure(io):
+    io.port.ser.write = lambda packet: None
+    with pytest.raises(ConnectionError, match="transmit"):
+        io.ping(1)
+    assert not io.port.is_using
+
+
 def test_real_sdk_transmit_conformance_in_isolated_process():
     # The driver test suite installs module mocks, so exercise the real SDK in
     # a fresh process. Serial remains fake: this test never opens a device.
