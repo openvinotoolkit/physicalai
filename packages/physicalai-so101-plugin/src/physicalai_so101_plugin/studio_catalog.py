@@ -64,6 +64,7 @@ class SO101RobotPayload(BaseModel):
         json_schema_extra=cast(
             "dict[str, JsonValue]",
             robot_field_ui({
+                "advanced_configuration": True,
                 "info": {
                     "title": "Choosing joint units",
                     "description": (
