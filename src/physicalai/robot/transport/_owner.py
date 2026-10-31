@@ -9,11 +9,11 @@ import json
 import select
 import subprocess  # noqa: S404 # nosec: B404
 import sys
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Literal, Self, cast
 
 from loguru import logger
 
-from physicalai.robot.errors import RobotDeviceAlreadyOwned, RobotTransportError
+from physicalai.robot.errors import RobotCalibrationError, RobotDeviceAlreadyOwned, RobotTransportError
 
 if TYPE_CHECKING:
     from physicalai.robot.transport._owner_config import RobotOwnerConfig
@@ -99,6 +99,7 @@ class RobotOwner:
         """Parse a worker ``ERROR:{json}`` line and raise the matching exception.
 
         Raises:
+            RobotCalibrationError: If the worker reports validated calibration diagnostics.
             RobotDeviceAlreadyOwned: On the unambiguous device-conflict phase.
             RobotTransportError: For every other phase, carrying ``phase``
                 and ``device_ids`` for the caller to inspect.
@@ -119,6 +120,20 @@ class RobotOwner:
 
         if phase == "device_lock_contention":
             raise RobotDeviceAlreadyOwned(msg, phase=phase, device_ids=device_ids)
+        calibration = payload.get("calibration")
+        if phase == "connection_failed" and isinstance(calibration, dict):
+            reason = calibration.get("reason")
+            path = calibration.get("path")
+            if (
+                isinstance(reason, str)
+                and reason in {"missing", "invalid", "mismatch"}
+                and (path is None or isinstance(path, str))
+            ):
+                raise RobotCalibrationError(
+                    msg,
+                    reason=cast("Literal['missing', 'invalid', 'mismatch']", reason),
+                    calibration_path=path,
+                )
         raise RobotTransportError(msg, phase=phase, device_ids=device_ids or None)
 
     def stop(self, timeout: float = 5.0) -> None:

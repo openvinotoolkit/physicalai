@@ -3,14 +3,27 @@
 
 from __future__ import annotations
 
+import io
+import json
+import threading
+from unittest.mock import Mock
+
 import pytest
 
-from physicalai.robot.errors import RobotDeviceAlreadyOwned, RobotTransportError
+from physicalai.robot.errors import RobotCalibrationError, RobotDeviceAlreadyOwned, RobotTransportError
+from physicalai.robot.transport import SharedRobot
 from physicalai.robot.transport._ids import derive_endpoint_port
 from physicalai.robot.transport._lock import NamedLock, acquire_locks
 from physicalai.robot.transport._owner import RobotOwner
 from physicalai.robot.transport._owner_config import RobotOwnerConfig
-from physicalai.robot.transport._owner_worker import _StartupError, _build_metadata, _declare_zenoh_endpoints, _startup
+from physicalai.robot.transport._owner_worker import (
+    _StartupError,
+    _build_metadata,
+    _declare_zenoh_endpoints,
+    _startup,
+    run_owner,
+    signal_error,
+)
 
 from .conftest import FAKE_ROBOT_CLASS, requires_zenoh
 from .fake import FakeRobot
@@ -18,6 +31,70 @@ from .fake import FakeRobot
 
 def _fake_robot(**init_args: object) -> dict[str, object]:
     return {"class_path": FAKE_ROBOT_CLASS, "init_args": dict(init_args)}
+
+
+def test_calibration_failure_preserves_diagnostics_and_releases_locks(
+    unique_id: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    name = unique_id.replace("/", "-")
+    device_id = f"fake:{unique_id}"
+    driver = FakeRobot(device_ids=(device_id,))
+    error = RobotCalibrationError("missing calibration", reason="missing", calibration_path="/calibration/leader.json")
+    monkeypatch.setattr(driver, "connect", Mock(side_effect=error))
+    monkeypatch.setattr(RobotOwnerConfig, "build", lambda _self: driver)
+    config = RobotOwnerConfig(name=name, robot=_fake_robot())
+    with pytest.raises(RobotCalibrationError) as caught:
+        run_owner(config, threading.Event())
+    assert caught.value.reason == error.reason
+    assert caught.value.calibration_path == error.calibration_path
+    assert caught.value.phase == "connection_failed"
+    assert driver.disconnect_called
+    acquire_locks(name, [device_id]).release_all()
+
+
+@pytest.mark.parametrize("reason", ["missing", "invalid", "mismatch"])
+def test_owner_reads_structured_calibration_error(reason: str) -> None:
+    line = "ERROR:" + json.dumps({
+        "msg": "driver failed",
+        "phase": "connection_failed",
+        "traceback": "diagnostic traceback",
+        "calibration": {"reason": reason, "path": "/calibration/leader.json"},
+    })
+    with pytest.raises(RobotCalibrationError) as caught:
+        RobotOwner._raise_from_error_line(line)
+    assert caught.value.reason == reason
+    assert caught.value.calibration_path == "/calibration/leader.json"
+    assert "diagnostic traceback" in str(caught.value)
+
+
+@pytest.mark.parametrize("calibration", [{"reason": "unknown"}, {"reason": "missing", "path": 123}, []])
+def test_owner_does_not_trust_malformed_calibration_diagnostics(calibration: object) -> None:
+    line = "ERROR:" + json.dumps({"msg": "failed", "phase": "connection_failed", "calibration": calibration})
+    with pytest.raises(RobotTransportError) as caught:
+        RobotOwner._raise_from_error_line(line)
+    assert not isinstance(caught.value, RobotCalibrationError)
+
+
+def test_calibration_diagnostics_round_trip_through_error_signal(monkeypatch: pytest.MonkeyPatch) -> None:
+    output = io.StringIO()
+    monkeypatch.setattr(output, "close", lambda: None)
+    monkeypatch.setattr("physicalai.robot.transport._owner_worker.sys.stdout", output)
+    error = RobotCalibrationError("missing file", reason="missing", calibration_path="/calibration/leader.json")
+    signal_error(str(error), phase=error.phase, calibration_error=error)
+    with pytest.raises(RobotCalibrationError) as caught:
+        RobotOwner._raise_from_error_line(output.getvalue().strip())
+    assert caught.value.reason == error.reason
+    assert caught.value.calibration_path == error.calibration_path
+
+
+def test_shared_robot_does_not_erase_calibration_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    error = RobotCalibrationError("missing file", reason="missing", calibration_path="/calibration/leader.json")
+    monkeypatch.setattr(RobotOwner, "start", Mock(side_effect=error))
+    robot = SharedRobot("calibration-test", robot=_fake_robot())
+    with pytest.raises(RobotCalibrationError) as caught:
+        robot._spawn_or_reprobe(timeout=1.0)
+    assert caught.value is error
 
 
 def _owner(unique_id: str, **robot_init_args: object) -> RobotOwner:
