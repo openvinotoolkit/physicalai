@@ -43,6 +43,7 @@ _MAX_FAILURE_S = 3.0
 _GOAL_TIME_TICKS = 3
 _RETURN_DURATION_S = 2.5
 _RETURN_MAX_TRACKING_ERROR = 0.15
+_RETURN_SKIP_TOLERANCE = 0.1
 
 RunReason = Literal["stop_requested", "duration_elapsed", "interrupted", "error"]
 """Why a :meth:`RobotRuntime.run` call ended."""
@@ -765,6 +766,10 @@ class RobotRuntime:
         try:
             current = self._robot.get_observation().joint_positions
             travel = float(np.max(np.abs(target - current)))
+            relative_travel = float(np.linalg.norm(target - current) / max(np.linalg.norm(target), 1e-8))
+            if relative_travel <= _RETURN_SKIP_TOLERANCE:
+                logger.info("Robot within %.1f%% of initial position — skipping return", relative_travel * 100)
+                return
             logger.info("Returning robot to initial position over %.1fs", _RETURN_DURATION_S)
             for i in range(1, steps + 1):
                 loop_start = time.perf_counter()
