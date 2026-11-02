@@ -228,6 +228,10 @@ def test_make_payload_model_for_so100() -> None:
     assert payload.port == "/dev/ttyACM0"
     assert payload.disable_torque_on_disconnect is True
     assert payload.use_degrees is True
+    description = model.model_json_schema()["properties"]["id"]["description"]
+    assert "calibration filename without .json" in description
+    assert "leader for leader.json" in description
+    assert "not the Studio robot ID" in description
 
 
 def test_payload_schema_marks_id_as_required() -> None:
@@ -250,6 +254,9 @@ def test_payload_schema_marks_id_as_required() -> None:
     model = _make_payload_model(TeleoperatorConfig.get_known_choices()["so101_leader"])
 
     assert model.model_json_schema()["properties"]["id"]["x-physicalai-ui"] == {"required": True}
+    description = model.model_json_schema()["properties"]["id"]["description"]
+    assert "calibration filename without .json" in description
+    assert "Calibration directory" in description
 
 
 def test_make_payload_model_for_hope_jr_hand() -> None:

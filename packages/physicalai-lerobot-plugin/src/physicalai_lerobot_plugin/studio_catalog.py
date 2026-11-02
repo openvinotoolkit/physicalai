@@ -34,6 +34,7 @@ from physicalai_studio_plugin import (
 from pydantic import BaseModel, ConfigDict, Field, create_model
 from serial.tools import list_ports
 
+from physicalai_lerobot_plugin._calibration import build_device
 from physicalai_lerobot_plugin.constants import trust_unverified_plugins
 
 if TYPE_CHECKING:
@@ -397,18 +398,25 @@ def _make_payload_model(config_cls: type[Any]) -> type[BaseModel]:
     field_defs: dict[str, tuple[Any, Any]] = {}
     for f in dataclasses.fields(config_cls):
         pydantic_type, default_val = _resolve_field_type(f)
+        description = f.name
         ui_options: RobotFieldUiOptions = {}
         if f.name == "id":
             ui_options["required"] = True
+            description = (
+                "LeRobot identifier used to select saved calibration files, not the Studio robot ID. "
+                "For a single arm, enter the calibration filename without .json "
+                "(for example, leader for leader.json). "
+                "Files are loaded from Calibration directory, or LeRobot's default directory when unset."
+            )
         if any(marker in f.name for marker in _ADVANCED_CONFIGURATION_NAME_MARKERS):
             ui_options["advanced_configuration"] = True
         extra = robot_field_ui(ui_options) if ui_options else None
         if default_val is _REQUIRED_SENTINEL:
-            field_defs[f.name] = (pydantic_type, Field(..., description=f.name, json_schema_extra=extra))
+            field_defs[f.name] = (pydantic_type, Field(..., description=description, json_schema_extra=extra))
         else:
             field_defs[f.name] = (
                 pydantic_type,
-                Field(default=default_val, description=f.name, json_schema_extra=extra),
+                Field(default=default_val, description=description, json_schema_extra=extra),
             )
 
     payload_model = create_model(
@@ -511,7 +519,7 @@ def _make_builder(
         lerobot_config = _materialize_dataclass(config_cls, payload_data)
         await _resolve_ports_in_dataclass(lerobot_config, factory)
         config_kwargs = _config_to_kwargs(lerobot_config)
-        lerobot_robot = make_robot_from_config(lerobot_config)
+        lerobot_robot = build_device(make_robot_from_config, lerobot_config)
         return LeRobotAdapter(
             config_type,
             config_kwargs,
@@ -562,7 +570,7 @@ def _make_teleop_builder(
         teleop_config = _materialize_dataclass(config_cls, payload_data)
         await _resolve_ports_in_dataclass(teleop_config, factory)
         config_kwargs = _config_to_kwargs(teleop_config)
-        teleoperator = make_teleoperator_from_config(teleop_config)
+        teleoperator = build_device(make_teleoperator_from_config, teleop_config)
         return LeRobotTeleoperatorAdapter(
             config_type,
             config_kwargs,

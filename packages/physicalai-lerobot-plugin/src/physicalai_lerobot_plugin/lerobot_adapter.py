@@ -23,6 +23,8 @@ from loguru import logger
 from physicalai.capture.frame import Frame
 from physicalai.config import export_config
 from physicalai.robot.device_ids import device_id_from_serial_port
+from physicalai.robot.errors import RobotCalibrationError
+from physicalai_lerobot_plugin._calibration import build_device, connect_device, disconnect_device
 from physicalai_lerobot_plugin.constants import VALID_ROLES, trust_unverified_plugins
 
 if TYPE_CHECKING:
@@ -291,7 +293,7 @@ class LeRobotAdapter:
         logger.info("Building LeRobot robot config type={!r} with kwargs={!r}", self._config_type, self._config_kwargs)
         lerobot_config = _robot_config_class(self._config_type)(**self._config_kwargs)
         logger.info("Built LeRobot robot config: {!r}", lerobot_config)
-        self._robot = cast("_LeRobotLike", make_robot_from_config(lerobot_config))
+        self._robot = cast("_LeRobotLike", build_device(make_robot_from_config, lerobot_config))
         logger.info("Built LeRobot robot: {!r}", self._robot)
 
     def _ensure_joint_order(self, obs: dict[str, Any]) -> None:
@@ -361,12 +363,18 @@ class LeRobotAdapter:
         Creates the lerobot robot from stored config on first call.
 
         Raises:
+            RobotCalibrationError: If saved calibration needs operator attention.
             ConnectionError: If the connection or initial observation fails.
         """
         if self.is_connected():
             return
         try:
             self._connect_robot()
+        except RobotCalibrationError:
+            self.disconnect()
+            # Rebuild on retry to reload the operator's repaired calibration.
+            self._robot = None
+            raise
         except Exception as e:
             self.disconnect()
             msg = f"Failed to connect LeRobot {self._robot}: {e}"
@@ -384,7 +392,7 @@ class LeRobotAdapter:
         if robot is None:
             msg = "Robot is not initialized"
             raise RuntimeError(msg)
-        robot.connect(calibrate=True)
+        connect_device(robot)
         logger.info("Connected LeRobot robot config type={!r}; reading initial observation", self._config_type)
         obs = robot.get_observation()
         self._ensure_joint_order(obs)
@@ -392,15 +400,8 @@ class LeRobotAdapter:
 
     def disconnect(self) -> None:
         """Close the connection. Safe to call multiple times."""
-        if not self.is_connected():
-            return
-        try:
-            robot = self._robot
-            if robot is None:
-                return
-            robot.disconnect()
-        except Exception:  # noqa: BLE001
-            logger.exception("Error during LeRobot disconnect")
+        if self._robot is not None:
+            disconnect_device(self._robot)
 
     def is_connected(self) -> bool:
         """Check if the robot is currently connected.
@@ -607,7 +608,7 @@ class LeRobotTeleoperatorAdapter:
         )
         teleop_config = _teleoperator_config_class(self._config_type)(**self._config_kwargs)
         logger.info("Built LeRobot teleoperator config: {!r}", teleop_config)
-        self._teleoperator = cast("_TeleoperatorLike", make_teleoperator_from_config(teleop_config))
+        self._teleoperator = cast("_TeleoperatorLike", build_device(make_teleoperator_from_config, teleop_config))
         logger.info("Built LeRobot teleoperator: {!r}", self._teleoperator)
 
     def _ensure_joint_order(self, action: dict[str, Any]) -> None:
@@ -661,12 +662,18 @@ class LeRobotTeleoperatorAdapter:
         Creates the teleoperator from stored config on first call.
 
         Raises:
+            RobotCalibrationError: If saved calibration needs operator attention.
             ConnectionError: If the connection or initial observation fails.
         """
         if self.is_connected():
             return
         try:
             self._connect_teleoperator()
+        except RobotCalibrationError:
+            self.disconnect()
+            # Rebuild on retry to reload the operator's repaired calibration.
+            self._teleoperator = None
+            raise
         except Exception as e:
             self.disconnect()
             msg = f"Failed to connect LeRobot teleoperator {self._teleoperator}: {e}"
@@ -684,7 +691,7 @@ class LeRobotTeleoperatorAdapter:
         if teleop is None:
             msg = "Teleoperator is not initialized"
             raise RuntimeError(msg)
-        teleop.connect()
+        connect_device(teleop)
         logger.info(
             "Connected LeRobot teleoperator config type={!r}; reading initial action",
             self._config_type,
@@ -699,15 +706,8 @@ class LeRobotTeleoperatorAdapter:
 
     def disconnect(self) -> None:
         """Close the connection. Safe to call multiple times."""
-        if not self.is_connected():
-            return
-        try:
-            teleop = self._teleoperator
-            if teleop is None:
-                return
-            teleop.disconnect()
-        except Exception:  # noqa: BLE001
-            logger.exception("Error during LeRobot teleoperator disconnect")
+        if self._teleoperator is not None:
+            disconnect_device(self._teleoperator)
 
     def is_connected(self) -> bool:
         """Check if the teleoperator is currently connected.
