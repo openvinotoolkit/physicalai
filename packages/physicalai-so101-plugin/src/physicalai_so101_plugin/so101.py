@@ -45,6 +45,7 @@ from scservo_sdk import (
 from physicalai.config import export_config
 from physicalai.robot import Robot
 from physicalai.robot.device_ids import device_id_from_serial_port
+from physicalai_so101_plugin._conversion import degrees_to_ticks, ticks_to_degrees, ticks_to_normalized
 from physicalai_so101_plugin.calibration import SO101Calibration
 from physicalai_so101_plugin.constants import (
     MAX_SPEED_DEG_S,
@@ -61,7 +62,7 @@ if TYPE_CHECKING:
     from physicalai.capture.frame import Frame
     from physicalai.robot.interface import RobotObservation
 
-SO101Unit = Literal["ticks", "normalized"]
+SO101Unit = Literal["ticks", "normalized", "degrees"]
 _TWO_BYTE_REGISTER = 2
 
 
@@ -108,10 +109,10 @@ class SO101(Robot):
         calibration: SO-101 calibration object or calibration JSON path.
             This is required for normal operation.
         unit: Joint-space command/observation unit. Defaults to ``"normalized"``.
-            Allowed values in calibrated mode: ``"normalized"``.
-            In this mode values are degree-derived and mapped to body
-            ``[-100, 100]`` and gripper ``[0, 100]``. Uncalibrated mode only
-            supports ``"ticks"``.
+            Allowed values in calibrated mode: ``"normalized"`` or ``"degrees"``.
+            Normalized maps body joints to ``[-100, 100]``. Degrees reports body
+            angles relative to each calibrated range midpoint. The gripper uses
+            ``[0, 100]`` in both modes. Uncalibrated mode only supports ``"ticks"``.
     """
 
     JOINT_ORDER: ClassVar[list[str]] = list(SO101_JOINT_ORDER)
@@ -273,7 +274,7 @@ class SO101(Robot):
     @property
     def max_speed(self) -> float:
         """Maximum joint speed in the configured :attr:`unit`."""
-        if self.unit == "normalized":
+        if self.unit in {"normalized", "degrees"}:
             calibration = self._require_calibration()
             per_joint: list[float] = []
             for name in self.JOINT_ORDER:
@@ -282,13 +283,15 @@ class SO101(Robot):
                 if rng <= 0:
                     continue
                 normalized_per_tick = 100.0 / rng if name == "gripper" else 200.0 / rng
+                if self.unit == "degrees" and name != "gripper":
+                    normalized_per_tick = 360.0 / (TICKS_PER_REVOLUTION - 1)
                 per_joint.append(MAX_SPEED_DEG_S * TICKS_PER_REVOLUTION / 360.0 * normalized_per_tick)
             return max(per_joint) if per_joint else 0.0
         # Ticks/s based on encoder resolution.
         return float(MAX_SPEED_DEG_S * TICKS_PER_REVOLUTION / 360.0)
 
     def _validate_unit(self) -> None:
-        valid_units = {"ticks", "normalized"}
+        valid_units = {"ticks", "normalized", "degrees"}
         if self._unit not in valid_units:
             msg = f"Invalid unit {self._unit!r}. Must be one of {sorted(valid_units)}."
             raise ValueError(msg)
@@ -301,7 +304,7 @@ class SO101(Robot):
 
     @staticmethod
     def _validate_conversion_unit(unit: SO101Unit) -> None:
-        if unit not in {"ticks", "normalized"}:
+        if unit not in {"ticks", "normalized", "degrees"}:
             msg = f"Invalid unit {unit!r}."
             raise ValueError(msg)
 
@@ -547,26 +550,14 @@ class SO101(Robot):
         return self._connection is not None
 
     def _ticks_to_normalized(self, ticks: np.ndarray) -> np.ndarray:
-        calibration = self._require_calibration()
-        result = np.empty(self.NUM_JOINTS, dtype=np.float32)
-        for i, name in enumerate(self.JOINT_ORDER):
-            cal = calibration.joints[name]
-            rng = cal.range_max - cal.range_min
-            if rng <= 0:
-                result[i] = 0.0
-                continue
-            tick_value = int(np.clip(ticks[i], cal.range_min, cal.range_max))
-            if name == "gripper":
-                norm = ((tick_value - cal.range_min) / rng) * 100.0
-            else:
-                norm = ((tick_value - cal.range_min) / rng) * 200.0 - 100.0
-            result[i] = float(np.clip(norm, 0.0, 100.0)) if name == "gripper" else float(np.clip(norm, -100.0, 100.0))
-        return result
+        return ticks_to_normalized(ticks, self._require_calibration())
 
     def _ticks_to_unit(self, ticks: np.ndarray, *, unit: SO101Unit | None = None) -> np.ndarray:
         resolved = self._resolve_unit(unit)
         if resolved == "normalized":
             return self._ticks_to_normalized(ticks)
+        if resolved == "degrees":
+            return ticks_to_degrees(ticks, self._require_calibration())
         return ticks.astype(np.float32)
 
     def _normalized_to_ticks(self, values: np.ndarray) -> np.ndarray:
@@ -592,6 +583,8 @@ class SO101(Robot):
         resolved = self._resolve_unit(unit)
         if resolved == "normalized":
             return self._normalized_to_ticks(values)
+        if resolved == "degrees":
+            return degrees_to_ticks(values, self._require_calibration())
         return np.round(values).astype(np.int32)
 
     def _configure_servos(self) -> None:
@@ -756,6 +749,8 @@ class SO101(Robot):
                 STS3215Addr.PRESENT_POSITION,
                 STS3215Len.PRESENT_POSITION,
             )
+            if self.unit == "degrees" and positions[i] & 0x8000:
+                positions[i] = -(positions[i] & ~0x8000)
         return positions
 
     def _write_joint_positions(self, ticks: np.ndarray) -> None:
