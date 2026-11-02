@@ -20,6 +20,8 @@ if TYPE_CHECKING:
 _Device = TypeVar("_Device")
 _Config = TypeVar("_Config")
 _ARM_ATTRIBUTES = ("left_arm", "right_arm", "left", "right")
+# These drivers create their bus only in connect(), but require saved calibration.
+_DEFERRED_BUS_CALIBRATION_DEVICES = frozenset({"rebot_b601_follower", "rebot_102_leader"})
 
 
 def build_device(factory: Callable[[_Config], _Device], config: _Config) -> _Device:
@@ -33,12 +35,19 @@ def build_device(factory: Callable[[_Config], _Device], config: _Config) -> _Dev
 
     Raises:
         RobotCalibrationError: If calibration JSON cannot be decoded.
+        ParsingError: If draccus reports an unrelated parsing failure.
     """
-    from draccus.utils import DecodingError  # noqa: PLC0415
+    from draccus.utils import DecodingError, ParsingError  # noqa: PLC0415
 
     try:
         return factory(config)
     except (json.JSONDecodeError, DecodingError) as exc:
+        msg = "Invalid LeRobot calibration file. Verify the saved calibration before reconnecting."
+        raise RobotCalibrationError(msg, reason="invalid") from exc
+    except ParsingError as exc:
+        # Newer draccus wraps JSON decoding failures; preserve unrelated errors.
+        if not isinstance(exc.__cause__, json.JSONDecodeError):
+            raise
         msg = "Invalid LeRobot calibration file. Verify the saved calibration before reconnecting."
         raise RobotCalibrationError(msg, reason="invalid") from exc
 
@@ -74,11 +83,15 @@ def connect_device(device: object) -> None:
         calibration = getattr(part, "calibration", None)
         bus = getattr(part, "bus", None)
         # Base devices can have an empty calibration even when they require
-        # none. Only preflight motor buses that consume calibration.
+        # none. ReBot drivers defer bus construction until connect(), so their
+        # calibration requirement must be checked before hardware is opened.
         if (
             isinstance(path, Path)
             and isinstance(calibration, dict)
-            and isinstance(getattr(bus, "calibration", None), dict)
+            and (
+                isinstance(getattr(bus, "calibration", None), dict)
+                or getattr(part, "name", None) in _DEFERRED_BUS_CALIBRATION_DEVICES
+            )
             and not calibration
         ):
             reason = "invalid" if path.is_file() else "missing"

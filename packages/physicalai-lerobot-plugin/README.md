@@ -19,6 +19,8 @@ Studio catalog entry:
 
 ## Installation
 
+Requires Physical AI Runtime 0.4.0 or newer for structured calibration errors.
+
 ```bash
 uv add physicalai-lerobot-plugin
 ```

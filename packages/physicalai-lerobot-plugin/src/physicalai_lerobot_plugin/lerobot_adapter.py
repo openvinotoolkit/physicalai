@@ -372,6 +372,8 @@ class LeRobotAdapter:
             self._connect_robot()
         except RobotCalibrationError:
             self.disconnect()
+            # Rebuild on retry to reload the operator's repaired calibration.
+            self._robot = None
             raise
         except Exception as e:
             self.disconnect()
@@ -669,6 +671,8 @@ class LeRobotTeleoperatorAdapter:
             self._connect_teleoperator()
         except RobotCalibrationError:
             self.disconnect()
+            # Rebuild on retry to reload the operator's repaired calibration.
+            self._teleoperator = None
             raise
         except Exception as e:
             self.disconnect()
