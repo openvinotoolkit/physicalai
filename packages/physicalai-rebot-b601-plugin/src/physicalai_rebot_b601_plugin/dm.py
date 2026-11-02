@@ -45,6 +45,8 @@ from physicalai_rebot_b601_plugin.constants import (
     REBOT_B601_DM_MOTOR_IDS,
     REBOT_B601_DM_MOTOR_MODELS,
     REBOT_B601_DM_POS_VEL_DEG_S,
+    REBOT_B601_MAX_ACCEL_DEG_S2,
+    REBOT_B601_MAX_SPEED_DEG_S,
     REBOT_B601_MIT_GAIN_LIMITS,
     REBOT_B601_PARK_SPEED_DEG_S,
     REBOT_B601_PARK_STAGES,
@@ -76,6 +78,11 @@ _APPROACH_DONE_DEG = 0.5
 _JUMP_SPEED_DEG_S = 480.0
 _JUMP_MAX_DT_S = 0.05
 _JUMP_MIN_DEG = 10.0
+# The motors have stopped driving (lost power, or reset after a supply dropout) when every arm joint
+# reports less torque than this while the arm is this far from its command, for this many reads.
+_DROPOUT_TORQUE_NM = 0.05
+_DROPOUT_ERROR_DEG = 5.0
+_DROPOUT_READS = 10
 # Reading the pose to hold right after enabling torque: attempts and the pause between them.
 _HOLD_READ_ATTEMPTS = 3
 _HOLD_READ_RETRY_S = 0.01
@@ -547,6 +554,9 @@ class ReBotB601DM:
         self._reference_velocity_deg_s = np.zeros(self.NUM_JOINTS)
         self._approaching = False
         self._approach_progress_speed = 0.0
+        self._previous_target_deg: np.ndarray | None = None
+        self._limit_velocity_deg_s = np.zeros(self.NUM_JOINTS)
+        self._dropout_reads = 0
 
     def _read_motor_states(self) -> list[MotorState]:
         if not self.is_connected():
@@ -565,6 +575,33 @@ class ReBotB601DM:
                 raise ConnectionError(msg)
             states.append(state)
         return states
+
+    def _check_driving(self, positions: np.ndarray, torques: np.ndarray) -> None:
+        """Raise if the motors answer but have stopped driving the arm.
+
+        A supply dropout resets the motors: they keep reporting positions but no longer push, so the
+        arm goes limp while commands keep arriving. That shows as zero torque on every arm joint while
+        the arm drifts away from its command.
+
+        Raises:
+            ConnectionError: If that has lasted for ``_DROPOUT_READS`` consecutive reads.
+        """
+        last = self._last_command_deg
+        arm = slice(0, REBOT_B601_ARM_JOINT_COUNT)
+        if not self._torque_enabled or last is None:
+            self._dropout_reads = 0
+            return
+        error = float(np.max(np.abs(last[arm] - positions[arm])))
+        limp = float(np.max(np.abs(torques[arm]))) < _DROPOUT_TORQUE_NM and error > _DROPOUT_ERROR_DEG
+        self._dropout_reads = self._dropout_reads + 1 if limp else 0
+        if self._dropout_reads >= _DROPOUT_READS:
+            self._dropout_reads = 0
+            msg = (
+                f"The reBot motors stopped driving the arm: no joint pushes any torque while the arm is "
+                f"{error:.0f} degrees from its command. They probably lost power or reset (a very fast swing "
+                "can overload the power supply). Check the supply, then reconnect."
+            )
+            raise ConnectionError(msg)
 
     def _measured_public_deg(self, states: list[MotorState] | None = None) -> np.ndarray:
         states = self._read_motor_states() if states is None else states
@@ -607,6 +644,7 @@ class ReBotB601DM:
             rotor_temperatures[i] = float(state.t_rotor)
             status_codes[i] = int(state.status_code)
 
+        self._check_driving(positions, torques)
         return self.OBSERVATION_CLASS(
             joint_positions=positions,
             timestamp=time.monotonic(),
@@ -671,11 +709,14 @@ class ReBotB601DM:
             self._last_command_time = None
             self._approaching = True
             self._approach_progress_speed = 0.0
+            self._limit_velocity_deg_s = np.zeros(self.NUM_JOINTS)
         dt = self._command_interval(now)
         if not self._approaching and self._is_jump(targets, dt):
             self._approaching = self._approach_speed is not None
             self._approach_progress_speed = 0.0
-        command = self._approach(targets, dt) if self._approaching else targets
+            self._limit_velocity_deg_s = np.zeros(self.NUM_JOINTS)
+        command = self._approach(targets, dt) if self._approaching else self._limit_motion(targets, dt)
+        self._previous_target_deg = targets.copy()
         self._send_command(command, dt, goal_time)
         self._last_command_time = now
 
@@ -685,12 +726,15 @@ class ReBotB601DM:
         return min(max(now - self._last_command_time, _MIN_COMMAND_DT_S), _MAX_COMMAND_DT_S)
 
     def _is_jump(self, targets: np.ndarray, dt: float) -> bool:
-        """Whether ``targets`` jumps further from the last command than any real motion could.
+        """Whether ``targets`` jumps further from the previous target than any real motion could.
+
+        The previous target, not the last command: the speed limits let the command fall behind a
+        fast but continuous stream, which is not a jump.
 
         Returns:
             ``True`` if an arm joint would have to move faster than ``_JUMP_SPEED_DEG_S``.
         """
-        last = self._last_command_deg
+        last = self._previous_target_deg if self._previous_target_deg is not None else self._last_command_deg
         if last is None:
             return False
         step = float(np.max(np.abs(targets[:REBOT_B601_ARM_JOINT_COUNT] - last[:REBOT_B601_ARM_JOINT_COUNT])))
@@ -698,6 +742,58 @@ class ReBotB601DM:
             return False
         logger.warning(f"reBot command jumped {step:.0f} degrees in one step; easing into it")
         return True
+
+    def _limit_motion(self, targets: np.ndarray, dt: float) -> np.ndarray:
+        """Follow ``targets`` with the arm joints within the speed and acceleration limits.
+
+        Below the limits the command is the target itself. A joint that falls behind catches up no
+        faster than the target moves plus what it can still brake from before reaching it, so it does
+        not overshoot a target that holds still. The gripper is not limited.
+
+        Returns:
+            The command for this step.
+        """
+        last = self._last_command_deg
+        arm = slice(0, REBOT_B601_ARM_JOINT_COUNT)
+        if last is None:
+            self._limit_velocity_deg_s = np.zeros(self.NUM_JOINTS)
+            return targets
+        speed_limit, accel_limit = self._motion_limits()
+        previous = self._previous_target_deg if self._previous_target_deg is not None else last
+        target_speed = np.minimum(np.abs(targets[arm] - previous[arm]) / dt, speed_limit)
+        error = targets[arm] - last[arm]
+        # Fastest speed from which the joint can still stop within the remaining error, braking at the
+        # acceleration limit in steps of dt.
+        half_step = 0.5 * accel_limit * dt
+        braking = np.sqrt(half_step**2 + 2.0 * accel_limit * np.abs(error)) - half_step
+        catch_up = np.minimum(target_speed + braking, speed_limit)
+        desired = np.clip(error / dt, -catch_up, catch_up)
+        velocity = self._limit_velocity_deg_s[arm].copy()
+        velocity += np.clip(desired - velocity, -accel_limit * dt, accel_limit * dt)
+        step = velocity * dt
+        # Land on a target instead of passing it once the joint is nearly stopped.
+        landing = (
+            (np.sign(step) == np.sign(error))
+            & (np.abs(step) > np.abs(error))
+            & (np.abs(velocity) <= 2 * accel_limit * dt)
+        )
+        step = np.where(landing, error, step)
+        self._limit_velocity_deg_s[arm] = step / dt
+        command = targets.copy()
+        command[arm] = last[arm] + step
+        return command
+
+    def _motion_limits(self) -> tuple[np.ndarray, np.ndarray]:
+        """Per-joint speed and acceleration limits of the arm joints, from their motor models.
+
+        Returns:
+            Speed limits (deg/s) and acceleration limits (deg/s²), one per arm joint.
+        """
+        models = [self.MOTOR_MODELS[name] for name in self.JOINT_ORDER[:REBOT_B601_ARM_JOINT_COUNT]]
+        return (
+            np.array([REBOT_B601_MAX_SPEED_DEG_S[m] for m in models]),
+            np.array([REBOT_B601_MAX_ACCEL_DEG_S2[m] for m in models]),
+        )
 
     def _approach(self, targets: np.ndarray, dt: float) -> np.ndarray:
         """Move the arm joints toward ``targets`` along a straight joint-space line at a bounded speed.

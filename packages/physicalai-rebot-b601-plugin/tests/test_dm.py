@@ -537,9 +537,9 @@ class TestReBotB601DMControl:
         robot.send_action(np.zeros(7, dtype=np.float32))
         assert motors[0].send_mit.call_args.args[1] == 0.0
         clock.sleep(0.02)
-        robot.send_action(np.array([1.0, 0, 0, 0, 0, 0, 0], dtype=np.float32))
+        robot.send_action(np.array([0.2, 0, 0, 0, 0, 0, 0], dtype=np.float32))  # 10 deg/s, within the limits
 
-        assert motors[0].send_mit.call_args.args[1] == pytest.approx(_VELOCITY_FILTER_ALPHA * math.radians(50.0))
+        assert motors[0].send_mit.call_args.args[1] == pytest.approx(_VELOCITY_FILTER_ALPHA * math.radians(10.0))
         assert motors[1].send_mit.call_args.args[1] == 0.0
 
     def test_first_command_eases_in_from_the_measured_pose(
@@ -581,14 +581,109 @@ class TestReBotB601DMControl:
         for _ in range(3):
             robot.send_action(np.zeros(7, dtype=np.float32))
             clock.sleep(1 / 30)
-        # A 5-degree step is a fast but real motion: tracked directly.
-        robot.send_action(np.array([5.0, 0, 0, 0, 0, 0, 0], dtype=np.float32))
+        # A 5-degree step is a fast but real motion: tracked within the acceleration limit (much faster
+        # than the 30 deg/s approach).
+        for _ in range(8):
+            robot.send_action(np.array([5.0, 0, 0, 0, 0, 0, 0], dtype=np.float32))
+            clock.sleep(1 / 30)
         assert math.degrees(motors[0].send_mit.call_args.args[0]) == pytest.approx(5.0)
-        clock.sleep(1 / 30)
 
         robot.send_action(np.array([45.0, 0, 0, 0, 0, 0, 0], dtype=np.float32))
 
         assert 5.0 < math.degrees(motors[0].send_mit.call_args.args[0]) < 6.0
+
+    def _commanded_deg(self, motors: list[MagicMock]) -> np.ndarray:
+        return np.array([math.degrees(m.send_mit.call_args.args[0]) for m in motors[:6]])
+
+    def test_fast_targets_are_held_to_the_speed_limit(self, mock_motorbridge: MagicMock, clock: _FakeClock) -> None:
+        from physicalai_rebot_b601_plugin.constants import REBOT_B601_MAX_SPEED_DEG_S
+
+        robot = _create_robot(mock_motorbridge, control_mode="mit")
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        _follow_commands(motors)
+        dt = 1 / 60
+        commands = []
+        signs = np.array([1, -1, -1, 1, 1, 1])  # toward each joint's open range
+        for k in range(30):  # every joint target moving at 400 deg/s for half a second
+            robot.send_action(np.append(signs * 400.0 * dt * k, 0.0).astype(np.float32))
+            commands.append(self._commanded_deg(motors))
+            clock.sleep(dt)
+        speed = np.abs(np.diff(np.array(commands), axis=0)).max(axis=0) / dt
+        limits = np.array([REBOT_B601_MAX_SPEED_DEG_S[m] for m in ("4340P",) * 3 + ("4310",) * 3])
+        assert np.all(speed <= limits + 1e-6)
+        assert speed[0] == pytest.approx(limits[0])
+
+    def test_acceleration_is_limited_from_rest(self, mock_motorbridge: MagicMock, clock: _FakeClock) -> None:
+        from physicalai_rebot_b601_plugin.constants import REBOT_B601_MAX_ACCEL_DEG_S2
+
+        robot = _create_robot(mock_motorbridge, control_mode="mit")
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        _follow_commands(motors)
+        dt = 1 / 60
+        robot.send_action(np.zeros(7, dtype=np.float32))
+        clock.sleep(dt)
+        robot.send_action(np.array([8.0, 0, 0, 0, 0, 0, 0], dtype=np.float32))  # 480 deg/s in one tick
+
+        first_step = self._commanded_deg(motors)[0]
+        assert first_step == pytest.approx(REBOT_B601_MAX_ACCEL_DEG_S2["4340P"] * dt * dt)
+
+    def test_slow_targets_are_tracked_without_lag(self, mock_motorbridge: MagicMock, clock: _FakeClock) -> None:
+        robot = _create_robot(mock_motorbridge, control_mode="mit")
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        _follow_commands(motors)
+        dt = 1 / 60
+        for k in range(30):  # 60 deg/s, smoothly started
+            target = 60.0 * dt * k * min(1.0, k / 10)
+            robot.send_action(np.array([target, -target, 0, 0, 0, 0, 0], dtype=np.float32))
+            clock.sleep(dt)
+
+        assert self._commanded_deg(motors)[:2] == pytest.approx([target, -target])
+
+    def test_catching_up_does_not_overshoot_a_still_target(self, mock_motorbridge: MagicMock, clock: _FakeClock) -> None:
+        robot = _create_robot(mock_motorbridge, control_mode="mit")
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        _follow_commands(motors)
+        dt = 1 / 60
+        robot.send_action(np.zeros(7, dtype=np.float32))
+        clock.sleep(dt)
+        trace = []
+        for _ in range(30):
+            robot.send_action(np.array([9.0, 0, 0, 0, 0, 0, 0], dtype=np.float32))
+            trace.append(self._commanded_deg(motors)[0])
+            clock.sleep(dt)
+
+        assert max(trace) <= 9.0 + 1e-9
+        assert trace[-1] == pytest.approx(9.0)
+
+    def test_limp_motors_raise_instead_of_being_commanded_on(self, mock_motorbridge: MagicMock, clock: _FakeClock) -> None:
+        robot = _create_robot(mock_motorbridge, control_mode="mit")
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        _follow_commands(motors)
+        robot.send_action(np.array([0, -30.0, -30.0, 0, 0, 0, 0], dtype=np.float32))
+        robot.get_observation()
+        for motor in motors:  # power dropout: positions fall back to rest, no torque
+            motor.get_state.side_effect = None
+            motor.get_state.return_value = _MotorState(pos=0.0, torq=0.0)
+
+        with pytest.raises(ConnectionError, match="stopped driving"):
+            for _ in range(20):
+                robot.get_observation()
+
+    def test_loaded_motors_far_from_the_command_do_not_raise(self, mock_motorbridge: MagicMock, clock: _FakeClock) -> None:
+        robot = _create_robot(mock_motorbridge, control_mode="mit")
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        robot.send_action(np.array([0, -30.0, -30.0, 0, 0, 0, 0], dtype=np.float32))
+        for motor in motors:  # pushing hard against an obstacle: far from the command, but driving
+            motor.get_state.return_value = _MotorState(pos=0.0, torq=8.0)
+
+        for _ in range(20):
+            robot.get_observation()
 
     def test_large_step_after_a_pause_eases_in(self, mock_motorbridge: MagicMock, clock: _FakeClock) -> None:
         robot = _create_robot(mock_motorbridge, control_mode="mit", approach_speed=30.0)

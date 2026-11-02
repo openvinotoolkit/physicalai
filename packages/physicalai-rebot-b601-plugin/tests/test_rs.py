@@ -548,10 +548,10 @@ class TestReBotB601RSControl:
 
         robot.send_action(np.zeros(7, dtype=np.float32))
         now[0] += 0.02
-        robot.send_action(np.array([0.0, -1.0, 0, 0, 0, 0, 0], dtype=np.float32))
+        robot.send_action(np.array([0.0, -0.2, 0, 0, 0, 0, 0], dtype=np.float32))
 
-        # Public -1 degree in 20 ms is -50 deg/s; the motor turns the other way. Filtered by half.
-        assert motors[1].send_mit.call_args.args[1] == pytest.approx(0.5 * math.radians(50.0))
+        # Public -0.2 degree in 20 ms is -10 deg/s; the motor turns the other way. Filtered by half.
+        assert motors[1].send_mit.call_args.args[1] == pytest.approx(0.5 * math.radians(10.0))
 
     def test_gripper_uses_the_measured_command_interval(
         self,
