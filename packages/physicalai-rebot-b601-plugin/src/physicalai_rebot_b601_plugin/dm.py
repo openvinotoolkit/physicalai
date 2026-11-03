@@ -140,6 +140,19 @@ def _normalize_max_relative_target(value: float | None) -> float | None:
     return None if value <= -1.0 else value
 
 
+def _normalize_scale(value: float, name: str) -> float:
+    """Return a feedforward scale as a float in ``[0, 1]``; ``True``/``False`` mean 1 and 0.
+
+    Raises:
+        ValueError: If ``value`` is not a finite number between 0 and 1.
+    """
+    scale = float(value)
+    if not (math.isfinite(scale) and 0.0 <= scale <= 1.0):
+        msg = f"{name} must be between 0 and 1, got {value!r}"
+        raise ValueError(msg)
+    return scale
+
+
 def _normalize_speed(value: float | None, name: str) -> float | None:
     """Validate an optional joint speed in degrees per second; ``None`` or ``-1`` disables it.
 
@@ -237,8 +250,8 @@ class ReBotB601DM:
         mit_kp: DMMITGain | None = None,
         mit_kd: DMMITGain | None = None,
         max_relative_target: float | None = None,
-        gravity_compensation: bool = True,
-        velocity_feedforward: bool = True,
+        gravity_compensation: float | bool = 1.0,
+        velocity_feedforward: float | bool = 0.3,
         approach_speed: float | None = 30.0,
         park_on_disconnect: bool = True,
         motion_limits: bool = True,
@@ -262,10 +275,11 @@ class ReBotB601DM:
                 defaults to :data:`REBOT_B601_DM_MIT_KD` when ``None``.
             max_relative_target: Optional maximum allowed change (degrees) between the current and
                 commanded position per step; limits how far the arm lunges on a single command.
-            gravity_compensation: In MIT mode, send the gravity torque of the commanded pose as
-                feedforward so the arm does not sag. Ignored in POS_VEL mode.
-            velocity_feedforward: In MIT mode, send the velocity of the commanded targets so the
-                damping gain does not hold the arm back while it follows a moving target.
+            gravity_compensation: In MIT mode, the share (0 to 1) of the commanded pose's gravity
+                torque sent as feedforward, so the arm does not sag. Ignored in POS_VEL mode.
+            velocity_feedforward: In MIT mode, the share (0 to 1) of the commanded targets' velocity
+                sent as the velocity reference, so the damping gain holds the arm back less while
+                it follows a moving target. Above about 0.5 the arm overshoots fast stops.
             approach_speed: Peak joint speed (degrees per second) for the first move after the
                 motors are enabled: the arm eases from its measured pose to the commanded one,
                 then tracks normally. ``None`` or ``-1`` jumps straight to the first command.
@@ -312,8 +326,8 @@ class ReBotB601DM:
         self._mit_kp = mit_kp
         self._mit_kd = mit_kd
         self._max_relative_target: float | None = max_relative_target
-        self._gravity_scale = 1.0 if gravity_compensation else 0.0
-        self._velocity_scale = 1.0 if velocity_feedforward else 0.0
+        self._gravity_scale = _normalize_scale(gravity_compensation, "gravity_compensation")
+        self._velocity_scale = _normalize_scale(velocity_feedforward, "velocity_feedforward")
         self._approach_speed: float | None = approach_speed
         self._park_on_disconnect = park_on_disconnect
         self._motion_limits_enabled = motion_limits
@@ -367,13 +381,10 @@ class ReBotB601DM:
             ValueError: If a scale is outside 0 to 1, or a gain is negative, non-finite, unknown or
                 out of the motor's range.
         """
-        for name, scale in (
-            ("gravity_compensation", gravity_compensation),
-            ("velocity_feedforward", velocity_feedforward),
-        ):
-            if scale is not None and not (math.isfinite(scale) and 0.0 <= scale <= 1.0):
-                msg = f"{name} must be between 0 and 1, got {scale!r}"
-                raise ValueError(msg)
+        if gravity_compensation is not None:
+            gravity_compensation = _normalize_scale(gravity_compensation, "gravity_compensation")
+        if velocity_feedforward is not None:
+            velocity_feedforward = _normalize_scale(velocity_feedforward, "velocity_feedforward")
         merged = {"mit_kp": self._merged_gains("kp", mit_kp), "mit_kd": self._merged_gains("kd", mit_kd)}
         for name, gains in merged.items():
             if gains is None:
@@ -384,9 +395,9 @@ class ReBotB601DM:
                     raise ValueError(msg)
             self._check_gain_limits(gains, name)
         if gravity_compensation is not None:
-            self._gravity_scale = float(gravity_compensation)
+            self._gravity_scale = gravity_compensation
         if velocity_feedforward is not None:
-            self._velocity_scale = float(velocity_feedforward)
+            self._velocity_scale = velocity_feedforward
         if motion_limits is not None and motion_limits != self._motion_limits_enabled:
             # Start limiting from the speed the command already has, not from rest.
             self._limit_velocity_deg_s = self._reference_velocity_deg_s.copy()

@@ -47,10 +47,9 @@ REBOT_B601_PARK_STAGES: Final = (
 # Largest MIT stiffness (N·m/rad) and damping (N·m·s/rad) each motor model's command frame can
 # encode. motorbridge clamps larger values silently, so the drivers reject them instead.
 # Speed and acceleration limits for every arm command, by motor model (degrees per second, and per
-# second squared). They bound the arm's kinetic energy and peak current. On a real B601-RS with its
-# 48 V 12.5 A supply, a 400 deg/s shoulder swing that reversed hard made every motor drop out at once,
-# while slightly slower swings were fine. Replaying that session in simulation, these limits keep the
-# arm's peak kinetic energy about 25% below the largest swing it survived; real teleoperation stays
+# second squared). A light leader arm can be swung far faster than the follower should move: on a
+# B601-RS with its 48 V 12.5 A supply, a 400 deg/s shoulder swing that reversed hard reset every motor
+# at once. The limits bound how hard the motors accelerate and brake the arm; real teleoperation stays
 # below them about 99% of the time.
 REBOT_B601_MAX_SPEED_DEG_S: Final = {"rs-06": 150.0, "rs-00": 300.0, "4340P": 150.0, "4310": 300.0}
 REBOT_B601_MAX_ACCEL_DEG_S2: Final = {"rs-06": 1000.0, "rs-00": 2000.0, "4340P": 1000.0, "4310": 2000.0}

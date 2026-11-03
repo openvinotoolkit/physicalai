@@ -102,21 +102,28 @@ def _validate_speed(value: float) -> float:
 class _ReBotMotionPayload(BaseModel):
     """Feedforward and motion-shaping settings shared by both B601 followers."""
 
-    gravity_compensation: bool = Field(  # pyrefly: ignore [bad-argument-type, no-matching-overload]
-        default=True,
+    gravity_compensation: float = Field(  # pyrefly: ignore [bad-argument-type, no-matching-overload]
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        allow_inf_nan=False,
         title="Gravity compensation",
         description=(
-            "Send the arm's modelled gravity torque with every MIT command, so it holds its pose "
-            "instead of sagging. MIT mode only."
+            "Share of the arm's modelled gravity torque sent with every MIT command, so it holds its "
+            "pose instead of sagging. 1 is the full model, 0 turns it off. MIT mode only."
         ),
         json_schema_extra=robot_field_ui({"advanced_configuration": True}),
     )
-    velocity_feedforward: bool = Field(  # pyrefly: ignore [bad-argument-type, no-matching-overload]
-        default=True,
+    velocity_feedforward: float = Field(  # pyrefly: ignore [bad-argument-type, no-matching-overload]
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        allow_inf_nan=False,
         title="Velocity feedforward",
         description=(
-            "Send the velocity of the commanded motion with every MIT command, so the damping gain "
-            "does not make the arm lag behind a moving leader or policy. MIT mode only."
+            "Share of the commanded motion's velocity sent with every MIT command, so the damping gain "
+            "holds the arm back less behind a moving leader or policy. Above about 0.5 the arm "
+            "overshoots fast stops; 0 turns it off. MIT mode only."
         ),
         json_schema_extra=robot_field_ui({"advanced_configuration": True}),
     )

@@ -124,13 +124,32 @@ ConnectionError: Servo 'shoulder_pan' (ID 1) did not respond on /dev/ttyUSB0
 Possible causes:
 
 - **Wrong port or baud rate** — verify the Damiao serial baud (DM, defaults to 921600).
-- **Power issue** — motors need 24 V (DM/RS). Check the
-  power supply LED.
+- **Power issue** — check the supply LED and that it gives the voltage your arm's power kit
+  specifies (48 V for the RS kit).
 - **Damaged cable** — try reseating the CAN/RS-485/ UART cable.
 - **Wrong motor ID** — `REBOT_B601_DM_MOTOR_IDS` / `REBOT_B601_RS_MOTOR_IDS`
   must match your hardware configuration.
 - **CAN bus termination** — ensure the CAN bus has proper 120 Ω termination
   at both ends for RS arms.
+
+---
+
+### Arm goes limp while it moves
+
+```text
+ConnectionError: The reBot motors stopped driving the arm: no joint pushes any torque while the arm is ...
+```
+
+Every arm motor reset at once. Possible causes:
+
+- **Supply overload** — a hard, fast reversal (several large joints near peak torque at once) can
+  pull more than the power supply delivers; its voltage collapses and every motor resets. Keep
+  `motion_limits` on, keep `velocity_feedforward` at 0.5 or less, or use a supply with more
+  headroom.
+- **Loose cable** — if only the motors past the base drop out (the base keeps working), reseat
+  the power and CAN cables between the base and the shoulder, where they bend with the base.
+
+Check the supply, then reconnect.
 
 ---
 

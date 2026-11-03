@@ -584,6 +584,40 @@ class TestReBotB601RSControl:
 
 
 class TestReBotB601RSLiveControl:
+    def test_defaults_are_full_gravity_and_partial_velocity_feedforward(self, mock_motorbridge: MagicMock) -> None:
+        settings = _create_robot(mock_motorbridge, raw=False).set_control()
+
+        assert settings["gravity_compensation"] == 1.0
+        assert settings["velocity_feedforward"] == 0.3
+        assert settings["motion_limits"] is True
+
+    @pytest.mark.parametrize("kwargs", [{"gravity_compensation": 1.2}, {"velocity_feedforward": float("nan")}])
+    def test_constructor_rejects_feedforward_outside_0_to_1(self, mock_motorbridge: MagicMock, kwargs: dict) -> None:
+        with pytest.raises(ValueError, match="between 0 and 1"):
+            _create_robot(mock_motorbridge, **kwargs)
+
+    def test_velocity_scale_scales_the_reference_velocity(
+        self,
+        mock_motorbridge: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from physicalai_rebot_b601_plugin import dm
+
+        now = [10.0]
+        fake_time = MagicMock()
+        fake_time.monotonic.side_effect = lambda: now[0]
+        monkeypatch.setattr(dm, "time", fake_time)
+        robot = _create_robot(mock_motorbridge, velocity_feedforward=0.3)
+        robot.connect()
+        motors = list(mock_motorbridge.Controller.return_value.mock_motors)
+
+        robot.send_action(np.zeros(7, dtype=np.float32))
+        now[0] += 0.02
+        robot.send_action(np.array([0.0, -0.2, 0, 0, 0, 0, 0], dtype=np.float32))
+
+        # -10 deg/s public, filtered by half, scaled by 0.3; the motor turns the other way.
+        assert motors[1].send_mit.call_args.args[1] == pytest.approx(0.3 * 0.5 * math.radians(10.0))
+
     def test_set_control_changes_feedforward_limits_and_gains(self, mock_motorbridge: MagicMock) -> None:
         robot = _create_robot(mock_motorbridge)
         robot.set_control(

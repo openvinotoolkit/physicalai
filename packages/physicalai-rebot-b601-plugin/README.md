@@ -40,16 +40,18 @@ tau = kp * (q_ref - q) + kd * (dq_ref - dq) + tau_ff
 A plain PD law sags under gravity by `gravity / kp` and lags a moving target by `kd / kp` seconds.
 The drivers fill both feedforward terms, the way Trossen's controller does for the WidowX AI:
 
-- **Gravity compensation** (`gravity_compensation`, default on): `tau_ff` is the gravity torque of
-  the commanded pose, computed from the bundled URDF's link masses. Weight the URDF does not include
-  (a wrist camera, a grasped object) is left to the PD gains.
-- **Velocity feedforward** (`velocity_feedforward`, default on): `dq_ref` is the smoothed velocity of
-  the commanded targets, so `kd` damps tracking errors instead of holding the arm back.
+- **Gravity compensation** (`gravity_compensation`, default 1): `tau_ff` is the gravity torque of
+  the commanded pose, computed from the bundled URDF's link masses, times this share (0 to 1). Weight
+  the URDF does not include (a wrist camera, a grasped object) is left to the PD gains.
+- **Velocity feedforward** (`velocity_feedforward`, default 0.3): `dq_ref` is this share (0 to 1) of
+  the smoothed velocity of the commanded targets, so `kd` holds the arm back less behind a moving
+  target. On a real RS arm the full velocity (1) made the arm overshoot fast stops; 0.3 keeps most
+  of the lag reduction without it.
 
 Both apply to MIT mode only: `ReBotB601RS` always, `ReBotB601DM` with `control_mode="mit"`. DM's
 POS_VEL mode runs the motor's own position loop, which has no feedforward input.
 
-Three more behaviours apply to both modes:
+More behaviours apply to both modes:
 
 - **Hold on enable**: when torque is enabled (on connect, or by `enable_torque()`), the driver
   immediately commands the measured pose. An enabled motor otherwise runs its power-up command of
@@ -66,6 +68,19 @@ Three more behaviours apply to both modes:
   feedforward out over a second while keeping damping, so a link the rest pose does not support
   (such as the wrist) sinks onto its support slowly. It is skipped while torque is already off and
   stops early if a joint is blocked. Without it, the arm falls when torque is released.
+- **Motion limits** (`motion_limits`, default on): every arm command follows its target within
+  per-motor speed and acceleration limits (150 °/s and 1000 °/s² for RS-06 and 4340P, twice that for
+  RS-00 and 4310), braking in time so it does not overshoot a target that holds still. A light
+  leader arm can be swung much faster than the follower should move.
+- **Dropout detection**: if every arm motor reports no torque while the arm is more than 5° from its
+  command for 10 reads, `get_observation()` raises `ConnectionError` (see Troubleshooting).
+
+`set_control()` changes `gravity_compensation`, `velocity_feedforward`, `motion_limits` and per-joint
+MIT gains while the arm runs, and returns the settings in effect:
+
+```python
+robot.set_control(velocity_feedforward=0.0, mit_kd={"shoulder_lift": 12.0})
+```
 
 The default MIT gains:
 

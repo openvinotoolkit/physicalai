@@ -107,8 +107,8 @@ class ReBotB601RS(ReBotB601DM):
         gripper_mit_torque_limit: float = 3.5,
         gripper_mit_hold_torque_limit: float = 1.0,
         max_relative_target: float | None = None,
-        gravity_compensation: bool = True,
-        velocity_feedforward: bool = True,
+        gravity_compensation: float | bool = 1.0,
+        velocity_feedforward: float | bool = 0.3,
         approach_speed: float | None = 30.0,
         park_on_disconnect: bool = True,
         motion_limits: bool = True,
@@ -130,8 +130,10 @@ class ReBotB601RS(ReBotB601DM):
             gripper_mit_hold_torque_limit: Gripper torque limit once it stalls, e.g. on an object (N·m).
             max_relative_target: Optional per-command step limit in degrees from the measured pose;
                 ``None`` or ``-1`` disables it.
-            gravity_compensation: Send the gravity torque of the commanded pose as feedforward.
-            velocity_feedforward: Send the velocity of the commanded targets as feedforward.
+            gravity_compensation: Share (0 to 1) of the commanded pose's gravity torque sent as
+                feedforward.
+            velocity_feedforward: Share (0 to 1) of the commanded targets' velocity sent as the
+                velocity reference; above about 0.5 the arm overshoots fast stops.
             approach_speed: Peak joint speed (degrees per second) for the first move after the
                 motors are enabled; ``None`` or ``-1`` jumps straight to the first command.
             park_on_disconnect: Fold the arm into its rest pose before disconnecting.

@@ -415,8 +415,8 @@ def test_payloads_default_to_feedforward_and_safe_motion() -> None:
     from physicalai_rebot_b601_plugin.studio_catalog import ReBotB601DMPayload, ReBotB601RSPayload
 
     for payload in (ReBotB601RSPayload(), ReBotB601DMPayload(connection_string="/dev/ttyACM0")):
-        assert payload.gravity_compensation is True
-        assert payload.velocity_feedforward is True
+        assert payload.gravity_compensation == 1.0
+        assert payload.velocity_feedforward == 0.3
         assert payload.approach_speed == 30.0
         assert payload.park_on_disconnect is True
 
@@ -433,8 +433,8 @@ async def test_builders_pass_motion_settings_to_the_drivers() -> None:
     )
 
     settings = {
-        "gravity_compensation": False,
-        "velocity_feedforward": False,
+        "gravity_compensation": 0.0,
+        "velocity_feedforward": 0.5,
         "approach_speed": -1.0,
         "park_on_disconnect": False,
     }
