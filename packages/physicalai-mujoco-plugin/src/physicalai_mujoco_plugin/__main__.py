@@ -321,7 +321,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     sub.add_parser("profiles", help="List registered robot profiles")
-    sub.add_parser("prefetch", help="Download the supported robot models from MuJoCo Menagerie")
+    sub.add_parser("prefetch", help="Download the supported robot models (MuJoCo Menagerie, OpenArm)")
 
     stop = sub.add_parser("stop", help="Stop a running MuJoCo simulation owner")
     stop.add_argument(

@@ -496,6 +496,7 @@ class TestGeneratedEntries:
             ("MuJoCo_reBotB601_Bimanual_Follower", "mujoco-rebot_b601-bimanual-follow"),
             ("MuJoCo_FrankaResearch3_Follower", "mujoco-franka_fr3-follow"),
             ("MuJoCo_FrankaDuo_Follower", "mujoco-franka_duo-follow"),
+            ("MuJoCo_OpenArmv2_Follower", "mujoco-openarm-follow"),
             ("MuJoCo_UniversalRobotsUR5e_Follower", "mujoco-ur5e-follow"),
             ("MuJoCo_ALOHA_Follower", "mujoco-aloha-follow"),
             ("MuJoCo_SOARM100_Follower", "mujoco-so_arm100-follow"),
@@ -636,6 +637,7 @@ class TestSimulationLaunch:
                 ["MuJoCo_FrankaResearch3_Follower", "MuJoCo_FrankaEmikaPanda_Follower", "MuJoCo_FrankaDuo_Follower"],
                 ["single_pick_place", "bucket_sort"],
             ),
+            "MuJoCo_OpenArmv2_Follower": ["openarm_cell"],
             **dict.fromkeys(
                 ["MuJoCo_UnitreeG1_Follower", "MuJoCo_UnitreeGo2_Follower", "MuJoCo_BostonDynamicsSpot_Follower"],
                 ["floor_flat"],

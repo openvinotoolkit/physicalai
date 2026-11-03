@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+* **mujoco:** OpenArm v2 twin (`openarm`, provisional): Enactic's bimanual MJCF under LeRobot's `BiOpenArmFollower` names and units, in the new `openarm_cell` scene with the cell's overhead camera. OpenArm is not in MuJoCo Menagerie, so the model downloads on first use from the pinned `openarm-mujoco` 2.3.0 source archive on PyPI into the Menagerie cache (`OPENARM_MUJOCO_ROOT` overrides it); `prefetch` fetches it too.
+* **mujoco:** Camera streams also render geom group 5 (`CAMERA_ONLY_GEOM_GROUP`), which viewers hide: the OpenArm Cell's opaque wall panels, whose glass stand-ins the viewer leaves out.
+
 ### Changed
 
 * **mujoco:** The SO-101 arm is now MuJoCo Menagerie's `robotstudio_so101` loaded through the pinned `mujoco-menagerie` package (2026.9.4), which downloads it on first use (about 4 MB) into a per-user cache. Scenes hold no robot: `SceneConfig.load_model()` attaches the arm at each scene's `robot_mount` frame. Joint and camera names, normalized units, camera views and physics are unchanged. `urdf/so101/so101.xml`, `so101_robot_bodies.xml`, `so101_robot_config.xml` and `urdf/so101_dual/` are removed; `mujoco.MjModel.from_xml_path` on a scene file now gives a model without the arm.
