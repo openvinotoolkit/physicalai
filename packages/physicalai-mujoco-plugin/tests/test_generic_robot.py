@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from unittest.mock import Mock
 from uuid import uuid4
 
 import numpy as np
@@ -12,6 +15,7 @@ import pytest
 
 from physicalai.config import Config
 from physicalai.robot import SharedRobot
+from physicalai.robot.errors import RobotTransportError
 from physicalai.robot.interface import Robot
 from physicalai_mujoco_plugin.robot import MuJoCoRobot
 from physicalai_mujoco_plugin.sim import default_cameras
@@ -91,26 +95,160 @@ def test_ur5e_cannot_switch_to_an_so101_only_scene() -> None:
         robot.disconnect()
 
 
+@contextmanager
+def _shared_robot_for_test(robot: MuJoCoRobot) -> Iterator[SharedRobot]:
+    """Retry test-name port collisions without retrying assertions or other startup failures."""
+    config = Config.from_instance(robot)
+    for attempt in range(3):
+        # UUID names still hash into a finite port range. A bind-in-use failure needs a
+        # fresh name, not a longer timeout; a port pre-check would race with other sockets.
+        shared = SharedRobot.from_config(
+            config,
+            name=f"mujoco-ur5e-test-{uuid4().hex}",
+            rate_hz=50.0,
+            idle_timeout=10.0,
+        )
+        try:
+            shared.connect()
+        except RobotTransportError as exc:
+            # SharedRobot wraps the structured worker error in its exception cause.
+            error = exc.__cause__ if isinstance(exc.__cause__, RobotTransportError) else exc
+            if attempt == 2 or error.phase != "endpoint_collision" or "Address already in use" not in str(error):
+                raise
+        else:
+            break
+
+    # disconnect() deliberately leaves the owner running and clears its handle.
+    owner = shared._owner  # noqa: SLF001
+    try:
+        yield shared
+    finally:
+        try:
+            shared.disconnect()
+        finally:
+            if owner is not None:
+                owner.stop()
+
+
 @pytest.mark.slow
 @pytest.mark.requires_download
 def test_generic_fixed_base_round_trips_through_shared_robot() -> None:
     """A generic profile works through the shared-owner transport (TST-4, fixed base)."""
     robot = MuJoCoRobot(profile="ur5e", scene="single_pick_place", cameras=[])
-    # The subscriber retries its localhost connection with a backoff, so the first metadata
-    # reply can take ~3 s; a shorter idle timeout lets the owner exit before it arrives.
-    shared = SharedRobot.from_config(
-        Config.from_instance(robot),
-        name=f"mujoco-ur5e-test-{uuid4().hex}",
-        rate_hz=50.0,
-        idle_timeout=10.0,
-    )
-    try:
-        shared.connect()
+    with _shared_robot_for_test(robot) as shared:
         assert shared.joint_names == UR5E_JOINTS
         observation = shared.get_observation()
         assert observation.joint_positions.shape == (6,)
         assert observation.state.shape == (6,)
         assert set(observation.sensor_data) == {"velocities"}
         shared.send_action(observation.joint_positions)
-    finally:
-        shared.disconnect()
+
+
+@pytest.fixture
+def shared_factory(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    """Keep retry/cleanup regression tests independent of downloads and network sockets."""
+    factory = Mock()
+    monkeypatch.setattr(SharedRobot, "from_config", factory)
+    return factory
+
+
+def _wrapped_startup_error(phase: str | None, message: str) -> RobotTransportError:
+    error = RobotTransportError("failed to start robot owner")
+    error.__cause__ = RobotTransportError(message, phase=phase)
+    return error
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_shared_robot_retries_bind_collision_with_a_new_name(shared_factory: Mock, wrapped: bool) -> None:
+    collision = RobotTransportError("Address already in use", phase="endpoint_collision")
+    if wrapped:
+        collision = _wrapped_startup_error("endpoint_collision", "Address already in use")
+    failed = Mock(connect=Mock(side_effect=collision))
+    owner = Mock()
+    connected = Mock(_owner=owner)
+    # Model disconnect() clearing the owner handle so teardown must capture it beforehand.
+    connected.disconnect.side_effect = lambda: setattr(connected, "_owner", None)
+    shared_factory.side_effect = [failed, connected]
+
+    with _shared_robot_for_test(MuJoCoRobot(profile="ur5e", cameras=[])) as shared:
+        assert shared is connected
+        owner.stop.assert_not_called()
+
+    assert shared_factory.call_count == 2
+    assert shared_factory.call_args_list[0].kwargs["name"] != shared_factory.call_args_list[1].kwargs["name"]
+    connected.disconnect.assert_called_once_with()
+    owner.stop.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    ("phase", "message"),
+    [
+        ("connection_failed", "Address already in use"),
+        ("construction_failed", "driver unavailable"),
+        ("name_lock_contention", "Address already in use"),
+        ("endpoint_collision", "failed to declare queryable"),
+        (None, "Address already in use"),
+    ],
+)
+def test_shared_robot_does_not_retry_other_startup_errors(
+    shared_factory: Mock, phase: str | None, message: str
+) -> None:
+    error = _wrapped_startup_error(phase, message)
+    shared_factory.return_value = Mock(connect=Mock(side_effect=error))
+
+    with pytest.raises(RobotTransportError) as caught, _shared_robot_for_test(MuJoCoRobot(profile="ur5e", cameras=[])):
+        pytest.fail("connection should have failed")
+
+    assert caught.value is error
+    shared_factory.assert_called_once()
+
+
+@pytest.mark.parametrize("error", [RobotTransportError("startup timed out"), ValueError("invalid config")])
+def test_shared_robot_does_not_retry_unclassified_connection_errors(shared_factory: Mock, error: Exception) -> None:
+    shared_factory.return_value = Mock(connect=Mock(side_effect=error))
+
+    with pytest.raises(type(error)) as caught, _shared_robot_for_test(MuJoCoRobot(profile="ur5e", cameras=[])):
+        pytest.fail("connection should have failed")
+
+    assert caught.value is error
+    shared_factory.assert_called_once()
+
+
+def test_shared_robot_collision_retry_is_bounded(shared_factory: Mock) -> None:
+    errors = [_wrapped_startup_error("endpoint_collision", "Address already in use") for _ in range(3)]
+    shared_factory.side_effect = [Mock(connect=Mock(side_effect=error)) for error in errors]
+
+    with pytest.raises(RobotTransportError) as caught, _shared_robot_for_test(MuJoCoRobot(profile="ur5e", cameras=[])):
+        pytest.fail("connection should have failed")
+
+    assert caught.value is errors[-1]
+    assert shared_factory.call_count == 3
+    assert len({call.kwargs["name"] for call in shared_factory.call_args_list}) == 3
+
+
+def test_shared_robot_stops_owner_without_retrying_body_failures(shared_factory: Mock) -> None:
+    connected = Mock(_owner=Mock())
+    shared_factory.return_value = connected
+
+    with (
+        pytest.raises(AssertionError, match="observation failed"),
+        _shared_robot_for_test(MuJoCoRobot(profile="ur5e", cameras=[])),
+    ):
+        raise AssertionError("observation failed")
+
+    shared_factory.assert_called_once()
+    connected.disconnect.assert_called_once_with()
+    connected._owner.stop.assert_called_once_with()
+
+
+def test_shared_robot_stops_owner_even_if_disconnect_fails(shared_factory: Mock) -> None:
+    connected = Mock(_owner=Mock(), disconnect=Mock(side_effect=RuntimeError("disconnect failed")))
+    shared_factory.return_value = connected
+
+    with (
+        pytest.raises(RuntimeError, match="disconnect failed"),
+        _shared_robot_for_test(MuJoCoRobot(profile="ur5e", cameras=[])),
+    ):
+        pass
+
+    connected._owner.stop.assert_called_once_with()
