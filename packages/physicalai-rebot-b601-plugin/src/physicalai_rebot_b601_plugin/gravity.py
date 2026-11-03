@@ -16,15 +16,28 @@ bundled preview URDFs: joint1 turns about +z, joint2 about -z, joint3 to joint6 
 from __future__ import annotations
 
 import math
-import xml.etree.ElementTree as ET  # noqa: S405 - parses the URDFs bundled with this package
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
+from defusedxml import ElementTree
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
     from pathlib import Path
+
+
+class _Element(Protocol):
+    """The parts of an XML element this module reads."""
+
+    attrib: dict[str, str]
+
+    def find(self, path: str) -> _Element | None: ...
+
+    def findall(self, path: str) -> Iterable[_Element]: ...
+
+    def get(self, key: str) -> str | None: ...
+
 
 STANDARD_GRAVITY = 9.80665
 
@@ -87,7 +100,7 @@ class _ActiveJoint:
     anchor: np.ndarray
 
 
-def _parse_links(root: ET.Element) -> dict[str, tuple[float, np.ndarray]]:
+def _parse_links(root: _Element) -> dict[str, tuple[float, np.ndarray]]:
     """Read each link's mass and centre of mass (in the link frame) from a URDF.
 
     Returns:
@@ -105,7 +118,7 @@ def _parse_links(root: ET.Element) -> dict[str, tuple[float, np.ndarray]]:
     return links
 
 
-def _parse_joint(element: ET.Element) -> _Joint | None:
+def _parse_joint(element: _Element) -> _Joint | None:
     parent = element.find("parent")
     child = element.find("child")
     if parent is None or child is None:
@@ -150,7 +163,7 @@ class GravityModel:
         Raises:
             ValueError: If a joint is missing, not revolute, or the URDF has no single root.
         """
-        root = ET.parse(urdf_path).getroot()  # noqa: S314 - trusted, package-bundled file
+        root = ElementTree.parse(urdf_path).getroot()
         joints = [joint for element in root.findall("joint") if (joint := _parse_joint(element)) is not None]
         children: dict[str, list[_Joint]] = {}
         for joint in joints:
