@@ -903,7 +903,33 @@ class TestReBotB601DMSafety:
         assert low < sent.min()
         # It brakes for the limit in time rather than stopping dead at it.
         acceleration = np.abs(np.diff(sent, 2)) * 60 * 60
-        assert acceleration.max() <= 1.25 * REBOT_B601_MAX_ACCEL_DEG_S2["4340P"]
+        assert acceleration.max() <= REBOT_B601_MAX_ACCEL_DEG_S2["4340P"] + 1e-6
+
+    def test_braking_for_a_limit_survives_a_faster_command_rate(
+        self,
+        mock_motorbridge: MagicMock,
+        clock: _FakeClock,
+    ) -> None:
+        from physicalai_rebot_b601_plugin.constants import REBOT_B601_MAX_ACCEL_DEG_S2
+
+        robot = _create_robot(mock_motorbridge, control_mode="mit")
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        _follow_commands(motors)
+        high = robot.JOINT_LIMITS_DEG["shoulder_pan"][1]
+        times, t = [], 0.0
+        for k in range(40):  # 100 deg/s toward the limit at 10 Hz, then at 60 Hz once there
+            dt = 0.1 if k < 20 else 1 / 60
+            robot.send_action(np.array([min(100.0 * t, high), 0, 0, 0, 0, 0, 0], dtype=np.float32))
+            times.append(t)
+            clock.sleep(dt)
+            t += dt
+
+        sent = np.array(_sent_public_deg(robot, motors, 0))
+        velocity = np.diff(sent) / np.diff(times)
+        acceleration = np.abs(np.diff(velocity)) / np.diff(times)[1:]
+        assert sent.max() <= high + 1e-9
+        assert acceleration.max() <= REBOT_B601_MAX_ACCEL_DEG_S2["4340P"] + 1e-6
 
     def test_a_jump_mid_motion_brakes_within_the_acceleration_limit(
         self,

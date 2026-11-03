@@ -184,6 +184,18 @@ def _braking_speed(distance: np.ndarray, accel: np.ndarray, dt: float) -> np.nda
     return np.sqrt(half_step**2 + 2.0 * accel * np.abs(distance)) - half_step
 
 
+def _stopping_speed(room: np.ndarray, accel: np.ndarray, dt: float) -> np.ndarray:
+    """Fastest speed for the next ``dt`` that still leaves room to stop smoothly, however short later steps are.
+
+    After moving ``v * dt`` the joint needs ``v**2 / (2 * accel)`` more to stop, so
+    ``v * dt + v**2 / (2 * accel) <= room``.
+
+    Returns:
+        One speed per joint, in the units of ``room`` per second.
+    """
+    return accel * (np.sqrt(dt**2 + 2.0 * np.maximum(room, 0.0) / accel) - dt)
+
+
 def _minimum_jerk(s: float) -> float:
     """Minimum-jerk position profile on ``s`` in ``[0, 1]``; zero velocity and acceleration at both ends.
 
@@ -928,8 +940,8 @@ class ReBotB601DM:
         low, high = self._arm_joint_limits()
         desired = np.clip(
             np.clip(error / dt, -catch_up, catch_up),
-            -_braking_speed(np.maximum(last[arm] - low, 0.0), accel_limit, dt),
-            _braking_speed(np.maximum(high - last[arm], 0.0), accel_limit, dt),
+            -_stopping_speed(last[arm] - low, accel_limit, dt),
+            _stopping_speed(high - last[arm], accel_limit, dt),
         )
         velocity = self._limit_velocity_deg_s[arm].copy()
         velocity += np.clip(desired - velocity, -accel_limit * dt, accel_limit * dt)
