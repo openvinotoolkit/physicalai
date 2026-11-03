@@ -311,6 +311,8 @@ class XRServer:
         self._connections = 0
         self.code: str | None = None
         """The pairing code, once :meth:`start` read it."""
+        self._grabs: str | None = None
+        """The newest grab state for the page, as its JSON message."""
         self._clients = 0
         self._lock = threading.Lock()
         self._server: HttpServer | None = None
@@ -368,6 +370,10 @@ class XRServer:
         if self._server is not None:
             self._server.stop()
             self._server = None
+
+    def set_grab_state(self, state: Mapping[str, Mapping[str, int]]) -> None:
+        """Tell the page which grab points the controllers hover and hold (``Teleop.grab_state``)."""
+        self._grabs = json.dumps({"type": "grabs", **state}, sort_keys=True)
 
     def receive(self, message: Any, connection: int = 0) -> None:  # noqa: ANN401 - untrusted JSON
         """Keep a page message's sample, or end the session, if *connection* drives the arms or may take over.
@@ -474,14 +480,17 @@ class XRServer:
                 self._drop(connection)
 
     async def _push_poses(self, websocket: WebSocket) -> None:
-        """Send the bodies' poses whenever the simulation has new ones."""
-        sent = None
+        """Send the bodies' poses whenever the simulation has new ones, and the grab state when it changes."""
+        sent, grabs = None, None
         with contextlib.suppress(WebSocketDisconnect, RuntimeError):
             while True:
                 poses = self._scene.poses() if self._scene is not None else None
                 if poses is not None and poses is not sent:
                     await websocket.send_bytes(poses)
                     sent = poses
+                if self._grabs is not None and self._grabs != grabs:
+                    grabs = self._grabs
+                    await websocket.send_text(grabs)
                 await asyncio.sleep(POSE_INTERVAL_S)
 
 

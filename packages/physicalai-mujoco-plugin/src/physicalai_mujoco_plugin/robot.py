@@ -612,7 +612,8 @@ class MuJoCoRobot(OperatorControls):
         self._init_episode_auto_reset()
         self._watcher = SceneXmlWatcher(sim.xml_path, sim.layout)  # type: ignore[union-attr]
         self._objects.publish(sim.data)  # type: ignore[union-attr]
-        self._teleop = Teleop(sim.model, sim.bindings, sim.channels, self._profile)  # type: ignore[union-attr]
+        workspace = self._area.spawn_center if sim.scene is not None else None  # type: ignore[union-attr]
+        self._teleop = Teleop(sim.model, sim.bindings, sim.channels, self._profile, workspace)  # type: ignore[union-attr]
         self._teleop.set_inputs(mouse=self._teleop_mouse)
 
     def _switch_to_scene(self, scene_id: str) -> bool:
@@ -818,7 +819,8 @@ class MuJoCoRobot(OperatorControls):
     def _publish_headset_scene(self, model: object, data: object) -> None:
         """Give the headset's page the bodies' poses of this tick."""
         if self._xr_scene is not None and self._teleop is not None:
-            self._xr_scene.update(model, data, self._teleop.view)  # type: ignore[arg-type]
+            self._xr_scene.update(model, data, self._teleop.view, self._teleop.grab_points)  # type: ignore[arg-type]
+            self._xr.set_grab_state(self._teleop.grab_state())  # type: ignore[union-attr]
 
     def _tick_teleop(self, data: object, control_dt: float) -> None:
         """Let the viewer's gripper handles or a headset session drive the arms this tick."""
