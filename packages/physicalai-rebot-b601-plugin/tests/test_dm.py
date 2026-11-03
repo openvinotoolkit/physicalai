@@ -873,3 +873,163 @@ class TestReBotB601DMControl:
         robot.connect()
         with pytest.raises(ValueError, match="speed must be a finite positive value"):
             robot.park(speed=speed)
+
+
+def _sent_public_deg(robot: Any, motors: list[MagicMock], index: int) -> list[float]:
+    name = robot.JOINT_ORDER[index]
+    return [robot._motor_to_public_position(name, math.degrees(c.args[0])) for c in motors[index].send_mit.call_args_list]
+
+
+class TestReBotB601DMSafety:
+    def test_a_moving_target_stopping_at_a_limit_never_commands_past_it(
+        self,
+        mock_motorbridge: MagicMock,
+        clock: _FakeClock,
+    ) -> None:
+        robot = _create_robot(mock_motorbridge, control_mode="mit")
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        _follow_commands(motors)
+        low, high = robot.JOINT_LIMITS_DEG["shoulder_pan"]
+        for k in range(150):  # 100 deg/s toward the upper limit, then hold there
+            robot.send_action(np.array([min(100.0 * k / 60, high + 20), 0, 0, 0, 0, 0, 0], dtype=np.float32))
+            clock.sleep(1 / 60)
+
+        sent = _sent_public_deg(robot, motors, 0)
+        assert max(sent) <= high + 1e-9
+        assert sent[-1] == pytest.approx(high)
+        assert low < min(sent)
+
+    def test_a_jump_mid_motion_brakes_within_the_acceleration_limit(
+        self,
+        mock_motorbridge: MagicMock,
+        clock: _FakeClock,
+    ) -> None:
+        from physicalai_rebot_b601_plugin.constants import REBOT_B601_MAX_ACCEL_DEG_S2
+
+        robot = _create_robot(mock_motorbridge, control_mode="mit", approach_speed=30.0)
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        for motor in motors:
+            motor.get_state.return_value = _MotorState(pos=0.0)
+        _follow_commands(motors)
+        dt = 1 / 60
+        for k in range(60):  # ease in, then follow a target moving at 120 deg/s
+            robot.send_action(np.array([max(0.0, 120.0 * dt * (k - 20)), 0, 0, 0, 0, 0, 0], dtype=np.float32))
+            clock.sleep(dt)
+        start = robot._last_command_deg[0]
+        for _ in range(150):  # the stream jumps 40 degrees ahead and stays there
+            robot.send_action(np.array([start + 40.0, 0, 0, 0, 0, 0, 0], dtype=np.float32))
+            clock.sleep(dt)
+
+        sent = np.array(_sent_public_deg(robot, motors, 0))
+        velocity = np.diff(sent) / dt
+        acceleration = np.abs(np.diff(velocity))[-150:] / dt
+        # The last step lands on the target, which may brake up to one more tick's worth of speed.
+        assert acceleration.max() <= 1.25 * REBOT_B601_MAX_ACCEL_DEG_S2["4340P"]
+        assert sent[-1] == pytest.approx(start + 40.0)
+
+    def test_non_finite_actions_are_rejected_before_anything_is_sent(
+        self,
+        mock_motorbridge: MagicMock,
+        clock: _FakeClock,
+    ) -> None:
+        robot = _create_robot(mock_motorbridge, control_mode="mit", gravity_compensation=True)
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        _follow_commands(motors)
+        robot.send_action(np.zeros(7, dtype=np.float32))
+        calls = [m.send_mit.call_count for m in motors]
+
+        with pytest.raises(ValueError, match="finite"):
+            robot.send_action(np.array([0, np.nan, 0, 0, 0, 0, 0], dtype=np.float32))
+        assert [m.send_mit.call_count for m in motors] == calls
+
+        clock.sleep(1 / 60)
+        robot.send_action(np.zeros(7, dtype=np.float32))
+        for motor in motors[:6]:
+            assert all(math.isfinite(v) for v in motor.send_mit.call_args.args)
+
+    def test_interrupting_the_park_still_disables_the_motors(
+        self,
+        mock_motorbridge: MagicMock,
+        clock: _FakeClock,
+    ) -> None:
+        robot = _create_robot(mock_motorbridge, control_mode="mit", park_on_disconnect=True)
+        robot.connect()
+        controller = mock_motorbridge.Controller.from_dm_serial.return_value
+        motors = _dm_motors(mock_motorbridge)
+        _follow_commands(motors)
+        robot.send_action(np.array([0, -30.0, -30.0, 0, 0, 0, 0], dtype=np.float32))
+        disables = controller.disable_all.call_count
+
+        def interrupt(_seconds: float) -> None:
+            raise KeyboardInterrupt
+
+        clock.sleep = interrupt  # a second Ctrl+C while the arm parks
+        with pytest.raises(KeyboardInterrupt):
+            robot.disconnect()
+
+        assert controller.disable_all.call_count == disables + 1
+        assert all(motor.close.called for motor in motors)
+        assert not robot.is_connected()
+
+    def test_a_failed_hold_on_connect_disables_the_motors(self, mock_motorbridge: MagicMock, clock: _FakeClock) -> None:
+        robot = _create_robot(mock_motorbridge, hold=True, control_mode="mit")
+        controller = mock_motorbridge.Controller.from_dm_serial.return_value
+        motors = _dm_motors(mock_motorbridge)
+        motors[3].send_mit.side_effect = RuntimeError("CAN write failed")
+
+        with pytest.raises(RuntimeError, match="CAN write failed"):
+            robot.connect()
+
+        assert controller.enable_all.call_count == 1
+        assert controller.disable_all.call_count == 2  # before enabling, and after the failed hold
+        assert not robot.is_connected()
+
+    def test_park_starts_from_the_measured_pose_not_the_last_command(
+        self,
+        mock_motorbridge: MagicMock,
+        clock: _FakeClock,
+    ) -> None:
+        robot = _create_robot(mock_motorbridge, control_mode="mit", park_on_disconnect=True)
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        for motor in motors:  # the arm is blocked at rest and never follows
+            motor.get_state.return_value = _MotorState(pos=0.0)
+        robot.send_action(np.array([20.0, 0, 0, 0, 0, 0, 0], dtype=np.float32))
+        sent_before = motors[0].send_mit.call_count
+
+        robot.park()
+
+        assert all(p == pytest.approx(0.0) for p in _sent_public_deg(robot, motors, 0)[sent_before:])
+
+    def test_set_control_waits_for_the_command_being_sent(self, mock_motorbridge: MagicMock, clock: _FakeClock) -> None:
+        import threading
+
+        robot = _create_robot(mock_motorbridge, control_mode="mit")
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        _follow_commands(motors)
+        robot.send_action(np.zeros(7, dtype=np.float32))
+        old_kd = [robot._mit_gain(name, "kd") for name in robot.JOINT_ORDER[:6]]
+        update = threading.Thread(target=robot.set_control, kwargs={"mit_kd": dict.fromkeys(robot.JOINT_ORDER[:6], 1.0)})
+        first = motors[0].send_mit.side_effect
+
+        started = threading.Event()
+
+        def start_update_mid_command(*args: Any) -> Any:
+            if not started.is_set():
+                started.set()
+                update.start()
+                update.join(timeout=0.2)
+                assert update.is_alive()  # blocked until this command has been sent to every motor
+            return first(*args)
+
+        motors[0].send_mit.side_effect = start_update_mid_command
+        clock.sleep(1 / 60)
+        robot.send_action(np.zeros(7, dtype=np.float32))
+        update.join(timeout=2.0)
+
+        assert [motor.send_mit.call_args.args[3] for motor in motors[:6]] == old_kd  # one setting per command
+        assert robot.set_control()["mit_kd"]["shoulder_pan"] == 1.0

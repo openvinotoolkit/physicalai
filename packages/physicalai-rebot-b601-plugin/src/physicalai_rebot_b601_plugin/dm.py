@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import contextlib
 import math
+import threading
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
@@ -77,6 +78,9 @@ _APPROACH_DONE_DEG = 0.5
 # capped, so a command after a pause in the stream cannot jump further than at 20 Hz.
 _JUMP_SPEED_DEG_S = 480.0
 _JUMP_MAX_DT_S = 0.05
+# A jump while the command moves faster than this brakes within the acceleration limit instead of
+# restarting the approach from rest.
+_RECOVER_MIN_SPEED_DEG_S = 5.0
 _JUMP_MIN_DEG = 10.0
 # The motors have stopped driving (lost power, or reset after a supply dropout) when every arm joint
 # reports less torque than this while the arm is this far from its command, for this many reads.
@@ -332,6 +336,8 @@ class ReBotB601DM:
         self._park_on_disconnect = park_on_disconnect
         self._motion_limits_enabled = motion_limits
         self._gravity_model: GravityModel | None = None
+        # Serialises command generation with set_control(), which may run on another thread.
+        self._command_lock = threading.RLock()
         self._controller: Controller | None = None
         self._motors: dict[str, Motor] = {}
         self._torque_enabled = False
@@ -381,31 +387,32 @@ class ReBotB601DM:
             ValueError: If a scale is outside 0 to 1, or a gain is negative, non-finite, unknown or
                 out of the motor's range.
         """
-        if gravity_compensation is not None:
-            gravity_compensation = _normalize_scale(gravity_compensation, "gravity_compensation")
-        if velocity_feedforward is not None:
-            velocity_feedforward = _normalize_scale(velocity_feedforward, "velocity_feedforward")
-        merged = {"mit_kp": self._merged_gains("kp", mit_kp), "mit_kd": self._merged_gains("kd", mit_kd)}
-        for name, gains in merged.items():
-            if gains is None:
-                continue
-            for joint, value in gains.items():
-                if not math.isfinite(value) or value < 0.0:
-                    msg = f"{name}[{joint!r}] must be a non-negative finite value, got {value!r}"
-                    raise ValueError(msg)
-            self._check_gain_limits(gains, name)
-        if gravity_compensation is not None:
-            self._gravity_scale = gravity_compensation
-        if velocity_feedforward is not None:
-            self._velocity_scale = velocity_feedforward
-        if motion_limits is not None and motion_limits != self._motion_limits_enabled:
-            # Start limiting from the speed the command already has, not from rest.
-            self._limit_velocity_deg_s = self._reference_velocity_deg_s.copy()
-            self._motion_limits_enabled = motion_limits
-        if merged["mit_kp"] is not None:
-            self._mit_kp = merged["mit_kp"]
-        if merged["mit_kd"] is not None:
-            self._mit_kd = merged["mit_kd"]
+        with self._command_lock:
+            if gravity_compensation is not None:
+                gravity_compensation = _normalize_scale(gravity_compensation, "gravity_compensation")
+            if velocity_feedforward is not None:
+                velocity_feedforward = _normalize_scale(velocity_feedforward, "velocity_feedforward")
+            merged = {"mit_kp": self._merged_gains("kp", mit_kp), "mit_kd": self._merged_gains("kd", mit_kd)}
+            for name, gains in merged.items():
+                if gains is None:
+                    continue
+                for joint, value in gains.items():
+                    if not math.isfinite(value) or value < 0.0:
+                        msg = f"{name}[{joint!r}] must be a non-negative finite value, got {value!r}"
+                        raise ValueError(msg)
+                self._check_gain_limits(gains, name)
+            if gravity_compensation is not None:
+                self._gravity_scale = gravity_compensation
+            if velocity_feedforward is not None:
+                self._velocity_scale = velocity_feedforward
+            if motion_limits is not None and motion_limits != self._motion_limits_enabled:
+                # Start limiting from the speed the command already has, not from rest.
+                self._limit_velocity_deg_s = self._reference_velocity_deg_s.copy()
+                self._motion_limits_enabled = motion_limits
+            if merged["mit_kp"] is not None:
+                self._mit_kp = merged["mit_kp"]
+            if merged["mit_kd"] is not None:
+                self._mit_kd = merged["mit_kd"]
         return {
             "gravity_compensation": self._gravity_scale,
             "velocity_feedforward": self._velocity_scale,
@@ -507,11 +514,17 @@ class ReBotB601DM:
             return
 
         try:
+            if self._control_mode == "mit":
+                self._gravity()  # load the model before any motor is enabled
             controller = self._open_controller()
             self._controller = controller
             self._motors = self._register_motors(controller)
             self._configure_motors()
-        except Exception:
+        except BaseException:
+            # Motors may already be enabled (the hold runs after enable_all): never leave them running.
+            if self._controller is not None:
+                with contextlib.suppress(Exception):
+                    self._controller.disable_all()
             with contextlib.suppress(Exception):
                 self._cleanup_connection()
             raise
@@ -541,9 +554,12 @@ class ReBotB601DM:
                     self.park()
                 except Exception:  # noqa: BLE001 - disconnect must always release the bus
                     logger.opt(exception=True).warning("Could not park the reBot arm before disconnecting")
-            self._disconnect_motors()
         finally:
-            self._cleanup_connection()
+            # Also on KeyboardInterrupt (a second Ctrl+C while parking): disable before releasing.
+            try:
+                self._disconnect_motors()
+            finally:
+                self._cleanup_connection()
 
         logger.info(f"{self.__class__.__name__} disconnected from {self.port}")
 
@@ -652,6 +668,7 @@ class ReBotB601DM:
         self._approach_progress_speed = 0.0
         self._previous_target_deg: np.ndarray | None = None
         self._limit_velocity_deg_s = np.zeros(self.NUM_JOINTS)
+        self._recovering = False
         self._dropout_reads = 0
 
     def _read_motor_states(self) -> list[MotorState]:
@@ -786,7 +803,13 @@ class ReBotB601DM:
         if action.shape != expected_shape:
             msg = f"Expected action shape {expected_shape}, got {action.shape}"
             raise ValueError(msg)
+        if not np.all(np.isfinite(action)):
+            msg = f"Action must be finite, got {action}"
+            raise ValueError(msg)
+        with self._command_lock:
+            self._send_targets(action, goal_time)
 
+    def _send_targets(self, action: np.ndarray, goal_time: float) -> None:
         targets = np.array(
             [self._clip_public_action(name, float(action[i])) for i, name in enumerate(self.JOINT_ORDER)],
         )
@@ -806,16 +829,29 @@ class ReBotB601DM:
             self._approaching = True
             self._approach_progress_speed = 0.0
             self._limit_velocity_deg_s = np.zeros(self.NUM_JOINTS)
+        streaming = self._last_command_time is not None and now - self._last_command_time <= _MAX_COMMAND_DT_S
         dt = self._command_interval(now)
-        if not self._approaching and self._is_jump(targets, dt):
-            self._approaching = self._approach_speed is not None
-            self._approach_progress_speed = 0.0
-            self._limit_velocity_deg_s = np.zeros(self.NUM_JOINTS)
+        if not self._approaching and not self._recovering and self._is_jump(targets, dt):
+            arm = slice(0, REBOT_B601_ARM_JOINT_COUNT)
+            moving = streaming and float(np.max(np.abs(self._limit_velocity_deg_s[arm]))) > _RECOVER_MIN_SPEED_DEG_S
+            if moving and self._motion_limits_enabled and self._approach_speed is not None:
+                # Mid-motion: brake within the acceleration limit, then head on at approach speed.
+                self._recovering = True
+            else:
+                self._approaching = self._approach_speed is not None
+                self._approach_progress_speed = 0.0
+                self._limit_velocity_deg_s = np.zeros(self.NUM_JOINTS)
         if self._approaching:
             command = self._approach(targets, dt)
+        elif self._recovering and self._motion_limits_enabled:
+            command = self._limit_motion(targets, dt, max_speed=self._approach_speed)
+            arm = slice(0, REBOT_B601_ARM_JOINT_COUNT)
+            if float(np.max(np.abs(targets[arm] - command[arm]))) <= _APPROACH_DONE_DEG:
+                self._recovering = False
         elif self._motion_limits_enabled:
             command = self._limit_motion(targets, dt)
         else:
+            self._recovering = False
             command = targets
         self._previous_target_deg = targets.copy()
         self._send_command(command, dt, goal_time)
@@ -844,12 +880,14 @@ class ReBotB601DM:
         logger.warning(f"reBot command jumped {step:.0f} degrees in one step; easing into it")
         return True
 
-    def _limit_motion(self, targets: np.ndarray, dt: float) -> np.ndarray:
+    def _limit_motion(self, targets: np.ndarray, dt: float, *, max_speed: float | None = None) -> np.ndarray:
         """Follow ``targets`` with the arm joints within the speed and acceleration limits.
 
         Below the limits the command is the target itself. A joint that falls behind catches up no
         faster than the target moves plus what it can still brake from before reaching it, so it does
-        not overshoot a target that holds still. The gripper is not limited.
+        not overshoot a target that holds still. A joint still braking when its target stops at a
+        joint limit is held at the limit. ``max_speed`` (degrees per second) lowers the speed limit.
+        The gripper is not limited.
 
         Returns:
             The command for this step.
@@ -860,6 +898,8 @@ class ReBotB601DM:
             self._limit_velocity_deg_s = np.zeros(self.NUM_JOINTS)
             return targets
         speed_limit, accel_limit = self._motion_limits()
+        if max_speed is not None:
+            speed_limit = np.minimum(speed_limit, max_speed)
         previous = self._previous_target_deg if self._previous_target_deg is not None else last
         target_speed = np.minimum(np.abs(targets[arm] - previous[arm]) / dt, speed_limit)
         error = targets[arm] - last[arm]
@@ -874,15 +914,18 @@ class ReBotB601DM:
         step = velocity * dt
         # Land on a target instead of passing it once the joint is nearly stopped.
         landing = (
-            (np.sign(step) == np.sign(error))
-            & (np.abs(step) > np.abs(error))
-            & (np.abs(velocity) <= 2 * accel_limit * dt)
+            (np.sign(step) == np.sign(error)) & (np.abs(step) > np.abs(error)) & (np.abs(velocity) <= accel_limit * dt)
         )
-        step = np.where(landing, error, step)
-        self._limit_velocity_deg_s[arm] = step / dt
         command = targets.copy()
-        command[arm] = last[arm] + step
+        command[arm] = self._within_joint_limits(last[arm], np.where(landing, error, step), dt)
         return command
+
+    def _within_joint_limits(self, last: np.ndarray, step: np.ndarray, dt: float) -> np.ndarray:
+        """Return the arm positions after ``step``, held at the joint limits, and record their velocity."""
+        limits = np.array([self.JOINT_LIMITS_DEG[name] for name in self.JOINT_ORDER[:REBOT_B601_ARM_JOINT_COUNT]])
+        position = np.clip(last + step, limits[:, 0], limits[:, 1])
+        self._limit_velocity_deg_s[:REBOT_B601_ARM_JOINT_COUNT] = (position - last) / dt
+        return position
 
     def _motion_limits(self) -> tuple[np.ndarray, np.ndarray]:
         """Per-joint speed and acceleration limits of the arm joints, from their motor models.
@@ -934,6 +977,10 @@ class ReBotB601DM:
         ``hold_scale`` scales the MIT stiffness and gravity feedforward of the arm joints (damping is
         kept); the soft release fades it to zero.
         """
+        with self._command_lock:
+            self._send_command_locked(command_deg, dt, goal_time, hold_scale)
+
+    def _send_command_locked(self, command_deg: np.ndarray, dt: float, goal_time: float, hold_scale: float) -> None:
         last = self._last_command_deg
         velocity = np.zeros(self.NUM_JOINTS)
         if last is not None:
@@ -1027,8 +1074,12 @@ class ReBotB601DM:
             msg = "Robot is not connected. Call connect() first."
             raise ConnectionError(msg)
         present = self._measured_public_deg()
-        if self._last_command_deg is None:
-            self._last_command_deg = present.copy()
+        # Start from where the arm is, not from the last tracking command (which may be elsewhere if the
+        # arm lagged or was blocked), so a skipped stage and the soft release hold the actual pose.
+        self._last_command_deg = present.copy()
+        self._reference_velocity_deg_s = np.zeros(self.NUM_JOINTS)
+        self._approaching = False
+        self._recovering = False
         start = present.copy()
         logger.info(f"Parking {self.__class__.__name__} in its rest pose")
         for stage in REBOT_B601_PARK_STAGES:
