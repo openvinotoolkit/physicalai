@@ -174,6 +174,16 @@ def _normalize_speed(value: float | None, name: str) -> float | None:
     return None if value <= -1.0 else value
 
 
+def _braking_speed(distance: np.ndarray, accel: np.ndarray, dt: float) -> np.ndarray:
+    """Fastest speed from which a joint stops within ``distance``, braking at ``accel`` in steps of ``dt``.
+
+    Returns:
+        One speed per joint, in the units of ``distance`` per second.
+    """
+    half_step = 0.5 * accel * dt
+    return np.sqrt(half_step**2 + 2.0 * accel * np.abs(distance)) - half_step
+
+
 def _minimum_jerk(s: float) -> float:
     """Minimum-jerk position profile on ``s`` in ``[0, 1]``; zero velocity and acceleration at both ends.
 
@@ -601,9 +611,20 @@ class ReBotB601DM:
                 target_mode = Mode.MIT if self._control_mode == "mit" else Mode.POS_VEL
             motor.ensure_mode(target_mode)
 
+        self._enable_and_hold()
+
+    def _enable_and_hold(self) -> None:
+        """Enable every motor and hold the measured pose; disable them again if the hold fails."""
+        controller = self._require_controller()
         controller.enable_all()
         self._torque_enabled = True
-        self._hold_after_enable()
+        try:
+            self._hold_after_enable()
+        except BaseException:
+            with contextlib.suppress(Exception):
+                controller.disable_all()
+            self._torque_enabled = False
+            raise
 
     def _hold_after_enable(self) -> None:
         """Hold the measured pose right after the motors are enabled.
@@ -636,9 +657,7 @@ class ReBotB601DM:
 
     def enable_torque(self) -> None:
         """Enable torque on all motors and hold the measured pose; the next command eases in from it."""
-        self._require_controller().enable_all()
-        self._torque_enabled = True
-        self._hold_after_enable()
+        self._enable_and_hold()
 
     def configure_position_control(self) -> None:
         """Reconfigure all motors to their position-control modes."""
@@ -834,7 +853,7 @@ class ReBotB601DM:
         if not self._approaching and not self._recovering and self._is_jump(targets, dt):
             arm = slice(0, REBOT_B601_ARM_JOINT_COUNT)
             moving = streaming and float(np.max(np.abs(self._limit_velocity_deg_s[arm]))) > _RECOVER_MIN_SPEED_DEG_S
-            if moving and self._motion_limits_enabled and self._approach_speed is not None:
+            if moving and self._motion_limits_enabled:
                 # Mid-motion: brake within the acceleration limit, then head on at approach speed.
                 self._recovering = True
             else:
@@ -903,12 +922,15 @@ class ReBotB601DM:
         previous = self._previous_target_deg if self._previous_target_deg is not None else last
         target_speed = np.minimum(np.abs(targets[arm] - previous[arm]) / dt, speed_limit)
         error = targets[arm] - last[arm]
-        # Fastest speed from which the joint can still stop within the remaining error, braking at the
-        # acceleration limit in steps of dt.
-        half_step = 0.5 * accel_limit * dt
-        braking = np.sqrt(half_step**2 + 2.0 * accel_limit * np.abs(error)) - half_step
-        catch_up = np.minimum(target_speed + braking, speed_limit)
-        desired = np.clip(error / dt, -catch_up, catch_up)
+        # Catch up no faster than the joint can still stop within the remaining error, and brake in time
+        # for the joint limits, which a moving target may run into.
+        catch_up = np.minimum(target_speed + _braking_speed(error, accel_limit, dt), speed_limit)
+        low, high = self._arm_joint_limits()
+        desired = np.clip(
+            np.clip(error / dt, -catch_up, catch_up),
+            -_braking_speed(np.maximum(last[arm] - low, 0.0), accel_limit, dt),
+            _braking_speed(np.maximum(high - last[arm], 0.0), accel_limit, dt),
+        )
         velocity = self._limit_velocity_deg_s[arm].copy()
         velocity += np.clip(desired - velocity, -accel_limit * dt, accel_limit * dt)
         step = velocity * dt
@@ -922,10 +944,13 @@ class ReBotB601DM:
 
     def _within_joint_limits(self, last: np.ndarray, step: np.ndarray, dt: float) -> np.ndarray:
         """Return the arm positions after ``step``, held at the joint limits, and record their velocity."""
-        limits = np.array([self.JOINT_LIMITS_DEG[name] for name in self.JOINT_ORDER[:REBOT_B601_ARM_JOINT_COUNT]])
-        position = np.clip(last + step, limits[:, 0], limits[:, 1])
+        position = np.clip(last + step, *self._arm_joint_limits())
         self._limit_velocity_deg_s[:REBOT_B601_ARM_JOINT_COUNT] = (position - last) / dt
         return position
+
+    def _arm_joint_limits(self) -> tuple[np.ndarray, np.ndarray]:
+        limits = np.array([self.JOINT_LIMITS_DEG[name] for name in self.JOINT_ORDER[:REBOT_B601_ARM_JOINT_COUNT]])
+        return limits[:, 0], limits[:, 1]
 
     def _motion_limits(self) -> tuple[np.ndarray, np.ndarray]:
         """Per-joint speed and acceleration limits of the arm joints, from their motor models.

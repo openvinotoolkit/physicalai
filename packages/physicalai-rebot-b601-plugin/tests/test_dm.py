@@ -895,10 +895,15 @@ class TestReBotB601DMSafety:
             robot.send_action(np.array([min(100.0 * k / 60, high + 20), 0, 0, 0, 0, 0, 0], dtype=np.float32))
             clock.sleep(1 / 60)
 
-        sent = _sent_public_deg(robot, motors, 0)
-        assert max(sent) <= high + 1e-9
+        from physicalai_rebot_b601_plugin.constants import REBOT_B601_MAX_ACCEL_DEG_S2
+
+        sent = np.array(_sent_public_deg(robot, motors, 0))
+        assert sent.max() <= high + 1e-9
         assert sent[-1] == pytest.approx(high)
-        assert low < min(sent)
+        assert low < sent.min()
+        # It brakes for the limit in time rather than stopping dead at it.
+        acceleration = np.abs(np.diff(sent, 2)) * 60 * 60
+        assert acceleration.max() <= 1.25 * REBOT_B601_MAX_ACCEL_DEG_S2["4340P"]
 
     def test_a_jump_mid_motion_brakes_within_the_acceleration_limit(
         self,
@@ -928,6 +933,31 @@ class TestReBotB601DMSafety:
         # The last step lands on the target, which may brake up to one more tick's worth of speed.
         assert acceleration.max() <= 1.25 * REBOT_B601_MAX_ACCEL_DEG_S2["4340P"]
         assert sent[-1] == pytest.approx(start + 40.0)
+
+    def test_a_jump_mid_motion_without_an_approach_still_brakes_within_the_limit(
+        self,
+        mock_motorbridge: MagicMock,
+        clock: _FakeClock,
+    ) -> None:
+        from physicalai_rebot_b601_plugin.constants import REBOT_B601_MAX_ACCEL_DEG_S2
+
+        robot = _create_robot(mock_motorbridge, control_mode="mit", approach_speed=None)
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        _follow_commands(motors)
+        dt = 1 / 60
+        for k in range(60):
+            robot.send_action(np.array([120.0 * dt * k, 0, 0, 0, 0, 0, 0], dtype=np.float32))
+            clock.sleep(dt)
+        start = robot._last_command_deg[0]
+        for _ in range(90):
+            robot.send_action(np.array([start - 40.0, 0, 0, 0, 0, 0, 0], dtype=np.float32))
+            clock.sleep(dt)
+
+        sent = np.array(_sent_public_deg(robot, motors, 0))
+        acceleration = np.abs(np.diff(sent, 2))[-90:] / dt / dt
+        assert acceleration.max() <= 1.25 * REBOT_B601_MAX_ACCEL_DEG_S2["4340P"]
+        assert sent[-1] == pytest.approx(start - 40.0)
 
     def test_non_finite_actions_are_rejected_before_anything_is_sent(
         self,
@@ -983,9 +1013,29 @@ class TestReBotB601DMSafety:
         with pytest.raises(RuntimeError, match="CAN write failed"):
             robot.connect()
 
-        assert controller.enable_all.call_count == 1
-        assert controller.disable_all.call_count == 2  # before enabling, and after the failed hold
+        calls = [name for name, *_ in controller.method_calls]
+        assert "disable_all" in calls[calls.index("enable_all") :]  # disabled again after the failed hold
         assert not robot.is_connected()
+
+    def test_a_failed_hold_on_enable_torque_disables_the_motors(
+        self,
+        mock_motorbridge: MagicMock,
+        clock: _FakeClock,
+    ) -> None:
+        robot = _create_robot(mock_motorbridge, hold=True, control_mode="mit")
+        robot.connect()
+        controller = mock_motorbridge.Controller.from_dm_serial.return_value
+        robot.disable_torque()
+        _dm_motors(mock_motorbridge)[3].send_mit.side_effect = RuntimeError("CAN write failed")
+        controller.reset_mock()
+
+        with pytest.raises(RuntimeError, match="CAN write failed"):
+            robot.enable_torque()
+
+        calls = [name for name, *_ in controller.method_calls]
+        assert calls[0] == "enable_all"
+        assert calls[-1] == "disable_all"
+        assert not robot._torque_enabled
 
     def test_park_starts_from_the_measured_pose_not_the_last_command(
         self,
