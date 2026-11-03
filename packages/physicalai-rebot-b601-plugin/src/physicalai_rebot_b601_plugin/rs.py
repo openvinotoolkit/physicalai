@@ -93,7 +93,7 @@ class ReBotB601RS(ReBotB601DM):
     VALID_CAN_ADAPTERS: ClassVar = VALID_RS_CAN_ADAPTERS
     GRAVITY_URDF: ClassVar[str] = REBOT_B601_RS_GRAVITY_URDF
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - one flat option per control feature, for YAML and Studio
         self,
         port: str = "can0",
         *,
@@ -111,6 +111,7 @@ class ReBotB601RS(ReBotB601DM):
         velocity_feedforward: bool = True,
         approach_speed: float | None = 30.0,
         park_on_disconnect: bool = True,
+        motion_limits: bool = True,
     ) -> None:
         """Initialize the RobStride follower and its impedance controller.
 
@@ -134,6 +135,8 @@ class ReBotB601RS(ReBotB601DM):
             approach_speed: Peak joint speed (degrees per second) for the first move after the
                 motors are enabled; ``None`` or ``-1`` jumps straight to the first command.
             park_on_disconnect: Fold the arm into its rest pose before disconnecting.
+            motion_limits: Follow each command within the per-motor speed and acceleration limits;
+                ``False`` sends commands as they come, like LeRobot's follower.
 
         Raises:
             ValueError: If a control setting, gain, torque limit, or relative target is invalid.
@@ -166,6 +169,7 @@ class ReBotB601RS(ReBotB601DM):
             velocity_feedforward=velocity_feedforward,
             approach_speed=approach_speed,
             park_on_disconnect=park_on_disconnect,
+            motion_limits=motion_limits,
         )
         self._mit_kp = mit_kp
         self._mit_kd = mit_kd

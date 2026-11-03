@@ -614,6 +614,17 @@ class TestReBotB601DMControl:
         assert np.all(speed <= limits + 1e-6)
         assert speed[0] == pytest.approx(limits[0])
 
+    def test_motion_limits_can_be_turned_off(self, mock_motorbridge: MagicMock, clock: _FakeClock) -> None:
+        robot = _create_robot(mock_motorbridge, control_mode="mit", motion_limits=False)
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        _follow_commands(motors)
+        robot.send_action(np.zeros(7, dtype=np.float32))
+        clock.sleep(1 / 60)
+        robot.send_action(np.array([8.0, 0, 0, 0, 0, 0, 0], dtype=np.float32))  # 480 deg/s in one tick
+
+        assert self._commanded_deg(motors)[0] == pytest.approx(8.0)
+
     def test_acceleration_is_limited_from_rest(self, mock_motorbridge: MagicMock, clock: _FakeClock) -> None:
         from physicalai_rebot_b601_plugin.constants import REBOT_B601_MAX_ACCEL_DEG_S2
 

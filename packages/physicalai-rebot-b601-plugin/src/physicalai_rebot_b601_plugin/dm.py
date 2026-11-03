@@ -223,7 +223,7 @@ class ReBotB601DM:
     VALID_CAN_ADAPTERS: ClassVar = VALID_CAN_ADAPTERS
     GRAVITY_URDF: ClassVar[str] = REBOT_B601_DM_GRAVITY_URDF
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - one flat option per control feature, for YAML and Studio
         self,
         port: str = "/dev/ttyACM0",
         *,
@@ -241,6 +241,7 @@ class ReBotB601DM:
         velocity_feedforward: bool = True,
         approach_speed: float | None = 30.0,
         park_on_disconnect: bool = True,
+        motion_limits: bool = True,
     ) -> None:
         """Initialize the Damiao motor driver.
 
@@ -271,6 +272,9 @@ class ReBotB601DM:
             park_on_disconnect: Move the arm into its folded rest (zero) pose at
                 ``REBOT_B601_PARK_SPEED_DEG_S`` before disconnecting, so it does not fall when torque
                 is released. Skipped while torque is disabled.
+            motion_limits: Follow each command within the per-motor speed and acceleration limits
+                (``REBOT_B601_MAX_SPEED_DEG_S``, ``REBOT_B601_MAX_ACCEL_DEG_S2``); ``False`` sends
+                commands as they come, like LeRobot's follower.
 
         Raises:
             ValueError: If any parameter has an invalid value.
@@ -312,6 +316,7 @@ class ReBotB601DM:
         self._velocity_feedforward = velocity_feedforward
         self._approach_speed: float | None = approach_speed
         self._park_on_disconnect = park_on_disconnect
+        self._motion_limits_enabled = motion_limits
         self._gravity_model: GravityModel | None = None
         self._controller: Controller | None = None
         self._motors: dict[str, Motor] = {}
@@ -715,7 +720,12 @@ class ReBotB601DM:
             self._approaching = self._approach_speed is not None
             self._approach_progress_speed = 0.0
             self._limit_velocity_deg_s = np.zeros(self.NUM_JOINTS)
-        command = self._approach(targets, dt) if self._approaching else self._limit_motion(targets, dt)
+        if self._approaching:
+            command = self._approach(targets, dt)
+        elif self._motion_limits_enabled:
+            command = self._limit_motion(targets, dt)
+        else:
+            command = targets
         self._previous_target_deg = targets.copy()
         self._send_command(command, dt, goal_time)
         self._last_command_time = now
