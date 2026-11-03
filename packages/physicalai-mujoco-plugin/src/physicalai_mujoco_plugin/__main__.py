@@ -297,6 +297,15 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     start.add_argument(
+        "--xr-port",
+        type=_port_number,
+        default=None,
+        help=(
+            "Serve the headset teleoperation page (Meta Quest, WebXR) over HTTPS on this port, on the "
+            "local network; open the logged address in the headset's browser (default: off)"
+        ),
+    )
+    start.add_argument(
         "--no-http",
         action="store_true",
         default=False,
@@ -613,6 +622,7 @@ def _run_start(args: argparse.Namespace, status: _StatusWriter) -> None:  # noqa
         exit_with_pid=os.getpid() if args.exit_with_parent else None,
         grip_force_n=args.grip_force,
         http_fallback_port=http_fallback_port,
+        xr_port=args.xr_port,
     )
 
     shared = SharedRobot.from_config(

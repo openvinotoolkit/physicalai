@@ -43,6 +43,7 @@ from physicalai_mujoco_plugin.profiles.franka import with_grip_force
 from physicalai_mujoco_plugin.scene_objects import SceneObjects, SpawnArea
 from physicalai_mujoco_plugin.sim import Sim, default_cameras, joint_names_before_load, load_sim, resolve_scene
 from physicalai_mujoco_plugin.studio_recorder import DEFAULT_STUDIO_URL
+from physicalai_mujoco_plugin.teleop import Teleop
 from physicalai_mujoco_plugin.viewer import ViewerTheme
 
 if TYPE_CHECKING:
@@ -54,6 +55,8 @@ if TYPE_CHECKING:
     from physicalai_mujoco_plugin.scene_registry import SceneConfig
     from physicalai_mujoco_plugin.scene_watch import SceneXmlWatcher
     from physicalai_mujoco_plugin.viewer import ViewerService
+    from physicalai_mujoco_plugin.xr import XRServer
+    from physicalai_mujoco_plugin.xr_scene import SceneStream
 
 _DEFAULT_SUCCESS_DWELL_S = 5.0
 _CAMERA_STOP_TIMEOUT_S = 5.0
@@ -115,6 +118,8 @@ class MuJoCoRobot(OperatorControls):
         exit_with_pid: int | None = None,
         grip_force_n: float | None = None,
         http_fallback_port: int | None = None,
+        xr_host: str = "0.0.0.0",  # noqa: S104 - a headset on the local network opens the page
+        xr_port: int | None = None,
     ) -> None:
         """Create a disconnected simulation.
 
@@ -156,6 +161,8 @@ class MuJoCoRobot(OperatorControls):
             http_fallback_port: Port for the HTTP server when ``http_port`` is taken, so the server
                 still starts when another process took ``http_port`` after it was found free;
                 ``None`` runs without the server then.
+            xr_host: Bind address of the headset teleoperation page (``xr.py``).
+            xr_port: HTTPS port of the headset teleoperation page; ``None`` serves none.
 
         Raises:
             ValueError: If ``unit``, ``torque_mode``, ``rate_hz``, ``substeps``, ``overview``,
@@ -189,6 +196,7 @@ class MuJoCoRobot(OperatorControls):
             "viewer_theme": viewer_theme, "http_host": http_host, "http_port": http_port, "owner_name": owner_name,
             "studio_url": studio_url, "seed": seed, "exit_with_pid": exit_with_pid,
             "grip_force_n": grip_force_n, "http_fallback_port": http_fallback_port,
+            "xr_host": xr_host, "xr_port": xr_port,
         }  # fmt: skip
         """Constructor arguments, for pickling (``__getstate__``)."""
         self._profile: RobotProfile = get_profile(profile)
@@ -250,6 +258,12 @@ class MuJoCoRobot(OperatorControls):
         self._base_status: tuple[BaseStatus, ...] = ()
         """Floating-base readouts of the last tick, for the HTTP and viewer threads."""
         self._replay: Replay | None = None
+        self._teleop: Teleop | None = None
+        self._teleop_mouse = False
+        self._xr_host, self._xr_port = xr_host, xr_port
+        self._xr: XRServer | None = None
+        self._xr_scene: SceneStream | None = None
+        self._xr_session: int | None = None
         self._exit_with_pid = exit_with_pid
         self._process_watch: threading.Event | None = None
         self._overview: OverviewStyle = "shoulder"
@@ -340,12 +354,32 @@ class MuJoCoRobot(OperatorControls):
                 self._viewer, self._enable_viewer = None, False
         self._cameras.start(sim.model, sim.data)
         self._start_http_server()
+        self._start_xr_server()
+
+    def _start_xr_server(self) -> None:
+        """Serve the headset teleoperation page when ``xr_port`` asks for it; a failure only logs."""
+        if self._xr_port is None or self._xr is not None:
+            return
+        from physicalai_mujoco_plugin.xr import XRServer  # noqa: PLC0415
+        from physicalai_mujoco_plugin.xr_scene import SceneStream  # noqa: PLC0415
+
+        scene = SceneStream()
+        server = XRServer(self._xr_host, self._xr_port, cameras=lambda: self._cameras.frame_buffers, scene=scene)
+        try:
+            server.start()
+        except (RuntimeError, OSError) as exc:
+            logger.error("Headset teleoperation unavailable: {}", exc)
+            return
+        self._xr, self._xr_scene = server, scene
 
     def disconnect(self) -> None:
         """Stop the services and release the simulation; repeated calls are harmless."""
         self._stop_process_watch()
         self._stop_http_server()
         self._cameras.close()
+        if self._xr is not None:
+            self._xr.stop()
+            self._xr = self._xr_scene = None
         if self._automation is not None:
             self._automation.close()
         with self._state_lock:
@@ -358,6 +392,7 @@ class MuJoCoRobot(OperatorControls):
             self._sim = None
             self._base_status = ()
             self._replay = None
+            self._teleop = None
             # Keep the selected scene and its reset recipe for reconnect.
             self._pending_scene_switch = False
             self._commands = queue.Queue()
@@ -438,6 +473,11 @@ class MuJoCoRobot(OperatorControls):
         if self._automation is not None and self._automation.drives_arm:
             if not self._ignored_action_logged:
                 logger.info("The autopilot drives the arm, or it waits at its reset pose; ignoring actions")
+                self._ignored_action_logged = True
+            return
+        if self._teleop is not None and self._teleop.drives:
+            if not self._ignored_action_logged:
+                logger.info("Teleoperation drives the arms; ignoring actions until it stops")
                 self._ignored_action_logged = True
             return
         self._ignored_action_logged = False
@@ -572,6 +612,8 @@ class MuJoCoRobot(OperatorControls):
         self._init_episode_auto_reset()
         self._watcher = SceneXmlWatcher(sim.xml_path, sim.layout)  # type: ignore[union-attr]
         self._objects.publish(sim.data)  # type: ignore[union-attr]
+        self._teleop = Teleop(sim.model, sim.bindings, sim.channels, self._profile)  # type: ignore[union-attr]
+        self._teleop.set_inputs(mouse=self._teleop_mouse)
 
     def _switch_to_scene(self, scene_id: str) -> bool:
         """Hot-swap the simulation to another registered scene (DRV-7).
@@ -747,6 +789,7 @@ class MuJoCoRobot(OperatorControls):
             self._show_replay_frame(self._substeps * float(model.opt.timestep))
         else:
             control_dt = self._substeps * float(model.opt.timestep)
+            self._tick_teleop(data, control_dt)
             self._automation.tick(model, data, control_dt, self._arm_targets())  # type: ignore[union-attr]
             for _ in range(self._substeps):
                 if self._ease is not None:
@@ -770,6 +813,28 @@ class MuJoCoRobot(OperatorControls):
             elif self._viewer.native is not None:
                 self._handle_viewer_reset()
         self._cameras.publish(data)
+        self._publish_headset_scene(model, data)
+
+    def _publish_headset_scene(self, model: object, data: object) -> None:
+        """Give the headset's page the bodies' poses of this tick."""
+        if self._xr_scene is not None and self._teleop is not None:
+            self._xr_scene.update(model, data, self._teleop.view)  # type: ignore[arg-type]
+
+    def _tick_teleop(self, data: object, control_dt: float) -> None:
+        """Let the viewer's gripper handles or a headset session drive the arms this tick."""
+        if self._teleop is None:
+            return
+        sample = self._xr.latest() if self._xr is not None else None
+        if sample is not None and sample.session != self._xr_session:
+            self._teleop.set_inputs(headset=False)  # another page took over: what the last one held is let go
+        self._xr_session = sample.session if sample is not None else None
+        self._teleop.set_inputs(headset=sample is not None)
+        if not self._teleop.drives:
+            return
+        from physicalai_mujoco_plugin.xr import robot_controllers  # noqa: PLC0415
+
+        controllers = robot_controllers(sample, self._teleop.view) if sample is not None else None
+        self._teleop.tick(data, control_dt, controllers)  # type: ignore[arg-type]
 
     def _update_bases(self) -> None:
         """Detect falls, reset on one when the scene asks for it (DRV-9), and publish the base status."""

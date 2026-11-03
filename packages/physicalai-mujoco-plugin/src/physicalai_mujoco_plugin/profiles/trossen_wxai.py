@@ -75,7 +75,7 @@ TROSSEN_WXAI_PROFILE = RobotProfile(
     cameras=(TROSSEN_WXAI_WRIST_CAMERA,),
     customize=customize_trossen_wxai,
     default_scene="single_pick_place",
-    end_effectors=(EndEffector(site="ee_gripper_link", axis=(1.0, 0.0, 0.0)),),
+    end_effectors=(EndEffector(site="ee_gripper_link", axis=(1.0, 0.0, 0.0), gripper="gripper"),),
     reach=0.556,
 )
 

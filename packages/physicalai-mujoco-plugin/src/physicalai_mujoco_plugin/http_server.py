@@ -169,6 +169,23 @@ class StopReplayCommand:
     """End the replay and restore the physics state from before it."""
 
 
+@dataclass(frozen=True)
+class SetTeleopCommand:
+    """Switch the viewer's gripper handles on or off (``teleop.py``)."""
+
+    mouse: bool
+
+
+@dataclass(frozen=True)
+class SetToolTargetCommand:
+    """Move one arm's gripper target to a world pose (a viewer drag)."""
+
+    arm: str
+    position: tuple[float, float, float]
+    wxyz: tuple[float, float, float, float]
+    dragging: bool
+
+
 SimCommand = (
     ResetCommand
     | SwitchSceneCommand
@@ -183,6 +200,8 @@ SimCommand = (
     | SetStudioRecordingCommand
     | ReplayCommand
     | StopReplayCommand
+    | SetTeleopCommand
+    | SetToolTargetCommand
 )
 
 MAX_BELT_SPEED = 0.10
@@ -257,6 +276,14 @@ class AutoResetRequest(BaseModel):
 
 
 _Coord = Annotated[FiniteFloat, Field(ge=-MAX_OBJECT_COORD_M, le=MAX_OBJECT_COORD_M)]
+
+
+class TeleopRequest(BaseModel):
+    """Body for ``POST /teleop``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mouse: bool
 
 
 class ObjectPoseRequest(BaseModel):
@@ -487,6 +514,7 @@ def build_app(
                 "switch_scene": "POST /scenes/{scene_id}",
                 "reset": "POST /reset",
                 "home": "POST /home",
+                "teleop": "POST /teleop",
                 "overview": "POST /overview",
                 "seed": "POST /seed",
                 "auto_reset": "POST /episode/auto-reset",
@@ -522,6 +550,7 @@ def build_app(
     _add_camera_routes(app, buffers=buffers, get_status=get_status, jpeg_quality=jpeg_quality)
     _add_scene_routes(app, commands=commands, get_status=get_status)
     _add_sim_control_routes(app, commands=commands, get_status=get_status)
+    _add_teleop_routes(app, commands=commands, get_status=get_status)
     _add_replay_routes(app, commands=commands, get_status=get_status, check=check_replay)
     _add_automation_routes(app, commands=commands, get_status=get_status, get_leader=get_leader)
     return app
@@ -784,6 +813,17 @@ def _add_replay_routes(
         return {"status": "queued"}
 
 
+def _add_teleop_routes(
+    app: FastAPI, *, commands: queue.Queue[SimCommand], get_status: Callable[[], dict[str, Any]]
+) -> None:
+    @app.post("/teleop")
+    def teleop(request: TeleopRequest) -> dict[str, Any]:
+        if not get_status().get("teleop", {}).get("arms"):
+            raise HTTPException(status_code=409, detail="The robot has no arm with an end effector to teleoperate")
+        commands.put(SetTeleopCommand(mouse=request.mouse))
+        return {"status": "queued", "mouse": request.mouse}
+
+
 def _add_automation_routes(
     app: FastAPI,
     *,
@@ -833,19 +873,38 @@ def _add_automation_routes(
 class HttpServer:
     """Runs a uvicorn server for a FastAPI app on a daemon thread."""
 
-    def __init__(self, app: FastAPI, host: str, port: int) -> None:
-        """Configure a server for *app* on *host*:*port* (not yet started)."""
+    def __init__(
+        self,
+        app: FastAPI,
+        host: str,
+        port: int,
+        *,
+        tls: tuple[str, str] | None = None,
+        name: str = "mujoco-http-server",
+    ) -> None:
+        """Configure a server for *app* on *host*:*port* (not yet started); *tls* is a certificate and key file."""
         self._host = host
         self._port = port
+        self._scheme = "https" if tls is not None else "http"
+        self._name = name
+        certificate, key = tls if tls is not None else (None, None)
         self._server = uvicorn.Server(
-            uvicorn.Config(app, host=host, port=port, log_level="warning", access_log=False),
+            uvicorn.Config(
+                app,
+                host=host,
+                port=port,
+                log_level="warning",
+                access_log=False,
+                ssl_certfile=certificate,
+                ssl_keyfile=key,
+            ),
         )
         self._thread: threading.Thread | None = None
 
     @property
     def url(self) -> str:
         """Base URL of the running server."""
-        return f"http://{self._host}:{self._port}"
+        return f"{self._scheme}://{self._host}:{self._port}"
 
     def start(self) -> None:
         """Start the server thread and wait for the socket to bind.
@@ -855,7 +914,7 @@ class HttpServer:
                 exits before becoming ready.
         """
         self._check_port_available()
-        self._thread = threading.Thread(target=self._server.run, name="mujoco-http-server", daemon=True)
+        self._thread = threading.Thread(target=self._server.run, name=self._name, daemon=True)
         self._thread.start()
         deadline = time.monotonic() + _SERVER_START_TIMEOUT_S
         while not self._server.started:

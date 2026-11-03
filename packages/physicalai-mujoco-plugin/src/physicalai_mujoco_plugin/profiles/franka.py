@@ -251,7 +251,7 @@ FRANKA_FR3_PROFILE = RobotProfile(
     default_unit="degrees",
     customize=customize_franka_fr3,
     default_scene="single_pick_place",
-    end_effectors=(EndEffector(body="hand", pos=_HAND_TIP),),
+    end_effectors=(EndEffector(body="hand", pos=_HAND_TIP, gripper="gripper"),),
     reach=0.855,
 )
 FRANKA_DUO_PROFILE = RobotProfile(
@@ -266,8 +266,8 @@ FRANKA_DUO_PROFILE = RobotProfile(
     default_scene="single_pick_place",
     stand=DUO_STAND_BODY,
     end_effectors=(
-        EndEffector(body="left_hand", pos=_HAND_TIP),
-        EndEffector(body="right_hand", pos=_HAND_TIP),
+        EndEffector(body="left_hand", pos=_HAND_TIP, gripper="left_gripper"),
+        EndEffector(body="right_hand", pos=_HAND_TIP, gripper="right_gripper"),
     ),
     # From the tilted mount origin, 0.25 m up on its column (measured 0.837 m; 0.829 keeps the scaled spawn
     # arc's outer corner within 15 degrees of straight down). One arm alone reaches 0.855 m.

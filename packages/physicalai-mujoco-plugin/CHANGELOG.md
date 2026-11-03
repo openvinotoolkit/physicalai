@@ -4,6 +4,8 @@
 
 ### Added
 
+* **mujoco:** Teleoperate the arms from the viewer: **Drag the grippers** in the **Teleop** folder (`POST /teleop`) shows a handle at each gripper, which inverse kinematics follows. Actions are ignored while it drives the arms.
+* **mujoco:** Teleoperate from a VR headset (Meta Quest): `start --xr-port` serves a WebXR page over HTTPS (a self-signed certificate made with `openssl`) that draws the simulation in 3D, life-size, over passthrough (meshes sent once, then the bodies' poses at 60 Hz), with the camera streams above it. Holding a controller's grip moves its arm's gripper with the controller, the trigger closes it. The page pairs with a six-digit code, and one page drives the arms at a time.
 * **mujoco:** OpenArm v2 twin (`openarm`, provisional): Enactic's bimanual MJCF under LeRobot's `BiOpenArmFollower` names and units, in the new `openarm_cell` scene with the cell's overhead camera. OpenArm is not in MuJoCo Menagerie, so the model downloads on first use from the pinned `openarm-mujoco` 2.3.0 source archive on PyPI into the Menagerie cache (`OPENARM_MUJOCO_ROOT` overrides it); `prefetch` fetches it too.
 * **mujoco:** Camera streams also render geom group 5 (`CAMERA_ONLY_GEOM_GROUP`), which viewers hide: the OpenArm Cell's opaque wall panels, whose glass stand-ins the viewer leaves out.
 

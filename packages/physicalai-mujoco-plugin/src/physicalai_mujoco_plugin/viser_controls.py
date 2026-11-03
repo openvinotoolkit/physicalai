@@ -44,6 +44,8 @@ from physicalai_mujoco_plugin.http_server import (
     SetOverviewCommand,
     SetSeedCommand,
     SetStudioRecordingCommand,
+    SetTeleopCommand,
+    SetToolTargetCommand,
     ShutdownCommand,
     StopReplayCommand,
     SwitchSceneCommand,
@@ -79,6 +81,7 @@ _PREVIEW_JPEG_QUALITY = 70
 _GIZMO_SCALE = 0.08
 _GIZMO_PARENT = "/fixed_bodies"
 """mjviser's frame for fixed geometry; it sits at the world origin."""
+_TELEOP_GIZMO_SCALE = 0.12
 
 NO_FOLLOW_LABEL = "None"
 """Follow dropdown entry for a free camera."""
@@ -339,6 +342,8 @@ class PanelState:
     """The overview styles the scene offers; with one, the panel offers no switch."""
     overview_locked: str | None = None
     """Why the overview camera must not move now (automatic Studio recording), or ``None``."""
+    teleop: Mapping[str, Any] = field(default_factory=dict)
+    """Teleoperation inputs, arm targets and headset (see ``OperatorControls._teleop_status``)."""
 
 
 @dataclass
@@ -366,6 +371,9 @@ class _Handles:
     previews: dict[str, Any] = field(default_factory=dict)
     preview_seq: dict[str, int] = field(default_factory=dict)
     follow_dropdown: Any = None
+    teleop_gizmos: dict[str, Any] = field(default_factory=dict)
+    teleop_mouse: Any = None
+    teleop_status: Any = None
 
 
 OVERVIEW_LABELS: dict[OverviewStyle, str] = {"shoulder": "Shoulder", "front": "Front"}
@@ -441,6 +449,32 @@ def _robot_markdown(state: PanelState) -> str:
     for base in state.bases:
         hold = "fallen" if base.fallen else ("held" if base.held else "free")
         lines.append(f"**{base.prefix}base:** height {base.height:.2f} m, tilt {base.tilt_deg:.0f} deg, {hold}")
+    return "  \n".join(lines)
+
+
+def _headset_line(xr: Mapping[str, Any] | None) -> str | None:
+    """Return the headset's line: where to open the page, or the session that runs."""
+    if not xr:
+        return None
+    if xr.get("session"):
+        controllers = ", ".join(xr.get("controllers", ())) or "no controller"
+        return f"**Headset**: in a session ({controllers}); hold a grip button to move an arm"
+    if xr.get("connected"):
+        return "**Headset**: connected; press **Start** in the headset"
+    where = " or ".join(f"`{url}`" for url in xr.get("urls", ()))
+    return f"**Headset**: open {where} in the headset's browser; pairing code `{xr.get('code')}`"
+
+
+def _teleop_markdown(teleop: Mapping[str, Any]) -> str:
+    """Return the Teleop folder's status: what drives the arms, and which arm is held or out of reach."""
+    lines = [line for line in (_headset_line(teleop.get("xr")),) if line]
+    if not (teleop.get("mouse") or teleop.get("headset")):
+        return "  \n".join(["Off: actions from Studio or a policy drive the arms.", *lines])
+    for arm in teleop.get("arms", ()):
+        state = "held" if arm.get("held") else "holding still"
+        if not arm.get("reached", True):
+            state += ", out of reach"
+        lines.append(f"**{arm['name']}**: {state}")
     return "  \n".join(lines)
 
 
@@ -587,6 +621,8 @@ class SimControlPanel:
         # Object joint -> (client id, last pose) for gizmos being dragged. Written
         # on Viser's event loop, read on the sim thread.
         self._drags: dict[str, tuple[int | None, ObjectPose]] = {}
+        # Arm -> (client id, last pose) for gripper handles being dragged; same threads and lock.
+        self._teleop_drags: dict[str, tuple[int | None, ObjectPose]] = {}
         self._drags_lock = threading.Lock()
         self._next_status = 0.0
         self._next_objects = 0.0
@@ -625,6 +661,7 @@ class SimControlPanel:
         self._handles = _Handles()
         with self._drags_lock:
             self._drags.clear()
+            self._teleop_drags.clear()
         self._next_status = self._next_objects = self._next_preview = 0.0
         self._build_scene_controls(state)
         if state.profile:
@@ -634,6 +671,8 @@ class SimControlPanel:
         self._build_seed_controls(state)
         if state.episode.get("enabled"):
             self._build_episode_controls(state)
+        if state.teleop.get("arms"):
+            self._build_teleop_controls(state)
         if state.objects:
             self._build_object_controls()
         if state.cameras:
@@ -724,6 +763,17 @@ class SimControlPanel:
             )
             gizmo.on_update(self._make_gizmo_callback(joint))
             self._handles.gizmos[joint] = gizmo
+        for arm in state.teleop.get("arms", ()):
+            gizmo = self._server.scene.add_transform_controls(
+                f"{_GIZMO_PARENT}/teleop_{re.sub(r'[^A-Za-z0-9_-]', '_', arm['name'])}",
+                scale=_TELEOP_GIZMO_SCALE,
+                depth_test=False,
+                position=tuple(arm["position"]),
+                wxyz=tuple(arm["wxyz"]),
+                visible=bool(state.teleop.get("mouse")),
+            )
+            gizmo.on_update(self._make_teleop_gizmo_callback(arm["name"]))
+            self._handles.teleop_gizmos[arm["name"]] = gizmo
 
     def _build_scene_controls(self, state: PanelState) -> None:
         gui = self._server.gui
@@ -1008,6 +1058,26 @@ class SimControlPanel:
                 value = min(max(float(dwell.value), MIN_DWELL_S), MAX_DWELL_S)
                 self._submit(SetAutoResetCommand(dwell_s=value))
 
+    def _build_teleop_controls(self, state: PanelState) -> None:
+        gui = self._server.gui
+        handles = self._handles
+        with gui.add_folder("Teleop"):
+            handles.teleop_mouse = gui.add_checkbox(
+                "Drag the grippers",
+                initial_value=bool(state.teleop.get("mouse")),
+                hint="A handle at each gripper moves the arm (arrows move, rings turn); "
+                "actions from Studio or a policy are ignored meanwhile",
+            )
+            handles.teleop_status = gui.add_markdown(_teleop_markdown(state.teleop))
+
+        @handles.teleop_mouse.on_update
+        def _on_mouse(event: object) -> None:
+            if not _is_server_event(event):
+                mouse = bool(handles.teleop_mouse.value)
+                self._submit(SetTeleopCommand(mouse=mouse))
+                for gizmo in handles.teleop_gizmos.values():
+                    gizmo.visible = mouse
+
     def _build_object_controls(self) -> None:
         gui = self._server.gui
         with gui.add_folder("Objects"):
@@ -1100,15 +1170,37 @@ class SimControlPanel:
 
         return _on_gizmo
 
+    def _make_teleop_gizmo_callback(self, arm: str) -> Callable[[object], Any]:
+        async def _on_gizmo(event: object) -> None:  # noqa: RUF029 - keeps start/update/end in order
+            target = event.target  # type: ignore[attr-defined]
+            pose = ObjectPose(
+                position=tuple(float(v) for v in target.position),  # type: ignore[arg-type]
+                wxyz=tuple(float(v) for v in target.wxyz),  # type: ignore[arg-type]
+            )
+            dragging = getattr(event, "phase", "update") != "end"
+            with self._drags_lock:
+                if dragging:
+                    self._teleop_drags[arm] = (getattr(event, "client_id", None), pose)
+                else:
+                    self._teleop_drags.pop(arm, None)
+            self._submit(SetToolTargetCommand(arm=arm, position=pose.position, wxyz=pose.wxyz, dragging=dragging))
+
+        return _on_gizmo
+
     def _on_client_disconnect(self, client: object) -> None:
-        """Release objects held by a browser that went away mid-drag."""
+        """Release objects and gripper handles held by a browser that went away mid-drag."""
         client_id = getattr(client, "client_id", None)
         with self._drags_lock:
             released = [(joint, pose) for joint, (owner, pose) in self._drags.items() if owner == client_id]
             for joint, _ in released:
                 del self._drags[joint]
+            arms = [(arm, pose) for arm, (owner, pose) in self._teleop_drags.items() if owner == client_id]
+            for arm, _ in arms:
+                del self._teleop_drags[arm]
         for joint, pose in released:
             self._submit(SetObjectPoseCommand(joint=joint, position=pose.position, wxyz=pose.wxyz, hold=False))
+        for arm, pose in arms:
+            self._submit(SetToolTargetCommand(arm=arm, position=pose.position, wxyz=pose.wxyz, dragging=False))
 
     # ------------------------------------------------------------------
     # Refresh (sim thread)
@@ -1123,6 +1215,7 @@ class SimControlPanel:
         if now >= self._next_objects:
             self._next_objects = now + _OBJECT_PERIOD_S
             self._refresh_gizmos(state)
+            self._refresh_teleop(state)
         if self._show_previews and now >= self._next_preview:
             self._next_preview = now + _PREVIEW_PERIOD_S
             self._refresh_previews(state)
@@ -1199,6 +1292,25 @@ class SimControlPanel:
                 continue
             gizmo.position = pose.position
             gizmo.wxyz = pose.wxyz
+
+    def _refresh_teleop(self, state: PanelState) -> None:
+        handles = self._handles
+        teleop = state.teleop
+        if handles.teleop_status is None:
+            return
+        mouse = bool(teleop.get("mouse"))
+        handles.teleop_mouse.value = mouse
+        handles.teleop_status.content = _teleop_markdown(teleop)
+        with self._drags_lock:
+            dragged = set(self._teleop_drags)
+        for arm in teleop.get("arms", ()):
+            gizmo = handles.teleop_gizmos.get(arm["name"])
+            if gizmo is None:
+                continue
+            gizmo.visible = mouse
+            if arm["name"] not in dragged:  # the handle shows where the target is, whatever moved it
+                gizmo.position = tuple(arm["position"])
+                gizmo.wxyz = tuple(arm["wxyz"])
 
     def _refresh_previews(self, state: PanelState) -> None:
         handles = self._handles
