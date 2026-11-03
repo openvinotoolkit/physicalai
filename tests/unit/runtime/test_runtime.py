@@ -1452,15 +1452,33 @@ class TestReturnToInitialState:
     def test_skips_return_when_already_near_starting_pose(self) -> None:
         start = np.array([10.0, 20.0, 30.0], dtype=np.float32)
         near_start = start + np.array([0.5, -0.5, 1.0], dtype=np.float32)  # ~3.3% of ||start||
+        distant_target = np.zeros(3, dtype=np.float32)
+        robot = _make_mock_robot()
+
+        def get_observation() -> FakeRobotObservation:
+            return FakeRobotObservation(
+                joint_positions=start.copy() if robot.get_observation.call_count == 1 else near_start.copy(),
+                timestamp=time.monotonic(),
+                sensor_data=None,
+                images=None,
+            )
+
+        robot.get_observation.side_effect = get_observation
         runtime, robot = _stop_runtime(
-            robot=_make_following_robot(start),
-            action_source=FakeActionSource(next_action=near_start),
+            robot=robot,
+            action_source=FakeActionSource(next_action=distant_target),
         )
 
         with _frozen_time():
             steps = runtime.run(duration_s=0.3, return_to_initial_state=True)
 
-        assert robot.send_action.call_count == steps
+        assert steps == 3
+        assert robot.send_action.call_count == steps + 1
+        for call in robot.send_action.call_args_list[:-1]:
+            np.testing.assert_array_equal(call.args[0], distant_target)
+        hold_command = robot.send_action.call_args
+        np.testing.assert_array_equal(hold_command.args[0], near_start)
+        assert hold_command.kwargs["goal_time"] == robot.send_action.call_args_list[-2].kwargs["goal_time"]
 
     def test_returns_when_just_outside_tolerance(self) -> None:
         start = np.array([10.0, 20.0, 30.0], dtype=np.float32)
