@@ -26,7 +26,7 @@ import contextlib
 import math
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import numpy as np
 from loguru import logger
@@ -199,7 +199,7 @@ class ReBotB601DMObservation:
         return self.joint_positions
 
 
-@export_config
+@export_config  # noqa: PLR0904 - the Robot protocol plus live control (set_control)
 class ReBotB601DM:
     """Damiao motor driver for the reBot B601 robot arm.
 
@@ -312,8 +312,8 @@ class ReBotB601DM:
         self._mit_kp = mit_kp
         self._mit_kd = mit_kd
         self._max_relative_target: float | None = max_relative_target
-        self._gravity_compensation = gravity_compensation
-        self._velocity_feedforward = velocity_feedforward
+        self._gravity_scale = 1.0 if gravity_compensation else 0.0
+        self._velocity_scale = 1.0 if velocity_feedforward else 0.0
         self._approach_speed: float | None = approach_speed
         self._park_on_disconnect = park_on_disconnect
         self._motion_limits_enabled = motion_limits
@@ -338,6 +338,86 @@ class ReBotB601DM:
                 msg = f"{name} must be a non-negative finite value, got {gain!r}"
                 raise ValueError(msg)
             self._check_gain_limits(gain, name)
+
+    def set_control(
+        self,
+        *,
+        gravity_compensation: float | None = None,
+        velocity_feedforward: float | None = None,
+        motion_limits: bool | None = None,
+        mit_kp: dict[str, float] | None = None,
+        mit_kd: dict[str, float] | None = None,
+    ) -> dict[str, Any]:
+        """Change control settings while the arm runs; settings left as ``None`` are kept.
+
+        Takes effect from the next command. Change gains and feedforward in small steps (a tuning
+        tool can ramp them): each call applies its values at once.
+
+        Args:
+            gravity_compensation: Scale of the gravity feedforward, 0 (off) to 1 (the model's torque).
+            velocity_feedforward: Scale of the velocity feedforward, 0 (off) to 1.
+            motion_limits: Whether commands follow the speed and acceleration limits.
+            mit_kp: MIT stiffness for some or all arm joints.
+            mit_kd: MIT damping for some or all arm joints.
+
+        Returns:
+            The settings now in effect, as plain values; call without arguments to read them.
+
+        Raises:
+            ValueError: If a scale is outside 0 to 1, or a gain is negative, non-finite, unknown or
+                out of the motor's range.
+        """
+        for name, scale in (
+            ("gravity_compensation", gravity_compensation),
+            ("velocity_feedforward", velocity_feedforward),
+        ):
+            if scale is not None and not (math.isfinite(scale) and 0.0 <= scale <= 1.0):
+                msg = f"{name} must be between 0 and 1, got {scale!r}"
+                raise ValueError(msg)
+        merged = {"mit_kp": self._merged_gains("kp", mit_kp), "mit_kd": self._merged_gains("kd", mit_kd)}
+        for name, gains in merged.items():
+            if gains is None:
+                continue
+            for joint, value in gains.items():
+                if not math.isfinite(value) or value < 0.0:
+                    msg = f"{name}[{joint!r}] must be a non-negative finite value, got {value!r}"
+                    raise ValueError(msg)
+            self._check_gain_limits(gains, name)
+        if gravity_compensation is not None:
+            self._gravity_scale = float(gravity_compensation)
+        if velocity_feedforward is not None:
+            self._velocity_scale = float(velocity_feedforward)
+        if motion_limits is not None and motion_limits != self._motion_limits_enabled:
+            # Start limiting from the speed the command already has, not from rest.
+            self._limit_velocity_deg_s = self._reference_velocity_deg_s.copy()
+            self._motion_limits_enabled = motion_limits
+        if merged["mit_kp"] is not None:
+            self._mit_kp = merged["mit_kp"]
+        if merged["mit_kd"] is not None:
+            self._mit_kd = merged["mit_kd"]
+        return {
+            "gravity_compensation": self._gravity_scale,
+            "velocity_feedforward": self._velocity_scale,
+            "motion_limits": self._motion_limits_enabled,
+            "mit_kp": self._merged_gains("kp", {}),
+            "mit_kd": self._merged_gains("kd", {}),
+        }
+
+    def _merged_gains(self, which: Literal["kp", "kd"], update: dict[str, float] | None) -> dict[str, float] | None:
+        if update is None:
+            return None
+        unknown = set(update) - set(self.JOINT_ORDER[:REBOT_B601_ARM_JOINT_COUNT])
+        if unknown:
+            msg = f"mit_{which} takes arm joints only, got {sorted(unknown)}"
+            raise ValueError(msg)
+        merged: dict[str, float] = {}
+        for joint in self.JOINT_ORDER:
+            try:
+                merged[joint] = self._mit_gain(joint, which)
+            except KeyError:
+                continue
+        merged.update({joint: float(value) for joint, value in update.items()})
+        return merged
 
     def _check_gain_limits(self, gain: float | dict[str, float], name: str) -> None:
         """Reject gains the motor's MIT frame cannot encode; motorbridge would clamp them silently.
@@ -845,10 +925,11 @@ class ReBotB601DM:
         """
         last = self._last_command_deg
         velocity = np.zeros(self.NUM_JOINTS)
-        if self._velocity_feedforward and last is not None:
+        if last is not None:
             raw = (command_deg - last) / dt
             velocity = _VELOCITY_FILTER_ALPHA * raw + (1.0 - _VELOCITY_FILTER_ALPHA) * self._reference_velocity_deg_s
         self._reference_velocity_deg_s = velocity
+        velocity = self._velocity_scale * velocity
         torques = hold_scale * self._gravity_torques(command_deg)
 
         for i, name in enumerate(self.JOINT_ORDER):
@@ -873,10 +954,10 @@ class ReBotB601DM:
             One torque in N·m per joint.
         """
         torques = np.zeros(self.NUM_JOINTS)
-        if not self._gravity_compensation or self._control_mode != "mit":
+        if self._gravity_scale <= 0.0 or self._control_mode != "mit":
             return torques
         arm = REBOT_B601_ARM_JOINT_COUNT
-        torques[:arm] = self._gravity().torques(np.radians(command_deg[:arm]))
+        torques[:arm] = self._gravity_scale * self._gravity().torques(np.radians(command_deg[:arm]))
         return torques
 
     def _gravity(self) -> GravityModel:

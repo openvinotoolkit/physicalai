@@ -581,3 +581,49 @@ class TestReBotB601RSControl:
 
         # The motor target moved +0.05 rad in 50 ms: 1 rad/s, filtered by 0.3 -> 0.3 rad/s, times kd 1.
         assert gripper.send_mit.call_args.args[4] == pytest.approx(0.3)
+
+
+class TestReBotB601RSLiveControl:
+    def test_set_control_changes_feedforward_limits_and_gains(self, mock_motorbridge: MagicMock) -> None:
+        robot = _create_robot(mock_motorbridge)
+        robot.set_control(
+            gravity_compensation=0.5,
+            velocity_feedforward=0.0,
+            motion_limits=False,
+            mit_kd={"shoulder_lift": 16.0},
+        )
+
+        settings = robot.set_control()
+        assert settings["gravity_compensation"] == 0.5
+        assert settings["velocity_feedforward"] == 0.0
+        assert settings["motion_limits"] is False
+        assert settings["mit_kd"]["shoulder_lift"] == 16.0
+        assert settings["mit_kd"]["elbow_flex"] == 10.0  # unchanged joints keep their gains
+        assert "gripper" not in settings["mit_kd"]
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"gravity_compensation": 1.5},
+            {"velocity_feedforward": -0.1},
+            {"mit_kd": {"wrist_flex": 6.0}},  # RS-00 damping max is 5
+            {"mit_kp": {"gripper": 10.0}},
+            {"mit_kp": {"shoulder_lift": float("nan")}},
+        ],
+    )
+    def test_set_control_rejects_invalid_settings(self, mock_motorbridge: MagicMock, kwargs: dict) -> None:
+        robot = _create_robot(mock_motorbridge)
+        before = robot.set_control()
+
+        with pytest.raises(ValueError):
+            robot.set_control(**kwargs)
+        assert robot.set_control() == before
+
+    def test_gravity_scale_scales_the_feedforward(self, mock_motorbridge: MagicMock) -> None:
+        robot = _create_robot(mock_motorbridge, gravity_compensation=True)
+        command = np.array([0.0, -60.0, -70.0, -20.0, 0.0, 0.0, 0.0])
+        full = robot._gravity_torques(command)
+        robot.set_control(gravity_compensation=0.25)
+
+        assert robot._gravity_torques(command) == pytest.approx(0.25 * full)
+
