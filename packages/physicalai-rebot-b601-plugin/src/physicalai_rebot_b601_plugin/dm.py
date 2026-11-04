@@ -27,7 +27,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 import numpy as np
 from loguru import logger
@@ -61,10 +61,11 @@ ReBotB601DMControlMode = Literal["pos_vel", "mit"]
 ReBotB601DMGripperControlMode = Literal["force_pos", "mit"]
 DMMITGain = float | dict[str, float]
 
-# Interval between commands used for velocity feedforward. The measured interval is clamped to
-# this range so a stalled or bursty caller cannot produce a huge velocity estimate.
+# Interval between commands, which the motion limits and velocity feedforward integrate over. The
+# measured interval is clamped to this range: up to 1 kHz the command follows real time, and a
+# stalled caller cannot produce a huge step or velocity estimate.
 _NOMINAL_COMMAND_DT_S = 1.0 / 30.0
-_MIN_COMMAND_DT_S = 0.005
+_MIN_COMMAND_DT_S = 0.001
 _MAX_COMMAND_DT_S = 0.1
 # Exponential smoothing of the velocity feedforward (weight of the newest sample).
 _VELOCITY_FILTER_ALPHA = 0.5
@@ -739,7 +740,7 @@ class ReBotB601DM:
         limp = float(np.max(np.abs(torques[arm]))) < _DROPOUT_TORQUE_NM and error > _DROPOUT_ERROR_DEG
         self._dropout_reads = self._dropout_reads + 1 if limp else 0
         if self._dropout_reads >= _DROPOUT_READS:
-            self._dropout_reads = 0
+            # Keep raising on every read until a healthy one: a retry must not see the arm as fine.
             msg = (
                 f"The reBot motors stopped driving the arm: no joint pushes any torque while the arm is "
                 f"{error:.0f} degrees from its command. They probably lost power or reset (a very fast swing "
@@ -874,6 +875,8 @@ class ReBotB601DM:
                 self._limit_velocity_deg_s = np.zeros(self.NUM_JOINTS)
         if self._approaching:
             command = self._approach(targets, dt)
+            if self._motion_limits_enabled and self._last_command_deg is not None:
+                command = self._accel_limited(command, dt)
         elif self._recovering and self._motion_limits_enabled:
             command = self._limit_motion(targets, dt, max_speed=self._approach_speed)
             arm = slice(0, REBOT_B601_ARM_JOINT_COUNT)
@@ -953,6 +956,24 @@ class ReBotB601DM:
         command = targets.copy()
         command[arm] = self._within_joint_limits(last[arm], np.where(landing, error, step), dt)
         return command
+
+    def _accel_limited(self, command: np.ndarray, dt: float) -> np.ndarray:
+        """Hold a command's change of arm velocity within the acceleration limits, and track that velocity.
+
+        The approach follows a straight line toward the latest target; if the target turns, this keeps
+        the turn within the limits, and the tracked velocity carries over when normal tracking resumes.
+
+        Returns:
+            The command for this step.
+        """
+        last = cast("np.ndarray", self._last_command_deg)
+        arm = slice(0, REBOT_B601_ARM_JOINT_COUNT)
+        _, accel_limit = self._motion_limits()
+        previous = self._limit_velocity_deg_s[arm]
+        velocity = np.clip((command[arm] - last[arm]) / dt, previous - accel_limit * dt, previous + accel_limit * dt)
+        limited = command.copy()
+        limited[arm] = self._within_joint_limits(last[arm], velocity * dt, dt)
+        return limited
 
     def _within_joint_limits(self, last: np.ndarray, step: np.ndarray, dt: float) -> np.ndarray:
         """Return the arm positions after ``step``, held at the joint limits, and record their velocity."""

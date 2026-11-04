@@ -684,6 +684,8 @@ class TestReBotB601DMControl:
         with pytest.raises(ConnectionError, match="stopped driving"):
             for _ in range(20):
                 robot.get_observation()
+        with pytest.raises(ConnectionError, match="stopped driving"):  # and keeps raising on a retry
+            robot.get_observation()
 
     def test_loaded_motors_far_from_the_command_do_not_raise(self, mock_motorbridge: MagicMock, clock: _FakeClock) -> None:
         robot = _create_robot(mock_motorbridge, control_mode="mit")
@@ -1109,3 +1111,44 @@ class TestReBotB601DMSafety:
 
         assert [motor.send_mit.call_args.args[3] for motor in motors[:6]] == old_kd  # one setting per command
         assert robot.set_control()["mit_kd"]["shoulder_pan"] == 1.0
+
+    def test_fast_command_rates_follow_real_time(self, mock_motorbridge: MagicMock, clock: _FakeClock) -> None:
+        from physicalai_rebot_b601_plugin.constants import REBOT_B601_MAX_SPEED_DEG_S
+
+        robot = _create_robot(mock_motorbridge, control_mode="mit")
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        _follow_commands(motors)
+        robot.send_action(np.zeros(7, dtype=np.float32))
+        for _ in range(300):  # 1 kHz for 0.3 s toward a far target
+            clock.sleep(0.001)
+            robot.send_action(np.array([140.0, 0, 0, 0, 0, 0, 0], dtype=np.float32))
+
+        travelled = _sent_public_deg(robot, motors, 0)[-1]
+        assert travelled <= REBOT_B601_MAX_SPEED_DEG_S["4340P"] * 0.3 + 1e-6
+
+    def test_a_turning_target_during_the_approach_stays_within_the_acceleration_limit(
+        self,
+        mock_motorbridge: MagicMock,
+        clock: _FakeClock,
+    ) -> None:
+        from physicalai_rebot_b601_plugin.constants import REBOT_B601_MAX_ACCEL_DEG_S2
+
+        robot = _create_robot(mock_motorbridge, control_mode="mit", approach_speed=30.0)
+        robot.connect()
+        motors = _dm_motors(mock_motorbridge)
+        for motor in motors:
+            motor.get_state.return_value = _MotorState(pos=0.0)
+        _follow_commands(motors)
+        dt = 1 / 60
+        for _ in range(60):  # approaching +60 at 30 deg/s...
+            robot.send_action(np.array([60.0, 0, 0, 0, 0, 0, 0], dtype=np.float32))
+            clock.sleep(dt)
+        for _ in range(60):  # ...when the target swings to -60
+            robot.send_action(np.array([-60.0, 0, 0, 0, 0, 0, 0], dtype=np.float32))
+            clock.sleep(dt)
+
+        sent = np.array(_sent_public_deg(robot, motors, 0))
+        acceleration = np.abs(np.diff(sent, 2)) / dt / dt
+        assert acceleration.max() <= REBOT_B601_MAX_ACCEL_DEG_S2["4340P"] + 1e-6
+
