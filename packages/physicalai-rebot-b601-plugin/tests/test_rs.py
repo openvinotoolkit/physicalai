@@ -277,7 +277,7 @@ class TestReBotB601RSObservation:
 
 class TestReBotB601RSAction:
     def test_send_action_maps_clips_and_sends_mit(self, mock_motorbridge: MagicMock) -> None:
-        robot = _create_robot(mock_motorbridge)
+        robot = _create_robot(mock_motorbridge, gripper_max_speed=-1)
         robot.connect()
         controller = mock_motorbridge.Controller.return_value
         motors = list(controller.mock_motors)
@@ -294,10 +294,10 @@ class TestReBotB601RSAction:
         motors[5].send_mit.assert_called_once_with(math.radians(-90.0), 0.0, 50.0, 4.0, 0.0)
         # The gripper servos on the motor itself; it has not moved yet, so it gets the hold limit.
         motors[6].send_mit.assert_called_once_with(math.radians(270.0), 0.0, 30.0, 0.8, 0.0)
-        motors[6].robstride_write_param_f32.assert_called_once_with(0x700B, 1.0)
+        motors[6].robstride_write_param_f32.assert_called_once_with(0x700B, 0.5)
 
     def test_gripper_uses_moving_torque_limit_while_moving(self, mock_motorbridge: MagicMock) -> None:
-        robot = _create_robot(mock_motorbridge)
+        robot = _create_robot(mock_motorbridge, gripper_max_speed=-1)
         robot.connect()
         gripper = mock_motorbridge.Controller.return_value.mock_motors[6]
         action = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
@@ -307,8 +307,37 @@ class TestReBotB601RSAction:
         gripper.get_state.return_value = _MotorState(pos=math.radians(260.0))
         robot.send_action(action)
 
-        assert gripper.robstride_write_param_f32.call_args_list[-2:] == [call(0x700B, 1.0), call(0x700B, 3.5)]
+        assert gripper.robstride_write_param_f32.call_args_list[-2:] == [call(0x700B, 0.5), call(0x700B, 1.5)]
         gripper.send_mit.assert_called_with(0.0, 0.0, 30.0, 0.8, 0.0)
+
+    def test_gripper_target_moves_no_faster_than_the_max_speed(
+        self, mock_motorbridge: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from physicalai_rebot_b601_plugin import rs
+
+        now = [10.0]
+        fake_time = MagicMock()
+        fake_time.monotonic.side_effect = lambda: now[0]
+        monkeypatch.setattr(rs, "time", fake_time)
+        robot = _create_robot(mock_motorbridge, gripper_max_speed=200.0)
+        robot.connect()
+        gripper = mock_motorbridge.Controller.return_value.mock_motors[6]
+        gripper.get_state.return_value = _MotorState(pos=math.radians(5.0))
+        close = np.array([0, 0, 0, 0, 0, 0, -90.0], dtype=np.float32)  # public -90 is motor +90
+
+        targets = []
+        for _ in range(3):
+            robot.send_action(close)
+            targets.append(math.degrees(gripper.send_mit.call_args.args[0]))
+            now[0] += 0.05
+
+        # From the measured 5 deg: 4 deg in the nominal first 20 ms, then 10 deg per 50 ms.
+        assert targets == pytest.approx([9.0, 19.0, 29.0])
+
+    @pytest.mark.parametrize("speed", [0.0, -2.0, math.nan])
+    def test_invalid_gripper_max_speed_raises(self, mock_motorbridge: MagicMock, speed: float) -> None:
+        with pytest.raises(ValueError, match="gripper_max_speed"):
+            _create_robot(mock_motorbridge, gripper_max_speed=speed)
 
     def test_gripper_torque_limit_is_written_only_when_it_changes_or_is_due(
         self, mock_motorbridge: MagicMock, monkeypatch: pytest.MonkeyPatch
@@ -355,7 +384,7 @@ class TestReBotB601RSAction:
         ]
 
     def test_gripper_open_stall_cuts_torque(self, mock_motorbridge: MagicMock) -> None:
-        robot = _create_robot(mock_motorbridge)
+        robot = _create_robot(mock_motorbridge, gripper_max_speed=-1)
         robot.connect()
         gripper = mock_motorbridge.Controller.return_value.mock_motors[6]
         gripper.get_state.return_value = _MotorState(pos=0.0)
@@ -398,7 +427,7 @@ class TestReBotB601RSAction:
         motors[3].send_mit.assert_called_once_with(math.radians(12.0), 0.0, 50.0, 5.0, 0.0)
 
     def test_send_action_max_relative_target_scales_gripper_step(self, mock_motorbridge: MagicMock) -> None:
-        robot = _create_robot(mock_motorbridge, max_relative_target=10.0)
+        robot = _create_robot(mock_motorbridge, max_relative_target=10.0, gripper_max_speed=-1)
         robot.connect()
         motors = list(mock_motorbridge.Controller.return_value.mock_motors)
         for motor in motors:
@@ -599,13 +628,13 @@ class TestReBotB601RSControl:
         now[0] += 0.02  # 0.02 rad in 20 ms: moving
         gripper.get_state.return_value = _MotorState(pos=0.02, vel=0.0)
         robot.send_action(np.zeros(7, dtype=np.float32))
-        assert gripper.robstride_write_param_f32.call_args == call(0x700B, 3.5)
+        assert gripper.robstride_write_param_f32.call_args == call(0x700B, 1.5)
 
         # Another 0.02 rad, in 100 ms: 0.2 rad/s is stalled (below 0.25), though not at a nominal 20 ms.
         now[0] += 0.1
         gripper.get_state.return_value = _MotorState(pos=0.04, vel=0.0)
         robot.send_action(np.zeros(7, dtype=np.float32))
-        assert gripper.robstride_write_param_f32.call_args == call(0x700B, 1.0)
+        assert gripper.robstride_write_param_f32.call_args == call(0x700B, 0.5)
 
 
 class TestReBotB601RSLiveControl:

@@ -385,7 +385,7 @@ class ReBotB601RSPayload(_ReBotMotionPayload):
         json_schema_extra=robot_field_ui({"advanced_configuration": True}),
     )
     gripper_mit_torque_limit: float = Field(  # pyrefly: ignore [bad-argument-type, no-matching-overload]
-        default=3.5,
+        default=1.5,
         ge=0.0,
         le=REBOT_B601_RS_GRIPPER_MAX_TORQUE_NM,
         allow_inf_nan=False,
@@ -393,12 +393,20 @@ class ReBotB601RSPayload(_ReBotMotionPayload):
         json_schema_extra=robot_field_ui({"advanced_configuration": True}),
     )
     gripper_mit_hold_torque_limit: float = Field(  # pyrefly: ignore [bad-argument-type, no-matching-overload]
-        default=1.0,
+        default=0.5,
         ge=0.0,
         le=REBOT_B601_RS_GRIPPER_MAX_TORQUE_NM,
         allow_inf_nan=False,
         title="Gripper torque limit while holding (N·m)",
         description="Torque limit once the gripper stalls, for example on a grasped object.",
+        json_schema_extra=robot_field_ui({"advanced_configuration": True}),
+    )
+    gripper_max_speed: float = Field(  # pyrefly: ignore [bad-argument-type, no-matching-overload]
+        default=400.0,
+        ge=-1.0,
+        allow_inf_nan=False,
+        title="Gripper max speed (degrees per second)",
+        description="Fastest the gripper moves; lower values close more gently on objects. Set to -1 for no limit.",
         json_schema_extra=robot_field_ui({"advanced_configuration": True}),
     )
 
@@ -482,6 +490,7 @@ async def _build_rebot_b601_rs_driver(  # noqa: RUF029 - Studio awaits every rob
         gripper_mit_kd=validated.gripper_mit_kd,
         gripper_mit_torque_limit=validated.gripper_mit_torque_limit,
         gripper_mit_hold_torque_limit=validated.gripper_mit_hold_torque_limit,
+        gripper_max_speed=validated.gripper_max_speed,
         gravity_compensation=validated.gravity_compensation,
         velocity_feedforward=validated.velocity_feedforward,
         approach_speed=validated.approach_speed,

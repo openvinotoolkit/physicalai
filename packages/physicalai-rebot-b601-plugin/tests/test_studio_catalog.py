@@ -242,7 +242,7 @@ def test_rebot_b601_rs_payload_defaults_and_ui_schema() -> None:
     assert payload.max_relative_target == -1.0
     assert payload.mit_kp.model_dump() == REBOT_B601_RS_MIT_KP
     assert payload.mit_kd.model_dump() == REBOT_B601_RS_MIT_KD
-    assert (payload.gripper_mit_torque_limit, payload.gripper_mit_hold_torque_limit) == (3.5, 1.0)
+    assert (payload.gripper_mit_torque_limit, payload.gripper_mit_hold_torque_limit) == (1.5, 0.5)
     # Robots saved before these settings existed only stored the CAN interface.
     assert ReBotB601RSPayload.model_validate({"connection_string": "can1"}).max_relative_target == -1.0
     ReBotB601RSPayload.model_rebuild(raise_errors=True)
@@ -350,7 +350,7 @@ async def test_build_rebot_b601_rs_returns_exportable_socketcan_driver(as_model:
     assert exported["class_path"].endswith("ReBotB601RS")
     assert exported["init_args"]["port"] == "can1"
     assert exported["init_args"]["max_relative_target"] == -1.0
-    assert exported["init_args"]["gripper_mit_hold_torque_limit"] == 1.0
+    assert exported["init_args"]["gripper_mit_hold_torque_limit"] == 0.5
 
 
 @pytest.mark.anyio

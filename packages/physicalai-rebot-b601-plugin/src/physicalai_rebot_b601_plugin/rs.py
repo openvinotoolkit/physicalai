@@ -28,7 +28,7 @@ from physicalai_rebot_b601_plugin.constants import (
     REBOT_B601_RS_MOTOR_MODELS,
     VALID_RS_CAN_ADAPTERS,
 )
-from physicalai_rebot_b601_plugin.dm import ReBotB601DM, ReBotB601DMObservation
+from physicalai_rebot_b601_plugin.dm import ReBotB601DM, ReBotB601DMObservation, _normalize_speed
 
 if TYPE_CHECKING:
     from motorbridge import Motor
@@ -109,8 +109,9 @@ class ReBotB601RS(ReBotB601DM):
         mit_kd: RSMITGain | None = None,
         gripper_mit_kp: float = 30.0,
         gripper_mit_kd: float = 0.8,
-        gripper_mit_torque_limit: float = 3.5,
-        gripper_mit_hold_torque_limit: float = 1.0,
+        gripper_mit_torque_limit: float = 1.5,
+        gripper_mit_hold_torque_limit: float = 0.5,
+        gripper_max_speed: float | None = 400.0,
         max_relative_target: float | None = None,
         gravity_compensation: float | bool = 1.0,
         velocity_feedforward: float | bool = 0.3,
@@ -134,6 +135,8 @@ class ReBotB601RS(ReBotB601DM):
             gripper_mit_torque_limit: Gripper torque limit while it moves (N·m), enforced by the
                 motor firmware (``limit_torque``).
             gripper_mit_hold_torque_limit: Gripper torque limit once it stalls, e.g. on an object (N·m).
+            gripper_max_speed: Fastest the gripper's target moves (degrees per second), which sets how
+                hard the jaws hit an object; ``None`` or ``-1`` follows the commands as they come.
             max_relative_target: Optional per-command step limit in degrees from the measured pose;
                 ``None`` or ``-1`` disables it.
             gravity_compensation: Share (0 to 1) of the commanded pose's gravity torque sent as
@@ -162,6 +165,7 @@ class ReBotB601RS(ReBotB601DM):
         if any(limit > REBOT_B601_RS_GRIPPER_MAX_TORQUE_NM for limit in torque_limits):
             msg = f"gripper torque limits must not exceed {REBOT_B601_RS_GRIPPER_MAX_TORQUE_NM} N·m."
             raise ValueError(msg)
+        gripper_max_speed = _normalize_speed(gripper_max_speed, "gripper_max_speed")
         _validate_mit_gain(mit_kp, "mit_kp")
         _validate_mit_gain(mit_kd, "mit_kd")
 
@@ -185,6 +189,7 @@ class ReBotB601RS(ReBotB601DM):
         self._gripper_mit_kd = gripper_mit_kd
         self._gripper_mit_torque_limit = gripper_mit_torque_limit
         self._gripper_mit_hold_torque_limit = gripper_mit_hold_torque_limit
+        self._gripper_max_speed_rad_s = None if gripper_max_speed is None else math.radians(gripper_max_speed)
         self._reset_control_state()
 
     def _open_controller(self) -> Controller:
@@ -215,6 +220,7 @@ class ReBotB601RS(ReBotB601DM):
         self._gripper_open_stall_count = 0
         # Unknown after a reset (a new connection, or another program may have changed it).
         self._gripper_holding: bool | None = None
+        self._gripper_target_rad: float | None = None
         self._gripper_limit_written_at = -math.inf
 
     def _mit_gain(self, name: str, which: Literal["kp", "kd"]) -> float:
@@ -273,6 +279,7 @@ class ReBotB601RS(ReBotB601DM):
         else:
             state_vel = (state.pos - self._gripper_prev_state_pos) / control_dt_s
         self._gripper_prev_state_pos = state.pos
+        target_rad = self._slew_gripper_target(target_rad, state.pos, control_dt_s)
 
         stalled = abs(state_vel) < _GRIPPER_STALL_VEL_RAD_S
         if target_rad - state.pos > _GRIPPER_OPEN_STALL_ERROR_RAD and stalled:
@@ -286,6 +293,20 @@ class ReBotB601RS(ReBotB601DM):
             return
         self._set_gripper_torque_limit(motor, holding=stalled)
         motor.send_mit(target_rad, 0.0, self._gripper_mit_kp, kd, 0.0)
+
+    def _slew_gripper_target(self, target_rad: float, measured_rad: float, dt: float) -> float:
+        """Move the gripper's target toward ``target_rad`` no faster than ``gripper_max_speed``.
+
+        Returns:
+            The target to send this command, starting from the measured position after a reset.
+        """
+        speed = self._gripper_max_speed_rad_s
+        if speed is None:
+            return target_rad
+        previous = self._gripper_target_rad if self._gripper_target_rad is not None else measured_rad
+        step = speed * dt
+        self._gripper_target_rad = previous + min(max(target_rad - previous, -step), step)
+        return self._gripper_target_rad
 
     def _set_gripper_torque_limit(self, motor: Motor, *, holding: bool) -> None:
         """Write the gripper's firmware torque limit (hold or moving) when it changes, and now and then."""

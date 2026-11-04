@@ -100,9 +100,11 @@ MIT frame (and an RS-00 one) cannot encode damping above 5, and the drivers reje
 motor's range instead of letting `motorbridge` clamp them silently.
 
 The RS gripper servos on the motor itself and the firmware caps its torque (`limit_torque`) at
-`gripper_mit_torque_limit` (3.5 N·m) while it moves and `gripper_mit_hold_torque_limit` (1 N·m)
-once it stalls, for example on a grasped object. It crosses its full travel in about 0.35 s. On
-disconnect the driver restores the motor's full torque range after letting the gripper go.
+`gripper_mit_torque_limit` (1.5 N·m) while it moves and `gripper_mit_hold_torque_limit` (0.5 N·m)
+once it stalls, for example on a grasped object. `gripper_max_speed` (400 deg/s) limits how fast
+its target moves, and so how hard the jaws hit an object; 3D-printed fingertips broke at the
+unlimited speed (about 1000 deg/s). On disconnect the driver restores the motor's full torque range
+after letting the gripper go.
 
 ## Screenshots
 
