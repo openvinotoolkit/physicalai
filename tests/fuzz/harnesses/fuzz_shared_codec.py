@@ -176,10 +176,14 @@ def _structured_malformed_mode(fdp: atheris.FuzzedDataProvider) -> None:
             pass
     elif target == 3:
         dtype = fdp.PickValueInList(_BAD_ARRAY_DTYPES)
+        array = np.zeros((fdp.ConsumeIntInRange(1, 4),), dtype=np.dtype(dtype))
         try:
-            encode_numpy(np.zeros((fdp.ConsumeIntInRange(1, 4),), dtype=np.dtype(dtype)))
+            encode_numpy(array)
         except _EXPECTED_DECODE_EXCEPTIONS:
             pass
+        else:
+            msg = f"encode_numpy accepted unsupported dtype {dtype!r}"
+            raise AssertionError(msg)
     else:
         marker = {
             "__np__": True,

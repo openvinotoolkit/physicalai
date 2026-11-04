@@ -158,8 +158,11 @@ def _structured_valid_mode(fdp: atheris.FuzzedDataProvider) -> None:
     output = decoded[name]
     assert isinstance(output, np.ndarray), f"image {name!r} round-trip did not return an ndarray"
     assert output.dtype == image.dtype, f"image {name!r} round-trip changed dtype: {output.dtype} != {image.dtype}"
-    # JPEG is lossy: assert layout only, never exact pixels.
     assert output.shape == image.shape, f"image {name!r} round-trip changed shape: {output.shape} != {image.shape}"
+    if codec == "raw":
+        np.testing.assert_array_equal(output, image, err_msg=f"raw image {name!r} round-trip changed values")
+        assert output.flags.writeable, f"raw image {name!r} round-trip returned a read-only array"
+    # JPEG is lossy: assert layout only, never exact pixels.
 
 
 @atheris.instrument_func
