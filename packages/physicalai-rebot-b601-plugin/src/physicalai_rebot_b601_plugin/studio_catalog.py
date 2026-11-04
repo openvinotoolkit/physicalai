@@ -369,15 +369,17 @@ class ReBotB601RSPayload(_ReBotMotionPayload):
         json_schema_extra=robot_field_ui({"advanced_configuration": True}),
     )
     gripper_mit_kp: float = Field(  # pyrefly: ignore [bad-argument-type, no-matching-overload]
-        default=12.0,
+        default=30.0,
         ge=0.0,
+        le=REBOT_B601_MIT_GAIN_LIMITS["rs-00"][0],
         allow_inf_nan=False,
         title="Gripper stiffness (kp)",
         json_schema_extra=robot_field_ui({"advanced_configuration": True}),
     )
     gripper_mit_kd: float = Field(  # pyrefly: ignore [bad-argument-type, no-matching-overload]
-        default=0.05,
+        default=0.8,
         ge=0.0,
+        le=REBOT_B601_MIT_GAIN_LIMITS["rs-00"][1],
         allow_inf_nan=False,
         title="Gripper damping (kd)",
         json_schema_extra=robot_field_ui({"advanced_configuration": True}),

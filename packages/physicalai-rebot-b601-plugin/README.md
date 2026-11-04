@@ -27,7 +27,7 @@ matching LeRobot's RS defaults, which do not provide POS_VEL velocity settings.
 | Class         | Arm              | Motors                        | Protocol                              |
 | ------------- | ---------------- | ----------------------------- | ------------------------------------- |
 | `ReBotB601DM` | B601-DM follower | Damiao (via `motorbridge`)    | POS_VEL / FORCE_POS (default), or MIT |
-| `ReBotB601RS` | B601-RS follower | RobStride (via `motorbridge`) | MIT mode + gripper impedance          |
+| `ReBotB601RS` | B601-RS follower | RobStride (via `motorbridge`) | MIT mode + force-limited gripper      |
 
 ## Control
 
@@ -84,20 +84,25 @@ robot.set_control(velocity_feedforward=0.0, mit_kd={"shoulder_lift": 12.0})
 
 The default MIT gains:
 
-| Joint         | RS `kp`               | RS `kd` | DM `kp` | DM `kd` |
-| ------------- | --------------------- | ------- | ------- | ------- |
-| shoulder_pan  | 50                    | 3       | 120     | 5       |
-| shoulder_lift | 150                   | 10      | 120     | 5       |
-| elbow_flex    | 150                   | 10      | 120     | 5       |
-| wrist_flex    | 50                    | 5       | 30      | 2       |
-| wrist_yaw     | 50                    | 4       | 30      | 2       |
-| wrist_roll    | 50                    | 4       | 30      | 2       |
-| gripper       | impedance (12 / 0.05) |         | 8       | 1       |
+| Joint         | RS `kp` | RS `kd` | DM `kp` | DM `kd` |
+| ------------- | ------- | ------- | ------- | ------- |
+| shoulder_pan  | 50      | 3       | 120     | 5       |
+| shoulder_lift | 150     | 10      | 120     | 5       |
+| elbow_flex    | 150     | 10      | 120     | 5       |
+| wrist_flex    | 50      | 5       | 30      | 2       |
+| wrist_yaw     | 50      | 4       | 30      | 2       |
+| wrist_roll    | 50      | 4       | 30      | 2       |
+| gripper       | 30      | 0.8     | 8       | 1       |
 
 The RS gains are Seeed's and LeRobot's RobStride defaults. The DM gains are Seeed's Damiao values
 with the shoulder and elbow damping capped at 5 and the wrists stiffened from 18 to 30. A Damiao
 MIT frame (and an RS-00 one) cannot encode damping above 5, and the drivers reject gains above a
 motor's range instead of letting `motorbridge` clamp them silently.
+
+The RS gripper servos on the motor itself and the firmware caps its torque (`limit_torque`) at
+`gripper_mit_torque_limit` (3.5 N·m) while it moves and `gripper_mit_hold_torque_limit` (1 N·m)
+once it stalls, for example on a grasped object. It crosses its full travel in about 0.35 s. On
+disconnect the driver restores the motor's full torque range after letting the gripper go.
 
 ## Screenshots
 

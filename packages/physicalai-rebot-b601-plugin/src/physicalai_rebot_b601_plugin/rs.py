@@ -5,12 +5,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import math
 import time
 from dataclasses import dataclass
-from typing import ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
-import numpy as np
 from loguru import logger
 from motorbridge import Controller, Mode
 
@@ -30,6 +30,9 @@ from physicalai_rebot_b601_plugin.constants import (
 )
 from physicalai_rebot_b601_plugin.dm import ReBotB601DM, ReBotB601DMObservation
 
+if TYPE_CHECKING:
+    from motorbridge import Motor
+
 ReBotRSCanAdapter = Literal["socketcan", "robstride"]
 ReBotRole = Literal["follower"]
 RSMITGain = float | dict[str, float]
@@ -37,10 +40,12 @@ RSMITGain = float | dict[str, float]
 _GRIPPER_STALL_VEL_RAD_S = 0.25
 _GRIPPER_OPEN_STALL_ERROR_RAD = 0.05
 _GRIPPER_OPEN_STALL_CYCLES = 5
-_GRIPPER_DAMPING = 1.5
-_GRIPPER_LPF_ALPHA = 0.3
-_GRIPPER_TARGET_VEL_MAX_RAD_S = 3.0
-# The gripper's velocity estimates use the measured interval between commands, clamped to this
+# RobStride ``limit_torque``: the firmware caps every MIT command's torque at this value, so the
+# gripper's stiff on-board servo can never squeeze harder than the configured limit.
+_LIMIT_TORQUE_PARAM = 0x700B
+# The limit is written without an acknowledgement; write it again this often in case one was lost.
+_GRIPPER_LIMIT_REFRESH_S = 0.5
+# The gripper's velocity estimate uses the measured interval between commands, clamped to this
 # range; the first command after a reset uses the nominal interval.
 _GRIPPER_NOMINAL_DT_S = 0.02
 _GRIPPER_MIN_DT_S = 0.005
@@ -102,8 +107,8 @@ class ReBotB601RS(ReBotB601DM):
         disable_torque_on_disconnect: bool = True,
         mit_kp: RSMITGain | None = None,
         mit_kd: RSMITGain | None = None,
-        gripper_mit_kp: float = 12.0,
-        gripper_mit_kd: float = 0.05,
+        gripper_mit_kp: float = 30.0,
+        gripper_mit_kd: float = 0.8,
         gripper_mit_torque_limit: float = 3.5,
         gripper_mit_hold_torque_limit: float = 1.0,
         max_relative_target: float | None = None,
@@ -124,9 +129,10 @@ class ReBotB601RS(ReBotB601DM):
                 unset joints use :data:`REBOT_B601_RS_MIT_KP`.
             mit_kd: MIT damping for the arm joints, like ``mit_kp``; defaults to
                 :data:`REBOT_B601_RS_MIT_KD`.
-            gripper_mit_kp: Gripper impedance stiffness (N·m/rad).
-            gripper_mit_kd: Gripper impedance damping (N·m·s/rad).
-            gripper_mit_torque_limit: Gripper torque limit while it moves (N·m).
+            gripper_mit_kp: Gripper stiffness (N·m/rad) of the motor's own MIT servo.
+            gripper_mit_kd: Gripper damping (N·m·s/rad) of the motor's own MIT servo.
+            gripper_mit_torque_limit: Gripper torque limit while it moves (N·m), enforced by the
+                motor firmware (``limit_torque``).
             gripper_mit_hold_torque_limit: Gripper torque limit once it stalls, e.g. on an object (N·m).
             max_relative_target: Optional per-command step limit in degrees from the measured pose;
                 ``None`` or ``-1`` disables it.
@@ -204,11 +210,12 @@ class ReBotB601RS(ReBotB601DM):
 
     def _reset_control_state(self) -> None:
         super()._reset_control_state()
-        self._gripper_prev_target_pos: float | None = None
-        self._gripper_prev_filtered_target_vel: float | None = None
         self._gripper_prev_state_pos: float | None = None
         self._gripper_prev_time: float | None = None
         self._gripper_open_stall_count = 0
+        # Unknown after a reset (a new connection, or another program may have changed it).
+        self._gripper_holding: bool | None = None
+        self._gripper_limit_written_at = -math.inf
 
     def _mit_gain(self, name: str, which: Literal["kp", "kd"]) -> float:
         override = self._mit_kp if which == "kp" else self._mit_kd
@@ -232,8 +239,7 @@ class ReBotB601RS(ReBotB601DM):
         _ = goal_time
         motor = self._motors[name]
         if name == "gripper":
-            tau = self._gripper_output_torque(target_rad)
-            motor.send_mit(0.0, 0.0, 0.0, _GRIPPER_DAMPING, tau)
+            self._send_gripper(motor, target_rad)
             return
         kp = kp_scale * self._mit_gain(name, "kp")
         motor.send_mit(target_rad, velocity_rad_s, kp, self._mit_gain(name, "kd"), torque_nm)
@@ -246,38 +252,28 @@ class ReBotB601RS(ReBotB601DM):
             return _GRIPPER_NOMINAL_DT_S
         return min(max(now - previous, _GRIPPER_MIN_DT_S), _GRIPPER_MAX_DT_S)
 
-    def _gripper_output_torque(self, target_rad: float) -> float:
-        motor = self._motors["gripper"]
+    def _send_gripper(self, motor: Motor, target_rad: float) -> None:
+        """Servo the gripper on the motor itself, with the firmware capping its torque.
+
+        The motor's MIT loop runs much faster than the commands arrive, so the gripper follows a
+        fast leader; ``limit_torque`` keeps its force at the moving limit, or at the hold limit once
+        it stalls (for example on a grasped object). A gripper that cannot open, at its open stop,
+        is let go with damping only.
+        """
+        kd = self._gripper_mit_kd
         self._require_controller().poll_feedback_once()
         state = motor.get_state()
         if state is None:
-            return 0.0
+            motor.send_mit(0.0, 0.0, 0.0, kd, 0.0)
+            return
 
         control_dt_s = self._gripper_control_dt()
-        if self._gripper_prev_target_pos is None:
-            target_vel = 0.0
-        else:
-            target_vel = (target_rad - self._gripper_prev_target_pos) / control_dt_s
-        self._gripper_prev_target_pos = target_rad
-
-        if self._gripper_prev_filtered_target_vel is None:
-            filtered_target_vel = target_vel
-        else:
-            filtered_target_vel = (
-                _GRIPPER_LPF_ALPHA * target_vel + (1.0 - _GRIPPER_LPF_ALPHA) * self._gripper_prev_filtered_target_vel
-            )
-        target_vel = float(np.clip(filtered_target_vel, -_GRIPPER_TARGET_VEL_MAX_RAD_S, _GRIPPER_TARGET_VEL_MAX_RAD_S))
-        self._gripper_prev_filtered_target_vel = target_vel
-
         if self._gripper_prev_state_pos is None:
             state_vel = 0.0
         else:
             state_vel = (state.pos - self._gripper_prev_state_pos) / control_dt_s
         self._gripper_prev_state_pos = state.pos
 
-        impedance_torque = self._gripper_mit_kp * (target_rad - state.pos) + self._gripper_mit_kd * (
-            target_vel - state.vel
-        )
         stalled = abs(state_vel) < _GRIPPER_STALL_VEL_RAD_S
         if target_rad - state.pos > _GRIPPER_OPEN_STALL_ERROR_RAD and stalled:
             self._gripper_open_stall_count += 1
@@ -286,6 +282,30 @@ class ReBotB601RS(ReBotB601DM):
         if self._gripper_open_stall_count >= _GRIPPER_OPEN_STALL_CYCLES:
             if self._gripper_open_stall_count == _GRIPPER_OPEN_STALL_CYCLES:
                 logger.warning("reBot RS gripper open-stall detected, cutting torque")
-            return 0.0
-        max_torque = self._gripper_mit_hold_torque_limit if stalled else self._gripper_mit_torque_limit
-        return float(np.clip(impedance_torque, -max_torque, max_torque))
+            motor.send_mit(state.pos, 0.0, 0.0, kd, 0.0)
+            return
+        self._set_gripper_torque_limit(motor, holding=stalled)
+        motor.send_mit(target_rad, 0.0, self._gripper_mit_kp, kd, 0.0)
+
+    def _set_gripper_torque_limit(self, motor: Motor, *, holding: bool) -> None:
+        """Write the gripper's firmware torque limit (hold or moving) when it changes, and now and then."""
+        now = time.monotonic()
+        if holding == self._gripper_holding and now - self._gripper_limit_written_at < _GRIPPER_LIMIT_REFRESH_S:
+            return
+        limit = self._gripper_mit_hold_torque_limit if holding else self._gripper_mit_torque_limit
+        motor.robstride_write_param_f32(_LIMIT_TORQUE_PARAM, limit)
+        self._gripper_holding = holding
+        self._gripper_limit_written_at = now
+
+    def _disconnect_motors(self) -> None:
+        """Give the gripper back its full firmware torque range before the motors are disabled.
+
+        The gripper is let go (damping only) first, so the higher limit never squeezes anything. With
+        ``disable_torque_on_disconnect=False`` the motors stay on and the limit is kept.
+        """
+        gripper = self._motors.get("gripper")
+        if self.disable_torque_on_disconnect and gripper is not None:
+            with contextlib.suppress(Exception):
+                gripper.send_mit(0.0, 0.0, 0.0, self._gripper_mit_kd, 0.0)
+                gripper.robstride_write_param_f32(_LIMIT_TORQUE_PARAM, REBOT_B601_RS_GRIPPER_MAX_TORQUE_NM)
+        super()._disconnect_motors()
