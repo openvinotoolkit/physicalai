@@ -15,7 +15,7 @@ dependencies = [
     # catalog passes.
     "physicalai-studio-plugin>=0.5.0",
     "numpy>=1.24",
-    "mujoco>=3.6.0",
+    "mujoco>=3.6.0,<3.17",
     # Robot models are downloaded from MuJoCo Menagerie on first use; the exact
     # version pins every model file, so bump it deliberately.
     "mujoco-menagerie==2026.9.4",
