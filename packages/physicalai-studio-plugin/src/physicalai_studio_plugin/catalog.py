@@ -93,8 +93,12 @@ class RobotCatalogDefinition(Generic[_PayloadT]):
     )
     probe: RobotProbe[_PayloadT] | None = None
     zero_calibration: RobotZeroCalibration[Any] | None = None
-    simulation: SimulationLaunch[_PayloadT] | None = None
+
     """How Studio starts the simulation a simulated robot type attaches to; ``None`` for real robots."""
+    simulation: SimulationLaunch[_PayloadT] | None = None
+
+    """Whether the motors can be torqued; ``False`` for read-only leaders whose joints can only be read."""
+    has_torque: bool = True
 
 
 class RobotCatalogRegistry(Protocol):

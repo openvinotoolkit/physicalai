@@ -122,6 +122,12 @@ def test_definition_defaults_to_no_zero_calibration() -> None:
     assert definition.zero_calibration is None
 
 
+def test_definition_has_torque_defaults_to_true() -> None:
+    assert RobotCatalogDefinition(type="Test_Follower", display_name="Test Follower", role="follower").has_torque
+    leader = RobotCatalogDefinition(type="Test_Leader", display_name="Test Leader", role="leader", has_torque=False)
+    assert leader.has_torque is False
+
+
 def test_definition_accepts_zero_calibration() -> None:
     calibration = RobotZeroCalibration(instructions="Move to the rest pose.", set_zero=_noop_calibration_step)
     definition = RobotCatalogDefinition(
