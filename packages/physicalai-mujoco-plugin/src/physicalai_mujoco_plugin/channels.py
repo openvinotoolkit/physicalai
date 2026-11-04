@@ -354,6 +354,22 @@ class ArmChannels:
             data.qpos[member.qpos_adr] = qpos[0]
             data.qvel[member.dof_adr] = 0.0
 
+    def driven_targets(self) -> list[tuple[int, float]]:
+        """The joint position each channel driven here (PD torque, velocity) is driven toward.
+
+        Position servos are not listed: their target is their ``ctrl``.
+
+        Returns:
+            One ``(joint id, target in model units)`` per channel that drives a joint.
+        """
+        indices = [row[0] for row in self._pd_rows] + list(self._velocity_gains_by_index)
+        rows = []
+        for index in indices:
+            member = self.channels[index].first
+            if member.joint_id is not None:
+                rows.append((int(member.joint_id), float(self._tracked_targets[index])))
+        return rows
+
     def apply_pd(self) -> None:
         """Update the ``ctrl`` of the channels driven here; call before every physics step.
 
