@@ -93,12 +93,12 @@ class RobotCatalogDefinition(Generic[_PayloadT]):
     )
     probe: RobotProbe[_PayloadT] | None = None
     zero_calibration: RobotZeroCalibration[Any] | None = None
-
-    """How Studio starts the simulation a simulated robot type attaches to; ``None`` for real robots."""
     simulation: SimulationLaunch[_PayloadT] | None = None
-
-    """Whether the motors can be torqued; ``False`` for read-only leaders whose joints can only be read."""
-    has_torque: bool = True
+    """How Studio starts the simulation a simulated robot type attaches to; ``None`` for real robots."""
+    has_torque: bool = False
+    """Whether the driver implements ``physicalai.robot.TorqueControllable``: its motors can be switched on to
+    drive it, a leader too (to bring it to the follower), or off to move it by hand. ``False`` for arms that
+    can only be read, and for drivers that do not implement it."""
 
 
 class RobotCatalogRegistry(Protocol):

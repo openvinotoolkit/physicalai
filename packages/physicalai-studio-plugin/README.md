@@ -176,7 +176,7 @@ class RobotCatalogDefinition(Generic[_PayloadT]):
     probe: RobotProbe[_PayloadT] | None = None
     zero_calibration: RobotZeroCalibration | None = None
     simulation: SimulationLaunch | None = None
-    has_torque: bool = True
+    has_torque: bool = False
 ```
 
 | Field              | Description                                                                                         |
@@ -191,7 +191,7 @@ class RobotCatalogDefinition(Generic[_PayloadT]):
 | `probe`            | Optional [`RobotProbe[_PayloadT]`](#robotprobe) for device interaction.                             |
 | `zero_calibration` | Optional [`RobotZeroCalibration`](#robotzerocalibration) for Studio's guided zero-pose calibration. |
 | `simulation`       | Optional [`SimulationLaunch`](#simulationlaunch) that Studio uses to start a simulated robot.       |
-| `has_torque`       | Whether the motors can be torqued. Defaults to `True`; set `False` for read-only leaders.           |
+| `has_torque`       | Whether the driver implements `TorqueControllable` (`set_torque`). Defaults to `False`.             |
 
 ### `RobotAdapterOptions`
 
