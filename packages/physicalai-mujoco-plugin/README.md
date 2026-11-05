@@ -62,7 +62,7 @@ To drive the simulation from Physical AI Studio, see [Use with Physical AI Studi
 
 ### Browser viewer controls
 
-The viewer opens on its **Simulation** tab, which controls the simulation. The **Camera** tab controls whether the view follows a body. The **Visualization** and **Groups** tabs come from mjviser and control what is drawn.
+The viewer opens on its **Simulation** tab, which controls the simulation. The **Camera** tab controls whether the view follows a body. The **Visualization** and **Groups** tabs come from mjviser and control what is drawn. **Visualization** also toggles the target ghost: a see-through copy of every robot at the pose its joints are told to reach, on by default, so an arm that lags, is blocked or cannot reach a target shows as a gap between the arm and its ghost. It hides during a replay.
 
 - **Scene**: pick another scene for the running robot; every tabletop scene runs one or two arms, and a switch keeps the arm count. **Reset Scene** respawns the scene's objects while keeping the target fixed. **Home Arm** puts the arm joints and their position targets at the scene's home pose. An active policy or teleop session will drive the arm away again on its next action. During a replay ([`POST /replay`](#replay-recorded-joint-positions)), the folder shows the replayed frame and a **Stop Replay** button. **Overview camera** moves the `overview` camera between **Shoulder** and **Front** ([Overview camera styles](#overview-camera-styles)); it is disabled while automatic Studio recording runs.
 - **Robot**: the profile, its tier, the joint units, the overview camera style, and each floating base's height, tilt and hold.

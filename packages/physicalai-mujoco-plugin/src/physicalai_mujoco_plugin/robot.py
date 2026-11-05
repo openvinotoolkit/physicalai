@@ -329,6 +329,7 @@ class MuJoCoRobot(OperatorControls):
                 submit_command=self._submit_command,
                 panel_state=self._panel_state,
                 key_callback=self._key_callback,
+                driven_targets=self._driven_targets,
             )
             if not self._viewer.open(sim.model, sim.data):
                 self._viewer, self._enable_viewer = None, False
@@ -804,6 +805,17 @@ class MuJoCoRobot(OperatorControls):
             self._tick_meter.reset()  # the clock restarted (new model)
         self._last_tick_sim_time = sim_time
         self._tick_meter.add(sim_time)
+
+    def _driven_targets(self) -> list[tuple[int, float]] | None:
+        """``(joint id, target)`` of the PD torque and velocity channels, for the viewer's target ghost.
+
+        Returns:
+            The targets, or ``None`` during a replay, whose targets mean nothing.
+        """
+        sim = self._sim
+        if sim is None or self._replay is not None:
+            return None
+        return [row for channels in sim.channels for row in channels.driven_targets()]
 
     def _arm_targets(self) -> np.ndarray:
         """Return the current target of every channel in model units (radians for hinges).
