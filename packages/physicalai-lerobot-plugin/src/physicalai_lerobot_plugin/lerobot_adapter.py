@@ -25,6 +25,7 @@ from physicalai.config import export_config
 from physicalai.robot.device_ids import device_id_from_serial_port
 from physicalai.robot.errors import RobotCalibrationError
 from physicalai_lerobot_plugin._calibration import build_device, connect_device, disconnect_device
+from physicalai_lerobot_plugin._config import materialize_config
 from physicalai_lerobot_plugin.constants import VALID_ROLES, trust_unverified_plugins
 
 if TYPE_CHECKING:
@@ -291,7 +292,7 @@ class LeRobotAdapter:
         from lerobot.robots import make_robot_from_config  # noqa: PLC0415
 
         logger.info("Building LeRobot robot config type={!r} with kwargs={!r}", self._config_type, self._config_kwargs)
-        lerobot_config = _robot_config_class(self._config_type)(**self._config_kwargs)
+        lerobot_config = materialize_config(_robot_config_class(self._config_type), self._config_kwargs)
         logger.info("Built LeRobot robot config: {!r}", lerobot_config)
         self._robot = cast("_LeRobotLike", build_device(make_robot_from_config, lerobot_config))
         logger.info("Built LeRobot robot: {!r}", self._robot)
@@ -606,7 +607,7 @@ class LeRobotTeleoperatorAdapter:
             self._config_type,
             self._config_kwargs,
         )
-        teleop_config = _teleoperator_config_class(self._config_type)(**self._config_kwargs)
+        teleop_config = materialize_config(_teleoperator_config_class(self._config_type), self._config_kwargs)
         logger.info("Built LeRobot teleoperator config: {!r}", teleop_config)
         self._teleoperator = cast("_TeleoperatorLike", build_device(make_teleoperator_from_config, teleop_config))
         logger.info("Built LeRobot teleoperator: {!r}", self._teleoperator)
