@@ -2072,6 +2072,7 @@ provides-extras = ["tests"]
 name = "physicalai-rebot-b601-plugin"
 source = { editable = "packages/physicalai-rebot-b601-plugin" }
 dependencies = [
+    { name = "defusedxml" },
     { name = "loguru" },
     { name = "motorbridge" },
     { name = "numpy" },
@@ -2087,6 +2088,7 @@ tests = [
 
 [package.metadata]
 requires-dist = [
+    { name = "defusedxml", specifier = ">=0.7.1" },
     { name = "loguru", specifier = ">=0.7" },
     { name = "motorbridge", specifier = ">=0.4.4" },
     { name = "numpy", specifier = ">=1.24" },

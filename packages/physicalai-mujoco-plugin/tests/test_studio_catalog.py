@@ -530,8 +530,8 @@ class TestGeneratedEntries:
         names = {entry.type: entry.display_name for entry in list_catalog_entries()}
         assert names["MuJoCo_WidowXAI_Bimanual_Follower"] == "MuJoCo WidowX AI Bimanual Follower"
         assert names["MuJoCo_UnitreeG1_Follower"] == "MuJoCo Unitree G1 Follower (experimental)"
-        assert names["MuJoCo_reBotB601_Follower"] == "MuJoCo reBot B601 Follower (provisional)"
-        assert names["MuJoCo_reBotB601_Bimanual_Follower"] == "MuJoCo reBot B601 Bimanual Follower (provisional)"
+        assert names["MuJoCo_reBotB601_Follower"] == "MuJoCo reBot B601 Follower"
+        assert names["MuJoCo_reBotB601_Bimanual_Follower"] == "MuJoCo reBot B601 Bimanual Follower"
         assert names["MuJoCo_WidowXAI_Follower"] == "MuJoCo WidowX AI Follower"
 
     def test_unsupported_profiles_get_no_entry(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -821,9 +821,8 @@ class TestSimulationLaunch:
         assert labels["MuJoCo_UnitreeG1_Follower"] == ("humanoid", "experimental")
         assert labels["MuJoCo_UnitreeGo2_Follower"] == ("quadruped", "experimental")
         assert labels["MuJoCo_BostonDynamicsSpot_Follower"] == ("quadruped", "experimental")
-        # The reBot twin's mapping is provisional (#343/#360, no hardware check yet).
-        assert labels["MuJoCo_reBotB601_Follower"] == ("1 arm", "twin", "provisional")
-        assert labels["MuJoCo_reBotB601_Bimanual_Follower"] == ("2 arms (bimanual)", "twin", "provisional")
+        assert labels["MuJoCo_reBotB601_Follower"] == ("1 arm", "twin")
+        assert labels["MuJoCo_reBotB601_Bimanual_Follower"] == ("2 arms (bimanual)", "twin")
 
     def test_the_module_runs_with_python_dash_m(self) -> None:
         import subprocess  # noqa: PLC0415

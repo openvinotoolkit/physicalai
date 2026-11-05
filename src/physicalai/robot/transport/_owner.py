@@ -22,6 +22,11 @@ _DEFAULT_START_TIMEOUT = 30.0
 """Generous by design: WidowXAI.connect() blocks ~2s on a homing move, and
 serial enumeration can be slow — a blind short timeout would misfire."""
 
+_STOP_TIMEOUT_S = 30.0
+"""Generous for the same reason: on SIGTERM a driver may park the arm in its rest
+pose before releasing torque (the reBot B601 takes several seconds), and SIGKILL
+before that would skip disabling the motors."""
+
 
 class RobotOwner:
     """Spawns and supervises the robot owner subprocess.
@@ -136,14 +141,16 @@ class RobotOwner:
                 )
         raise RobotTransportError(msg, phase=phase, device_ids=device_ids or None)
 
-    def stop(self, timeout: float = 5.0) -> None:
+    def stop(self, timeout: float = _STOP_TIMEOUT_S) -> None:
         """Stop the owner subprocess.
 
         Sends SIGTERM (the worker disconnects the driver into its safe
         state), waits up to *timeout* seconds, then SIGKILL.
 
         Args:
-            timeout: Maximum seconds to wait for graceful shutdown.
+            timeout: Maximum seconds to wait for graceful shutdown. Disconnecting
+                can take a while: an arm may move to its rest pose before it
+                releases torque.
         """
         proc = self._process
         if proc is None:

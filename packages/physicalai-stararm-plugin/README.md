@@ -13,6 +13,17 @@ Fashion Star Arm 102 plugin for [PhysicalAI](https://github.com/openvinotoolkit/
 - Studio catalog plugin entries for LD leader, HD leader, and FL follower
 - Bundled `stararm102` URDF package
 
+## Follower profiles
+
+Star Arm leaders default to `follower_profile=None`, which preserves their native
+joint frame. Set `follower_profile="b601"` when controlling a reBot B601 to emit
+LeRobot-compatible actions: the profile applies directions
+`[-1, -1, 1, 1, 1, -1, -6]` and clips to the B601 public limits, including a
+`-270..0` degree gripper range.
+
+The native default is suitable when a Star Arm leader controls a Star Arm 102-FL
+follower.
+
 ## Installation
 
 ```bash

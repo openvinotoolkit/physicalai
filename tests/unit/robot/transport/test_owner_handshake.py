@@ -68,6 +68,20 @@ def test_owner_reads_structured_calibration_error(reason: str) -> None:
     assert "diagnostic traceback" in str(caught.value)
 
 
+def test_stop_waits_for_a_slow_safe_disconnect_before_killing() -> None:
+    # On SIGTERM the worker disconnects the driver, which may first park the arm for several seconds.
+    process = Mock()
+    process.poll.return_value = None
+    process.returncode = 0
+    owner = RobotOwner.__new__(RobotOwner)
+    owner._process = process
+
+    owner.stop()
+
+    assert process.wait.call_args_list[0].kwargs["timeout"] >= 20.0
+    process.kill.assert_not_called()
+
+
 @pytest.mark.parametrize("calibration", [{"reason": "unknown"}, {"reason": "missing", "path": 123}, []])
 def test_owner_does_not_trust_malformed_calibration_diagnostics(calibration: object) -> None:
     line = "ERROR:" + json.dumps({"msg": "failed", "phase": "connection_failed", "calibration": calibration})

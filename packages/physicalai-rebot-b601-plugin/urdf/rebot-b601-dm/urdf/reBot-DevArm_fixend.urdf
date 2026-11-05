@@ -352,6 +352,14 @@
     <child link="end_link" />
     <axis xyz="0 0 0" />
   </joint>
+  <link name="gripper_drive_link" />
+  <joint name="gripper_drive" type="revolute">
+    <origin xyz="0 0 0" rpy="0 0 0" />
+    <parent link="end_link" />
+    <child link="gripper_drive_link" />
+    <axis xyz="1 0 0" />
+    <limit lower="-4.71238898" upper="0" effort="1" velocity="10" />
+  </joint>
   <link name="finger_left_link">
     <visual name="finger_left_body">
       <origin xyz="0 0 0" rpy="0 0 0" />
@@ -394,6 +402,7 @@
     <child link="finger_left_link" />
     <axis xyz="0 1 0" />
     <limit lower="0" upper="0.0285" effort="8" velocity="0.08" />
+    <mimic joint="gripper_drive" multiplier="-0.00604788784" offset="0" />
   </joint>
   <link name="finger_right_link">
     <visual name="finger_right_body">

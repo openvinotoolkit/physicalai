@@ -164,10 +164,10 @@ class TestDemonstrator:
         assert max(carry) <= np.degrees(demo.active_arm.max_tilt) + 1e-6
         assert tilt["close"] <= 15.0  # noqa: PLR2004 - the grasp from nearly straight above
 
-    def test_the_widowx_servos_hold_the_targets_the_leader_publishes(self, scene: MuJoCoRobot) -> None:
+    def test_soft_servos_hold_the_targets_the_leader_publishes(self, scene: MuJoCoRobot) -> None:
         model, data = scene._sim.model, scene._sim.data
-        if scene._profile.name != "trossen_wxai":
-            assert not model.body_gravcomp.any()  # the WidowX AI's soft servos only
+        if scene._profile.name not in {"trossen_wxai", "rebot_b601"}:
+            assert not model.body_gravcomp.any()  # the WidowX AI's and the reBot's soft servos only
             return
         demo = _demo(scene)
         for _ in range(round(1.0 / TICK_S)):
