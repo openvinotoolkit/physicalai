@@ -5,19 +5,51 @@
   "include-v-in-tag": true,
   "include-component-in-tag": true,
   "changelog-sections": [
-    { "type": "feat", "section": "✨ Features", "hidden": false },
-    { "type": "fix", "section": "🐛 Bug Fixes", "hidden": false },
+    {
+      "type": "feat",
+      "section": "✨ Features",
+      "hidden": false
+    },
+    {
+      "type": "fix",
+      "section": "🐛 Bug Fixes",
+      "hidden": false
+    },
     {
       "type": "perf",
       "section": "🚀 Performance Improvements",
       "hidden": false
     },
-    { "type": "refactor", "section": "♻️ Code Refactoring", "hidden": false },
-    { "type": "docs", "section": "📚 Documentation", "hidden": false },
-    { "type": "test", "section": "✅ Tests", "hidden": false },
-    { "type": "ci", "section": "👷 CI/CD", "hidden": false },
-    { "type": "chore", "section": "🔧 Chores", "hidden": false },
-    { "type": "revert", "section": "⏪ Reverts", "hidden": false }
+    {
+      "type": "refactor",
+      "section": "♻️ Code Refactoring",
+      "hidden": false
+    },
+    {
+      "type": "docs",
+      "section": "📚 Documentation",
+      "hidden": false
+    },
+    {
+      "type": "test",
+      "section": "✅ Tests",
+      "hidden": false
+    },
+    {
+      "type": "ci",
+      "section": "👷 CI/CD",
+      "hidden": false
+    },
+    {
+      "type": "chore",
+      "section": "🔧 Chores",
+      "hidden": false
+    },
+    {
+      "type": "revert",
+      "section": "⏪ Reverts",
+      "hidden": false
+    }
   ],
   "packages": {
     ".": {
@@ -60,6 +92,11 @@
     "packages/physicalai-trossen-plugin": {
       "release-type": "python",
       "package-name": "physicalai-trossen-plugin",
+      "changelog-path": "CHANGELOG.md"
+    },
+    "packages/physicalai-rosbag-plugin": {
+      "release-type": "python",
+      "package-name": "physicalai-rosbag-plugin",
       "changelog-path": "CHANGELOG.md"
     }
   }
