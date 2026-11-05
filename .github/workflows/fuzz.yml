@@ -82,6 +82,15 @@ jobs:
           # Robot transport msgpack codec (action/state/metadata records)
           - harness: transport_codec
             seed_dir: ""
+          # Shared transport msgpack codec (tagged arrays, depth/size limits)
+          - harness: shared_codec
+            seed_dir: ""
+          # Remote inference protocol maps (decode + encode round-trips)
+          - harness: remote_protocol
+            seed_dir: ""
+          # Remote inference image path (JPEG/raw decoding via predict requests)
+          - harness: remote_images
+            seed_dir: ""
 
     permissions:
       contents: read
