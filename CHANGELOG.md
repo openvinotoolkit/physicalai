@@ -12,6 +12,14 @@
 
 - Add `Config.to_yaml()` for in-memory YAML serialization.
 
+## [0.4.1](https://github.com/openvinotoolkit/physicalai/compare/v0.4.0...v0.4.1) (2026-11-06)
+
+
+### 🔧 Chores
+
+* **main:** release physicalai-lerobot-plugin 0.4.1 ([#386](https://github.com/openvinotoolkit/physicalai/issues/386)) ([c354d75](https://github.com/openvinotoolkit/physicalai/commit/c354d751b17951b1c7f4922b67f5abb8c388cedf))
+* **main:** release physicalai-trossen-plugin 0.3.0 ([#383](https://github.com/openvinotoolkit/physicalai/issues/383)) ([605304d](https://github.com/openvinotoolkit/physicalai/commit/605304d1859c598ab397fd6cc7560a0105da7a1e))
+
 ## [0.4.0](https://github.com/openvinotoolkit/physicalai/compare/v0.3.0...v0.4.0) (2026-11-06)
 
 
