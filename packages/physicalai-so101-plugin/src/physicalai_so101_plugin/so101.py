@@ -121,6 +121,9 @@ class SO101(Robot):
     NUM_JOINTS: ClassVar[int] = 6
     """Number of joints / servos on the SO-101."""
 
+    SYNC_READ_ATTEMPTS: ClassVar[int] = 3
+    """Total sync-read attempts per observation before a bus failure is raised."""
+
     def __init__(
         self,
         port: str,
@@ -719,16 +722,37 @@ class SO101(Robot):
         self._set_torque(enabled=True)
 
     def _read_joint_positions(self) -> np.ndarray:
-        """Bulk-read present positions from all servos via sync read.
+        """Bulk-read present positions from all servos, retrying transient failures.
+
+        A single dropped or corrupt reply on the servo bus (for example comm
+        result ``-6`` timeout or ``-7`` corrupt packet after a supply dip) is
+        retried up to :attr:`SYNC_READ_ATTEMPTS` times in total before giving up.
 
         Returns:
             Int32 array of raw tick positions, shape ``(6,)``.
 
         Raises:
-            ConnectionError: If sync read fails.
-        """
+            ConnectionError: If every sync read attempt fails.
+        """  # noqa: DOC502 — raised by the delegated _sync_read_positions_once(), but callers see it here.
         conn = self._require_connection()
+        for attempt in range(1, self.SYNC_READ_ATTEMPTS):
+            try:
+                return self._sync_read_positions_once(conn)
+            except ConnectionError as exc:
+                logger.warning(
+                    f"SO-101 sync read attempt {attempt}/{self.SYNC_READ_ATTEMPTS} on {self.port} failed: {exc}"
+                )
+        return self._sync_read_positions_once(conn)
 
+    def _sync_read_positions_once(self, conn: _SO101Connection) -> np.ndarray:
+        """Run one sync-read transaction and decode the present positions.
+
+        Returns:
+            Int32 array of raw tick positions, shape ``(6,)``.
+
+        Raises:
+            ConnectionError: If the transaction fails or a servo's data is missing.
+        """
         comm_result = conn.group_sync_read.txRxPacket()
         if comm_result != 0:
             msg = f"Sync read failed with comm result {comm_result}"
