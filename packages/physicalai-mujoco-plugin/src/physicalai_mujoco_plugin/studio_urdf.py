@@ -219,11 +219,17 @@ def models_available(profile: RobotProfile) -> bool:
     """Return whether the profile's robot model can be loaded without a download.
 
     Returns:
-        ``True`` with a ``MENAGERIE_ROOT`` checkout, or when every Menagerie model the profile
-        loads is in the cache.
+        For a model from outside Menagerie (the OpenArm), whether its local copy or its archive is
+        there; otherwise ``True`` with a ``MENAGERIE_ROOT`` checkout, or when every Menagerie model
+        the profile loads is in the cache.
     """
     import mujoco_menagerie  # noqa: PLC0415
 
+    from physicalai_mujoco_plugin.external_models import EXTERNAL_MODELS, external_available  # noqa: PLC0415
+
+    external = EXTERNAL_MODELS.get(profile.menagerie_model)
+    if external is not None:
+        return external_available(external, profile.menagerie_entry)
     cache = mujoco_menagerie.Cache()
     if cache.root is not None:
         return True

@@ -4,13 +4,14 @@ Simulate robot arms, humanoids and quadrupeds from [MuJoCo Menagerie](https://gi
 
 ## Features
 
-- Run any MuJoCo Menagerie robot as a PhysicalAI transport owner: 15 robots with a hand-written profile (SO-101, WidowX AI, reBot B601, UR5e, ALOHA, Franka, xArm7, Unitree G1, ...), and any other Menagerie model with a derived one; see [Other robots](#other-robots)
-- Digital twins of the SO-101, WidowX AI and reBot B601 with their real drivers' joint names and units
+- Run any MuJoCo Menagerie robot as a PhysicalAI transport owner: 16 robots with a hand-written profile (SO-101, WidowX AI, reBot B601, UR5e, ALOHA, Franka, OpenArm, xArm7, Unitree G1, ...), and any other Menagerie model with a derived one; see [Other robots](#other-robots)
+- Digital twins of the SO-101, WidowX AI, reBot B601 and OpenArm v2 with their real drivers' joint names and units
 - Viser browser viewer with a Simulation tab (scene switching, reset, arm homing, seeded resets, episode auto-reset, conveyor belt controls, object dragging, camera previews, confirmed shutdown) and a Camera tab to follow an object, the target, or a gripper
 - Camera streams over HTTP (MJPEG), used in Studio as IP cameras
 - REST control server with the same controls as the viewer
 - Built-in task scenes
 - Automatic cube respawn after a configurable success dwell (five seconds by default) in `single_pick_place`
+- The OpenArm Cell (`openarm_cell`), Enactic's cage for the bimanual OpenArm, with its overhead camera
 - A conveyor-belt sorting cell (`conveyor_sort`) with an adjustable belt speed, a continuous item feed, and per-episode scoring
 - A language-conditioned sorting task for the Franka FR3, Panda and Duo, the WidowX AI (alone or a pair) and the reBot B601 (`bucket_sort`): an instruction such as "put the CPU in the red bucket", randomized bucket colours, and a success flag
 
@@ -48,7 +49,7 @@ The first `start` of a robot on a machine downloads its model from [MuJoCo Menag
 physicalai-mujoco prefetch
 ```
 
-On a machine without internet access, run `prefetch` on a connected machine and copy the cache (set its location with `MENAGERIE_CACHE_DIR`), or set `MENAGERIE_ROOT` to a `mujoco_menagerie` checkout. A simulation owner started some other way, such as `examples/run_mujoco_owner.py`, downloads the model during its startup instead, so run `prefetch` first on a slow connection.
+On a machine without internet access, run `prefetch` on a connected machine and copy the cache (set its location with `MENAGERIE_CACHE_DIR`), or set `MENAGERIE_ROOT` to a `mujoco_menagerie` checkout. OpenArm is not in Menagerie: its model downloads from the pinned `openarm-mujoco` source archive on PyPI (about 6 MB) into the same cache, and `OPENARM_MUJOCO_ROOT` points at a local copy (an `openarm_mujoco` checkout at the pinned version, or the unpacked archive). A simulation owner started some other way, such as `examples/run_mujoco_owner.py`, downloads the model during its startup instead, so run `prefetch` first on a slow connection.
 
 By default `start` runs:
 
@@ -331,7 +332,7 @@ Use `--unit degrees` (or `unit="degrees"` on `MuJoCoRobot`) to get joint angles 
 
 ## Other robots
 
-Every robot comes from MuJoCo Menagerie and is described by a _profile_: what the plugin knows about it beyond its model. `physicalai-mujoco profiles` lists the hand-written ones. Their _tier_ says how closely they are maintained:
+Every robot but the OpenArm comes from MuJoCo Menagerie (the OpenArm from Enactic's `openarm-mujoco`), and each is described by a _profile_: what the plugin knows about it beyond its model. `physicalai-mujoco profiles` lists the hand-written ones. Their _tier_ says how closely they are maintained:
 
 - `twin`: matches a real robot's driver, with the same joint names and units.
 - `dataset`: an arm that public robot-learning datasets use. Channels, home pose and cameras are derived from the model. Channel names change only where LeRobot datasets name the joints (ALOHA, SO-100, Koch); values stay in model units from the model's zero pose, without any dataset's calibration.
@@ -344,6 +345,7 @@ Every robot comes from MuJoCo Menagerie and is described by a _profile_: what th
 | `rebot_b601`           | Seeed reBot B601-RS, `ReBotB601RS` names                | `twin`         | `single_pick_place`, `bucket_sort` (1 arm) | 1, 2 | `degrees`    |
 | `franka_fr3`           | Franka Research 3 with hand, matching `FrankaFR3`       | `twin`         | `single_pick_place`, `bucket_sort` (1 arm) | 1, 2 | `degrees`    |
 | `franka_duo`           | Franka FR3 Duo, both arms as one robot (16 channels)    | `twin`         | `single_pick_place`, `bucket_sort`         | 1    | `degrees`    |
+| `openarm`              | OpenArm v2, both arms as one robot (provisional)        | `twin`         | `openarm_cell`                             | 1    | `degrees`    |
 | `ur5e`                 | Universal Robots UR5e (no gripper)                      | `dataset`      | `single_pick_place`                        | 1, 2 | `degrees`    |
 | `aloha`                | ALOHA, both arms as one robot (14 joints)               | `dataset`      | `single_pick_place`                        | 1    | `degrees`    |
 | `so_arm100`            | SO-ARM100 (Menagerie `trs_so_arm100`)                   | `dataset`      | `single_pick_place`                        | 1, 2 | `degrees`    |
@@ -381,7 +383,7 @@ Two profile fields drive this:
 
 The reachability test (`tests/test_reach.py`, marker `mujoco_smoke`) solves a damped least-squares IK for every arm on the centre and the extremes of its scaled spawn arc: within 1 cm, approach axis within 15° of straight down (the SO-101 needs 12° at the far edge of its own arc). With two arms, both reach the points on the arc's axis and the nearest arm reaches the others. It also measures each `reach` and checks the stored value to 1 cm. After changing an arm, print fresh measurements with `uv run python packages/physicalai-mujoco-plugin/tests/test_reach.py [profile ...]`.
 
-Every profile in these tiers has a Studio follower entry for one robot. The twins (SO-101, WidowX AI, reBot B601), whose real robots have bimanual leaders, also have a bimanual entry; other arms run two from the CLI only (`start --bimanual`). Entries whose mapping onto the real driver is not established yet (`RobotProfile.provisional`) end in **(provisional)** and carry a `provisional` label in the start dialog.
+Every profile in these tiers has a Studio follower entry for one robot. The twins (SO-101, WidowX AI, reBot B601), whose real robots have bimanual leaders, also have a bimanual entry; other arms run two from the CLI only (`start --bimanual`). Entries whose mapping onto the real driver is not established yet (`RobotProfile.provisional`, today the OpenArm) end in **(provisional)** and carry a `provisional` label in the start dialog.
 
 Any other Menagerie model name loads as an unsupported profile, outside CI and Studio: its channels, home pose, sensors and cameras are derived from the model, one channel per actuator. It needs a scene that supports it (`--scene`) or a robot-complete `--model`. Floor scenes such as `floor_flat` take any floating-base robot. Every channel's action is a position, also for velocity actuators, which the simulation drives toward it. Torque actuators on a tendon or site need `MuJoCoRobot(..., torque_mode="raw")`, whose actions are `ctrl`.
 
@@ -405,6 +407,8 @@ A twin uses its real driver's joint names, units and `state`. The SO-101's and t
 - **reBot B601** (`rebot_b601`, Menagerie's `seeed_rebot_devarm`): the joint names, order and degrees of the B601 plugin's `ReBotB601RS`, confirmed on a real B601-RS: Menagerie's joints one to one, and `gripper` in the driver's degrees too (−270 open to 0 closed). The joints stop where the driver clips its actions (±145° pan, −170…0° lift, −90…80° wrist flex, ±90° roll), except `elbow_flex`, which the model stops at −180° while the driver allows −200°. The arm responds like the driver: its servos have the driver's default MIT gains and full gravity compensation within the motors' torque limits, and the joints the friction and damping fitted to real RS teleoperation; the driver's 0.3 velocity feedforward is not modelled.
   Until #360 merges, the B601 plugin still uses its previous frame, which differs in the signs of `shoulder_pan`, `shoulder_lift` and `wrist_roll` and in the gripper's sign and scale, so data recorded with one does not carry over to the other. The mapping follows #360's joint-frame URDF and **has not been checked on a real arm**, so moving datasets or policies between this simulation and a real B601 is **not established**.
   It needs a read-only comparison on hardware first: move each joint by hand and compare the driver's readings with the simulation's, without zeroing or actuating the arm. Studio marks its followers **(provisional)**. Its `wrist` camera is the RealSense D405 on Seeed's printed mount, placed from the mount's CAD geometry; which side of the gripper it faces is assumed until that hardware check.
+- **OpenArm v2** (`openarm`, Enactic's `openarm_bimanual.xml` from `openarm-mujoco` 2.3.0, **provisional**): both arms as one robot, under the names and degrees of LeRobot's `BiOpenArmFollower` without `.pos`, sorted by name as `physicalai-lerobot-plugin` orders them: `left_gripper`, `left_joint_1` … `left_joint_7`, then the same for `right_`. Zero is the calibration pose, arms hanging and grippers closed, which is the model's zero pose; the simulation starts at Enactic's home, elbows bent 90° and grippers open. `gripper` is LeRobot's motor angle, 0 closed to −65° open on both sides, mapped linearly onto the model's finger joint (0 to +45° left, 0 to −45° right).
+  That gripper map and the signs of the symmetric joints (1, 3, 5, 6, 7) **have not been checked on a real arm**; the asymmetric limits of joints 2 and 4 agree between LeRobot and the model. Its gripper cameras are the model's (`left_wrist`, `right_wrist`, 66° vertical field of view). It runs in `openarm_cell`, which holds the shoulders where the cell's lifter does at the bottom of its travel, 0.335 m above the table, and whose `overview` camera is the cell's ceiling camera (a RealSense D457 on the real cell). The viewer shows the cell's frame without its walls; the camera streams see its opaque panels (geom group 5, which only the cameras render).
 
 ### Floating-base robots
 

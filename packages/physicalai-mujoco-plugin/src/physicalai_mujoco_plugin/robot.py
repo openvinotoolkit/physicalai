@@ -29,7 +29,12 @@ from loguru import logger
 
 from physicalai.config import export_config
 from physicalai_mujoco_plugin.camera_thread import RateMeter
-from physicalai_mujoco_plugin.cameras import CameraConfig, CameraService, offscreen_rendering_available
+from physicalai_mujoco_plugin.cameras import (
+    CameraConfig,
+    CameraService,
+    camera_scene_option,
+    offscreen_rendering_available,
+)
 from physicalai_mujoco_plugin.channels import TorqueMode
 from physicalai_mujoco_plugin.compose import OverviewStyle
 from physicalai_mujoco_plugin.control import OperatorControls
@@ -501,7 +506,7 @@ class MuJoCoRobot(OperatorControls):
             msg = "Robot is not connected."
             raise ConnectionError(msg)
         with mujoco.Renderer(self._sim.model, height, width) as renderer:
-            renderer.update_scene(self._sim.data, camera=camera_name)
+            renderer.update_scene(self._sim.data, camera=camera_name, scene_option=camera_scene_option())
             return renderer.render()
 
     # ------------------------------------------------------------------
