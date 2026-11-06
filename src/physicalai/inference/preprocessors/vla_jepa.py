@@ -27,7 +27,7 @@ def _area_weights(size_in: int, size_out: int) -> np.ndarray:
     for index in range(size_out):
         start, end = index * size_in // size_out, -(-(index + 1) * size_in // size_out)
         weights[index, start:end] = 1 / (end - start)
-    return weights
+    return weights.astype(np.float32)
 
 
 def _bicubic_weights(size_in: int, size_out: int, a: float = -0.5) -> np.ndarray:
@@ -46,7 +46,7 @@ def _bicubic_weights(size_in: int, size_out: int, a: float = -0.5) -> np.ndarray
             np.where(x < 2, (((x - 5) * x + 8) * x - 4) * a, 0.0),  # noqa: PLR2004
         )
         weights[index, start:end] = kernel / kernel.sum()
-    return weights
+    return weights.astype(np.float32)
 
 
 def _resize(image: np.ndarray, weights: tuple[np.ndarray, np.ndarray]) -> np.ndarray:

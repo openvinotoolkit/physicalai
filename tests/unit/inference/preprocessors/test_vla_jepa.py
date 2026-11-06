@@ -70,7 +70,8 @@ def test_graph_inputs(preprocessor: VLAJEPAPreprocessor) -> None:
 def test_camera_layouts_match(preprocessor: VLAJEPAPreprocessor) -> None:
     """Runtime frames (nested, channels-last uint8) match flat channels-first float inputs."""
     inputs = _inputs()
-    nested = {**inputs, IMAGES: {"wrist": inputs.pop("images.wrist"), "front": inputs.pop("images.front")}}
+    images = {name: inputs.pop(f"images.{name}") for name in ("wrist", "front")}
+    nested = {**inputs, IMAGES: images}
     channels_first = {
         **_inputs(),
         **{key: value.transpose(0, 3, 1, 2) / 255 for key, value in _inputs().items() if key.startswith(IMAGES)},
