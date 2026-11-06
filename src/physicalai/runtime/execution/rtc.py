@@ -296,7 +296,9 @@ class RTCExecution(Execution):
         thread (or timeout).
 
         Raises:
-            RuntimeError: If start() not called or thread dies during warmup.
+            RuntimeError: If start() was not called, another warmup is in
+                progress, the warmup times out, or it is cancelled by reset(),
+                stop(), a restart or a failed inference.
             WorkerDiedError: If the RTC thread died before or during warmup.
         """
         if self._model is None or self._rtc_queue is None:
