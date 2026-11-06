@@ -11,6 +11,21 @@ from physicalai.inference.preprocessors import ImageLayout, Preprocessor, Resize
 
 
 class TestResizePreprocessor:
+    @pytest.mark.parametrize("image_layout", ["BCHW", "BHWC"])
+    @pytest.mark.parametrize("mode", ["stretch", "letterbox"])
+    def test_temporal_images_match_batched_resize(self, image_layout: str, mode: str) -> None:
+        """The shared resizer preserves batch and time while resizing every frame."""
+        prep = ResizePreprocessor((8, 10), image_layout=image_layout, mode=mode)
+        images = np.arange(2 * 3 * 3 * 4 * 5, dtype=np.float32).reshape(2, 3, 3, 4, 5)
+        if image_layout == "BHWC":
+            images = images.transpose(0, 1, 3, 4, 2)
+
+        result = prep({"images.front": images})["images.front"]
+        expected = prep({"images.front": images.reshape(6, *images.shape[2:])})["images.front"]
+
+        np.testing.assert_equal(result.shape, (2, 3, 3, 8, 10))
+        np.testing.assert_array_equal(result.reshape(6, 3, 8, 10), expected)
+
     def test_is_preprocessor(self) -> None:
         prep = ResizePreprocessor(image_layout="BCHW", image_resolution=(64, 64))
         assert isinstance(prep, Preprocessor)
