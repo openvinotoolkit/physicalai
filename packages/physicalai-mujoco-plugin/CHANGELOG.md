@@ -9,6 +9,24 @@
 * **mujoco:** Every MuJoCo follower in Studio has a 3D model. The SO-101s keep their URDFs; the others, the WidowX AI's included, get a URDF built from the robot's MuJoCo model on first use and cached per user, so the robot page and dataset playback no longer wait forever on "Loading robot model...".
 * **mujoco:** Studio's MuJoCo follower probes report an owner as online only when it drives that entry's joints, so the single-arm entry no longer attaches to a bimanual simulation or the other way round.
 
+## [0.6.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-mujoco-plugin-v0.5.0...physicalai-mujoco-plugin-v0.6.0) (2026-11-06)
+
+
+### ✨ Features
+
+* **mujoco:** show a target ghost of every robot in the viewer ([#438](https://github.com/openvinotoolkit/physicalai/issues/438)) ([6d3c5fb](https://github.com/openvinotoolkit/physicalai/commit/6d3c5fb75b9db4cd5f51fb67de610f531bc667f1))
+* **rebot-b601:** add feedforward, speed limits, safe start-up and park ([#433](https://github.com/openvinotoolkit/physicalai/issues/433)) ([75f24e4](https://github.com/openvinotoolkit/physicalai/commit/75f24e4adc4215b74354959ce9f41483bfc2135a))
+
+
+### ✅ Tests
+
+* **mujoco:** retry shared-owner port collisions ([#431](https://github.com/openvinotoolkit/physicalai/issues/431)) ([ee381b7](https://github.com/openvinotoolkit/physicalai/commit/ee381b7b7643d173e9b6b74e8702fa6e800b2943))
+
+
+### 🔧 Chores
+
+* **deps:** lock file maintenance ([#428](https://github.com/openvinotoolkit/physicalai/issues/428)) ([c45cf71](https://github.com/openvinotoolkit/physicalai/commit/c45cf71f0ff5ac0d7762c2a5b9e198fedc896355))
+
 ## [0.5.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-mujoco-plugin-v0.4.0...physicalai-mujoco-plugin-v0.5.0) (2026-10-30)
 
 
