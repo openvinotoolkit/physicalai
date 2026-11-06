@@ -274,6 +274,13 @@ class TestBimanualWidowXAISendAction:
         robot._left._driver.set_all_positions.assert_called()  # type: ignore[attr-defined]
         robot._right._driver.set_all_positions.assert_called()  # type: ignore[attr-defined]
 
+    def test_goal_time_is_scaled_once_per_arm(self, mock_trossen_arm: MagicMock) -> None:
+        robot = _make_bimanual(mock_trossen_arm, role="follower")
+        robot.send_action(np.zeros(14, dtype=np.float32), goal_time=0.01)
+
+        for arm in (robot.left, robot.right):
+            assert arm._driver.set_all_positions.call_args.args[1] == pytest.approx(0.03)
+
     def test_wrong_shape_raises(self, mock_trossen_arm: MagicMock) -> None:
         robot = _make_bimanual(mock_trossen_arm, role="follower")
         with pytest.raises(ValueError, match="Expected at least"):
