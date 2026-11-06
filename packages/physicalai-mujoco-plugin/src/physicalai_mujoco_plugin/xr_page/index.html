@@ -13,6 +13,7 @@
       #status { color: #9ad; }
       #view { width: 100%; max-width: 960px; aspect-ratio: 4 / 3; display: block; border-radius: 8px; background: #14161b; }
       #pairing input { font-size: 30px; padding: 12px; border-radius: 8px; border: 0; letter-spacing: 4px; }
+      #pairing input { font-size: 30px; padding: 12px; border-radius: 8px; border: 0; letter-spacing: 4px; }
       #preview { max-width: 320px; width: 40%; margin-top: 12px; border-radius: 8px; }
     </style>
   </head>
@@ -23,12 +24,20 @@
       <label>Pairing code <input id="code" inputmode="numeric" autocomplete="off" maxlength="6" size="7" /></label>
       <button>Pair</button>
     </form>
+    <form id="pairing" hidden>
+      <label>Pairing code <input id="code" inputmode="numeric" autocomplete="off" maxlength="6" size="7" /></label>
+      <button>Pair</button>
+    </form>
     <p><button id="start" disabled>Start</button></p>
     <ul>
       <li>You stand in the robot, life-size: its arms reach out ahead of you, the way you look at the start.</li>
       <li>
         Hold a controller's <b>grip</b> button to move that arm: its gripper follows the controller. Release to stop;
         the arm holds. Grip again to continue from there. The <b>trigger</b> closes the gripper.
+      </li>
+      <li>
+        Or grab the arm where you want to move it: near the arm, dots show the gripper and joints you can grab; a ring
+        marks the one in reach. Hold the gripper and the elbow with both controllers to place both.
       </li>
       <li><b>A</b> or <b>X</b>: bring the robot back in front of you. <b>B</b> or <b>Y</b>: show or hide the cameras.</li>
       <li>Thumbsticks: left moves the robot down and up, right moves it nearer and farther (not while you hold an arm).</li>
