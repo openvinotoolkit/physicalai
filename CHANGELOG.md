@@ -12,6 +12,92 @@
 
 - Add `Config.to_yaml()` for in-memory YAML serialization.
 
+## [0.4.0](https://github.com/openvinotoolkit/physicalai/compare/v0.3.0...v0.4.0) (2026-11-06)
+
+
+### ✨ Features
+
+* add BimanualRobot and CompositeRobot ([#373](https://github.com/openvinotoolkit/physicalai/issues/373)) ([c4e2c3f](https://github.com/openvinotoolkit/physicalai/commit/c4e2c3f0e8df3c27d9237b2fba4da2943371fb90))
+* add physcialai-trossen-plugin ([#365](https://github.com/openvinotoolkit/physicalai/issues/365)) ([bb7cfaf](https://github.com/openvinotoolkit/physicalai/commit/bb7cfaf946c8fccbd90d193ac0edfe3d848a858a))
+* add physicalai-so101-plugin ([#367](https://github.com/openvinotoolkit/physicalai/issues/367)) ([1cc910b](https://github.com/openvinotoolkit/physicalai/commit/1cc910b451508ce40cd7319ece2a29283fadfcfb))
+* control rate inflation by intermediate actions interpolation ([#311](https://github.com/openvinotoolkit/physicalai/issues/311)) ([78669a0](https://github.com/openvinotoolkit/physicalai/commit/78669a0d80b462718cd67fa3d7a6765080ed2226))
+* **inference:** add deterministic adapter close lifecycle ([#372](https://github.com/openvinotoolkit/physicalai/issues/372)) ([d0f379d](https://github.com/openvinotoolkit/physicalai/commit/d0f379d7a067b0f8e1ca27d1bdcd00e896d4c6df))
+* **inference:** add remote inference API ([#358](https://github.com/openvinotoolkit/physicalai/issues/358)) ([f5bc82b](https://github.com/openvinotoolkit/physicalai/commit/f5bc82b4cfc5bf7a7f8262e71876f1215231f37f))
+* **mujoco:** add a compact viewer theme and require physicalai-studio-plugin 0.4.0 ([#381](https://github.com/openvinotoolkit/physicalai/issues/381)) ([9ca3c5f](https://github.com/openvinotoolkit/physicalai/commit/9ca3c5fe25162d541735030330135bb12b457b6f))
+* **mujoco:** add a scripted demonstrator for bucket_sort ([#400](https://github.com/openvinotoolkit/physicalai/issues/400)) ([3f0869f](https://github.com/openvinotoolkit/physicalai/commit/3f0869f3f4a3bcd189390cd16491fcb2bf445929))
+* **mujoco:** add the bucket_sort scene for the Franka FR3 ([#398](https://github.com/openvinotoolkit/physicalai/issues/398)) ([06df4b0](https://github.com/openvinotoolkit/physicalai/commit/06df4b07e15205848f8b8345c7a6b707038bf416))
+* **mujoco:** Franka FR3 with hand and FR3 Duo twins, ease streamed actions ([#393](https://github.com/openvinotoolkit/physicalai/issues/393)) ([ab545d8](https://github.com/openvinotoolkit/physicalai/commit/ab545d868754fbb5bb4d61449da7239c1f944f11))
+* **mujoco:** record bucket_sort in Studio, run it on more arms, and give every robot a 3D model ([#404](https://github.com/openvinotoolkit/physicalai/issues/404)) ([70a360b](https://github.com/openvinotoolkit/physicalai/commit/70a360b15c749a64b8460cdbd3157a2b8726f925))
+* **mujoco:** show a target ghost of every robot in the viewer ([#438](https://github.com/openvinotoolkit/physicalai/issues/438)) ([6d3c5fb](https://github.com/openvinotoolkit/physicalai/commit/6d3c5fb75b9db4cd5f51fb67de610f531bc667f1))
+* **mujoco:** simulate any MuJoCo Menagerie robot with MuJoCoRobot ([#337](https://github.com/openvinotoolkit/physicalai/issues/337)) ([53af2a0](https://github.com/openvinotoolkit/physicalai/commit/53af2a0d5ab81c9a816311c70d0cee4f3ad5c84d))
+* **mujoco:** simulate legged robots, twins/bimanual and dataset arms with cameras and replay ([#353](https://github.com/openvinotoolkit/physicalai/issues/353)) ([7961daa](https://github.com/openvinotoolkit/physicalai/commit/7961daa1f04533c13c949e18b301c09b46ba0d0f))
+* **mujoco:** start Studio's viewer dark and close on the bucket_sort table ([#415](https://github.com/openvinotoolkit/physicalai/issues/415)) ([3c92c1f](https://github.com/openvinotoolkit/physicalai/commit/3c92c1f18527afc7feb019bdd255cc64d27c729b))
+* **rebot-b601:** add feedforward, speed limits, safe start-up and park ([#433](https://github.com/openvinotoolkit/physicalai/issues/433)) ([75f24e4](https://github.com/openvinotoolkit/physicalai/commit/75f24e4adc4215b74354959ce9f41483bfc2135a))
+* **runtime:** add system stats to the Rerun dashboard ([#402](https://github.com/openvinotoolkit/physicalai/issues/402)) ([ec92b29](https://github.com/openvinotoolkit/physicalai/commit/ec92b291ccd7038c96f971a1698f274b032866f2))
+* skip the return procedure if robot is already at home ([#429](https://github.com/openvinotoolkit/physicalai/issues/429)) ([448b109](https://github.com/openvinotoolkit/physicalai/commit/448b109868c4937fc48d1d55a4fa46e5142e52dc))
+* **so101:** allow setting units for so101 arm ([#425](https://github.com/openvinotoolkit/physicalai/issues/425)) ([e66b4b3](https://github.com/openvinotoolkit/physicalai/commit/e66b4b3c6ff0f2e17793c594e83bd46376acb26b))
+* **XR0:** Pre-Post Processing Upstream Aligment ([#387](https://github.com/openvinotoolkit/physicalai/issues/387)) ([b4cc2cf](https://github.com/openvinotoolkit/physicalai/commit/b4cc2cf569c24f92424001dde7aca4081096ebd1))
+
+
+### 🐛 Bug Fixes
+
+* **capture:** keep IP camera streams fresh under load ([#409](https://github.com/openvinotoolkit/physicalai/issues/409)) ([b89955f](https://github.com/openvinotoolkit/physicalai/commit/b89955fa8feb31c8a56f6fe354524312ec80fd82))
+* **deps:** update dependency msgpack to v1.2.3 [security] ([#414](https://github.com/openvinotoolkit/physicalai/issues/414)) ([7efb9ef](https://github.com/openvinotoolkit/physicalai/commit/7efb9ef4281e3158dceb57c1bdf5dac7a3544c8e))
+* **inference:** feed cameras to the policy in training order ([#411](https://github.com/openvinotoolkit/physicalai/issues/411)) ([3d81990](https://github.com/openvinotoolkit/physicalai/commit/3d81990c153e06cd363e9933700730330f4063e5))
+* **lerobot:** improve lerobot calibration error handling ([#426](https://github.com/openvinotoolkit/physicalai/issues/426)) ([eaa2452](https://github.com/openvinotoolkit/physicalai/commit/eaa245231cc1308bd44be3552f12335716cc072c))
+* **lerobot:** restore typed configs in robot workers ([#434](https://github.com/openvinotoolkit/physicalai/issues/434)) ([1996cf7](https://github.com/openvinotoolkit/physicalai/commit/1996cf76a85346ffe4c00a3b29a556066e64014f))
+* **lerobot:** support lerobot 0.7 and pin it in CI ([#445](https://github.com/openvinotoolkit/physicalai/issues/445)) ([fb320bb](https://github.com/openvinotoolkit/physicalai/commit/fb320bb9f4b8b88214d9bf281be1f769058b7c56))
+* **mujoco-plugin:** write the README for a PyPI install ([#389](https://github.com/openvinotoolkit/physicalai/issues/389)) ([a3b1359](https://github.com/openvinotoolkit/physicalai/commit/a3b1359be93a180d2b3e5696afe93069339a9034))
+* **mujoco:** require physicalai-studio-plugin 0.5.0 ([#423](https://github.com/openvinotoolkit/physicalai/issues/423)) ([ca89a35](https://github.com/openvinotoolkit/physicalai/commit/ca89a35bcf4a2da824749d9e24f6e8bd190c06e1))
+* **mujoco:** show camera previews in the viewer on first start ([#399](https://github.com/openvinotoolkit/physicalai/issues/399)) ([e93eb9c](https://github.com/openvinotoolkit/physicalai/commit/e93eb9c575c01672873540098c4fa3320e092577))
+* **pi05:** draw the flow-matching start noise in the preprocessor ([#442](https://github.com/openvinotoolkit/physicalai/issues/442)) ([390bab8](https://github.com/openvinotoolkit/physicalai/commit/390bab88a2def4d15d9e4ecb37f4af7de99ce725))
+* **rerun:** allow setting rerun spawn port ([#408](https://github.com/openvinotoolkit/physicalai/issues/408)) ([71b8e13](https://github.com/openvinotoolkit/physicalai/commit/71b8e13f0ad3b35791a6d7167413f825a4863408))
+* RTC peroidic replay ([#410](https://github.com/openvinotoolkit/physicalai/issues/410)) ([9e14f58](https://github.com/openvinotoolkit/physicalai/commit/9e14f58218fb1adadd0ff25fdfe6b00726ba59a1))
+* **runtime:** give robot reads, sends and each camera their own failure limit ([#366](https://github.com/openvinotoolkit/physicalai/issues/366)) ([7c0aab6](https://github.com/openvinotoolkit/physicalai/commit/7c0aab661c912d2a91fdfc0b2c2624fb2650c627))
+* **runtime:** reset low pass filter state at the start of each run ([#363](https://github.com/openvinotoolkit/physicalai/issues/363)) ([49d5fd5](https://github.com/openvinotoolkit/physicalai/commit/49d5fd5d6594ee54787bee600a75725d43d62bc9))
+* **so101:** retry a failed sync read before raising ([#446](https://github.com/openvinotoolkit/physicalai/issues/446)) ([42f641f](https://github.com/openvinotoolkit/physicalai/commit/42f641f24fa1ca5588957f7c36a73a4baec9fbc7))
+* **transport:** retry a subscriber's owner connection every 100-500 ms ([#357](https://github.com/openvinotoolkit/physicalai/issues/357)) ([51f28b1](https://github.com/openvinotoolkit/physicalai/commit/51f28b1ce476199c13f8b8a41da94daf5e0ad297))
+
+
+### ♻️ Code Refactoring
+
+* **config:** remove deprecated configuration shims ([#244](https://github.com/openvinotoolkit/physicalai/issues/244)) ([9133822](https://github.com/openvinotoolkit/physicalai/commit/91338224c67f0d17f166eb062e3ac9a6762db784))
+* **skills:** separate Runtime using and contributing skills ([#356](https://github.com/openvinotoolkit/physicalai/issues/356)) ([c9f117a](https://github.com/openvinotoolkit/physicalai/commit/c9f117a9ba9b63712bb0692d7fa41867ac5f478e))
+
+
+### 📚 Documentation
+
+* add a tutorial that runs a policy in the MuJoCo simulation ([#380](https://github.com/openvinotoolkit/physicalai/issues/380)) ([7308fcc](https://github.com/openvinotoolkit/physicalai/commit/7308fcc45ebd624110d0c3a50fce4a06cf87dae8))
+* clarify remote inference usage ([#406](https://github.com/openvinotoolkit/physicalai/issues/406)) ([ba558eb](https://github.com/openvinotoolkit/physicalai/commit/ba558ebbe1f8cf9b108a7ee1cf237c3e0d92b5cc))
+* **tutorials:** install the simulation notebook's packages from PyPI ([#407](https://github.com/openvinotoolkit/physicalai/issues/407)) ([5ff1ae7](https://github.com/openvinotoolkit/physicalai/commit/5ff1ae75c746646512baa0da08131bf29885dcbc))
+
+
+### ✅ Tests
+
+* **fuzz:** add harnesses for remote inference protocol and shared codec ([#413](https://github.com/openvinotoolkit/physicalai/issues/413)) ([3c34e37](https://github.com/openvinotoolkit/physicalai/commit/3c34e3769f51b265d9d476cae57baa4f69431f20))
+* **mujoco:** retry shared-owner port collisions ([#431](https://github.com/openvinotoolkit/physicalai/issues/431)) ([ee381b7](https://github.com/openvinotoolkit/physicalai/commit/ee381b7b7643d173e9b6b74e8702fa6e800b2943))
+* **notebooks:** Add inference check for run_policy_in_simulation notebook ([#412](https://github.com/openvinotoolkit/physicalai/issues/412)) ([2e7fa97](https://github.com/openvinotoolkit/physicalai/commit/2e7fa97062d8d8ad07d52a37cec99e5651a65721))
+* **transport:** give the discovery tests a 2 s window ([#361](https://github.com/openvinotoolkit/physicalai/issues/361)) ([5c1ffdc](https://github.com/openvinotoolkit/physicalai/commit/5c1ffdcf3dac45d59ef79f5db965d58e84596f86))
+
+
+### 🔧 Chores
+
+* deprecate `RobotAdapterOptions` ([#374](https://github.com/openvinotoolkit/physicalai/issues/374)) ([0ca5b8e](https://github.com/openvinotoolkit/physicalai/commit/0ca5b8e06c132aa2c83aa7a92bc6dfb79a7b231f))
+* **deps:** lock file maintenance ([#364](https://github.com/openvinotoolkit/physicalai/issues/364)) ([7af1d77](https://github.com/openvinotoolkit/physicalai/commit/7af1d77e5395d6fde7918cf80380d91bcf12335e))
+* **deps:** lock file maintenance ([#375](https://github.com/openvinotoolkit/physicalai/issues/375)) ([906e3a6](https://github.com/openvinotoolkit/physicalai/commit/906e3a669bf207a74781ba297f9ef9399870f788))
+* **deps:** lock file maintenance ([#428](https://github.com/openvinotoolkit/physicalai/issues/428)) ([c45cf71](https://github.com/openvinotoolkit/physicalai/commit/c45cf71f0ff5ac0d7762c2a5b9e198fedc896355))
+* **deps:** update github actions ([#371](https://github.com/openvinotoolkit/physicalai/issues/371)) ([747aa97](https://github.com/openvinotoolkit/physicalai/commit/747aa977077998a020833d00f985ca153249cf69))
+* **deps:** update github actions ([#424](https://github.com/openvinotoolkit/physicalai/issues/424)) ([ae50523](https://github.com/openvinotoolkit/physicalai/commit/ae505237515ae683a6607aae9c2a42f89d0481d1))
+* **main:** release physicalai-mujoco-plugin 0.4.0 ([#342](https://github.com/openvinotoolkit/physicalai/issues/342)) ([493889f](https://github.com/openvinotoolkit/physicalai/commit/493889f21e1e24459896a3a8a5749f6684d19395))
+* **main:** release physicalai-mujoco-plugin 0.5.0 ([#384](https://github.com/openvinotoolkit/physicalai/issues/384)) ([c97f859](https://github.com/openvinotoolkit/physicalai/commit/c97f859183d378eef9160167bf8239657cb825e1))
+* **main:** release physicalai-rebot-b601-plugin 0.9.0 ([#354](https://github.com/openvinotoolkit/physicalai/issues/354)) ([bc28980](https://github.com/openvinotoolkit/physicalai/commit/bc289800603d5026b49129ec4932ca1fc9a8a8c3))
+* **main:** release physicalai-so101-plugin 0.2.0 ([#377](https://github.com/openvinotoolkit/physicalai/issues/377)) ([02b0d72](https://github.com/openvinotoolkit/physicalai/commit/02b0d72e37e293fdd7f06254637f3f90e4598a45))
+* **main:** release physicalai-so101-plugin 0.3.0 ([#382](https://github.com/openvinotoolkit/physicalai/issues/382)) ([4cfbafc](https://github.com/openvinotoolkit/physicalai/commit/4cfbafcc11b2ddd9ad19e1aefa960539ff91eddc))
+* **main:** release physicalai-stararm-plugin 0.5.0 ([#355](https://github.com/openvinotoolkit/physicalai/issues/355)) ([78c400b](https://github.com/openvinotoolkit/physicalai/commit/78c400bec745b55e942ab7b4a1921d65d7f14c77))
+* **main:** release physicalai-studio-plugin 0.4.0 ([#370](https://github.com/openvinotoolkit/physicalai/issues/370)) ([f69bdaa](https://github.com/openvinotoolkit/physicalai/commit/f69bdaa436a3fc11efb4fc42afb317f0a8e792fa))
+* **main:** release physicalai-studio-plugin 0.5.0 ([#385](https://github.com/openvinotoolkit/physicalai/issues/385)) ([9d591e7](https://github.com/openvinotoolkit/physicalai/commit/9d591e719eb0db9aba93ddc141025a83169e8581))
+* **main:** release physicalai-trossen-plugin 0.2.0 ([#376](https://github.com/openvinotoolkit/physicalai/issues/376)) ([6b185a6](https://github.com/openvinotoolkit/physicalai/commit/6b185a6eac38dde630358663e4a63cb0ad193c6f))
+
 ## [0.3.0](https://github.com/openvinotoolkit/physicalai/compare/v0.2.0...v0.3.0) (2026-10-07)
 
 
