@@ -1125,6 +1125,66 @@ class TestRTCWorkerDeath:
 
         assert ex._death_cause is None  # noqa: SLF001
 
+    def test_warmup_fails_at_once_when_the_worker_died_before_it(self) -> None:
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+        from physicalai.runtime.execution import rtc
+
+        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0)
+        cause = RuntimeError("worker failed at start")
+
+        with (
+            patch.object(ex, "_infer_until_stopped", side_effect=cause),
+            patch.object(rtc, "_WARMUP_TIMEOUT_S", 10.0),
+        ):
+            ex.start(_rtc_model(), RTCActionQueue())
+            try:
+                worker = ex._thread  # noqa: SLF001
+                assert worker is not None
+                worker.join(timeout=5.0)
+                assert not worker.is_alive()
+
+                started = time.monotonic()
+                with pytest.raises(WorkerDiedError, match="died before warmup") as excinfo:
+                    ex.warmup({"state": np.zeros(3, dtype=np.float32)})
+                assert time.monotonic() - started < 5.0
+                assert excinfo.value.__cause__ is cause
+            finally:
+                ex.stop()
+
+    def test_malformed_chunk_from_a_reset_episode_is_discarded(self) -> None:
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def stale_then_good(_inputs: object) -> dict[str, np.ndarray]:
+            if not entered.is_set():
+                entered.set()
+                release.wait(timeout=5.0)
+                return {"actions": np.zeros((1, 20, 3), dtype=np.float32)}
+            return {"action": np.zeros((1, 20, 3), dtype=np.float32)}
+
+        model = _rtc_model()
+        model.side_effect = stale_then_good
+        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0)
+        observation = {"state": np.zeros(3, dtype=np.float32)}
+        ex.start(model, RTCActionQueue())
+        try:
+            ex.maybe_request(observation)
+            assert entered.wait(timeout=5.0)
+            ex.reset(reset_model=False)
+            ex.maybe_request(observation)
+            release.set()
+
+            deadline = time.monotonic() + 5.0
+            while ex.inference_count == 0 and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+            assert ex.inference_count == 1
+            assert ex._death_cause is None  # noqa: SLF001
+        finally:
+            ex.stop()
+
     def test_runtime_stops_when_the_worker_dies(self) -> None:
         from types import SimpleNamespace
 

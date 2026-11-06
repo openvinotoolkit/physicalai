@@ -297,13 +297,16 @@ class RTCExecution(Execution):
 
         Raises:
             RuntimeError: If start() not called or thread dies during warmup.
-            WorkerDiedError: If the RTC thread dies during warmup.
+            WorkerDiedError: If the RTC thread died before or during warmup.
         """
         if self._model is None or self._rtc_queue is None:
             raise RuntimeError(_NOT_STARTED)
 
         signal = _WarmupSignal()
         with self._obs_lock:
+            if self._death_cause is not None:
+                msg = f"RTC thread died before warmup: {self._death_cause}"
+                raise WorkerDiedError(msg) from self._death_cause
             if self._warmup_signal is not None:
                 msg = "RTCExecution warmup is already in progress"
                 raise RuntimeError(msg)
@@ -455,9 +458,11 @@ class RTCExecution(Execution):
                 # This run has already ended, so its error must not fail a later one.
                 logger.exception("RTC worker failed after its run ended")
                 return
-            self._death_cause = e
             logger.exception("RTC inference thread died")
             with self._obs_lock:
+                # Set under the lock so warmup() either sees the death or has
+                # already registered the signal woken below.
+                self._death_cause = e
                 signal = self._warmup_signal
                 if signal is not None and not signal.event.is_set():
                     error = WorkerDiedError(f"RTC thread died during warmup: {e}")
@@ -580,15 +585,17 @@ class RTCExecution(Execution):
             Processed actions, or ``None`` when the incarnation has changed.
         """
         assert self._rtc_queue is not None  # noqa: S101
-        raw_actions = outputs[ACTION]
-        if raw_actions.ndim == 3:  # noqa: PLR2004
-            raw_actions = raw_actions[0]
-        processed_actions = raw_actions
-
         with self._obs_lock:
+            # Check before reading the outputs, so a malformed chunk from an
+            # episode that was reset mid-inference is discarded, not raised.
             if incarnation != self._incarnation:
                 self._cancel_signal_locked(signal, "RTCExecution warmup cancelled by reset")
                 return None
+
+            raw_actions = outputs[ACTION]
+            if raw_actions.ndim == 3:  # noqa: PLR2004
+                raw_actions = raw_actions[0]
+            processed_actions = raw_actions
 
             self._inference_count += 1
             self._lifetime_inferences += 1
