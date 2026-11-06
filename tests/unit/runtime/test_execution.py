@@ -1058,6 +1058,103 @@ class TestRTCExecutionObsSlot:
             stop_thread.join(timeout=5.0)
 
 
+class TestRTCWorkerDeath:
+    """An error anywhere in the RTC worker must reach the control thread.
+
+    A chunk without an ``action`` key fails while it is merged, outside the
+    model call, which is a different path from a model that raises.
+    """
+
+    def test_warmup_fails_at_once_with_the_worker_error(self) -> None:
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+        from physicalai.runtime.execution import rtc
+
+        model = _rtc_model()
+        model.return_value = {"actions": np.zeros((1, 20, 3), dtype=np.float32)}
+        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0)
+
+        with patch.object(rtc, "_WARMUP_TIMEOUT_S", 10.0):
+            ex.start(model, RTCActionQueue())
+            try:
+                started = time.monotonic()
+                with pytest.raises(WorkerDiedError, match="died during warmup") as excinfo:
+                    ex.warmup({"state": np.zeros(3, dtype=np.float32)})
+                assert time.monotonic() - started < 5.0
+                assert isinstance(excinfo.value.__cause__, KeyError)
+            finally:
+                ex.stop()
+
+    def test_maybe_request_raises_after_the_worker_dies_mid_run(self) -> None:
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+
+        model = _rtc_model()
+        queue = RTCActionQueue()
+        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0)
+        observation = {"state": np.zeros(3, dtype=np.float32)}
+        ex.start(model, queue)
+        try:
+            ex.warmup(observation)
+            model.return_value = {"actions": np.zeros((1, 20, 3), dtype=np.float32)}
+            while queue.pop() is not None:
+                pass
+
+            ex.maybe_request(observation)
+            worker = ex._thread  # noqa: SLF001
+            assert worker is not None
+            worker.join(timeout=5.0)
+
+            assert not worker.is_alive()
+            with pytest.raises(WorkerDiedError, match="'action'"):
+                ex.maybe_request(observation)
+        finally:
+            ex.stop()
+
+    def test_error_after_the_run_ended_is_not_recorded(self) -> None:
+        from physicalai.runtime import RTCExecution
+
+        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0)
+        stop_event = threading.Event()
+
+        def fail_after_stop(event: threading.Event) -> None:
+            event.set()
+            msg = "late error"
+            raise RuntimeError(msg)
+
+        with patch.object(ex, "_infer_until_stopped", side_effect=fail_after_stop):
+            ex._rtc_loop(stop_event)  # noqa: SLF001
+
+        assert ex._death_cause is None  # noqa: SLF001
+
+    def test_runtime_stops_when_the_worker_dies(self) -> None:
+        from types import SimpleNamespace
+
+        from physicalai.runtime import PolicySource, RobotRuntime, RTCActionQueue, RTCExecution
+
+        robot = MagicMock()
+        robot.joint_names = ["a", "b", "c"]
+        robot.get_observation.return_value = SimpleNamespace(
+            state=np.zeros(3, dtype=np.float32),
+            joint_positions=np.zeros(3, dtype=np.float32),
+            images=None,
+        )
+        model = _rtc_model()
+        model.side_effect = [
+            {"action": np.zeros((1, 20, 3), dtype=np.float32)},
+            {"actions": np.zeros((1, 20, 3), dtype=np.float32)},
+        ]
+        source = PolicySource(
+            model=model,
+            execution=RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0),
+            action_queue=RTCActionQueue(),
+        )
+        runtime = RobotRuntime(robot=robot, action_source=source, fps=30)
+
+        with runtime, pytest.raises(WorkerDiedError, match="'action'"):
+            runtime.run(duration_s=10.0)
+
+        assert runtime.last_run_reason == "error"
+
+
 def _blocking_model(entered: threading.Event, release: threading.Event, rows: int = 6) -> MagicMock:
     """Model whose inference blocks until *release* is set."""
 

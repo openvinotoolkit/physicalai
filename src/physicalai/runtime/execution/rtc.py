@@ -440,7 +440,33 @@ class RTCExecution(Execution):
             raise RuntimeError(msg)
 
     def _rtc_loop(self, stop_event: threading.Event) -> None:
-        """Background loop for one run: infer chunks and merge into queue.
+        """Run the worker loop for one run and record why it stopped early.
+
+        Nothing propagates out of this thread. An error anywhere in the loop,
+        not only inside the model, is kept in ``_death_cause`` so the control
+        thread sees it as ``WorkerDiedError`` on the next ``maybe_request()``.
+        A warmup that is waiting fails with it at once instead of waiting for
+        the warmup timeout.
+        """
+        try:
+            self._infer_until_stopped(stop_event)
+        except Exception as e:
+            if stop_event.is_set():
+                # This run has already ended, so its error must not fail a later one.
+                logger.exception("RTC worker failed after its run ended")
+                return
+            self._death_cause = e
+            logger.exception("RTC inference thread died")
+            with self._obs_lock:
+                signal = self._warmup_signal
+                if signal is not None and not signal.event.is_set():
+                    error = WorkerDiedError(f"RTC thread died during warmup: {e}")
+                    error.__cause__ = e
+                    signal.error = error
+                    signal.event.set()
+
+    def _infer_until_stopped(self, stop_event: threading.Event) -> None:
+        """Infer chunks and merge them into the queue until *stop_event* is set.
 
         Takes its own events rather than reading ``self``, so a worker that
         outlives ``stop()`` keeps observing its own set stop event even after a
