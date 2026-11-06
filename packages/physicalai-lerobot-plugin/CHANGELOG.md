@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.1](https://github.com/openvinotoolkit/physicalai/compare/physicalai-lerobot-plugin-v0.4.0...physicalai-lerobot-plugin-v0.4.1) (2026-11-06)
+
+
+### 🐛 Bug Fixes
+
+* **lerobot:** improve lerobot calibration error handling ([#426](https://github.com/openvinotoolkit/physicalai/issues/426)) ([eaa2452](https://github.com/openvinotoolkit/physicalai/commit/eaa245231cc1308bd44be3552f12335716cc072c))
+* **lerobot:** restore typed configs in robot workers ([#434](https://github.com/openvinotoolkit/physicalai/issues/434)) ([1996cf7](https://github.com/openvinotoolkit/physicalai/commit/1996cf76a85346ffe4c00a3b29a556066e64014f))
+* **lerobot:** support lerobot 0.7 and pin it in CI ([#445](https://github.com/openvinotoolkit/physicalai/issues/445)) ([fb320bb](https://github.com/openvinotoolkit/physicalai/commit/fb320bb9f4b8b88214d9bf281be1f769058b7c56))
+
+
+### 🔧 Chores
+
+* deprecate `RobotAdapterOptions` ([#374](https://github.com/openvinotoolkit/physicalai/issues/374)) ([0ca5b8e](https://github.com/openvinotoolkit/physicalai/commit/0ca5b8e06c132aa2c83aa7a92bc6dfb79a7b231f))
+
 ## [0.4.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-lerobot-plugin-v0.3.1...physicalai-lerobot-plugin-v0.4.0) (2026-09-15)
 
 
