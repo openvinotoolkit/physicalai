@@ -45,24 +45,24 @@ class BimanualWidowXAI(BimanualRobot[WidowXAI, WidowXAI]):
         return self._left.role
 
     def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None:
-        """Send the first 14 action values to follower arms.
+        """Send the first 14 action values to both arms; each refuses them with torque off.
 
         Trossen policy outputs can include trailing values such as predicted
         velocities, which this hardware driver intentionally ignores.
 
         Raises:
-            RuntimeError: If the bimanual robot is a leader.
             ValueError: If action does not contain both arm joint vectors.
         """
-        if self.role == "leader":
-            msg = "Cannot send actions to a leader robot."
-            raise RuntimeError(msg)
-
         joint_count = len(self.joint_names)
         if action.ndim != 1 or action.shape[0] < joint_count:
             msg = f"Expected at least {joint_count} action dims, got {action.shape}"
             raise ValueError(msg)
         super().send_action(action[:joint_count], goal_time=goal_time)
+
+    def set_torque(self, *, enabled: bool) -> None:
+        """Switch torque on or off on both arms; see :meth:`WidowXAI.set_torque`."""
+        self._left.set_torque(enabled=enabled)
+        self._right.set_torque(enabled=enabled)
 
     def set_external_efforts(self, efforts: np.ndarray, gain: float = 1.0) -> None:
         """Apply force feedback to each leader arm.

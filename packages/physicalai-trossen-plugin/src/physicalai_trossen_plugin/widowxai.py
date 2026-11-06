@@ -109,6 +109,7 @@ class WidowXAI(Robot):
 
         self._ip = ip
         self._role = role
+        self._torque_enabled = False
         self._driver: TrossenArmDriver | None = None
 
     @property
@@ -173,6 +174,7 @@ class WidowXAI(Robot):
             raise
 
         self._driver = driver
+        self._torque_enabled = self._role == "follower"
         logger.info(f"WidowXAI connected at {self._ip} (role={self._role})")
 
     def disconnect(self) -> None:
@@ -246,7 +248,9 @@ class WidowXAI(Robot):
         )
 
     def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None:
-        """Send a joint position command to follower arms.
+        """Send a joint position command; needs torque on (a follower, or a leader after ``set_torque``).
+
+        Goal time is multiplied to prevent jitter and grinding.
 
         Args:
             action: Array of shape ``(N,)`` where N >= 7. Only the first 7
@@ -255,11 +259,11 @@ class WidowXAI(Robot):
             goal_time: Minimum time (seconds) for the arm to reach the target.
 
         Raises:
-            RuntimeError: If called on a leader arm.
+            RuntimeError: If torque is off, as on a leader until ``set_torque(enabled=True)``.
             ValueError: If action has fewer than 7 elements.
         """
-        if self._role == "leader":
-            msg = "Cannot send actions to a leader arm."
+        if not self._torque_enabled:
+            msg = "Cannot send actions with torque off; call set_torque(enabled=True) first."
             raise RuntimeError(msg)
 
         if action.shape[0] < self.NUM_JOINTS:
@@ -277,7 +281,24 @@ class WidowXAI(Robot):
         present_positions = np.asarray(driver.get_all_positions(), dtype=np.float32)
         safe_action = self._ensure_safe_goal_position(target_radians, present_positions, self.MAX_RELATIVE_TARGET)
 
-        driver.set_all_positions(trossen_arm.VectorDouble(safe_action.tolist()), goal_time, False)
+        driver.set_all_positions(trossen_arm.VectorDouble(safe_action.tolist()), goal_time * 2, False)
+
+    def set_torque(self, *, enabled: bool) -> None:
+        """Hold the current position under position control, or release into gravity-compensated free motion.
+
+        With torque off the arm runs in external effort mode with zero effort, as a leader
+        does for teleoperation: it floats where it is put.
+        """
+        driver = self._require_driver()
+        if enabled:
+            present = list(driver.get_all_positions())
+            driver.set_all_modes(trossen_arm.Mode.position)
+            # Hold where it is, not at whatever position was last commanded.
+            driver.set_all_positions(trossen_arm.VectorDouble(present), 0.1, False)
+        else:
+            driver.set_all_modes(trossen_arm.Mode.external_effort)
+            driver.set_all_external_efforts(trossen_arm.VectorDouble([0.0] * self.NUM_JOINTS), 0.0, False)
+        self._torque_enabled = enabled
 
     def is_connected(self) -> bool:
         """Return True when the SDK driver is configured."""
@@ -309,6 +330,7 @@ class WidowXAI(Robot):
         driver = self._require_driver()
 
         driver.set_all_modes(trossen_arm.Mode.external_effort)
+        self._torque_enabled = False
         driver.set_all_external_efforts(
             trossen_arm.VectorDouble([-gain * e for e in efforts.tolist()]), 0.0, blocking=False
         )
