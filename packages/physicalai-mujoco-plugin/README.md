@@ -71,6 +71,7 @@ The viewer opens on its **Simulation** tab, which controls the simulation. The *
 - **Randomization**: tick **Fixed seed** to reseed before every reset and scene switch, so object layouts repeat. Untick it to go back to random layouts.
 - **Episode** (`single_pick_place` only): the cube respawns after it rests on the target for the success dwell. Turn **Auto-reset** off or change the dwell here. The panel shows the countdown and the number of completed episodes.
 - **Conveyor** (`conveyor_sort` only, in place of **Episode**): **Belt running** pauses or resumes the belt and the item feed. **Belt speed** sets the belt surface speed from 0 to 10 cm/s. The panel shows the items fed so far, the current and last episode's score, and the sorting rule.
+- **Teleop** (robots with end effectors): move the arms from the viewer instead of a leader arm, and see whether a headset drives them. While teleoperation drives the arms, actions from Studio or a policy are ignored. See [Teleoperate from the viewer or a headset](#teleoperate-from-the-viewer-or-a-headset).
 - **Objects**: tick **Drag objects** to show a handle on each free object. While you drag, the object stays at the handle's pose. When you let go, it falls from there with zero velocity. The target stays fixed.
 - **Cameras**: tick **Show previews** to see low-rate thumbnails of the rendered cameras. Previews start off because every open viewer receives them.
 - **Shutdown** asks for confirmation before stopping the owner (hidden with `--viewer-theme studio` or `compact`).
@@ -78,6 +79,30 @@ The viewer opens on its **Simulation** tab, which controls the simulation. The *
 On the **Camera** tab, **Follow** chooses a body for the view to stay on: a free object, the target, or a gripper. Orbiting and zooming keep the view on it. Panning away stops following, and **Follow** goes back to **None**. **None**, the default, is a free camera that nothing moves. While you drag the followed object, the view holds still, then glides back onto it when you let go. **FOV** and **Reset View** apply to every open viewer. The follow choice is shared too. Following moves the viewer cameras; the rendered scene itself never shifts.
 
 Switching scenes rebuilds the whole viewer for the new model. The follow, drag and preview settings carry over to the new scene; following an object the new scene lacks falls back to **None**. Changes made over HTTP show up in the panel within about half a second. Camera settings are viewer-only and have no HTTP endpoint.
+
+### Teleoperate from the viewer or a headset
+
+Tick **Drag the grippers** in the **Teleop** folder to show a handle at each gripper: drag its arrows to move the gripper and its rings to turn it. Inverse kinematics turns the handle's pose into joint targets every control tick, at most 3 rad/s per joint, and keeps each arm near its home posture where the gripper pose leaves it free, so a seven-joint arm's elbow does not drift. Letting go of a target the arm cannot reach puts the handle back where the gripper got to. Untick it to hand the arms back to actions. `POST /teleop` switches the handles over HTTP.
+
+#### From a VR headset (Meta Quest)
+
+Start the simulation with `--xr-port` to serve a WebXR page on your local network, over HTTPS:
+
+```bash
+physicalai-mujoco start --profile openarm --xr-port 8443
+```
+
+The log and the **Teleop** folder show its address, for example `https://<your-mac>.local:8443/` and `https://<LAN address>:8443/`, and a six-digit pairing code. The headset and the computer must be on the same network (on macOS, allow incoming connections for Python if the firewall asks).
+
+The page listens on every network interface. The pairing code keeps other devices from watching the cameras or driving the arms, but anyone who has it can, and the certificate proves nothing about who connects. Use it only on a network you trust, as with the robot's own transport, and keep it off guest or public Wi-Fi.
+
+1. Open the address in the headset's browser. The certificate is self-signed: choose **Advanced**, then **Proceed**, once. Enter the pairing code; the browser keeps it (the code stays the same across restarts, stored beside the certificate in the Menagerie cache).
+2. Press **Start**. The headset draws the simulation in 3D, life-size, over your room (passthrough): you look out from just above the robot's shoulders, its arms reaching ahead the way you looked. The camera streams float above it, the `overview` camera in the middle. For as long as the session runs, the arms ignore actions from Studio or a policy. One page drives the arms at a time: a second headset or browser watches until the first ends its session or disconnects.
+3. Hold a controller's **grip** button to move its arm (the left controller the left arm; either controller a robot with one arm): the gripper then moves and turns as the controller does from where you gripped, in the robot's directions as you see it. Release the grip and the arm holds; grip again to carry on from there, so you can move your hand back without moving the arm. Joint targets move at most 1.5 rad/s.
+4. The **trigger** closes that arm's gripper.
+5. **A** or **X** brings the robot back in front of you, **B** or **Y** shows or hides the cameras. The left thumbstick moves the robot down and up, the right one nearer and farther (pull back to watch it from behind). The robot stays put while you hold an arm.
+
+The page fetches the scene's meshes once (about 4 MB for the OpenArm cell) and then only the bodies' poses, 60 times a second. It draws the geoms the viewer shows (groups 0 to 2) and, see-through, group 3 geoms whose material is a glass, like the cell's walls; the floor is your room's. Opened on a computer, the page shows the view the headset starts with. Exit the session in the headset to hand the arms back.
 
 ### Bimanual simulation
 
@@ -466,6 +491,9 @@ curl -i http://127.0.0.1:8080/viewer
 # Reset/randomize the current scene (floating bases also return to their start pose), or move the arm to its home pose
 curl -X POST http://127.0.0.1:8080/reset
 curl -X POST http://127.0.0.1:8080/home
+
+# Show the viewer's gripper handles, which then drive the arms; false hands the arms back to actions
+curl -X POST http://127.0.0.1:8080/teleop -H 'Content-Type: application/json' -d '{"mouse": true}'
 
 # Move the overview camera across the table, facing the robots, and back behind them
 curl -X POST http://127.0.0.1:8080/overview -H 'content-type: application/json' -d '{"style": "front"}'

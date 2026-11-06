@@ -117,7 +117,7 @@ SO101_PROFILE = RobotProfile(
     customize=customize_so101,
     default_scene="single_pick_place",
     # Menagerie's gripper frame, 5 mm behind the finger tips, with +z out of the jaws.
-    end_effectors=(EndEffector(site="gripperframe"),),
+    end_effectors=(EndEffector(site="gripperframe", gripper="gripper"),),
     reach=0.367,
 )
 

@@ -243,6 +243,10 @@ class ArmChannels:
             if joint is not None and joint in model_values:
                 self._write_model(index, channel, float(model_values[joint]))
 
+    def write_model_target(self, index: int, value: float) -> None:
+        """Set one channel's target in model units (a tendon's length for a tendon channel)."""
+        self._write_model(index, self.channels[index], float(value))
+
     def place(self, qpos: Mapping[str, float]) -> None:
         """Teleport each channel's joints to ``qpos[joint]`` at rest, and hold them there.
 
