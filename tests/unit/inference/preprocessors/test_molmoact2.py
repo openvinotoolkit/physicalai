@@ -88,6 +88,34 @@ class TestMolmoAct2Preprocessor:
         assert float(explicit[0].min()) == 1.0
         assert float(explicit[1].max()) == 0.0
 
+    def test_single_configured_camera_accepts_bare_images_array(self) -> None:
+        # PolicySource sends a lone camera as a bare ``images`` array without its name.
+        inputs = {
+            STATE: np.zeros((1, 2), dtype=np.float32),
+            TASK: ["move"],
+            IMAGES: np.full((1, 3, 28, 28), 255, dtype=np.uint8),
+        }
+
+        result = MolmoAct2Preprocessor(image_keys=["top"], image_size=(28, 28))(inputs)
+
+        assert result[IMAGES].shape == (1, 1, 3, 28, 28)
+        assert float(result[IMAGES].min()) == 1.0
+        assert result[TASK][0].startswith("<|image|><|im_start|>")
+
+    def test_bare_images_array_is_rejected_when_several_cameras_are_configured(self) -> None:
+        inputs = {
+            STATE: np.zeros((1, 2), dtype=np.float32),
+            TASK: ["move"],
+            IMAGES: np.zeros((1, 3, 28, 28), dtype=np.uint8),
+        }
+
+        with pytest.raises(ValueError, match=r"missing image inputs for \['top', 'wrist'\]"):
+            _prepare()(inputs)
+
+    def test_missing_configured_camera_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match=r"missing image inputs for \['wrist'\]"):
+            _prepare()(_observation(image_count=1))
+
     def test_accepts_batched_channels_last_camera_frames(self) -> None:
         observation = _observation(image_count=2)
         observation[f"{IMAGES}.top"] = np.zeros((1, 28, 28, 3), dtype=np.uint8)

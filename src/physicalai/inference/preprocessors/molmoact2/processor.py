@@ -195,25 +195,49 @@ class MolmoAct2Preprocessor(Preprocessor):
 
     def _raw_images(self, inputs: dict[str, Any]) -> list[np.ndarray]:
         container = inputs.get(IMAGES)
+        if self.image_keys:
+            return self._configured_images(inputs, container)
         images: list[np.ndarray] = []
-        for name in self.image_keys:
-            key = name if name.startswith(f"{IMAGES}.") else f"{IMAGES}.{name}"
-            if key in inputs:
-                images.append(np.asarray(inputs[key]))
-            elif isinstance(container, dict) and name.removeprefix(f"{IMAGES}.") in container:
-                images.append(np.asarray(container[name.removeprefix(f"{IMAGES}.")]))
-        if not self.image_keys and isinstance(container, np.ndarray):
+        if isinstance(container, np.ndarray):
             images = [container]
-        elif not self.image_keys and isinstance(container, dict):
+        elif isinstance(container, dict):
             keys = sorted(key for key in container if "is_pad" not in str(key))
             images = [np.asarray(container[key]) for key in keys]
-        elif not self.image_keys and not images:
+        else:
             keys = sorted(key for key in inputs if key.startswith(f"{IMAGES}.") and "is_pad" not in key)
             images = [np.asarray(inputs[key]) for key in keys]
         if not images:
             msg = "MolmoAct2 requires at least one image input"
             raise ValueError(msg)
         return images
+
+    def _configured_images(self, inputs: dict[str, Any], container: object) -> list[np.ndarray]:
+        """Collect the images named in ``image_keys`` in their configured order.
+
+        Returns:
+            One image array per configured camera.
+
+        Raises:
+            ValueError: If a configured camera has no image input.
+        """
+        images: list[np.ndarray] = []
+        missing: list[str] = []
+        for name in self.image_keys:
+            key = name if name.startswith(f"{IMAGES}.") else f"{IMAGES}.{name}"
+            if key in inputs:
+                images.append(np.asarray(inputs[key]))
+            elif isinstance(container, dict) and name.removeprefix(f"{IMAGES}.") in container:
+                images.append(np.asarray(container[name.removeprefix(f"{IMAGES}.")]))
+            else:
+                missing.append(name)
+        if not missing:
+            return images
+        # A single camera arrives as a bare ``images`` array without its name,
+        # which is unambiguous only when exactly one camera is configured.
+        if len(self.image_keys) == 1 and isinstance(container, np.ndarray):
+            return [container]
+        msg = f"MolmoAct2 is missing image inputs for {missing}"
+        raise ValueError(msg)
 
     @staticmethod
     def _tasks(inputs: dict[str, Any], *, batch_size: int) -> list[str]:
