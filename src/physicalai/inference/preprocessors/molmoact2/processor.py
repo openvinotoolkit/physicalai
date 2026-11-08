@@ -232,8 +232,10 @@ class MolmoAct2Preprocessor(Preprocessor):
                 missing.append(name)
         if not missing:
             return images
-        # A single camera arrives as a bare ``images`` array without its name,
-        # which is unambiguous only when exactly one camera is configured.
+        # PolicySource sends one camera as a bare ``images`` array without its
+        # name and several cameras only as named keys, never both at once. The
+        # bare array is therefore taken as the camera only when exactly one is
+        # configured, and a named key for that camera wins when both are given.
         if len(self.image_keys) == 1 and isinstance(container, np.ndarray):
             return [container]
         msg = f"MolmoAct2 is missing image inputs for {missing}"
