@@ -69,6 +69,9 @@ runtime:
 
   callbacks:
     # Live visualization in Rerun. ``mode: spawn`` launches a viewer window.
+    # Monitoring sidebar: CPU/RAM, inference latency, and optional Intel/NVIDIA GPU stats.
+    # GPU stats use xpu-smi / nvidia-smi from PATH on a background worker.
+    # Install with: uv sync --extra observer-rerun
     # For a remote/long-running viewer, swap to:
     #   mode: connect
     #   connect_addr: "127.0.0.1:9876"

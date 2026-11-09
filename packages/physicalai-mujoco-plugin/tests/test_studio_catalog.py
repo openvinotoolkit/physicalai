@@ -1,29 +1,40 @@
 from __future__ import annotations
 
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import numpy as np
 from physicalai.config import Config
-from physicalai.robot.errors import RobotNotConnectedError
+from physicalai.robot.errors import RobotNotConnectedError, RobotProtocolMismatch, RobotTransportError
 from physicalai.robot.transport import RobotOwnerConfig, SharedRobot
+from physicalai_studio_plugin import SimulationScene
 
 from physicalai_mujoco_plugin.virtual_leader import MuJoCoVirtualLeader
 from physicalai_mujoco_plugin.constants import (
     BIMANUAL_SO101_JOINT_ORDER,
     DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME,
     DEFAULT_MUJOCO_OWNER_NAME,
+    MAX_SEED,
     SO101_JOINT_ORDER,
+    default_owner_name,
 )
+from physicalai_mujoco_plugin.profiles import PROFILES, SO101_PROFILE
+from physicalai_mujoco_plugin.scene_registry import check_arm_count, get_scene
 from physicalai_mujoco_plugin.studio_catalog import (
+    CatalogEntry,
+    MuJoCoRobotProbe,
     MuJoCoVirtualLeaderPayload,
     MuJoCoSO101BimanualPayload,
     MuJoCoSO101Payload,
-    MuJoCoSO101Probe,
     _definitions,
-    _SharedSO101Robot,
+    _payload_model,
+    _SharedMuJoCoRobot,
+    list_catalog_entries,
     register_physicalai_studio_plugin,
 )
+
+SO101_ENTRY = CatalogEntry(SO101_PROFILE, ("",))
 
 
 class TestMuJoCoSO101Payload:
@@ -32,6 +43,12 @@ class TestMuJoCoSO101Payload:
         assert payload.name == DEFAULT_MUJOCO_OWNER_NAME
         assert payload.allow_remote is False
         assert payload.connect_timeout == 10.0
+        assert payload.http_url == "http://127.0.0.1:8080"
+
+    def test_payload_stored_before_http_url_still_validates(self) -> None:
+        stored = {"name": "my-sim", "allow_remote": True, "connect_timeout": 5.0}
+        payload = MuJoCoSO101Payload.model_validate(stored)
+        assert payload.model_dump() == {**stored, "http_url": "http://127.0.0.1:8080"}
 
     def test_custom_payload(self) -> None:
         payload = MuJoCoSO101Payload(name="my-sim", allow_remote=True, connect_timeout=5.0)
@@ -60,7 +77,7 @@ class TestMuJoCoSO101BimanualPayload:
 
     def test_connection_settings_are_advanced(self) -> None:
         schema = MuJoCoSO101BimanualPayload.model_json_schema()
-        for field in ("allow_remote", "connect_timeout"):
+        for field in ("allow_remote", "connect_timeout", "http_url"):
             assert schema["properties"][field]["x-physicalai-ui"]["advanced_configuration"] is True
 
     def test_payload_model_rebuild(self) -> None:
@@ -70,7 +87,8 @@ class TestMuJoCoSO101BimanualPayload:
 class TestDefinitions:
     def test_definitions_return_list(self) -> None:
         defs = _definitions()
-        assert [d.role for d in defs] == ["follower", "follower", "leader"]
+        assert [d.role for d in defs[:3]] == ["follower", "follower", "leader"]
+        assert {d.role for d in defs[3:]} == {"follower"}
 
     def test_definition_contents(self) -> None:
         defs = _definitions()
@@ -91,13 +109,6 @@ class TestDefinitions:
         assert definition.asset is not None
         assert definition.robot_payload is MuJoCoSO101BimanualPayload
         assert definition.probe is not None
-
-    def test_adapter_options(self) -> None:
-        defs = _definitions()
-        definition = defs[0]
-        assert definition.adapter_options.include_velocities is False
-        assert definition.adapter_options.external_effort_gain is None
-        assert definition.adapter_options.goal_time_scale == 1.0
 
     def test_builder_callable(self) -> None:
         defs = _definitions()
@@ -125,7 +136,7 @@ class TestDefinitions:
         recipe = Config.from_instance(robot)
         built = RobotOwnerConfig(name="studio-owner", robot=recipe).build()
 
-        assert isinstance(built, _SharedSO101Robot)
+        assert isinstance(built, _SharedMuJoCoRobot)
         assert built._shared_robot._name == name  # noqa: SLF001
         assert built._shared_robot._allow_remote is True  # noqa: SLF001
         assert built._shared_robot._connect_timeout == 3.0  # noqa: SLF001
@@ -161,19 +172,19 @@ class TestDefinitions:
 
 class TestSharedRobotAdapter:
     def test_has_no_owned_devices(self) -> None:
-        robot = _SharedSO101Robot(SharedRobot.attach(DEFAULT_MUJOCO_OWNER_NAME), SO101_JOINT_ORDER)
+        robot = _SharedMuJoCoRobot(SharedRobot.attach(DEFAULT_MUJOCO_OWNER_NAME), SO101_JOINT_ORDER)
         assert robot.device_ids == ()
         assert robot.joint_names == list(SO101_JOINT_ORDER)
 
     def test_bimanual_joint_names(self) -> None:
-        robot = _SharedSO101Robot(SharedRobot.attach(DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME), BIMANUAL_SO101_JOINT_ORDER)
+        robot = _SharedMuJoCoRobot(SharedRobot.attach(DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME), BIMANUAL_SO101_JOINT_ORDER)
         assert robot.joint_names == list(BIMANUAL_SO101_JOINT_ORDER)
 
     def test_exports_attach_only_shared_robot_recipe(self) -> None:
-        robot = _SharedSO101Robot(SharedRobot.attach(DEFAULT_MUJOCO_OWNER_NAME, connect_timeout=5.0), SO101_JOINT_ORDER)
+        robot = _SharedMuJoCoRobot(SharedRobot.attach(DEFAULT_MUJOCO_OWNER_NAME, connect_timeout=5.0), SO101_JOINT_ORDER)
 
         assert Config.from_instance(robot) == {
-            "class_path": "physicalai_mujoco_plugin.studio_catalog._SharedSO101Robot",
+            "class_path": "physicalai_mujoco_plugin.studio_catalog._SharedMuJoCoRobot",
             "init_args": {
                 "shared_robot": {
                     "class_path": "physicalai.robot.SharedRobot",
@@ -189,7 +200,7 @@ class TestSharedRobotAdapter:
 
     def test_owner_build_constructs_attach_only_shared_robot(self) -> None:
         recipe = Config.from_instance(
-            _SharedSO101Robot(
+            _SharedMuJoCoRobot(
                 SharedRobot.attach("mujoco-so101", connect_timeout=5.0),
                 SO101_JOINT_ORDER,
             ),
@@ -197,7 +208,7 @@ class TestSharedRobotAdapter:
 
         built = RobotOwnerConfig(name="studio-owner", robot=recipe).build()
 
-        assert isinstance(built, _SharedSO101Robot)
+        assert isinstance(built, _SharedMuJoCoRobot)
         assert isinstance(built._shared_robot, SharedRobot)  # noqa: SLF001
         assert built._shared_robot._name == "mujoco-so101"  # noqa: SLF001
         assert built._shared_robot._robot is None  # noqa: SLF001
@@ -207,7 +218,7 @@ class TestSharedRobotAdapter:
 class TestSharedRobotLifecycle:
     def test_real_shared_robot_disconnect_and_reconnect(self) -> None:
         shared = SharedRobot.attach("mujoco-lifecycle-test")
-        robot = _SharedSO101Robot(shared, SO101_JOINT_ORDER)
+        robot = _SharedMuJoCoRobot(shared, SO101_JOINT_ORDER)
         sessions = [MagicMock(), MagicMock()]
         with (
             patch("physicalai.robot.transport._shared_robot.open_session", side_effect=sessions),
@@ -232,7 +243,7 @@ class TestSharedRobotLifecycle:
     def test_delegates_connection_to_shared_robot(self) -> None:
         shared = MagicMock(spec=SharedRobot)
         shared.is_connected.return_value = True
-        robot = _SharedSO101Robot(shared, SO101_JOINT_ORDER)
+        robot = _SharedMuJoCoRobot(shared, SO101_JOINT_ORDER)
 
         robot.connect()
         assert robot.is_connected() is True
@@ -243,10 +254,131 @@ class TestSharedRobotLifecycle:
         shared.disconnect.assert_called_once()
 
 
+class TestNotRunningError:
+    """P2: a follower whose simulation is not running says which one and how to start it."""
+
+    START = "Start it with: physicalai-mujoco start --profile trossen_wxai --bimanual"
+
+    def _robot(self, error: Exception) -> _SharedMuJoCoRobot:
+        shared = MagicMock(spec=SharedRobot)
+        shared.name = "mujoco-trossen_wxai-bimanual-follow"
+        shared.connect.side_effect = error
+        return _SharedMuJoCoRobot(shared, ("joint_0",), self.START)
+
+    def test_no_owner_names_the_simulation_and_its_start_command(self) -> None:
+        missing = RobotTransportError(
+            "no owner found for 'mujoco-trossen_wxai-bimanual-follow' (attach-only mode: robot config not provided)"
+        )
+        with pytest.raises(RobotTransportError) as raised:
+            self._robot(missing).connect()
+
+        assert type(raised.value) is RobotTransportError
+        assert str(raised.value) == (
+            f"No MuJoCo simulation named 'mujoco-trossen_wxai-bimanual-follow' is running. {self.START}"
+        )
+        assert raised.value.__cause__ is missing
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            RobotTransportError("no state received from owner of 'x' within 5.0s"),
+            RobotProtocolMismatch("no owner found for 'x' speaks another protocol"),
+            TimeoutError("zenoh"),
+        ],
+    )
+    def test_other_errors_pass_through(self, error: Exception) -> None:
+        with pytest.raises(type(error)) as raised:
+            self._robot(error).connect()
+        assert raised.value is error
+
+    @pytest.mark.parametrize(
+        ("entry_type", "name", "http_url", "hint"),
+        [
+            (
+                "MuJoCo_SO101_Follower",
+                DEFAULT_MUJOCO_OWNER_NAME,
+                "http://127.0.0.1:8080",
+                "Start it with: physicalai-mujoco start --profile so101 --scene single_pick_place "
+                "--name=mujoco-so101-follow --http-port 8080 --viser-port 0",
+            ),
+            (
+                "MuJoCo_WidowXAI_Bimanual_Follower",
+                "mujoco-trossen_wxai-bimanual-follow",
+                "http://localhost:8123/",
+                "Start it with: physicalai-mujoco start --profile trossen_wxai --bimanual --scene single_pick_place "
+                "--name=mujoco-trossen_wxai-bimanual-follow --http-host localhost --http-port 8123 --viser-port 0",
+            ),
+            (
+                "MuJoCo_Koch_Follower",
+                "my koch",
+                "http://127.0.0.1:8765",
+                "Start it with: physicalai-mujoco start --profile koch --scene single_pick_place "
+                "'--name=my koch' --http-port 8765 --viser-port 0",
+            ),
+            (
+                "MuJoCo_SO101_Follower",
+                DEFAULT_MUJOCO_OWNER_NAME,
+                "http://10.0.0.5:8081",
+                "Start it on 10.0.0.5 with: physicalai-mujoco start --profile so101 --scene single_pick_place "
+                "--name=mujoco-so101-follow --http-host 10.0.0.5 --http-port 8081 --viser-port 0 --allow-remote",
+            ),
+            (
+                "MuJoCo_SO101_Follower",
+                DEFAULT_MUJOCO_OWNER_NAME,
+                "http://127.0.0.1:notaport",
+                "Start it with: physicalai-mujoco start --profile so101 --scene single_pick_place "
+                "--name=mujoco-so101-follow --http-port 8080 --viser-port 0",
+            ),
+        ],
+    )
+    def test_start_hint_follows_the_entry_and_its_payload(
+        self, entry_type: str, name: str, http_url: str, hint: str
+    ) -> None:
+        entry = {entry.type: entry for entry in list_catalog_entries()}[entry_type]
+        assert entry.start_hint(name, http_url) == hint
+
+    def test_start_hint_is_the_start_dialogs_command_in_the_default_scene(self) -> None:
+        import shlex
+
+        entry = {entry.type: entry for entry in list_catalog_entries()}["MuJoCo_FrankaResearch3_Follower"]
+        launch = entry.simulation_launch()
+        assert launch is not None
+        payload = _payload_model(entry)(name="fr3", http_url="http://127.0.0.1:8765")
+        command = launch.standalone_argv(launch.default_scene, payload)
+        assert command is not None
+        assert entry.start_hint("fr3", "http://127.0.0.1:8765") == f"Start it with: {shlex.join(command)}"
+
+    @pytest.mark.parametrize("name", ["-sim", "--profile", "my koch", "it's"])
+    def test_the_start_command_parses_back_to_the_payload(self, name: str) -> None:
+        """The CLI must read the suggested command as the follower's name and port, whatever the name."""
+        import shlex
+
+        from physicalai_mujoco_plugin import __main__ as cli
+
+        entry = {entry.type: entry for entry in list_catalog_entries()}["MuJoCo_Koch_Follower"]
+        hint = entry.start_hint(name, "http://127.0.0.1:8123")
+        argv = shlex.split(hint.removeprefix("Start it with: "))
+        assert argv[0] == "physicalai-mujoco"
+        args = cli._build_parser().parse_args(argv[1:])
+        assert (args.profile, args.name, args.http_port, args.bimanual) == ("koch", name, 8123, False)
+
+    @pytest.mark.anyio
+    async def test_builder_passes_the_payloads_start_hint(self) -> None:
+        definition = {d.type: d for d in _definitions()}["MuJoCo_WidowXAI_Bimanual_Follower"]
+        robot = await definition.robot_builder(MagicMock(payload={"http_url": "http://127.0.0.1:8123"}), MagicMock())
+
+        hint = (
+            "Start it with: physicalai-mujoco start --profile trossen_wxai --bimanual --scene single_pick_place "
+            "--name=mujoco-trossen_wxai-bimanual-follow --http-port 8123 --viser-port 0"
+        )
+        assert robot._start_hint == hint  # noqa: SLF001
+        assert Config.from_instance(robot)["init_args"]["start_hint"] == hint
+
+
 class TestProbe:
     @pytest.mark.anyio
     async def test_discover(self) -> None:
-        probe = MuJoCoSO101Probe()
+        probe = MuJoCoRobotProbe(SO101_ENTRY)
         manager = AsyncMock()
         manager.robots = []
         result = await probe.discover(manager)
@@ -255,7 +387,7 @@ class TestProbe:
 
     @pytest.mark.anyio
     async def test_identify(self) -> None:
-        probe = MuJoCoSO101Probe()
+        probe = MuJoCoRobotProbe(SO101_ENTRY)
         payload = MuJoCoSO101Payload()
         await probe.identify(payload)
 
@@ -263,7 +395,7 @@ class TestProbe:
     async def test_is_online_no_owner(self) -> None:
         from physicalai_mujoco_plugin import studio_catalog as sc
 
-        probe = MuJoCoSO101Probe()
+        probe = MuJoCoRobotProbe(SO101_ENTRY)
         payload = MuJoCoSO101Payload(name="nonexistent")
 
         with patch.object(sc, "_check_zenoh_robot_online", return_value=False):
@@ -312,16 +444,17 @@ class TestRegistration:
     def test_register_called(self) -> None:
         registry = MagicMock()
         register_physicalai_studio_plugin(registry)
-        assert registry.register_robot.call_count == 3
+        assert registry.register_robot.call_count == len(list_catalog_entries()) + 1  # + virtual leader
 
 
 class TestVirtualLeaderDefinition:
     def test_definition_contents(self) -> None:
         definition = _definitions()[2]
-        assert definition.type == "MuJoCo_SO101_Virtual_Leader"
+        assert definition.type == "MuJoCo_Virtual_Leader"
+        assert definition.display_name == "MuJoCo Virtual Leader"
         assert definition.role == "leader"
         assert definition.robot_payload is MuJoCoVirtualLeaderPayload
-        assert definition.asset is not None
+        assert definition.asset is None  # leads any profile
         assert definition.probe is not None
 
     def test_payload_bounds_the_port(self) -> None:
@@ -339,7 +472,7 @@ class TestVirtualLeaderDefinition:
         assert isinstance(built, MuJoCoVirtualLeader)
         assert built.http_port == 8123
         assert built.host == "127.0.0.1"
-        assert built.joint_names == list(SO101_JOINT_ORDER)
+        assert built.joint_names == []  # read from the simulation on connect, before the owner advertises them
 
     @pytest.mark.anyio
     async def test_probe_reports_offline_without_a_simulation(self) -> None:
@@ -348,3 +481,353 @@ class TestVirtualLeaderDefinition:
         assert await probe.discover(MagicMock()) == []
         # Port 1 is never a simulation.
         assert await probe.is_online(MuJoCoVirtualLeaderPayload(http_port=1)) is False
+
+
+class TestGeneratedEntries:
+    """STU-1/STU-2: one follower entry per supported profile and arm layout."""
+
+    def test_types_follow_the_profiles(self) -> None:
+        assert [(entry.type, entry.owner_name) for entry in list_catalog_entries()] == [
+            ("MuJoCo_SO101_Follower", DEFAULT_MUJOCO_OWNER_NAME),
+            ("MuJoCo_SO101_Bimanual_Follower", DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME),
+            ("MuJoCo_WidowXAI_Follower", "mujoco-trossen_wxai-follow"),
+            ("MuJoCo_WidowXAI_Bimanual_Follower", "mujoco-trossen_wxai-bimanual-follow"),
+            ("MuJoCo_reBotB601_Follower", "mujoco-rebot_b601-follow"),
+            ("MuJoCo_reBotB601_Bimanual_Follower", "mujoco-rebot_b601-bimanual-follow"),
+            ("MuJoCo_FrankaResearch3_Follower", "mujoco-franka_fr3-follow"),
+            ("MuJoCo_FrankaDuo_Follower", "mujoco-franka_duo-follow"),
+            ("MuJoCo_UniversalRobotsUR5e_Follower", "mujoco-ur5e-follow"),
+            ("MuJoCo_ALOHA_Follower", "mujoco-aloha-follow"),
+            ("MuJoCo_SOARM100_Follower", "mujoco-so_arm100-follow"),
+            ("MuJoCo_Koch_Follower", "mujoco-koch-follow"),
+            ("MuJoCo_AgileXPiPER_Follower", "mujoco-piper-follow"),
+            ("MuJoCo_FrankaEmikaPanda_Follower", "mujoco-franka_panda-follow"),
+            ("MuJoCo_UFACTORYxArm7_Follower", "mujoco-xarm7-follow"),
+            ("MuJoCo_KinovaGen3_Follower", "mujoco-kinova_gen3-follow"),
+            ("MuJoCo_UnitreeG1_Follower", "mujoco-unitree_g1-follow"),
+            ("MuJoCo_UnitreeGo2_Follower", "mujoco-unitree_go2-follow"),
+            ("MuJoCo_BostonDynamicsSpot_Follower", "mujoco-boston_dynamics_spot-follow"),
+        ]
+        assert len({definition.type for definition in _definitions()}) == len(_definitions())
+
+    def test_every_supported_profile_has_a_single_robot_entry(self) -> None:
+        """SUP-1/STU-1: twin, dataset and experimental profiles are all selectable in Studio."""
+        supported = {name for name, profile in PROFILES.items() if profile.tier != "unsupported"}
+        single = {entry.profile.name for entry in list_catalog_entries() if not entry.bimanual}
+
+        assert supported == single
+        assert {"aloha", "so_arm100", "koch", "piper", "franka_fr3", "franka_panda", "xarm7", "kinova_gen3"} <= single
+
+    def test_no_entry_offers_zero_calibration(self) -> None:
+        """Simulated joints have no motor offset, so Studio must not offer the guided zero-pose step.
+
+        It would call ``release``/``set_zero`` on the driver, which ``MuJoCoRobot`` doesn't have; this
+        also covers the reBot B601 twin, whose real driver has the step.
+        """
+        assert [d.type for d in _definitions() if d.zero_calibration is not None] == []
+
+    def test_display_names_mark_experimental_entries(self) -> None:
+        names = {entry.type: entry.display_name for entry in list_catalog_entries()}
+        assert names["MuJoCo_WidowXAI_Bimanual_Follower"] == "MuJoCo WidowX AI Bimanual Follower"
+        assert names["MuJoCo_UnitreeG1_Follower"] == "MuJoCo Unitree G1 Follower (experimental)"
+        assert names["MuJoCo_reBotB601_Follower"] == "MuJoCo reBot B601 Follower"
+        assert names["MuJoCo_reBotB601_Bimanual_Follower"] == "MuJoCo reBot B601 Bimanual Follower"
+        assert names["MuJoCo_WidowXAI_Follower"] == "MuJoCo WidowX AI Follower"
+
+    def test_unsupported_profiles_get_no_entry(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from physicalai_mujoco_plugin import studio_catalog as sc
+        from physicalai_mujoco_plugin.profiles import RobotProfile
+
+        unsupported = RobotProfile(
+            name="unitree_go1", display_name="Go1", menagerie_model="unitree_go1", default_scene="floor_flat"
+        )
+        monkeypatch.setattr(sc, "PROFILES", {"so101": SO101_PROFILE, "unitree_go1": unsupported})
+        assert [entry.profile.name for entry in list_catalog_entries()] == ["so101", "so101"]
+
+    def test_generated_payloads_default_to_their_owner(self) -> None:
+        for definition, entry in zip(_definitions()[3:], list_catalog_entries()[2:], strict=True):
+            payload_model = definition.robot_payload
+            payload = payload_model()
+            assert (payload.name, payload.http_url) == (entry.owner_name, "http://127.0.0.1:8080")
+            payload_model.model_rebuild(raise_errors=True)
+            assert payload_model.model_validate({"name": "x"}).name == "x"
+
+    def test_so101_entries_keep_their_urdfs_and_the_others_get_generated_ones(self) -> None:
+        """STU-2: every follower has a 3D model; the WidowX AI's too is generated (tests/test_studio_urdf.py)."""
+        from physicalai_mujoco_plugin.studio_urdf import ensure_robot_urdf  # noqa: PLC0415
+
+        definitions = {definition.type: definition for definition in _definitions() if definition.role == "follower"}
+        assert all(definition.asset is not None for definition in definitions.values())
+        asset = definitions["MuJoCo_WidowXAI_Follower"].asset
+        assert str(asset.urdf_relative_path) == "trossen_wxai-1/robot.urdf"
+        assert asset.root_resolver.func is ensure_robot_urdf
+        assert asset.joint_map == {f"{name}.pos": [f"{name}_channel"] for name in list_catalog_entries()[2].joint_names()}
+        assert str(definitions["MuJoCo_SO101_Follower"].asset.urdf_relative_path) == "so101/so101_new_calib.urdf"
+
+    def test_only_twins_get_a_bimanual_entry(self) -> None:
+        """D2: two-arm entries for the robots with real bimanual leaders; other arms run two from the CLI only."""
+        from physicalai_mujoco_plugin.scene_registry import arm_prefixes  # noqa: PLC0415
+        from physicalai_mujoco_plugin.studio_catalog import BIMANUAL_PREFIXES  # noqa: PLC0415
+
+        bimanual = [entry.profile.name for entry in list_catalog_entries() if entry.bimanual]
+        assert bimanual == ["so101", "trossen_wxai", "rebot_b601"]
+        assert {PROFILES[name].tier for name in bimanual} == {"twin"}
+        assert BIMANUAL_PREFIXES == arm_prefixes(2)
+
+    @pytest.mark.anyio
+    async def test_probe_checks_for_the_entrys_joints(self) -> None:
+        from physicalai_mujoco_plugin import studio_catalog as sc
+
+        definition = {d.type: d for d in _definitions()}["MuJoCo_WidowXAI_Bimanual_Follower"]
+        with patch.object(sc, "_check_zenoh_robot_online", return_value=True) as check:
+            assert await definition.probe.is_online(definition.robot_payload(name="w"))
+        names = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_yaw", "wrist_roll", "gripper")
+        check.assert_called_once_with("w", tuple(f"{side}_{name}" for side in ("left", "right") for name in names))
+
+    @pytest.mark.anyio
+    async def test_derived_profiles_take_their_names_from_the_model(self) -> None:
+        from physicalai_mujoco_plugin import compose
+
+        definition = {d.type: d for d in _definitions()}["MuJoCo_UniversalRobotsUR5e_Follower"]
+        layout = MagicMock(joint_names=("shoulder_pan", "elbow"))
+        with patch.object(compose, "robot_layout", return_value=layout):
+            robot = await definition.robot_builder(MagicMock(payload={}), MagicMock())
+        assert robot.joint_names == ["shoulder_pan", "elbow"]
+        assert robot._shared_robot._name == "mujoco-ur5e-follow"  # noqa: SLF001
+
+    @pytest.mark.anyio
+    async def test_an_entry_whose_model_is_unavailable_is_offline(self) -> None:
+        from physicalai_mujoco_plugin import compose
+        from physicalai_mujoco_plugin import studio_catalog as sc
+
+        definition = {d.type: d for d in _definitions()}["MuJoCo_UnitreeG1_Follower"]
+        with (
+            patch.object(compose, "robot_layout", side_effect=RuntimeError("offline")),
+            patch.object(sc, "_check_zenoh_robot_online") as check,
+        ):
+            assert await definition.probe.is_online(definition.robot_payload()) is False
+        check.assert_not_called()
+
+    def test_import_needs_no_mujoco(self) -> None:
+        import subprocess  # noqa: PLC0415
+        import sys  # noqa: PLC0415
+
+        code = (
+            "import sys, physicalai_mujoco_plugin.studio_catalog as sc; sc._definitions(); "
+            "sys.exit('mujoco' in sys.modules)"
+        )
+        assert subprocess.run([sys.executable, "-c", code], check=False).returncode == 0  # noqa: S603
+
+
+class TestSimulationLaunch:
+    """P3: every follower entry tells Studio how to start its simulation."""
+
+    def test_followers_offer_the_scenes_for_their_arm_count_and_the_leader_none(self) -> None:
+        launches = {d.type: d.simulation for d in _definitions()}
+        assert launches.pop("MuJoCo_Virtual_Leader") is None
+        so101 = ["single_pick_place", "yahtzee", "conveyor_sort"]
+        expected = {
+            "MuJoCo_SO101_Follower": so101,
+            "MuJoCo_SO101_Bimanual_Follower": so101,
+            "MuJoCo_WidowXAI_Follower": ["single_pick_place", "bucket_sort"],
+            "MuJoCo_WidowXAI_Bimanual_Follower": ["single_pick_place", "bucket_sort"],
+            "MuJoCo_reBotB601_Follower": ["single_pick_place", "bucket_sort"],
+            **dict.fromkeys(
+                ["MuJoCo_FrankaResearch3_Follower", "MuJoCo_FrankaEmikaPanda_Follower", "MuJoCo_FrankaDuo_Follower"],
+                ["single_pick_place", "bucket_sort"],
+            ),
+            **dict.fromkeys(
+                ["MuJoCo_UnitreeG1_Follower", "MuJoCo_UnitreeGo2_Follower", "MuJoCo_BostonDynamicsSpot_Follower"],
+                ["floor_flat"],
+            ),
+        }
+        for entry in list_catalog_entries():
+            launch = launches[entry.type]
+            assert launch is not None
+            scene_ids = [scene.id for scene in launch.scenes]
+            assert scene_ids == expected.get(entry.type, ["single_pick_place"]), entry.type
+            assert launch.default_scene == entry.profile.default_scene
+            for scene_id in scene_ids:
+                check_arm_count(get_scene(scene_id), entry.profile, len(entry.prefixes))
+
+    def test_scenes_carry_the_registrys_names_and_descriptions(self) -> None:
+        launch = SO101_ENTRY.simulation_launch()
+        assert launch is not None
+        conveyor = get_scene("conveyor_sort")
+        assert launch.scenes[2] == SimulationScene(
+            id="conveyor_sort", display_name=conveyor.display_name, description=conveyor.description
+        )
+
+    @pytest.mark.parametrize(
+        ("entry_type", "seed", "extra"),
+        [
+            ("MuJoCo_SO101_Follower", None, []),
+            ("MuJoCo_WidowXAI_Bimanual_Follower", 7, ["--bimanual"]),
+            ("MuJoCo_UnitreeGo2_Follower", MAX_SEED, []),
+        ],
+    )
+    def test_argv_starts_a_supervised_simulation_that_start_parses(
+        self, entry_type: str, seed: int | None, extra: list[str]
+    ) -> None:
+        from physicalai_mujoco_plugin import __main__ as cli  # noqa: PLC0415
+
+        entry = {entry.type: entry for entry in list_catalog_entries()}[entry_type]
+        launch = entry.simulation_launch()
+        assert launch is not None
+        payload = _payload_model(entry)(name="-studio sim", http_url="http://127.0.0.1:8765")
+        assert launch.owner_name(payload) == "-studio sim"
+        argv = launch.argv(launch.default_scene, payload, seed)
+        assert argv[:6] == [sys.executable, "-m", "physicalai_mujoco_plugin", "start", "--profile", entry.profile.name]
+        assert argv[6 : 6 + len(extra)] == extra
+        args = cli._build_parser().parse_args(argv[3:])  # noqa: SLF001
+        assert (args.profile, args.bimanual, args.scene, args.name, args.seed) == (
+            entry.profile.name,
+            entry.bimanual,
+            launch.default_scene,
+            "-studio sim",
+            seed,
+        )
+        assert (args.status_json, args.exit_with_parent, args.viser_port) == (True, True, 0)
+        # The payload's port when it is free, so cameras and exports keep their address.
+        assert (args.http_port, args.http_port_fallback) == (8765, True)
+        assert args.viewer_theme == "studio"
+
+    @pytest.mark.parametrize("http_url", ["http://127.0.0.1:notaport", "http://127.0.0.1:0", "127.0.0.1:8080"])
+    def test_argv_takes_a_free_port_without_a_usable_payload_port(self, http_url: str) -> None:
+        launch = SO101_ENTRY.simulation_launch()
+        assert launch is not None
+        argv = launch.argv("yahtzee", MuJoCoSO101Payload(http_url=http_url))
+        assert argv[argv.index("--http-port") + 1] == "0"
+        assert "--http-port-fallback" not in argv
+
+    @pytest.mark.parametrize(
+        ("entry_type", "seed", "extra"),
+        [
+            ("MuJoCo_SO101_Follower", None, []),
+            ("MuJoCo_WidowXAI_Bimanual_Follower", 7, ["--bimanual"]),
+            ("MuJoCo_UnitreeGo2_Follower", MAX_SEED, []),
+        ],
+    )
+    def test_standalone_argv_starts_the_same_simulation_at_the_payloads_address(
+        self, entry_type: str, seed: int | None, extra: list[str]
+    ) -> None:
+        from physicalai_mujoco_plugin import __main__ as cli  # noqa: PLC0415
+
+        entry = {entry.type: entry for entry in list_catalog_entries()}[entry_type]
+        launch = entry.simulation_launch()
+        assert launch is not None
+        payload = _payload_model(entry)(name="-my sim", http_url="http://127.0.0.1:8765")
+        argv = launch.standalone_argv(launch.default_scene, payload, seed)
+        assert argv is not None
+        assert argv[:4] == ["physicalai-mujoco", "start", "--profile", entry.profile.name]
+        assert argv[4 : 4 + len(extra)] == extra
+        args = cli._build_parser().parse_args(argv[1:])  # noqa: SLF001
+        assert (args.profile, args.bimanual, args.scene, args.name, args.seed) == (
+            entry.profile.name,
+            entry.bimanual,
+            launch.default_scene,
+            "-my sim",
+            seed,
+        )
+        assert (args.http_host, args.http_port, args.viser_port, args.allow_remote) == ("127.0.0.1", 8765, 0, False)
+        # Not Studio's supervision contract: the user's simulation runs until they stop it.
+        assert (args.status_json, args.exit_with_parent, args.viewer_theme) == (False, False, "default")
+
+    def test_standalone_argv_for_the_franka_on_bucket_sort(self) -> None:
+        launches = {d.type: d.simulation for d in _definitions()}
+        fr3, duo = launches["MuJoCo_FrankaResearch3_Follower"], launches["MuJoCo_FrankaDuo_Follower"]
+        assert fr3 is not None
+        assert duo is not None
+        payload = {"name": "mujoco-franka_fr3-follow", "http_url": "http://127.0.0.1:8765"}
+        assert fr3.standalone_argv("bucket_sort", payload) == [  # type: ignore[arg-type]
+            "physicalai-mujoco",
+            "start",
+            "--profile",
+            "franka_fr3",
+            "--scene",
+            "bucket_sort",
+            "--name=mujoco-franka_fr3-follow",
+            "--http-port",
+            "8765",
+            "--viser-port",
+            "0",
+        ]
+        assert duo.standalone_argv("bucket_sort", {"http_url": "http://127.0.0.1:8765"}, 3) == [  # type: ignore[arg-type]
+            "physicalai-mujoco",
+            "start",
+            "--profile",
+            "franka_duo",
+            "--scene",
+            "bucket_sort",
+            f"--name={default_owner_name('franka_duo')}",
+            "--http-port",
+            "8765",
+            "--viser-port",
+            "0",
+            "--seed",
+            "3",
+        ]
+
+    @pytest.mark.parametrize(
+        ("http_url", "allow_remote", "expected"),
+        [
+            ("http://127.0.0.1:8080", False, ["--http-port", "8080", "--viser-port", "0"]),
+            ("http://127.0.0.1", False, ["--http-port", "80", "--viser-port", "0"]),
+            ("http://localhost:8123/", False, ["--http-host", "localhost", "--http-port", "8123", "--viser-port", "0"]),
+            ("http://[::1]:8123", False, ["--http-host", "::1", "--http-port", "8123", "--viser-port", "0"]),
+            ("http://127.0.0.1:8123", True, ["--http-port", "8123", "--viser-port", "0", "--allow-remote"]),
+            (
+                "http://10.0.0.5:8081",
+                False,
+                ["--http-host", "10.0.0.5", "--http-port", "8081", "--viser-port", "0", "--allow-remote"],
+            ),
+        ],
+    )
+    def test_standalone_argv_serves_where_the_payload_points(
+        self, http_url: str, allow_remote: bool, expected: list[str]
+    ) -> None:
+        launch = SO101_ENTRY.simulation_launch()
+        assert launch is not None
+        payload = MuJoCoSO101Payload(http_url=http_url, allow_remote=allow_remote)
+        argv = launch.standalone_argv("yahtzee", payload)
+        assert argv is not None
+        assert argv[argv.index(f"--name={DEFAULT_MUJOCO_OWNER_NAME}") + 1 :] == expected
+
+    @pytest.mark.parametrize("http_url", ["http://127.0.0.1:notaport", "http://127.0.0.1:0", "127.0.0.1:8080", ""])
+    def test_standalone_argv_needs_a_host_and_a_fixed_port(self, http_url: str) -> None:
+        launch = SO101_ENTRY.simulation_launch()
+        assert launch is not None
+        with pytest.raises(ValueError, match="port|host"):
+            launch.standalone_argv("yahtzee", MuJoCoSO101Payload(http_url=http_url))
+
+    def test_the_seed_range_matches_post_seed(self) -> None:
+        launch = SO101_ENTRY.simulation_launch()
+        assert launch is not None
+        assert launch.max_seed == MAX_SEED
+        with pytest.raises(ValueError, match="seed must be an integer from 0 to 4294967295"):
+            launch.argv("yahtzee", MuJoCoSO101Payload(), MAX_SEED + 1)
+
+    def test_the_owner_name_is_the_payloads_name_even_from_a_raw_payload(self) -> None:
+        launch = {d.type: d for d in _definitions()}["MuJoCo_SO101_Bimanual_Follower"].simulation
+        assert launch is not None
+        assert launch.owner_name(MuJoCoSO101BimanualPayload()) == DEFAULT_BIMANUAL_MUJOCO_OWNER_NAME
+        assert launch.owner_name({"name": "sim-2"}) == "sim-2"  # type: ignore[arg-type]
+
+    def test_labels_give_the_arm_count_and_tier(self) -> None:
+        labels = {d.type: d.simulation.labels for d in _definitions() if d.simulation is not None}
+        assert labels["MuJoCo_SO101_Follower"] == ("1 arm", "twin")
+        assert labels["MuJoCo_WidowXAI_Bimanual_Follower"] == ("2 arms (bimanual)", "twin")
+        assert labels["MuJoCo_ALOHA_Follower"] == ("2 arms", "dataset")
+        assert labels["MuJoCo_UnitreeG1_Follower"] == ("humanoid", "experimental")
+        assert labels["MuJoCo_UnitreeGo2_Follower"] == ("quadruped", "experimental")
+        assert labels["MuJoCo_BostonDynamicsSpot_Follower"] == ("quadruped", "experimental")
+        assert labels["MuJoCo_reBotB601_Follower"] == ("1 arm", "twin")
+        assert labels["MuJoCo_reBotB601_Bimanual_Follower"] == ("2 arms (bimanual)", "twin")
+
+    def test_the_module_runs_with_python_dash_m(self) -> None:
+        import subprocess  # noqa: PLC0415
+
+        command = [sys.executable, "-m", "physicalai_mujoco_plugin", "start", "--help"]
+        result = subprocess.run(command, check=False, capture_output=True, text=True)  # noqa: S603
+        assert result.returncode == 0
+        assert "--seed" in result.stdout

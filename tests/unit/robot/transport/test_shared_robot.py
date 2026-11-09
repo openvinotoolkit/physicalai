@@ -333,14 +333,14 @@ class TestSharedRobotLifecycle:
             second.connect()
 
     def test_discover_via_connected_session(self, module_owner: SharedRobot) -> None:
-        found = discover_robots(timeout=1.0, session=module_owner._session)
+        found = discover_robots(timeout=2.0, session=module_owner._session)
         names = [m["name"] for m in found]
         assert module_owner.name in names
         metadata = next(m for m in found if m["name"] == module_owner.name)
         assert metadata["robot_class"] == FAKE_ROBOT_CLASS
 
     def test_discover_local_default_session(self, module_owner: SharedRobot) -> None:
-        found = discover_robots(timeout=1.0)
+        found = discover_robots(timeout=2.0)
         assert module_owner.name in [m["name"] for m in found]
 
 

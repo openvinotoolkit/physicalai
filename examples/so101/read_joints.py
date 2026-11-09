@@ -18,7 +18,7 @@ import argparse
 import sys
 import time
 
-from physicalai.robot.so101.so101 import SO101
+from physicalai_so101_plugin import SO101
 
 
 def main(argv: list[str] | None = None) -> None:

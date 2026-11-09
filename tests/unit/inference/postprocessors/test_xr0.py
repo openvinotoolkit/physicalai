@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import cast
+
 import numpy as np
 import pytest
 
@@ -12,45 +15,74 @@ from physicalai.inference.postprocessors import Postprocessor, XR0Postprocessor
 
 class TestXR0PostprocessorInit:
     def test_is_postprocessor(self) -> None:
-        post = XR0Postprocessor(action_mean=[0.0] * 4, action_std=[1.0] * 4)
+        post = XR0Postprocessor(action_mean=[[0.0] * 4] * 3, action_std=[[1.0] * 4] * 3)
         assert isinstance(post, Postprocessor)
 
     def test_mismatched_stats_raise(self) -> None:
         with pytest.raises(ValueError, match="same shape"):
-            XR0Postprocessor(action_mean=[0.0] * 4, action_std=[1.0] * 3)
+            XR0Postprocessor(action_mean=[[0.0] * 4] * 3, action_std=[[1.0] * 3] * 3)
+
+    def test_flat_stats_raise(self) -> None:
+        # Per-dimension stats are no longer broadcast over the chunk.
+        with pytest.raises(ValueError, match="per-timestep"):
+            XR0Postprocessor(
+                action_mean=cast("Sequence[Sequence[float]]", [0.0] * 4),
+                action_std=cast("Sequence[Sequence[float]]", [1.0] * 4),
+            )
 
 
 class TestXR0PostprocessorCall:
     def test_denormalizes_action(self) -> None:
-        post = XR0Postprocessor(action_mean=[1.0] * 4, action_std=[2.0] * 4)
+        post = XR0Postprocessor(action_mean=[[1.0] * 4] * 3, action_std=[[2.0] * 4] * 3)
         out = post({ACTION: np.zeros((1, 3, 4), dtype=np.float32)})
         # 0 * (2 + eps) + 1 == 1.0
         np.testing.assert_allclose(out[ACTION], 1.0, atol=1e-5)
 
     def test_slices_to_action_dim(self) -> None:
-        post = XR0Postprocessor(action_mean=[0.0] * 8, action_std=[1.0] * 8, action_dim=6)
+        post = XR0Postprocessor(action_mean=[[0.0] * 8] * 5, action_std=[[1.0] * 8] * 5, action_dim=6)
         out = post({ACTION: np.ones((1, 5, 8), dtype=np.float32)})
         assert out[ACTION].shape == (1, 5, 6)
 
     def test_none_action_dim_keeps_width(self) -> None:
-        post = XR0Postprocessor(action_mean=[0.0] * 8, action_std=[1.0] * 8)
+        post = XR0Postprocessor(action_mean=[[0.0] * 8] * 5, action_std=[[1.0] * 8] * 5)
         out = post({ACTION: np.ones((1, 5, 8), dtype=np.float32)})
         assert out[ACTION].shape == (1, 5, 8)
 
     def test_missing_action_passthrough(self) -> None:
-        post = XR0Postprocessor(action_mean=[0.0] * 4, action_std=[1.0] * 4)
+        post = XR0Postprocessor(action_mean=[[0.0] * 4] * 3, action_std=[[1.0] * 4] * 3)
         payload = {"other": np.zeros((2,), dtype=np.float32)}
         out = post(payload)
         assert "other" in out
 
     def test_roundtrip_with_preprocessor_convention(self) -> None:
-        mean = np.array([0.5, -1.0, 2.0, 0.0], dtype=np.float32)
-        std = np.array([1.5, 0.5, 3.0, 1.0], dtype=np.float32)
+        mean = np.tile(np.array([0.5, -1.0, 2.0, 0.0], dtype=np.float32), (4, 1))
+        std = np.tile(np.array([1.5, 0.5, 3.0, 1.0], dtype=np.float32), (4, 1))
         post = XR0Postprocessor(action_mean=mean.tolist(), action_std=std.tolist())
         raw = np.random.rand(1, 4, 4).astype(np.float32)
         normalized = (raw - mean) / (std + 1e-6)
         out = post({ACTION: normalized})
         np.testing.assert_allclose(out[ACTION], raw, atol=1e-4)
+
+    def test_per_timestep_stats_in_absolute_mode(self) -> None:
+        # Current exports bake per-timestep stats in absolute mode too. The stats
+        # vary along the chunk axis, so a wrong broadcast would change the result.
+        mean = np.arange(5 * 4, dtype=np.float32).reshape(5, 4)
+        std = np.arange(1, 5 * 4 + 1, dtype=np.float32).reshape(5, 4)
+        post = XR0Postprocessor(action_mean=mean.tolist(), action_std=std.tolist())
+        raw = np.random.rand(2, 5, 4).astype(np.float32)
+        normalized = (raw - mean) / (std + 1e-6)
+        out = post({ACTION: normalized})
+        np.testing.assert_allclose(out[ACTION], raw, atol=1e-3)
+
+    def test_chunk_length_mismatch_raises(self) -> None:
+        # Per-timestep stats are positional: a stats chunk shorter than the action
+        # chunk must fail loudly instead of silently rescaling.
+        post = XR0Postprocessor(
+            action_mean=np.zeros((10, 4), dtype=np.float32).tolist(),
+            action_std=np.ones((10, 4), dtype=np.float32).tolist(),
+        )
+        with pytest.raises(ValueError, match="broadcast"):
+            post({ACTION: np.zeros((1, 30, 4), dtype=np.float32)})
 
 
 class TestXR0PostprocessorDelta:
@@ -101,7 +133,7 @@ class TestXR0PostprocessorDelta:
             post({ACTION: np.zeros((1, 5, 8), dtype=np.float32)})
 
     def test_absolute_mode_ignores_state(self) -> None:
-        post = XR0Postprocessor(action_mean=[0.0] * 8, action_std=[1.0] * 8, action_dim=6)
+        post = XR0Postprocessor(action_mean=[[0.0] * 8] * 5, action_std=[[1.0] * 8] * 5, action_dim=6)
         action = np.ones((1, 5, 8), dtype=np.float32)
         with_state = post({ACTION: action, STATE_PASSTHROUGH: np.ones((1, 1, 8), dtype=np.float32)})[ACTION]
         without_state = post({ACTION: action})[ACTION]

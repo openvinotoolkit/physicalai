@@ -10,9 +10,10 @@ exclude = ["packages/physicalai-lerobot-plugin"]
 physicalai = { workspace = true }
 physicalai-studio-plugin = { workspace = true }
 physicalai-mujoco-plugin = { workspace = true }
-physicalai-bimanual-so101-plugin = { workspace = true }
 physicalai-rebot-b601-plugin = { workspace = true }
 physicalai-stararm-plugin = { workspace = true }
+physicalai-trossen-plugin = { workspace = true }
+physicalai-so101-plugin = { workspace = true }
 
 [project]
 name = "physicalai"
@@ -55,7 +56,7 @@ pai = "physicalai.cli.main:main"
 
 [project.optional-dependencies]
 tests = ["pytest", "mypy"]
-notebooks = ["matplotlib", "matplotlib-inline", "ipykernel"]
+notebooks = ["matplotlib", "matplotlib-inline", "ipykernel", "ipywidgets", "jupyterlab"]
 realsense = [
     "pyrealsense2>=2.58.4.10922; sys_platform != 'darwin'",
     "pyrealsense2-macosx; sys_platform == 'darwin'",
@@ -63,7 +64,7 @@ realsense = [
 basler = ["pypylon", "opencv-python-headless"]
 # Pin iceoryx2 exact version and sync with PhysicalAI Studio so
 # publishers and subscribers across processes/venvs can attach to each other.
-transport = ["iceoryx2==0.9.0", "eclipse-zenoh==1.9.0", "msgpack==1.2.1"]
+transport = ["iceoryx2==0.9.0", "eclipse-zenoh==1.9.0", "msgpack==1.2.3"]
 genicam = []
 capture = [
     "physicalai[realsense]",
@@ -74,26 +75,29 @@ capture = [
 ur = []
 abb = []
 franka = []
-trossen = ["trossen-arm>=1.9.0"]
-so101 = ["feetech-servo-sdk"]
-observer-rerun = ["rerun-sdk>=0.22"]
+observer-rerun = ["rerun-sdk>=0.22", "psutil>=5.9"]
 robots = [
     "physicalai[ur]",
     "physicalai[abb]",
     "physicalai[franka]",
-    "physicalai[trossen]; python_version < '3.14'",
     "physicalai[so101]",
+    "physicalai[trossen]",
 ]
 # First-party plugin packages from packages/. They require Python 3.12+, so on
-# 3.11 these extras install nothing. physicalai-lerobot-plugin is left out: it
-# pulls in torch and downgrades shared dependencies such as OpenCV.
+# 3.11 these extras install nothing. The Trossen plugin also requires
+# trossen-arm, which is distributed only for macOS and Linux.
+# physicalai-lerobot-plugin is left out: it pulls in torch and downgrades shared
+# dependencies such as OpenCV.
 plugin-mujoco = ["physicalai-mujoco-plugin; python_version >= '3.12'"]
-plugin-bimanual-so101 = ["physicalai-bimanual-so101-plugin; python_version >= '3.12'"]
 plugin-rebot-b601 = ["physicalai-rebot-b601-plugin; python_version >= '3.12'"]
 plugin-stararm = ["physicalai-stararm-plugin; python_version >= '3.12'"]
+plugin-so101 = ["physicalai-so101-plugin; python_version >= '3.12' and python_version < '3.14'"]
+so101 = ["physicalai-so101-plugin; python_version >= '3.12' and python_version < '3.14'"]
+plugin-trossen = ["physicalai-trossen-plugin; python_version >= '3.12' and python_version < '3.14' and (sys_platform == 'darwin' or sys_platform == 'linux')"]
+trossen = ["physicalai-trossen-plugin; python_version >= '3.12' and python_version < '3.14' and (sys_platform == 'darwin' or sys_platform == 'linux')"]
 
 [dependency-groups]
-dev = ["pytest", "mypy", "pyrefly", "ruff>=0.15.12", "prek"]
+dev = ["pytest", "mypy", "pyrefly", "ruff>=0.15.12", "prek", "physicalai-so101-plugin"]
 docs = ["mkdocs>=1.6", "mkdocs-material>=9.6"]
 
 [tool.hatch.version]
@@ -239,7 +243,7 @@ enabled = false
 enabled = false
 
 [tool.pytest.ini_options]
-addopts = ["--strict-markers", "--strict-config", "--showlocals", "-ra", "-m", "not ov_smoke"]
+addopts = ["--strict-markers", "--strict-config", "--showlocals", "-ra", "-m", "not ov_smoke and not mujoco_smoke"]
 testpaths = "tests"
 pythonpath = ["src", "tests/fuzz/harnesses"]
 # Prevent pytest from walking into the fuzz harness tree.
@@ -251,6 +255,7 @@ markers = [
     "v4l2: marks tests requiring V4L2 mocking (Linux only)",
     "transport: marks tests requiring iceoryx2",
     "ov_smoke: OpenVINO smoke tests — three-stage contract (load, tokenizer, predict) against published HF exports",
+    "mujoco_smoke: MuJoCo smoke matrix and reachability checks over every supported robot profile (deselected by default; run with -m mujoco_smoke)",
 ]
 
 [tool.coverage.report]

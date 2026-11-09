@@ -1,53 +1,58 @@
 # Physical AI MuJoCo Plugin
 
-Run single-arm or bimanual SO-101 simulations through [PhysicalAI Runtime](https://github.com/openvinotoolkit/physicalai). The plugin provides a browser viewer, camera streams, task scenes, and follower catalog entries for [Physical AI Studio](https://github.com/open-edge-platform/physical-ai-studio).
+Simulate robot arms, humanoids and quadrupeds from [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) as [PhysicalAI Runtime](https://github.com/openvinotoolkit/physicalai) robots. Runtime, Studio, policies and datasets use them through the same robot interface as real hardware. The plugin provides a browser viewer, camera streams, task scenes, and follower catalog entries for [Physical AI Studio](https://github.com/open-edge-platform/physical-ai-studio).
 
 ## Features
 
-- Run a virtual SO-101 as a PhysicalAI transport owner
+- Run any MuJoCo Menagerie robot as a PhysicalAI transport owner: 15 robots with a hand-written profile (SO-101, WidowX AI, reBot B601, UR5e, ALOHA, Franka, xArm7, Unitree G1, ...), and any other Menagerie model with a derived one; see [Other robots](#other-robots)
+- Digital twins of the SO-101, WidowX AI and reBot B601 with their real drivers' joint names and units
 - Viser browser viewer with a Simulation tab (scene switching, reset, arm homing, seeded resets, episode auto-reset, conveyor belt controls, object dragging, camera previews, confirmed shutdown) and a Camera tab to follow an object, the target, or a gripper
 - Camera streams over HTTP (MJPEG), used in Studio as IP cameras
 - REST control server with the same controls as the viewer
 - Built-in task scenes
 - Automatic cube respawn after a configurable success dwell (five seconds by default) in `single_pick_place`
 - A conveyor-belt sorting cell (`conveyor_sort`) with an adjustable belt speed, a continuous item feed, and per-episode scoring
+- A language-conditioned sorting task for the Franka FR3, Panda and Duo, the WidowX AI (alone or a pair) and the reBot B601 (`bucket_sort`): an instruction such as "put the CPU in the red bucket", randomized bucket colours, and a success flag
 
 ## What this is for
 
-- Teleoperating a virtual SO-101 from PhysicalAI Studio.
+- Teleoperating a simulated robot from PhysicalAI Studio.
 - Testing robot setup, task logic, and control flows without physical hardware.
 - Playing back policy/inference outputs in a simulated scene while monitoring robot + camera streams.
 - Developing workflows where Studio, transport, and robot APIs stay identical between sim and real deployments.
 
+To run a trained policy in the `conveyor_sort` scene from a notebook, see the tutorial [`examples/tutorials/run_policy_in_simulation.ipynb`](../../examples/tutorials/run_policy_in_simulation.ipynb).
+
 ## Quick start
 
-Requires Python 3.12 or newer. From the Runtime repository root:
+Requires Python 3.12 or newer:
 
 ```bash
-git lfs pull
-uv sync --package physicalai-mujoco-plugin
-uv run --package physicalai-mujoco-plugin physicalai-mujoco start
+pip install physicalai-mujoco-plugin
+physicalai-mujoco start                        # SO-101, the default profile
+physicalai-mujoco profiles                     # list the robots
+physicalai-mujoco start --profile franka_panda  # another robot
 ```
 
-On a headless or remote Linux machine (no desktop session, for example over SSH), MuJoCo cannot create an OpenGL context for the cameras and `start` fails with `an OpenGL platform library has not been loaded into this process`. Render with EGL instead:
+To run it from a checkout of this repository instead, see [Development](#development).
+
+On a headless Linux machine (neither `DISPLAY` nor `WAYLAND_DISPLAY` set, for example over SSH), `start` renders the cameras with EGL: it sets `MUJOCO_GL=egl` (and `PYOPENGL_PLATFORM=egl`) when `MUJOCO_GL` is unset and an EGL library is installed, and logs it. If MuJoCo still cannot render, `start` runs without cameras and logs a warning. An explicit `MUJOCO_GL` always wins; use `MUJOCO_GL=osmesa` on a machine without a GPU driver (slower, needs OSMesa installed):
 
 ```bash
-MUJOCO_GL=egl uv run --package physicalai-mujoco-plugin physicalai-mujoco start
+MUJOCO_GL=osmesa physicalai-mujoco start
 ```
 
-Use `MUJOCO_GL=osmesa` on a machine without a GPU driver (slower, needs OSMesa installed). The same applies to the `start` command in the Studio setup below.
-
-The first `start` on a machine downloads the SO-101 model from [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) (about 4 MB) into a per-user cache before the simulation starts. To download it ahead of time, for example while building a container image, run:
+The first `start` of a robot on a machine downloads its model from [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) into a per-user cache before the simulation starts (about 4 MB for the SO-101). To download the models of every profile ahead of time, for example while building a container image, run:
 
 ```bash
-uv run --package physicalai-mujoco-plugin physicalai-mujoco prefetch
+physicalai-mujoco prefetch
 ```
 
 On a machine without internet access, run `prefetch` on a connected machine and copy the cache (set its location with `MENAGERIE_CACHE_DIR`), or set `MENAGERIE_ROOT` to a `mujoco_menagerie` checkout. A simulation owner started some other way, such as `examples/run_mujoco_owner.py`, downloads the model during its startup instead, so run `prefetch` first on a slow connection.
 
-By default this starts:
+By default `start` runs:
 
-- A MuJoCo SO-101 owner named `mujoco-so101-follow`
+- The SO-101 profile, as an owner named `mujoco-so101-follow` (`mujoco-<profile>-follow` for other profiles)
 - Browser viewer at `http://127.0.0.1:9090`
 - Camera streams served over HTTP (MJPEG + REST control server on port `8080`)
 - Control rate `50 Hz`
@@ -57,16 +62,17 @@ To drive the simulation from Physical AI Studio, see [Use with Physical AI Studi
 
 ### Browser viewer controls
 
-The viewer opens on its **Simulation** tab, which controls the simulation. The **Camera** tab controls whether the view follows a body. The **Visualization** and **Groups** tabs come from mjviser and control what is drawn.
+The viewer opens on its **Simulation** tab, which controls the simulation. The **Camera** tab controls whether the view follows a body. The **Visualization** and **Groups** tabs come from mjviser and control what is drawn. **Visualization** also toggles the target ghost: a see-through copy of every robot at the pose its joints are told to reach, on by default, so an arm that lags, is blocked or cannot reach a target shows as a gap between the arm and its ghost. It hides during a replay.
 
-- **Scene**: pick another scene that fits the running robot (single-arm or bimanual). **Reset Scene** respawns the scene's objects while keeping the target fixed. **Home Arm** puts the arm joints and their position targets at the scene's home pose. An active policy or teleop session will drive the arm away again on its next action.
+- **Scene**: pick another scene for the running robot; every tabletop scene runs one or two arms, and a switch keeps the arm count. **Reset Scene** respawns the scene's objects while keeping the target fixed. **Home Arm** puts the arm joints and their position targets at the scene's home pose. An active policy or teleop session will drive the arm away again on its next action. During a replay ([`POST /replay`](#replay-recorded-joint-positions)), the folder shows the replayed frame and a **Stop Replay** button. **Overview camera** moves the `overview` camera between **Shoulder** and **Front** ([Overview camera styles](#overview-camera-styles)); it is disabled while automatic Studio recording runs.
+- **Robot**: the profile, its tier, the joint units, the overview camera style, and each floating base's height, tilt and hold.
 - **Performance**: the simulation speed as a multiple of real time, the control loop rate, and each camera's frame rate, over the last two seconds. Below 0.95x real time, the belt, arm and physics all run slower than the wall clock, while Studio records and policies run at wall-clock rates. Keep it at 1.00x when recording or evaluating.
 - **Randomization**: tick **Fixed seed** to reseed before every reset and scene switch, so object layouts repeat. Untick it to go back to random layouts.
 - **Episode** (`single_pick_place` only): the cube respawns after it rests on the target for the success dwell. Turn **Auto-reset** off or change the dwell here. The panel shows the countdown and the number of completed episodes.
 - **Conveyor** (`conveyor_sort` only, in place of **Episode**): **Belt running** pauses or resumes the belt and the item feed. **Belt speed** sets the belt surface speed from 0 to 10 cm/s. The panel shows the items fed so far, the current and last episode's score, and the sorting rule.
 - **Objects**: tick **Drag objects** to show a handle on each free object. While you drag, the object stays at the handle's pose. When you let go, it falls from there with zero velocity. The target stays fixed.
 - **Cameras**: tick **Show previews** to see low-rate thumbnails of the rendered cameras. Previews start off because every open viewer receives them.
-- **Shutdown** asks for confirmation before stopping the owner.
+- **Shutdown** asks for confirmation before stopping the owner (hidden with `--viewer-theme studio` or `compact`).
 
 On the **Camera** tab, **Follow** chooses a body for the view to stay on: a free object, the target, or a gripper. Orbiting and zooming keep the view on it. Panning away stops following, and **Follow** goes back to **None**. **None**, the default, is a free camera that nothing moves. While you drag the followed object, the view holds still, then glides back onto it when you let go. **FOV** and **Reset View** apply to every open viewer. The follow choice is shared too. Following moves the viewer cameras; the rendered scene itself never shifts.
 
@@ -74,19 +80,22 @@ Switching scenes rebuilds the whole viewer for the new model. The follow, drag a
 
 ### Bimanual simulation
 
-Start the garment scene alongside a single-arm owner using separate server ports:
+`--bimanual` runs two arms in the chosen scene, any tabletop scene, or the profile's default scene. Start one alongside a single-arm owner using separate server ports:
 
 ```bash
-uv run --package physicalai-mujoco-plugin physicalai-mujoco start --bimanual --http-port 8081 --viser-port 9091
+physicalai-mujoco start --bimanual --http-port 8081 --viser-port 9091
+physicalai-mujoco start --bimanual --http-port 8082 --viser-port 9092 --name so101-bimanual
 ```
 
-Connect Studio's `MuJoCo SO-101 Bimanual Follower` to `mujoco-so101-bimanual-follow`. Its camera names are `left_wrist`, `right_wrist`, and `overview`, served on the selected HTTP port.
+The arms are named `left_…` and `right_…`; the left arm is on the left seen from behind the arms. Connect Studio's `MuJoCo SO-101 Bimanual Follower` to `mujoco-so101-bimanual-follow`. Its camera names are `left_wrist`, `right_wrist`, and `overview`, served on the selected HTTP port.
+
+Each scene places the two arms itself: `conveyor_sort` puts them behind its bins; the other tabletop scenes place them side by side at the single arm's table edge, 20 cm apart for the SO-101, with the block's spawn arc 2 cm closer. ALOHA (already two arms in one model) and floating-base robots run alone, so `--bimanual` refuses them. The conveyor autopilot drives a single SO-101; with two arms the belt runs and the autopilot stays off.
 
 ### Stop an owner
 
 ```bash
-uv run --package physicalai-mujoco-plugin physicalai-mujoco stop --name mujoco-so101-follow
-uv run --package physicalai-mujoco-plugin physicalai-mujoco stop --name mujoco-so101-bimanual-follow --http-port 8081
+physicalai-mujoco stop --name mujoco-so101-follow
+physicalai-mujoco stop --name mujoco-so101-bimanual-follow --http-port 8081
 ```
 
 The stop command selects a local owner by name. Its HTTP fallback checks that the server reports the requested name.
@@ -94,7 +103,7 @@ The stop command selects a local owner by name. Its HTTP fallback checks that th
 ### CLI teleoperation (self-relay)
 
 With the owner running, you can also relay the simulation back to itself using
-the [PhysicalAI CLI](https://github.com/openvinotoolkit/physicalai):
+the [PhysicalAI CLI](https://github.com/openvinotoolkit/physicalai). The configuration is in this repository, so run it from a checkout:
 
 ```bash
 uv run --package physicalai-mujoco-plugin physicalai run --config packages/physicalai-mujoco-plugin/examples/runtime/teleop.yaml
@@ -125,7 +134,7 @@ uv add physicalai-mujoco-plugin
 uv sync
 ```
 
-The PyPI release may lag behind this repository. To use the version in this checkout, including the viewer controls described above, run `git lfs pull` in this repository (the robot meshes are stored in Git LFS), then install it as an editable path instead:
+To use an unreleased version from a checkout of this repository, run `git lfs pull` in the checkout (the robot meshes are stored in Git LFS), then install it as an editable path instead:
 
 ```bash
 cd application/backend
@@ -133,7 +142,7 @@ uv add --editable /path/to/physicalai/packages/physicalai-mujoco-plugin
 uv sync
 ```
 
-Restart Studio. The robot picker then offers **MuJoCo SO-101 Follower** and **MuJoCo SO-101 Bimanual Follower**. See Studio's robot plugin guide for Docker and other install options.
+Restart Studio. The robot picker then offers **MuJoCo SO-101 Follower** and **MuJoCo SO-101 Bimanual Follower**, one MuJoCo follower for each other supported robot, and bimanual followers for the other twins, the WidowX AI and the reBot B601 (see [Other robots](#other-robots)). See Studio's robot plugin guide for Docker and other install options.
 
 ### 2. Start the simulation
 
@@ -175,7 +184,11 @@ Then, in your Studio project:
 
 4. Open **Environments**, select **Configure new environment**, and add the MuJoCo follower, the leader, and both cameras.
 
-For the bimanual simulation, start it with `--bimanual`, choose **MuJoCo SO-101 Bimanual Follower** with the name `mujoco-so101-bimanual-follow`, and add the `left_wrist`, `right_wrist` and `overview` cameras from its HTTP port. Its leader is a bimanual SO-101 leader, for example from the Bimanual SO-101 plugin.
+For the bimanual simulation, start it with `--bimanual` (in any tabletop scene, chosen with `--scene`), choose **MuJoCo SO-101 Bimanual Follower** with the name `mujoco-so101-bimanual-follow`, and add the `left_wrist`, `right_wrist` and `overview` cameras from its HTTP port. Every tabletop scene streams the same cameras for a robot and arm count, so a dataset keeps its camera features when you switch scenes. Its leader is a bimanual SO-101 leader, for example from the Bimanual SO-101 plugin.
+
+Other robots work the same way: start the simulation with `--profile` and choose the matching follower, for example **MuJoCo WidowX AI Follower** for `--profile trossen_wxai`, whose default name is `mujoco-trossen_wxai-follow` (`mujoco-<profile>-follow`, or `mujoco-<profile>-bimanual-follow` for two robots). A twin takes its real robot's leader, for example a WidowX AI leader arm. Each follower's advanced settings also hold the simulation's HTTP address (`http_url`, default `http://127.0.0.1:8080`), where its cameras and its 3D viewer (`/viewer`) are served.
+
+Studio's 3D model of a MuJoCo follower, on the robot page and in dataset playback, is the simulated robot itself. The SO-101 followers use the plugin's SO-101 URDFs. For every other follower, the plugin builds a URDF from the robot's MuJoCo model the first time Studio shows it: one link per body, the model's joints with their ranges, and the meshes MuJoCo draws, as STL files. Two robots stand where the profile's default scene puts them. It takes under a second and is cached in the per-user cache directory (`~/Library/Caches/physicalai_mujoco` on macOS, `~/.cache/physicalai_mujoco` on Linux, `%LOCALAPPDATA%\physicalai_mujoco\Cache` on Windows; `PHYSICALAI_MUJOCO_CACHE_DIR` overrides it), with one directory per plugin, Menagerie and MuJoCo version. A robot whose Menagerie model is not downloaded yet has no 3D model until it is (`physicalai-mujoco prefetch`).
 
 ### 4. Teleoperate and record datasets
 
@@ -192,7 +205,7 @@ The same controls are available over HTTP (see [REST control API](#rest-control-
 
 In `conveyor_sort`, the scripted demonstrator can act as the leader arm, and the simulation can save each conveyor episode to the open dataset. No one has to teleoperate, and no one has to press **Accept** or **Start episode**.
 
-1. In Studio, add a robot of type **MuJoCo SO-101 Virtual Leader**. Its port is the simulation's `--http-port` (default `8080`). Use it as the leader of the MuJoCo environment.
+1. In Studio, add a robot of type **MuJoCo Virtual Leader**. Its port is the simulation's `--http-port` (default `8080`). Use it as the leader of the MuJoCo environment. The leader takes its joints from the simulation, so the same type leads any MuJoCo follower.
 2. In the viewer's **Autopilot** folder, set **Autopilot** to **Virtual leader (Studio teleop)**. The demonstrator now only publishes its joint targets (`GET /leader`); the arm moves once Studio sends them back as actions.
 3. In Studio, open the dataset's recording view and start teleoperation. The demonstrator's targets become the recorded actions.
 4. In the viewer, set **Task** and **Keep**, then tick **Record in Studio**. The simulation attaches to Studio's running session. For each episode it clears the belt, starts a recording with the task, and holds the belt when the tenth item is scored. Then it saves the episode, or discards it if **Keep** is **Perfect episodes only** and the episode had a wrong or missed item.
@@ -202,16 +215,28 @@ In `conveyor_sort`, the scripted demonstrator can act as the leader arm, and the
 
 The simulation joins Studio's session the same way a second browser tab does. It finds the session through `GET /api/runtime/sessions` and never stops that session. Use `--studio-url` if Studio does not run at `http://127.0.0.1:7860`.
 
-**Autopilot** has a third mode, **Drive the arm**. It moves the arm directly and ignores incoming actions, which is useful for demos, but don't record in this mode.
+**Autopilot** has a third mode, **Drive the arm**. It moves the arm directly and ignores incoming actions, which is useful for demos, but don't record the conveyor in this mode.
+
+#### Record the bucket_sort autopilot, with automatic episodes
+
+In `bucket_sort`, the demonstrator leads the MuJoCo FR3 follower the same way, as Studio's virtual leader. The recorded actions are the demonstrator's commands, so a grasp records the gripper closing past the object, which is what makes a position-controlled gripper squeeze. Recording the follower's reached positions instead would stop at the object's width.
+
+1. In Studio, use the **MuJoCo Virtual Leader** as the leader of the MuJoCo FR3 environment, as in step 1 above.
+2. In the viewer's **Autopilot** folder, set **Autopilot** to **Virtual leader (Studio teleop)**.
+3. In Studio, open the dataset's recording view and start teleoperation.
+4. Set **Keep** and **Episodes**, then tick **Record in Studio**. There is no **Task** field: each episode's worded instruction is its task. For each episode the simulation resets the scene, holds the arm at its reset pose, starts a recording with that episode's instruction, and lets the demonstrator move once Studio records. A success is saved once the object has stayed in its bucket for 1 s of simulated time, so each episode ends with the arm settling; with **Perfect episodes only**, a success after a retry (`clean` false) is discarded. A failed or stalled episode, a reset during the episode, or switching the autopilot out of **Virtual leader** discards the episode.
+5. Untick **Record in Studio** to stop, or set **Episodes** to stop after that many saved episodes. Pressing stop in Studio, or stopping teleoperation, also stops the automation.
+
+**Stuck starts** (0 to 0.5, `recovery_fraction`) starts that share of episodes with the hand closed and empty on the demonstrator's planned path to the bucket, where a policy that lost the object gets stuck; the arm moves there before the recording starts, and a move that shifts an object or bucket by more than 5 mm resets the scene for a normal start instead. **Attempts per episode** (1 to 5, `max_attempts`, default 2) sets how many tries the demonstrator gets, so with **Keep all** the episodes it recovers with a retry are saved too.
 
 ### 5. Run a trained policy
 
 On the **Models** page, select **Run model** for a policy trained on the simulation dataset. Studio loads the environment the dataset was recorded with, so keep the simulation running with the same owner name and camera ports. Use **Reset Scene** or **Fixed seed** in the viewer between runs.
 
-To run the policy outside Studio, download its runtime configuration and run it with the Physical AI CLI. The plugin must be installed in that environment too; from this repository:
+To run the policy outside Studio, download its runtime configuration and run it with the Physical AI CLI. The plugin must be installed in that environment too:
 
 ```bash
-uv run --package physicalai-mujoco-plugin physicalai run --config runtime.yaml
+physicalai run --config runtime.yaml
 ```
 
 ### 6. Stop
@@ -221,29 +246,74 @@ Press `Ctrl+C` in the `start` terminal, use the viewer's **Shutdown** button, or
 ## CLI options
 
 ```bash
-uv run --no-sync physicalai-mujoco start --help
+physicalai-mujoco start --help
 ```
 
 Common options:
 
 - `--name <robot-name>`: transport name (must match Studio payload)
-- `--bimanual`: run two arms with the `garment_fold` scene by default
-- `--model <path>`: custom XML/URDF path to load initially (bypasses default scene resolution)
-- `--scene <name>`: scene name (`single_pick_place`, `yahtzee` or `conveyor_sort`; with `--bimanual`, `garment_fold`). Default `single_pick_place`
+- `--profile <name>`: select a registered profile (`so101`, `trossen_wxai`, `rebot_b601`, `ur5e`, `aloha`, ...) or Menagerie model name; `physicalai-mujoco profiles` lists registered profiles
+- `--bimanual`: two arms in the chosen scene (any tabletop scene), named `left_…` and `right_…`, under `mujoco-<profile>-bimanual-follow`
+- `--model <path>`: scene XML to load instead of the registered scene's. Its `robot_mount` frames get the profile's robot and decide the arm count (`--bimanual` needs `left_robot_mount` and `right_robot_mount`); an XML without them is used as is
+- `--scene <name>`: registered scene name. Default comes from the selected profile
+- `--overview <shoulder|front>`: where a tabletop scene's `overview` camera stands, see [Overview camera styles](#overview-camera-styles) (default `shoulder`)
+- `--seed <0..4294967295>`: fixed seed for scene resets, so object layouts repeat, as with **Fixed seed** in the viewer or `POST /seed` (default: random layouts)
+- `--grip-force <newtons>`: the Franka Hand's grasp force per finger, above 0 and at most 140 (default 70, the real hand's continuous force); only the Franka profiles have the hand, see [Other robots](#other-robots)
 - `--no-gui`: disable all viewers
-- `--viser-port <port>`: browser viewer port (default `9090`)
+- `--viser-port <port>`: browser viewer port (default `9090`; `0` picks a free port)
 - `--viser-host <host>`: browser viewer bind host (default `127.0.0.1`; use `0.0.0.0` to expose it remotely)
+- `--viewer-theme <default|studio|compact>`: `compact` hides the browser viewer's share and **Shutdown** buttons and starts with the control panel minimized, for a viewer embedded next to its own controls (a notebook); `studio` is `compact` in dark mode, for a viewer embedded in Studio, which stops the simulation itself
 - `--no-cameras`: disable camera rendering (HTTP streams and viewer previews)
 - `--http-host <host>`: host for the camera/control HTTP server (default `127.0.0.1`)
-- `--http-port <port>`: port for the camera/control HTTP server (default `8080`)
+- `--http-port <port>`: port for the camera/control HTTP server (default `8080`; `0` picks a free port)
 - `--no-http`: disable the camera/control HTTP server
+- `--status-json`: print startup events as JSON lines on stdout, see [Start from another program](#start-from-another-program)
+- `--exit-with-parent`: shut down when stdin reaches end of file, see [Start from another program](#start-from-another-program)
 - `--rate-hz <float>`: owner loop frequency
-- `--substeps <int>`: MuJoCo steps per control cycle
-- `--unit <normalized|degrees>`: joint units for observations and actions (default `normalized`, see [Joint units](#joint-units))
+- `--substeps <int>`: MuJoCo steps per control cycle (default: real time at `--rate-hz`, `10` in the SO-101 scenes)
+- `--unit <normalized|degrees>`: joint units for observations and actions (default comes from the selected profile; SO-101 uses `normalized`, see [Joint units](#joint-units))
 - `--idle-timeout <seconds>`: seconds with zero subscribers before self-exit
   (default `10` without HTTP, disabled when HTTP is enabled so stream viewers keep the sim alive)
 - `--allow-remote`: allow non-loopback zenoh connections
 - `--studio-url <url>`: Physical AI Studio backend for automatic episode recording (default `http://127.0.0.1:7860`)
+
+### Start from another program
+
+A program that starts and supervises the simulation, such as Physical AI Studio, can follow its startup and tie its lifetime to its own:
+
+```bash
+physicalai-mujoco start --status-json --exit-with-parent --http-port 0 --viser-port 0 --viewer-theme studio
+```
+
+`--status-json` prints one JSON object per line on stdout and flushes each line; logs stay on stderr:
+
+```json
+{"event": "phase", "phase": "fetch"}
+{"event": "phase", "phase": "fetch", "bytes": 1048576, "total": 4194304}
+{"event": "phase", "phase": "connect"}
+{"event": "phase", "phase": "load"}
+{"event": "phase", "phase": "cameras"}
+{"event": "ready", "name": "mujoco-so101-follow", "pid": 4242, "profile": "so101", "scene": "single_pick_place", "arms": 1, "overview_style": "shoulder", "http_url": "http://127.0.0.1:53412", "viewer_url": "http://127.0.0.1:53413", "cameras": ["wrist", "overview"]}
+```
+
+- `fetch` comes before the robot model download from MuJoCo Menagerie; while it downloads, more `fetch` events report `bytes` so far and the `total` (`0` when unknown). A cached model sends no `bytes` events.
+- `connect` comes before the owner process starts, `load` once the owner loads the scene and starts the viewer, cameras and HTTP server, and `cameras` while `start` waits up to 15 s for each camera's first frame.
+- `ready` comes once the owner runs. `pid` is the owner process, `scene` is `null` for a `--model` without `--scene`, `arms` is the number of robots, and `overview_style` is the `overview` camera's style at start. `cameras` lists only the cameras that streamed a first frame, served at `<http_url>/cameras/<name>/mjpeg`; a camera whose renderer failed is left out, with a warning on stderr. Without HTTP (`--no-http`), `http_url` is `null` and `cameras` is empty. `viewer_url` is `null` without a viewer. A bind-all host (`0.0.0.0`, `::`) is reported as loopback.
+- `error`, with a `message`, means `start` failed; it exits with a non-zero code. This includes a requested HTTP server that does not answer (for example its port was taken) and a requested browser viewer that did not start (viser failed to import or to build its scene; without `--no-gui`): `start` then stops the owner it started. When the viewer port is taken, viser listens on the next free port, and `viewer_url` reports that one. A shutdown before `ready` (stdin end of file with `--exit-with-parent`, or a signal) is an `error` too, and `start` stops the owner it started. Invalid arguments exit with code 2 before any event.
+
+With `--status-json` or `--exit-with-parent`, `start` only runs a simulation it starts itself. If a simulation with the same name is already running, `start` fails with an `error` and leaves that simulation alone; it never stops an owner it did not start.
+
+`--http-port 0` and `--viser-port 0` pick free ports; `ready` reports the ports in use. `start` picks them before the owner binds them, so another process could take one in between.
+
+`--http-port <port> --http-port-fallback` uses that port when it is free and a free one when it is taken, instead of running without the HTTP server. `start` also reserves a second free port, which the owner uses when another process takes the first one before the owner binds it. The log and `ready` give the port in use.
+
+`--exit-with-parent` makes `start` read stdin and shut down at end of file, as on `SIGTERM`. A parent keeps the write end of a pipe to `start`'s stdin open and never writes to it; when the parent exits or crashes, the operating system closes the pipe (macOS and Linux). The owner process watches `start` too, from the moment it starts loading, and shuts down if `start` itself is killed. Don't use `--exit-with-parent` with stdin at `/dev/null`: that is end of file at once.
+
+The browser viewer has no `X-Frame-Options` or `Content-Security-Policy` header, so a page can embed `viewer_url` in an iframe.
+
+Studio gets this command line from the catalog: every simulated follower's `simulation` field (a [`SimulationLaunch`](https://github.com/openvinotoolkit/physicalai/blob/main/packages/physicalai-studio-plugin/README.md#simulationlaunch)) lists the scenes that entry runs in, with the profile's default scene preselected, labels the entry with its arm count and tier, and builds `python -m physicalai_mujoco_plugin start --profile <profile> [--bimanual] --scene <scene> --name=<payload name> --status-json --exit-with-parent --http-port <port of the payload's http_url> --http-port-fallback --viser-port 0 --viewer-theme studio [--seed <n>]` in Studio's own Python, from the robot's payload (`build_payload_argv`). Reusing the payload's port while it is free keeps the robot's cameras, the standalone command below and runtime exports on one address across starts; a payload without a usable port gets `--http-port 0`. Building it loads no robot model and downloads nothing; the `fetch` phase does that.
+
+The start dialog also shows the command that starts the same simulation in a terminal, for a simulation that keeps running when Studio stops and that your own scripts can drive: `physicalai-mujoco start --profile <profile> [--bimanual] --scene <scene> --name=<payload name> --http-port <port of the payload's http_url> --viser-port 0 [--seed <n>]`, with `--http-host` when the payload's host is not `127.0.0.1` and `--allow-remote` when the payload allows remote connections or its host is another machine. Studio attaches to it as a simulation started outside Studio, through the robot's own address, and finds its viewer through `GET /viewer`.
 
 ## Joint units
 
@@ -257,17 +327,123 @@ This lets a real leader arm drive the simulation, and makes simulated datasets u
 
 The match is not exact. If a joint was moved further one way than the other during calibration, its `0` is not at the joint's straight position, so the same value points the real joint and the simulated joint in slightly different directions. A real arm's calibrated range also differs from the URDF limits by a few degrees because of assembly tolerances, which adds to the difference towards the ends of a joint's range.
 
-Use `--unit degrees` (or `unit="degrees"` on `MuJoCoSO101`) to get joint angles in degrees instead.
+Use `--unit degrees` (or `unit="degrees"` on `MuJoCoRobot`) to get joint angles in degrees instead. Sliding joints, such as a parallel gripper's, stay in metres.
+
+## Other robots
+
+Every robot comes from MuJoCo Menagerie and is described by a _profile_: what the plugin knows about it beyond its model. `physicalai-mujoco profiles` lists the hand-written ones. Their _tier_ says how closely they are maintained:
+
+- `twin`: matches a real robot's driver, with the same joint names and units.
+- `dataset`: an arm that public robot-learning datasets use. Channels, home pose and cameras are derived from the model. Channel names change only where LeRobot datasets name the joints (ALOHA, SO-100, Koch); values stay in model units from the model's zero pose, without any dataset's calibration.
+- `experimental`: floating-base robots on floor scenes; nothing balances them.
+
+| Profile                | Robot                                                   | Tier           | Scenes                                     | Arms | Units        |
+| ---------------------- | ------------------------------------------------------- | -------------- | ------------------------------------------ | ---- | ------------ |
+| `so101`                | SO-101, matching the real `SO101` driver                | `twin`         | all tabletop scenes                        | 1, 2 | `normalized` |
+| `trossen_wxai`         | Trossen WidowX AI, matching Runtime's `WidowXAI` driver | `twin`         | `single_pick_place`, `bucket_sort`         | 1, 2 | `degrees`    |
+| `rebot_b601`           | Seeed reBot B601-RS, `ReBotB601RS` names                | `twin`         | `single_pick_place`, `bucket_sort` (1 arm) | 1, 2 | `degrees`    |
+| `franka_fr3`           | Franka Research 3 with hand, matching `FrankaFR3`       | `twin`         | `single_pick_place`, `bucket_sort` (1 arm) | 1, 2 | `degrees`    |
+| `franka_duo`           | Franka FR3 Duo, both arms as one robot (16 channels)    | `twin`         | `single_pick_place`, `bucket_sort`         | 1    | `degrees`    |
+| `ur5e`                 | Universal Robots UR5e (no gripper)                      | `dataset`      | `single_pick_place`                        | 1, 2 | `degrees`    |
+| `aloha`                | ALOHA, both arms as one robot (14 joints)               | `dataset`      | `single_pick_place`                        | 1    | `degrees`    |
+| `so_arm100`            | SO-ARM100 (Menagerie `trs_so_arm100`)                   | `dataset`      | `single_pick_place`                        | 1, 2 | `degrees`    |
+| `koch`                 | Koch low-cost arm (`low_cost_robot_arm`)                | `dataset`      | `single_pick_place`                        | 1, 2 | `degrees`    |
+| `piper`                | AgileX PiPER                                            | `dataset`      | `single_pick_place`                        | 1, 2 | `degrees`    |
+| `franka_panda`         | Franka Emika Panda                                      | `dataset`      | `single_pick_place`, `bucket_sort` (1 arm) | 1, 2 | `degrees`    |
+| `xarm7`                | UFACTORY xArm7                                          | `dataset`      | `single_pick_place`                        | 1, 2 | `degrees`    |
+| `kinova_gen3`          | Kinova Gen3 (no gripper)                                | `dataset`      | `single_pick_place`                        | 1, 2 | `degrees`    |
+| `unitree_g1`           | Unitree G1 humanoid                                     | `experimental` | `floor_flat`                               | 1    | `degrees`    |
+| `unitree_go2`          | Unitree Go2 quadruped                                   | `experimental` | `floor_flat`                               | 1    | `degrees`    |
+| `boston_dynamics_spot` | Boston Dynamics Spot                                    | `experimental` | `floor_flat`                               | 1    | `degrees`    |
+
+**Arms** is how many copies of the robot one simulation runs: 2 with `start --bimanual` (`physicalai-mujoco profiles` lists it too).
+
+ALOHA attaches as Menagerie's two-arm model at the scene's single mount, so both arms keep their real spacing and their wrist cameras (`wrist_cam_left`, `wrist_cam_right`). Its joints are named `left_waist` ... `right_gripper`, as in LeRobot's ALOHA datasets.
+
+The Franka profiles follow `physicalai-franka-plugin`: `fr3_joint1` ... `fr3_joint7` in degrees and `gripper`, the hand's opening width in metres (0 to 0.08), prefixed `left_` and `right_` on the Duo as `BimanualFrankaFR3` names them. Menagerie's FR3 has no hand, so both mount the Franka Hand from Menagerie's Panda package on the flange as Menagerie's Panda does. `franka_duo` is one model, like ALOHA's, with both arms where Franka's FR3 Duo mount (`fr3_duo_mount_v0_3`) puts them, so its joint-space poses match the real Duo and the Franka GELLO Duo one to one.
+
+The Duo's mount stands on the carriage of Franka's column (`franka_spine_v0_1`, from the mobile FR3 Duo), meshes from `franka_description` (`scripts/build_franka_duo_meshes.py`): the arm bases are 0.25 m above the scene's mount and 25 mm behind it, and the 1.1 m column stands on the floor 0.33 m behind the mount. On `bucket_sort`'s table the column stands on the floor behind the table with its carriage at its full 0.85 m travel; that sets the 0.25 m. Studio lists the Duo instead of a side-by-side `franka_fr3` pair; `start --bimanual` still runs one.
+
+Every Franka Hand (FR3, both Duo hands and `franka_panda`) grasps like the real one: a closed command squeezes each finger against the object with 70 N, the real hand's continuous grasp force, and the hand opens and closes at up to 0.2 m/s. Short of saturation the force is 7000 N/m times the width the fingers stand short of the command (a command 4 mm narrower than the object squeezes with 28 N). `franka_panda` keeps Menagerie's `actuator8` command, 0 to 255 for 0 to 0.04 m on each finger. `start --grip-force <newtons>` sets the force (up to the real hand's 140 N peak); the stiffness follows it, and so does the finger damping, so the 0.2 m/s speed stays.
+
+The Koch and SO-ARM100 profiles turn Menagerie's arm about its base so that it faces +x like the others (Menagerie's face -x and -y, and their base joint limits keep part of the table out of reach); joint names, ranges and zero pose are unchanged. The Kinova Gen3 has four unlimited joints, so it runs in `degrees` only.
+
+`single_pick_place` scales with the arm (`SceneConfig.layout="reach"`). Its layout is sized for the SO-101; for another arm, the block's spawn arc (centre and radii), the target disc and the `overview` camera move away from the mount by `reach / SO-101 reach`, so the camera frames the larger layout as it frames the SO-101's. Object sizes and separations stay as they are, and the SO-101 gets the scene exactly as written. ALOHA's arc is centred between its two arms (`SceneConfig.profile_spawn_centers`), and each arm covers its own side. Arms whose home pose the scaled camera would crop get their own overview rig pose (`SceneConfig.profile_overview_rigs`), pulled back along the line of sight; ALOHA's looks across the table. A test projects every arm's geometry at home, the spawn arc and the target into the 640x480 overview, and live XML edits of the rig keep the scaling and the override.
+
+With two arms side by side (`--bimanual`), the arc moves 2 cm closer (`SceneConfig.two_arm_spawn_center`) and the separation scales like the rest of the layout. The UR5e, whose home pose reaches 54 cm sideways, stands 65 cm apart (`SceneConfig.two_arm_separations`). The framing test covers both arm counts.
+
+A reset tries not to spawn the block (or, in `yahtzee`, drop a die) under a low part of an arm: it takes every arm where it stands at that moment, projects each robot geom whose lowest point is within 10 cm of the table (scaled with the layout) onto the table, and draws again any position closer to that footprint than the object's horizontal radius plus 1 cm. When none of 200 draws is clear, it keeps the draw farthest from the footprint (one that also keeps clear of the target and the other objects, if any does), so an arm that covers the whole spawn area still gets an object, possibly under it. Parts higher up, such as a forearm reaching over the spawn area, do not count. At home this only moves the SO-ARM100's block, whose jaws hang 7 cm above the middle of its arc.
+
+Two profile fields drive this:
+
+- `RobotProfile.end_effectors`: each arm's tool frame, as a model site (`EndEffector(site="attachment_site")`) or a point in a body (`EndEffector(body="hand", pos=(0, 0, 0.110))`), and its approach `axis`, the direction in that frame that points out of the gripper or flange. Menagerie's tool sites are used where they exist; the SO-ARM100, Koch, PiPER, Panda, reBot B601 and the Franka twins use the point between their finger tips. The arms without a gripper (UR5e, Kinova Gen3) use their flange.
+- `RobotProfile.reach`: the farthest horizontal distance from the arm's base, toward the spawn area, at which the end effector reaches a point 2 cm above the table within 5 mm, with its approach axis within 15° of straight down (the SO-101: 0.367 m). A `reach` scene refuses a profile without one.
+
+The reachability test (`tests/test_reach.py`, marker `mujoco_smoke`) solves a damped least-squares IK for every arm on the centre and the extremes of its scaled spawn arc: within 1 cm, approach axis within 15° of straight down (the SO-101 needs 12° at the far edge of its own arc). With two arms, both reach the points on the arc's axis and the nearest arm reaches the others. It also measures each `reach` and checks the stored value to 1 cm. After changing an arm, print fresh measurements with `uv run python packages/physicalai-mujoco-plugin/tests/test_reach.py [profile ...]`.
+
+Every profile in these tiers has a Studio follower entry for one robot. The twins (SO-101, WidowX AI, reBot B601), whose real robots have bimanual leaders, also have a bimanual entry; other arms run two from the CLI only (`start --bimanual`). Entries whose mapping onto the real driver is not established yet (`RobotProfile.provisional`) end in **(provisional)** and carry a `provisional` label in the start dialog.
+
+Any other Menagerie model name loads as an unsupported profile, outside CI and Studio: its channels, home pose, sensors and cameras are derived from the model, one channel per actuator. It needs a scene that supports it (`--scene`) or a robot-complete `--model`. Floor scenes such as `floor_flat` take any floating-base robot. Every channel's action is a position, also for velocity actuators, which the simulation drives toward it. Torque actuators on a tendon or site need `MuJoCoRobot(..., torque_mode="raw")`, whose actions are `ctrl`.
+
+```bash
+physicalai-mujoco start --profile ur5e
+```
+
+From Python, or with `physicalai robot serve`, use the generic driver:
+
+```python
+from physicalai_mujoco_plugin import MuJoCoRobot
+
+robot = MuJoCoRobot(profile="ur5e", scene="single_pick_place")
+```
+
+### Twins
+
+A twin uses its real driver's joint names, units and `state`. The SO-101's and the WidowX AI's model joints map one to one onto their real drivers' joints, so their datasets and policies are meant to move between the simulation and the real robot; the reBot B601's mapping is still unverified:
+
+- **WidowX AI** (`trossen_wxai`, Menagerie's `wxai_follower`): `shoulder_pan`, `shoulder_lift`, `elbow_flex`, `wrist_flex`, `wrist_yaw`, `wrist_roll` in degrees and `gripper` (the carriage opening) in metres; `sensor_data["velocities"]` in rad/s and m/s, unconverted like the real driver's. The real driver's `efforts` are not simulated, so the key is absent. Its `wrist` camera sits where Menagerie places the D405. Two arms (`--bimanual`) are named `left_…` and `right_…`, like `BimanualWidowXAI`. Studio's **MuJoCo WidowX AI Follower** shows Studio's own WidowX AI model.
+- **reBot B601** (`rebot_b601`, Menagerie's `seeed_rebot_devarm`): the joint names, order and degrees of the B601 plugin's `ReBotB601RS`, confirmed on a real B601-RS: Menagerie's joints one to one, and `gripper` in the driver's degrees too (−270 open to 0 closed). The joints stop where the driver clips its actions (±145° pan, −170…0° lift, −90…80° wrist flex, ±90° roll), except `elbow_flex`, which the model stops at −180° while the driver allows −200°. The arm responds like the driver: its servos have the driver's default MIT gains and full gravity compensation within the motors' torque limits, and the joints the friction and damping fitted to real RS teleoperation; the driver's 0.3 velocity feedforward is not modelled.
+  Until #360 merges, the B601 plugin still uses its previous frame, which differs in the signs of `shoulder_pan`, `shoulder_lift` and `wrist_roll` and in the gripper's sign and scale, so data recorded with one does not carry over to the other. The mapping follows #360's joint-frame URDF and **has not been checked on a real arm**, so moving datasets or policies between this simulation and a real B601 is **not established**.
+  It needs a read-only comparison on hardware first: move each joint by hand and compare the driver's readings with the simulation's, without zeroing or actuating the arm. Studio marks its followers **(provisional)**. Its `wrist` camera is the RealSense D405 on Seeed's printed mount, placed from the mount's CAD geometry; which side of the gripper it faces is assumed until that hardware check.
+
+### Floating-base robots
+
+Humanoids and quadrupeds spawn at a scene's `<frame name="{prefix}robot_spawn"/>`: at the frame's position and heading, at the height and orientation of the robot's home keyframe. The frame's height, roll and pitch are ignored. A weld holds the base there until the first action, so an idle robot does not fall over; nothing balances it after that. The experimental profiles stand on their home pose when the action holds it.
+
+- `state` is `joint_positions ‖ base_quat (4) ‖ base_angvel (3) ‖ base_linvel (3) ‖ model sensors`, in that order. With several floating robots, the joints of all robots come first, then one base-and-sensors block per robot in anchor order. Fixed-base robots keep `state = joint_positions`.
+- `sensor_data` adds `base_pos` (world, m), `base_quat` (wxyz), `base_angvel` and `base_linvel` (body frame), and `sensor/<name>` for every model sensor.
+- `robot.reset()`, `POST /reset` and the viewer's **Reset** button put the robot back at its start pose and hold its base again, then reset the scene. Call `robot.reset()` from the control-loop thread. Fixed-base robots keep the scene-only reset; `POST /home` homes them.
+- The base hold always lasts until the first action; there is no setting to keep or disable it.
+- `/health` reports `floating_base`, `fallen` (the base tilted more than 60° for 1.5 s) and per robot `bases` (height, tilt, held, fallen).
+
+```bash
+physicalai-mujoco start --profile unitree_g1
+```
 
 ## Cameras over HTTP
 
-The plugin renders two camera feeds on their own thread and serves them over HTTP. The control loop only hands the camera thread a pose snapshot each tick, so rendering never delays physics:
+The plugin renders the camera feeds on their own thread and serves them over HTTP. The control loop only hands the camera thread a pose snapshot each tick, so rendering never delays physics. By default it streams the robot's first camera, the scene's `overview`, then the other robot cameras, at 640×480 and 30 fps. For the SO-101:
 
 - `wrist` -> `http://127.0.0.1:8080/cameras/wrist/mjpeg`
 - `overview` -> `http://127.0.0.1:8080/cameras/overview/mjpeg`
 
+A robot's cameras come from its profile, else from the model's own sensor cameras (not Menagerie's viewer cameras such as `track`), else the plugin generates one: `wrist` beside an arm's gripper or flange, `head` on a floating base's head, or `front` on its body. A generated `wrist` of a profile with an end effector (`RobotProfile.end_effectors`) sits on the end effector's body, 4 cm behind its tool point and to the side, and looks along its approach axis at a point 10 cm past the tool point, with the fingers or flange at the bottom of the image; without one, the tool axis is guessed from the model's geometry.
+
+A wrist camera follows the gripper, as on a real arm, so its view at the start depends on the home pose: where Menagerie's home pose points the tool forward (Kinova Gen3's own camera, PiPER, Koch), the wrist camera looks toward the horizon until the arm reaches down to the table. The UR5e has no camera of its own, so it streams a generated `wrist` and `overview`. A second robot's cameras carry its prefix (`left_wrist`, `right_wrist`). `GET /health` labels each camera's `source` (`override`, `model`, `default` or `scene`). A scene camera named `chase` follows the first robot's floating base and streams after `overview`.
+
 Each camera is also available as a single JPEG snapshot at
 `http://127.0.0.1:8080/cameras/<name>/frame.jpg`.
+
+### Overview camera styles
+
+The tabletop scenes place their `overview` camera in one of the two common third-person styles:
+
+- `shoulder` (default): high behind the robot base, looking over it at the work area, like the over-the-shoulder camera of [BridgeData V2](https://rail-berkeley.github.io/bridgedata/). This is the scene file's own pose, and the SO-101's is unchanged from earlier releases, so datasets recorded and policies trained on it keep working. A gripper hovering at home can hide a spawned block from it.
+- `front`: across the work area from the robots, facing them, 45 degrees down at the spawn area's centre (between the arms with two), like the `agentview` camera of [robosuite](https://robosuite.ai) and [LIBERO](https://libero-project.github.io). Its distance and aim point grow with the arm's reach like the scene's layout, so every arm, the spawn area and the target stay in frame; in `single_pick_place` the arms at home hide neither a spawned block nor the target. ALOHA's front camera faces its arms from the side opposite its teleoperator.
+
+The camera is named `overview` in both styles, so the camera set and a dataset's camera features stay the same. Choose the style when the simulation starts, with `start --overview front` or `MuJoCoRobot(overview="front")`. While it runs, switch it with the viewer's **Overview camera** dropdown (Simulation tab, **Scene** folder) or `POST /overview`. The switch moves only the camera; the scene, arms and objects stay where they are, and later scene switches keep the style. Datasets and policies expect the view they were recorded with: don't switch during a recording, and keep one view per dataset. While automatic Studio recording runs, the switch is refused (`409`, and the dropdown is disabled).
+
+The style is not saved: it lasts as long as the simulation, and every start uses `--overview` or the `overview` argument (default `shoulder`). `floor_flat` and custom `--model` XMLs keep their own cameras and offer only `shoulder`; asking them for `front` fails at start, and `POST /overview` returns `409`. `GET /health` reports `overview_style`, the scene's `overview_styles`, and `overview_locked`, the reason a switch is refused now (or `null`).
 
 ### REST control API
 
@@ -280,9 +456,16 @@ curl http://127.0.0.1:8080/scenes
 # Switch to another scene
 curl -X POST http://127.0.0.1:8080/scenes/yahtzee
 
-# Reset/randomize the current scene, or move the arm to its home pose
+# The 3D viewer: GET / reports viewer_url, and /viewer redirects to it (404 without a web viewer)
+curl -i http://127.0.0.1:8080/viewer
+
+# Reset/randomize the current scene (floating bases also return to their start pose), or move the arm to its home pose
 curl -X POST http://127.0.0.1:8080/reset
 curl -X POST http://127.0.0.1:8080/home
+
+# Move the overview camera across the table, facing the robots, and back behind them
+curl -X POST http://127.0.0.1:8080/overview -H 'content-type: application/json' -d '{"style": "front"}'
+curl -X POST http://127.0.0.1:8080/overview -H 'content-type: application/json' -d '{"style": "shoulder"}'
 
 # Make resets repeatable, then random again
 curl -X POST http://127.0.0.1:8080/seed -H 'content-type: application/json' -d '{"seed": 42}'
@@ -300,32 +483,52 @@ curl http://127.0.0.1:8080/objects
 curl -X POST 'http://127.0.0.1:8080/objects/block1:joint/pose' -H 'content-type: application/json' \
   -d '{"position": [0.25, 0.0, 0.05], "wxyz": [1, 0, 0, 0]}'
 
+# Replay recorded joint positions (one row per frame, in the robot's units), then resume
+curl -X POST http://127.0.0.1:8080/replay -H 'content-type: application/json' \
+  -d '{"joint_positions": [[0, -50, 40, 20, 0, 10], [1, -49, 39, 20, 0, 12]], "fps": 30, "base": null}'
+curl -X POST http://127.0.0.1:8080/replay/stop
+
 # Stop the simulation owner
 curl -X POST http://127.0.0.1:8080/shutdown
 ```
 
-| Endpoint                    | Method | Description                                                                                    |
-| --------------------------- | ------ | ---------------------------------------------------------------------------------------------- |
-| `/`                         | GET    | Service info, endpoint index                                                                   |
-| `/health`                   | GET    | Sim status: connected, scene, compatible scenes, seed, episode, timing, objects, cameras       |
-| `/cameras`                  | GET    | Camera list with stream/snapshot URLs                                                          |
-| `/cameras/{name}/mjpeg`     | GET    | MJPEG stream (`multipart/x-mixed-replace`)                                                     |
-| `/cameras/{name}/frame.jpg` | GET    | Latest frame as a JPEG snapshot                                                                |
-| `/scenes`                   | GET    | Current scene, available scene IDs, and IDs compatible with this robot                         |
-| `/scenes/{scene_id}`        | POST   | Switch to a compatible scene (`409` for another arm count)                                     |
-| `/reset`                    | POST   | Reset/randomize the current scene                                                              |
-| `/home`                     | POST   | Move the arm joints and targets to the scene's home pose                                       |
-| `/seed`                     | POST   | `{"seed": <0..4294967295> or null}`: fix or clear the reset seed                               |
-| `/episode/auto-reset`       | POST   | `{"enabled": bool, "dwell_s": 0.5..120}` (either field); `409` if unsupported                  |
-| `/conveyor/belt-speed`      | POST   | `{"speed": 0..0.1}` belt speed in m/s; `409` if the scene has no conveyor belt                 |
-| `/autopilot`                | POST   | `{"mode": "off" \| "drive" \| "leader"}`; `409` if the scene has no autopilot                  |
-| `/leader`                   | GET    | Virtual leader pose: `seq`, `mode`, `unit`, `joint_names`, `joint_positions`                   |
-| `/studio/recording`         | POST   | `{"enabled": bool, "task": str (1-200), "keep": "perfect" \| "all", "max_episodes": 0..10000}` |
-| `/objects`                  | GET    | Free-object joint names and world poses                                                        |
-| `/objects/{joint}/pose`     | POST   | `{"position": [x, y, z], "wxyz": [w, x, y, z]}`: teleport a free object                        |
-| `/shutdown`                 | POST   | Gracefully stop the simulation owner                                                           |
+| Endpoint                    | Method | Description                                                                                                                                                                                                                                    |
+| --------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/`                         | GET    | Service info, endpoint index                                                                                                                                                                                                                   |
+| `/health`                   | GET    | Sim status: connected, scene, compatible scenes, overview style, seed, episode, timing, cameras                                                                                                                                                |
+| `/cameras`                  | GET    | Camera list with stream/snapshot URLs                                                                                                                                                                                                          |
+| `/cameras/{name}/mjpeg`     | GET    | MJPEG stream (`multipart/x-mixed-replace`)                                                                                                                                                                                                     |
+| `/cameras/{name}/frame.jpg` | GET    | Latest frame as a JPEG snapshot                                                                                                                                                                                                                |
+| `/scenes`                   | GET    | Current scene, available scene IDs, and IDs compatible with this robot                                                                                                                                                                         |
+| `/scenes/{scene_id}`        | POST   | Switch to a compatible scene (`409` for another arm count)                                                                                                                                                                                     |
+| `/reset`                    | POST   | Reset/randomize the scene; floating bases return to their start pose (held)                                                                                                                                                                    |
+| `/home`                     | POST   | Move the arm joints and targets to the scene's home pose                                                                                                                                                                                       |
+| `/overview`                 | POST   | `{"style": "shoulder" \| "front"}`: move the overview camera; `409` while Studio records                                                                                                                                                       |
+| `/seed`                     | POST   | `{"seed": <0..4294967295> or null}`: fix or clear the reset seed                                                                                                                                                                               |
+| `/episode/auto-reset`       | POST   | `{"enabled": bool, "dwell_s": 0.5..120}` (either field); `409` if unsupported                                                                                                                                                                  |
+| `/conveyor/belt-speed`      | POST   | `{"speed": 0..0.1}` belt speed in m/s; `409` if the scene has no conveyor belt                                                                                                                                                                 |
+| `/autopilot`                | POST   | `{"mode": "off" \| "drive" \| "leader"}`; `409` if the scene has no autopilot                                                                                                                                                                  |
+| `/leader`                   | GET    | Virtual leader pose: `seq`, `mode`, `unit`, `joint_names`, `joint_positions`                                                                                                                                                                   |
+| `/studio/recording`         | POST   | `{"enabled": bool, "task": str (1-200), "keep": "perfect" \| "all", "max_episodes": 0..10000, "recovery_fraction": 0..0.5, "max_attempts": 1..5}`; conveyor_sort or bucket_sort (which ignores `task` and alone uses the last two), else `409` |
+| `/objects`                  | GET    | Free-object joint names and world poses                                                                                                                                                                                                        |
+| `/objects/{joint}/pose`     | POST   | `{"position": [x, y, z], "wxyz": [w, x, y, z]}`: teleport a free object                                                                                                                                                                        |
+| `/replay`                   | POST   | `{"joint_positions": [[...], ...], "fps": 0..1000, "base": null}`: replay recorded joints                                                                                                                                                      |
+| `/replay/stop`              | POST   | End the replay and restore the simulation state from before it                                                                                                                                                                                 |
+| `/shutdown`                 | POST   | Gracefully stop the simulation owner                                                                                                                                                                                                           |
 
-Control requests are queued and applied on the next control cycle. Invalid bodies return `422`. Object coordinates must be finite and within ±2 m.
+Control requests are queued and applied on the next control cycle. Invalid bodies return `422`, except for `/replay`. Object coordinates must be finite and within ±2 m.
+
+#### Replay recorded joint positions
+
+`POST /replay` plays recorded joint positions back kinematically, for example a dataset episode recorded from this robot. Each control tick sets the joints to the frame due at the replay's clock and runs `mj_forward`; physics does not step, so objects stay where they are. The replay clock advances by one control period per tick, like the simulation clock it replaces.
+
+- `joint_positions`: one row per frame, one value per joint in `joint_names` order, in the robot's configured units (the same as its observations). Values are not clipped to the joint ranges, so a recording that pressed past a limit replays as recorded. Values the robot cannot show unchanged are refused with 400, naming the first frame and joint: `normalized` joints outside their range (−100…100, gripper 0…100), and any joint position beyond 10⁶ radians or metres after the profile's scale and offset. Every frame of every robot is checked before the replay starts, so a replay never stops half-way. At most 36000 frames and 16 MiB.
+- `fps`: the recorded frame rate, above 0 and at most 1000. A recording slower than the control rate holds each frame for several ticks; a faster one skips frames.
+- `base`: must be `null`; replaying base poses is not supported yet. A floating-base robot (G1, Go2, Spot) still replays its joints, and its base stays where it was, because physics does not step during a replay.
+
+An invalid body returns `400` with the reason, a larger body `413`. A request while the simulation is disconnected returns `409`, as does one for a robot with a channel driven through a tendon or site instead of a hinge or slide joint (`unsupported_joints` in `GET /health`): such a position has no unique joint configuration to place.
+
+While a replay runs, actions are ignored, and scene automation (the conveyor, autopilot, Studio recording and episode auto-reset) pauses. After the last frame the replay holds it until `POST /replay/stop`, which restores the full simulation state from before the replay, so a policy or teleop session continues where it was. A new `POST /replay` replaces a running one and keeps that saved state. **Reset**, **Home** and object moves end the replay the same way before they apply. A scene switch ends it with the old scene. `GET /health` reports `replay`: `active`, `unsupported_joints` and, during a replay, `finished`, the shown `frame` (from 0), `frames` and `fps`. A native-viewer reset ends a replay like `POST /reset`.
 
 With HTTP enabled, `Ctrl+C` in the start command requests owner shutdown through HTTP. If the HTTP endpoint is unavailable, the launcher sends SIGTERM to the original owner only after confirming its registered name and PID still match. It then disconnects the CLI subscriber. With HTTP disabled, the same verified signal path stops a local owner; detached owners also exit after their configured idle timeout once all subscribers leave. Use the named `stop` command to stop an owner directly.
 
@@ -337,7 +540,7 @@ HTTP control has no authentication and binds to loopback by default. Use explici
 
 ### `start` fails with `an OpenGL platform library has not been loaded into this process`
 
-MuJoCo could not create an OpenGL context, usually because there is no desktop session (headless machine, SSH, container). Set `MUJOCO_GL=egl` before `start`, or `MUJOCO_GL=osmesa` without a GPU driver. See [Quick start](#quick-start).
+MuJoCo could not create an OpenGL context, usually because there is no desktop session (headless machine, SSH, container). `start` picks EGL by itself only when neither `DISPLAY` nor `WAYLAND_DISPLAY` is set and an EGL library is installed. Otherwise set `MUJOCO_GL=egl` before `start`, or `MUJOCO_GL=osmesa` without a GPU driver. See [Quick start](#quick-start).
 
 ### HTTP server unavailable or port already in use
 
@@ -352,11 +555,11 @@ These warnings are typically non-fatal on Wayland and can be ignored if simulati
 ### Camera/control server is not started
 
 - Confirm the sim is running and the port is free: `curl http://127.0.0.1:8080/health`
-- `--no-http` or `--http-port 0` disables the server; `--no-cameras` disables all camera rendering
+- `--no-http` disables the server (`--http-port 0` picks a free port instead); `--no-cameras` disables all camera rendering
 
 ### Studio shows the MuJoCo robot as offline
 
-- Start the simulation first, then reload the robot in Studio.
+- Start the simulation first, then reload the robot in Studio. A session on a follower whose simulation is not running fails with `No MuJoCo simulation named '<name>' is running. Start it with: physicalai-mujoco start --profile <profile> [--bimanual] --scene <default scene> --name=<name> --http-port <port> --viser-port 0`, the start dialog's command for the follower's name and `http_url` in the profile's default scene. For an `http_url` on another host, it says to start it there with `--http-host` and `--allow-remote`.
 - Check that the robot name in Studio matches the owner name printed by `start` (default `mujoco-so101-follow`).
 - Run Studio and the simulation on the same machine, or enable remote connections on both sides.
 
@@ -370,17 +573,18 @@ These warnings are typically non-fatal on Wayland and can be ignored if simulati
 
 The plugin ships with built-in scenes that provide different environments for the robot:
 
-| Scene ID                      | Description                             | Free objects | Target      |
-| ----------------------------- | --------------------------------------- | ------------ | ----------- |
-| `single_pick_place` (default) | One block and a target disc             | 1 cube       | target disc |
-| `yahtzee`                     | Six dice and a cup                      | 6 dice       | cup         |
-| `conveyor_sort`               | Sort items off a moving belt into bins  | 24-item pool | 4 bins      |
-| `garment_fold`                | Bimanual SO-101 with a flexible garment | garment      | none        |
+| Scene ID                      | Description                              | Free objects | Target      | Arms |
+| ----------------------------- | ---------------------------------------- | ------------ | ----------- | ---- |
+| `single_pick_place` (default) | One block and a target disc              | 1 cube       | target disc | 1, 2 |
+| `yahtzee`                     | Six dice and a cup                       | 6 dice       | cup         | 1, 2 |
+| `conveyor_sort`               | Sort items off a moving belt into bins   | 24-item pool | 4 bins      | 1, 2 |
+| `bucket_sort` (arms)          | Put the named object in the named bucket | 3 objects    | 3 buckets   | 1, 2 |
+| `floor_flat`                  | A flat floor for a floating-base robot   | none         | none        | 1    |
 
 Start with a specific scene:
 
 ```bash
-uv run --no-sync physicalai-mujoco start --scene yahtzee
+physicalai-mujoco start --scene yahtzee
 ```
 
 ### Conveyor sort
@@ -411,6 +615,44 @@ uv run python scripts/run_conveyor_demo.py --speed 0.03 --video /tmp/demo.mp4   
 
 Measured over 3 seeds of 3 episodes (90 items per speed): 99–100% of items sorted correctly at 1–5 cm/s, 81% at 7 cm/s and 48% at 10 cm/s. Above about 5 cm/s, items arrive faster than one pick-and-place cycle (about 2.3 s).
 
+### Bucket sort
+
+`bucket_sort` is a language-conditioned sorting task for one Franka FR3 with its hand (`start --profile franka_fr3 --scene bucket_sort`). The arm stands on a 1.8 m x 1.0 m table whose top is the robot's base plane, with the floor 0.75 m below.
+
+It also runs the Franka Panda (`--profile franka_panda`) and the FR3 Duo (`--profile franka_duo`, on its column behind the table, no `--bimanual`); the layout and the cameras stay the FR3's, but for the Duo the rear pole camera stands behind the Duo instead of behind its left arm. The Duo works with one arm per attempt, the one that reaches the object and the bucket, while the other holds its ready pose; layouts that neither arm reaches fail and reset (5 of 40 seeded layouts; the FR3 and the Panda did all 40).
+
+The WidowX AI (`--profile trossen_wxai`, alone or with `--bimanual`) and the reBot B601 (`--profile rebot_b601`) run it with the buckets and objects closer in, full size on the same table (`bucket_sort_arms.SIX_JOINT_LAYOUT`, `WXAI_PAIR_LAYOUT`): the objects 0.22 to 0.42 m from the base, the buckets 0.40 to 0.52 m out with their open ends toward it, and the hand leaning outward up to 50 degrees to reach over the rims, the grasp as near fingers-down as the arm allows and 15 degrees off it at most; an attempt no allowed lean reaches does not run. The WidowX AI twin's soft servos carry the arm's weight through gravity compensation in the model, so the targets the autopilot and Studio send are the real arm's. The two WidowX AI stand 0.44 m apart with the objects between them, each turned 30 degrees away from the other at home; one works an attempt, as on the Duo. The SO-101 does not run it.
+
+Both **Overview camera** choices in Viser model a D435 **RGB** camera on a short, table-clamped pole: nominal 42° vertical FOV, not the depth sensor's 58°. Choose **Shoulder** (the default, rear-side) or **Front**, or start with `--overview shoulder` / `--overview front`. Neither is mandatory. Both are task-focused views that intentionally crop the upper arm; keep the same POV for recording and deployment.
+
+| Style                | RGB optical centre `(x, y, z)` m | Aim point `(x, y, z)` m | Downward tilt |
+| -------------------- | -------------------------------- | ----------------------- | ------------- |
+| Shoulder / rear edge | `(-0.17, +0.68, 0.90)`           | `(0.45, 0, 0.05)`       | 42.7°         |
+| Front / front edge   | `(+0.83, -0.80, 0.90)`           | `(0.45, -0.20, 0.05)`   | 50.1°         |
+
+The origin is the single FR3's base on the table: +x into the workspace, +y to the robot's left, +z up. Both images are level. No long boom is required; optical height is nominally 0.90 m above the tabletop, with framing checked over 0.8–1.0 m. These are installation targets, not measured RGB calibration. The rear pole lies within potential arm reach: verify full pole/clamp/cable clearance before hardware motion. The wrist optical transform also still needs calibration against the real printed bracket.
+
+See the [dimensioned schematic and IRL setup checklist](docs/bucket-sort-camera-setup.md) for clamp offsets, optical heights, hardware and calibration steps. The built-in stream is 640×480 unless configured otherwise; match your real stream's intrinsics, aspect ratio and policy preprocessing rather than treating nominal FOV as calibration.
+
+- **Buckets**: black, blue and red open bins lying on their long side with the opening up: 202.5 mm long, 150 mm across and 120 mm deep. Their long axis points roughly at the robot, and their open end (above a 35 mm lip) faces it (`bucket_sort.BUCKET_YAW`, a quarter turn, in radians, plus up to 25 degrees either way). They stand anywhere 0.50 to 0.72 m in front of the base and up to 0.40 m to either side, at least 3 cm apart, so they may stand in a row, staggered or one behind another. They are free bodies of 0.2 kg standing on the table, so the arm can push them, and they are free objects of the scene like the three below: drag them in the viewer (**Objects**, **Drag objects**) or move them with `POST /objects/bucket_<colour>:joint/pose`.
+- **Objects**: a resistor body coloured like a carbon-film resistor (tan, with brown, red, brown and yellow bands; 34.5 x 67.7 x 29.9 mm, 40 g), a 9 V battery (26 x 47.5 x 17 mm, 45 g) and a CPU standing on six legs (70 x 38 x 21 mm, 30 g), all narrower than the hand's 80 mm opening across one side.
+- **Instruction**: each episode names one object and one bucket. The sentence is worded differently each episode: `put the CPU in the red bucket` (the canonical form, about 30% of episodes), `Drop the 9V battery in the blue bin.`, `Can you please put the chip in the black box?`, `Of the three tubs, put the resistor in the red one`. The phrase banks are `bucket_sort.PHRASES` (templates, object names and container words, with weights); every sentence names the object and the colour and no other object or colour. `/health` reports the instruction as `episode.instruction` (`object`, `bucket`, `text`, the sentence used, and `canonical_text`), the buckets from left to right as laid out at the reset (`episode.slots`: `slot`, `color`, `x`, `y`, `yaw`), each bucket's current pose (`episode.buckets`, `position` and `wxyz` by colour), where each object is (`episode.in_bucket`) and `episode.success`; the viewer's **Episode** folder shows the instruction.
+- **Randomization**: a reset (**Reset Scene**, `POST /reset`, or the automatic reset below) puts the arm at Franka's ready pose with the hand open, lays the buckets out in a random colour order with random positions and headings, drops the objects at random positions and headings 0.30 to 0.48 m in front of the base and up to 0.34 m to either side, and draws a new instruction and its wording. Every layout keeps the objects at least 2 cm apart and 6 cm from the buckets, leaves room for the hand to grasp each object across its short side without touching a bucket wall or another object, and keeps every object and the middle of every bucket's opening 0.35 to 0.76 m from the base's axis, where the FR3 reaches them fingers down with every joint at least 8 degrees inside its limits (`bucket_sort.sample_layout`; the ranges are the module's constants). A fixed seed (`--seed`, `POST /seed`) repeats all of it.
+- **Success**: the named object's centre is inside the named bucket, wherever that bucket stands now, and the object is still and out of the hand, while no other object is in a bucket. After the success dwell (**Episode** folder, `POST /episode/auto-reset`), the next episode starts.
+- **Held-out pairs**: instructions are drawn from all nine (object, bucket) pairs by default. To hold some out of training, give the task the pairs to draw from: `physicalai_mujoco_plugin.bucket_sort.BucketSortTask` is the scene's reset callback (`Sim.on_reset`), and `task.set_allowed_pairs([("cpu", "black"), ...])` applies from the next reset. `sample_instruction(rng, allowed_pairs)` draws one on its own.
+- **Canonical wording**: to always use the canonical sentence, set `bucket_sort.VARY_INSTRUCTION_TEXT = False`, or call `task.set_vary_text(False)` on the task (`BucketSortTask(vary_text=False)`); either applies from the next reset.
+- **Autopilot**: a scripted demonstrator (`bucket_sort_demo.py`) carries out each instruction, with the conveyor's modes: **Drive the arm** (`POST /autopilot {"mode": "drive"}`) moves the arm and ignores actions; **Virtual leader** (`"leader"`) only publishes its targets on `GET /leader` (the profile's channels: for the FR3 `fr3_joint1` ... `fr3_joint7` in degrees and `gripper` in metres) for a client that sends them back as actions and records them.
+  - Each episode it closes the hand across the named object's short side (of the two symmetric hand yaws, the one that keeps the wrist further from its limits), lifts it, carries it above the rims, lowers it into the named bucket's opening, lets go and returns to the ready pose.
+  - Moves are minimum-jerk in the hand's position, yaw and opening, blended into each other, and turned into joint targets by damped least-squares IK that stays 7 degrees inside the FR3's joint limits and under half its joint speed and acceleration limits. Every plan is checked for the hand's clearance from the buckets, the other objects and the table before it runs.
+  - Heights, speeds, the grasp offset, the hand yaw, pauses and the release point are drawn per episode from the demonstrator's generator (`--seed` seeds it too).
+  - Poses are read live: an object that moves or turns before the grasp re-plans the approach, and a named bucket that moves (pushed, or dragged in the viewer) between the start of the carry and the release re-plans the carry and the release.
+  - A missed or dropped object gets one retry; then the episode is reported failed and the scene resets. `/health` `autopilot` reports `phase`, `instruction`, `episode`, `attempt`, `outcome` (`running`, `success`, `failed`, or `stalled` when the arm does not follow the published targets, as in `leader` mode with no client), `failure`, and `clean` (no attempt went wrong).
+  - With **Record in Studio**, each episode is saved to the dataset open in Studio, with its instruction as the task ([Record the bucket_sort autopilot](#record-the-bucket_sort-autopilot-with-automatic-episodes)).
+
+The meshes come from the source CAD with `scripts/build_bucket_sort_meshes.py`, which decimates them, converts them to metres, splits each object by material so MuJoCo can colour it, and writes them in MuJoCo's binary MSH format (about half the size of the same meshes as OBJ, and binary in diffs; the repository sends `*.stl` to Git LFS, `*.msh` is committed as is). The CPU export holds one leg, which the script copies into the body's other five leg sockets, and the script cuts the resistor's bands out of its body mesh. It needs trimesh, pymeshlab and shapely, which the plugin does not depend on; its docstring has the command.
+
+The buckets collide as box primitives in `scene.xml` (keep them in sync with `bucket_sort.BUCKET_INTERIOR`): a 6 mm bottom that stands on the table, walls on it and the sloped lip. Their contacts are stiffer than MuJoCo's default (`solref` 4 ms), so an object dropped from the hand stops in the 6 mm bottom instead of sinking through it. Each object collides as the convex hull of its mesh.
+
 ### Switching scenes at runtime
 
 Pick a scene in the viewer's **Scene** dropdown or send `POST /scenes/{scene_id}`. The switch happens on the next control cycle:
@@ -419,7 +661,7 @@ Pick a scene in the viewer's **Scene** dropdown or send `POST /scenes/{scene_id}
 - Rebuilds the viewer for the new environment
 - Respawns the scene's free-object joints clear of their target, using the new spawn parameters (target bodies stay fixed)
 
-Only scenes with the running robot's arm count are offered: a single-arm simulation cannot switch to `garment_fold`, and a bimanual one cannot switch to the single-arm scenes. Over HTTP such a request returns `409` and the current scene is kept. A scene whose model lacks the joints the robot drives is also rejected.
+A switch keeps the arm count, so the joint names stay those the transport advertised: a bimanual simulation switches to any tabletop scene with two arms. Only scenes that support the running robot are offered; over HTTP another request returns `409` and the current scene is kept. A scene whose model lacks the joints the robot drives is also rejected.
 
 The native MuJoCo viewer also binds **`n`** (next scene) to cycle through the compatible scenes. That viewer is only used on Linux/Windows when the browser viewer fails to start.
 
@@ -427,7 +669,15 @@ The native MuJoCo viewer also binds **`n`** (next scene) to cycle through the co
 
 ## Development
 
-Fetch LFS assets before running the real-model tests. They load MuJoCo models without opening a display:
+To run the plugin from a checkout, fetch the LFS assets and prefix the commands in this README with `uv run --package physicalai-mujoco-plugin`. From the repository root:
+
+```bash
+git lfs pull
+uv sync --package physicalai-mujoco-plugin
+uv run --package physicalai-mujoco-plugin physicalai-mujoco start
+```
+
+Fetch LFS assets before running the real-model tests too. They load MuJoCo models without opening a display:
 
 ```bash
 uv sync --all-packages --extra tests --extra transport
@@ -437,11 +687,14 @@ uv build --package physicalai-mujoco-plugin
 
 ### Changing the simulation and viewer
 
-- **Only the simulation thread touches MuJoCo state.** Viewer and HTTP callbacks only enqueue a `SimCommand` (`http_server.py`), which `MuJoCoSO101._handle_command` applies on the next control cycle. HTTP and viewer readouts go through snapshots (`_http_status`, `_panel_state`) taken under `_state_lock`. To add a control, add a command, handle it in `_handle_command`, then add its HTTP route and its input in `viser_controls.py`.
+- **Only the simulation thread touches MuJoCo state.** Viewer and HTTP callbacks only enqueue a `SimCommand` (`http_server.py`), which `MuJoCoRobot._handle_command` applies on the next control cycle. HTTP and viewer readouts go through snapshots (`_http_status`, `_panel_state`) taken under `_state_lock`. To add a control, add a command, handle it in `_handle_command`, then add its HTTP route and its input in `viser_controls.py`.
 - **Viewer inputs ignore server-side events.** Setting a Viser input's `value` from the server fires its `on_update` callbacks with `client=None`. Panel callbacks skip those events, so syncing the panel from sim state never sends a command back.
 - **mjviser is used partly through its internals.** The plugin builds the viewer tabs itself, and does not use mjviser's `create_scene_gui` or `create_visualization_gui`. mjviser's camera tracking follows an arbitrary body by shifting the world, and each call registers another client-connect hook. The plugin also sets `camera_tracking_enabled`, installs a refresh handler, and moves the fixed-body handles itself. mjviser is pinned to `<0.1`; after upgrading it, check a scene switch and camera follow in a browser, because the unit tests mock viser.
-- **Scene switches rebuild the viewer.** `_build_viser_gui` clears every GUI element and scene node, then builds them again for the new model. Viewer preferences that should survive a switch live on `SimControlPanel`, not on the per-build handles.
-- **Scenes hold no robot.** The arm is MuJoCo Menagerie's SO-101 (`robotstudio_so101`), loaded through the pinned `mujoco-menagerie` package, which downloads it on first use. Each scene marks an arm's base with a `<frame name="{prefix}robot_mount"/>`, and `robot_profile.load_scene_model` attaches the arm there with that name prefix (`left_`/`right_` in the bimanual scene). `SO101_PROFILE` pins the joint ranges, force limits and wrist camera the plugin has always used; change the arm or its wrist camera there. Load scenes with `SceneConfig.load_model()`: `mujoco.MjModel.from_xml_path` on a scene file gives a model without the arm. `urdf/so101/*.urdf` and their meshes remain for Studio's 3D view.
+- **The driver owns services, it does not implement them.** `robot.py` steps physics and converts units through `channels.py`; the viewer (`viewer.py`), cameras (`cameras.py`), free objects (`scene_objects.py`) and live camera edits (`scene_watch.py`) are services it starts, syncs once per tick, and stops. None of them steps physics.
+- **Floor scenes spawn floating bases.** They mark a robot's start with `<frame name="{prefix}robot_spawn"/>` (`SceneConfig.anchors="spawn"`). Composing moves the robot's root body to its keyframe height first, so the base-hold weld `mujoco_base_hold_{prefix}` takes the start pose as its reference; `floating.py` reads the base and detects falls.
+- **Scene switches rebuild the viewer.** `ViewerService.build_gui` clears every GUI element and scene node, then builds them again for the new model. Viewer preferences that should survive a switch live on `SimControlPanel`, not on the per-build handles.
+- **Scenes hold no robot.** The arm is MuJoCo Menagerie's SO-101 (`robotstudio_so101`), loaded through the pinned `mujoco-menagerie` package, which downloads it on first use. Each scene marks an arm's base with a `<frame name="{prefix}robot_mount"/>`, and `compose.compose_scene` attaches the profile's robot there with that name prefix (`left_`/`right_` for two arms). `profiles/so101.py` pins the joint ranges, force limits and wrist camera the plugin has always used; change the arm or its wrist camera there. Scenes list the profiles they support in `SceneConfig.robots`. Load scenes with `SceneConfig.load_model()`: `mujoco.MjModel.from_xml_path` on a scene file gives a model without the arm. `urdf/so101/*.urdf` and their meshes remain for Studio's 3D view.
+- **Arm counts are laid out per scene.** A scene file lays out one arm count (`SceneConfig.written_arms`); the other comes from `SceneConfig.mounts` (pinned poses) or is derived from the single mount (`two_arm_style`: `side_by_side` or `across`, `two_arm_separation` scaled with reach), and `compose.apply_layout` moves the mount frames there. `home_qpos` applies to each arm with its prefix.
 - **Camera images are streamed as MuJoCo renders them.** `mujoco.Renderer` already returns upright images, so set a camera's orientation in the scene XML rather than flipping frames in code. In a MuJoCo camera frame, `-z` is the viewing direction and `+y` is the top of the image. `mirror_horizontal` exists for setups that need a mirrored feed; the `start` command does not use it.
 
 ### Compatibility with Studio
@@ -465,6 +718,7 @@ git worktree remove /tmp/physicalai-v0.2.0
 - Run the repository hooks on the files you changed (`prek run --files <files>`). `prek run --all-files` also reformats unrelated files elsewhere in the repository.
 - The ruff hook runs with `--unsafe-fixes` and can rewrite code, for example by collapsing a lambda into a bound method. Run the tests again after the hooks.
 - Tests that step a real simulation for seconds are marked `@pytest.mark.slow`. Run the quick set with `-m "not slow"` while iterating, and the full suite before pushing.
+- The smoke matrix (`tests/test_smoke_matrix.py`) runs every supported profile in its default scene: it idles, holds the home pose and nudges the joints (each nudge larger than the tolerance, so dropped actions fail), and checks that the state stays finite, MuJoCo reports no instability and the joints track within 5° or 5 mm. Tendon grippers without a joint range (Panda, xArm7) are nudged within their `ctrlrange` and must cover half the nudge. The reachability test (`tests/test_reach.py`) checks every arm of a `layout="reach"` scene. Both are deselected by default; CI runs them in their own step. Run them after adding or changing a profile: `uv run pytest -m mujoco_smoke packages/physicalai-mujoco-plugin/tests`.
 - Run the security scans used by CI:
 
   ```bash
@@ -474,7 +728,7 @@ git worktree remove /tmp/physicalai-v0.2.0
 
   Semgrep reports two existing `urlopen` findings in `tests/test_http_server.py`; CI only fails on new findings.
 
-The package was imported from [physicalai-plugins PR #36](https://github.com/MarkRedeman/physicalai-plugins/pull/36) at `53bf606ef0f340a2a1821fc42a1ab6f44c33edf7`. See `NOTICE` for provenance and `CHANGELOG.md` for earlier releases. Release publishing uses this repository's shared workflows; the existing PyPI project needs a trusted publisher for `openvinotoolkit/physicalai` before its first release here.
+The package was imported from [physicalai-plugins PR #36](https://github.com/MarkRedeman/physicalai-plugins/pull/36) at `53bf606ef0f340a2a1821fc42a1ab6f44c33edf7`. See `NOTICE` for provenance and `CHANGELOG.md` for earlier releases. Releases are published to [PyPI](https://pypi.org/project/physicalai-mujoco-plugin/) by this repository's shared release workflow.
 
 ## Current status and future improvements
 

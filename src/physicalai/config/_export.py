@@ -10,6 +10,7 @@ import inspect
 from typing import TYPE_CHECKING, TypeVar, overload
 
 from ._errors import ConfigError
+from ._importing import import_dotted_path
 from ._normalize import (
     normalize_value,
     snapshot_captured_value,
@@ -26,7 +27,6 @@ from ._types import (
     JsonValue,
     ValidatedConfigDict,
 )
-from .importing import import_dotted_path
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -37,7 +37,7 @@ _T = TypeVar("_T", bound=type)
 
 
 class _NonScalarVarKwarg:
-    """Poison value so ``to_config`` rejects non-scalar ``**kwargs`` entries.
+    """Poison value so export rejects non-scalar ``**kwargs`` entries.
 
     Used when ``@export_config(scalar_var_kwargs=True)`` seals flattened
     var-keyword arguments to JSON scalars only.
@@ -245,19 +245,6 @@ def _export_instance(
     return {"class_path": class_path, "init_args": init_args}
 
 
-def to_config(value: object) -> Config:
-    """Return the canonical recipe for an ``@export_config`` instance.
-
-    .. deprecated::
-        Use :meth:`~physicalai.config.Config.from_instance` instead.
-    """
-    from ._deprecate import deprecate  # noqa: PLC0415
-    from .base import Config  # noqa: PLC0415
-
-    deprecate("physicalai.config.to_config", "Config.from_instance")
-    return Config.from_instance(value)
-
-
 def _validate_replayable_signature(cls: type, signature: inspect.Signature) -> None:
     for param in signature.parameters.values():
         if param.name == "self":
@@ -294,7 +281,7 @@ def _flatten_var_kwargs(
             msg = f"{cls_name}: **{var_kw_name} keys must be strings"
             raise TypeError(msg)
         if scalar_var_kwargs and not _is_json_scalar(value):
-            # Seal so normalize fails at to_config (no silent JSON nest).
+            # Seal so normalize fails during export (no silent JSON nest).
             supplied[key] = _NonScalarVarKwarg(key)
         else:
             supplied[key] = snapshot_captured_value(value)
@@ -462,7 +449,7 @@ def export_config(
     scalar_var_kwargs: bool = False,
     config_args: Sequence[str] | None = None,
 ) -> _T | Callable[[_T], _T]:
-    """Opt a concrete class into constructor-config export via :func:`to_config`.
+    """Opt a concrete class into constructor-config export via :meth:`Config.from_instance`.
 
     Remembers caller-supplied ``__init__`` arguments (not defaults). Rejects
     constructors that declare positional-only parameters or ``*args``.
@@ -485,7 +472,7 @@ def export_config(
 
     Pass ``scalar_var_kwargs=True`` when flattened ``**kwargs`` must export as
     JSON scalars only (``None`` / ``bool`` / ``int`` / ``float`` / ``str``).
-    Non-scalar var-keyword values then fail at :func:`to_config` instead of
+    Non-scalar var-keyword values then fail during export instead of
     being normalized as nested JSON. Requires a ``**kwargs`` parameter.
 
     Nested non-component domain values (for example calibration objects) may
@@ -513,7 +500,7 @@ def export_config(
         class_path: Optional stable public import path for export. Verified on
             export to resolve exactly to the decorated class.
         scalar_var_kwargs: When ``True``, seal flattened ``**kwargs`` to JSON
-            scalars so non-scalars fail at :func:`to_config`.
+            scalars so non-scalars fail during export.
         config_args: Init-arg names the class consumes as Config
             *data*. :func:`instantiate` passes these through as plain mappings
             instead of constructing the nested component — use it for spawn

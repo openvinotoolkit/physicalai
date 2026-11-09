@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.5.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-studio-plugin-v0.4.0...physicalai-studio-plugin-v0.5.0) (2026-10-30)
+
+
+### ✨ Features
+
+* **mujoco:** record bucket_sort in Studio, run it on more arms, and give every robot a 3D model ([#404](https://github.com/openvinotoolkit/physicalai/issues/404)) ([70a360b](https://github.com/openvinotoolkit/physicalai/commit/70a360b15c749a64b8460cdbd3157a2b8726f925))
+
+
+### 🔧 Chores
+
+* deprecate `RobotAdapterOptions` ([#374](https://github.com/openvinotoolkit/physicalai/issues/374)) ([0ca5b8e](https://github.com/openvinotoolkit/physicalai/commit/0ca5b8e06c132aa2c83aa7a92bc6dfb79a7b231f))
+
+## [0.4.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-studio-plugin-v0.3.0...physicalai-studio-plugin-v0.4.0) (2026-10-20)
+
+
+### ✨ Features
+
+* **mujoco:** simulate legged robots, twins/bimanual and dataset arms with cameras and replay ([#353](https://github.com/openvinotoolkit/physicalai/issues/353)) ([7961daa](https://github.com/openvinotoolkit/physicalai/commit/7961daa1f04533c13c949e18b301c09b46ba0d0f))
+
+
+### ♻️ Code Refactoring
+
+* **config:** remove deprecated configuration shims ([#244](https://github.com/openvinotoolkit/physicalai/issues/244)) ([9133822](https://github.com/openvinotoolkit/physicalai/commit/91338224c67f0d17f166eb062e3ac9a6762db784))
+
 ## [0.3.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-studio-plugin-v0.2.0...physicalai-studio-plugin-v0.3.0) (2026-10-06)
 
 

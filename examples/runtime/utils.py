@@ -20,7 +20,7 @@ def build_robot(args: argparse.Namespace) -> Robot:
     """
     driver: Robot
     if args.robot == "so101":
-        from physicalai.robot import SO101
+        from physicalai_so101_plugin import SO101
 
         if not args.port:
             sys.exit("error: --port is required for so101")
@@ -28,13 +28,13 @@ def build_robot(args: argparse.Namespace) -> Robot:
             sys.exit("error: --calibration is required for so101")
         driver = SO101(port=args.port, calibration=args.calibration, role="follower")
     elif args.robot == "widowxai":
-        from physicalai.robot import WidowXAI
+        from physicalai_trossen_plugin import WidowXAI
 
         if not args.ip:
             sys.exit("error: --ip is required for widowxai")
         driver = WidowXAI(ip=args.ip, role="follower")
     elif args.robot == "bimanual_widowxai":
-        from physicalai.robot import BimanualWidowXAI, WidowXAI
+        from physicalai_trossen_plugin import BimanualWidowXAI, WidowXAI
 
         if not args.ip_left or not args.ip_right:
             sys.exit("error: --ip-left and --ip-right are required for bimanual")
@@ -92,7 +92,7 @@ def parse_camera_specs(
 
 def prompt_torque_disable(robot: Robot) -> None:
     """Ask the user whether to disable torque after a run completes (SO101 only)."""
-    from physicalai.robot import SO101
+    from physicalai_so101_plugin import SO101
 
     if not isinstance(robot, SO101):
         print("Torque prompt skipped (not an SO101 robot).")

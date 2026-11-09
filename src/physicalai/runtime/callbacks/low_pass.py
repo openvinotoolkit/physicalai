@@ -12,6 +12,8 @@ from physicalai.config import export_config
 if TYPE_CHECKING:
     import numpy as np
 
+    from physicalai.runtime.events import LifecycleEvent
+
 
 @export_config(class_path="physicalai.runtime.LowPassFilterCallback")
 class LowPassFilterCallback:
@@ -20,6 +22,9 @@ class LowPassFilterCallback:
     Filters outgoing multidimensional joint positions/actions using a simple
     discrete one-pole IIR filter (exponential moving average):
         y_t = alpha * x_t + (1 - alpha) * y_{t-1}
+
+    The state is reset at the start of every ``run()`` so a new session is not
+    blended with the last action of the previous one.
 
     Args:
         alpha: Smoothing factor in range (0, 1]. A lower value introduces
@@ -55,3 +60,8 @@ class LowPassFilterCallback:
 
     def on_action_sent(self, *, action: np.ndarray, step: int) -> None:
         """No-op."""
+
+    def on_lifecycle(self, event: LifecycleEvent) -> None:
+        """Clear the filter state when a new session starts."""
+        if event.event == "start":
+            self._last_action = None

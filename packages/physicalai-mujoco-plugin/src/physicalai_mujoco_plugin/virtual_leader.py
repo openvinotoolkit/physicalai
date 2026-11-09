@@ -6,8 +6,9 @@
 The simulation publishes a leader pose on ``GET /leader`` every control tick:
 the autopilot's targets when it runs in ``leader`` mode, otherwise the arm's
 current joints (so teleoperation holds still). Physical AI Studio builds this
-class for the *MuJoCo SO-101 Virtual Leader* catalog entry and records what it
-reads as the follower's actions.
+class for the *MuJoCo Virtual Leader* catalog entry and records what it reads as
+the follower's actions. The leader takes its joint names from the simulation, so
+it leads any profile and arm layout; Studio checks they match the follower's.
 
 This module must not import MuJoCo: Studio's environment may not carry the
 simulator's version, and a leader needs only HTTP.
@@ -27,7 +28,6 @@ from physicalai.config import export_config
 
 if TYPE_CHECKING:
     from physicalai.capture.frame import Frame
-from physicalai_mujoco_plugin.constants import SO101_JOINT_ORDER
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 DEFAULT_HTTP_PORT = 8080
@@ -72,7 +72,8 @@ class MuJoCoVirtualLeader:
         self.http_port = int(http_port)
         self.host = host
         self.timeout_s = float(timeout_s)
-        self.joint_names = list(SO101_JOINT_ORDER)
+        self.joint_names: list[str] = []
+        """The simulation's joint names, read on `connect`."""
         self._conn: http.client.HTTPConnection | None = None
         self._last_seq: int | None = None
         self._last: VirtualLeaderObservation | None = None
@@ -83,10 +84,10 @@ class MuJoCoVirtualLeader:
         return ()
 
     def connect(self) -> None:
-        """Open the connection and check the simulation publishes a single-arm leader pose.
+        """Open the connection and take the joint names the simulation publishes.
 
         Raises:
-            ConnectionError: If the simulation is unreachable or publishes another joint layout.
+            ConnectionError: If the simulation is unreachable or publishes no joint names.
         """
         self._conn = http.client.HTTPConnection(self.host, self.http_port, timeout=self.timeout_s)
         try:
@@ -95,10 +96,11 @@ class MuJoCoVirtualLeader:
             self.disconnect()
             raise
         names = payload.get("joint_names")
-        if not isinstance(names, list) or names != self.joint_names:
+        if not isinstance(names, list) or not names or not all(isinstance(name, str) for name in names):
             self.disconnect()
-            msg = f"The simulation publishes leader joints {names}, expected {self.joint_names}"
+            msg = f"The simulation publishes no leader joint names, got {names!r}"
             raise ConnectionError(msg)
+        self.joint_names = list(names)
 
     def disconnect(self) -> None:
         """Close the connection."""

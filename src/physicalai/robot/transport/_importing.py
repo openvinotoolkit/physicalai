@@ -3,13 +3,13 @@
 
 """Dotted-path imports for robot owner configuration.
 
-Canonical implementation lives in :mod:`physicalai.config.importing`. This
-module re-exports for backward-compatible imports without loading export or
-instantiate.
+Canonical implementation lives in :mod:`physicalai.config._importing`. This
+module re-exports the shared resolver for robot transport callers.
 """
 
 from __future__ import annotations
 
-from physicalai.config.importing import import_dotted_path
+# Keep transport's import path backed by the shared resolver.
+from physicalai.config._importing import import_dotted_path  # ruff: ignore[PLC2701]
 
 __all__ = ["import_dotted_path"]

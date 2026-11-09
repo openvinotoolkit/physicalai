@@ -29,6 +29,21 @@ Export converts `Path` to its unchanged string form, `Enum` to its JSON-safe
 value, and tuples to lists. `instantiate()` accepts the JSON representation,
 not those original Python objects.
 
+## Config API
+
+Use `Config.from_instance(value)` to capture constructor arguments from a class
+decorated with `@export_config`. `config.to_dict()` returns the recipe mapping;
+`config.to_yaml()` returns its YAML text, and `config.save(path)` writes that
+YAML to a file. `Config.load(source)` reads a mapping or YAML file. For typed
+dataclass configs, call `TypedConfig.load(...)` to reconstruct the dataclass.
+
+`config.instantiate()` builds a direct recipe. It imports and runs the configured
+class, so use it only with trusted local configuration.
+
+`physicalai.config.import_dotted_path(path)` is the public dotted-symbol
+resolver used by the config package. It does not establish that a path is
+trusted; see [Security](#security) before resolving operator configuration.
+
 ## Runtime Documents
 
 A CLI runtime document places constructor arguments under `runtime:` and may

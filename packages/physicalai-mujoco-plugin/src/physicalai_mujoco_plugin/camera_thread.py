@@ -108,16 +108,17 @@ class CameraThread:
 
         Returns:
             Whether the thread ended. If not, it still owns its renderers and closes them itself
-            when its current render returns.
+            when its current render returns; call `stop` again to wait for it again.
         """
         self._stop.set()
-        thread, self._thread = self._thread, None
+        thread = self._thread
         if thread is None:
             return True
         thread.join(timeout=timeout_s)
         if thread.is_alive():
             logger.warning("Camera thread did not stop within {:.1f}s", timeout_s)
             return False
+        self._thread = None
         return True
 
     def publish(self, data: object) -> None:

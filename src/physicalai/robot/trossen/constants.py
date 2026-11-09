@@ -1,22 +1,12 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Trossen WidowX AI hardware constants."""
+"""Backward-compatible Trossen constants module forwarded to the plugin."""
 
 from __future__ import annotations
 
-from typing import Final
+from physicalai.robot.plugins import load_robot_plugin
 
-WIDOWXAI_JOINT_ORDER: Final = (
-    "shoulder_pan",
-    "shoulder_lift",
-    "elbow_flex",
-    "wrist_flex",
-    "wrist_yaw",
-    "wrist_roll",
-    "gripper",
-)
 
-VALID_ROLES: Final = frozenset({"leader", "follower"})
-
-HOME_POSITION: Final = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+def __getattr__(name: str) -> object:
+    return getattr(load_robot_plugin("physicalai_trossen_plugin.constants", "trossen"), name)

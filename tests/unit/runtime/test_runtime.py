@@ -426,6 +426,32 @@ class TestLowPassFilterCallback:
         with pytest.raises(ValueError, match="alpha"):
             LowPassFilterCallback(alpha=1.1)
 
+    @pytest.mark.parametrize(("event", "reset"), [("start", True), ("obs_error", False), ("shutdown", False)])
+    def test_low_pass_resets_only_on_start(self, event: str, reset: bool) -> None:
+        from physicalai.runtime import LowPassFilterCallback
+
+        cb = LowPassFilterCallback(alpha=0.5)
+        cb.on_action_ready(action=np.array([1.0], dtype=np.float32), step=0)
+
+        cb.on_lifecycle(LifecycleEvent(session_id="s", timestamp=0.0, event=event, metadata={}))
+        res = cb.on_action_ready(action=np.array([0.0], dtype=np.float32), step=0)
+
+        assert np.allclose(res, [0.0] if reset else [0.5])
+
+    def test_low_pass_starts_fresh_on_next_run(self) -> None:
+        from physicalai.runtime import LowPassFilterCallback
+
+        source = FakeActionSource(next_action=np.ones(3, dtype=np.float32))
+        runtime, robot = _stop_runtime(action_source=source, callbacks=[LowPassFilterCallback(alpha=0.2)])
+
+        with _frozen_time():
+            runtime.run(duration_s=0.5)
+            source.next_action = np.zeros(3, dtype=np.float32)
+            robot.send_action.reset_mock()
+            runtime.run(duration_s=0.1)
+
+        np.testing.assert_allclose(robot.send_action.call_args_list[0].args[0], np.zeros(3))
+
 
 class _ConfigFakeRobot:
     """Minimal Robot-protocol stub usable as a YAML ``class_path`` target."""
@@ -1422,6 +1448,50 @@ class TestReturnToInitialState:
         assert robot.send_action.call_count == steps + self._RETURN_STEPS
         final_action = robot.send_action.call_args_list[-1].args[0]
         np.testing.assert_allclose(final_action, start, rtol=1e-6)
+
+    def test_skips_return_when_already_near_starting_pose(self) -> None:
+        start = np.array([10.0, 20.0, 30.0], dtype=np.float32)
+        near_start = start + np.array([0.5, -0.5, 1.0], dtype=np.float32)  # ~3.3% of ||start||
+        distant_target = np.zeros(3, dtype=np.float32)
+        robot = _make_mock_robot()
+
+        def get_observation() -> FakeRobotObservation:
+            return FakeRobotObservation(
+                joint_positions=start.copy() if robot.get_observation.call_count == 1 else near_start.copy(),
+                timestamp=time.monotonic(),
+                sensor_data=None,
+                images=None,
+            )
+
+        robot.get_observation.side_effect = get_observation
+        runtime, robot = _stop_runtime(
+            robot=robot,
+            action_source=FakeActionSource(next_action=distant_target),
+        )
+
+        with _frozen_time():
+            steps = runtime.run(duration_s=0.3, return_to_initial_state=True)
+
+        assert steps == 3
+        assert robot.send_action.call_count == steps + 1
+        for call in robot.send_action.call_args_list[:-1]:
+            np.testing.assert_array_equal(call.args[0], distant_target)
+        hold_command = robot.send_action.call_args
+        np.testing.assert_array_equal(hold_command.args[0], near_start)
+        assert hold_command.kwargs["goal_time"] == robot.send_action.call_args_list[-2].kwargs["goal_time"]
+
+    def test_returns_when_just_outside_tolerance(self) -> None:
+        start = np.array([10.0, 20.0, 30.0], dtype=np.float32)
+        off_start = start + np.array([0.0, 0.0, 4.0], dtype=np.float32)  # ~10.7% of ||start||
+        runtime, robot = _stop_runtime(
+            robot=_make_following_robot(start),
+            action_source=FakeActionSource(next_action=off_start),
+        )
+
+        with _frozen_time():
+            steps = runtime.run(duration_s=0.3, return_to_initial_state=True)
+
+        assert robot.send_action.call_count == steps + self._RETURN_STEPS
 
     def test_aborts_and_holds_pose_when_robot_stops_following(self) -> None:
         start = np.array([0.1, 0.2, 0.3], dtype=np.float32)

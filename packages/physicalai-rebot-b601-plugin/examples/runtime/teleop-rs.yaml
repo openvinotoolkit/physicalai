@@ -13,9 +13,12 @@ runtime:
     init_args:
       port: can0 # CHANGE_ME: SocketCAN channel
       can_adapter: socketcan
-      # Limit each joint to a 10-degree step per command (600 deg/s at 60 fps) so a
-      # leader/follower pose mismatch at startup cannot make the arm lunge.
-      max_relative_target: 10.0
+      max_relative_target: -1 # No per-command step limit
+      # Gravity and velocity feedforward are on by default. After torque is
+      # enabled the arm eases into the leader's pose at approach_speed, and on
+      # exit it folds into its rest pose before torque is released.
+      approach_speed: 30.0 # degrees/s; -1 jumps straight to the leader
+      park_on_disconnect: true
 
   action_source:
     class_path: physicalai.runtime.TeleopSource
@@ -25,5 +28,6 @@ runtime:
         init_args:
           port: /dev/ttyUSB0 # CHANGE_ME: leader arm serial port
           baudrate: 1000000
+          follower_profile: b601
 
   fps: 60.0

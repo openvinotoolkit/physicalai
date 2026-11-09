@@ -16,6 +16,8 @@ Public API::
     from physicalai.runtime import ConsoleCallback, JsonlCallback, AsyncCallback, RerunCallback
 """
 
+from __future__ import annotations
+
 from physicalai.runtime.action_sources import ActionSource, PolicySource, TeleopSource
 from physicalai.runtime.callbacks import (
     AsyncCallback,

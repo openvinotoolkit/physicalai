@@ -1,6 +1,6 @@
 # SO-101 Example Scripts
 
-Quick hardware verification scripts. No extra dependencies beyond `physicalai[so101]`.
+Quick hardware verification scripts. No extra dependencies beyond `physicalai-so101-plugin`.
 
 ## read_joints
 

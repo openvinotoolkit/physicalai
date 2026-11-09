@@ -32,11 +32,6 @@
       "package-name": "physicalai-studio-plugin",
       "changelog-path": "CHANGELOG.md"
     },
-    "packages/physicalai-bimanual-so101-plugin": {
-      "release-type": "python",
-      "package-name": "physicalai-bimanual-so101-plugin",
-      "changelog-path": "CHANGELOG.md"
-    },
     "packages/physicalai-rebot-b601-plugin": {
       "release-type": "python",
       "package-name": "physicalai-rebot-b601-plugin",
@@ -55,6 +50,16 @@
     "packages/physicalai-mujoco-plugin": {
       "release-type": "python",
       "package-name": "physicalai-mujoco-plugin",
+      "changelog-path": "CHANGELOG.md"
+    },
+    "packages/physicalai-so101-plugin": {
+      "release-type": "python",
+      "package-name": "physicalai-so101-plugin",
+      "changelog-path": "CHANGELOG.md"
+    },
+    "packages/physicalai-trossen-plugin": {
+      "release-type": "python",
+      "package-name": "physicalai-trossen-plugin",
       "changelog-path": "CHANGELOG.md"
     }
   }

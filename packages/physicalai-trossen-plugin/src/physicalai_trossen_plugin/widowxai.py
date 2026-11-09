@@ -1,0 +1,314 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+# ruff: noqa: BLE001, FBT003
+
+"""Trossen WidowX AI robot arm driver.
+
+Concrete implementation of the :class:`~physicalai.robot.Robot`
+protocol for the Trossen WidowX AI robot arm (7-DOF).
+
+Requires the ``trossen-arm`` package::
+
+    pip install physicalai-trossen-plugin
+
+The driver supports two roles:
+
+* **follower** (default) — position control, used for inference / deployment.
+* **leader** — external effort mode, used for teleoperation.
+
+Unit contract at the driver boundary:
+
+* Non-gripper joints are exposed in **degrees** for both observations and actions.
+* The gripper is a **native scalar passthrough** (no degree/radian conversion).
+"""
+
+from __future__ import annotations
+
+import contextlib
+import time
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, ClassVar, Literal
+
+import numpy as np
+from loguru import logger
+
+try:
+    import trossen_arm
+except ImportError as e:
+    msg = (
+        "trossen-arm is required for WidowXAI. Install with: "
+        "pip install physicalai-trossen-plugin. "
+        "Note: trossen-arm does not ship wheels for Python 3.14+ yet; "
+        "use Python 3.11-3.13 if you need this robot."
+    )
+    raise ImportError(msg) from e
+
+from physicalai.config import export_config
+from physicalai.robot import Robot
+from physicalai_trossen_plugin.constants import HOME_POSITION, VALID_ROLES, WIDOWXAI_JOINT_ORDER
+
+if TYPE_CHECKING:
+    from trossen_arm import TrossenArmDriver
+
+    from physicalai.capture.frame import Frame
+    from physicalai.robot.interface import RobotObservation
+
+
+@dataclass
+class WidowXAIObservation:
+    """Observation from the WidowX AI robot arm.
+
+    Attributes:
+        joint_positions: Array of shape ``(7,)`` with non-gripper joints in
+            degrees and gripper in native scalar units.
+        timestamp: ``time.monotonic()`` at the moment of capture.
+        sensor_data: Velocities and (for follower) external efforts.
+        images: Always ``None`` — no built-in camera support.
+    """
+
+    joint_positions: np.ndarray
+    timestamp: float
+    sensor_data: dict[str, np.ndarray] | None = None
+    images: dict[str, Frame] | None = None
+
+    @property
+    def state(self) -> np.ndarray:
+        """State vector: joint positions (7)."""
+        return self.joint_positions
+
+
+@export_config(class_path="physicalai_trossen_plugin.WidowXAI")
+class WidowXAI(Robot):
+    """Driver for the Trossen WidowX AI robot arm (7-DOF).
+
+    Args:
+        ip: IP address of the robot arm (e.g. ``"192.168.1.2"``).
+        role: ``"follower"`` (position control) or ``"leader"``
+            (external effort mode for teleoperation).
+
+    Note:
+        Non-gripper joint positions are exposed in degrees for read/write at
+        this API boundary. Gripper values are passed through in native scalar
+        units without degree/radian conversion.
+    """
+
+    JOINT_ORDER: ClassVar[list[str]] = list(WIDOWXAI_JOINT_ORDER)
+    NUM_JOINTS: ClassVar[int] = len(JOINT_ORDER)
+    MAX_RELATIVE_TARGET: ClassVar[float] = 0.25
+
+    def __init__(self, ip: str, role: Literal["leader", "follower"] = "follower") -> None:
+        """Initialize the WidowXAI driver.
+
+        Raises:
+            ValueError: If role is not "leader" or "follower".
+        """
+        if role not in VALID_ROLES:
+            msg = f"Invalid role {role!r}. Must be one of {VALID_ROLES}."
+            raise ValueError(msg)
+
+        self._ip = ip
+        self._role = role
+        self._driver: TrossenArmDriver | None = None
+
+    @property
+    def joint_names(self) -> list[str]:
+        """Ordered joint names matching state/action arrays."""
+        return self.JOINT_ORDER
+
+    @property
+    def ip(self) -> str:
+        """IP address of the robot arm."""
+        return self._ip
+
+    @property
+    def device_ids(self) -> tuple[str, ...]:
+        """Network address identifying this arm, e.g. ``("tcp:192.168.1.2",)``."""
+        return (f"tcp:{self._ip}",)
+
+    @property
+    def role(self) -> str:
+        """Robot role (``"leader"`` or ``"follower"``)."""
+        return self._role
+
+    def _require_driver(self) -> TrossenArmDriver:
+        if self._driver is None:
+            msg = "Robot is not connected. Call connect() first."
+            raise ConnectionError(msg)
+        return self._driver
+
+    def connect(self) -> None:
+        """Connect to the robot and move to home position."""
+        if self.is_connected():
+            return
+
+        driver = trossen_arm.TrossenArmDriver()
+
+        try:
+            end_effector = (
+                trossen_arm.StandardEndEffector.wxai_v0_follower
+                if self._role == "follower"
+                else trossen_arm.StandardEndEffector.wxai_v0_leader
+            )
+            driver.configure(
+                trossen_arm.Model.wxai_v0,
+                end_effector,
+                self._ip,
+                True,
+                timeout=5,
+            )
+
+            driver.set_all_modes(trossen_arm.Mode.position)
+            driver.set_all_positions(trossen_arm.VectorDouble(HOME_POSITION), 2.0, True)
+
+            if self._role == "leader":
+                # Zero external efforts before homing (essential for leader)
+                driver.set_all_modes(trossen_arm.Mode.external_effort)
+                driver.set_all_external_efforts(trossen_arm.VectorDouble(HOME_POSITION), 0.0, False)
+
+        except Exception:
+            with contextlib.suppress(Exception):
+                driver.cleanup()
+            self._driver = None
+            raise
+
+        self._driver = driver
+        logger.info(f"WidowXAI connected at {self._ip} (role={self._role})")
+
+    def disconnect(self) -> None:
+        """Home the arm and clean up the SDK connection."""
+        if self._driver is None:
+            logger.warning(f"WidowXAI not connected at {self._ip} (role={self._role})")
+            return
+
+        try:
+            self._driver.set_all_modes(trossen_arm.Mode.position)
+            self._driver.set_all_positions(trossen_arm.VectorDouble(HOME_POSITION), 2.0, True)
+        except Exception:
+            logger.warning("Failed to home WidowXAI during disconnect; proceeding to cleanup.")
+        finally:
+            try:
+                self._driver.cleanup()
+            except Exception:
+                logger.warning("Error during WidowXAI cleanup; continuing.")
+            self._driver = None
+
+    @staticmethod
+    def _ensure_safe_goal_position(
+        goal_position: np.ndarray,
+        present_position: np.ndarray,
+        max_relative_target: float,
+    ) -> np.ndarray:
+        """Cap per-joint relative target magnitude for safety.
+
+        Returns:
+            Goal position clipped so each joint delta is within
+            ``[-max_relative_target, max_relative_target]`` of
+            ``present_position``.
+        """
+        delta = goal_position - present_position
+        capped_delta = np.clip(delta, -max_relative_target, max_relative_target)
+        if not np.array_equal(delta, capped_delta):
+            logger.warning("Capped widowxai goal delta to max_relative_target={}", max_relative_target)
+        return present_position + capped_delta
+
+    def get_observation(self) -> RobotObservation:
+        """Read current joint state and auxiliary sensor data.
+
+        Returns:
+            Observation containing joint positions, timestamp, and sensor data.
+            Non-gripper joint positions are returned in degrees, while gripper
+            remains in native scalar units.
+        """
+        driver = self._require_driver()
+
+        positions = driver.get_all_positions()
+        velocities = driver.get_all_velocities()
+
+        positions_array = np.array(positions, dtype=np.float32)
+        # Backend/app-facing convention: non-gripper joints in degrees,
+        # gripper kept in native scalar units.
+        for i, name in enumerate(self.joint_names):
+            if name != "gripper":
+                positions_array[i] = np.rad2deg(positions_array[i])
+        velocities_array = np.array(velocities, dtype=np.float32)
+
+        sensor_data: dict[str, np.ndarray] = {"velocities": velocities_array}
+
+        if self._role == "follower":
+            efforts = driver.get_all_external_efforts()
+            sensor_data["efforts"] = np.array(efforts, dtype=np.float32)
+
+        return WidowXAIObservation(
+            joint_positions=positions_array,
+            timestamp=time.monotonic(),
+            sensor_data=sensor_data,
+        )
+
+    def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None:
+        """Send a joint position command to follower arms.
+
+        Args:
+            action: Array of shape ``(N,)`` where N >= 7. Only the first 7
+                elements (joint positions) are used; extra dimensions
+                (e.g. predicted velocities) are ignored.
+            goal_time: Minimum time (seconds) for the arm to reach the target.
+
+        Raises:
+            RuntimeError: If called on a leader arm.
+            ValueError: If action has fewer than 7 elements.
+        """
+        if self._role == "leader":
+            msg = "Cannot send actions to a leader arm."
+            raise RuntimeError(msg)
+
+        if action.shape[0] < self.NUM_JOINTS:
+            msg = f"Expected at least {self.NUM_JOINTS} action dims, got {action.shape}"
+            raise ValueError(msg)
+
+        action = action[: self.NUM_JOINTS]
+        driver = self._require_driver()
+
+        target_radians = np.asarray(action, dtype=np.float32).copy()
+        for i, name in enumerate(self.joint_names):
+            if name != "gripper":
+                target_radians[i] = np.deg2rad(target_radians[i])
+
+        present_positions = np.asarray(driver.get_all_positions(), dtype=np.float32)
+        safe_action = self._ensure_safe_goal_position(target_radians, present_positions, self.MAX_RELATIVE_TARGET)
+
+        driver.set_all_positions(trossen_arm.VectorDouble(safe_action.tolist()), goal_time, False)
+
+    def is_connected(self) -> bool:
+        """Return True when the SDK driver is configured."""
+        return self._driver is not None and self._driver.get_is_configured()
+
+    def set_external_efforts(self, efforts: np.ndarray, gain: float = 1.0) -> None:
+        """Apply force feedback (leader only).
+
+        Switches to external_effort mode and applies negated efforts,
+        matching the backend's force feedback convention.
+
+        Args:
+            efforts: Array of shape ``(7,)`` with effort values.
+            gain: Scaling factor for efforts. Defaults to 1.0.
+
+        Raises:
+            RuntimeError: If called on a follower arm.
+            ValueError: If efforts shape is not ``(7,)``.
+        """
+        if self._role != "leader":
+            msg = "set_external_efforts is only available for leader arms."
+            raise RuntimeError(msg)
+
+        expected_shape = (self.NUM_JOINTS,)
+        if efforts.shape != expected_shape:
+            msg = f"Expected efforts shape {expected_shape}, got {efforts.shape}"
+            raise ValueError(msg)
+
+        driver = self._require_driver()
+
+        driver.set_all_modes(trossen_arm.Mode.external_effort)
+        driver.set_all_external_efforts(
+            trossen_arm.VectorDouble([-gain * e for e in efforts.tolist()]), 0.0, blocking=False
+        )

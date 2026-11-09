@@ -51,6 +51,7 @@ class RealSenseCamera(DepthMixin, Camera):
         self._config: Any | None = None
         self._align: Any | None = None
         self._last_frameset: Any | None = None
+        self._latest_color_frame: Frame | None = None
 
     def connect(self, timeout: float = 5.0) -> None:
         """Open the RealSense pipeline and confirm first frame.
@@ -96,6 +97,7 @@ class RealSenseCamera(DepthMixin, Camera):
             raise CaptureTimeoutError(msg) from err
 
         self._last_frameset = self._align.process(first_frameset)
+        self._latest_color_frame = None
         self._connected = True
         self._sequence = 0
         self._depth_sequence = 0
@@ -111,6 +113,7 @@ class RealSenseCamera(DepthMixin, Camera):
         self._config = None
         self._align = None
         self._last_frameset = None
+        self._latest_color_frame = None
         self._connected = False
 
     @property
@@ -158,7 +161,8 @@ class RealSenseCamera(DepthMixin, Camera):
         self._last_frameset = frameset
         self._sequence += 1
         self._last_timestamp = time.monotonic()
-        return Frame(data=converted, timestamp=self._last_timestamp, sequence=self._sequence)
+        self._latest_color_frame = Frame(data=converted, timestamp=self._last_timestamp, sequence=self._sequence)
+        return self._latest_color_frame
 
     def read_latest(self) -> Frame:
         """Read the freshest aligned color frame without blocking.
@@ -191,11 +195,14 @@ class RealSenseCamera(DepthMixin, Camera):
             self._last_frameset = latest_frameset
             self._sequence += 1
             self._last_timestamp = time.monotonic()
-            return Frame(data=converted, timestamp=self._last_timestamp, sequence=self._sequence)
+            self._latest_color_frame = Frame(data=converted, timestamp=self._last_timestamp, sequence=self._sequence)
+            return self._latest_color_frame
 
         if self._last_frameset is None:
             msg = "No frame available"
             raise CaptureError(msg)
+        if self._latest_color_frame is not None:
+            return self._latest_color_frame
 
         color_frame = self._last_frameset.get_color_frame()
         if not color_frame:
@@ -203,7 +210,8 @@ class RealSenseCamera(DepthMixin, Camera):
             raise CaptureError(msg)
         color_data = np.asanyarray(color_frame.get_data())
         converted = self._convert_color(color_data)
-        return Frame(data=converted, timestamp=self._last_timestamp, sequence=self._sequence)
+        self._latest_color_frame = Frame(data=converted, timestamp=self._last_timestamp, sequence=self._sequence)
+        return self._latest_color_frame
 
     def read_depth(self) -> Frame:
         """Read the next aligned depth frame.
@@ -233,6 +241,7 @@ class RealSenseCamera(DepthMixin, Camera):
 
         depth_data = np.asanyarray(depth_frame.get_data())
         self._last_frameset = frameset
+        self._latest_color_frame = None
         self._depth_sequence += 1
         self._last_timestamp = time.monotonic()
         return Frame(data=depth_data, timestamp=self._last_timestamp, sequence=self._depth_sequence)
@@ -274,8 +283,9 @@ class RealSenseCamera(DepthMixin, Camera):
         self._depth_sequence += 1
         self._last_frameset = frameset
         timestamp = time.monotonic()
+        self._latest_color_frame = Frame(data=color_converted, timestamp=timestamp, sequence=self._sequence)
         return (
-            Frame(data=color_converted, timestamp=timestamp, sequence=self._sequence),
+            self._latest_color_frame,
             Frame(data=depth_data, timestamp=timestamp, sequence=self._depth_sequence),
         )
 

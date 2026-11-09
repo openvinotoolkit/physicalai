@@ -118,9 +118,6 @@ def test_hd_leader_has_robot_builder() -> None:
     hd = next(d for d in _definitions() if d.type == "StarArm_102_HD_Leader")
     assert callable(hd.robot_builder)
     assert hd.robot_payload is StarArm102HDPayload
-    assert hd.adapter_options.include_velocities is False
-    assert hd.adapter_options.external_effort_gain is None
-    assert hd.adapter_options.goal_time_scale == 1.0
 
 
 def test_ld_leader_has_robot_builder() -> None:
@@ -129,9 +126,6 @@ def test_ld_leader_has_robot_builder() -> None:
     ld = next(d for d in _definitions() if d.type == "StarArm_102_LD_Leader")
     assert callable(ld.robot_builder)
     assert ld.robot_payload is StarArm102LDPayload
-    assert ld.adapter_options.include_velocities is False
-    assert ld.adapter_options.external_effort_gain is None
-    assert ld.adapter_options.goal_time_scale == 1.0
 
 
 def test_fl_follower_has_robot_builder() -> None:
@@ -140,9 +134,6 @@ def test_fl_follower_has_robot_builder() -> None:
     fl = next(d for d in _definitions() if d.type == "StarArm_102_FL_Follower")
     assert callable(fl.robot_builder)
     assert fl.robot_payload is StarArm102FLPayload
-    assert fl.adapter_options.include_velocities is True
-    assert fl.adapter_options.external_effort_gain is None
-    assert fl.adapter_options.goal_time_scale == 1.0
 
 
 def test_stararm_102_ld_payload_defaults() -> None:
@@ -301,3 +292,19 @@ def test_fl_follower_has_no_zero_calibration() -> None:
     from physicalai_stararm_plugin.studio_catalog import _definitions
 
     assert next(d for d in _definitions() if d.type == "StarArm_102_FL_Follower").zero_calibration is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("profile", "expected"), [("native", None), ("b601", "b601")])
+@pytest.mark.parametrize("leader", ["hd", "ld"])
+async def test_leader_builders_pass_the_follower_profile(leader: str, profile: str, expected: str | None) -> None:
+    from physicalai_stararm_plugin import studio_catalog
+
+    payload_cls = studio_catalog.StarArm102HDPayload if leader == "hd" else studio_catalog.StarArm102LDPayload
+    build = studio_catalog._build_stararm_102_hd_driver if leader == "hd" else studio_catalog._build_stararm_102_ld_driver
+    assert payload_cls(serial_number="X").follower_profile == "native"
+
+    payload = payload_cls(serial_number="X", follower_profile=profile)  # pyrefly: ignore[bad-argument-type]
+    driver = await build(_StubRobot(payload), cast(Any, _StubFactory()))
+
+    assert cast(Any, driver).follower_profile == expected

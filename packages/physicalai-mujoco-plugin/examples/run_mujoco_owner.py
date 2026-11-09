@@ -1,10 +1,10 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Launch a MuJoCo SO-101 simulation as a zenoh robot owner.
+"""Launch a MuJoCo simulation as a zenoh robot owner, from Python.
 
 Usage:
-    uv run python examples/run_mujoco_owner.py [--model <path>] [--name <name>]
+    uv run python examples/run_mujoco_owner.py [--profile so101] [--scene <id>] [--name <name>]
 
 The simulation publishes state and accepts actions via zenoh. Use the
 PhysicalAI Studio plugin to connect to it.
@@ -14,22 +14,20 @@ from __future__ import annotations
 
 import argparse
 import signal
-import sys
 import time
-from dataclasses import asdict
-from pathlib import Path
 
 from loguru import logger
 from physicalai.config import Config
 from physicalai.robot.transport import SharedRobot
 
 from physicalai_mujoco_plugin.constants import DEFAULT_MUJOCO_OWNER_NAME
-from physicalai_mujoco_plugin.mujoco_robot import MuJoCoSO101
+from physicalai_mujoco_plugin.robot import MuJoCoRobot
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run MuJoCo SO-101 as a zenoh robot owner")
-    parser.add_argument("--model", type=str, default=None, help="MuJoCo model XML/URDF path")
+    parser = argparse.ArgumentParser(description="Run a MuJoCo simulation as a zenoh robot owner")
+    parser.add_argument("--profile", type=str, default="so101", help="Robot profile or Menagerie model name")
+    parser.add_argument("--scene", type=str, default=None, help="Scene id (default: the profile's)")
     parser.add_argument(
         "--name",
         type=str,
@@ -37,30 +35,20 @@ def main() -> None:
         help="Zenoh robot name",
     )
     parser.add_argument("--rate-hz", type=float, default=100.0, help="Control loop rate")
-    parser.add_argument("--substeps", type=int, default=1, help="Sim steps per control cycle")
+    parser.add_argument("--substeps", type=int, default=None, help="Sim steps per control cycle (default: real time)")
     parser.add_argument("--allow-remote", action="store_true", help="Allow remote zenoh connections")
     args = parser.parse_args()
 
-    model_path = args.model
-    scene_config = None
-    if model_path is None:
-        from physicalai_mujoco_plugin.scene_registry import get_scene
-
-        scene = get_scene("single_pick_place")
-        model_path = str(scene.scene_xml_path)
-        scene_config = asdict(scene)
-        if not Path(model_path).exists():
-            logger.error("Bundled scene not found at {}", model_path)
-            sys.exit(1)
-
     robot = SharedRobot.from_config(
-        Config.from_instance(MuJoCoSO101(model_path=model_path, substeps=args.substeps, scene_config=scene_config)),
+        Config.from_instance(
+            MuJoCoRobot(args.profile, scene=args.scene, substeps=args.substeps, rate_hz=args.rate_hz, cameras=[])
+        ),
         name=args.name,
         allow_remote=args.allow_remote,
         rate_hz=args.rate_hz,
     )
 
-    logger.info("Connecting MuJoCo SO-101 zenoh owner '{}' ...", args.name)
+    logger.info("Connecting MuJoCo {} zenoh owner '{}' ...", args.profile, args.name)
     robot.connect()
     logger.info("Running. Press Ctrl+C to stop.")
 

@@ -21,7 +21,7 @@ import time
 
 import numpy as np
 
-from physicalai.robot.so101.so101 import SO101
+from physicalai_so101_plugin import SO101
 
 _DEFAULT_OFFSET_RAD = 0.08
 """Default movement offset in radians (~4.6 degrees) when calibrated."""

@@ -18,6 +18,7 @@ from physicalai.capture.camera import ColorMode
 from physicalai.capture.cameras.uvc.v4l2._camera import V4L2Camera
 
 from physicalai.capture.cameras.uvc.v4l2._ioctl import (
+    V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC,
     V4L2_BUF_TYPE_VIDEO_CAPTURE,
     V4L2_CAP_STREAMING,
     V4L2_CAP_VIDEO_CAPTURE,
@@ -37,6 +38,7 @@ from physicalai.capture.cameras.uvc.v4l2._ioctl import (
 from physicalai.capture.discovery import DeviceInfo
 from physicalai.capture.errors import CaptureError, CaptureTimeoutError, NotConnectedError
 from physicalai.capture.frame import Frame
+from physicalai.capture.transport import _publisher_worker as worker
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -47,8 +49,10 @@ _FAKE_FD = 5
 
 def _make_xioctl(num_buffers: int = 1, dqbuf_frame_data: bytes | None = None):
     """Return a mock xioctl side-effect that handles core requests."""
+    sequence = 0
 
     def _xioctl(fd: int, request: int, arg: object) -> int:  # noqa: ARG001
+        nonlocal sequence
         if request == VIDIOC_QUERYCAP:
             cap = v4l2_capability()
             cap.capabilities = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_STREAMING
@@ -69,6 +73,9 @@ def _make_xioctl(num_buffers: int = 1, dqbuf_frame_data: bytes | None = None):
             buf.memory = V4L2_MEMORY_MMAP
             buf.timestamp.tv_sec = 1000
             buf.timestamp.tv_usec = 500000
+            buf.flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC
+            buf.sequence = sequence
+            sequence += 1
             ctypes.memmove(
                 ctypes.addressof(arg),  # type: ignore[arg-type]
                 ctypes.addressof(buf),
@@ -315,43 +322,20 @@ def test_read_sequence_increments() -> None:
 
 
 def test_read_latest_drains_buffers() -> None:
-    """read_latest() drains all available frames and returns the last one."""
+    """read_latest() drains the allocated ready buffers and returns the last one."""
     frame_data = b"\xff\xd8\xff" + b"\x00" * 97
     expected_arr = np.zeros((480, 640, 3), dtype=np.uint8)
-
-    # select returns ready twice then empty — read_latest drains 2 buffers.
-    select_side_effects = [
-        ([_FAKE_FD], [], []),  # connect's select
-        ([_FAKE_FD], [], []),  # read_latest: first drain iteration
-        ([_FAKE_FD], [], []),  # read_latest: second drain iteration
-        ([], [], []),  # read_latest: loop exits
-    ]
-
-    xioctl_fn = _make_xioctl(num_buffers=1, dqbuf_frame_data=frame_data)
-    mm = _make_mmap_mock(frame_data)
-    tj_patch = _make_turbojpeg_mock(expected_arr)
-
-    with mock.patch("physicalai.capture.cameras.uvc.v4l2._camera.os.open", return_value=_FAKE_FD):
-        with mock.patch("physicalai.capture.cameras.uvc.v4l2._camera.os.close"):
-            with mock.patch(
-                "physicalai.capture.cameras.uvc.v4l2._camera.xioctl",
-                side_effect=xioctl_fn,
-            ):
-                with mock.patch(
-                    "physicalai.capture.cameras.uvc.v4l2._camera.mmap.mmap",
-                    return_value=mm,
-                ):
-                    with mock.patch(
-                        "physicalai.capture.cameras.uvc.v4l2._camera.select.select",
-                        side_effect=select_side_effects,
-                    ):
-                        with mock.patch.dict(sys.modules, tj_patch):
-                            cam = V4L2Camera(num_buffers=1)
-                            cam.connect()
-                            frame = cam.read_latest()
-
+    with _mock_v4l2_device(num_buffers=2, frame_data=frame_data, turbojpeg_output=expected_arr):
+        camera = V4L2Camera(num_buffers=2)
+        camera.connect()
+        with mock.patch(
+            "physicalai.capture.cameras.uvc.v4l2._camera.select.select",
+            side_effect=[([_FAKE_FD], [], []), ([_FAKE_FD], [], [])],
+        ):
+            frame = camera.read_latest()
     assert isinstance(frame, Frame)
     assert frame.data.shape == (480, 640, 3)
+    assert frame.sequence == 1
 
 
 # ---------------------------------------------------------------------------
@@ -500,6 +484,118 @@ def test_read_uses_kernel_buffer_timestamp() -> None:
     assert frame.timestamp == pytest.approx(1000.5)
 
 
+def test_read_latest_without_cache_never_calls_blocking_read() -> None:
+    with _mock_v4l2_device(frame_data=b"frame"):
+        camera = V4L2Camera()
+        camera.connect()
+        with (
+            mock.patch.object(camera, "read", side_effect=AssertionError("blocking read must not run")),
+            mock.patch(
+                "physicalai.capture.cameras.uvc.v4l2._camera.select.select", return_value=([], [], [])
+            ) as select,
+            pytest.raises(CaptureError, match="No frame available"),
+        ):
+            camera.read_latest()
+        assert all(call.args[3] == 0 for call in select.call_args_list)
+
+
+def test_read_latest_returns_original_cached_frame_without_waiting() -> None:
+    with _mock_v4l2_device(frame_data=b"frame"):
+        camera = V4L2Camera()
+        camera.connect()
+        first = camera.read()
+        with mock.patch("physicalai.capture.cameras.uvc.v4l2._camera.select.select", return_value=([], [], [])):
+            assert camera.read_latest() is first
+            assert camera.read_latest().timestamp == first.timestamp
+
+
+def test_read_latest_bounds_continuously_refilled_queue() -> None:
+    with _mock_v4l2_device(num_buffers=2, frame_data=b"frame") as (_, ioctl, _):
+        camera = V4L2Camera(num_buffers=2)
+        camera.connect()
+        original = ioctl.side_effect
+        dequeues = 0
+
+        def bounded(fd: int, request: int, arg: object) -> int:
+            nonlocal dequeues
+            if request == VIDIOC_DQBUF:
+                dequeues += 1
+                if dequeues > 2:
+                    raise AssertionError("latest read exceeded allocated buffer count")
+            return original(fd, request, arg)
+
+        ioctl.side_effect = bounded
+        frame = camera.read_latest()
+        assert dequeues == 2
+        assert frame.sequence == 1
+
+
+def test_read_latest_handles_readiness_race_with_cached_frame() -> None:
+    with _mock_v4l2_device(frame_data=b"frame") as (_, ioctl, _):
+        camera = V4L2Camera()
+        camera.connect()
+        first = camera.read()
+        ioctl.side_effect = BlockingIOError(11, "buffer no longer ready")
+        assert camera.read_latest() is first
+
+
+def test_read_preserves_kernel_sequence_gaps() -> None:
+    with _mock_v4l2_device(frame_data=b"frame") as (_, ioctl, _):
+        camera = V4L2Camera()
+        camera.connect()
+        original = ioctl.side_effect
+        sequences = iter([11, 15])
+
+        def sequenced(fd: int, request: int, arg: object) -> int:
+            result = original(fd, request, arg)
+            if request == VIDIOC_DQBUF:
+                assert isinstance(arg, v4l2_buffer)
+                arg.sequence = next(sequences)
+            return result
+
+        ioctl.side_effect = sequenced
+        assert camera.read().sequence == 11
+        assert camera.read().sequence == 15
+
+
+@pytest.mark.parametrize("clock_flags", [0, 0x4000])
+def test_unknown_timestamp_clock_uses_local_time_and_warns_once(clock_flags: int) -> None:
+    with _mock_v4l2_device(frame_data=b"frame") as (_, ioctl, _):
+        camera = V4L2Camera()
+        camera.connect()
+        original = ioctl.side_effect
+
+        def unknown_clock(fd: int, request: int, arg: object) -> int:
+            result = original(fd, request, arg)
+            if request == VIDIOC_DQBUF:
+                assert isinstance(arg, v4l2_buffer)
+                arg.flags = clock_flags
+                arg.timestamp.tv_sec = 1_700_000_000
+            return result
+
+        ioctl.side_effect = unknown_clock
+        with (
+            mock.patch("physicalai.capture.cameras.uvc.v4l2._camera.time.monotonic", return_value=42.0),
+            mock.patch("physicalai.capture.cameras.uvc.v4l2._camera.logger") as logger,
+        ):
+            assert camera.read().timestamp == 42.0
+            assert camera.read().timestamp == 42.0
+            logger.warning.assert_called_once()
+            assert "source capture age" in logger.warning.call_args.args[0]
+
+
+def test_live_publisher_drains_pending_v4l2_frames() -> None:
+    with _mock_v4l2_device(num_buffers=3, frame_data=b"frame"):
+        camera = V4L2Camera(num_buffers=3)
+        camera.connect()
+        with mock.patch(
+            "physicalai.capture.cameras.uvc.v4l2._camera.select.select",
+            side_effect=[([_FAKE_FD], [], []), ([_FAKE_FD], [], []), ([_FAKE_FD], [], []), ([], [], [])],
+        ):
+            frame = worker._read_live_frame(camera)
+        assert frame.sequence == 2
+
+
 # ---------------------------------------------------------------------------
 # Controls tests
 # ---------------------------------------------------------------------------
@@ -539,7 +635,7 @@ def test_controls_applied_at_connect() -> None:
                         ):
                             cam = V4L2Camera(
                                 num_buffers=1,
-                                controls={0x009a0901: 1, 0x009a0902: 100},
+                                controls={0x009A0901: 1, 0x009A0902: 100},
                             )
                             cam.connect()
 

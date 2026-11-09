@@ -18,12 +18,18 @@ from .factory import CatalogRobotFactory
 if TYPE_CHECKING:
     from .assets import RobotAsset
     from .probe import RobotProbe
+    from .simulation import SimulationLaunch
     from .zero_calibration import RobotZeroCalibration
 
 
 @dataclass(frozen=True)
 class RobotAdapterOptions:
-    """Controls adapter behavior for velocity, timing, and effort handling."""
+    """Deprecated compatibility metadata ignored by current Studio integrations.
+
+    Studio no longer applies velocity, action-timing, force-read, or effort-write
+    behavior from these values. Existing third-party plugin declarations remain
+    accepted so their catalog definitions continue to load.
+    """
 
     include_velocities: bool = False
     goal_time_scale: float = 1.0
@@ -63,7 +69,7 @@ Return the plain driver (for example ``physicalai.robot.SO101``), not a
 
 The driver's class must therefore be decorated with
 ``physicalai.config.export_config``, because Studio exports it with
-``to_config`` to hand the owner a construction recipe. An undecorated class
+``Config.from_instance()`` to hand the owner a construction recipe. An undecorated class
 fails the build with ``ConfigError``.
 """
 
@@ -79,9 +85,16 @@ class RobotCatalogDefinition(Generic[_PayloadT]):
     robot_payload: _PayloadModelT | None = None
     asset: RobotAsset | None = None
 
-    adapter_options: RobotAdapterOptions = field(default_factory=RobotAdapterOptions)
+    # Deprecated: Studio ignores this compatibility metadata. New plugins must
+    # not set it; the field remains so existing plugin definitions still load.
+    adapter_options: RobotAdapterOptions = field(
+        default_factory=RobotAdapterOptions,
+        metadata={"deprecated": True},
+    )
     probe: RobotProbe[_PayloadT] | None = None
     zero_calibration: RobotZeroCalibration[Any] | None = None
+    simulation: SimulationLaunch[_PayloadT] | None = None
+    """How Studio starts the simulation a simulated robot type attaches to; ``None`` for real robots."""
 
 
 class RobotCatalogRegistry(Protocol):

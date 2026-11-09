@@ -362,6 +362,8 @@ class RTCExecution(Execution):
             return
 
         with self._obs_lock:
+            if not self._rtc_queue.below_threshold(self.queue_threshold):
+                return
             snapshot = {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in observation.items()}
             self._obs_slot = (snapshot, self._incarnation, None)
 
@@ -578,6 +580,12 @@ class RTCExecution(Execution):
                 processed_actions,
                 action_index_before_inference=action_index_before,
             )
+            # maybe_request() kept publishing while this chunk was in flight.
+            # Those samples predate the merge and are stale by the time the
+            # queue drains again; keeping one would make the next chunk plan
+            # from a past state and replay part of the old trajectory.
+            if self._obs_slot is not None and self._obs_slot[2] is None:
+                self._obs_slot = None
             if signal is not None:
                 signal.event.set()
             return processed_actions

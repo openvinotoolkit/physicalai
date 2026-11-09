@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 from types import SimpleNamespace
 from typing import Any, ClassVar
 from unittest.mock import MagicMock
@@ -11,6 +12,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
+from physicalai_mujoco_plugin.floating import BaseStatus
 from physicalai_mujoco_plugin.http_server import (
     MAX_DWELL_S,
     MAX_SEED,
@@ -18,15 +20,24 @@ from physicalai_mujoco_plugin.http_server import (
     FrameBuffer,
     HomeCommand,
     ResetCommand,
+    SetAutopilotCommand,
     SetAutoResetCommand,
     SetObjectPoseCommand,
+    SetOverviewCommand,
     SetSeedCommand,
+    SetStudioRecordingCommand,
     ShutdownCommand,
+    StopReplayCommand,
     SwitchSceneCommand,
 )
+from physicalai_mujoco_plugin.scene_registry import ViewerView
+from physicalai_mujoco_plugin.studio_recorder import RecordingOptions
 from physicalai_mujoco_plugin.viser_controls import (
+    AUTOPILOT_LABELS,
     CUSTOM_MODEL_LABEL,
+    KEEP_LABELS,
     NO_FOLLOW_LABEL,
+    OVERVIEW_HINT,
     CameraFollow,
     CameraView,
     FollowStep,
@@ -82,8 +93,16 @@ class FakeGui:
         self.folders.append(label)
         return contextlib.nullcontext()
 
-    def add_dropdown(self, label: str, *, options: list[str], initial_value: str, hint: str | None = None) -> FakeHandle:
-        return self._add(label, FakeHandle(label, initial_value, options=options, hint=hint))
+    def add_dropdown(
+        self,
+        label: str,
+        *,
+        options: list[str],
+        initial_value: str,
+        hint: str | None = None,
+        disabled: bool = False,
+    ) -> FakeHandle:
+        return self._add(label, FakeHandle(label, initial_value, options=options, hint=hint, disabled=disabled))
 
     def add_button(self, label: str, **kwargs: Any) -> FakeHandle:  # noqa: ANN401
         return self._add(label, FakeHandle(label, **kwargs))
@@ -180,10 +199,12 @@ def make_state(**overrides: Any) -> PanelState:  # noqa: ANN401
     return PanelState(**values)
 
 
-def build_panel(state: PanelState | None = None) -> tuple[SimControlPanel, FakeServer, list[object]]:
+def build_panel(
+    state: PanelState | None = None, *, shutdown_button: bool = True
+) -> tuple[SimControlPanel, FakeServer, list[object]]:
     commands: list[object] = []
     server = FakeServer()
-    panel = SimControlPanel(server, SimpleNamespace(Icon=MagicMock()), commands.append)
+    panel = SimControlPanel(server, SimpleNamespace(Icon=MagicMock()), commands.append, shutdown_button=shutdown_button)
     state = state or make_state()
     panel.build(state)
     panel.build_camera_tab(state)
@@ -233,6 +254,97 @@ class TestSceneControls:
         server.gui.handles["Home Arm"].fire()
         assert commands == [ResetCommand(), HomeCommand()]
 
+    def test_replay_status_and_stop_show_only_during_a_replay(self) -> None:
+        panel, server, commands = build_panel(make_state(replay={"active": False}))
+        status, stop = panel._handles.replay  # noqa: SLF001
+        assert (status.visible, stop.visible) == (False, False)
+
+        replay = {"active": True, "finished": False, "frame": 4, "frames": 90, "fps": 30.0}
+        panel.refresh(make_state(replay=replay), now=1.0)
+        assert (status.visible, stop.visible) == (True, True)
+        assert status.content == "**Replay:** frame 5/90 at 30 fps; actions are ignored"
+        server.gui.handles["Stop Replay"].fire()
+        assert commands == [StopReplayCommand()]
+
+        panel.refresh(make_state(replay={**replay, "finished": True, "frame": 89}), now=2.0)
+        assert status.content.startswith("**Replay:** finished, holding frame 90/90")
+        panel.refresh(make_state(replay={"active": False}), now=3.0)
+        assert (status.visible, stop.visible) == (False, False)
+
+
+class TestOverviewControl:
+    """The Scene folder's "Overview camera" dropdown (``shoulder``/``front``)."""
+
+    BOTH: ClassVar[tuple[str, ...]] = ("shoulder", "front")
+
+    def test_offers_the_scenes_styles_with_a_hint(self) -> None:
+        _, server, _ = build_panel(make_state(overview_styles=self.BOTH))
+        dropdown = server.gui.handles["Overview camera"]
+        assert (dropdown.options, dropdown.value, dropdown.disabled) == (("Shoulder", "Front"), "Shoulder", False)
+        assert dropdown.kwargs["hint"] == OVERVIEW_HINT
+        assert "keep one view per dataset" in OVERVIEW_HINT
+
+    def test_choosing_a_style_enqueues_the_switch(self) -> None:
+        _, server, commands = build_panel(make_state(overview_styles=self.BOTH))
+        server.gui.handles["Overview camera"].fire("Front")
+        server.gui.handles["Overview camera"].fire("Shoulder", client=None)  # a server-side sync
+        assert commands == [SetOverviewCommand(style="front")]
+
+    def test_no_switch_where_the_scene_has_one_style(self) -> None:
+        _, server, _ = build_panel(make_state(overview_styles=("shoulder",)))
+        assert "Overview camera" not in server.gui.handles
+
+    def test_disabled_while_studio_records_and_follows_the_style(self) -> None:
+        panel, server, _ = build_panel(make_state(overview_styles=self.BOTH))
+        dropdown = server.gui.handles["Overview camera"]
+        state = make_state(overview_styles=self.BOTH, overview_style="front", overview_locked="recording")
+        panel.refresh(state, now=1.0)
+        assert (dropdown.value, dropdown.disabled) == ("Front", True)
+        panel.refresh(dataclasses.replace(state, overview_locked=None), now=2.0)
+        assert dropdown.disabled is False
+
+    def test_starts_disabled_while_studio_records(self) -> None:
+        _, server, _ = build_panel(make_state(overview_styles=self.BOTH, overview_locked="recording"))
+        assert server.gui.handles["Overview camera"].disabled is True
+
+    def test_the_robot_folder_shows_the_style(self) -> None:
+        panel, _, _ = build_panel(make_state(profile="so101", tier="twin", overview_style="front"))
+        assert "**Overview camera:** front" in panel._handles.robot.content  # noqa: SLF001
+
+
+class TestRobotStatus:
+    def test_shows_profile_tier_and_units(self) -> None:
+        panel, server, _ = build_panel(
+            make_state(profile="so101", tier="twin", units=("normalized",) * 5 + ("normalized",))
+        )
+        assert "Robot" in server.gui.folders
+        content = panel._handles.robot.content  # noqa: SLF001
+        assert "so101 (twin)" in content
+        assert "normalized (6)" in content
+        assert "base" not in content
+        assert "Reset Scene" in server.gui.handles
+
+    def test_floating_bases_get_their_status_and_a_reset_button(self) -> None:
+        held = BaseStatus(prefix="", height=0.79, tilt_deg=1.0, held=True, fallen=False)
+        state = make_state(profile="unitree_g1", tier="experimental", units=("degrees",) * 29, bases=(held,))
+        panel, server, commands = build_panel(state)
+        content = panel._handles.robot.content  # noqa: SLF001
+        assert "unitree_g1 (experimental)" in content
+        assert "degrees (29)" in content
+        assert "height 0.79 m" in content
+        assert "held" in content
+        server.gui.handles["Reset"].fire()
+        assert commands == [ResetCommand()]
+
+        fallen = BaseStatus(prefix="", height=0.2, tilt_deg=88.0, held=False, fallen=True)
+        panel.refresh(dataclasses.replace(state, bases=(fallen,)), now=1.0)
+        assert "tilt 88 deg, fallen" in panel._handles.robot.content  # noqa: SLF001
+
+    def test_no_robot_folder_without_a_profile(self) -> None:
+        _, server, _ = build_panel()
+        assert "Robot" not in server.gui.folders
+        assert "Reset" not in server.gui.handles
+
 
 class TestSeedControls:
     def test_seed_input_starts_disabled_without_a_fixed_seed(self) -> None:
@@ -263,6 +375,86 @@ class TestSeedControls:
 
 
 class TestEpisodeControls:
+    def test_a_conveyor_without_its_autopilot_says_why(self) -> None:
+        """P1: two arms on the conveyor keep the belt controls; the autopilot shows its reason instead."""
+        reason = "The conveyor autopilot drives one SO-101 arm; this simulation has 2 arms."
+        state = make_state(
+            episode={"enabled": True, "kind": "conveyor", "active": True, "belt_speed": 0.05},
+            autopilot={"available": False, "unavailable_reason": reason, "mode": "off"},
+        )
+        _, server, _ = build_panel(state)
+        assert "Belt speed (cm/s)" in server.gui.handles
+        assert "Autopilot" in server.gui.folders
+        assert "Autopilot" not in server.gui.handles  # no mode dropdown
+        assert server.gui.handles["markdown"].content == f"Off: {reason}"
+
+    @staticmethod
+    def _bucket_sort_state(**autopilot: Any) -> PanelState:  # noqa: ANN401
+        return make_state(
+            scene_id="bucket_sort",
+            episode={
+                "enabled": True,
+                "kind": "bucket_sort",
+                "active": True,
+                "phase": "idle",
+                "episode_count": 0,
+                "success_dwell_s": 5.0,
+                "countdown_s": None,
+                "instruction": {"object": "cpu", "bucket": "red", "text": "put the CPU in the red bucket"},
+            },
+            autopilot={"available": True, "unavailable_reason": None, "mode": "off", **autopilot},
+        )
+
+    def test_a_scene_with_a_demonstrator_gets_the_autopilot_dropdown(self) -> None:
+        """bucket_sort has a demonstrator but not the conveyor: its Episode folder is followed by the Autopilot one."""
+        _, server, commands = build_panel(self._bucket_sort_state())
+        assert server.gui.folders.index("Autopilot") == server.gui.folders.index("Episode") + 1
+        dropdown = server.gui.handles["Autopilot"]
+        assert dropdown.value == "Off"
+        assert dropdown.options == tuple(AUTOPILOT_LABELS.values())
+        dropdown.fire(AUTOPILOT_LABELS["drive"])
+        dropdown.fire(AUTOPILOT_LABELS["leader"])
+        dropdown.fire(AUTOPILOT_LABELS["off"])
+        assert commands == [
+            SetAutopilotCommand(mode="drive"),
+            SetAutopilotCommand(mode="leader"),
+            SetAutopilotCommand(mode="off"),
+        ]
+
+    def test_bucket_sort_records_in_studio_with_each_instruction_as_the_task(self) -> None:
+        """The Record / Keep / Episodes controls are there; the Task field is not, the instruction is the task."""
+        _, server, commands = build_panel(self._bucket_sort_state())
+        assert "Task" not in server.gui.handles
+        server.gui.handles["Keep"].value = KEEP_LABELS["all"]
+        server.gui.handles["Episodes (0 = no limit)"].value = 3
+        server.gui.handles["Record in Studio"].fire(True)
+        server.gui.handles["Record in Studio"].fire(False)
+        assert commands == [
+            SetStudioRecordingCommand(options=RecordingOptions(keep="all", max_episodes=3)),
+            SetStudioRecordingCommand(options=None),
+        ]
+
+    def test_a_scene_without_a_demonstrator_has_no_autopilot_folder(self) -> None:
+        _, server, _ = build_panel(make_state(autopilot={"available": False, "unavailable_reason": None, "mode": "off"}))
+        assert "Episode" in server.gui.folders
+        assert "Autopilot" not in server.gui.folders
+        _, server, _ = build_panel()  # no autopilot status at all
+        assert "Autopilot" not in server.gui.folders
+
+    def test_the_autopilot_dropdown_and_status_follow_the_demonstrator(self) -> None:
+        """A mode chosen over HTTP, or the demonstrator's own progress, shows in the panel."""
+        panel, server, commands = build_panel(self._bucket_sort_state())
+        running = {"mode": "drive", "phase": "carry", "attempt": 1, "max_attempts": 2, "outcome": "running"}
+        panel.refresh(self._bucket_sort_state(**running), now=1.0)
+        mode, status = panel._handles.autopilot_mode  # noqa: SLF001
+        assert (mode.value, server.gui.handles["Autopilot"].value) == (AUTOPILOT_LABELS["drive"],) * 2
+        assert status.content == "**Autopilot:** carry, attempt 1/2"
+        panel.refresh(self._bucket_sort_state(**{**running, "phase": "return", "outcome": "success"}), now=2.0)
+        assert status.content == "**Autopilot:** return, attempt 1/2, success"
+        panel.refresh(self._bucket_sort_state(), now=3.0)
+        assert (mode.value, status.content) == (AUTOPILOT_LABELS["off"], "**Autopilot:** off")
+        assert commands == []  # the refresh only mirrors; it never sends a command
+
     def test_hidden_when_the_scene_has_no_auto_reset(self) -> None:
         _, server, _ = build_panel(make_state(episode={"enabled": False}))
         assert "Episode" not in server.gui.folders
@@ -698,6 +890,32 @@ class TestCameraTab:
         np.testing.assert_allclose(client.camera.look_at, [0.1, 0.0, 0.2])
         np.testing.assert_allclose(client.camera.position, np.array([0.1, 0.0, 0.2]) + default_camera_position(2.0))
 
+    def test_a_scene_view_replaces_the_default_angle_and_sets_the_fov(self) -> None:
+        view = ViewerView(position=(-0.25, 1.42, 1.0), look_at=(0.32, 0.0, 0.22), fov_deg=51.6)
+        panel, server, _ = build_panel(make_state(view=view))
+        assert server.gui.handles["FOV (°)"].value == pytest.approx(51.6)
+        client = make_client()
+        server.connect_callbacks[0](client)
+        np.testing.assert_allclose(client.camera.position, view.position)
+        np.testing.assert_allclose(client.camera.look_at, view.look_at)
+        assert client.camera.fov == pytest.approx(np.deg2rad(51.6))
+
+        open_viewer = make_client(look_at=(1.0, 1.0, 1.0))
+        server.clients = {7: open_viewer}
+        other = ViewerView(position=(1.0, 0.0, 1.0), look_at=(0.0, 0.0, 0.0), fov_deg=70.0)
+        panel.build_camera_tab(make_state(view=other))  # a scene switch moves open viewers too
+        np.testing.assert_allclose(open_viewer.camera.look_at, other.look_at)
+        assert open_viewer.camera.fov == pytest.approx(np.deg2rad(70.0))
+        panel.build_camera_tab(make_state(view=view))
+        server.clients = {}
+
+        server.gui.handles["FOV (°)"].fire(70.0)
+        panel.build_camera_tab(make_state(view=view))  # a rebuild of the same scene keeps the slider
+        assert server.gui.handles["FOV (°)"].value == pytest.approx(70.0)
+        server.clients = {1: make_client(look_at=(1.0, 1.0, 1.0))}
+        server.gui.handles["Reset View"].fire()
+        np.testing.assert_allclose(server.clients[1].camera.look_at, view.look_at)
+
     def test_new_clients_look_at_the_followed_body(self) -> None:
         panel, server, _ = build_panel()
         server.gui.handles["Follow"].fire("gripper")
@@ -759,6 +977,10 @@ class TestShutdown:
         _, server, commands = build_panel()
         server.gui.handles["Shutdown"].fire(client=None)
         assert commands == []
+
+    def test_a_viewer_embedded_in_studio_has_no_shutdown_button(self) -> None:
+        _, server, _ = build_panel(shutdown_button=False)
+        assert "Shutdown" not in server.gui.handles
 
 
 @pytest.mark.parametrize(

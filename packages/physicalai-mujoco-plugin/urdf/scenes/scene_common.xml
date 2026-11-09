@@ -14,7 +14,10 @@
   </default>
   <asset>
     <texture type="skybox" builtin="gradient" rgb1="0.53 0.81 0.98" rgb2="0.20 0.35 0.55" width="512" height="3072"/>
-    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
-    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+    <!-- A neutral grey work-cell floor. No reflectance: a reflective floor makes MuJoCo draw the
+         whole scene again every frame (~2.8 ms). -->
+    <texture type="2d" name="floor" builtin="checker" mark="edge" rgb1="0.36 0.37 0.39" rgb2="0.32 0.33 0.35"
+             markrgb="0.45 0.46 0.48" width="300" height="300"/>
+    <material name="floor" texture="floor" texuniform="true" texrepeat="4 4"/>
   </asset>
 </mujocoinclude>

@@ -450,6 +450,99 @@ class TestPrepareInputsCollision:
             self._call({"obs": {"image": arr_b}, "obs.image": arr_a}, ["obs.image"])
 
 
+def _make_camera_export_dir(tmp_path: Path, cameras: list[str]) -> Path:
+    export_dir = _make_export_dir(tmp_path)
+    manifest_path = export_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["model"]["input_features"] = [
+        {
+            "class_path": "physicalai.inference.data.features.InferenceFeature",
+            "init_args": {"ftype": "VISUAL", "shape": [3, 4, 4], "name": f"images.{camera}", "dtype": "float32"},
+        }
+        for camera in cameras
+    ]
+    manifest_path.write_text(json.dumps(manifest))
+    return export_dir
+
+
+class _RecordInputs(Preprocessor):
+    def __init__(self) -> None:
+        self.seen: dict = {}
+
+    @override
+    def __call__(self, inputs: dict) -> dict:
+        self.seen = inputs
+        return inputs
+
+
+@pytest.mark.usefixtures("_patch_adapter")
+class TestCameraOrder:
+    """Cameras reach the preprocessors in the order the manifest declares them."""
+
+    @pytest.fixture(autouse=True)
+    def _passthrough_adapter(self, mock_adapter: MagicMock) -> None:
+        mock_adapter.input_names = []
+
+    @staticmethod
+    def _image(value: float) -> np.ndarray:
+        return np.full((1, 3, 4, 4), value, dtype=np.float32)
+
+    def test_flat_cameras_follow_manifest_order(self, tmp_path: Path) -> None:
+        record = _RecordInputs()
+        model = InferenceModel(_make_camera_export_dir(tmp_path, ["wrist", "overview"]), preprocessors=[record])
+
+        model({"state": np.zeros((1, 2)), "images.overview": self._image(1), "images.wrist": self._image(0)})
+
+        assert list(record.seen) == ["state", "images.wrist", "images.overview"]
+        assert record.seen["images.wrist"].max() == 0
+
+    def test_nested_cameras_follow_manifest_order(self, tmp_path: Path) -> None:
+        record = _RecordInputs()
+        model = InferenceModel(_make_camera_export_dir(tmp_path, ["wrist", "overview"]), preprocessors=[record])
+
+        model({"images": {"overview": self._image(1), "wrist": self._image(0)}})
+
+        assert list(record.seen["images"]) == ["wrist", "overview"]
+
+    def test_inputs_in_order_are_passed_through(self, tmp_path: Path) -> None:
+        record = _RecordInputs()
+        model = InferenceModel(_make_camera_export_dir(tmp_path, ["wrist", "overview"]), preprocessors=[record])
+        inputs = {"images.wrist": self._image(0), "images.overview": self._image(1)}
+
+        model(inputs)
+
+        assert record.seen is inputs
+
+    def test_unknown_cameras_keep_their_order_and_warn_once(self, tmp_path: Path) -> None:
+        record = _RecordInputs()
+        model = InferenceModel(_make_camera_export_dir(tmp_path, ["wrist", "overview"]), preprocessors=[record])
+        messages: list[str] = []
+        handler_id = logger.add(lambda message: messages.append(message.record["message"]), level="WARNING")
+
+        try:
+            for _ in range(2):
+                model({"images.top": self._image(1), "images.wrist": self._image(0)})
+        finally:
+            logger.remove(handler_id)
+
+        assert list(record.seen) == ["images.top", "images.wrist"]
+        assert sum("do not match the trained cameras" in message for message in messages) == 1
+
+    def test_pi05_stacks_cameras_in_training_order(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
+        from physicalai.inference.preprocessors.pi05 import Pi05Preprocessor
+
+        model = InferenceModel(
+            _make_camera_export_dir(tmp_path, ["wrist", "overview"]),
+            preprocessors=[Pi05Preprocessor(image_resolution=(4, 4))],
+        )
+
+        model({"state": np.zeros((1, 2)), "images.overview": self._image(1), "images.wrist": self._image(0)})
+
+        stacked = mock_adapter.predict.call_args.args[0]["images"]
+        assert stacked[0].max() == -1  # wrist (0.0) normalized to [-1, 1]
+        assert stacked[1].min() == 1  # overview (1.0)
+
+
 @pytest.mark.usefixtures("_patch_adapter")
 class TestModelPathResolution:
     @pytest.mark.parametrize(
@@ -510,7 +603,6 @@ class TestGetRunnerFactory:
     def test_manifest_runner_spec_single_pass(self) -> None:
         manifest_dict = {"runner": {"class_path": "physicalai.inference.runners.SinglePass", "init_args": {}}}
         assert isinstance(get_runner(manifest_dict), SinglePass)
-
 
     def test_manifest_runner_spec_takes_priority_over_flat_kwargs(self) -> None:
         manifest_dict = {
@@ -804,8 +896,9 @@ class TestHubLoading:
         assert model.backend == "onnx"
 
     def test_from_pretrained_rejects_export_dir(self) -> None:
-        with patch("physicalai.inference.model.download_from_hub") as mock_download, pytest.raises(
-            TypeError, match="does not accept export_dir"
+        with (
+            patch("physicalai.inference.model.download_from_hub") as mock_download,
+            pytest.raises(TypeError, match="does not accept export_dir"),
         ):
             InferenceModel.from_pretrained("physical-ai/act-cube", export_dir="/tmp/leak")
 
@@ -877,3 +970,75 @@ class TestPolicyNameValidation:
 
         model = InferenceModel(export_dir)
         assert model.policy_name == name
+
+
+@pytest.mark.usefixtures("_patch_adapter")
+class TestClose:
+    def test_close_notifies_callbacks_then_releases_the_adapter_once(
+        self,
+        tmp_path: Path,
+        mock_adapter: MagicMock,
+    ) -> None:
+        events: list[str] = []
+        callback = MagicMock()
+        callback.on_close.side_effect = lambda: events.append("callback")
+        mock_adapter.close.side_effect = lambda: events.append("adapter")
+        model = InferenceModel(_make_export_dir(tmp_path), callbacks=[callback])
+
+        model.close()
+        model.close()
+
+        assert events == ["callback", "adapter"]
+
+    def test_all_resources_are_closed_when_a_callback_fails(
+        self,
+        tmp_path: Path,
+        mock_adapter: MagicMock,
+    ) -> None:
+        events: list[str] = []
+        first = MagicMock()
+        second = MagicMock()
+
+        def fail_callback() -> None:
+            events.append("first")
+            raise RuntimeError("callback cleanup failed")
+
+        first.on_close.side_effect = fail_callback
+        second.on_close.side_effect = lambda: events.append("second")
+        mock_adapter.close.side_effect = lambda: events.append("adapter")
+        model = InferenceModel(_make_export_dir(tmp_path), callbacks=[first, second])
+
+        with pytest.raises(ExceptionGroup, match="Errors occurred while closing") as exc_info:
+            model.close()
+
+        assert events == ["first", "second", "adapter"]
+        assert len(exc_info.value.exceptions) == 1
+        assert str(exc_info.value.exceptions[0]) == "callback cleanup failed"
+        model.close()  # Cleanup is attempted once, even when a hook raises.
+        assert events == ["first", "second", "adapter"]
+
+    def test_adapter_is_closed_when_its_close_hook_fails_after_callbacks(
+        self,
+        tmp_path: Path,
+        mock_adapter: MagicMock,
+    ) -> None:
+        callback = MagicMock()
+        mock_adapter.close.side_effect = RuntimeError("adapter cleanup failed")
+        model = InferenceModel(_make_export_dir(tmp_path), callbacks=[callback])
+
+        with pytest.raises(ExceptionGroup, match="Errors occurred while closing") as exc_info:
+            model.close()
+
+        callback.on_close.assert_called_once_with()
+        assert len(exc_info.value.exceptions) == 1
+        assert str(exc_info.value.exceptions[0]) == "adapter cleanup failed"
+
+    def test_context_manager_closes_the_model(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
+        with InferenceModel(_make_export_dir(tmp_path)) as model:
+            assert isinstance(model, InferenceModel)
+            mock_adapter.close.assert_not_called()
+
+        mock_adapter.close.assert_called_once_with()
+
+    def test_base_adapter_close_is_a_no_op(self) -> None:
+        assert TestAdapter().close() is None

@@ -39,6 +39,7 @@ from loguru import logger
 
 from physicalai.config import Config, export_config
 from physicalai.robot.errors import (
+    RobotCalibrationError,
     RobotDeviceAlreadyOwned,
     RobotNameConflict,
     RobotNotConnectedError,
@@ -194,7 +195,7 @@ class SharedRobot:
     Opted into :func:`~physicalai.config.export_config` as a **construction
     recipe** only (name, nested ``robot`` Config, transport knobs).
     Connection / Zenoh session / publisher state is never part of
-    :func:`~physicalai.config.to_config`.
+    :meth:`~physicalai.config.Config.from_instance`.
 
     Args:
         name: Required logical name — keys the Zenoh topics directly. Two
@@ -420,6 +421,7 @@ class SharedRobot:
             The owner's metadata record.
 
         Raises:
+            RobotCalibrationError: If the driver's calibration needs operator attention.
             RobotTransportError: If no robot config was given (attach-only)
                 or spawning failed for a reason other than a benign
                 same-device race.
@@ -446,7 +448,7 @@ class SharedRobot:
         owner = RobotOwner(config)
         try:
             owner.start(timeout=timeout)
-        except RobotDeviceAlreadyOwned:
+        except (RobotDeviceAlreadyOwned, RobotCalibrationError):
             raise
         except RobotTransportError as exc:
             if exc.phase == "name_lock_contention":

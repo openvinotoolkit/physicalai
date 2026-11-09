@@ -74,6 +74,13 @@ class RuntimeAdapter(ABC):
             List of output tensor names
         """
 
+    def close(self) -> None:  # noqa: B027  # Optional hook with a no-op default.
+        """Release resources such as worker processes or device memory.
+
+        :class:`~physicalai.inference.model.InferenceModel` calls this once when
+        it is closed. The default holds no resources.
+        """
+
     def default_device(self) -> str:  # noqa: PLR6301
         """Get default device for this runtime.
 

@@ -7,28 +7,12 @@
 from __future__ import annotations
 
 import json
-import sys
-from collections.abc import Generator
-from pathlib import Path
-from typing import Any, cast
-from unittest.mock import MagicMock, patch
+from typing import Any
 
 import pytest
 
 from physicalai.config import Config
 from physicalai.robot import Robot
-
-# SO101 imports scservo_sdk at module load; keep unit tests hardware-free.
-sys.modules.setdefault("scservo_sdk", MagicMock())
-
-SAMPLE_CALIBRATION: dict[str, Any] = {
-    "shoulder_pan": {"id": 1, "drive_mode": 0, "homing_offset": 2048, "range_min": 707, "range_max": 3439},
-    "shoulder_lift": {"id": 2, "drive_mode": 1, "homing_offset": 1024, "range_min": 669, "range_max": 3292},
-    "elbow_flex": {"id": 3, "drive_mode": 0, "homing_offset": 2048, "range_min": 846, "range_max": 3069},
-    "wrist_flex": {"id": 4, "drive_mode": 0, "homing_offset": 2048, "range_min": 956, "range_max": 3311},
-    "wrist_roll": {"id": 5, "drive_mode": 0, "homing_offset": 2048, "range_min": 59, "range_max": 3946},
-    "gripper": {"id": 6, "drive_mode": 0, "homing_offset": 2048, "range_min": 2026, "range_max": 3074},
-}
 
 
 def _assert_construction_round_trip(robot: object) -> dict[str, Any]:
@@ -44,179 +28,47 @@ def _assert_construction_round_trip(robot: object) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# SO101
+# Trossen compatibility aliases
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def mock_scservo_sdk() -> MagicMock:
-    # Reuse the module-level mock rather than patch.dict(sys.modules), which drops
-    # modules imported during the test (e.g. docstring_parser) and breaks later tests.
-    return cast("MagicMock", sys.modules["scservo_sdk"])
+class TestTrossenCompatibilityAliases:
+    def test_legacy_root_class_path_instantiates_plugin_driver(self) -> None:
+        pytest.importorskip("trossen_arm", reason="trossen-arm SDK is not installed")
+
+        from physicalai_trossen_plugin import WidowXAI as PluginWidowXAI
+
+        robot = Config("physicalai.robot.WidowXAI", {"ip": "192.168.1.10"}).instantiate()
+
+        assert isinstance(robot, PluginWidowXAI)
+        assert Config.from_instance(robot).to_dict()["class_path"] == "physicalai_trossen_plugin.WidowXAI"
+
+    def test_legacy_trossen_package_exports_plugin_driver(self) -> None:
+        pytest.importorskip("trossen_arm", reason="trossen-arm SDK is not installed")
+
+        from physicalai.robot.trossen import WidowXAI as LegacyWidowXAI
+        from physicalai_trossen_plugin import WidowXAI as PluginWidowXAI
+
+        assert LegacyWidowXAI is PluginWidowXAI
 
 
-class TestSO101Config:
-    def test_dict_calibration_round_trip(self, mock_scservo_sdk: MagicMock) -> None:
-        from physicalai.robot import SO101
+def test_missing_robot_plugin_names_the_install_extra(monkeypatch: pytest.MonkeyPatch) -> None:
+    import physicalai.robot.plugins as plugins
 
-        robot = SO101(port="/dev/ttyUSB0", calibration=SAMPLE_CALIBRATION)
-        wire = _assert_construction_round_trip(robot)
-        assert wire["class_path"] == "physicalai.robot.SO101"
-        assert wire["init_args"] == {
-            "port": "/dev/ttyUSB0",
-            "calibration": SAMPLE_CALIBRATION,
-        }
+    def missing_plugin(_: str) -> object:
+        raise ModuleNotFoundError(name="physicalai_so101_plugin")
 
-    def test_calibration_object_encodes_to_dict(self, mock_scservo_sdk: MagicMock) -> None:
-        from physicalai.robot import SO101
-        from physicalai.robot.so101 import SO101Calibration
+    monkeypatch.setattr(plugins, "import_module", missing_plugin)
 
-        calibration = SO101Calibration.from_dict(SAMPLE_CALIBRATION)
-        robot = SO101(port="/dev/ttyACM0", calibration=calibration)
-        wire = _assert_construction_round_trip(robot)
-        assert wire["init_args"]["calibration"] == SAMPLE_CALIBRATION
-
-    def test_path_calibration_keeps_relative_string(
-        self, mock_scservo_sdk: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from physicalai.robot import SO101
-
-        calib_path = tmp_path / "calibration.json"
-        calib_path.write_text(json.dumps(SAMPLE_CALIBRATION), encoding="utf-8")
-        monkeypatch.chdir(tmp_path)
-
-        robot = SO101(port="/dev/ttyUSB0", calibration="calibration.json")
-        wire = _assert_construction_round_trip(robot)
-        assert wire["init_args"]["calibration"] == "calibration.json"
-
-    def test_path_object_keeps_relative_as_given(
-        self, mock_scservo_sdk: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from physicalai.robot import SO101
-
-        calib_path = tmp_path / "calib.json"
-        calib_path.write_text(json.dumps(SAMPLE_CALIBRATION), encoding="utf-8")
-        monkeypatch.chdir(tmp_path)
-
-        robot = SO101(port="/dev/ttyUSB0", calibration=Path("calib.json"))
-        wire = _assert_construction_round_trip(robot)
-        assert wire["init_args"]["calibration"] == "calib.json"
-
-    def test_absolute_path_calibration_stays_absolute(
-        self, mock_scservo_sdk: MagicMock, tmp_path: Path
-    ) -> None:
-        from physicalai.robot import SO101
-
-        calib_path = (tmp_path / "absolute-calib.json").resolve()
-        calib_path.write_text(json.dumps(SAMPLE_CALIBRATION), encoding="utf-8")
-
-        robot = SO101(port="/dev/ttyUSB0", calibration=calib_path)
-        wire = _assert_construction_round_trip(robot)
-        assert wire["init_args"]["calibration"] == str(calib_path)
-        assert Path(str(wire["init_args"]["calibration"])).is_absolute()
-
-    def test_uncalibrated_export_round_trips(self, mock_scservo_sdk: MagicMock) -> None:
-        from jsonargparse import ArgumentParser
-
-        from physicalai.robot import SO101
-
-        robot = SO101.uncalibrated(port="/dev/ttyUSB0")
-        wire = _assert_construction_round_trip(robot)
-        assert wire["init_args"]["calibration"] is None
-        assert wire["init_args"]["allow_uncalibrated"] is True
-        assert wire["init_args"]["unit"] == "ticks"
-
-        # Public allow_uncalibrated + defaulted calibration make the export
-        # loadable by jsonargparse (the physicalai run --config path); a
-        # required calibration with no default rejects calibration: null.
-        parser = ArgumentParser()
-        parser.add_class_arguments(SO101, "robot")
-        ns = parser.parse_object({"robot": wire["init_args"]})
-        assert ns.robot.calibration is None
-        assert ns.robot.allow_uncalibrated is True
-
-    def test_protocol_still_holds(self, mock_scservo_sdk: MagicMock) -> None:
-        from physicalai.robot import SO101
-
-        robot = SO101(port="/dev/ttyUSB0", calibration=SAMPLE_CALIBRATION)
-        assert isinstance(robot, Robot)
-        assert isinstance(Config.from_instance(robot), Config)
+    with pytest.raises(ModuleNotFoundError, match=r"physicalai\[so101\]"):
+        plugins.load_robot_plugin("physicalai_so101_plugin", "so101")
 
 
-# ---------------------------------------------------------------------------
-# WidowXAI / BimanualWidowXAI
-# ---------------------------------------------------------------------------
+def test_robot_plugin_rejects_unapproved_module() -> None:
+    import physicalai.robot.plugins as plugins
 
-
-def _make_mock_trossen_arm() -> MagicMock:
-    module = MagicMock()
-    driver = MagicMock()
-    driver.get_is_configured.return_value = True
-    module.TrossenArmDriver.return_value = driver
-    module.Model.wxai_v0 = MagicMock(name="Model.wxai_v0")
-    module.StandardEndEffector.wxai_v0_follower = MagicMock(name="wxai_v0_follower")
-    module.StandardEndEffector.wxai_v0_leader = MagicMock(name="wxai_v0_leader")
-    module.Mode.position = MagicMock(name="Mode.position")
-    module.Mode.external_effort = MagicMock(name="Mode.external_effort")
-    return module
-
-
-@pytest.fixture
-def mock_trossen_arm() -> Generator[MagicMock, None, None]:
-    """Inject a mock ``trossen_arm`` so WidowX drivers import without the SDK."""
-    mock_module = _make_mock_trossen_arm()
-    # Drop cached modules so import picks up the mock even if a prior import failed.
-    for name in (
-        "physicalai.robot.trossen.widowxai",
-        "physicalai.robot.trossen.bimanual_widowxai",
-        "physicalai.robot.trossen",
-    ):
-        sys.modules.pop(name, None)
-    with patch.dict(sys.modules, {"trossen_arm": mock_module}):
-        yield mock_module
-
-
-class TestWidowXAIConfig:
-    def test_default_role_omitted(self, mock_trossen_arm: MagicMock) -> None:
-        from physicalai.robot import WidowXAI
-
-        robot = WidowXAI(ip="192.168.1.2")
-        wire = _assert_construction_round_trip(robot)
-        assert wire["class_path"] == "physicalai.robot.WidowXAI"
-        assert wire["init_args"] == {"ip": "192.168.1.2"}
-
-    def test_explicit_role_round_trip(self, mock_trossen_arm: MagicMock) -> None:
-        from physicalai.robot import WidowXAI
-
-        robot = WidowXAI(ip="10.0.0.1", role="leader")
-        wire = _assert_construction_round_trip(robot)
-        assert wire["init_args"] == {"ip": "10.0.0.1", "role": "leader"}
-
-    def test_protocol_still_holds(self, mock_trossen_arm: MagicMock) -> None:
-        from physicalai.robot import WidowXAI
-
-        robot = WidowXAI(ip="192.168.1.2")
-        assert isinstance(robot, Robot)
-        assert isinstance(Config.from_instance(robot), Config)
-
-
-class TestBimanualWidowXAIConfig:
-    def test_nested_arms_round_trip(self, mock_trossen_arm: MagicMock) -> None:
-        from physicalai.robot import BimanualWidowXAI, WidowXAI
-
-        left = WidowXAI(ip="192.168.1.10", role="follower")
-        right = WidowXAI(ip="192.168.1.11", role="follower")
-        robot = BimanualWidowXAI(left=left, right=right)
-        wire = _assert_construction_round_trip(robot)
-        assert wire["class_path"] == "physicalai.robot.BimanualWidowXAI"
-        left_cfg = wire["init_args"]["left"]
-        right_cfg = wire["init_args"]["right"]
-        assert isinstance(left_cfg, dict)
-        assert isinstance(right_cfg, dict)
-        assert left_cfg["class_path"] == "physicalai.robot.WidowXAI"
-        assert right_cfg["class_path"] == "physicalai.robot.WidowXAI"
-        assert left_cfg["init_args"] == {"ip": "192.168.1.10", "role": "follower"}
-        assert right_cfg["init_args"] == {"ip": "192.168.1.11", "role": "follower"}
+    with pytest.raises(ValueError, match="Unsupported robot plugin module"):
+        plugins.load_robot_plugin("untrusted.plugin", "so101")
 
 
 # ---------------------------------------------------------------------------
@@ -259,15 +111,12 @@ class TestSharedRobotConfig:
     def test_defining_module_robot_path_round_trips_as_given(self) -> None:
         from physicalai.robot import SharedRobot
 
-        defining = "physicalai.robot.so101.so101.SO101"
+        defining = "physicalai_so101_plugin.SO101"
         robot = SharedRobot(
             "canonical-arm",
             robot={
                 "class_path": defining,
-                "init_args": {
-                    "port": "/dev/ttyUSB0",
-                    "calibration": SAMPLE_CALIBRATION,
-                },
+                "init_args": {"port": "/dev/ttyUSB0"},
             },
         )
         wire = _assert_construction_round_trip(robot)
@@ -293,7 +142,7 @@ class TestSharedRobotConfig:
         assert wire["init_args"]["name"] == "attach-null"
         assert wire["init_args"]["robot"] is None
 
-    def test_live_session_arg_fails_at_to_config(self) -> None:
+    def test_live_session_arg_fails_at_from_instance(self) -> None:
         from physicalai.config import ConfigError
         from physicalai.robot import SharedRobot
 
@@ -334,7 +183,7 @@ class TestSharedRobotConfig:
         wire = _assert_construction_round_trip(robot)
         assert "_session" not in wire["init_args"]
 
-    def test_classmethod_live_session_still_fails_at_to_config(self) -> None:
+    def test_classmethod_live_session_still_fails_at_from_instance(self) -> None:
         from physicalai.config import ConfigError
         from physicalai.robot import SharedRobot
 

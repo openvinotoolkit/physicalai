@@ -603,6 +603,113 @@ class TestRTCExecutionObsSlot:
         finally:
             ex.stop()
 
+    def test_refill_infers_on_fresh_observation_not_one_published_during_previous_inference(self) -> None:
+        """Observations published while a chunk is in flight must not seed the next refill.
+
+        ``maybe_request()`` keeps publishing while the queue is below threshold,
+        including while the worker is inside the model. If the slot survives the
+        merge, the next refill infers on a sample that is many ticks old, and
+        the robot replays part of the old trajectory.
+        """
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+
+        chunk_size = 20
+        horizon = 5
+        tick_s = 0.01
+        inference_s = 0.035
+        lock = threading.Lock()
+        tick = 0
+        staleness: list[int] = []
+
+        def predict(inputs: dict[str, Any]) -> dict[str, np.ndarray]:
+            with lock:
+                staleness.append(tick - int(inputs["state"][0]))
+            time.sleep(inference_s)
+            return {"action": np.zeros((1, chunk_size, 3), dtype=np.float32)}
+
+        model = _rtc_model(chunk_size=chunk_size, action_dim=3)
+        model.side_effect = predict
+        queue = RTCActionQueue()
+        ex = RTCExecution(chunk_size=chunk_size, execution_horizon=horizon, fps=1 / tick_s, queue_threshold=horizon)
+        ex.start(model, queue)
+        try:
+            ex.warmup({"state": np.zeros(3, dtype=np.float32)})
+            for _ in range(150):
+                with lock:
+                    tick += 1
+                    current = tick
+                ex.maybe_request({"state": np.full(3, current, dtype=np.float32)})
+                queue.pop()
+                time.sleep(tick_s)
+        finally:
+            ex.stop()
+
+        refills = staleness[1:]
+        assert len(refills) >= 3
+        assert max(refills) <= 2, f"refills inferred on stale observations: {refills}"
+
+    def test_maybe_request_does_not_publish_after_merge_that_raced_its_threshold_check(self) -> None:
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+
+        entered = threading.Event()
+        release_model = threading.Event()
+        check_passed = threading.Event()
+        resume_publish = threading.Event()
+        merged = threading.Event()
+        model = _rtc_model(chunk_size=20, action_dim=3)
+
+        def predict(_inputs: dict[str, Any]) -> dict[str, np.ndarray]:
+            if not entered.is_set():
+                entered.set()
+                assert release_model.wait(timeout=5.0)
+            return {"action": np.zeros((1, 20, 3), dtype=np.float32)}
+
+        model.side_effect = predict
+        queue = RTCActionQueue()
+        original_below_threshold = queue.below_threshold
+        original_merge = queue.merge
+        publisher: threading.Thread | None = None
+
+        def below_threshold(threshold: int) -> bool:
+            result = original_below_threshold(threshold)
+            if threading.current_thread() is publisher and not check_passed.is_set():
+                check_passed.set()
+                assert resume_publish.wait(timeout=5.0)
+            return result
+
+        def merge(*args: Any, **kwargs: Any) -> None:
+            original_merge(*args, **kwargs)
+            merged.set()
+
+        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0, queue_threshold=5)
+        with patch.object(queue, "below_threshold", new=below_threshold), patch.object(queue, "merge", new=merge):
+            ex.start(model, queue)
+            try:
+                with ex._obs_lock:  # noqa: SLF001
+                    ex._obs_slot = ({"state": np.zeros(3, dtype=np.float32)}, ex._incarnation, None)  # noqa: SLF001
+                assert entered.wait(timeout=5.0)
+
+                publisher = threading.Thread(
+                    target=ex.maybe_request,
+                    args=({"state": np.ones(3, dtype=np.float32)},),
+                )
+                publisher.start()
+                assert check_passed.wait(timeout=5.0)
+
+                release_model.set()
+                assert merged.wait(timeout=5.0)
+                resume_publish.set()
+                publisher.join(timeout=5.0)
+                assert not publisher.is_alive()
+
+                assert queue.remaining == 20
+                with ex._obs_lock:  # noqa: SLF001
+                    assert ex._obs_slot is None  # noqa: SLF001
+            finally:
+                release_model.set()
+                resume_publish.set()
+                ex.stop()
+
     def test_reset_rearms_warmup_without_restarting_worker(self) -> None:
         from physicalai.runtime import RTCActionQueue, RTCExecution
 
