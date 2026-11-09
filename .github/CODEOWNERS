@@ -3,10 +3,10 @@
 
 # Lock file, owned also by the Renovate auto-approve account so that
 # automerge-enabled lock file maintenance PRs satisfy required reviews.
-uv.lock @sys-openvino-ci @openvinotoolkit/physicalai-maintain
+uv.lock @sys-geti @openvinotoolkit/physicalai-maintain
 
 # GitHub automation and workflows.
-.github/ @sys-openvino-ci @openvinotoolkit/physicalai-ci @openvinotoolkit/physicalai-maintain
+.github/ @sys-geti @openvinotoolkit/physicalai-ci @openvinotoolkit/physicalai-maintain
 
 # Documentation and contributor guidance.
 *.md @openvinotoolkit/physicalai-maintain @openvinotoolkit/physicalai-doc-write

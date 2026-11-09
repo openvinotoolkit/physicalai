@@ -18,7 +18,7 @@ jobs:
       github.repository_owner == 'openvinotoolkit' &&
       github.repository == github.event.pull_request.head.repo.full_name &&
       github.event.pull_request.user.login == 'ov-renovate[bot]' &&
-      github.event.requested_reviewer.login == 'sys-openvino-ci' &&
+      github.event.requested_reviewer.login == 'sys-geti' &&
       github.event.sender.login == 'ov-renovate[bot]'
       }}
     steps:
@@ -77,13 +77,13 @@ jobs:
         # - running in openvinotoolkit repository (not a fork)
         # - the PR is not from a fork (same repository)
         # - the PR was created by ov-renovate[bot]
-        # - review was requested from sys-openvino-ci
+        # - review was requested from sys-geti
         # - review was requested by ov-renovate[bot]
         if: ${{
           github.repository_owner == 'openvinotoolkit' &&
           github.repository == github.event.pull_request.head.repo.full_name &&
           github.event.pull_request.user.login == 'ov-renovate[bot]' &&
-          github.event.requested_reviewer.login == 'sys-openvino-ci' &&
+          github.event.requested_reviewer.login == 'sys-geti' &&
           github.event.sender.login == 'ov-renovate[bot]'
           }}
         env:
@@ -101,11 +101,11 @@ jobs:
             exit 1
           fi
 
-          echo "Verifying sys-openvino-ci is a requested reviewer..."
-          is_reviewer=$(gh api "/repos/${REPO}/pulls/${PR_NUMBER}" --jq '[.requested_reviewers[].login] | contains(["sys-openvino-ci"])')
+          echo "Verifying sys-geti is a requested reviewer..."
+          is_reviewer=$(gh api "/repos/${REPO}/pulls/${PR_NUMBER}" --jq '[.requested_reviewers[].login] | contains(["sys-geti"])')
 
           if [ "$is_reviewer" != "true" ]; then
-            echo "Error: sys-openvino-ci is not a requested reviewer"
+            echo "Error: sys-geti is not a requested reviewer"
             exit 1
           fi
 
