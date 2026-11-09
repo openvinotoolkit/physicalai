@@ -6,7 +6,8 @@
 uv.lock @sys-geti @openvinotoolkit/physicalai-maintain
 
 # GitHub automation and workflows.
-.github/ @sys-geti @openvinotoolkit/physicalai-ci @openvinotoolkit/physicalai-maintain
+.github/ @openvinotoolkit/physicalai-ci @openvinotoolkit/physicalai-maintain
+.github/workflows/ @sys-geti @openvinotoolkit/physicalai-ci @openvinotoolkit/physicalai-maintain
 
 # Documentation and contributor guidance.
 *.md @openvinotoolkit/physicalai-maintain @openvinotoolkit/physicalai-doc-write
