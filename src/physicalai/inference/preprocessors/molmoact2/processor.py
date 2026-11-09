@@ -195,51 +195,43 @@ class MolmoAct2Preprocessor(Preprocessor):
 
     def _raw_images(self, inputs: dict[str, Any]) -> list[np.ndarray]:
         container = inputs.get(IMAGES)
-        if self.image_keys:
-            return self._configured_images(inputs, container)
-        images: list[np.ndarray] = []
-        if isinstance(container, np.ndarray):
-            images = [container]
-        elif isinstance(container, dict):
-            keys = sorted(key for key in container if "is_pad" not in str(key))
-            images = [np.asarray(container[key]) for key in keys]
-        else:
-            keys = sorted(key for key in inputs if key.startswith(f"{IMAGES}.") and "is_pad" not in key)
-            images = [np.asarray(inputs[key]) for key in keys]
+        names = self.image_keys or self._discover_names(inputs, container)
+        found = [(name, self._lookup_image(inputs, container, name)) for name in names]
+        images = [image for _, image in found if image is not None]
+        missing = [name for name, image in found if image is None]
+        # PolicySource sends one camera as a bare ``images`` array without its
+        # name, and several cameras only as named keys. The bare array is
+        # therefore the camera only when at most one is expected and none was
+        # found by name, so a named key wins when both are given.
+        if not images and isinstance(container, np.ndarray) and len(names) <= 1:
+            return [container]
+        if missing:
+            msg = f"MolmoAct2 is missing image inputs for {missing}"
+            raise ValueError(msg)
         if not images:
             msg = "MolmoAct2 requires at least one image input"
             raise ValueError(msg)
         return images
 
-    def _configured_images(self, inputs: dict[str, Any], container: object) -> list[np.ndarray]:
-        """Collect the images named in ``image_keys`` in their configured order.
+    @staticmethod
+    def _lookup_image(inputs: dict[str, Any], container: object, name: str) -> np.ndarray | None:
+        bare = name.removeprefix(f"{IMAGES}.")
+        if (key := f"{IMAGES}.{bare}") in inputs:
+            return np.asarray(inputs[key])
+        if isinstance(container, dict) and bare in container:
+            return np.asarray(container[bare])
+        return None
 
-        Returns:
-            One image array per configured camera.
-
-        Raises:
-            ValueError: If a configured camera has no image input.
-        """
-        images: list[np.ndarray] = []
-        missing: list[str] = []
-        for name in self.image_keys:
-            key = name if name.startswith(f"{IMAGES}.") else f"{IMAGES}.{name}"
-            if key in inputs:
-                images.append(np.asarray(inputs[key]))
-            elif isinstance(container, dict) and name.removeprefix(f"{IMAGES}.") in container:
-                images.append(np.asarray(container[name.removeprefix(f"{IMAGES}.")]))
-            else:
-                missing.append(name)
-        if not missing:
-            return images
-        # PolicySource sends one camera as a bare ``images`` array without its
-        # name and several cameras only as named keys, never both at once. The
-        # bare array is therefore taken as the camera only when exactly one is
-        # configured, and a named key for that camera wins when both are given.
-        if len(self.image_keys) == 1 and isinstance(container, np.ndarray):
-            return [container]
-        msg = f"MolmoAct2 is missing image inputs for {missing}"
-        raise ValueError(msg)
+    @staticmethod
+    def _discover_names(inputs: dict[str, Any], container: object) -> list[str]:
+        if isinstance(container, np.ndarray):
+            return []
+        if isinstance(container, dict):
+            names = [str(key) for key in container]
+        else:
+            prefix = f"{IMAGES}."
+            names = [key.removeprefix(prefix) for key in inputs if key.startswith(prefix)]
+        return sorted(name for name in names if "is_pad" not in name)
 
     @staticmethod
     def _tasks(inputs: dict[str, Any], *, batch_size: int) -> list[str]:
