@@ -22,7 +22,7 @@
     schedule: ["* * * * 0"], // weekly on Sunday
     automerge: true,
     automergeType: "pr",
-    reviewers: ["sys-openvino-ci"],
+    reviewers: ["sys-geti"],
     platformAutomerge: true,
 
     // Renovate does not assign reviewers and assignees to
@@ -81,7 +81,7 @@
       schedule: ["* * 1,15 * *"], // twice a month
       automerge: true,
       automergeType: "pr",
-      reviewers: ["sys-openvino-ci"],
+      reviewers: ["sys-geti"],
       platformAutomerge: true,
       assignAutomerge: true,
     },
