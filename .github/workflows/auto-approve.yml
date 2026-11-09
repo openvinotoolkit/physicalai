@@ -123,6 +123,7 @@ jobs:
           echo "Commit SHA verified: ${current_sha}"
 
           echo "All security checks passed. Approving PR #${PR_NUMBER}..."
-          gh pr review "${PR_NUMBER}" \
-            --repo "${REPO}" \
-            --approve
+          gh api --method POST \
+            "/repos/${REPO}/pulls/${PR_NUMBER}/reviews" \
+            -f event=APPROVE \
+            -f commit_id="${ORIGINAL_SHA}"
