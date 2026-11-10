@@ -33,7 +33,8 @@ from physicalai.inference.manifest import (
     TensorSpec,
     _policy_name_from_class_path,
 )
-from physicalai.inference.preprocessors import StatsNormalizer
+from physicalai.inference.postprocessors import XR0Postprocessor
+from physicalai.inference.preprocessors import StatsNormalizer, XR0Preprocessor
 from physicalai.inference.runners import SinglePass
 
 
@@ -266,6 +267,56 @@ class TestInstantiateComponent:
         assert isinstance(normalizer, StatsNormalizer)
         out = normalizer({"state": np.zeros(3, dtype=np.float32)})
         np.testing.assert_allclose(out["state"], [0.0, 0.0, 0.0])
+
+    def test_instantiate_xr0_with_per_timestep_stats(self) -> None:
+        """XR0 exports bake per-timestep ``(T, D)`` stats as nested JSON lists;
+        jsonargparse must accept them against the constructor annotations."""
+        from physicalai.inference.postprocessors.base import Postprocessor
+        from physicalai.inference.preprocessors.base import Preprocessor
+
+        pre_spec = ComponentSpec.model_validate({
+            "type": "xr0",
+            "max_state_dim": 32,
+            "patch_size": 16,
+            "merge_size": 2,
+            "normalize_state": True,
+            "state_mean": [[1.0] * 8],
+            "state_std": [[2.0] * 8],
+        })
+        preprocessor = instantiate_component(Preprocessor, pre_spec)
+        assert isinstance(preprocessor, XR0Preprocessor)
+        np.testing.assert_allclose(preprocessor._state_mean[:8], 1.0)
+        np.testing.assert_allclose(preprocessor._state_std[:8], 2.0)
+
+        post_spec = ComponentSpec.model_validate({
+            "type": "xr0_denormalize",
+            "action_mode": "delta",
+            "action_mean": [[0.0] * 8] * 5,
+            "action_std": [[1.0] * 8] * 5,
+            "action_dim": 6,
+        })
+        postprocessor = instantiate_component(Postprocessor, post_spec)
+        assert isinstance(postprocessor, XR0Postprocessor)
+        assert postprocessor._mean.shape == (5, 8)
+
+    def test_instantiate_xr0_with_image_key_view_map(self) -> None:
+        """XR0 exports bake the camera renaming as a JSON object; jsonargparse
+        must accept it as a ``dict[str, str]`` constructor argument."""
+        from physicalai.inference.preprocessors.base import Preprocessor
+
+        spec = ComponentSpec.model_validate({
+            "type": "xr0",
+            "max_state_dim": 32,
+            "patch_size": 16,
+            "merge_size": 2,
+            "image_key_view_map": {"images.top_camera": "ego", "images.pov_black_follower_camera": "wrist_left"},
+        })
+        preprocessor = instantiate_component(Preprocessor, spec)
+        assert isinstance(preprocessor, XR0Preprocessor)
+        assert preprocessor._image_key_view_map == {
+            "images.top_camera": "ego",
+            "images.pov_black_follower_camera": "wrist_left",
+        }
 
 
 class TestModelSpec:

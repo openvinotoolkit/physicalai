@@ -1,6 +1,6 @@
 # Tutorials
 
-End-to-end walkthroughs that combine data collection, training, and deployment on real hardware.
+End-to-end walkthroughs that combine data collection, training, and deployment, on real hardware or in simulation.
 
 ## Collect → Train → Deploy
 
@@ -45,3 +45,33 @@ Optional but **recommended**: [Physical AI Studio](https://github.com/open-edge-
 - [Run a Policy on a Robot](../../docs/how-to/runtime/run-policy-on-robot.md)
 - [Load an Exported Policy](../../docs/how-to/inference/load-exported-policy.md)
 - [Robot API reference](../../docs/reference/robot-api.md)
+
+## Run a Policy in Simulation
+
+**Notebook:** [run_policy_in_simulation.ipynb](run_policy_in_simulation.ipynb)
+
+Run a trained policy without any hardware. A simulated SO-101 arm sorts items from a conveyor belt into bins by colour, driven by an ACT policy from the Hugging Face Hub. The notebook takes the same steps as on a real robot:
+
+1. **Start** the simulation with `MuJoCoRobot`, which serves its cameras and a 3D viewer.
+2. **Load** the policy with `InferenceModel.from_pretrained`.
+3. **Connect** the robot, the cameras and the policy in a `RobotRuntime`.
+4. **Run** it from a few buttons and watch it in the viewer, next to the cameras the policy sees.
+
+### What you'll have at the end
+
+An ACT policy ([iMaxxgx/act-so101-conveyor-sort](https://huggingface.co/iMaxxgx/act-so101-conveyor-sort), OpenVINO) sorting items in the MuJoCo `conveyor_sort` scene at 30 Hz, with the score shown in the viewer.
+
+### Prerequisites
+
+No robot, camera or GPU: it runs on a CPU. From a checkout of this repository:
+
+```bash
+uv sync --all-packages --extra notebooks
+uv run jupyter lab examples/tutorials
+```
+
+### Related documentation
+
+- [MuJoCo plugin README](../../packages/physicalai-mujoco-plugin/README.md): robots, scenes and the viewer
+- [Run a Policy on a Robot](../../docs/how-to/runtime/run-policy-on-robot.md)
+- [Load an Exported Policy](../../docs/how-to/inference/load-exported-policy.md)

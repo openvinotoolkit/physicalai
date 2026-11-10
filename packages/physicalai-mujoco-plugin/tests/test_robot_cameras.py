@@ -731,7 +731,7 @@ class TestMenagerieRobots:
             ("piper", "link6", 25.0),
             ("so_arm100", "Fixed_Jaw", 25.0),
             ("ur5e", "wrist_3_link", 30.0),
-            ("franka_fr3", "fr3_link7", 40.0),
+            ("franka_fr3", "hand", 35.0),
             ("franka_panda", "hand", 35.0),
             ("xarm7", "xarm_gripper_base_link", 25.0),
         ],
@@ -742,7 +742,7 @@ class TestMenagerieRobots:
         """Aimed 10 cm past the tool point from 4 cm behind it, beside the end effector's body.
 
         The angle to the approach axis is the side offset's: the camera clears the arm's widest
-        part beside the tool (the FR3's sixth link most).
+        part beside the tool (the Franka arms' sixth link most).
         """
         profile = get_profile(name)
         (camera,) = robot_layout(profile).cameras

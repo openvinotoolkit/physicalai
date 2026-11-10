@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from physicalai_mujoco_plugin.profiles._types import CameraSpec, EndEffector, RobotProfile, validate_profile
 from physicalai_mujoco_plugin.profiles.dataset import DATASET_PROFILES
+from physicalai_mujoco_plugin.profiles.franka import FRANKA_DUO_PROFILE, FRANKA_FR3_PROFILE
 from physicalai_mujoco_plugin.profiles.rebot_b601 import REBOT_B601_PROFILE
 from physicalai_mujoco_plugin.profiles.so101 import SO101_PROFILE
 from physicalai_mujoco_plugin.profiles.trossen_wxai import TROSSEN_WXAI_PROFILE
@@ -69,6 +70,8 @@ PROFILES: dict[str, RobotProfile] = {
         SO101_PROFILE,
         TROSSEN_WXAI_PROFILE,
         REBOT_B601_PROFILE,
+        FRANKA_FR3_PROFILE,
+        FRANKA_DUO_PROFILE,
         UR5E_PROFILE,
         *DATASET_PROFILES,
         UNITREE_G1_PROFILE,

@@ -1,10 +1,11 @@
 # Physical AI MuJoCo Plugin
 
-Run single-arm or bimanual SO-101 simulations, and other [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) robots, through [PhysicalAI Runtime](https://github.com/openvinotoolkit/physicalai). The plugin provides a browser viewer, camera streams, task scenes, and follower catalog entries for [Physical AI Studio](https://github.com/open-edge-platform/physical-ai-studio).
+Simulate robot arms, humanoids and quadrupeds from [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) as [PhysicalAI Runtime](https://github.com/openvinotoolkit/physicalai) robots. Runtime, Studio, policies and datasets use them through the same robot interface as real hardware. The plugin provides a browser viewer, camera streams, task scenes, and follower catalog entries for [Physical AI Studio](https://github.com/open-edge-platform/physical-ai-studio).
 
 ## Features
 
-- Run a virtual SO-101 as a PhysicalAI transport owner
+- Run any MuJoCo Menagerie robot as a PhysicalAI transport owner: 15 robots with a hand-written profile (SO-101, WidowX AI, reBot B601, UR5e, ALOHA, Franka, xArm7, Unitree G1, ...), and any other Menagerie model with a derived one; see [Other robots](#other-robots)
+- Digital twins of the SO-101, WidowX AI and reBot B601 with their real drivers' joint names and units
 - Viser browser viewer with a Simulation tab (scene switching, reset, arm homing, seeded resets, episode auto-reset, conveyor belt controls, object dragging, camera previews, confirmed shutdown) and a Camera tab to follow an object, the target, or a gripper
 - Camera streams over HTTP (MJPEG), used in Studio as IP cameras
 - REST control server with the same controls as the viewer
@@ -14,38 +15,43 @@ Run single-arm or bimanual SO-101 simulations, and other [MuJoCo Menagerie](http
 
 ## What this is for
 
-- Teleoperating a virtual SO-101 from PhysicalAI Studio.
+- Teleoperating a simulated robot from PhysicalAI Studio.
 - Testing robot setup, task logic, and control flows without physical hardware.
 - Playing back policy/inference outputs in a simulated scene while monitoring robot + camera streams.
 - Developing workflows where Studio, transport, and robot APIs stay identical between sim and real deployments.
 
+To run a trained policy in the `conveyor_sort` scene from a notebook, see the tutorial [`examples/tutorials/run_policy_in_simulation.ipynb`](../../examples/tutorials/run_policy_in_simulation.ipynb).
+
 ## Quick start
 
-Requires Python 3.12 or newer. From the Runtime repository root:
+Requires Python 3.12 or newer:
 
 ```bash
-git lfs pull
-uv sync --package physicalai-mujoco-plugin
-uv run --package physicalai-mujoco-plugin physicalai-mujoco start
+pip install physicalai-mujoco-plugin
+physicalai-mujoco start                        # SO-101, the default profile
+physicalai-mujoco profiles                     # list the robots
+physicalai-mujoco start --profile franka_panda  # another robot
 ```
+
+To run it from a checkout of this repository instead, see [Development](#development).
 
 On a headless Linux machine (neither `DISPLAY` nor `WAYLAND_DISPLAY` set, for example over SSH), `start` renders the cameras with EGL: it sets `MUJOCO_GL=egl` (and `PYOPENGL_PLATFORM=egl`) when `MUJOCO_GL` is unset and an EGL library is installed, and logs it. If MuJoCo still cannot render, `start` runs without cameras and logs a warning. An explicit `MUJOCO_GL` always wins; use `MUJOCO_GL=osmesa` on a machine without a GPU driver (slower, needs OSMesa installed):
 
 ```bash
-MUJOCO_GL=osmesa uv run --package physicalai-mujoco-plugin physicalai-mujoco start
+MUJOCO_GL=osmesa physicalai-mujoco start
 ```
 
-The first `start` on a machine downloads the SO-101 model from [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) (about 4 MB) into a per-user cache before the simulation starts. To download it ahead of time, for example while building a container image, run:
+The first `start` of a robot on a machine downloads its model from [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) into a per-user cache before the simulation starts (about 4 MB for the SO-101). To download the models of every profile ahead of time, for example while building a container image, run:
 
 ```bash
-uv run --package physicalai-mujoco-plugin physicalai-mujoco prefetch
+physicalai-mujoco prefetch
 ```
 
 On a machine without internet access, run `prefetch` on a connected machine and copy the cache (set its location with `MENAGERIE_CACHE_DIR`), or set `MENAGERIE_ROOT` to a `mujoco_menagerie` checkout. A simulation owner started some other way, such as `examples/run_mujoco_owner.py`, downloads the model during its startup instead, so run `prefetch` first on a slow connection.
 
-By default this starts:
+By default `start` runs:
 
-- A MuJoCo SO-101 owner named `mujoco-so101-follow`
+- The SO-101 profile, as an owner named `mujoco-so101-follow` (`mujoco-<profile>-follow` for other profiles)
 - Browser viewer at `http://127.0.0.1:9090`
 - Camera streams served over HTTP (MJPEG + REST control server on port `8080`)
 - Control rate `50 Hz`
@@ -76,8 +82,8 @@ Switching scenes rebuilds the whole viewer for the new model. The follow, drag a
 `--bimanual` runs two arms in the chosen scene, any tabletop scene, or the profile's default scene. Start one alongside a single-arm owner using separate server ports:
 
 ```bash
-uv run --package physicalai-mujoco-plugin physicalai-mujoco start --bimanual --http-port 8081 --viser-port 9091
-uv run --package physicalai-mujoco-plugin physicalai-mujoco start --bimanual --http-port 8082 --viser-port 9092 --name so101-bimanual
+physicalai-mujoco start --bimanual --http-port 8081 --viser-port 9091
+physicalai-mujoco start --bimanual --http-port 8082 --viser-port 9092 --name so101-bimanual
 ```
 
 The arms are named `left_…` and `right_…`; the left arm is on the left seen from behind the arms. Connect Studio's `MuJoCo SO-101 Bimanual Follower` to `mujoco-so101-bimanual-follow`. Its camera names are `left_wrist`, `right_wrist`, and `overview`, served on the selected HTTP port.
@@ -87,8 +93,8 @@ Each scene places the two arms itself: `conveyor_sort` puts them behind its bins
 ### Stop an owner
 
 ```bash
-uv run --package physicalai-mujoco-plugin physicalai-mujoco stop --name mujoco-so101-follow
-uv run --package physicalai-mujoco-plugin physicalai-mujoco stop --name mujoco-so101-bimanual-follow --http-port 8081
+physicalai-mujoco stop --name mujoco-so101-follow
+physicalai-mujoco stop --name mujoco-so101-bimanual-follow --http-port 8081
 ```
 
 The stop command selects a local owner by name. Its HTTP fallback checks that the server reports the requested name.
@@ -96,7 +102,7 @@ The stop command selects a local owner by name. Its HTTP fallback checks that th
 ### CLI teleoperation (self-relay)
 
 With the owner running, you can also relay the simulation back to itself using
-the [PhysicalAI CLI](https://github.com/openvinotoolkit/physicalai):
+the [PhysicalAI CLI](https://github.com/openvinotoolkit/physicalai). The configuration is in this repository, so run it from a checkout:
 
 ```bash
 uv run --package physicalai-mujoco-plugin physicalai run --config packages/physicalai-mujoco-plugin/examples/runtime/teleop.yaml
@@ -127,7 +133,7 @@ uv add physicalai-mujoco-plugin
 uv sync
 ```
 
-The PyPI release may lag behind this repository. To use the version in this checkout, including the viewer controls described above, run `git lfs pull` in this repository (the robot meshes are stored in Git LFS), then install it as an editable path instead:
+To use an unreleased version from a checkout of this repository, run `git lfs pull` in the checkout (the robot meshes are stored in Git LFS), then install it as an editable path instead:
 
 ```bash
 cd application/backend
@@ -212,10 +218,10 @@ The simulation joins Studio's session the same way a second browser tab does. It
 
 On the **Models** page, select **Run model** for a policy trained on the simulation dataset. Studio loads the environment the dataset was recorded with, so keep the simulation running with the same owner name and camera ports. Use **Reset Scene** or **Fixed seed** in the viewer between runs.
 
-To run the policy outside Studio, download its runtime configuration and run it with the Physical AI CLI. The plugin must be installed in that environment too; from this repository:
+To run the policy outside Studio, download its runtime configuration and run it with the Physical AI CLI. The plugin must be installed in that environment too:
 
 ```bash
-uv run --package physicalai-mujoco-plugin physicalai run --config runtime.yaml
+physicalai run --config runtime.yaml
 ```
 
 ### 6. Stop
@@ -225,7 +231,7 @@ Press `Ctrl+C` in the `start` terminal, use the viewer's **Shutdown** button, or
 ## CLI options
 
 ```bash
-uv run --no-sync physicalai-mujoco start --help
+physicalai-mujoco start --help
 ```
 
 Common options:
@@ -287,7 +293,7 @@ With `--status-json` or `--exit-with-parent`, `start` only runs a simulation it 
 
 The browser viewer has no `X-Frame-Options` or `Content-Security-Policy` header, so a page can embed `viewer_url` in an iframe.
 
-Studio gets this command line from the catalog: every simulated follower's `simulation` field (a [`SimulationLaunch`](../physicalai-studio-plugin/README.md#simulationlaunch)) lists the scenes that entry runs in, with the profile's default scene preselected, labels the entry with its arm count and tier, and builds `python -m physicalai_mujoco_plugin start --profile <profile> [--bimanual] --scene <scene> --name=<payload name> --status-json --exit-with-parent --http-port 0 --viser-port 0 --viewer-theme studio [--seed <n>]` in Studio's own Python. Building it loads no robot model and downloads nothing; the `fetch` phase does that.
+Studio gets this command line from the catalog: every simulated follower's `simulation` field (a [`SimulationLaunch`](https://github.com/openvinotoolkit/physicalai/blob/main/packages/physicalai-studio-plugin/README.md#simulationlaunch)) lists the scenes that entry runs in, with the profile's default scene preselected, labels the entry with its arm count and tier, and builds `python -m physicalai_mujoco_plugin start --profile <profile> [--bimanual] --scene <scene> --name=<payload name> --status-json --exit-with-parent --http-port 0 --viser-port 0 --viewer-theme studio [--seed <n>]` in Studio's own Python. Building it loads no robot model and downloads nothing; the `fetch` phase does that.
 
 ## Joint units
 
@@ -316,12 +322,13 @@ Every robot comes from MuJoCo Menagerie and is described by a _profile_: what th
 | `so101`                | SO-101, matching the real `SO101` driver                | `twin`         | all tabletop scenes | 1, 2 | `normalized` |
 | `trossen_wxai`         | Trossen WidowX AI, matching Runtime's `WidowXAI` driver | `twin`         | `single_pick_place` | 1, 2 | `degrees`    |
 | `rebot_b601`           | Seeed reBot B601-RS, `ReBotB601RS` names (provisional)  | `twin`         | `single_pick_place` | 1, 2 | `degrees`    |
+| `franka_fr3`           | Franka Research 3 with hand, matching `FrankaFR3`       | `twin`         | `single_pick_place` | 1, 2 | `degrees`    |
+| `franka_duo`           | Franka FR3 Duo, both arms as one robot (16 channels)    | `twin`         | `single_pick_place` | 1    | `degrees`    |
 | `ur5e`                 | Universal Robots UR5e (no gripper)                      | `dataset`      | `single_pick_place` | 1, 2 | `degrees`    |
 | `aloha`                | ALOHA, both arms as one robot (14 joints)               | `dataset`      | `single_pick_place` | 1    | `degrees`    |
 | `so_arm100`            | SO-ARM100 (Menagerie `trs_so_arm100`)                   | `dataset`      | `single_pick_place` | 1, 2 | `degrees`    |
 | `koch`                 | Koch low-cost arm (`low_cost_robot_arm`)                | `dataset`      | `single_pick_place` | 1, 2 | `degrees`    |
 | `piper`                | AgileX PiPER                                            | `dataset`      | `single_pick_place` | 1, 2 | `degrees`    |
-| `franka_fr3`           | Franka Research 3 (no gripper)                          | `dataset`      | `single_pick_place` | 1, 2 | `degrees`    |
 | `franka_panda`         | Franka Emika Panda                                      | `dataset`      | `single_pick_place` | 1, 2 | `degrees`    |
 | `xarm7`                | UFACTORY xArm7                                          | `dataset`      | `single_pick_place` | 1, 2 | `degrees`    |
 | `kinova_gen3`          | Kinova Gen3 (no gripper)                                | `dataset`      | `single_pick_place` | 1, 2 | `degrees`    |
@@ -331,7 +338,11 @@ Every robot comes from MuJoCo Menagerie and is described by a _profile_: what th
 
 **Arms** is how many copies of the robot one simulation runs: 2 with `start --bimanual` (`physicalai-mujoco profiles` lists it too).
 
-ALOHA attaches as Menagerie's two-arm model at the scene's single mount, so both arms keep their real spacing and their wrist cameras (`wrist_cam_left`, `wrist_cam_right`). Its joints are named `left_waist` ... `right_gripper`, as in LeRobot's ALOHA datasets. The Koch and SO-ARM100 profiles turn Menagerie's arm about its base so that it faces +x like the others (Menagerie's face -x and -y, and their base joint limits keep part of the table out of reach); joint names, ranges and zero pose are unchanged. The Kinova Gen3 has four unlimited joints, so it runs in `degrees` only.
+ALOHA attaches as Menagerie's two-arm model at the scene's single mount, so both arms keep their real spacing and their wrist cameras (`wrist_cam_left`, `wrist_cam_right`). Its joints are named `left_waist` ... `right_gripper`, as in LeRobot's ALOHA datasets.
+
+The Franka profiles follow `physicalai-franka-plugin`: `fr3_joint1` ... `fr3_joint7` in degrees and `gripper`, the hand's opening width in metres (0 to 0.08), prefixed `left_` and `right_` on the Duo as `BimanualFrankaFR3` names them. Menagerie's FR3 has no hand, so both mount the Franka Hand from Menagerie's Panda package on the flange as Menagerie's Panda does. `franka_duo` is one model, like ALOHA's, with both arms where Franka's FR3 Duo mount (`fr3_duo_mount_v0_3`) puts them, 0.30 m above the scene's mount (an estimate of the Duo's column), so its joint-space poses match the real Duo and the Franka GELLO Duo one to one. Studio lists the Duo instead of a side-by-side `franka_fr3` pair; `start --bimanual` still runs one.
+
+The Koch and SO-ARM100 profiles turn Menagerie's arm about its base so that it faces +x like the others (Menagerie's face -x and -y, and their base joint limits keep part of the table out of reach); joint names, ranges and zero pose are unchanged. The Kinova Gen3 has four unlimited joints, so it runs in `degrees` only.
 
 `single_pick_place` scales with the arm (`SceneConfig.layout="reach"`). Its layout is sized for the SO-101; for another arm, the block's spawn arc (centre and radii), the target disc and the `overview` camera move away from the mount by `reach / SO-101 reach`, so the camera frames the larger layout as it frames the SO-101's. Object sizes and separations stay as they are, and the SO-101 gets the scene exactly as written. ALOHA's arc is centred between its two arms (`SceneConfig.profile_spawn_centers`), and each arm covers its own side. Arms whose home pose the scaled camera would crop get their own overview rig pose (`SceneConfig.profile_overview_rigs`), pulled back along the line of sight; ALOHA's looks across the table. A test projects every arm's geometry at home, the spawn arc and the target into the 640x480 overview, and live XML edits of the rig keep the scaling and the override.
 
@@ -341,7 +352,7 @@ A reset tries not to spawn the block (or, in `yahtzee`, drop a die) under a low 
 
 Two profile fields drive this:
 
-- `RobotProfile.end_effectors`: each arm's tool frame, as a model site (`EndEffector(site="attachment_site")`) or a point in a body (`EndEffector(body="hand", pos=(0, 0, 0.110))`), and its approach `axis`, the direction in that frame that points out of the gripper or flange. Menagerie's tool sites are used where they exist; the SO-ARM100, Koch, PiPER, Panda and reBot B601 use the point between their finger tips. The arms without a gripper (UR5e, FR3, Kinova Gen3) use their flange.
+- `RobotProfile.end_effectors`: each arm's tool frame, as a model site (`EndEffector(site="attachment_site")`) or a point in a body (`EndEffector(body="hand", pos=(0, 0, 0.110))`), and its approach `axis`, the direction in that frame that points out of the gripper or flange. Menagerie's tool sites are used where they exist; the SO-ARM100, Koch, PiPER, Panda, reBot B601 and the Franka twins use the point between their finger tips. The arms without a gripper (UR5e, Kinova Gen3) use their flange.
 - `RobotProfile.reach`: the farthest horizontal distance from the arm's base, toward the spawn area, at which the end effector reaches a point 2 cm above the table within 5 mm, with its approach axis within 15° of straight down (the SO-101: 0.367 m). A `reach` scene refuses a profile without one.
 
 The reachability test (`tests/test_reach.py`, marker `mujoco_smoke`) solves a damped least-squares IK for every arm on the centre and the extremes of its scaled spawn arc: within 1 cm, approach axis within 15° of straight down (the SO-101 needs 12° at the far edge of its own arc). With two arms, both reach the points on the arc's axis and the nearest arm reaches the others. It also measures each `reach` and checks the stored value to 1 cm. After changing an arm, print fresh measurements with `uv run python packages/physicalai-mujoco-plugin/tests/test_reach.py [profile ...]`.
@@ -351,7 +362,7 @@ Every profile in these tiers has a Studio follower entry for one robot. The twin
 Any other Menagerie model name loads as an unsupported profile, outside CI and Studio: its channels, home pose, sensors and cameras are derived from the model, one channel per actuator. It needs a scene that supports it (`--scene`) or a robot-complete `--model`. Floor scenes such as `floor_flat` take any floating-base robot. Every channel's action is a position, also for velocity actuators, which the simulation drives toward it. Torque actuators on a tendon or site need `MuJoCoRobot(..., torque_mode="raw")`, whose actions are `ctrl`.
 
 ```bash
-uv run --package physicalai-mujoco-plugin physicalai-mujoco start --profile ur5e
+physicalai-mujoco start --profile ur5e
 ```
 
 From Python, or with `physicalai robot serve`, use the generic driver:
@@ -382,7 +393,7 @@ Humanoids and quadrupeds spawn at a scene's `<frame name="{prefix}robot_spawn"/>
 - `/health` reports `floating_base`, `fallen` (the base tilted more than 60° for 1.5 s) and per robot `bases` (height, tilt, held, fallen).
 
 ```bash
-uv run --package physicalai-mujoco-plugin physicalai-mujoco start --profile unitree_g1
+physicalai-mujoco start --profile unitree_g1
 ```
 
 ## Cameras over HTTP
@@ -548,7 +559,7 @@ The plugin ships with built-in scenes that provide different environments for th
 Start with a specific scene:
 
 ```bash
-uv run --no-sync physicalai-mujoco start --scene yahtzee
+physicalai-mujoco start --scene yahtzee
 ```
 
 ### Conveyor sort
@@ -595,7 +606,15 @@ The native MuJoCo viewer also binds **`n`** (next scene) to cycle through the co
 
 ## Development
 
-Fetch LFS assets before running the real-model tests. They load MuJoCo models without opening a display:
+To run the plugin from a checkout, fetch the LFS assets and prefix the commands in this README with `uv run --package physicalai-mujoco-plugin`. From the repository root:
+
+```bash
+git lfs pull
+uv sync --package physicalai-mujoco-plugin
+uv run --package physicalai-mujoco-plugin physicalai-mujoco start
+```
+
+Fetch LFS assets before running the real-model tests too. They load MuJoCo models without opening a display:
 
 ```bash
 uv sync --all-packages --extra tests --extra transport
@@ -646,7 +665,7 @@ git worktree remove /tmp/physicalai-v0.2.0
 
   Semgrep reports two existing `urlopen` findings in `tests/test_http_server.py`; CI only fails on new findings.
 
-The package was imported from [physicalai-plugins PR #36](https://github.com/MarkRedeman/physicalai-plugins/pull/36) at `53bf606ef0f340a2a1821fc42a1ab6f44c33edf7`. See `NOTICE` for provenance and `CHANGELOG.md` for earlier releases. Release publishing uses this repository's shared workflows; the existing PyPI project needs a trusted publisher for `openvinotoolkit/physicalai` before its first release here.
+The package was imported from [physicalai-plugins PR #36](https://github.com/MarkRedeman/physicalai-plugins/pull/36) at `53bf606ef0f340a2a1821fc42a1ab6f44c33edf7`. See `NOTICE` for provenance and `CHANGELOG.md` for earlier releases. Releases are published to [PyPI](https://pypi.org/project/physicalai-mujoco-plugin/) by this repository's shared release workflow.
 
 ## Current status and future improvements
 

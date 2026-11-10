@@ -4,6 +4,7 @@ import contextlib
 import os
 import sys
 import threading
+import time
 import types
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -499,6 +500,49 @@ class TestObservationsAndActions:
         np.testing.assert_allclose(robot._data.ctrl, RANGES[:, 0])  # noqa: SLF001
 
 
+class TestActionEasing:
+    """A streamed action eases in over the gap between actions (capped by goal_time), not as a step."""
+
+    @pytest.fixture(autouse=True)
+    def _clock_only(self):
+        # Targets only: advance the simulation clock without dynamics (the toy model's large
+        # target jumps go unstable, and MuJoCo's auto-reset would zero ctrl).
+        with patch.object(mujoco, "mj_step", lambda model, data: setattr(data, "time", data.time + model.opt.timestep)):
+            yield
+
+    def test_streamed_actions_ease_between_targets(self, robot) -> None:
+        first, second = np.full(6, -20.0), np.full(6, 20.0)
+        robot.send_action(first)  # the first action applies at once
+        np.testing.assert_allclose(robot._data.ctrl, normalized_to_radians(first))  # noqa: SLF001
+        time.sleep(0.04)
+        robot.send_action(second, goal_time=0.12)
+        np.testing.assert_allclose(robot._data.ctrl, normalized_to_radians(first))  # noqa: SLF001 - not jumped
+        seen = []
+        for _ in range(30):
+            robot.get_observation()
+            seen.append(robot._data.ctrl.copy())  # noqa: SLF001
+        np.testing.assert_allclose(seen[-1], normalized_to_radians(second))
+        midway = [c for c in seen if not np.allclose(c, seen[-1])]
+        assert midway, "the target should pass through intermediate values"
+        assert robot._ease is None  # noqa: SLF001
+
+    def test_goal_time_zero_applies_at_once(self, robot) -> None:
+        robot.send_action(np.zeros(6))
+        time.sleep(0.04)
+        robot.send_action(np.full(6, 30.0), goal_time=0.0)
+        np.testing.assert_allclose(robot._data.ctrl, normalized_to_radians(np.full(6, 30.0)))  # noqa: SLF001
+
+    def test_other_target_writes_cancel_the_ease(self, robot) -> None:
+        robot.send_action(np.zeros(6))
+        time.sleep(0.04)
+        robot.send_action(np.full(6, 40.0), goal_time=0.12)
+        robot._write_public(np.full(6, -40.0))  # noqa: SLF001 - e.g. a reset or POST /home
+        for _ in range(30):
+            robot.get_observation()
+        np.testing.assert_allclose(robot._data.ctrl, normalized_to_radians(np.full(6, -40.0)))  # noqa: SLF001
+        assert robot._ease is None  # noqa: SLF001
+
+
 class TestCommands:
     def test_reset_command_runs_the_scene_reset(self, robot) -> None:
         robot._sim.on_reset = MagicMock()  # noqa: SLF001
@@ -847,6 +891,24 @@ class TestSceneSwitching:
                 assert set(robot._cameras.frame_buffers) == {"wrist", "overview"}  # noqa: SLF001
             finally:
                 robot.disconnect()
+
+    def test_the_viewer_panel_is_built_with_the_default_cameras(self, model_path) -> None:
+        """The Simulation tab's Cameras folder is built when the viewer opens, so the streams must be known by then."""
+        robot = MuJoCoRobot("so101", model_path=model_path, substeps=1, enable_viewer=True)
+        built: list[list[str]] = []
+
+        def open_viewer(viewer: ViewerService, _model: object, _data: object) -> bool:
+            built.append(list(viewer._panel_state().cameras))  # noqa: SLF001
+            return False  # no viser server; the robot carries on without a viewer
+
+        with (
+            patch("mujoco.Renderer"),
+            patch(RENDERING_AVAILABLE, return_value=True),
+            patch.object(ViewerService, "open", open_viewer),
+        ):
+            robot.connect()
+            robot.disconnect()
+        assert built == [["wrist", "overview"]]
 
     def test_an_unsupported_scene_is_rejected_before_loading(self, robot) -> None:
         model = robot._model  # noqa: SLF001

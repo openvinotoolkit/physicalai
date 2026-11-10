@@ -56,7 +56,7 @@ pai = "physicalai.cli.main:main"
 
 [project.optional-dependencies]
 tests = ["pytest", "mypy"]
-notebooks = ["matplotlib", "matplotlib-inline", "ipykernel"]
+notebooks = ["matplotlib", "matplotlib-inline", "ipykernel", "ipywidgets", "jupyterlab"]
 realsense = [
     "pyrealsense2>=2.58.4.10922; sys_platform != 'darwin'",
     "pyrealsense2-macosx; sys_platform == 'darwin'",

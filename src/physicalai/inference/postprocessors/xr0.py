@@ -18,6 +18,8 @@ if TYPE_CHECKING:
 
 # Numerical epsilon added to the action std (matches the training convention).
 _ACTION_EPS = 1e-6
+# Baked action stats are always per-timestep: (chunk_size, max_action_dim).
+_STATS_NDIM = 2
 
 
 class XR0Postprocessor(Postprocessor):
@@ -32,10 +34,10 @@ class XR0Postprocessor(Postprocessor):
     overlapping leading channels before slicing to the real action dimension.
 
     Args:
-        action_mean: Per-dimension action mean (padded to ``max_action_dim``).
-            Per-timestep ``(chunk_size, max_action_dim)`` in delta mode.
-        action_std: Per-dimension action std (padded to ``max_action_dim``).
-            Per-timestep ``(chunk_size, max_action_dim)`` in delta mode.
+        action_mean: Baked per-timestep action mean with shape
+            ``(chunk_size, max_action_dim)``; row ``i`` denormalizes timestep
+            ``i`` of the predicted chunk. Required in both action modes.
+        action_std: Baked action std, same shape as ``action_mean``.
         action_dim: Real (unpadded) action dimension; when set, the output is
             sliced to it. ``None`` keeps the padded width.
         action_mode: ``"absolute"`` (default) returns the denormalized action;
@@ -46,14 +48,14 @@ class XR0Postprocessor(Postprocessor):
     Examples:
         Constructed via manifest (type-based resolution)::
 
-            {"type": "xr0_denormalize", "action_mean": [...],
-             "action_std": [...], "action_dim": 30, "action_mode": "delta"}
+            {"type": "xr0_denormalize", "action_mean": [[...], [...]],
+             "action_std": [[...], [...]], "action_dim": 30, "action_mode": "delta"}
     """
 
     def __init__(
         self,
-        action_mean: Sequence[float] | Sequence[Sequence[float]],
-        action_std: Sequence[float] | Sequence[Sequence[float]],
+        action_mean: Sequence[Sequence[float]],
+        action_std: Sequence[Sequence[float]],
         action_dim: int | None = None,
         action_mode: str = "absolute",
         action_eps: float = _ACTION_EPS,
@@ -61,12 +63,16 @@ class XR0Postprocessor(Postprocessor):
         """Initialize the XR0 inference postprocessor.
 
         Raises:
-            ValueError: If ``action_mean`` and ``action_std`` shapes differ, or
-                if ``action_mode`` is not a recognized mode.
+            ValueError: If the action stats are not per-timestep 2-D arrays, if
+                ``action_mean`` and ``action_std`` shapes differ, or if
+                ``action_mode`` is not a recognized mode.
         """
         super().__init__()
         self._mean = np.asarray(action_mean, dtype=np.float32)
         self._std = np.asarray(action_std, dtype=np.float32)
+        if self._mean.ndim != _STATS_NDIM:
+            msg = f"action stats must be per-timestep with shape (chunk_size, max_action_dim), got {self._mean.shape}"
+            raise ValueError(msg)
         if self._mean.shape != self._std.shape:
             msg = f"action_mean {self._mean.shape} and action_std {self._std.shape} must have the same shape"
             raise ValueError(msg)
