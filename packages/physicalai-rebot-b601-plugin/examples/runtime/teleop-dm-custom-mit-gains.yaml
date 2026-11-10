@@ -32,7 +32,9 @@ runtime:
       # kd is damping: increasing it reduces overshoot and oscillation, but too
       # much makes motion sluggish. Decreasing it makes motion more responsive
       # but can make a high-kp joint oscillate. Tune kp first, then increase kd
-      # only enough to settle the motion.
+      # only enough to settle the motion. Damiao motors cannot take kd above 5.
+      # Gravity and velocity feedforward are on by default, so kp only has to
+      # correct tracking errors.
       mit_kd:
         shoulder_pan: 1.5
         shoulder_lift: 5.0
@@ -52,5 +54,6 @@ runtime:
         init_args:
           port: /dev/ttyUSB0 # CHANGE_ME: leader arm serial port
           baudrate: 1000000
+          follower_profile: b601
 
   fps: 30.0

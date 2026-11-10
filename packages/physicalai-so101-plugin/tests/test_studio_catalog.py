@@ -11,6 +11,9 @@ from xml.etree import ElementTree
 import pytest
 from pydantic import ValidationError
 
+from physicalai_so101_plugin import SO101Calibration
+from physicalai_so101_plugin.constants import SO101_JOINT_ORDER
+
 
 class _FakeRegistry:
     def __init__(self) -> None:
@@ -100,3 +103,80 @@ async def test_builder_rejects_unresolvable_port() -> None:
     robot = _StubRobot("SO101_Follower", SO101RobotPayload(connection_string="/dev/ttyUSB0"))
     with pytest.raises(ValueError, match="Could not resolve a serial port"):
         await _build_so101_driver(robot, _StubFactory(port=None))  # type: ignore[arg-type]
+
+
+def _calibration() -> SO101Calibration:
+    return SO101Calibration.from_dict({
+        name: {"id": servo_id, "drive_mode": 0, "homing_offset": 0, "range_min": 100, "range_max": 3100}
+        for servo_id, name in enumerate(SO101_JOINT_ORDER, 1)
+    })
+
+
+def test_unit_selector_schema_and_help() -> None:
+    from physicalai_studio_plugin import validate_robot_payload_ui
+    from physicalai_so101_plugin.studio_catalog import SO101RobotPayload
+
+    validate_robot_payload_ui(SO101RobotPayload)
+    SO101RobotPayload.model_rebuild(raise_errors=True)
+    schema = SO101RobotPayload.model_json_schema()
+    field = schema["properties"]["unit"]
+    assert field["enum"] == ["normalized", "degrees"]
+    assert field["default"] == "normalized"
+    assert field["title"] == "Joint units"
+    assert {"kind": "field", "name": "unit"} in schema["x-physicalai-ui"]
+    help_text = field["x-physicalai-ui"]["info"]["description"]
+    for text in ("[-100, 100]", "gripper remains [0, 100]", "midpoint", "matching units", "requires calibration"):
+        assert text in help_text
+
+
+def test_legacy_payload_defaults_to_normalized() -> None:
+    from physicalai_so101_plugin.studio_catalog import SO101RobotPayload
+
+    payload = SO101RobotPayload.model_validate({"connection_string": "fake"})
+    assert payload.unit == "normalized"
+    assert payload.model_dump(mode="json")["unit"] == "normalized"
+
+
+@pytest.mark.parametrize("unit", ["ticks", "radians", "use_degrees", ""])
+def test_catalog_rejects_unsupported_unit(unit: str) -> None:
+    from physicalai_so101_plugin.studio_catalog import SO101RobotPayload
+
+    with pytest.raises(ValidationError):
+        SO101RobotPayload(connection_string="fake", unit=unit)  # type: ignore[arg-type]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("robot_type,role", [("SO101_Follower", "follower"), ("SO101_Leader", "leader")])
+@pytest.mark.parametrize("unit", ["normalized", "degrees"])
+async def test_builder_passes_selected_unit_and_role(robot_type: str, role: str, unit: str) -> None:
+    from physicalai_so101_plugin.studio_catalog import SO101RobotPayload, _build_so101_driver
+
+    payload = SO101RobotPayload(
+        connection_string="fake", calibration=_calibration().joints, unit=unit,  # type: ignore[arg-type]
+    )
+    restored = SO101RobotPayload.model_validate(payload.model_dump(mode="json"))
+    arm = await _build_so101_driver(_StubRobot(robot_type, restored), _StubFactory(port="resolved"))  # type: ignore[arg-type]
+    assert arm.unit == unit
+    assert arm.role == role
+    assert arm.port == "resolved"
+    assert not arm.is_connected()
+
+
+@pytest.mark.anyio
+async def test_degree_selection_without_calibration_does_not_silently_use_ticks() -> None:
+    from physicalai_so101_plugin.studio_catalog import SO101RobotPayload, _build_so101_driver
+
+    payload = SO101RobotPayload(connection_string="fake", unit="degrees")
+    with pytest.raises(ValueError, match="degree units require calibration"):
+        await _build_so101_driver(_StubRobot("SO101_Follower", payload), _StubFactory(port="resolved"))  # type: ignore[arg-type]
+
+
+@pytest.mark.anyio
+async def test_default_uncalibrated_bringup_is_unchanged() -> None:
+    from physicalai_so101_plugin.studio_catalog import SO101RobotPayload, _build_so101_driver
+
+    payload = SO101RobotPayload(connection_string="fake")
+    arm = await _build_so101_driver(_StubRobot("SO101_Leader", payload), _StubFactory(port="resolved"))  # type: ignore[arg-type]
+    assert arm.unit == "ticks"
+    assert arm.role == "leader"
+    assert not arm.is_connected()

@@ -44,6 +44,8 @@ from physicalai_mujoco_plugin.constants import (
     default_owner_name,
 )
 from physicalai_mujoco_plugin.profiles import RobotProfile, get_profile, list_profiles
+from physicalai_mujoco_plugin.profiles.dataset import FRANKA_HAND_PEAK_FORCE_N
+from physicalai_mujoco_plugin.profiles.franka import with_grip_force
 from physicalai_mujoco_plugin.studio_recorder import DEFAULT_STUDIO_URL, validate_studio_url
 from physicalai_mujoco_plugin.viewer import ViewerTheme
 
@@ -110,6 +112,25 @@ def _seed_number(value: str) -> int:
     return seed
 
 
+def _grip_force(value: str) -> float:
+    """Parse a Franka Hand grasp force in newtons for ``argparse``.
+
+    Returns:
+        The force.
+
+    Raises:
+        argparse.ArgumentTypeError: If *value* is not a number above 0 and at most the hand's peak force.
+    """
+    try:
+        force = float(value)
+    except ValueError:
+        force = 0.0
+    if not 0.0 < force <= FRANKA_HAND_PEAK_FORCE_N:
+        msg = f"expected a force above 0 N and at most {FRANKA_HAND_PEAK_FORCE_N:g} N, got {value!r}"
+        raise argparse.ArgumentTypeError(msg)
+    return force
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=_CLI_NAME,
@@ -161,6 +182,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Joint units for observations and actions (default: the profile's; normalized for the SO-101, like "
             "the calibrated SO101 driver: body joints -100..100 and gripper 0..100 across each joint's range)"
+        ),
+    )
+    start.add_argument(
+        "--grip-force",
+        type=_grip_force,
+        default=None,
+        metavar="N",
+        help=(
+            "Franka Hand grasp force in newtons per finger, above 0 and at most "
+            f"{FRANKA_HAND_PEAK_FORCE_N:g} (default: 70, the real hand's continuous force). "
+            "Only the Franka profiles have the hand"
         ),
     )
     start.add_argument(
@@ -226,9 +258,9 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=get_args(ViewerTheme),
         default="default",
         help=(
-            "Browser viewer chrome: studio hides the Share and Shutdown buttons, for a viewer embedded in "
-            "Physical AI Studio, which stops the simulation itself; compact does the same and starts with the "
-            "control panel minimized, for a viewer next to its own controls (default: default)"
+            "Browser viewer chrome: compact hides the Share and Shutdown buttons and starts with the control "
+            "panel minimized, for a viewer next to its own controls; studio is compact in dark mode, for a "
+            "viewer embedded in Physical AI Studio, which stops the simulation itself (default: default)"
         ),
     )
     start.add_argument(
@@ -254,6 +286,15 @@ def _build_parser() -> argparse.ArgumentParser:
         type=_port_number,
         default=8080,
         help="Port for the camera/control HTTP server; 0 picks a free one (default: 8080)",
+    )
+    start.add_argument(
+        "--http-port-fallback",
+        action="store_true",
+        default=False,
+        help=(
+            "Use a free port for the camera/control HTTP server when --http-port is taken, instead of running "
+            "without it; the log and the ready event (--status-json) give the port in use"
+        ),
     )
     start.add_argument(
         "--no-http",
@@ -357,6 +398,17 @@ def _resolve_scene(args: argparse.Namespace, profile: RobotProfile) -> tuple[str
             logger.error("{}", exc)
             sys.exit(1)
     return scene_id, num_arms
+
+
+def _check_grip_force(args: argparse.Namespace, profile: RobotProfile) -> None:
+    """Exit with the reason if ``--grip-force`` is given for a profile without a Franka Hand."""
+    if args.grip_force is None:
+        return
+    try:
+        with_grip_force(profile, args.grip_force)
+    except ValueError as exc:
+        logger.error("{}", exc)
+        sys.exit(1)
 
 
 def _check_overview(args: argparse.Namespace, scene_id: str | None) -> None:
@@ -523,6 +575,7 @@ def _run_start(args: argparse.Namespace, status: _StatusWriter) -> None:  # noqa
     from physicalai_mujoco_plugin.scene_registry import get_scene  # noqa: PLC0415
 
     profile = _profile_or_exit(args.profile)
+    _check_grip_force(args, profile)
     scene_id, num_arms = _resolve_scene(args, profile)
     _check_overview(args, scene_id)
     owner_name = _resolve_owner_name(args, profile.name, num_arms)
@@ -535,7 +588,7 @@ def _run_start(args: argparse.Namespace, status: _StatusWriter) -> None:  # noqa
 
     http_enabled = not args.no_http
     viewer_enabled = not args.no_gui
-    http_port, viser_port = _server_ports(args)
+    http_port, viser_port, http_fallback_port = _server_ports(args)
     robot = MuJoCoRobot(
         profile.name,
         scene=scene_id,
@@ -558,6 +611,8 @@ def _run_start(args: argparse.Namespace, status: _StatusWriter) -> None:  # noqa
         studio_url=validate_studio_url(args.studio_url),
         # The owner runs in its own session; it watches this process so a hard kill stops it too.
         exit_with_pid=os.getpid() if args.exit_with_parent else None,
+        grip_force_n=args.grip_force,
+        http_fallback_port=http_fallback_port,
     )
 
     shared = SharedRobot.from_config(
@@ -578,6 +633,7 @@ def _run_start(args: argparse.Namespace, status: _StatusWriter) -> None:  # noqa
     # (a race past _require_unused_name); a supervised start must never stop such an owner.
     spawned = owner_pid is not None and _spawned_owner(shared)
     may_stop_owner = spawned or not supervised
+    http_port = _serving_port(args.http_host, owner_name, http_port, http_fallback_port)
     logger.info(
         "MuJoCo {} running (scene={}, rate={} Hz)",
         profile.display_name,
@@ -585,6 +641,8 @@ def _run_start(args: argparse.Namespace, status: _StatusWriter) -> None:  # noqa
         args.rate_hz,
     )
     _log_addresses(args, http_port, viser_port)
+    if not supervised:
+        logger.info("Press Ctrl+C to stop the simulation")
 
     def _signal_handler(signum: int, frame: object) -> None:
         _ = frame, signum
@@ -736,21 +794,75 @@ def _announcing_load(status: _StatusWriter, owner_name: str) -> Iterator[None]:
         status.phase("load")
 
 
-def _server_ports(args: argparse.Namespace) -> tuple[int, int]:
+def _server_ports(args: argparse.Namespace) -> tuple[int, int, int | None]:
     """Return the HTTP and viewer ports, with a free port where ``0`` was asked for, or exit.
 
+    With ``--http-port-fallback``, a taken ``--http-port`` is replaced by a free port, and a second
+    free port is returned for the owner to fall back to when another process takes the HTTP port
+    before the owner binds it.
+
     Returns:
-        The HTTP and viser ports; ``0`` for a disabled server, as ``MuJoCoRobot`` expects.
+        The HTTP and viser ports, ``0`` for a disabled server, as ``MuJoCoRobot`` expects, and the
+        HTTP fallback port, or ``None`` without ``--http-port-fallback``.
+    """
+    http_port = None if args.no_http else args.http_port
+    fallback = bool(http_port) and args.http_port_fallback
+    with contextlib.ExitStack() as stack:
+        if fallback:
+            # Held while the other ports are picked, so the fallback port is never this one.
+            held = _bound_socket(args.http_host, http_port)  # type: ignore[arg-type]
+            if held is None:
+                logger.warning("Port {} is taken; the camera/control HTTP server takes a free port instead", http_port)
+                http_port = 0
+            else:
+                stack.enter_context(held)
+        try:
+            http_port, viser_port, fallback_port = _free_ports([
+                (args.http_host, http_port),
+                (args.viser_host, None if args.no_gui else args.viser_port),
+                (args.http_host, 0 if fallback else None),
+            ])
+        except OSError as exc:
+            logger.error("Could not pick a free port: {}", exc)
+            sys.exit(1)
+    return http_port, viser_port, fallback_port or None
+
+
+def _bound_socket(host: str, port: int) -> socket.socket | None:
+    """Return a socket bound to *port* on *host*, as the owner's HTTP server binds it, or ``None``.
+
+    Returns:
+        The bound socket, for the caller to close, or ``None`` when *port* cannot be bound, for
+        example because another process listens there.
     """
     try:
-        http_port, viser_port = _free_ports([
-            (args.http_host, None if args.no_http else args.http_port),
-            (args.viser_host, None if args.no_gui else args.viser_port),
-        ])
-    except OSError as exc:
-        logger.error("Could not pick a free port: {}", exc)
-        sys.exit(1)
-    return http_port, viser_port
+        family, kind, proto, _, address = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)[0]
+        sock = socket.socket(family, kind, proto)
+    except OSError:
+        return None
+    try:
+        sock.bind(address)
+    except OSError:
+        sock.close()
+        return None
+    return sock
+
+
+def _serving_port(host: str, owner_name: str, http_port: int, fallback_port: int | None) -> int:
+    """Return the port the owner's HTTP server answers on: *http_port*, or *fallback_port* if only it answers.
+
+    The owner binds *fallback_port* when another process took *http_port* after ``start`` found it
+    free (``--http-port-fallback``).
+
+    Returns:
+        *fallback_port* when the owner answers there and not on *http_port*, else *http_port*.
+    """
+    if fallback_port is None:
+        return http_port
+    host = _LOOPBACK_FOR_WILDCARD.get(host, host)
+    if _http_owner_name(host, http_port) != owner_name and _http_owner_name(host, fallback_port) == owner_name:
+        return fallback_port
+    return http_port
 
 
 def _ready_addresses(

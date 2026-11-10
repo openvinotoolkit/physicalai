@@ -93,6 +93,7 @@ def _assert_window(inputs: dict[str, Any], expected: list[int]) -> None:
 
 def test_rtc_snapshot_is_detached_while_updates_continue_history(
     rtc_source: tuple[PolicySource, _RTCModel, RTCExecution],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source, model, execution = rtc_source
     frame = Frame(np.zeros((2, 4, 3), dtype=np.uint8), timestamp=0.0, sequence=0)
@@ -118,12 +119,25 @@ def test_rtc_snapshot_is_detached_while_updates_continue_history(
         _assert_window(blocked, [0, 0, 1])
     assert source.action_queue.remaining == 0
 
+    accepted = threading.Event()
+    accept_result = execution._accept_result
+
+    def signal_acceptance(*args: Any, **kwargs: Any) -> np.ndarray | None:
+        result = accept_result(*args, **kwargs)
+        accepted.set()
+        return result
+
+    monkeypatch.setattr(execution, "_accept_result", signal_acceptance)
     model.release[0].set()
+    assert accepted.wait(timeout=5.0)
+    # RTC discards observations published before result acceptance. Supply a
+    # fresh observation; history must still include the intervening updates.
+    _update(source, frame, 7)
     assert model.entered[1].wait(timeout=5.0)
     history = model.manifest.model.observation_history
     assert history is not None
     stride = history.stride
-    _assert_window(model.calls[2], [4, 5, 6] if stride == 1 else [2, 4, 6])
+    _assert_window(model.calls[2], [5, 6, 7] if stride == 1 else [3, 5, 7])
     assert execution.inference_count == 2
     assert not np.shares_memory(blocked[IMAGES], model.calls[2][IMAGES])
     assert not np.shares_memory(blocked[STATE], model.calls[2][STATE])
@@ -131,7 +145,7 @@ def test_rtc_snapshot_is_detached_while_updates_continue_history(
     frame.data.fill(99)
     _assert_window(model.calls[0], [0, 0, 0])
     _assert_window(blocked, [0, 0, 1])
-    _assert_window(model.calls[2], [4, 5, 6] if stride == 1 else [2, 4, 6])
+    _assert_window(model.calls[2], [5, 6, 7] if stride == 1 else [3, 5, 7])
 
 
 def test_rtc_reset_without_model_reset_discards_old_result_and_reseeds_history(

@@ -99,11 +99,26 @@ def test_an_incomplete_pose_is_a_connection_error(served: tuple[_Leader, int], p
         robot.disconnect()
 
 
-def test_rejects_a_simulation_with_another_joint_layout(served: tuple[_Leader, int]) -> None:
+def test_takes_the_joint_layout_the_simulation_publishes(served: tuple[_Leader, int]) -> None:
     leader, port = served
-    leader.payload = {**leader.payload, "joint_names": ["left_shoulder_pan"]}
+    names = [f"{side}_{joint}" for side in ("left", "right") for joint in ("fr3_joint1", "fr3_joint2", "gripper")]
+    leader.payload = {**leader.payload, "joint_names": names, "joint_positions": [0.0] * len(names)}
     robot = MuJoCoVirtualLeader(http_port=port)
-    with pytest.raises(ConnectionError, match="expected"):
+    assert robot.joint_names == []  # known only once connected
+    robot.connect()
+    try:
+        assert robot.joint_names == names
+        assert robot.get_observation().joint_positions.shape == (len(names),)
+    finally:
+        robot.disconnect()
+
+
+@pytest.mark.parametrize("names", [None, [], ["shoulder_pan", 3]])
+def test_rejects_a_simulation_without_joint_names(served: tuple[_Leader, int], names: object) -> None:
+    leader, port = served
+    leader.payload = {**leader.payload, "joint_names": names}
+    robot = MuJoCoVirtualLeader(http_port=port)
+    with pytest.raises(ConnectionError, match="no leader joint names"):
         robot.connect()
     assert not robot.is_connected()
 

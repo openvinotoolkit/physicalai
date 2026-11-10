@@ -450,6 +450,99 @@ class TestPrepareInputsCollision:
             self._call({"obs": {"image": arr_b}, "obs.image": arr_a}, ["obs.image"])
 
 
+def _make_camera_export_dir(tmp_path: Path, cameras: list[str]) -> Path:
+    export_dir = _make_export_dir(tmp_path)
+    manifest_path = export_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["model"]["input_features"] = [
+        {
+            "class_path": "physicalai.inference.data.features.InferenceFeature",
+            "init_args": {"ftype": "VISUAL", "shape": [3, 4, 4], "name": f"images.{camera}", "dtype": "float32"},
+        }
+        for camera in cameras
+    ]
+    manifest_path.write_text(json.dumps(manifest))
+    return export_dir
+
+
+class _RecordInputs(Preprocessor):
+    def __init__(self) -> None:
+        self.seen: dict = {}
+
+    @override
+    def __call__(self, inputs: dict) -> dict:
+        self.seen = inputs
+        return inputs
+
+
+@pytest.mark.usefixtures("_patch_adapter")
+class TestCameraOrder:
+    """Cameras reach the preprocessors in the order the manifest declares them."""
+
+    @pytest.fixture(autouse=True)
+    def _passthrough_adapter(self, mock_adapter: MagicMock) -> None:
+        mock_adapter.input_names = []
+
+    @staticmethod
+    def _image(value: float) -> np.ndarray:
+        return np.full((1, 3, 4, 4), value, dtype=np.float32)
+
+    def test_flat_cameras_follow_manifest_order(self, tmp_path: Path) -> None:
+        record = _RecordInputs()
+        model = InferenceModel(_make_camera_export_dir(tmp_path, ["wrist", "overview"]), preprocessors=[record])
+
+        model({"state": np.zeros((1, 2)), "images.overview": self._image(1), "images.wrist": self._image(0)})
+
+        assert list(record.seen) == ["state", "images.wrist", "images.overview"]
+        assert record.seen["images.wrist"].max() == 0
+
+    def test_nested_cameras_follow_manifest_order(self, tmp_path: Path) -> None:
+        record = _RecordInputs()
+        model = InferenceModel(_make_camera_export_dir(tmp_path, ["wrist", "overview"]), preprocessors=[record])
+
+        model({"images": {"overview": self._image(1), "wrist": self._image(0)}})
+
+        assert list(record.seen["images"]) == ["wrist", "overview"]
+
+    def test_inputs_in_order_are_passed_through(self, tmp_path: Path) -> None:
+        record = _RecordInputs()
+        model = InferenceModel(_make_camera_export_dir(tmp_path, ["wrist", "overview"]), preprocessors=[record])
+        inputs = {"images.wrist": self._image(0), "images.overview": self._image(1)}
+
+        model(inputs)
+
+        assert record.seen is inputs
+
+    def test_unknown_cameras_keep_their_order_and_warn_once(self, tmp_path: Path) -> None:
+        record = _RecordInputs()
+        model = InferenceModel(_make_camera_export_dir(tmp_path, ["wrist", "overview"]), preprocessors=[record])
+        messages: list[str] = []
+        handler_id = logger.add(lambda message: messages.append(message.record["message"]), level="WARNING")
+
+        try:
+            for _ in range(2):
+                model({"images.top": self._image(1), "images.wrist": self._image(0)})
+        finally:
+            logger.remove(handler_id)
+
+        assert list(record.seen) == ["images.top", "images.wrist"]
+        assert sum("do not match the trained cameras" in message for message in messages) == 1
+
+    def test_pi05_stacks_cameras_in_training_order(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
+        from physicalai.inference.preprocessors.pi05 import Pi05Preprocessor
+
+        model = InferenceModel(
+            _make_camera_export_dir(tmp_path, ["wrist", "overview"]),
+            preprocessors=[Pi05Preprocessor(image_resolution=(4, 4))],
+        )
+
+        model({"state": np.zeros((1, 2)), "images.overview": self._image(1), "images.wrist": self._image(0)})
+
+        stacked = mock_adapter.predict.call_args.args[0]["images"]
+        assert stacked[0].max() == -1  # wrist (0.0) normalized to [-1, 1]
+        assert stacked[1].min() == 1  # overview (1.0)
+
+
 @pytest.mark.usefixtures("_patch_adapter")
 class TestModelPathResolution:
     @pytest.mark.parametrize(

@@ -138,6 +138,73 @@ def exclude_franka_self_collisions(spec: mujoco.MjSpec, *, link_prefix: str) -> 
             exclude.bodyname1, exclude.bodyname2 = a, b
 
 
+FRANKA_HAND_GRASP_FORCE_N = 70.0
+"""The Franka Hand's continuous grasping force (140 N peak): what each finger presses with."""
+FRANKA_HAND_PEAK_FORCE_N = 140.0
+"""The Franka Hand's peak grasping force: the most ``--grip-force`` accepts."""
+FRANKA_HAND_SPEED_M_S = 0.2
+"""The Franka Hand's top opening and closing speed, as the rate of change of its width."""
+FRANKA_HAND_STIFFNESS_N_M = 7000.0
+"""Finger force per metre of width short of the command: the full grasp force from 10 mm short.
+
+A closed command (width 0) on any object 10 mm or wider squeezes it with
+:data:`FRANKA_HAND_GRASP_FORCE_N`; an open or intermediate width is held within a fraction of a
+millimetre."""
+_FINGER_DAMPING = FRANKA_HAND_GRASP_FORCE_N / (FRANKA_HAND_SPEED_M_S / 2)
+"""Finger slide damping (N s/m) that caps each finger at half the hand's speed under the full force.
+
+It scales with a different ``grip_force_n`` so that the speed cap stays the same."""
+_FINGER_SOLREF = (0.006, 1.0)
+"""Contact time constant of the finger pads: with MuJoCo's default 20 ms a 70 N squeeze sinks
+objects 3-6 mm into each finger; with 6 ms about 0.5 mm. 4 ms, twice the scenes' timestep, makes
+the fingers chatter on a held 9 V battery. ``solmix`` makes the pads' value win."""
+_FINGER_SOLMIX = 100.0
+
+
+def franka_hand_stiffness(grip_force_n: float = FRANKA_HAND_GRASP_FORCE_N) -> float:
+    """Return the finger stiffness (N/m) that reaches *grip_force_n* from 10 mm short of the command.
+
+    Returns:
+        :data:`FRANKA_HAND_STIFFNESS_N_M` scaled to *grip_force_n*.
+    """
+    return FRANKA_HAND_STIFFNESS_N_M * grip_force_n / FRANKA_HAND_GRASP_FORCE_N
+
+
+def tune_franka_hand_fingers(
+    spec: mujoco.MjSpec, *, prefix: str = "", grip_force_n: float = FRANKA_HAND_GRASP_FORCE_N
+) -> None:
+    """Damp Menagerie's Franka Hand fingers to its top speed and stiffen their contacts.
+
+    The gripper actuator stays the caller's to set: :func:`franka_hand_stiffness` per finger up
+    to *grip_force_n*. Its force is capped, so the speed limit comes from the finger joints' own
+    damping, which acts outside that cap.
+    """
+    damping = _FINGER_DAMPING * grip_force_n / FRANKA_HAND_GRASP_FORCE_N
+    for side, joint in (("left", "finger_joint1"), ("right", "finger_joint2")):
+        spec.joint(f"{prefix}{joint}").damping = [damping, 0.0, 0.0]
+        for geom in spec.body(f"{prefix}{side}_finger").geoms:
+            if geom.contype or geom.conaffinity:
+                geom.solref = list(_FINGER_SOLREF)
+                geom.solmix = _FINGER_SOLMIX
+
+
+def customize_franka_panda(spec: mujoco.MjSpec, grip_force_n: float = FRANKA_HAND_GRASP_FORCE_N) -> None:
+    """Menagerie's Panda with the real Franka Hand's grasp force (*grip_force_n* per finger) and speed.
+
+    Its ``actuator8`` keeps Menagerie's command, 0 to 255 for each finger at 0 to 0.04 m; it pulls
+    the ``split`` tendon (half the finger sum), so its stiffness and force range are four and two
+    times the per-finger values.
+    """
+    exclude_franka_self_collisions(spec, link_prefix="")
+    tune_franka_hand_fingers(spec, grip_force_n=grip_force_n)
+    actuator = spec.actuator("actuator8")
+    stiffness = 4.0 * franka_hand_stiffness(grip_force_n)
+    gain, bias = list(actuator.gainprm), list(actuator.biasprm)
+    gain[0], bias[:3] = stiffness * 0.04 / 255.0, [0.0, -stiffness, 0.0]
+    actuator.gainprm, actuator.biasprm = gain, bias
+    actuator.forcerange = [-2.0 * grip_force_n, 2.0 * grip_force_n]
+
+
 FRANKA_PANDA_PROFILE = RobotProfile(
     name="franka_panda",
     display_name="Franka Emika Panda",
@@ -145,7 +212,7 @@ FRANKA_PANDA_PROFILE = RobotProfile(
     menagerie_entry="panda",
     tier="dataset",
     default_scene="single_pick_place",
-    customize=partial(exclude_franka_self_collisions, link_prefix=""),
+    customize=customize_franka_panda,
     end_effectors=(EndEffector(body="hand", pos=(0.0, 0.0, 0.110)),),
     reach=0.849,
 )
@@ -184,11 +251,18 @@ DATASET_PROFILES: tuple[RobotProfile, ...] = (
 __all__ = [
     "ALOHA_PROFILE",
     "DATASET_PROFILES",
+    "FRANKA_HAND_GRASP_FORCE_N",
+    "FRANKA_HAND_PEAK_FORCE_N",
+    "FRANKA_HAND_SPEED_M_S",
+    "FRANKA_HAND_STIFFNESS_N_M",
     "FRANKA_PANDA_PROFILE",
     "KINOVA_GEN3_PROFILE",
     "KOCH_PROFILE",
     "PIPER_PROFILE",
     "SO_ARM100_PROFILE",
     "XARM7_PROFILE",
+    "customize_franka_panda",
     "exclude_franka_self_collisions",
+    "franka_hand_stiffness",
+    "tune_franka_hand_fingers",
 ]

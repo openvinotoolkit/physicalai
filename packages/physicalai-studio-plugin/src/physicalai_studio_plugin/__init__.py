@@ -15,7 +15,7 @@ from .catalog import (
 from .factory import CatalogRobotFactory
 from .probe import PortScanner, RobotProbe
 from .schemas import SerialPortInfo
-from .simulation import SimulationArgvBuilder, SimulationLaunch, SimulationScene
+from .simulation import SimulationArgvBuilder, SimulationLaunch, SimulationPayloadArgvBuilder, SimulationScene
 from .transport import shared_robot_name
 from .ui_schema import (
     RobotFieldUiOptions,
@@ -59,6 +59,7 @@ __all__ = [
     "SerialPortInfo",
     "SimulationArgvBuilder",
     "SimulationLaunch",
+    "SimulationPayloadArgvBuilder",
     "SimulationScene",
     "robot_field_ui",
     "robot_payload_ui",

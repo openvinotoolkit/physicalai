@@ -25,11 +25,13 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
     from physicalai_mujoco_plugin.http_server import SimCommand
+    from physicalai_mujoco_plugin.target_ghost import TargetGhost
     from physicalai_mujoco_plugin.viser_controls import PanelState, SimControlPanel
 
 ViewerTheme = Literal["default", "studio", "compact"]
-"""viser's chrome: ``studio`` hides the Share and Shutdown buttons; ``compact`` also starts with the control
-panel minimized, for a viewer embedded next to its own controls. The look stays viser's own."""
+"""viser's chrome: ``compact`` hides the Share and Shutdown buttons and starts with the control panel
+minimized, for a viewer embedded next to its own controls; ``studio`` is ``compact`` in dark mode, to sit
+inside Studio's dark UI."""
 
 
 class ViewerService:
@@ -44,6 +46,7 @@ class ViewerService:
         panel_state: Callable[[], PanelState],
         key_callback: Callable[[int], None] | None = None,
         theme: ViewerTheme = "default",
+        driven_targets: Callable[[], list[tuple[int, float]] | None] | None = None,
     ) -> None:
         """Create a closed viewer.
 
@@ -51,10 +54,12 @@ class ViewerService:
             host: viser bind address.
             port: viser port; ``0`` or less disables viser.
             theme: viser's chrome; ``studio`` is for a viewer embedded in Studio, which stops the
-                simulation itself, so it has no Share or Shutdown button.
+                simulation itself: no Share or Shutdown button, the panel minimized, dark mode.
             submit_command: Queues a panel command for the sim thread.
             panel_state: Snapshots the state the panel shows.
             key_callback: Native viewer key handler.
+            driven_targets: ``(joint id, target)`` of the joints not driven by a position servo
+                (software PD, velocity actuators), for the target ghost; ``None`` hides the ghost.
         """
         self.host = host
         self.port = port
@@ -69,6 +74,9 @@ class ViewerService:
         self._model: object | None = None
         self._sync_failed = False
         self._panel_failed = False
+        self._driven_targets = driven_targets or list
+        self.ghost: TargetGhost | None = None
+        self._show_ghost = True
 
     @property
     def active(self) -> bool:
@@ -223,6 +231,7 @@ class ViewerService:
             self.panel = SimControlPanel(server, viser, self._submit_command, shutdown_button=self.theme == "default")
 
         self.scene = None
+        self.ghost = None
         server.gui.reset()
         server.scene.reset()
 
@@ -231,6 +240,7 @@ class ViewerService:
         # mjviser's default refresh re-renders from the viser thread while the sim thread may be
         # stepping the same data; the sim loop re-renders at the control rate anyway.
         scene.set_refresh_handler(lambda: None)
+        _cast_fixed_shadows(scene)
         state = self._panel_state()
         tabs = server.gui.add_tab_group()
         with tabs.add_tab("Simulation", icon=viser.Icon.ROBOT):
@@ -238,15 +248,40 @@ class ViewerService:
         with tabs.add_tab("Camera", icon=viser.Icon.VIDEO):
             self.panel.build_camera_tab(state)
         with tabs.add_tab("Visualization", icon=viser.Icon.EYE):
+            self._build_ghost(server)
             scene.create_overlay_gui()
         with tabs.add_tab("Groups", icon=viser.Icon.LAYERS_INTERSECT):
             scene.create_groups_gui()
         self.panel.build_scene_nodes(state)
-        if self.theme == "compact":
+        if self.theme in {"studio", "compact"}:
             server.gui.main_panel.minimize()  # after `gui.reset()`, which restores the default placement
 
         self.scene = scene
         self._panel_failed = False
+
+    def _build_ghost(self, server: object) -> None:
+        """Add the target ghost and its checkbox; a failure leaves the viewer without it."""
+        from physicalai_mujoco_plugin.target_ghost import TargetGhost  # noqa: PLC0415
+
+        try:
+            driven = [joint for joint, _target in self._driven_targets() or ()]
+            ghost = TargetGhost(server, self._model, driven)  # type: ignore[arg-type]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("The target ghost is unavailable: {}", exc)
+            return
+        ghost.set_visible(self._show_ghost)
+        checkbox = server.gui.add_checkbox(  # type: ignore[attr-defined]
+            "Target pose (ghost)",
+            self._show_ghost,
+            hint="A see-through arm at the pose the joints are told to reach",
+        )
+
+        @checkbox.on_update
+        def _(_event: object) -> None:
+            self._show_ghost = bool(checkbox.value)
+            ghost.set_visible(self._show_ghost)
+
+        self.ghost = ghost
 
     def _launch_viser(self) -> bool:
         """Start the browser-based 3D viewer via mjviser/viser (works on macOS).
@@ -263,6 +298,9 @@ class ViewerService:
         except ImportError as exc:
             logger.warning("mjviser/viser unavailable, web viewer disabled: {}", exc)
             return False
+        from physicalai_mujoco_plugin.viewer_textures import install_box_textures  # noqa: PLC0415
+
+        install_box_textures()
 
         # SharedRobot's owner worker closes stdout after its READY handshake.
         # Viser prints from its background thread during stop(), so give Rich a
@@ -279,7 +317,7 @@ class ViewerService:
                 self.port = bound_port
             self.server = server
             if self.theme in {"studio", "compact"}:
-                server.gui.configure_theme(show_share_button=False)
+                server.gui.configure_theme(show_share_button=False, dark_mode=self.theme == "studio")
             self.build_gui()
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to start viser viewer on port {}: {}", self.port, exc)
@@ -333,6 +371,8 @@ class ViewerService:
         try:
             self.scene.update_from_mjdata(data)
             self._sync_fixed_bodies(data)
+            if self.ghost is not None:
+                self.ghost.update(data, self._driven_targets())
         except Exception as exc:  # noqa: BLE001
             if not self._sync_failed:
                 self._sync_failed = True
@@ -358,6 +398,16 @@ class ViewerService:
             for (body_id, *_rest), handle in (getattr(scene, attribute, None) or {}).items():
                 handle.position = np.asarray(data.xpos[body_id], dtype=np.float64)
                 handle.wxyz = np.asarray(data.xquat[body_id], dtype=np.float64)
+
+
+def _cast_fixed_shadows(scene: object) -> None:
+    """Let the fixed world geometry (tables, walls, frames) cast shadows in the browser viewer.
+
+    mjviser adds it with ``cast_shadow=False``, so a table top does not block the light: the
+    shadows of the arm and the objects on it fall through to the floor grid below it.
+    """
+    for handle in (getattr(scene, "_fixed_geom_handles", None) or {}).values():
+        handle.cast_shadow = True
 
 
 __all__ = ["ViewerService", "ViewerTheme"]

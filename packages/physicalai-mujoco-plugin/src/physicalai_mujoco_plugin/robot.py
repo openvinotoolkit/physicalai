@@ -34,6 +34,7 @@ from physicalai_mujoco_plugin.channels import TorqueMode
 from physicalai_mujoco_plugin.compose import OverviewStyle
 from physicalai_mujoco_plugin.control import OperatorControls
 from physicalai_mujoco_plugin.profiles import DefaultUnit, RobotProfile, get_profile
+from physicalai_mujoco_plugin.profiles.franka import with_grip_force
 from physicalai_mujoco_plugin.scene_objects import SceneObjects, SpawnArea
 from physicalai_mujoco_plugin.sim import Sim, default_cameras, joint_names_before_load, load_sim, resolve_scene
 from physicalai_mujoco_plugin.studio_recorder import DEFAULT_STUDIO_URL
@@ -107,6 +108,8 @@ class MuJoCoRobot(OperatorControls):
         studio_url: str = DEFAULT_STUDIO_URL,
         seed: int | None = None,
         exit_with_pid: int | None = None,
+        grip_force_n: float | None = None,
+        http_fallback_port: int | None = None,
     ) -> None:
         """Create a disconnected simulation.
 
@@ -131,9 +134,10 @@ class MuJoCoRobot(OperatorControls):
             enable_viewer: Open the viser viewer (or the native viewer where viser is unavailable).
             viser_host: viser bind address.
             viser_port: viser port.
-            viewer_theme: ``studio`` hides viser's Share and Shutdown buttons, for a viewer embedded
-                in Studio, which stops the simulation itself; ``compact`` also starts with the control
-                panel minimized, for a viewer embedded next to its own controls (a notebook).
+            viewer_theme: ``compact`` hides viser's Share and Shutdown buttons and starts with the
+                control panel minimized, for a viewer embedded next to its own controls (a notebook);
+                ``studio`` is ``compact`` in dark mode, for a viewer embedded in Studio, which stops the
+                simulation itself.
             http_host: HTTP camera and control server bind address.
             http_port: HTTP port; ``0`` disables the server.
             owner_name: The shared-robot owner name, used to find its Studio session.
@@ -142,10 +146,16 @@ class MuJoCoRobot(OperatorControls):
             exit_with_pid: The PID of the process that starts this owner, its parent: once this
                 process is no longer its child, the shared owner shuts down as on ``POST /shutdown``.
                 ``physicalai-mujoco start --exit-with-parent`` passes its own PID.
+            grip_force_n: The Franka Hand's grasp force per finger in newtons, above 0 and at most
+                140; ``None`` keeps the real hand's 70 N. Only the Franka profiles have the hand.
+            http_fallback_port: Port for the HTTP server when ``http_port`` is taken, so the server
+                still starts when another process took ``http_port`` after it was found free;
+                ``None`` runs without the server then.
 
         Raises:
             ValueError: If ``unit``, ``torque_mode``, ``rate_hz``, ``substeps``, ``overview``,
-                ``viewer_theme`` or ``exit_with_pid`` is invalid, the scene, the profile or
+                ``viewer_theme``, ``exit_with_pid`` or ``grip_force_n`` is invalid, the profile has no
+                Franka Hand but ``grip_force_n`` is set, the scene, the profile or
                 ``model_path`` cannot run the requested arm count, or the scene has no ``front``
                 overview and ``overview`` asks for it.
         """
@@ -173,9 +183,12 @@ class MuJoCoRobot(OperatorControls):
             "overview": overview, "enable_viewer": enable_viewer, "viser_host": viser_host, "viser_port": viser_port,
             "viewer_theme": viewer_theme, "http_host": http_host, "http_port": http_port, "owner_name": owner_name,
             "studio_url": studio_url, "seed": seed, "exit_with_pid": exit_with_pid,
+            "grip_force_n": grip_force_n, "http_fallback_port": http_fallback_port,
         }  # fmt: skip
         """Constructor arguments, for pickling (``__getstate__``)."""
         self._profile: RobotProfile = get_profile(profile)
+        if grip_force_n is not None:
+            self._profile = with_grip_force(self._profile, grip_force_n)
         self._unit: DefaultUnit = unit or self._profile.default_unit
         self._torque_mode: TorqueMode = torque_mode
         self._scene_arg = scene
@@ -190,6 +203,7 @@ class MuJoCoRobot(OperatorControls):
         self._viser_host, self._viser_port = viser_host, viser_port
         self._viewer_theme: ViewerTheme = viewer_theme
         self._http_host, self._http_port = http_host, http_port
+        self._http_fallback_port = http_fallback_port
         self._owner_name = owner_name
         self._studio_url = studio_url
         self._seed = seed
@@ -315,6 +329,7 @@ class MuJoCoRobot(OperatorControls):
                 submit_command=self._submit_command,
                 panel_state=self._panel_state,
                 key_callback=self._key_callback,
+                driven_targets=self._driven_targets,
             )
             if not self._viewer.open(sim.model, sim.data):
                 self._viewer, self._enable_viewer = None, False
@@ -417,7 +432,7 @@ class MuJoCoRobot(OperatorControls):
             return
         if self._automation is not None and self._automation.drives_arm:
             if not self._ignored_action_logged:
-                logger.info("The autopilot drives the arm; ignoring actions until it is switched off")
+                logger.info("The autopilot drives the arm, or it waits at its reset pose; ignoring actions")
                 self._ignored_action_logged = True
             return
         self._ignored_action_logged = False
@@ -739,6 +754,9 @@ class MuJoCoRobot(OperatorControls):
             self._record_tick(float(data.time))
             if self._episode_auto_reset is not None:
                 self._episode_auto_reset.update(model, data)
+            if self._automation.take_reset_request():  # type: ignore[union-attr]
+                logger.info("Resetting the scene for the autopilot or for Studio recording")
+                self._reset()
             self._objects.apply_held(model, data)
         self._objects.publish(data)
         if self._viewer is not None:
@@ -765,6 +783,8 @@ class MuJoCoRobot(OperatorControls):
         # The native viewer's render thread waits on the viewer lock meanwhile.
         # A retry only checks whether the thread has finished, so a stuck render cannot stall
         # every tick.
+        if self._automation is not None and self._automation.planner_running:
+            return  # the bucket_sort planner reads the model on its own thread: the edit stays pending
         restart = self._cameras.on_thread
         timeout_s = _EDIT_RETRY_STOP_TIMEOUT_S if self._scene_edit_deferred else _CAMERA_STOP_TIMEOUT_S
         if restart and not self._cameras.stop(timeout_s):
@@ -785,6 +805,17 @@ class MuJoCoRobot(OperatorControls):
             self._tick_meter.reset()  # the clock restarted (new model)
         self._last_tick_sim_time = sim_time
         self._tick_meter.add(sim_time)
+
+    def _driven_targets(self) -> list[tuple[int, float]] | None:
+        """``(joint id, target)`` of the PD torque and velocity channels, for the viewer's target ghost.
+
+        Returns:
+            The targets, or ``None`` during a replay, whose targets mean nothing.
+        """
+        sim = self._sim
+        if sim is None or self._replay is not None:
+            return None
+        return [row for channels in sim.channels for row in channels.driven_targets()]
 
     def _arm_targets(self) -> np.ndarray:
         """Return the current target of every channel in model units (radians for hinges).

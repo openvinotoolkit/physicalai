@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="420mm" height="297mm" viewBox="0 0 1680 1188" role="img" aria-labelledby="title desc">
+  <title id="title">bucket_sort: reproducible table-clamped D435 camera setup</title>
+  <desc id="desc">Dimensioned top view and line-of-sight elevations for a single Franka FR3, rear and front table-edge cameras, nominal optical-centre height 900 mm. Dimensions control; not a structural or safety-certified mounting drawing.</desc>
+  <metadata>{"units":"m","frame":"single FR3 base on tabletop; +X into workspace, +Y robot left, +Z up","table_x_m":[-0.17,0.83],"table_y_m":[-0.9,0.9],"tabletop_height_m":0.75,"tabletop_thickness_m":0.04,"nominal_rgb_vfov_deg":42,"cameras":{"shoulder":{"eye_m":[-0.17,0.68,0.9],"aim_m":[0.45,0,0.05]},"front":{"eye_m":[0.83,-0.8,0.9],"aim_m":[0.45,-0.2,0.05]}}}</metadata>
+  <defs>
+    <marker id="dim" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M10 0 L0 5 L10 10" fill="none" stroke="#526170" stroke-width="1.4"/></marker>
+    <marker id="arrowA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#087e8b"/></marker>
+    <marker id="arrowB" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#bb4b16"/></marker>
+    <marker id="axis" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#283c4e"/></marker>
+    <style>
+      text{font-family:Arial,Helvetica,sans-serif;fill:#203344;font-size:21px} .small{font-size:17px}.label{font-size:25px;font-weight:bold}.title{font-size:36px;font-weight:bold}.a{fill:#087e8b}.b{fill:#bb4b16}.line{fill:none;stroke:#526170;stroke-width:1.5}.dimension{fill:none;stroke:#526170;stroke-width:1.5;marker-start:url(#dim);marker-end:url(#dim)}.ext{stroke:#a7b1b8;stroke-width:1}.aimA{fill:none;stroke:#087e8b;stroke-width:3;marker-end:url(#arrowA)}.aimB{fill:none;stroke:#bb4b16;stroke-width:3;marker-end:url(#arrowB)}
+    </style>
+  </defs>
+  <rect width="1680" height="1188" fill="white"/>
+  <text x="55" y="57" class="title">bucket_sort — table-clamped camera setup</text>
+  <text x="55" y="94">Single FR3 + Franka Hand | All drawing dimensions in mm | Optical targets, not calibrated mounting CAD</text>
+  <line x1="55" y1="115" x2="1625" y2="115" stroke="#c1cbd1"/>
+  <text x="55" y="160" class="label">TOP VIEW</text>
+  <text x="55" y="192" class="small">X forward into workspace; Y to robot's left; Z up</text>
+  <rect x="280" y="250" width="350" height="630" fill="#fbf6ee" stroke="#203344" stroke-width="3"/>
+  <text x="455" y="292" text-anchor="middle" class="label">TABLE</text>
+  <text x="455" y="321" text-anchor="middle" class="small">1000 x 1800; top 40 thick</text>
+  <text x="455" y="230" text-anchor="middle" class="small">ROBOT LEFT (+Y)</text>
+  <text x="455" y="908" text-anchor="middle" class="small">ROBOT RIGHT (−Y)</text>
+  <text x="263" y="565" text-anchor="middle" transform="rotate(-90 263 565)" class="small">REAR EDGE, X = −170</text>
+  <text x="654" y="565" text-anchor="middle" transform="rotate(90 654 565)" class="small">FRONT EDGE, X = +830</text>
+  <rect x="444.5" y="446" width="63" height="238" fill="#f3dc9b" fill-opacity="0.4" stroke="#9a7620" stroke-dasharray="6 5"/>
+  <rect x="514.5" y="425" width="77" height="280" fill="#cadfed" fill-opacity="0.5" stroke="#3a7194" stroke-dasharray="6 5"/>
+  <text x="475" y="741" text-anchor="middle" class="small">object centres</text>
+  <text x="564" y="773" text-anchor="middle" class="small">bucket centres</text>
+  <text x="455" y="807" text-anchor="middle" class="small">Illustrative zones; layout randomises</text>
+  <circle cx="339.5" cy="565" r="19" fill="#d8e0e4" stroke="#203344" stroke-width="2"/>
+  <line x1="310" y1="565" x2="369" y2="565" stroke="#203344"/>
+  <line x1="339.5" y1="536" x2="339.5" y2="594" stroke="#203344"/>
+  <line x1="339.5" y1="565" x2="410" y2="565" stroke="#283c4e" stroke-width="2" marker-end="url(#axis)"/>
+  <line x1="339.5" y1="565" x2="339.5" y2="495" stroke="#283c4e" stroke-width="2" marker-end="url(#axis)"/>
+  <text x="408" y="550" class="small">+X</text><text x="350" y="500" class="small">+Y</text>
+  <text x="90" y="725">FR3 base origin</text><text x="90" y="755">(0, 0, 0)</text>
+  <line x1="235" y1="720" x2="310" y2="579" class="line"/>
+  <line x1="280" y1="327" x2="497" y2="565" class="aimA"/>
+  <line x1="630" y1="845" x2="497" y2="635" class="aimB"/>
+  <path d="M487 565 H507 M497 555 V575" stroke="#087e8b" stroke-width="2"/>
+  <path d="M487 635 H507 M497 625 V645" stroke="#bb4b16" stroke-width="2"/>
+  <circle cx="280" cy="327" r="13" fill="#087e8b"/><text x="280" y="333" text-anchor="middle" style="fill:white;font-size:17px;font-weight:bold">A</text>
+  <circle cx="630" cy="845" r="13" fill="#bb4b16"/><text x="630" y="851" text-anchor="middle" style="fill:white;font-size:17px;font-weight:bold">B</text>
+  <text x="62" y="348" class="label a">A — REAR</text>
+  <text x="62" y="378" class="small">XY (−170, +680)</text>
+  <text x="62" y="406" class="small">220 from +Y corner</text>
+  <text x="675" y="803" class="label b">B — FRONT</text>
+  <text x="675" y="835" class="small">XY (+830, −800)</text>
+  <text x="675" y="864" class="small">100 from the −Y corner</text>
+  <line x1="280" y1="250" x2="210" y2="250" class="ext"/><line x1="280" y1="880" x2="210" y2="880" class="ext"/>
+  <line x1="220" y1="250" x2="220" y2="880" class="dimension"/>
+  <text x="198" y="565" text-anchor="middle" transform="rotate(-90 198 565)">1800 TABLE WIDTH (Y)</text>
+  <line x1="280" y1="880" x2="280" y2="957" class="ext"/><line x1="630" y1="880" x2="630" y2="957" class="ext"/>
+  <line x1="280" y1="947" x2="630" y2="947" class="dimension"/>
+  <text x="455" y="982" text-anchor="middle">1000 TABLE DEPTH (X)</text>
+  <text x="60" y="1022" class="small">Base origin: 170 from rear edge; centred across table width.</text>
+  <text x="60" y="1050" class="small">Marks A/B are nominal clamp/pole axes and RGB XY targets.</text>
+  <line x1="875" y1="145" x2="875" y2="1060" stroke="#d4dce1"/>
+  <text x="915" y="160" class="label">LINE-OF-SIGHT ELEVATIONS</text>
+  <text x="915" y="192" class="small">Sections along each viewing direction; optical centre, not screw centre.</text>
+  <text x="920" y="235" class="label a">A — REAR</text><text x="1325" y="235" class="label b">B — FRONT</text>
+  <rect x="986" y="285" width="28" height="50" fill="#ccebef"/>
+  <rect x="1376" y="285" width="28" height="50" fill="#f9e0d1"/>
+  <line x1="1000" y1="535" x2="1000" y2="310" stroke="#087e8b" stroke-width="6"/>
+  <line x1="1390" y1="535" x2="1390" y2="310" stroke="#bb4b16" stroke-width="6"/>
+  <rect x="982" y="300" width="36" height="20" fill="#087e8b"/>
+  <rect x="1372" y="300" width="36" height="20" fill="#bb4b16"/>
+  <line x1="1000" y1="310" x2="1230.05" y2="522.5" class="aimA"/>
+  <line x1="1390" y1="310" x2="1567.55" y2="522.5" class="aimB"/>
+  <line x1="1000" y1="310" x2="1100" y2="310" stroke="#087e8b" stroke-dasharray="5 4"/>
+  <line x1="1390" y1="310" x2="1490" y2="310" stroke="#bb4b16" stroke-dasharray="5 4"/>
+  <text x="1055" y="356" class="a">42.7° down</text><text x="1490" y="350" class="b">50.1° down</text>
+  <rect x="920" y="535" width="350" height="10" fill="#e9d4b8" stroke="#526170"/>
+  <rect x="1320" y="535" width="310" height="10" fill="#e9d4b8" stroke="#526170"/>
+  <text x="1030" y="585" class="small">tabletop Z = 0; aim Z = +50</text>
+  <text x="1355" y="585" class="small">tabletop Z = 0; aim Z = +50</text>
+  <line x1="950" y1="310" x2="950" y2="535" class="dimension"/>
+  <text x="933" y="425" text-anchor="middle" transform="rotate(-90 933 425)">900 OPTICAL HEIGHT</text>
+  <line x1="1000" y1="628" x2="1230.05" y2="628" class="dimension"/>
+  <text x="1115" y="660" text-anchor="middle" class="small">920 horizontal run</text>
+  <line x1="1390" y1="628" x2="1567.55" y2="628" class="dimension"/>
+  <text x="1480" y="660" text-anchor="middle" class="small">710 horizontal run</text>
+  <line x1="915" y1="722.5" x2="1630" y2="722.5" stroke="#758593" stroke-width="2" stroke-dasharray="8 6"/>
+  <text x="930" y="755" class="small">Floor reference: tabletop 750 high → RGB optical centre 1650 above floor.</text>
+  <text x="930" y="786" class="small">Adjust optical height 800–1000. Re-aim at the same marked target after height changes.</text>
+  <rect x="915" y="820" width="715" height="225" rx="10" fill="#f3f6f8" stroke="#ccd6dc"/>
+  <text x="935" y="856" class="label">CAMERA TARGETS (mm)</text>
+  <text x="935" y="892" class="small">A eye (−170, +680, 900) → aim (450, 0, 50)</text>
+  <text x="935" y="925" class="small">B eye (+830, −800, 900) → aim (450, −200, 50)</text>
+  <text x="935" y="958" class="small">Both: level image, nominal D435 RGB vertical FOV 42°.</text>
+  <text x="935" y="991" class="small">No long boom required. Compensate actual clamp/head-to-RGB offsets.</text>
+  <text x="935" y="1021" class="small">Viser: Shoulder or Front. One overview stream; user chooses the POV.</text>
+  <line x1="55" y1="1080" x2="1625" y2="1080" stroke="#c1cbd1"/>
+  <text x="55" y="1115" class="small">DIMENSIONS CONTROL; NOT TO SCALE WHEN PRINTED. Single table-mounted FR3 only, not a tilted Duo base.</text>
+  <text x="55" y="1143" class="small">Rear pole is within potential arm reach. Validate pole/cable clearance, clamp stability and real RGB calibration before any hardware motion.</text>
+  <text x="55" y="1171" class="small">Wrist: D435-class camera on Franka's dedicated Hand bracket; exact wrist optical transform still requires calibration. Setup target v1 · 2026-10-23</text>
+</svg>

@@ -48,7 +48,15 @@ from physicalai_mujoco_plugin.http_server import (
     StopReplayCommand,
     SwitchSceneCommand,
 )
-from physicalai_mujoco_plugin.studio_recorder import DEFAULT_TASK, MAX_EPISODES, MAX_TASK_CHARS, RecordingOptions
+from physicalai_mujoco_plugin.studio_recorder import (
+    DEFAULT_MAX_ATTEMPTS,
+    DEFAULT_TASK,
+    MAX_ATTEMPTS,
+    MAX_EPISODES,
+    MAX_RECOVERY_FRACTION,
+    MAX_TASK_CHARS,
+    RecordingOptions,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -57,6 +65,7 @@ if TYPE_CHECKING:
     from physicalai_mujoco_plugin.compose import OverviewStyle
     from physicalai_mujoco_plugin.floating import BaseStatus
     from physicalai_mujoco_plugin.http_server import FrameBuffer, SimCommand
+    from physicalai_mujoco_plugin.scene_registry import ViewerView
     from physicalai_mujoco_plugin.studio_recorder import KeepPolicy
 
 CUSTOM_MODEL_LABEL = "Custom model"
@@ -307,6 +316,8 @@ class PanelState:
     """Point a free camera looks at by default."""
     view_extent: float = 1.0
     """Model size, used for the default camera distance."""
+    view: ViewerView | None = None
+    """The scene's starting view, which replaces the default angle on ``view_center``."""
     timing: Mapping[str, Any] = field(default_factory=dict)
     """Real-time factor, control rate and camera frame rates (see ``OperatorControls._timing_status``)."""
     autopilot: Mapping[str, Any] = field(default_factory=dict)
@@ -476,7 +487,13 @@ def _autopilot_markdown(autopilot: Mapping[str, Any]) -> str:
         return "**Autopilot:** off"
     phase = autopilot.get("phase") or "idle"
     target = autopilot.get("target")
-    return f"**Autopilot:** {phase}" + (f" ({target})" if target else "")
+    text = f"**Autopilot:** {phase}" + (f" ({target})" if target else "")
+    if autopilot.get("attempt"):  # bucket_sort: the attempt, and how the episode ended
+        text += f", attempt {autopilot['attempt']}/{autopilot.get('max_attempts', 2)}"
+        outcome = autopilot.get("outcome")
+        if outcome and outcome != "running":
+            text += f", {outcome}" + (f": {autopilot['failure']}" if autopilot.get("failure") else "")
+    return text
 
 
 def _refresh_replay(handles: tuple[Any, ...] | None, replay: Mapping[str, Any]) -> None:
@@ -517,13 +534,20 @@ def _studio_markdown(studio: Mapping[str, Any]) -> str:
 def _episode_markdown(episode: Mapping[str, Any]) -> str:
     if _is_conveyor(episode):
         return _conveyor_markdown(episode)
+    bucket_sort = episode.get("kind") == "bucket_sort"
     if not episode.get("active", True):
         phase = "paused"
     elif episode.get("phase") == "success_hold" and episode.get("countdown_s") is not None:
-        phase = f"success, respawning in {float(episode['countdown_s']):.1f} s"
+        restart = "next episode" if bucket_sort else "respawning"
+        phase = f"success, {restart} in {float(episode['countdown_s']):.1f} s"
     else:
         phase = "waiting for success"
-    return f"**Status:** {phase}  \n**Episodes:** {int(episode.get('episode_count', 0))}"
+    lines = [f"**Status:** {phase}", f"**Episodes:** {int(episode.get('episode_count', 0))}"]
+    if bucket_sort:
+        instruction = episode.get("instruction") or {}
+        slots = ", ".join(str(slot.get("color", "")) for slot in episode.get("slots", []))
+        lines[:0] = [f"**Instruction:** {instruction.get('text', '-')}", f"**Buckets, left to right:** {slots}"]
+    return "  \n".join(lines)
 
 
 class SimControlPanel:
@@ -571,6 +595,7 @@ class SimControlPanel:
         self._fov_deg = _FOV_DEFAULT_DEG
         self._view_center = np.zeros(3)
         self._view_extent = 1.0
+        self._view: ViewerView | None = None
         server.on_client_disconnect(self._on_client_disconnect)
         # Registered once for the server's lifetime (mjviser's scene GUI would
         # add one per scene build), so it always reads the current settings.
@@ -621,6 +646,11 @@ class SimControlPanel:
         gui = self._server.gui
         self._view_center = np.asarray(state.view_center, dtype=np.float64)
         self._view_extent = float(state.view_extent)
+        if state.view != self._view:  # a new scene's view; a rebuild of the same scene keeps the slider
+            self._view = state.view
+            self._fov_deg = state.view.fov_deg if state.view is not None else _FOV_DEFAULT_DEG
+            for client in self._server.get_clients().values():  # open viewers move to the new scene's view
+                self._aim_default(client)
         followed = self.camera.name
         if followed is not None and followed not in state.follow_targets:
             followed = None
@@ -665,11 +695,16 @@ class SimControlPanel:
                 self._aim_default(client)
 
     def _aim_default(self, client: Any) -> None:  # noqa: ANN401
-        """Point *client* at the followed body, or the model centre, from the default angle."""
+        """Point *client* at the followed body from the default angle, else at the scene's view or the model centre."""
         target = self.camera.last_target
-        look_at = target if target is not None else self._view_center
         with client.atomic() if hasattr(client, "atomic") else contextlib.nullcontext():
             client.camera.fov = np.deg2rad(self._fov_deg)
+            if target is None and self._view is not None:
+                client.camera.position = np.asarray(self._view.position, dtype=np.float64)
+                client.camera.look_at = np.asarray(self._view.look_at, dtype=np.float64)
+                client.camera.up_direction = (0.0, 0.0, 1.0)
+                return
+            look_at = target if target is not None else self._view_center
             client.camera.position = look_at + default_camera_position(self._view_extent)
             client.camera.look_at = look_at
 
@@ -835,6 +870,7 @@ class SimControlPanel:
 
     def _build_autopilot_controls(self, state: PanelState) -> None:
         gui = self._server.gui
+        conveyor = _is_conveyor(state.episode)
         with gui.add_folder("Autopilot"):
             mode = gui.add_dropdown(
                 "Autopilot",
@@ -842,18 +878,34 @@ class SimControlPanel:
                 initial_value=AUTOPILOT_LABELS.get(state.autopilot.get("mode", "off"), "Off"),
                 hint=(
                     "The scripted demonstrator sorts the belt. 'Drive the arm' moves it directly; "
-                    "'Virtual leader' only publishes targets for Studio's MuJoCo SO-101 Virtual Leader"
+                    "'Virtual leader' only publishes targets for Studio's MuJoCo Virtual Leader"
+                    if conveyor
+                    else "The scripted demonstrator carries out each instruction. 'Drive the arm' moves it "
+                    "directly; 'Virtual leader' only publishes its targets on GET /leader"
                 ),
             )
             status = gui.add_markdown(_autopilot_markdown(state.autopilot))
+            self._handles.autopilot_mode = (mode, status)
+            if not conveyor and state.episode.get("kind") != "bucket_sort":
+                # Automatic Studio recording runs conveyor and bucket_sort episodes only.
+                self._bind_autopilot_mode(mode)
+                return
             studio = state.studio
             active = studio.get("phase", "off") not in {"off", "done", "stopped", "error"}
             toggle = gui.add_checkbox(
                 "Record in Studio",
                 initial_value=active,
-                hint="Save each conveyor episode to the dataset open in Studio's recording view",
+                hint="Save each conveyor episode to the dataset open in Studio's recording view"
+                if conveyor
+                else "Save each episode the autopilot leads to the dataset open in Studio's recording view; "
+                "Studio teleoperates the arm with the MuJoCo virtual leader",
             )
-            task = gui.add_text("Task", initial_value=str(studio.get("task") or DEFAULT_TASK))
+            if conveyor:
+                task = gui.add_text("Task", initial_value=str(studio.get("task") or DEFAULT_TASK))
+            else:
+                # The instruction is each episode's task, so there is no task to type.
+                task = None
+                gui.add_markdown("**Task:** each episode's instruction. Needs the autopilot on 'Virtual leader'.")
             keep = gui.add_dropdown(
                 "Keep",
                 options=tuple(KEEP_LABELS.values()),
@@ -866,15 +918,29 @@ class SimControlPanel:
                 max=MAX_EPISODES,
                 step=1,
             )
+            recovery = attempts = None
+            if not conveyor:
+                recovery = gui.add_number(
+                    "Stuck starts",
+                    initial_value=float(studio.get("recovery_fraction") or 0.0),
+                    min=0.0,
+                    max=MAX_RECOVERY_FRACTION,
+                    step=0.05,
+                    hint="Share of episodes that start with the hand closed and empty where it would carry "
+                    "the object, so the policy learns to recover; the move there is not recorded",
+                )
+                attempts = gui.add_number(
+                    "Attempts per episode",
+                    initial_value=int(studio.get("max_attempts") or DEFAULT_MAX_ATTEMPTS),
+                    min=1,
+                    max=MAX_ATTEMPTS,
+                    step=1,
+                    hint="Tries the autopilot gets, retries included, before it gives the episode up",
+                )
             studio_status = gui.add_markdown(_studio_markdown(studio))
-        self._handles.autopilot_mode = (mode, status)
         self._handles.studio_toggle = toggle
         self._handles.studio_status = studio_status
-
-        @mode.on_update
-        def _on_mode(event: object) -> None:
-            if not _is_server_event(event):
-                self._submit(SetAutopilotCommand(mode=_AUTOPILOT_BY_LABEL[str(mode.value)]))
+        self._bind_autopilot_mode(mode)
 
         @toggle.on_update
         def _on_toggle(event: object) -> None:
@@ -882,10 +948,24 @@ class SimControlPanel:
                 return
             options = None
             if toggle.value:
-                text = str(task.value).strip()[:MAX_TASK_CHARS] or DEFAULT_TASK
+                text = (str(task.value).strip()[:MAX_TASK_CHARS] if task is not None else "") or DEFAULT_TASK
                 episodes = min(max(int(budget.value), 0), MAX_EPISODES)
-                options = RecordingOptions(task=text, keep=_KEEP_BY_LABEL[str(keep.value)], max_episodes=episodes)
+                share = min(max(float(recovery.value), 0.0), MAX_RECOVERY_FRACTION) if recovery is not None else 0.0
+                tries = min(max(int(attempts.value), 1), MAX_ATTEMPTS) if attempts is not None else DEFAULT_MAX_ATTEMPTS
+                options = RecordingOptions(
+                    task=text,
+                    keep=_KEEP_BY_LABEL[str(keep.value)],
+                    max_episodes=episodes,
+                    recovery_fraction=share,
+                    max_attempts=tries,
+                )
             self._submit(SetStudioRecordingCommand(options=options))
+
+    def _bind_autopilot_mode(self, mode: Any) -> None:  # noqa: ANN401 - a viser dropdown
+        @mode.on_update
+        def _on_mode(event: object) -> None:
+            if not _is_server_event(event):
+                self._submit(SetAutopilotCommand(mode=_AUTOPILOT_BY_LABEL[str(mode.value)]))
 
     def _build_episode_controls(self, state: PanelState) -> None:
         if _is_conveyor(state.episode):
@@ -897,7 +977,11 @@ class SimControlPanel:
             auto_reset = gui.add_checkbox(
                 "Auto-reset",
                 initial_value=bool(episode.get("active", True)),
-                hint="Respawn the cube after it rests on the target",
+                hint=(
+                    "Start a new episode after the named object rests in the named bucket"
+                    if episode.get("kind") == "bucket_sort"
+                    else "Respawn the cube after it rests on the target"
+                ),
             )
             dwell = gui.add_number(
                 "Success dwell (s)",
@@ -910,6 +994,8 @@ class SimControlPanel:
         self._handles.auto_reset = auto_reset
         self._handles.dwell = dwell
         self._handles.episode_status = status
+        if state.autopilot.get("available"):  # a scene with a demonstrator; the others have no folder
+            self._build_autopilot_controls(state)
 
         @auto_reset.on_update
         def _on_auto_reset(event: object) -> None:

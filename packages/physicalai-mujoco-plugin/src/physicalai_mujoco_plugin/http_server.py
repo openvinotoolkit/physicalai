@@ -38,7 +38,15 @@ from starlette.concurrency import run_in_threadpool
 
 from physicalai_mujoco_plugin.compose import OverviewStyle  # noqa: TC001 - pydantic reads it at runtime
 from physicalai_mujoco_plugin.constants import MAX_SEED
-from physicalai_mujoco_plugin.studio_recorder import DEFAULT_TASK, MAX_EPISODES, MAX_TASK_CHARS, RecordingOptions
+from physicalai_mujoco_plugin.studio_recorder import (
+    DEFAULT_MAX_ATTEMPTS,
+    DEFAULT_TASK,
+    MAX_ATTEMPTS,
+    MAX_EPISODES,
+    MAX_RECOVERY_FRACTION,
+    MAX_TASK_CHARS,
+    RecordingOptions,
+)
 
 if TYPE_CHECKING:
     import queue
@@ -58,6 +66,8 @@ MAX_OBJECT_COORD_M = 2.0
 _MIN_QUAT_NORM = 1e-6
 _WILDCARD_HOSTS = frozenset({"0.0.0.0", "::"})  # noqa: S104 - matched, not bound  # nosec B104
 MAX_REPLAY_FRAMES = 36_000
+RECORDING_SCENE_KINDS = frozenset({"conveyor", "bucket_sort"})
+"""Episode kinds whose episodes automatic Studio recording can record."""
 """Most frames ``POST /replay`` accepts: 20 minutes at 30 fps."""
 MAX_REPLAY_FPS = 1000.0
 MAX_REPLAY_BODY_BYTES = 16 * 1024 * 1024
@@ -192,7 +202,12 @@ class AutopilotRequest(BaseModel):
 
 
 class StudioRecordingRequest(BaseModel):
-    """Body for ``POST /studio/recording``; the Studio URL is a launch option, not a request field."""
+    """Body for ``POST /studio/recording``; the Studio URL is a launch option, not a request field.
+
+    The bucket_sort scene ignores ``task``: each episode's instruction is its task. Only it uses
+    ``recovery_fraction`` (the share of episodes that start from a stuck pose) and ``max_attempts``
+    (the demonstrator's attempts per episode).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -200,6 +215,8 @@ class StudioRecordingRequest(BaseModel):
     task: Annotated[str, Field(min_length=1, max_length=MAX_TASK_CHARS)] = DEFAULT_TASK
     keep: Literal["all", "perfect"] = "perfect"
     max_episodes: Annotated[int, Field(ge=0, le=MAX_EPISODES)] = 0
+    recovery_fraction: Annotated[float, Field(ge=0.0, le=MAX_RECOVERY_FRACTION, allow_inf_nan=False)] = 0.0
+    max_attempts: Annotated[int, Field(ge=1, le=MAX_ATTEMPTS)] = DEFAULT_MAX_ATTEMPTS
 
     @field_validator("task")
     @classmethod
@@ -794,10 +811,18 @@ def _add_automation_routes(
 
     @app.post("/studio/recording")
     def studio_recording(request: StudioRecordingRequest) -> dict[str, Any]:
-        if request.enabled and get_status().get("episode", {}).get("kind") != "conveyor":
-            raise HTTPException(status_code=409, detail="Automatic Studio recording needs the conveyor scene")
+        if request.enabled and get_status().get("episode", {}).get("kind") not in RECORDING_SCENE_KINDS:
+            raise HTTPException(
+                status_code=409, detail="Automatic Studio recording needs the conveyor or bucket_sort scene"
+            )
         options = (
-            RecordingOptions(task=request.task, keep=request.keep, max_episodes=request.max_episodes)
+            RecordingOptions(
+                task=request.task,
+                keep=request.keep,
+                max_episodes=request.max_episodes,
+                recovery_fraction=request.recovery_fraction,
+                max_attempts=request.max_attempts,
+            )
             if request.enabled
             else None
         )

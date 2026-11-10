@@ -43,8 +43,20 @@ a plain ``fovy`` renders the 640x480 streams undistorted.
 
 
 def customize_trossen_wxai(spec: mujoco.MjSpec) -> None:
-    """Remove Menagerie's ``wrist_cam``; :data:`TROSSEN_WXAI_WRIST_CAMERA` replaces it."""
+    """Remove Menagerie's ``wrist_cam`` and let the servos carry the arm's weight.
+
+    :data:`TROSSEN_WXAI_WRIST_CAMERA` replaces the camera. Menagerie's position servos are soft
+    (joint_5's ``kp`` is 4.4) and purely proportional, so under gravity the arm stands 2 to 3 cm
+    below its target at the finger tips; the real arm's controller holds the target. Gravity
+    compensation through the actuators (within their force limits) closes that gap in the plant,
+    whatever sends the targets, and leaves the targets themselves alone.
+    """
     spec.delete(spec.camera("wrist_cam"))
+    for body in spec.bodies:
+        if body.name not in {"world", "base_link"}:
+            body.gravcomp = 1.0
+    for joint in spec.joints:
+        joint.actgravcomp = True
 
 
 TROSSEN_WXAI_PROFILE = RobotProfile(

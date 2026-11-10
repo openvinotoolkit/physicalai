@@ -18,8 +18,8 @@ from physicalai.config import export_config
 from physicalai.inference.adapters import adapter_registry, get_adapter
 from physicalai.inference.callbacks.base import Callback
 from physicalai.inference.component_factory import instantiate_component, resolve_artifact
-from physicalai.inference.constants import ACTION
-from physicalai.inference.data.features import InferenceFeature
+from physicalai.inference.constants import ACTION, IMAGES
+from physicalai.inference.data.features import InferenceFeature, InferenceFeatureType
 from physicalai.inference.manifest import ComponentSpec, Manifest
 from physicalai.inference.postprocessors.base import Postprocessor
 from physicalai.inference.preprocessors.base import Preprocessor
@@ -39,6 +39,33 @@ _SAFE_POLICY_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.\-]*$", re.ASCII)
 def _is_safe_policy_name(name: str) -> bool:
     """Return True if *name* matches ``[a-zA-Z0-9][a-zA-Z0-9-_.]*`` (ASCII only)."""
     return _SAFE_POLICY_NAME_RE.fullmatch(name) is not None
+
+
+def _training_camera_order(features: list[InferenceFeature]) -> list[str]:
+    """Return the camera names in the order the manifest declares them.
+
+    Exports list their visual features in training order, as ``images.<name>``
+    when there is more than one camera. A single camera has no order to keep.
+    """
+    prefix = f"{IMAGES}."
+    names = [
+        feature.name.removeprefix(prefix)
+        for feature in features
+        if feature.ftype == InferenceFeatureType.VISUAL and feature.name.startswith(prefix)
+    ]
+    return names if len(names) > 1 else []
+
+
+def _with_keys_in_order(mapping: dict[str, Any], keys: list[str]) -> dict[str, Any]:
+    """Return a copy of *mapping* whose *keys* appear in the given order.
+
+    The keys keep the positions they had among the other entries; only which
+    key sits in each of those positions changes.
+    """
+    wanted = set(keys)
+    in_order = iter(keys)
+    slots = [next(in_order) if key in wanted else key for key in mapping]
+    return {key: mapping[key] for key in slots}
 
 
 @export_config(class_path="physicalai.inference.InferenceModel", scalar_var_kwargs=True)
@@ -161,6 +188,8 @@ class InferenceModel:
         )
         self.input_features: list[InferenceFeature] = self._load_features(self.manifest.model.input_features)
         self.output_features: list[InferenceFeature] = self._load_features(self.manifest.model.output_features)
+        self._camera_order = _training_camera_order(self.input_features)
+        self._warned_camera_mismatch = False
 
         self.callbacks: list[Callback] = (
             callbacks if callbacks is not None else self._load_callbacks(self.manifest.model.callbacks)
@@ -278,6 +307,7 @@ class InferenceModel:
             if modified is not None:
                 inputs = modified
 
+        inputs = self._order_cameras(inputs)
         for preprocessor in self.preprocessors:
             inputs = preprocessor(inputs)
 
@@ -406,6 +436,42 @@ class InferenceModel:
     def __exit__(self, *args: object) -> None:
         """Close the model when the context manager exits."""
         self.close()
+
+    def _order_cameras(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        """Put the observation's cameras in the order the policy was trained on.
+
+        Preprocessors such as Pi0.5's stack cameras in observation order, so an
+        observation that lists the same cameras in another order would silently
+        feed each image to the wrong camera slot. The manifest's input features
+        name the cameras in training order.
+
+        Args:
+            inputs: Observation with cameras under ``images.<name>`` keys or a
+                nested ``images`` dict.
+
+        Returns:
+            The observation with its cameras in training order, or ``inputs``
+            itself when they already are or do not match the trained cameras.
+        """
+        if not self._camera_order:
+            return inputs
+        nested = inputs.get(IMAGES)
+        prefix = "" if isinstance(nested, dict) else f"{IMAGES}."
+        images = nested if isinstance(nested, dict) else inputs
+        names = [key.removeprefix(prefix) for key in images if key.startswith(prefix) and "is_pad" not in key]
+        if names == self._camera_order:
+            return inputs
+        if set(names) != set(self._camera_order):
+            if not self._warned_camera_mismatch:
+                logger.warning(
+                    "Observation cameras {} do not match the trained cameras {}; using the observation order.",
+                    sorted(names),
+                    self._camera_order,
+                )
+                self._warned_camera_mismatch = True
+            return inputs
+        ordered = _with_keys_in_order(images, [f"{prefix}{name}" for name in self._camera_order])
+        return {**inputs, IMAGES: ordered} if isinstance(nested, dict) else ordered
 
     def _prepare_inputs(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         """Flatten and filter input dict for the adapter.

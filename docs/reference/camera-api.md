@@ -41,8 +41,26 @@ class CameraType(StrEnum):
 
 | Method          | Semantics                                                      |
 | --------------- | -------------------------------------------------------------- |
-| `read()`        | Returns the next frame, blocks, and preserves sequence.        |
+| `read()`        | Blocks for a new frame; backend-specific skipping applies.     |
 | `read_latest()` | Returns the newest frame, does not block, and may skip frames. |
 | `async_read()`  | Provides an async wrapper around `read()`.                     |
+
+`IPCamera`, default `UVCCamera`, and `SharedCamera` provide latest-oriented reads
+that can skip intermediate frames; they do not guarantee lossless recording.
+`IPCamera.read()` waits for a frame newer than the last returned by either read method.
+Cached frames retain their sequence and timestamp; `read(timeout=...)` raises
+`CaptureTimeoutError` if no new frame arrives. `read_latest()` never waits for a new
+frame and raises `CaptureError` if no frame is available.
+
+IP timestamps mark local decode/conversion completion; default UVC timestamps mark
+Python's first observation of a decoded frame. Neither measures source capture age.
+Linux UVC with `backend="v4l2"` keeps sequential `read()` semantics and preserves kernel
+sequences and monotonic driver timestamps, falling back to local dequeue time for
+other clocks. Shared transport preserves the backend's metadata.
+
+IP consumer read timeouts bound frame waits independently of native network I/O.
+After a permanent IP stream failure, explicitly disconnect/reconnect; there is no
+automatic reconnection. Shared-publisher reconfiguration of IP cameras is unsupported
+and leaves the existing stream running.
 
 Camera instances are not thread-safe.

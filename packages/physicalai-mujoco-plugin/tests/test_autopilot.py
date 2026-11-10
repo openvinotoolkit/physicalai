@@ -29,12 +29,61 @@ def score(sim: MuJoCoRobot) -> dict[str, int]:
 
 def test_autopilot_is_only_available_with_a_conveyor() -> None:
     autopilot = Autopilot()
-    autopilot.bind(None, None)
+    autopilot.bind(None)
     autopilot.set_mode("drive")
     assert autopilot.mode == "off"
     assert autopilot.step(object(), TICK_S) is None
     with pytest.raises(ValueError, match="Unknown autopilot mode"):
         autopilot.set_mode("fly")  # type: ignore[arg-type]
+
+
+class _StubDemonstrator:
+    phase = "reach"
+    target = "cube"
+
+    def __init__(self) -> None:
+        self.resets = 0
+        self.applied: list[bool] = []
+        self.wants_reset = True
+
+    def reset(self) -> None:
+        self.resets += 1
+
+    def step(self, data: object, dt: float, *, apply: bool = True) -> np.ndarray:
+        self.applied.append(apply)
+        return np.zeros(2)
+
+    def status(self) -> dict[str, object]:
+        return {"attempt": 1}
+
+    def take_reset_request(self) -> bool:
+        wants, self.wants_reset = self.wants_reset, False
+        return wants
+
+
+def test_autopilot_steps_any_demonstrator_and_passes_its_status_through() -> None:
+    demo = _StubDemonstrator()
+    autopilot = Autopilot()
+    autopilot.bind(demo)
+    assert autopilot.status()["attempt"] is None  # scene fields stay, empty, while off
+    assert not autopilot.take_reset_request()  # nothing runs while off
+
+    autopilot.set_mode("leader")
+    assert demo.resets == 1
+    assert autopilot.step(object(), TICK_S) is not None
+    assert demo.applied == [False]  # leader mode only publishes the targets
+    status = autopilot.status()
+    assert (status["phase"], status["target"], status["attempt"]) == ("reach", "cube", 1)
+    assert autopilot.take_reset_request()
+    assert not autopilot.take_reset_request()
+
+
+def test_unavailable_reason_is_dropped_when_a_demonstrator_is_bound() -> None:
+    autopilot = Autopilot()
+    autopilot.bind(None, unavailable="two arms")
+    assert autopilot.status()["unavailable_reason"] == "two arms"
+    autopilot.bind(_StubDemonstrator(), unavailable="two arms")
+    assert autopilot.status()["unavailable_reason"] is None
 
 
 @pytest.mark.slow

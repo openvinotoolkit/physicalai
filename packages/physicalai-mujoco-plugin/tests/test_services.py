@@ -53,7 +53,7 @@ class TestViewerLaunch:
         finally:
             console.file = original_file
 
-    def test_studio_theme_hides_share_and_shutdown_buttons_only(self, model_data) -> None:
+    def test_studio_theme_is_compact_in_dark_mode(self, model_data) -> None:
         server = MagicMock()
         viewer = ViewerService(
             host="127.0.0.1", port=9090, submit_command=MagicMock(), panel_state=MagicMock(), theme="studio"
@@ -65,9 +65,9 @@ class TestViewerLaunch:
         ):
             assert viewer.open(*model_data) is True
 
-        server.gui.configure_theme.assert_called_once_with(show_share_button=False)
+        server.gui.configure_theme.assert_called_once_with(show_share_button=False, dark_mode=True)
         assert panel.call_args.kwargs == {"shutdown_button": False}
-        server.gui.main_panel.minimize.assert_not_called()
+        server.gui.main_panel.minimize.assert_called_once_with()
 
     def test_compact_theme_hides_the_buttons_and_minimizes_the_control_panel(self, model_data) -> None:
         server = MagicMock()
@@ -81,7 +81,7 @@ class TestViewerLaunch:
         ):
             assert viewer.open(*model_data) is True
 
-        server.gui.configure_theme.assert_called_once_with(show_share_button=False)
+        server.gui.configure_theme.assert_called_once_with(show_share_button=False, dark_mode=False)
         assert panel.call_args.kwargs == {"shutdown_button": False}
         server.gui.main_panel.minimize.assert_called_once_with()
 
@@ -220,6 +220,18 @@ class TestViewerGui:
         assert scene.camera_tracking_enabled is False
         scene.create_scene_gui.assert_not_called()
         scene.set_refresh_handler.assert_called_once()
+
+    def test_fixed_geometry_casts_shadows(self, model_data) -> None:
+        # mjviser adds it without, so shadows of what stands on a table fall through to the floor.
+        viewer = self._built(model_data)
+        scene = MagicMock()
+        table = MagicMock(cast_shadow=False)
+        scene._fixed_geom_handles = {(0, 0, 0): table}  # noqa: SLF001
+
+        with patch("mjviser.ViserMujocoScene", return_value=scene):
+            viewer.build_gui()
+
+        assert table.cast_shadow is True
 
     def test_tab_order(self, model_data) -> None:
         server = MagicMock()

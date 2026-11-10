@@ -43,8 +43,11 @@ from physicalai_mujoco_plugin.spawn import FREEJOINT_SPAWN_Z
 
 
 def _scene_profile(scene_id: str) -> RobotProfile:
-    """The SO-101 for tabletop scenes, the Go2 for floor scenes (spawn anchors)."""
-    return SO101_PROFILE if scene_id in list_scenes_for(SO101_PROFILE) else get_profile("unitree_go2")
+    """The SO-101 for its tabletop scenes, the first listed robot of other scenes, the Go2 for floor scenes."""
+    if scene_id in list_scenes_for(SO101_PROFILE):
+        return SO101_PROFILE
+    robots = get_scene(scene_id).robots
+    return get_profile(robots[0] if robots != "*" else "unitree_go2")
 
 # Joint ranges (radians) of the plugin's SO-101 model before it moved to MuJoCo Menagerie's.
 # Normalized units span these ranges, so trained policies depend on them staying put.
@@ -450,10 +453,17 @@ def _assert_in_overview(model: mujoco.MjModel, data: mujoco.MjData, points: np.n
     assert margin <= v.min() and v.max() <= 480 - margin, f"{what}: y spans {v.min():.0f}..{v.max():.0f} px"
 
 
-def _robot_bodies(model: mujoco.MjModel, scene_xml: Path) -> set[int]:
-    """Return the bodies the composed robots brought: every body the scene file does not name."""
+def _robot_bodies(model: mujoco.MjModel, scene_xml: Path, stand: str | None = None) -> set[int]:
+    """Return the bodies the composed robots brought: every body the scene file does not name.
+
+    A robot's stand (the Duo's 1.1 m column, behind the arms) is not one: the overview frames the arms.
+    """
     scene_bodies = {body.name for body in mujoco.MjSpec.from_file(str(scene_xml)).bodies}
-    return {i for i in range(1, model.nbody) if model.body(i).name not in scene_bodies}
+    return {
+        i
+        for i in range(1, model.nbody)
+        if model.body(i).name not in scene_bodies and (stand is None or not model.body(i).name.endswith(stand))
+    }
 
 
 @pytest.mark.parametrize(
@@ -481,7 +491,7 @@ def test_overview_frames_the_arm_at_home_the_spawn_arc_and_the_target(name: str,
     for binding in composed.robots:
         place_home(model, data, binding)
     mujoco.mj_forward(model, data)
-    robot = _robot_bodies(model, scene.scene_xml_path)
+    robot = _robot_bodies(model, scene.scene_xml_path, profile.stand)
     laid_out = scene.for_profile(profile, arms)
     half = np.radians(laid_out.spawn_angle_half_deg)
     arc = [
@@ -551,8 +561,8 @@ _FRONT_SCENES = [
 
 
 @pytest.mark.parametrize(("scene_id", "name", "arms"), _FRONT_SCENES)
-def test_front_overview_frames_the_arms_at_home_and_the_aim_point(scene_id: str, name: str, arms: int) -> None:
-    """The ``front`` overview of the other tabletop scenes shows every arm at the scene's home pose and its aim point."""
+def test_front_overview_frames_its_subject_and_aim_point(scene_id: str, name: str, arms: int) -> None:
+    """Frame the arms, or the task bodies for bucket_sort's deliberately task-focused short-pole view."""
     scene = get_scene(scene_id)
     profile = get_profile(name)
     composed = compose_scene(scene.scene_xml_path, profile, scene_layout=scene.layout_for(profile, arms, "front"))
@@ -565,7 +575,12 @@ def test_front_overview_frames_the_arms_at_home_and_the_aim_point(scene_id: str,
     mujoco.mj_forward(model, data)
     aim = np.asarray(scene.front_view.aim or (*scene.for_profile(profile, arms).spawn_center, 0.0))  # type: ignore[union-attr]
 
-    points = np.vstack([_robot_geometry_points(model, data, _robot_bodies(model, scene.scene_xml_path)), aim])
+    subjects = _robot_bodies(model, scene.scene_xml_path)
+    if scene_id == "bucket_sort":
+        # Its real 0.8-1.0 m poles frame the task rather than the full arm. Dedicated camera tests
+        # cover complete bucket/object meshes across random resets, plus the mount constraints.
+        subjects = {int(model.jnt_bodyid[model.joint(joint).id]) for joint in scene.free_joints}
+    points = np.vstack([_robot_geometry_points(model, data, subjects), aim])
     _assert_in_overview(model, data, points, f"{name} in {scene_id} with {arms} arm(s)")
 
 

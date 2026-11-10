@@ -693,7 +693,7 @@ class TestStatus:
         assert status["connected"] is False
         assert status["scene"] == "single_pick_place"
         assert status["profile"] == "so101"
-        assert set(status["scenes"]) == {"single_pick_place", "yahtzee", "conveyor_sort", "floor_flat"}
+        assert set(status["scenes"]) == {"single_pick_place", "yahtzee", "conveyor_sort", "bucket_sort", "floor_flat"}
         assert "floor_flat" not in status["compatible_scenes"]
         assert status["objects"] == []
         assert status["cameras"] == [
@@ -1057,6 +1057,40 @@ class TestHttpServer:
         finally:
             blocker.close()
 
+    def test_busy_port_falls_back_to_the_fallback_port(self, model_path) -> None:
+        import http.client
+        import socket
+
+        port, fallback = self._free_port(), self._free_port()
+        blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        blocker.bind(("127.0.0.1", port))
+        blocker.listen(1)
+        try:
+            robot = so101(model_path, http_port=port, http_fallback_port=fallback)
+            robot.connect()
+            conn = http.client.HTTPConnection("127.0.0.1", fallback, timeout=5)
+            try:
+                assert robot._http_server is not None  # noqa: SLF001
+                assert robot._http_server.url == f"http://127.0.0.1:{fallback}"  # noqa: SLF001
+                conn.request("GET", "/health")
+                assert conn.getresponse().status == 200
+            finally:
+                conn.close()
+                robot.disconnect()
+        finally:
+            blocker.close()
+
+    def test_a_free_port_is_used_before_the_fallback(self, model_path) -> None:
+        port, fallback = self._free_port(), self._free_port()
+        robot = so101(model_path, http_port=port, http_fallback_port=fallback)
+        robot.connect()
+        try:
+            assert robot._http_server is not None  # noqa: SLF001
+            assert robot._http_server.url == f"http://127.0.0.1:{port}"  # noqa: SLF001
+        finally:
+            robot.disconnect()
+        assert robot.__getstate__()["http_fallback_port"] == fallback
+
     def test_http_disabled_by_default(self, robot) -> None:
         assert robot._http_server is None  # noqa: SLF001
 
@@ -1146,3 +1180,54 @@ def test_model_cameras_in_status_use_the_live_renderers(robot) -> None:
     # A real renderer is needed only by the camera tests in test_scene_models.py and test_cameras.py.
     assert robot._http_status()["cameras"] == []  # noqa: SLF001
     assert mujoco.mj_name2id(robot._model, mujoco.mjtObj.mjOBJ_CAMERA, "overview") >= 0  # noqa: SLF001
+
+
+class TestGripForce:
+    @staticmethod
+    def _grippers(robot: MuJoCoRobot) -> np.ndarray:
+        model = robot._model  # noqa: SLF001
+        ids = [i for i in range(model.nu) if model.actuator(i).name.endswith("gripper")]
+        assert ids
+        return model.actuator_forcerange[ids]
+
+    def test_the_force_reaches_the_owner_through_its_recipe(self) -> None:
+        robot = MuJoCoRobot("franka_fr3", scene="single_pick_place", grip_force_n=25.0, substeps=1, cameras=[])
+        assert robot.__getstate__()["grip_force_n"] == 25.0
+        owner = Config.from_instance(robot).instantiate()
+        assert owner.profile.customize.keywords == {"grip_force_n": 25.0}  # type: ignore[union-attr]
+
+    def test_the_force_is_off_by_default(self) -> None:
+        robot = MuJoCoRobot("franka_fr3", scene="single_pick_place", substeps=1, cameras=[])
+        robot.connect()
+        try:
+            np.testing.assert_allclose(self._grippers(robot), [[-70.0, 70.0]])
+        finally:
+            robot.disconnect()
+
+    def test_a_profile_without_a_franka_hand_rejects_it(self) -> None:
+        with pytest.raises(ValueError, match="Profile 'so101' has no Franka Hand"):
+            MuJoCoRobot("so101", grip_force_n=10.0, cameras=[])
+
+    def test_the_force_survives_a_scene_switch_and_a_reset(self) -> None:
+        robot = MuJoCoRobot("franka_fr3", scene="single_pick_place", grip_force_n=25.0, substeps=1, cameras=[])
+        robot.connect()
+        try:
+            np.testing.assert_allclose(self._grippers(robot), [[-25.0, 25.0]])
+            assert robot._switch_to_scene("bucket_sort")  # noqa: SLF001
+            robot.get_observation()
+            np.testing.assert_allclose(self._grippers(robot), [[-25.0, 25.0]])
+            robot._reset()  # noqa: SLF001
+            robot.get_observation()
+            np.testing.assert_allclose(self._grippers(robot), [[-25.0, 25.0]])
+        finally:
+            robot.disconnect()
+
+    def test_the_force_applies_to_both_arms_of_a_bimanual_run(self) -> None:
+        robot = MuJoCoRobot(
+            "franka_fr3", scene="single_pick_place", bimanual=True, grip_force_n=25.0, substeps=1, cameras=[]
+        )
+        robot.connect()
+        try:
+            np.testing.assert_allclose(self._grippers(robot), [[-25.0, 25.0]] * 2)
+        finally:
+            robot.disconnect()
