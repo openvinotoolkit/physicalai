@@ -113,6 +113,7 @@ component_registry.register("molmoact2_inputs", "physicalai.inference.preprocess
 component_registry.register("ov_tokenizer", "physicalai.inference.preprocessors.OVTokenizer")
 component_registry.register("pi05", "physicalai.inference.preprocessors.Pi05Preprocessor")
 component_registry.register("xr0", "physicalai.inference.preprocessors.XR0Preprocessor")
+component_registry.register("vla_jepa", "physicalai.inference.preprocessors.VLAJEPAPreprocessor")
 component_registry.register("rldx1", "physicalai.inference.preprocessors.Rldx1Preprocessor")
 component_registry.register("rldx1_token_composer", "physicalai.inference.preprocessors.Rldx1TokenComposer")
 component_registry.register("rldx1_rope", "physicalai.inference.preprocessors.Rldx1RopePreprocessor")
