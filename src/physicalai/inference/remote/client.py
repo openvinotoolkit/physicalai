@@ -245,6 +245,14 @@ class RemoteInferenceModel(InferenceModel):
             msg = f"Remote action chunk length {action_count} exceeds advertised chunk_size {chunk_size}"
             raise RemoteInferenceProtocolError(msg)
 
+    def observe(self, observation: dict[str, Any]) -> dict[str, Any]:  # noqa: PLR6301
+        """Return *observation* unchanged; callbacks run on the server, not the client.
+
+        Returns:
+            The unchanged observation.
+        """
+        return observation
+
     def reset(self) -> None:
         """Reset the remote policy on the model-owning server worker."""
         with self._lock:

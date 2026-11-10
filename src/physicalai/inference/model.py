@@ -341,9 +341,30 @@ class InferenceModel:
             >>> action = policy.select_action(obs)
             >>> next_obs, reward, done = env.step(action)
         """
+        observation = self.observe(observation)
         if not self._action_buffer:
             self._action_buffer.extend(self.predict_action_chunk(observation))
         return self._action_buffer.popleft()
+
+    def observe(self, observation: dict[str, Any]) -> dict[str, Any]:
+        """Feed one control-tick observation to callbacks that track history.
+
+        Call this every tick, including ticks served from a buffered action
+        chunk. ``select_action`` and ``PolicySource`` call it automatically;
+        callers driving ``predict_action_chunk`` directly must call it
+        themselves and pass the returned dict to the prediction.
+
+        Args:
+            observation: Observation dict for the current tick.
+
+        Returns:
+            The observation, possibly rewritten by ``on_observe`` callbacks.
+        """
+        for callback in self.callbacks:
+            modified = callback.on_observe(observation)
+            if modified is not None:
+                observation = modified
+        return observation
 
     def predict_action_chunk(self, observation: dict[str, np.ndarray]) -> np.ndarray:
         """Predict a chunk of actions for the given observation.

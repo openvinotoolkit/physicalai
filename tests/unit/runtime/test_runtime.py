@@ -1218,6 +1218,36 @@ class TestPolicySourceEpisodeReset:
         finally:
             source.disconnect()
 
+    def test_update_observes_every_tick_and_infers_on_observed_input(self) -> None:
+        class ObservingModel:
+            def __init__(self) -> None:
+                self.observed: list[float] = []
+                self.predicted: list[dict[str, Any]] = []
+
+            def observe(self, observation: dict[str, Any]) -> dict[str, Any]:
+                self.observed.append(float(observation[STATE][0, 0]))
+                return {**observation, "windowed": True}
+
+            def predict_action_chunk(self, observation: dict[str, Any]) -> np.ndarray:
+                self.predicted.append(observation)
+                return np.repeat(observation[STATE], 4, axis=0)
+
+            def reset(self) -> None:
+                pass
+
+        model = ObservingModel()
+        source = PolicySource(model=model, execution=SyncExecution(request_threshold=0.0))  # type: ignore[arg-type]
+        source.connect(bus=_CallbackBus([]), session_id="session")
+        try:
+            for step in range(3):
+                source.update(self._observation(float(step)), {}, step=step)
+        finally:
+            source.disconnect()
+
+        assert model.observed == [0.0, 1.0, 2.0]
+        assert len(model.predicted) == 1
+        assert model.predicted[0]["windowed"] is True
+
     def test_reset_reseeds_from_current_observation(self) -> None:
         model = MagicMock()
         model.predict_action_chunk.side_effect = lambda obs: np.repeat(obs[STATE], 4, axis=0)

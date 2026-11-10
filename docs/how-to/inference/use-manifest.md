@@ -45,7 +45,11 @@ model:
 
 The RLDX-1 callback above creates temporal image windows before preprocessing
 without Python-side callback wiring. Manifest callbacks receive `on_load`,
-`on_predict_start`, `on_predict_end`, and `on_reset` lifecycle events.
+`on_observe`, `on_predict_start`, `on_predict_end`, and `on_reset` lifecycle
+events. `on_observe` fires on every `select_action()` call and every
+`PolicySource` tick, even when the action comes from a buffered chunk. If you
+call `predict_action_chunk()` directly, call `model.observe(obs)` each tick and
+pass its result to the prediction.
 
 When constructing `InferenceModel`, an explicitly supplied `callbacks` list
 takes precedence over the manifest, including an explicitly supplied empty

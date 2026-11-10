@@ -30,6 +30,9 @@ class Rldx1VtcWindowCallback(Callback):
 
     Keeps per-camera ring buffers across calls and rewrites image inputs to
     ``(B, T, C, H, W)`` or ``(B, T, H, W, C)`` before preprocessors execute.
+    Frames are recorded in :meth:`on_observe`, which ``InferenceModel`` fires
+    every control tick, so the stride is measured in env steps rather than
+    inference calls.
 
     Args:
         video_length: Number of temporal frames in the output window.
@@ -56,13 +59,30 @@ class Rldx1VtcWindowCallback(Callback):
         self._history = None
 
     @override
+    def on_observe(self, observation: dict[str, Any]) -> dict[str, Any] | None:
+        """Record this tick's frames and return the windowed observation.
+
+        Returns:
+            A rewritten observation with ``(B, T, ...)`` image views, or
+            ``None`` when windowing does not apply.
+        """
+        return self._record_and_window(observation)
+
+    @override
     def on_predict_start(self, inputs: dict[str, Any]) -> dict[str, Any] | None:
-        """Apply temporal windowing to image inputs when needed.
+        """Window inputs for callers that bypass :meth:`on_observe`.
+
+        Inputs already windowed by :meth:`on_observe` are 5-D and pass through
+        unchanged. Without ``on_observe`` the history only advances once per
+        prediction, so prefer ``InferenceModel.select_action`` or ``observe``.
 
         Returns:
             A rewritten input dict when windowing is applied, otherwise
             ``None`` to keep inputs unchanged.
         """
+        return self._record_and_window(inputs)
+
+    def _record_and_window(self, inputs: dict[str, Any]) -> dict[str, Any] | None:
         if self._video_length <= 1:
             return None
 

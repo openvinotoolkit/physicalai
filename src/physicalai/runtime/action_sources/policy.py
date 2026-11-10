@@ -160,6 +160,9 @@ class PolicySource(ActionSource):
         """
         with self._state_lock:
             model_input = self._to_model_input(robot_state, camera_frames)
+            observe = getattr(type(self._model), "observe", None)
+            if observe is not None:
+                model_input = observe(self._model, model_input)
 
             if not self._warmed_up:
                 self.warmup(model_input)

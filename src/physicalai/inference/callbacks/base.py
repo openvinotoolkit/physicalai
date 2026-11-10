@@ -26,12 +26,13 @@ class Callback:
     Callbacks fire in declared order during the inference lifecycle:
 
     1. ``on_load`` — once, after the model finishes loading
-    2. ``on_predict_start`` — before each prediction
-    3. ``on_predict_end`` — after each prediction
-    4. ``on_reset`` — when ``InferenceModel.reset()`` is called
-    5. ``on_close`` — once, when ``InferenceModel.close()`` is called
+    2. ``on_observe`` — every control tick, via ``InferenceModel.observe()``
+    3. ``on_predict_start`` — before each prediction
+    4. ``on_predict_end`` — after each prediction
+    5. ``on_reset`` — when ``InferenceModel.reset()`` is called
+    6. ``on_close`` — once, when ``InferenceModel.close()`` is called
 
-    The ``on_predict_start`` and ``on_predict_end`` hooks can
+    The ``on_observe``, ``on_predict_start`` and ``on_predict_end`` hooks can
     optionally modify the data flowing through the pipeline by
     returning a replacement dict.  Return ``None`` (the default) to
     pass through unchanged.
@@ -43,6 +44,20 @@ class Callback:
 
         >>> model = InferenceModel("./exports/act", callbacks=[PrintCallback()])
     """
+
+    def on_observe(self, observation: dict[str, Any]) -> dict[str, Any] | None:
+        """Called once per control tick, whether or not inference runs.
+
+        Use this for state that must see every observation (e.g. temporal
+        frame history), since prediction runs only once per action chunk.
+
+        Args:
+            observation: Observation dict for the current tick.
+
+        Returns:
+            A replacement dict to use instead of *observation*, or
+            ``None`` to pass *observation* through unchanged.
+        """
 
     def on_predict_start(self, inputs: dict[str, Any]) -> dict[str, Any] | None:
         """Called before prediction.  Can modify inputs.

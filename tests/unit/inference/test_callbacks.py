@@ -290,6 +290,19 @@ class TestRldx1VtcWindowCallback:
         for idx in range(4):
             np.testing.assert_array_equal(out["images.main"][:, idx], new)
 
+    def test_on_observe_records_every_tick_and_predict_passes_through(self) -> None:
+        callback = Rldx1VtcWindowCallback(video_length=2, video_stride=2)
+        frames = [np.full((1, 3, 2, 2), i, dtype=np.uint8) for i in range(3)]
+
+        out = None
+        for frame in frames:
+            out = callback.on_observe({"images.main": frame})
+
+        assert out is not None
+        np.testing.assert_array_equal(out["images.main"][:, 0], frames[0])
+        np.testing.assert_array_equal(out["images.main"][:, 1], frames[2])
+        assert callback.on_predict_start(out) is None
+
 
 class TestCallbackWiring:
     def test_on_load_fires_during_init(
@@ -595,3 +608,23 @@ class TestContextManager:
         assert call_inputs["images.main"].shape == (1, 4, 3, 2, 2)
         for idx in range(4):
             np.testing.assert_array_equal(call_inputs["images.main"][:, idx], second)
+
+    def test_vtc_history_advances_on_buffered_select_action_ticks(
+        self,
+        mock_export_dir: Path,
+        mock_adapter: MagicMock,
+    ) -> None:
+        mock_adapter.output_names = ["action"]
+        mock_adapter.predict.return_value = {"action": np.zeros((1, 3, 2), dtype=np.float32)}
+        callback = Rldx1VtcWindowCallback(video_length=2, video_stride=1)
+        model = _make_model(mock_export_dir, mock_adapter, callbacks=[callback])
+        frames = [np.full((1, 3, 2, 2), i, dtype=np.uint8) for i in range(4)]
+
+        for frame in frames:
+            model.select_action({"images.main": frame})
+
+        # Chunk of 3 means inference on ticks 0 and 3; tick 3 must pair with tick 2, not tick 0.
+        assert mock_adapter.predict.call_count == 2
+        window = mock_adapter.predict.call_args[0][0]["images.main"]
+        np.testing.assert_array_equal(window[:, 0], frames[2])
+        np.testing.assert_array_equal(window[:, 1], frames[3])
