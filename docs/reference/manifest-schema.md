@@ -6,7 +6,7 @@ The on-disk manifest is `manifest.json`. YAML is shown here for readability.
 
 ```yaml
 format: policy_package
-version: "1.0"
+version: "1.1"
 policy: {}
 model: {}
 hardware: {}
@@ -56,14 +56,34 @@ model:
 
 Fields:
 
-| Field            | Type                  | Description                        |
-| ---------------- | --------------------- | ---------------------------------- |
-| `n_obs_steps`    | integer               | Observation history length         |
-| `artifacts`      | mapping               | Logical artifact name to file path |
-| `runner`         | `ComponentSpec`       | Inference runner                   |
-| `preprocessors`  | list[`ComponentSpec`] | Preprocessing pipeline             |
-| `postprocessors` | list[`ComponentSpec`] | Postprocessing pipeline            |
-| `callbacks`      | list[`ComponentSpec`] | Inference lifecycle callbacks      |
+| Field                 | Type                             | Description                                                           |
+| --------------------- | -------------------------------- | --------------------------------------------------------------------- |
+| `n_obs_steps`         | integer                          | Expected observation count (metadata only; does not activate history) |
+| `observation_history` | `ObservationHistorySpec` or null | Opt-in image/state history for `PolicySource`                         |
+| `artifacts`           | mapping                          | Logical artifact name to file path                                    |
+| `runner`              | `ComponentSpec`                  | Inference runner                                                      |
+| `preprocessors`       | list[`ComponentSpec`]            | Preprocessing pipeline                                                |
+| `postprocessors`      | list[`ComponentSpec`]            | Postprocessing pipeline                                               |
+| `callbacks`           | list[`ComponentSpec`]            | Inference lifecycle callbacks                                         |
+
+### Observation History
+
+```yaml
+version: "1.1"
+model:
+  observation_history:
+    n_obs_steps: 3
+    stride: 2
+```
+
+`ObservationHistorySpec` requires a positive integer `n_obs_steps`; `stride` is
+a positive integer defaulting to `1`. Omitting this field or setting it to `null`
+leaves history disabled. `PolicySource` automatically consumes this typed config;
+`SinglePass` is unchanged. The separate `model.n_obs_steps` remains metadata only.
+Images and state share the temporal window; task inputs remain non-temporal.
+History requires version `1.1` or greater. New manifests default to `1.1`;
+existing `1.0` manifests without history retain their previous behavior.
+See [usage and compatibility limits](../how-to/inference/use-manifest.md#enable-observation-history).
 
 ## Hardware
 
