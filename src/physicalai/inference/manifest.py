@@ -252,11 +252,14 @@ class ObservationHistorySpec(BaseModel):
     Attributes:
         n_obs_steps: Observations per window, including the current observation.
         stride: Received observation updates between selected frames.
+        preprocessor: History formatter prepended to the inference pipeline.
+            None leaves selected frames unstacked for the remaining pipeline.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     n_obs_steps: int = Field(ge=1, strict=True)
     stride: int = Field(default=1, ge=1, strict=True)
+    preprocessor: ComponentSpec | None = Field(default_factory=lambda: ComponentSpec(type="stack_observation_history"))
 
 
 class ModelSpec(BaseModel):

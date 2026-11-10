@@ -126,6 +126,18 @@ TeleopSource(
 
 Omitted `execution` defaults to `SyncExecution`. Omitted `action_queue` defaults to a `ChunkedActionQueue`.
 
+With `model.observation_history` declared, `PolicySource` collects history and
+delivers fixed tuples of owned, read-only image/state frames. `InferenceModel`
+prepends the declared history `preprocessor` before the regular list; it defaults
+to `{type: stack_observation_history}`. A registered `type` or `class_path` with
+`init_args` can select another formatter. `preprocessor: null` disables only that
+automatic formatter, not collection or temporal sampling; the remaining pipeline
+must format the full selected history. `on_predict_start` callbacks still see
+tuples before preprocessing; do not add another history-stacking callback. Remote
+serialization does not support these tuples, and `null` does not fix that limitation.
+Without history, behavior is unchanged. See
+[observation history](../how-to/inference/use-manifest.md#enable-observation-history).
+
 `reset()` starts a fresh policy episode without stopping the execution worker. It discards queued, pending, and in-flight actions, clears the last action, and resets model state by default. If inference is already running, reset waits for that model call to finish before resetting model state, while rejecting its stale result. Model or execution reset errors propagate to the caller. Pass `reset_model=False` only when model state should continue across the episode boundary. Custom execution strategies must implement `Execution.reset()` before they can support this operation.
 
 `warmup()` accepts model-ready input, such as `source.to_model_input(robot_state, camera_frames)`, and seeds the queue before the next control tick. It is optional: `update()` performs the same warmup lazily after `connect()` or `reset()`.

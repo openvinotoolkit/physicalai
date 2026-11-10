@@ -357,6 +357,16 @@ class TestObservationHistorySpec:
     def test_stride_defaults_to_one(self) -> None:
         assert ObservationHistorySpec(n_obs_steps=3).stride == 1
 
+    def test_preprocessor_defaults_to_history_stacker(self) -> None:
+        spec = ObservationHistorySpec(n_obs_steps=3)
+        assert spec.preprocessor == ComponentSpec(type="stack_observation_history")
+        assert spec.model_dump(exclude_defaults=True) == {"n_obs_steps": 3}
+
+    @pytest.mark.parametrize("preprocessor", [{}, "stack_observation_history", False])
+    def test_rejects_invalid_preprocessor(self, preprocessor: Any) -> None:
+        with pytest.raises(ValidationError):
+            ObservationHistorySpec.model_validate({"n_obs_steps": 3, "preprocessor": preprocessor})
+
     @pytest.mark.parametrize("field", ["n_obs_steps", "stride"])
     @pytest.mark.parametrize("value", [0, -1, True, False, 1.0, 1.5, "2", None])
     def test_requires_strict_positive_integers(self, field: str, value: Any) -> None:
@@ -374,8 +384,24 @@ class TestObservationHistorySpec:
                 "model": {"observation_history": {"n_obs_steps": 2, "strde": 3}},
             })
 
-    @pytest.mark.parametrize("history", [None, {"n_obs_steps": 1}, {"n_obs_steps": 3, "stride": 2}])
-    def test_manifest_roundtrip(self, tmp_path: Path, history: dict[str, int] | None) -> None:
+    @pytest.mark.parametrize(
+        "history",
+        [
+            None,
+            {"n_obs_steps": 1},
+            {"n_obs_steps": 3, "stride": 2},
+            {"n_obs_steps": 3, "preprocessor": None},
+            {
+                "n_obs_steps": 3,
+                "preprocessor": {"type": "custom_history", "axis": 2},
+            },
+            {
+                "n_obs_steps": 3,
+                "preprocessor": {"class_path": "myapp.transforms.History", "init_args": {"axis": 2}},
+            },
+        ],
+    )
+    def test_manifest_roundtrip(self, tmp_path: Path, history: dict[str, Any] | None) -> None:
         model: dict[str, Any] = {"n_obs_steps": 7}
         if history is not None:
             model["observation_history"] = history

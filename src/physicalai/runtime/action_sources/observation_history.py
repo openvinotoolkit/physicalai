@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from physicalai.inference.constants import IMAGES, STATE
+from physicalai.inference.preprocessors.observation_history import ObservationWindow
 
 if TYPE_CHECKING:
     from physicalai.inference.manifest import ObservationHistorySpec
@@ -31,11 +32,14 @@ class ObservationHistory:
         self._frames.clear()
         self._camera_names = None
 
-    def window(self, inputs: dict[str, Any], *, record: bool, camera_names: tuple[str, ...]) -> dict[str, Any]:
+    def window(
+        self, inputs: dict[str, Any], *, record: bool, camera_names: tuple[str, ...], stack: bool = True
+    ) -> dict[str, Any]:
         """Build a detached window; previews do not advance stored history.
 
         Returns:
-            Current task inputs and aligned image/state windows.
+            Current task inputs and aligned image/state windows, or fixed tuples
+            of owned frames when ``stack=False``. No live deque is passed on.
 
         Raises:
             ValueError: If observation keys, shapes, or dtypes change within an
@@ -68,6 +72,9 @@ class ObservationHistory:
 
         # Capture ownership before camera drivers can reuse their array buffers.
         current = {key: value.copy() for key, value in observations.items()}
+        if not stack:
+            for value in current.values():
+                value.setflags(write=False)
         frames = [*self._frames, current][-self._capacity :]
         if record:
             self._frames.append(current)
@@ -75,4 +82,5 @@ class ObservationHistory:
         indices = [
             max(0, len(frames) - 1 - offset * self._spec.stride) for offset in reversed(range(self._spec.n_obs_steps))
         ]
-        return {**inputs, **{key: np.stack([frames[i][key] for i in indices], axis=1) for key in observations}}
+        selected = {key: ObservationWindow(frames[i][key] for i in indices) for key in observations}
+        return {**inputs, **{key: np.stack(value, axis=1) if stack else value for key, value in selected.items()}}

@@ -25,6 +25,7 @@ from physicalai.inference.constants import (
 )
 from physicalai.inference.manifest import Manifest, ModelSpec, ObservationHistorySpec
 from physicalai.inference.model import InferenceModel
+from physicalai.inference.preprocessors.observation_history import StackObservationHistory
 from physicalai.runtime import PolicySource, RTCActionQueue, RTCExecution
 from physicalai.runtime._callback_bus import _CallbackBus
 from physicalai.runtime.execution import rtc
@@ -41,8 +42,8 @@ class _RTCModel:
     resets: int = 0
 
     def __call__(self, inputs: dict[str, Any]) -> dict[str, np.ndarray]:
-        # Retain exact worker inputs so mutation after submission remains visible.
-        self.calls.append(inputs)
+        # Materialize at model entry, as the default inference formatter does.
+        self.calls.append(StackObservationHistory()(inputs))
         call = len(self.calls)
         if call in (2, 3):
             self.entered[call - 2].set()

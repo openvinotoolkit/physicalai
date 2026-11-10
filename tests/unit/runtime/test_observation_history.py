@@ -22,6 +22,7 @@ from physicalai.inference.constants import ACTION, IMAGES, STATE, TASK
 from physicalai.inference.manifest import Manifest, ModelSpec, ObservationHistorySpec
 from physicalai.inference.model import InferenceModel
 from physicalai.inference.preprocessors.base import Preprocessor
+from physicalai.inference.preprocessors.observation_history import StackObservationHistory
 from physicalai.inference.runners import SinglePass
 from physicalai.runtime import AsyncExecution, ChunkedActionQueue, PolicySource, SyncExecution
 from physicalai.runtime._callback_bus import _CallbackBus
@@ -36,8 +37,8 @@ class RecordingModel:
     resets: int = 0
 
     def predict_action_chunk(self, observation: dict[str, Any]) -> np.ndarray:
-        # Retain exact inputs, not copies, so later aliasing remains observable.
-        self.calls.append(observation)
+        # Materialize at model entry, as the default inference formatter does.
+        self.calls.append(StackObservationHistory()(observation))
         return np.full((self.chunk_size, 2), len(self.calls), dtype=np.float32)
 
     def reset(self) -> None:
@@ -77,14 +78,14 @@ def _observation(value: int = 0, *, images: dict[str, Frame] | None = None) -> F
 
 
 def _assert_window(inputs: dict[str, Any], expected: list[int], key: str = IMAGES) -> None:
-    image = inputs[key]
+    image = StackObservationHistory()(inputs)[key]
     assert image.shape == (1, len(expected), 2, 4, 3)
     assert image.dtype == np.uint8
     np.testing.assert_array_equal(image, np.broadcast_to(np.array(expected)[None, :, None, None, None], image.shape))
 
 
 def _assert_state_window(inputs: dict[str, Any], expected: list[int]) -> None:
-    state = inputs[STATE]
+    state = StackObservationHistory()(inputs)[STATE]
     assert state.shape == (1, len(expected), 2)
     assert state.dtype == np.float32
     np.testing.assert_array_equal(state, [[[value, value + 1] for value in expected]])
@@ -99,7 +100,11 @@ class TemporalChannelsFirst(Preprocessor):
         return {**inputs, IMAGES: images.transpose(0, 1, 4, 2, 3)}
 
 
-def test_manifest_loaded_history_reaches_adapter_through_single_pass(tmp_path: Path) -> None:
+@pytest.mark.parametrize("explicit_stacker", [False, True], ids=["automatic", "explicit"])
+def test_manifest_loaded_history_reaches_adapter_through_single_pass(tmp_path: Path, explicit_stacker: bool) -> None:
+    preprocessors = [{"class_path": f"{__name__}.TemporalChannelsFirst"}]
+    if explicit_stacker:
+        preprocessors.insert(0, {"type": "stack_observation_history"})
     manifest = {
         "policy": {"name": "history"},
         "model": {
@@ -107,7 +112,7 @@ def test_manifest_loaded_history_reaches_adapter_through_single_pass(tmp_path: P
             "n_obs_steps": 7,
             "observation_history": {"n_obs_steps": 3, "stride": 2},
             "runner": {"type": "single_pass"},
-            "preprocessors": [{"class_path": f"{__name__}.TemporalChannelsFirst"}],
+            "preprocessors": preprocessors,
         },
     }
     (tmp_path / "manifest.json").write_text(json.dumps(manifest))
@@ -138,8 +143,9 @@ def test_manifest_loaded_history_reaches_adapter_through_single_pass(tmp_path: P
         assert model.manifest.model.n_obs_steps == 7
         assert model.manifest.model.observation_history == ObservationHistorySpec(n_obs_steps=3, stride=2)
         assert isinstance(model.runner, SinglePass)
-        assert len(model.preprocessors) == 1
-        assert isinstance(model.preprocessors[0], TemporalChannelsFirst)
+        assert len(model.preprocessors) == 2 + int(explicit_stacker)
+        assert isinstance(model.preprocessors[-1], TemporalChannelsFirst)
+        assert isinstance(model.preprocessors[0], StackObservationHistory)
         source = PolicySource(model, execution=SyncExecution(request_threshold=0.0), action_queue=ChunkedActionQueue())
         try:
             source.connect(bus=_CallbackBus([]), session_id="manifest-history")
@@ -350,7 +356,7 @@ def test_state_driver_buffer_and_returned_snapshots_do_not_alias_history(make_so
 
     first.fill(99)
     second.fill(98)
-    preview = source.to_model_input(_observation(90), {})
+    preview = StackObservationHistory()(source.to_model_input(_observation(90), {}))
     _assert_state_window(preview, [1, 2, 90])
     preview[STATE].fill(97)
     for value in range(3, 9):
@@ -415,7 +421,7 @@ def test_preview_and_explicit_warmup_do_not_record_or_double_count(make_source: 
     source.update(_observation(1), {"top": _frame(1)}, step=0)
     assert len(model.calls) == 1
 
-    preview = source.to_model_input(_observation(99), {"top": _frame(99)})
+    preview = StackObservationHistory()(source.to_model_input(_observation(99), {"top": _frame(99)}))
     _assert_window(preview, [1, 1, 99])
     _assert_state_window(preview, [1, 1, 99])
     preview[IMAGES].fill(42)

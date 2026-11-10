@@ -47,7 +47,14 @@ class PolicySource(ActionSource):
         *,
         task: str | None = None,
     ) -> None:
-        """Initialize a policy-backed action source."""
+        """Initialize a policy-backed action source.
+
+        Args:
+            model: Model used for inference.
+            execution: Inference scheduling strategy.
+            action_queue: Queue of predicted actions.
+            task: Current task instruction.
+        """
         self._model = model
         self._execution = execution or SyncExecution()
         self._action_queue = action_queue or ChunkedActionQueue(
@@ -171,7 +178,7 @@ class PolicySource(ActionSource):
             model_input = self._to_model_input(robot_state, camera_frames)
             if self._history is not None:
                 names = tuple(sorted((robot_state.images or {}).keys() | camera_frames.keys()))
-                model_input = self._history.window(model_input, record=True, camera_names=names)
+                model_input = self._history.window(model_input, record=True, camera_names=names, stack=False)
 
             if not self._warmed_up:
                 self.warmup(model_input)
@@ -253,5 +260,5 @@ class PolicySource(ActionSource):
             inputs = self._to_model_input(robot_obs, camera_frames)
             if self._history is not None:
                 names = tuple(sorted((robot_obs.images or {}).keys() | camera_frames.keys()))
-                return self._history.window(inputs, record=False, camera_names=names)
+                return self._history.window(inputs, record=False, camera_names=names, stack=False)
             return inputs
