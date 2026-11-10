@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 import numpy as np
@@ -24,7 +25,8 @@ class ObservationWindow(tuple[np.ndarray, ...]):
         Returns:
             A detached selection whose frames remain read-only.
         """
-        copied = ObservationWindow(frame.copy() for frame in self)
+        # Startup padding repeats frames; copy each distinct frame only once.
+        copied = ObservationWindow(deepcopy(frame, memo) for frame in self)
         for frame in copied:
             frame.setflags(write=False)
         memo[id(self)] = copied

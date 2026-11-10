@@ -23,10 +23,31 @@ def test_window_deepcopy_preserves_shape_and_readonly_snapshot() -> None:
     copied = deepcopy(selection)
     assert isinstance(copied, ObservationWindow)
     assert copied.shape == (1, 2, 2)
+    assert copied[0] is copied[1]
     for value in copied:
         assert not value.flags.writeable
         assert not np.shares_memory(value, frame)
         np.testing.assert_array_equal(value, frame)
+
+
+def test_window_deepcopy_shares_frame_copies_across_request_windows() -> None:
+    frame = np.ones((1, 2), dtype=np.float32)
+    other = np.zeros_like(frame)
+    request = {
+        "first": ObservationWindow((frame,) * 5),
+        "second": ObservationWindow((frame, other)),
+    }
+    for _ in range(2):  # RTC copies during warmup submission and worker entry.
+        copied = deepcopy(request)
+        assert all(value is copied["first"][0] for value in copied["first"])
+        assert copied["first"][0] is copied["second"][0]
+        assert copied["second"][0] is not copied["second"][1]
+        for key in request:
+            for original, value in zip(request[key], copied[key], strict=True):
+                assert not value.flags.writeable
+                assert not np.shares_memory(value, original)
+                np.testing.assert_array_equal(value, original)
+        request = copied
 
 
 def test_registry_constructs_history_preprocessor() -> None:
