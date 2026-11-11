@@ -4,7 +4,7 @@
 """Real-Time Chunking (RTC) execution strategy.
 
 Runs inference in a background daemon thread, injecting RTC-specific
-inputs (noise, prev_chunk_left_over, inference_delay, etc.) and
+inputs (prev_chunk_left_over, inference_delay, etc.) and
 managing a dual-track action queue for continuous robot control.
 """
 
@@ -77,7 +77,6 @@ class RTCExecution(Execution):
       discontinuous.
 
     RTC-specific inputs injected before each inference call:
-    - ``noise``: random noise for denoising (shape: 1 x chunk x action_dim)
     - ``prev_chunk_left_over``: unconsumed tail (shape: 1 x chunk x action_dim)
     - ``inference_delay``: integer derived from measured latency
     - ``max_guidance_weight``: classifier-free guidance weight
