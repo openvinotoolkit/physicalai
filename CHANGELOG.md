@@ -13,6 +13,8 @@
 - Add `Config.to_yaml()` for in-memory YAML serialization.
 - Add the `vla_jepa` preprocessor so VLA-JEPA OpenVINO exports run without the
   training library or PyTorch.
+- Add the `noise` preprocessor, which draws fresh flow-matching start noise on
+  every call for exports that take the noise as a graph input.
 
 ## [0.4.0](https://github.com/openvinotoolkit/physicalai/compare/v0.3.0...v0.4.0) (2026-11-06)
 
