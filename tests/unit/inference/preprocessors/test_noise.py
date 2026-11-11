@@ -34,6 +34,14 @@ def test_fresh_on_every_call() -> None:
     assert not np.array_equal(prep(_inputs())[NOISE], prep(_inputs())[NOISE])
 
 
+def test_reused_inputs_get_fresh_noise() -> None:
+    """Control loops reuse one observation dict; the preprocessor must not write noise into it."""
+    prep, inputs = NoisePreprocessor(shape=(50, 32)), _inputs()
+    first, second = prep(inputs)[NOISE], prep(inputs)[NOISE]
+    assert NOISE not in inputs
+    assert not np.array_equal(first, second)
+
+
 def test_standard_normal() -> None:
     prep = NoisePreprocessor(shape=(50, 32), seed=0)
     noise = np.concatenate([prep(_inputs())[NOISE].ravel() for _ in range(20)])

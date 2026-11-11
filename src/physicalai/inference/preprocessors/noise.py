@@ -43,8 +43,10 @@ class NoisePreprocessor(Preprocessor):
             inputs: Observation dict with a ``state`` array of shape ``(batch, ...)``.
 
         Returns:
-            The inputs with a ``(batch, *shape)`` float32 ``noise`` array.
+            The inputs, or a shallow copy of them with a ``(batch, *shape)`` float32 ``noise`` array.
         """
-        if NOISE not in inputs:
-            inputs[NOISE] = self._rng.standard_normal((inputs[STATE].shape[0], *self._shape), dtype=np.float32)
-        return inputs
+        if NOISE in inputs:
+            return inputs
+        # Copy so a reused observation dict doesn't keep this noise for the next call.
+        noise = self._rng.standard_normal((inputs[STATE].shape[0], *self._shape), dtype=np.float32)
+        return {**inputs, NOISE: noise}
