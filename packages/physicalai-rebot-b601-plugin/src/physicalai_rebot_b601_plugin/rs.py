@@ -39,7 +39,12 @@ RSMITGain = float | dict[str, float]
 
 _GRIPPER_STALL_VEL_RAD_S = 0.25
 _GRIPPER_OPEN_STALL_ERROR_RAD = 0.05
-_GRIPPER_OPEN_STALL_CYCLES = 5
+# Stall timing in seconds, not command counts: a gripper starting from rest needs 50-100 ms before
+# its measured speed passes the stall threshold (measured at 30-100 Hz), so a count of commands
+# misfires at Studio's 100 Hz. Hold force applies after this long without moving...
+_GRIPPER_HOLD_AFTER_S = 0.1
+# ...and a gripper that is told to open but has not moved for this long is at its open stop.
+_GRIPPER_OPEN_STALL_S = 0.5
 # RobStride ``limit_torque``: the firmware caps every MIT command's torque at this value, so the
 # gripper's stiff on-board servo can never squeeze harder than the configured limit.
 _LIMIT_TORQUE_PARAM = 0x700B
@@ -217,7 +222,9 @@ class ReBotB601RS(ReBotB601DM):
         super()._reset_control_state()
         self._gripper_prev_state_pos: float | None = None
         self._gripper_prev_time: float | None = None
-        self._gripper_open_stall_count = 0
+        self._gripper_stalled_since: float | None = None
+        self._gripper_open_stalled_since: float | None = None
+        self._gripper_open_stalled = False
         # Unknown after a reset (a new connection, or another program may have changed it).
         self._gripper_holding: bool | None = None
         self._gripper_target_rad: float | None = None
@@ -270,6 +277,10 @@ class ReBotB601RS(ReBotB601DM):
         self._require_controller().poll_feedback_once()
         state = motor.get_state()
         if state is None:
+            # Not driven while there is no feedback: the open-stall clock and the speed estimate start over. The
+            # still clock is kept, so a gripper holding an object keeps the hold limit when feedback returns.
+            self._gripper_prev_state_pos = None
+            self._gripper_open_stalled_since = None
             motor.send_mit(0.0, 0.0, 0.0, kd, 0.0)
             return
 
@@ -281,17 +292,54 @@ class ReBotB601RS(ReBotB601DM):
         self._gripper_prev_state_pos = state.pos
         target_rad = self._slew_gripper_target(target_rad, state.pos, control_dt_s)
 
-        stalled = abs(state_vel) < _GRIPPER_STALL_VEL_RAD_S
-        if target_rad - state.pos > _GRIPPER_OPEN_STALL_ERROR_RAD and stalled:
-            self._gripper_open_stall_count += 1
+        now = time.monotonic()
+        moving = abs(state_vel) >= _GRIPPER_STALL_VEL_RAD_S
+        # Hysteresis: once the open-stall clock runs, an opening error that dips just under the threshold
+        # (a jittery leader at the open stop) does not restart it.
+        open_threshold = _GRIPPER_OPEN_STALL_ERROR_RAD / (2.0 if self._gripper_open_stalled_since is not None else 1.0)
+        opening = target_rad - state.pos > open_threshold
+        if moving:
+            self._gripper_stalled_since = None
+        elif self._gripper_stalled_since is None:
+            self._gripper_stalled_since = now
+        # The open-stall clock runs only while the gripper is told to open and does not move. A gripper that
+        # sat still (closed, or holding an object) and is then told to open gets the full time to start.
+        if opening and not moving:
+            if self._gripper_open_stalled_since is None:
+                self._gripper_open_stalled_since = now
         else:
-            self._gripper_open_stall_count = 0
-        if self._gripper_open_stall_count >= _GRIPPER_OPEN_STALL_CYCLES:
-            if self._gripper_open_stall_count == _GRIPPER_OPEN_STALL_CYCLES:
+            self._gripper_open_stalled_since = None
+        if (
+            self._gripper_open_stalled_since is not None
+            and now - self._gripper_open_stalled_since >= _GRIPPER_OPEN_STALL_S
+        ):
+            if not self._gripper_open_stalled:
                 logger.warning("reBot RS gripper open-stall detected, cutting torque")
+            self._gripper_open_stalled = True
             motor.send_mit(state.pos, 0.0, 0.0, kd, 0.0)
             return
-        self._set_gripper_torque_limit(motor, holding=stalled)
+        self._gripper_open_stalled = False
+        stalled_s = 0.0 if self._gripper_stalled_since is None else now - self._gripper_stalled_since
+        # The hold limit is for gripping; opening (also from rest) always gets the moving limit to break free.
+        holding = not opening and stalled_s >= _GRIPPER_HOLD_AFTER_S
+        self._send_gripper_reference(motor, target_rad, state.pos, holding=holding)
+
+    def _send_gripper_reference(self, motor: Motor, target_rad: float, measured_rad: float, *, holding: bool) -> None:
+        """Send the gripper's reference and its torque cap, in the order that never squeezes harder than either."""
+        kd = self._gripper_mit_kd
+        previous = self._gripper_holding
+        if previous is not None and self._gripper_limit(holding=holding) > self._gripper_limit(holding=previous):
+            # Raising the cap: replace the reference first, so a gripper on an object that is told to open is
+            # not squeezed at the higher limit.
+            motor.send_mit(target_rad, 0.0, self._gripper_mit_kp, kd, 0.0)
+            self._set_gripper_torque_limit(motor, holding=holding)
+            return
+        if previous is None:
+            # The cap is unknown (after a reconnect or re-enable) and may be about to rise while the motor still
+            # runs an old reference: let go (damping only) before writing it.
+            motor.send_mit(measured_rad, 0.0, 0.0, kd, 0.0)
+        # Lowering or keeping the cap, or setting an unknown one: cap first.
+        self._set_gripper_torque_limit(motor, holding=holding)
         motor.send_mit(target_rad, 0.0, self._gripper_mit_kp, kd, 0.0)
 
     def _slew_gripper_target(self, target_rad: float, measured_rad: float, dt: float) -> float:
@@ -308,13 +356,15 @@ class ReBotB601RS(ReBotB601DM):
         self._gripper_target_rad = previous + min(max(target_rad - previous, -step), step)
         return self._gripper_target_rad
 
+    def _gripper_limit(self, *, holding: bool) -> float:
+        return self._gripper_mit_hold_torque_limit if holding else self._gripper_mit_torque_limit
+
     def _set_gripper_torque_limit(self, motor: Motor, *, holding: bool) -> None:
         """Write the gripper's firmware torque limit (hold or moving) when it changes, and now and then."""
         now = time.monotonic()
         if holding == self._gripper_holding and now - self._gripper_limit_written_at < _GRIPPER_LIMIT_REFRESH_S:
             return
-        limit = self._gripper_mit_hold_torque_limit if holding else self._gripper_mit_torque_limit
-        motor.robstride_write_param_f32(_LIMIT_TORQUE_PARAM, limit)
+        motor.robstride_write_param_f32(_LIMIT_TORQUE_PARAM, self._gripper_limit(holding=holding))
         self._gripper_holding = holding
         self._gripper_limit_written_at = now
 
