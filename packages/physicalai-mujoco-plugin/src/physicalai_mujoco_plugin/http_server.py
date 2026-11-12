@@ -46,6 +46,7 @@ from physicalai_mujoco_plugin.studio_recorder import (
     MAX_RECOVERY_FRACTION,
     MAX_TASK_CHARS,
     RecordingOptions,
+    RelayContext,
     StudioRelay,
 )
 
@@ -232,6 +233,10 @@ class StudioRecordingRequest(BaseModel):
 class StudioRelaySession(BaseModel):
     """The session of Studio's recording page, as it relays it."""
 
+    session_id: Annotated[str, Field(max_length=64)] | None = None
+    """Studio's runtime session; a run stays on the one it started on."""
+    dataset_id: Annotated[str, Field(max_length=64)] | None = None
+    """The dataset loaded to record into; a run stays on the one it started on."""
     dataset: bool
     """Whether a dataset is loaded to record into."""
     recording: bool
@@ -253,6 +258,8 @@ class StudioRelayResult(BaseModel):
 class StudioRelayRequest(BaseModel):
     """Body for ``POST /studio/relay`` (see :mod:`physicalai_mujoco_plugin.studio_recorder`)."""
 
+    client: Annotated[str, Field(min_length=1, max_length=64)]
+    """The relaying page's own id: the first page to relay a run owns it."""
     session: StudioRelaySession
     results: Annotated[list[StudioRelayResult], Field(max_length=16)] = []
 
@@ -560,8 +567,11 @@ def build_app(
 
         @app.post("/studio/relay")
         def relay_studio(request: StudioRelayRequest) -> dict[str, Any]:
+            session = request.session
             return studio_relay.exchange(
-                request.session.model_dump(), [result.model_dump() for result in request.results]
+                RelayContext(request.client, session.session_id, session.dataset_id),
+                session.model_dump(),
+                [result.model_dump() for result in request.results],
             )
 
     return app

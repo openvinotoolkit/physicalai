@@ -29,16 +29,20 @@ only when no attempt went wrong), a failure or a stall discarded.
 
 The relay exchange, request then response::
 
-    {"session": {"dataset": true, "recording": false, "teleop": true,
-                 "follower": "Sim arm", "leader": "Sim arm autopilot"},
+    {"client": "<the page's own id>",
+     "session": {"session_id": "...", "dataset_id": "...", "dataset": true, "recording": false,
+                 "teleop": true, "follower": "Sim arm", "leader": "Sim arm autopilot"},
      "results": [{"request_id": "...", "ok": true, "error": null}]}
 
-    {"active": true,
+    {"active": true, "owner": true,
      "commands": [{"command": "start_episode", "request_id": "...", "task": "..."}]}
 
 ``commands`` are Studio's own session commands: ``start_episode`` (with ``task``),
-``save_episode`` and ``discard_episode``. ``active`` turns false once the run ends; the
-commands queued just before (a last discard) still come with it.
+``save_episode`` and ``discard_episode``. The first page to exchange owns a run (``owner``);
+another page gets no commands, and the run fails if its page turns up on another session or
+dataset. A command comes with every exchange until its result does, so the page runs each
+``request_id`` once and sends its result until the command no longer comes. ``active`` turns
+false once the run ends; its discards still come until answered.
 """
 
 from __future__ import annotations
@@ -150,11 +154,26 @@ _COMMANDS = {"start_recording": "start_episode", "save_episode": "save_episode",
 """The recorders' commands, as Studio's session names them."""
 
 
+@dataclass(frozen=True)
+class RelayContext:
+    """Who relays a run: one recording page (``client``), on one session and dataset."""
+
+    client: str
+    session_id: str | None
+    dataset_id: str | None
+
+
 class RelayLink:
-    """One recording run's commands for Studio, and what Studio's recording page answered.
+    """One recording run's commands for Studio, and what the recording page relaying it answered.
 
     The simulation thread sends and reads; :meth:`StudioRelay.exchange` (the HTTP server's
     thread) hands the commands over and brings the session state and the results back.
+
+    The first page to exchange owns the run, on its session and dataset; another page gets
+    nothing, and the run fails if the owner turns up on another session or dataset. A command is
+    handed over on every exchange until its result comes back, so one lost on the way is sent
+    again; the page runs each request id once. Ending the run cancels what Studio has not
+    answered yet, except discards: those clean up the episode the run started.
     """
 
     def __init__(self, clock: Callable[[], float] = time.monotonic, silence_s: float = RELAY_SILENCE_S) -> None:
@@ -164,29 +183,40 @@ class RelayLink:
         self._lock = threading.Lock()
         self._started = False
         self._closed = False
+        self._failure: str | None = None
+        self._owner: RelayContext | None = None
         self._last_exchange: float | None = None
         self._session: dict[str, Any] | None = None
-        self._outgoing: list[dict[str, Any]] = []
+        self._outgoing: dict[str, dict[str, Any]] = {}
+        """Commands handed over until their result comes back, by request id, oldest first."""
         self._acks: dict[str, dict[str, Any]] = {}
 
     @property
     def phase(self) -> str:
-        """``idle``, ``connecting`` until Studio first answers, ``connected``, ``closed``, or ``error`` once silent."""
+        """``idle``, ``connecting`` until a page answers, ``connected``, ``closed``, or ``error``."""
         with self._lock:
-            if self._closed:
-                return "closed"
-            if not self._started:
-                return "idle"
-            if self._last_exchange is None:
-                return "connecting"
-            if self._clock() - self._last_exchange > self._silence_s:
-                return "error"
-            return "connected"
+            return self._phase()
+
+    def _phase(self) -> str:
+        if self._closed:
+            return "closed"
+        if not self._started:
+            return "idle"
+        if self._failure is not None:
+            return "error"
+        if self._last_exchange is None:
+            return "connecting"
+        if self._clock() - self._last_exchange > self._silence_s:
+            return "error"
+        return "connected"
 
     @property
     def error(self) -> str | None:
-        """Why the link failed: Studio's recording page stopped relaying."""
-        return NO_STUDIO if self.phase == "error" else None
+        """Why the link failed: the page stopped relaying, or moved to another session or dataset."""
+        with self._lock:
+            if self._phase() != "error":
+                return None
+            return self._failure or NO_STUDIO
 
     @property
     def target(self) -> StudioTarget | None:
@@ -211,13 +241,25 @@ class RelayLink:
             "follower_source": "teleop" if session.get("teleop") else None,
         }
 
+    @property
+    def owned(self) -> bool:
+        """Whether a page relays this run."""
+        with self._lock:
+            return self._owner is not None
+
+    @property
+    def pending(self) -> bool:
+        """Whether commands still wait for Studio's answer."""
+        with self._lock:
+            return bool(self._outgoing)
+
     def start(self) -> None:
         """Wait for Studio's recording page."""
         with self._lock:
             self._started = True
 
     def send(self, event: str, data: Mapping[str, Any] | None = None, request_id: str | None = None) -> None:
-        """Queue one command for the next exchange.
+        """Queue one command for the page, handed over until it answers.
 
         Raises:
             ValueError: For a command Studio's session does not take from the relay.
@@ -230,7 +272,8 @@ class RelayLink:
         if command == "start_episode":
             message["task"] = str((data or {}).get("task", ""))
         with self._lock:
-            self._outgoing.append(message)
+            if not self._closed:
+                self._outgoing[message["request_id"]] = message
 
     def take_ack(self, request_id: str) -> dict[str, Any] | None:
         """Pop Studio's result for `request_id`, once a relay brought it.
@@ -242,29 +285,51 @@ class RelayLink:
             return self._acks.pop(request_id, None)
 
     def close(self) -> None:
-        """Stop relaying; commands already queued still go out with the next exchange."""
+        """Stop relaying: cancel what Studio has not answered yet, except discards, which still go out."""
         with self._lock:
             self._closed = True
+            self._acks.clear()
+            self._outgoing = {
+                request_id: command
+                for request_id, command in self._outgoing.items()
+                if command["command"] == "discard_episode"
+            }
 
-    def exchange(self, session: Mapping[str, Any], results: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
-        """Take Studio's session state and results, and hand over the queued commands.
+    def exchange(
+        self, context: RelayContext, session: Mapping[str, Any], results: Iterable[Mapping[str, Any]]
+    ) -> list[dict[str, Any]] | None:
+        """Take a page's session state and results, and hand it the commands Studio has not answered.
 
         Returns:
-            The commands queued since the last exchange, oldest first.
+            The outstanding commands, oldest first; ``None`` for a page that does not own the run.
         """
         with self._lock:
-            if not self._closed:
-                self._last_exchange = self._clock()
-                self._session = dict(session)
-                for result in results:
-                    request_id = str(result.get("request_id", ""))
+            if self._owner is None and not self._closed and self._started:
+                self._owner = context
+            if self._owner is None or context.client != self._owner.client:
+                return None
+            if context != self._owner:
+                # The page loaded another session or dataset: what this run asked for no longer applies.
+                self._failure = "Studio's recording page moved to another session or dataset."
+                self._closed = True
+                self._outgoing.clear()
+                return None
+            for result in results:
+                request_id = str(result.get("request_id", ""))
+                if self._outgoing.pop(request_id, None) is not None and not self._closed:
                     self._acks[request_id] = {
                         "request_id": request_id,
                         "ok": bool(result.get("ok")),
                         "error": result.get("error"),
                     }
-            commands, self._outgoing = self._outgoing, []
-            return commands
+            if not self._closed:
+                self._last_exchange = self._clock()
+                self._session = dict(session)
+            return list(self._outgoing.values())
+
+
+MAX_ENDED_RUNS = 4
+"""Ended runs whose discards are kept for their page; older ones are dropped."""
 
 
 class StudioRelay:
@@ -276,28 +341,52 @@ class StudioRelay:
         self._silence_s = silence_s
         self._lock = threading.Lock()
         self._link: RelayLink | None = None
+        self._ended: list[RelayLink] = []
+        """Ended runs whose discards Studio has not answered yet."""
 
     def open(self) -> RelayLink:
-        """Return a link for a new run; the previous run's link no longer gets exchanges once drained."""
+        """Return a link for a new run; an ended run's discards still go out with the next exchanges."""
         link = RelayLink(self._clock, self._silence_s)
         with self._lock:
-            previous, self._link = self._link, link
-        if previous is not None:
-            previous.close()
+            if self._link is not None:
+                self._link.close()
+                self._ended.append(self._link)
+                del self._ended[:-MAX_ENDED_RUNS]
+            self._link = link
         return link
 
-    def exchange(self, session: Mapping[str, Any], results: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
-        """Relay one exchange with Studio's recording page (the HTTP server's thread).
+    def exchange(
+        self, context: RelayContext, session: Mapping[str, Any], results: Iterable[Mapping[str, Any]]
+    ) -> dict[str, Any]:
+        """Relay one exchange with a recording page (the HTTP server's thread).
 
         Returns:
-            ``{"active", "commands"}``: whether a run is under way, and its commands for Studio.
+            ``{"active", "owner", "commands"}``: whether a run is under way, whether this page
+            relays it, and the commands Studio has not answered yet, an ended run's discards first.
         """
-        with self._lock:
+        results = list(results)
+        with self._lock:  # one exchange at a time, and never with a run being replaced
+            commands: list[dict[str, Any]] = []
+            owner = False
+            for ended in list(self._ended):
+                handed = ended.exchange(context, session, results)
+                if handed is not None:
+                    owner = True
+                    commands.extend(handed)
+                if not ended.pending or not ended.owned:  # answered, or no page ever relayed it
+                    self._ended.remove(ended)
             link = self._link
-        if link is None:
-            return {"active": False, "commands": []}
-        commands = link.exchange(session, results)
-        return {"active": link.phase not in {"idle", "closed"}, "commands": commands}
+            active = link is not None and link.phase not in {"idle", "closed"}
+            if link is not None:
+                handed = link.exchange(context, session, results)
+                if handed is not None:
+                    owner = True
+                    commands.extend(handed)
+                if link.phase == "closed" and link.pending:
+                    self._ended.append(link)
+                    self._link = None
+            del self._ended[:-MAX_ENDED_RUNS]
+            return {"active": active, "owner": owner, "commands": commands}
 
 
 # ----------------------------------------------------------------------
@@ -473,6 +562,18 @@ class _RecorderBase:
             return "ended"
         return "next"
 
+    def _start_went_through(self, link: StudioLinkLike) -> bool:
+        """Read Studio's answer to the start in flight; stop with its reason if it refused.
+
+        Returns:
+            ``False`` once the run stopped.
+        """
+        ack = link.take_ack(self._request_id or "")
+        if ack is not None and not ack.get("ok"):
+            self._finish("error", f"Studio could not start the episode: {ack.get('error') or 'unknown error'}")
+            return False
+        return True
+
     def _send_end(self, link: StudioLinkLike, *, keep: bool, message: str) -> None:
         """Ask Studio to save (`keep`) or discard the episode it records, and wait for its answer."""
         self._request_id = uuid.uuid4().hex
@@ -541,16 +642,18 @@ class AutoRecorder(_RecorderBase):
         elif state.get("is_recording"):
             self._message = "Waiting for Studio: save or discard the episode it is recording."
         else:
-            self._request_id = None
-            link.send("start_recording", {"task": self._options.task})
+            self._request_id = uuid.uuid4().hex
+            link.send("start_recording", {"task": self._options.task}, request_id=self._request_id)
             self._episode_base = episode_count
             self._set_phase("starting", "Starting a Studio episode...")
             return RecorderDirective(hold_feed=True, clear_belt=True)
         return RecorderDirective(hold_feed=True)
 
     def _update_starting(
-        self, _link: StudioLinkLike, state: Mapping[str, Any], episode_count: int, _last: Mapping[str, int] | None
+        self, link: StudioLinkLike, state: Mapping[str, Any], episode_count: int, _last: Mapping[str, int] | None
     ) -> RecorderDirective:
+        if not self._start_went_through(link):
+            return RecorderDirective()
         if state.get("is_recording"):
             self._episode_base = episode_count
             self._set_phase("recording", f"Recording episode {self._counters.saved + 1}.")
@@ -773,7 +876,8 @@ class BucketSortRecorder(_RecorderBase):
 
     def _start(self, link: StudioLinkLike, progress: BucketSortProgress) -> BucketSortDirective:
         self._task = (progress.instruction or "")[:MAX_TASK_CHARS]
-        link.send("start_recording", {"task": self._task})
+        self._request_id = uuid.uuid4().hex
+        link.send("start_recording", {"task": self._task}, request_id=self._request_id)
         self._set_phase("starting", "Starting a Studio episode...")
         return BucketSortDirective(hold_arm=True)
 
@@ -815,8 +919,10 @@ class BucketSortRecorder(_RecorderBase):
         return BucketSortDirective(hold_arm=True, reset_scene=True)
 
     def _update_starting(
-        self, _link: StudioLinkLike, state: Mapping[str, Any], _progress: BucketSortProgress
+        self, link: StudioLinkLike, state: Mapping[str, Any], _progress: BucketSortProgress
     ) -> BucketSortDirective:
+        if not self._start_went_through(link):
+            return BucketSortDirective()
         if state.get("is_recording"):
             self._set_phase("recording", f"Recording episode {self._counters.saved + 1}: {self._task}")
             self._success_at = self._placed_since = None

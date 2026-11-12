@@ -549,24 +549,37 @@ class TestAutomationRoutes:
                 studio_relay=relay,
             )
         )
-        session = {"dataset": True, "recording": False, "teleop": True, "follower": "Arm", "leader": None}
-        assert client.post("/studio/relay", json={"session": session}).json() == {"active": False, "commands": []}
+        session = {
+            "session_id": "s1",
+            "dataset_id": "d1",
+            "dataset": True,
+            "recording": False,
+            "teleop": True,
+            "follower": "Arm",
+            "leader": None,
+        }
+        body = {"client": "page", "session": session}
+        assert client.post("/studio/relay", json=body).json() == {"active": False, "owner": False, "commands": []}
 
         link = relay.open()
         link.start()
         link.send("save_episode", request_id="r1")
-        body = {"session": session, "results": [{"request_id": "r0", "ok": True}]}
         assert client.post("/studio/relay", json=body).json() == {
             "active": True,
+            "owner": True,
             "commands": [{"command": "save_episode", "request_id": "r1"}],
         }
-        assert link.take_ack("r0") == {"request_id": "r0", "ok": True, "error": None}
+        answered = {**body, "results": [{"request_id": "r1", "ok": True}]}
+        assert client.post("/studio/relay", json=answered).json()["commands"] == []
+        assert link.take_ack("r1") == {"request_id": "r1", "ok": True, "error": None}
         assert link.state == {"dataset_loaded": True, "is_recording": False, "follower_source": "teleop"}
         for bad in (
-            {"session": {**session, "teleop": "maybe"}},
-            {"session": session, "results": [{"request_id": "", "ok": True}]},
-            {"session": session, "results": [{"request_id": "r", "ok": True}] * 17},
-            {"results": []},
+            {**body, "session": {**session, "teleop": "maybe"}},
+            {**body, "results": [{"request_id": "", "ok": True}]},
+            {**body, "results": [{"request_id": "r", "ok": True}] * 17},
+            {"session": session},
+            {**body, "client": ""},
+            {**body, "results": []} | {"session": {}},
         ):
             assert client.post("/studio/relay", json=bad).status_code == 422, bad
 

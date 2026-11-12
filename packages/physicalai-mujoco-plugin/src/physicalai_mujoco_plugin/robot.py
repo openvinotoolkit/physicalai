@@ -104,6 +104,7 @@ class MuJoCoRobot(OperatorControls):
         http_host: str = "127.0.0.1",
         http_port: int = 0,
         owner_name: str = "",
+        studio_url: str | None = None,
         seed: int | None = None,
         exit_with_pid: int | None = None,
         grip_force_n: float | None = None,
@@ -139,6 +140,7 @@ class MuJoCoRobot(OperatorControls):
             http_host: HTTP camera and control server bind address.
             http_port: HTTP port; ``0`` disables the server.
             owner_name: The shared-robot owner name.
+            studio_url: Ignored; Studio's recording page relays automatic recording now.
             seed: Fixed seed for scene resets; ``None`` randomizes.
             exit_with_pid: The PID of the process that starts this owner, its parent: once this
                 process is no longer its child, the shared owner shuts down as on ``POST /shutdown``.
@@ -202,6 +204,8 @@ class MuJoCoRobot(OperatorControls):
         self._http_host, self._http_port = http_host, http_port
         self._http_fallback_port = http_fallback_port
         self._owner_name = owner_name
+        if studio_url is not None:
+            logger.warning("studio_url is ignored: Studio's recording page relays automatic recording now")
         self._seed = seed
         self._rng = np.random.default_rng()
         self._reseed_if_fixed()

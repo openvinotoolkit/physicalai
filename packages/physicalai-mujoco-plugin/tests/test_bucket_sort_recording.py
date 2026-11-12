@@ -26,6 +26,7 @@ from physicalai_mujoco_plugin.studio_recorder import (
     BucketSortProgress,
     BucketSortRecorder,
     RecordingOptions,
+    RelayContext,
     StudioRelay,
     StudioTarget,
 )
@@ -395,7 +396,6 @@ class FakeStudio:
     def __init__(self) -> None:
         self.received: list[dict[str, Any]] = []
         self.state = dict(TELEOP)
-        self._results: list[dict[str, Any]] = []
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -404,6 +404,8 @@ class FakeStudio:
         self._thread.start()
 
     def _run(self, relay: StudioRelay) -> None:
+        page = RelayContext("page", "session", "dataset")
+        done: dict[str, dict[str, Any]] = {}
         while not self._stop.is_set():
             session = {
                 "dataset": self.state["dataset_loaded"],
@@ -412,11 +414,15 @@ class FakeStudio:
                 "follower": "Franka",
                 "leader": "Autopilot",
             }
-            results, self._results = self._results, []
-            for command in relay.exchange(session, results)["commands"]:
+            reply = relay.exchange(page, session, list(done.values()))
+            listed = {command["request_id"] for command in reply["commands"]}
+            done = {request_id: result for request_id, result in done.items() if request_id in listed}
+            for command in reply["commands"]:
+                if command["request_id"] in done:
+                    continue
                 self.received.append(command)
                 self.state = {**self.state, "is_recording": command["command"] == "start_episode"}
-                self._results.append({"request_id": command["request_id"], "ok": True, "error": None})
+                done[command["request_id"]] = {"request_id": command["request_id"], "ok": True, "error": None}
             time.sleep(0.01)
 
     def events(self) -> list[str]:

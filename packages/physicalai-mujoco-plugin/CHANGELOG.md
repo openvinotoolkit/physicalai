@@ -11,7 +11,7 @@
 
 ### Fixed
 
-* **mujoco:** **Record in Studio** works with Studio's current runtime sessions again. Studio's recording page relays the run (`POST /studio/relay`): it picks up the simulation's start, save and discard requests and runs them as its own buttons do, so the simulation needs no Studio address and no longer looks for a session list Studio removed. Keep the recording page open while it records. `--studio-url` is ignored, and `MuJoCoRobot` no longer takes `studio_url`.
+* **mujoco:** **Record in Studio** works with Studio's current runtime sessions again. Studio's recording page relays the run (`POST /studio/relay`): it picks up the simulation's start, save and discard requests and runs them as its own buttons do, so the simulation needs no Studio address and no longer looks for a session list Studio removed. Keep the recording page open while it records. `--studio-url` and `MuJoCoRobot(studio_url=...)` are ignored. Automatic recording needs a Studio whose recording page relays it.
 
 ## [0.5.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-mujoco-plugin-v0.4.0...physicalai-mujoco-plugin-v0.5.0) (2026-10-30)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import threading
 import time
 from dataclasses import dataclass, field
@@ -18,6 +19,7 @@ from physicalai_mujoco_plugin.studio_recorder import (
     RELAY_SILENCE_S,
     AutoRecorder,
     RecordingOptions,
+    RelayContext,
     RelayLink,
     StudioRelay,
     StudioTarget,
@@ -29,13 +31,23 @@ if TYPE_CHECKING:
 
 TARGET = StudioTarget("Mary Jane", "Autopilot")
 READY = {"connected": True, "follower_source": "teleop", "dataset_loaded": True, "is_recording": False}
-SESSION = {"dataset": True, "recording": False, "teleop": True, "follower": "Mary Jane", "leader": "Autopilot"}
+SESSION = {
+    "session_id": "session-1",
+    "dataset_id": "dataset-1",
+    "dataset": True,
+    "recording": False,
+    "teleop": True,
+    "follower": "Mary Jane",
+    "leader": "Autopilot",
+}
 """What Studio's recording page relays when it is ready: a dataset loaded, teleoperating, not recording."""
 
 
 # ----------------------------------------------------------------------
 # The relay
 # ----------------------------------------------------------------------
+
+PAGE = RelayContext("page-1", "session-1", "dataset-1")
 
 
 class Clock:
@@ -46,6 +58,14 @@ class Clock:
         return self.now
 
 
+def _ok(*request_ids: str) -> list[dict[str, Any]]:
+    return [{"request_id": request_id, "ok": True, "error": None} for request_id in request_ids]
+
+
+def _ids(commands: list[dict[str, Any]] | None) -> list[str]:
+    return [command["request_id"] for command in commands or []]
+
+
 def test_a_link_connects_on_the_first_exchange_and_fails_once_studio_falls_silent() -> None:
     clock = Clock()
     link = RelayLink(clock)
@@ -53,7 +73,7 @@ def test_a_link_connects_on_the_first_exchange_and_fails_once_studio_falls_silen
     link.start()
     assert (link.phase, link.state, link.target) == ("connecting", None, None)
 
-    link.exchange(SESSION, [])
+    link.exchange(PAGE, SESSION, [])
     assert link.phase == "connected"
     assert link.state == {"dataset_loaded": True, "is_recording": False, "follower_source": "teleop"}
     assert link.target == TARGET
@@ -65,50 +85,128 @@ def test_a_link_connects_on_the_first_exchange_and_fails_once_studio_falls_silen
     assert link.phase == "closed"
 
 
-def test_a_link_hands_over_studios_own_commands_and_takes_back_their_results() -> None:
+def test_a_command_comes_with_every_exchange_until_its_result_does() -> None:
     link = RelayLink()
     link.start()
     link.send("start_recording", {"task": "Sort"}, request_id="a")
     link.send("save_episode", request_id="b")
-    link.send("discard_episode")
 
-    commands = link.exchange(SESSION, [])
-    assert commands[:2] == [
+    assert link.exchange(PAGE, SESSION, []) == [
         {"command": "start_episode", "request_id": "a", "task": "Sort"},
         {"command": "save_episode", "request_id": "b"},
     ]
-    assert commands[2]["command"] == "discard_episode"
-    assert commands[2]["request_id"]  # Studio's session needs one for every command
-    assert link.exchange(SESSION, []) == []  # each command goes out once
-
-    assert link.take_ack("b") is None
-    link.exchange(SESSION, [{"request_id": "b", "ok": False, "error": "disk full"}])
+    # The reply was lost: the next exchange hands the same commands over again.
+    assert _ids(link.exchange(PAGE, SESSION, [])) == ["a", "b"]
+    assert _ids(link.exchange(PAGE, SESSION, [{"request_id": "b", "ok": False, "error": "disk full"}])) == ["a"]
     assert link.take_ack("b") == {"request_id": "b", "ok": False, "error": "disk full"}
-    assert link.take_ack("b") is None
+    # A result sent again, or for a command never issued, is ignored and kept nowhere.
+    link.exchange(PAGE, SESSION, _ok("b", "never", *[f"x{n}" for n in range(14)]))
+    assert link.take_ack("b") is None and link.take_ack("never") is None
     with pytest.raises(ValueError, match="relays no"):
         link.send("set_follower_source")
 
 
-def test_the_relay_hands_out_the_current_run_and_drains_the_last_one() -> None:
-    relay = StudioRelay()
-    assert relay.exchange(SESSION, []) == {"active": False, "commands": []}
+def test_only_the_page_that_relays_a_run_drives_it() -> None:
+    link = RelayLink()
+    link.start()
+    link.exchange(PAGE, SESSION, [])
+    link.send("save_episode", request_id="s")
 
-    first = relay.open()
-    first.start()
-    assert relay.exchange(SESSION, []) == {"active": True, "commands": []}
-    first.send("discard_episode", request_id="last")
-    first.close()  # switched off: the discard queued just before still goes out, once
-    assert relay.exchange(SESSION, []) == {
+    other = RelayContext("page-2", "session-2", "dataset-1")
+    assert link.exchange(other, {**SESSION, "recording": False}, _ok("s")) is None
+    assert link.take_ack("s") is None
+    assert link.state is not None and link.phase == "connected"  # the other page changed nothing
+
+    assert _ids(link.exchange(PAGE, SESSION, [])) == ["s"]
+
+
+@pytest.mark.parametrize("moved", [{"session_id": "session-9"}, {"dataset_id": "dataset-9"}])
+def test_a_run_fails_when_its_page_moves_to_another_session_or_dataset(moved: dict[str, str]) -> None:
+    link = RelayLink()
+    link.start()
+    link.exchange(PAGE, SESSION, [])
+    link.send("discard_episode", request_id="d")
+
+    assert link.exchange(dataclasses.replace(PAGE, **moved), SESSION, []) is None
+    assert link.phase == "closed"
+    assert not link.pending  # nothing it asked for applies to the other session or dataset
+
+
+def test_a_long_save_keeps_the_run_alive_while_the_page_keeps_relaying() -> None:
+    clock = Clock()
+    relay = StudioRelay(clock)
+    recorder = AutoRecorder(relay.open, clock=clock)
+    recorder.enable(RecordingOptions(keep="all"))
+    relay.exchange(PAGE, SESSION, [])
+    recorder.update(0, None)  # Studio answered: waiting
+    recorder.update(0, None)  # ready: start an episode
+    start = relay.exchange(PAGE, SESSION, [])["commands"][0]
+    relay.exchange(PAGE, {**SESSION, "recording": True}, _ok(start["request_id"]))
+    recorder.update(0, None)
+    recorder.update(1, {"right": 10})
+    save = relay.exchange(PAGE, {**SESSION, "recording": True}, [])["commands"][0]
+    assert recorder.phase == "saving"
+
+    for _ in range(60):  # a 30 s save, with the page relaying meanwhile
+        clock.now += 0.5
+        relay.exchange(PAGE, {**SESSION, "recording": True}, [])
+        recorder.update(1, None)
+    assert recorder.phase == "saving"
+    relay.exchange(PAGE, SESSION, _ok(save["request_id"]))
+    recorder.update(1, None)
+    assert (recorder.phase, recorder.status()["saved"]) == ("waiting", 1)
+
+
+def test_a_start_studio_refuses_stops_the_run_with_its_reason() -> None:
+    relay = StudioRelay()
+    recorder = AutoRecorder(relay.open)
+    recorder.enable(RecordingOptions())
+    relay.exchange(PAGE, SESSION, [])
+    recorder.update(0, None)  # Studio answered: waiting
+    recorder.update(0, None)  # ready: start an episode
+    start = relay.exchange(PAGE, SESSION, [])["commands"][0]
+    relay.exchange(PAGE, SESSION, [{"request_id": start["request_id"], "ok": False, "error": "No dataset loaded"}])
+    recorder.update(0, None)
+    assert recorder.phase == "error"
+    assert "No dataset loaded" in recorder.status()["message"]
+
+
+def test_ending_a_run_cancels_what_studio_has_not_answered_but_its_discards() -> None:
+    relay = StudioRelay()
+    link = relay.open()
+    link.start()
+    relay.exchange(PAGE, SESSION, [])
+    link.send("start_recording", {"task": "Sort"}, request_id="start")
+    link.send("discard_episode", request_id="last")
+    link.close()  # switched off before the page picked them up
+
+    assert relay.exchange(PAGE, SESSION, []) == {
         "active": False,
+        "owner": True,
         "commands": [{"command": "discard_episode", "request_id": "last"}],
     }
-    assert relay.exchange(SESSION, []) == {"active": False, "commands": []}
+    assert relay.exchange(PAGE, SESSION, _ok("last"))["commands"] == []
+    assert relay.exchange(PAGE, SESSION, []) == {"active": False, "owner": False, "commands": []}  # all answered
 
-    second = relay.open()
+
+def test_a_new_run_keeps_the_last_runs_discard_for_its_page() -> None:
+    relay = StudioRelay()
+    first = relay.open()
+    first.start()
+    relay.exchange(PAGE, SESSION, [])
+    first.send("discard_episode", request_id="last")
+    second = relay.open()  # replaced before the page picked the discard up
     second.start()
+    second.send("start_recording", {"task": "Sort"}, request_id="next")
+
+    reply = relay.exchange(PAGE, SESSION, [])
+    assert (reply["active"], _ids(reply["commands"])) == (True, ["last", "next"])
     assert first.phase == "closed"
-    second.send("save_episode", request_id="s")
-    assert relay.exchange(SESSION, [])["commands"] == [{"command": "save_episode", "request_id": "s"}]
+    assert _ids(relay.exchange(PAGE, SESSION, _ok("last"))["commands"]) == ["next"]
+
+
+def test_no_run_hands_out_nothing() -> None:
+    assert StudioRelay().exchange(PAGE, SESSION, []) == {"active": False, "owner": False, "commands": []}
 
 
 def test_a_run_stops_when_studio_never_picks_it_up() -> None:
@@ -169,7 +267,7 @@ def test_cycle_starts_records_saves_and_starts_again() -> None:
     directive = recorder.update(0, None)
     assert directive.hold_feed
     assert directive.clear_belt
-    assert link.sent == [("start_recording", {"task": "Sort"}, None)]
+    assert [sent[:2] for sent in link.sent] == [("start_recording", {"task": "Sort"})]
     assert recorder.update(0, None).hold_feed  # Studio has not confirmed yet
     link.state = {**READY, "is_recording": True}
     assert not recorder.update(0, None).hold_feed
@@ -338,18 +436,22 @@ class FakeStudio:
         self.received: list[dict[str, Any]] = []
         self.session = dict(session)
         self._relay = relay
-        self._results: list[dict[str, Any]] = []
+        self._done: dict[str, dict[str, Any]] = {}
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            results, self._results = self._results, []
-            for command in self._relay.exchange(dict(self.session), results)["commands"]:
+            reply = self._relay.exchange(PAGE, dict(self.session), list(self._done.values()))
+            listed = {command["request_id"] for command in reply["commands"]}
+            self._done = {request_id: result for request_id, result in self._done.items() if request_id in listed}
+            for command in reply["commands"]:
+                if command["request_id"] in self._done:
+                    continue  # run once; its result goes out until it is no longer listed
                 self.received.append(command)
                 self.session["recording"] = command["command"] == "start_episode"
-                self._results.append({"request_id": command["request_id"], "ok": True, "error": None})
+                self._done[command["request_id"]] = {"request_id": command["request_id"], "ok": True, "error": None}
             time.sleep(0.01)
 
     def commands(self) -> list[str]:
