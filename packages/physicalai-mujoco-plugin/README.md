@@ -207,7 +207,7 @@ In `conveyor_sort`, the scripted demonstrator can act as the leader arm, and the
 
 1. In Studio, pick **Autopilot (simulation)** as the leader of the MuJoCo environment (on the environment, or for one session on the recording page). The demonstrator then only publishes its joint targets (`GET /leader`); the arm moves once Studio sends them back as actions, so the recorded actions are the demonstrator's.
 2. Open the dataset's recording page. With the autopilot as leader it offers **Record automatically** instead of **Start episode** and **Accept**: set **Task**, **Keep** and **Episodes**, then start it. Studio turns teleoperation on and the simulation runs the episodes: for each one it clears the belt, has Studio start an episode with the task, and holds the belt when the tenth item is scored. Then it has Studio save the episode, or discard it if **Keep** is **Perfect episodes only** and the episode had a wrong or missed item.
-3. Press **Stop** on the recording page, or set **Episodes** to stop after that many saved episodes. The viewer's **Autopilot** folder shows how the recording goes.
+3. Press **Stop recording** on the recording page, or set **Episodes** to stop after that many saved episodes. The viewer's **Autopilot** folder shows how the recording goes.
 
 Automatic recording needs a Studio whose recording page relays it (the one with the **Autopilot (simulation)** leader). An older Studio can still teleoperate with a **MuJoCo Virtual Leader** robot on the simulation's `--http-port` and **Autopilot** set to **Virtual leader (Studio teleop)**, recording by hand.
 
@@ -221,7 +221,7 @@ In `bucket_sort`, the demonstrator leads the MuJoCo FR3 follower the same way, a
 
 1. In Studio, pick **Autopilot (simulation)** as the leader of the MuJoCo FR3 environment, as in step 1 above.
 2. On the dataset's recording page, set **Keep**, **Episodes** and, under **More**, **Stuck starts** and **Attempts per episode**, then press **Record automatically**. There is no **Task** field: each episode's worded instruction is its task. For each episode the simulation resets the scene, holds the arm at its reset pose, starts a recording with that episode's instruction, and lets the demonstrator move once Studio records. A success is saved once the object has stayed in its bucket for 1 s of simulated time, so each episode ends with the arm settling; with **Perfect episodes only**, a success after a retry (`clean` false) is discarded. A failed or stalled episode, a reset during the episode, or the autopilot no longer leading discards the episode.
-3. Press **Stop**, or set **Episodes** to stop after that many saved episodes.
+3. Press **Stop recording**, or set **Episodes** to stop after that many saved episodes.
 
 **Stuck starts** (0 to 0.5, `recovery_fraction`) starts that share of episodes with the hand closed and empty on the demonstrator's planned path to the bucket, where a policy that lost the object gets stuck; the arm moves there before the recording starts, and a move that shifts an object or bucket by more than 5 mm resets the scene for a normal start instead. **Attempts per episode** (1 to 5, `max_attempts`, default 2) sets how many tries the demonstrator gets, so with **Keep all** the episodes it recovers with a retry are saved too.
 
