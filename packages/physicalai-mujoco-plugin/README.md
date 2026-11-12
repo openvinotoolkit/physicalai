@@ -205,15 +205,14 @@ The same controls are available over HTTP (see [REST control API](#rest-control-
 
 In `conveyor_sort`, the scripted demonstrator can act as the leader arm, and the simulation can save each conveyor episode to the open dataset. No one has to teleoperate, and no one has to press **Accept** or **Start episode**.
 
-1. In Studio, add a robot of type **MuJoCo Virtual Leader**. Its port is the simulation's `--http-port` (default `8080`). Use it as the leader of the MuJoCo environment. The leader takes its joints from the simulation, so the same type leads any MuJoCo follower.
-2. In the viewer's **Autopilot** folder, set **Autopilot** to **Virtual leader (Studio teleop)**. The demonstrator now only publishes its joint targets (`GET /leader`); the arm moves once Studio sends them back as actions.
-3. In Studio, open the dataset's recording view and start teleoperation. The demonstrator's targets become the recorded actions.
-4. In the viewer, set **Task** and **Keep**, then tick **Record in Studio**. The simulation attaches to Studio's running session. For each episode it clears the belt, starts a recording with the task, and holds the belt when the tenth item is scored. Then it saves the episode, or discards it if **Keep** is **Perfect episodes only** and the episode had a wrong or missed item.
-5. Untick **Record in Studio** to stop, or set **Episodes** to stop after that many saved episodes. Pressing stop in Studio also stops the automation.
+1. In Studio, pick **Autopilot (simulation)** as the leader of the MuJoCo environment. (With an older Studio, add a robot of type **MuJoCo Virtual Leader** on the simulation's `--http-port` as the leader instead, and set **Autopilot** to **Virtual leader (Studio teleop)** in the viewer's **Autopilot** folder.) The demonstrator then only publishes its joint targets (`GET /leader`); the arm moves once Studio sends them back as actions.
+2. In Studio, open the dataset's recording page and turn teleoperation on. Studio switches the autopilot to leading. The demonstrator's targets become the recorded actions.
+3. In the viewer, set **Task** and **Keep**, then tick **Record in Studio**. Studio's recording page picks the run up. For each episode the simulation clears the belt, has Studio start an episode with the task, and holds the belt when the tenth item is scored. Then it has Studio save the episode, or discard it if **Keep** is **Perfect episodes only** and the episode had a wrong or missed item.
+4. Untick **Record in Studio** to stop, or set **Episodes** to stop after that many saved episodes. Pressing stop in Studio also stops the automation.
 
 **Record in Studio** also works with a physical leader arm. You teleoperate, and the simulation saves an episode each time the belt's ten items are scored.
 
-The simulation joins Studio's session the same way a second browser tab does. It finds the session through `GET /api/runtime/sessions` and never stops that session. Use `--studio-url` if Studio does not run at `http://127.0.0.1:7860`.
+The simulation does not connect to Studio. Studio's recording page, open on this robot, asks it for the next step a few times a second (`POST /studio/relay`) and runs it as its own **Start episode**, **Accept** and **Discard** buttons do, so keep that page open while it records. A run stops when the page does not ask for 10 s.
 
 **Autopilot** has a third mode, **Drive the arm**. It moves the arm directly and ignores incoming actions, which is useful for demos, but don't record the conveyor in this mode.
 
@@ -221,11 +220,10 @@ The simulation joins Studio's session the same way a second browser tab does. It
 
 In `bucket_sort`, the demonstrator leads the MuJoCo FR3 follower the same way, as Studio's virtual leader. The recorded actions are the demonstrator's commands, so a grasp records the gripper closing past the object, which is what makes a position-controlled gripper squeeze. Recording the follower's reached positions instead would stop at the object's width.
 
-1. In Studio, use the **MuJoCo Virtual Leader** as the leader of the MuJoCo FR3 environment, as in step 1 above.
-2. In the viewer's **Autopilot** folder, set **Autopilot** to **Virtual leader (Studio teleop)**.
-3. In Studio, open the dataset's recording view and start teleoperation.
-4. Set **Keep** and **Episodes**, then tick **Record in Studio**. There is no **Task** field: each episode's worded instruction is its task. For each episode the simulation resets the scene, holds the arm at its reset pose, starts a recording with that episode's instruction, and lets the demonstrator move once Studio records. A success is saved once the object has stayed in its bucket for 1 s of simulated time, so each episode ends with the arm settling; with **Perfect episodes only**, a success after a retry (`clean` false) is discarded. A failed or stalled episode, a reset during the episode, or switching the autopilot out of **Virtual leader** discards the episode.
-5. Untick **Record in Studio** to stop, or set **Episodes** to stop after that many saved episodes. Pressing stop in Studio, or stopping teleoperation, also stops the automation.
+1. In Studio, pick **Autopilot (simulation)** as the leader of the MuJoCo FR3 environment, as in step 1 above.
+2. In Studio, open the dataset's recording page and turn teleoperation on.
+3. Set **Keep** and **Episodes**, then tick **Record in Studio**. There is no **Task** field: each episode's worded instruction is its task. For each episode the simulation resets the scene, holds the arm at its reset pose, starts a recording with that episode's instruction, and lets the demonstrator move once Studio records. A success is saved once the object has stayed in its bucket for 1 s of simulated time, so each episode ends with the arm settling; with **Perfect episodes only**, a success after a retry (`clean` false) is discarded. A failed or stalled episode, a reset during the episode, or switching the autopilot out of **Virtual leader** discards the episode.
+4. Untick **Record in Studio** to stop, or set **Episodes** to stop after that many saved episodes. Pressing stop in Studio, or stopping teleoperation, also stops the automation.
 
 **Stuck starts** (0 to 0.5, `recovery_fraction`) starts that share of episodes with the hand closed and empty on the demonstrator's planned path to the bucket, where a policy that lost the object gets stuck; the arm moves there before the recording starts, and a move that shifts an object or bucket by more than 5 mm resets the scene for a normal start instead. **Attempts per episode** (1 to 5, `max_attempts`, default 2) sets how many tries the demonstrator gets, so with **Keep all** the episodes it recovers with a retry are saved too.
 
@@ -275,7 +273,6 @@ Common options:
 - `--idle-timeout <seconds>`: seconds with zero subscribers before self-exit
   (default `10` without HTTP, disabled when HTTP is enabled so stream viewers keep the sim alive)
 - `--allow-remote`: allow non-loopback zenoh connections
-- `--studio-url <url>`: Physical AI Studio backend for automatic episode recording (default `http://127.0.0.1:7860`)
 
 ### Start from another program
 
@@ -510,6 +507,7 @@ curl -X POST http://127.0.0.1:8080/shutdown
 | `/autopilot`                | POST   | `{"mode": "off" \| "drive" \| "leader"}`; `409` if the scene has no autopilot                                                                                                                                                                  |
 | `/leader`                   | GET    | Virtual leader pose: `seq`, `mode`, `unit`, `joint_names`, `joint_positions`                                                                                                                                                                   |
 | `/studio/recording`         | POST   | `{"enabled": bool, "task": str (1-200), "keep": "perfect" \| "all", "max_episodes": 0..10000, "recovery_fraction": 0..0.5, "max_attempts": 1..5}`; conveyor_sort or bucket_sort (which ignores `task` and alone uses the last two), else `409` |
+| `/studio/relay`             | POST   | `{"session": {"dataset", "recording", "teleop": bool, "follower", "leader": str}, "results": [{"request_id", "ok", "error"}]}` from Studio's recording page; answers `{"active": bool, "commands": [...]}` (see `studio_recorder.py`)          |
 | `/objects`                  | GET    | Free-object joint names and world poses                                                                                                                                                                                                        |
 | `/objects/{joint}/pose`     | POST   | `{"position": [x, y, z], "wxyz": [w, x, y, z]}`: teleport a free object                                                                                                                                                                        |
 | `/replay`                   | POST   | `{"joint_positions": [[...], ...], "fps": 0..1000, "base": null}`: replay recorded joints                                                                                                                                                      |

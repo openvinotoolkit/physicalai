@@ -3,24 +3,23 @@
 
 """Save conveyor and bucket_sort episodes into a Physical AI Studio dataset automatically.
 
-Studio has no episode REST API; its recording view drives a runtime session
-over ``/api/projects/{project}/runtime/ws``. A second client that sends the
-same handshake (same follower and leader) attaches to the live session instead
-of starting a new one, receives its state events, and may send the same
-``start_recording`` / ``save_episode`` / ``discard_episode`` commands the
-browser sends. This module is that client, plus the episode logic around it:
+The simulation does not reach Studio itself. Studio's recording page, open on this
+simulation's robot, relays: while automatic recording runs (``/health`` ``studio.phase``
+is neither ``off``, ``done``, ``stopped`` nor ``error``), it posts its session's state to
+``POST /studio/relay`` a few times a second, runs the commands it gets back through its own
+session, exactly as its buttons do, and posts the results with the next exchange.
+:class:`StudioRelay` is that endpoint; each run of the recorder gets a :class:`RelayLink`
+from it. The episode logic around the link:
 
-1. Find the live session for this simulation's follower: ``GET
-   /api/runtime/sessions``, then the project whose robot list holds it.
-2. Wait until Studio is ready: a dataset loaded, teleoperation running, and no
+1. Wait until Studio is ready: a dataset loaded, teleoperation running, and no
    recording in progress.
-3. Clear the belt, ``start_recording`` with the task, and let the belt run.
-4. When the conveyor episode ends, hold the feed, then save the episode (or
+2. Clear the belt, start a Studio episode with the task, and let the belt run.
+3. When the conveyor episode ends, hold the feed, then save the episode (or
    discard it when it had mistakes and only perfect episodes are kept).
-5. Repeat from 2 until switched off or the episode budget is used up.
+4. Repeat from 1 until switched off or the episode budget is used up.
 
 The bucket_sort scene (`BucketSortRecorder`) runs the same cycle, also through
-Studio's teleoperation with the virtual leader: the autopilot runs in ``leader``
+Studio's teleoperation with the autopilot as leader: the autopilot runs in ``leader``
 mode, so Studio records the demonstrator's commands as the actions, including a
 gripper closed past the object, not just where the fingers stopped. It differs
 in two ways. It resets the scene before each episode, and starts the Studio
@@ -28,28 +27,33 @@ episode with that episode's worded instruction as the task. And it ends the
 episode on the demonstrator's outcome: a success is saved (``keep: "perfect"``
 only when no attempt went wrong), a failure or a stall discarded.
 
-The client never sends ``disconnect``: that would stop Studio's session. It
-sends ``camera_ids: []`` so attaching never restarts the session for cameras.
+The relay exchange, request then response::
+
+    {"session": {"dataset": true, "recording": false, "teleop": true,
+                 "follower": "Sim arm", "leader": "Sim arm autopilot"},
+     "results": [{"request_id": "...", "ok": true, "error": null}]}
+
+    {"active": true,
+     "commands": [{"command": "start_episode", "request_id": "...", "task": "..."}]}
+
+``commands`` are Studio's own session commands: ``start_episode`` (with ``task``),
+``save_episode`` and ``discard_episode``. ``active`` turns false once the run ends; the
+commands queued just before (a last discard) still come with it.
 """
 
 from __future__ import annotations
 
-import http.client
-import json
-import queue
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal, Protocol
-from urllib.parse import urlsplit
 
 from loguru import logger
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Iterable, Mapping
 
-DEFAULT_STUDIO_URL = "http://127.0.0.1:7860"
 MAX_TASK_CHARS = 200
 MAX_EPISODES = 10_000
 MAX_RECOVERY_FRACTION = 0.5
@@ -57,11 +61,11 @@ MAX_RECOVERY_FRACTION = 0.5
 DEFAULT_MAX_ATTEMPTS = 2
 """The demonstrator's attempts per episode by default (``bucket_sort_demo.DEFAULT_MAX_ATTEMPTS``)."""
 MAX_ATTEMPTS = 5
-FOLLOWER_TYPES = frozenset({"MuJoCo_SO101_Follower"})
-"""Known follower types; any other ``MuJoCo_..._Follower`` (e.g. the bucket_sort FR3) matches too."""
 DEFAULT_TASK = "Sort the items: cracked or purple ones into reject, the others into the bin of their color."
 CONNECT_TIMEOUT_S = 30.0
-"""Discovery (a few 3 s requests), the 5 s websocket open and Studio's first state all fit well inside."""
+"""How long Studio's recording page may take to pick up a run (it checks ``/health`` about every second)."""
+RELAY_SILENCE_S = 10.0
+"""How long the recording page may stay silent before the run stops: it was closed, or lost its session."""
 START_TIMEOUT_S = 15.0
 SAVE_TIMEOUT_S = 120.0
 SUCCESS_HOLD_S = 1.0
@@ -70,6 +74,8 @@ its bucket, and the episode ends with the arm settling instead of on the tick th
 SUCCESS_HOLD_TIMEOUT_S = 4.0
 """Simulated seconds after the demonstrator's success the object may take to hold, then the episode is
 discarded; below the scene's 5 s success dwell, after which it starts the next layout."""
+NO_STUDIO = "Studio did not answer: open its recording page for this robot, with a dataset and teleoperation."
+"""Why a run stops when the recording page never picked it up, or stopped relaying."""
 
 KeepPolicy = Literal["all", "perfect"]
 RecorderPhase = Literal[
@@ -87,133 +93,21 @@ RecorderPhase = Literal[
 ]
 
 
-class StudioError(RuntimeError):
-    """Studio is unreachable, or has no session this simulation can join."""
-
-
-# ----------------------------------------------------------------------
-# Discovery over REST
-# ----------------------------------------------------------------------
-
-
-def validate_studio_url(url: str) -> str:
-    """Accept an ``http(s)://host[:port]`` base URL with no path, query or credentials.
-
-    Returns:
-        The URL without a trailing slash.
-
-    Raises:
-        ValueError: For any other shape.
-    """
-    parts = urlsplit(url.strip())
-    if parts.scheme not in {"http", "https"} or not parts.hostname:
-        msg = f"Studio URL must look like http://host:port, got {url!r}"
-        raise ValueError(msg)
-    if parts.username or parts.password or parts.query or parts.fragment or parts.path not in {"", "/"}:
-        msg = f"Studio URL must not carry a path, query or credentials: {url!r}"
-        raise ValueError(msg)
-    return f"{parts.scheme}://{parts.netloc}"
-
-
-def _get_json(base_url: str, path: str, timeout_s: float = 3.0) -> Any:  # noqa: ANN401 - JSON
-    parts = urlsplit(base_url)
-    connection_type = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
-    conn = connection_type(parts.hostname or "", parts.port, timeout=timeout_s)
-    try:
-        conn.request("GET", path, headers={"Accept": "application/json"})
-        response = conn.getresponse()
-        body = response.read()
-    except (OSError, http.client.HTTPException) as exc:
-        msg = f"Studio is not reachable at {base_url}: {exc}"
-        raise StudioError(msg) from exc
-    finally:
-        conn.close()
-    if response.status != 200:  # noqa: PLR2004
-        msg = f"Studio answered HTTP {response.status} for {path}"
-        raise StudioError(msg)
-    try:
-        return json.loads(body)
-    except ValueError as exc:
-        msg = f"Studio answered {path} with invalid JSON"
-        raise StudioError(msg) from exc
-
-
-def _is_mujoco_follower(robot_type: object) -> bool:
-    """Return whether *robot_type* is a MuJoCo follower of the plugin's Studio catalog."""
-    return isinstance(robot_type, str) and (
-        robot_type in FOLLOWER_TYPES or (robot_type.startswith("MuJoCo_") and robot_type.endswith("_Follower"))
-    )
-
-
 @dataclass(frozen=True)
 class StudioTarget:
-    """The Studio project, follower and leader of the live session to join."""
+    """The Studio session the relaying page drives: its follower and leader, by name."""
 
-    project_id: str
-    follower_id: str
     follower_name: str
-    leader_id: str | None
     leader_name: str | None
 
 
-def discover_session(
-    base_url: str,
-    owner_name: str,
-    *,
-    get_json: Callable[[str, str], Any] = _get_json,
-) -> StudioTarget:
-    """Find the live Studio session that drives this simulation's follower.
-
-    Returns:
-        Where to attach.
-
-    Raises:
-        StudioError: If Studio is unreachable or no live session drives this simulation.
-    """
-    sessions = {
-        str(session["follower_id"]): session
-        for session in get_json(base_url, "/api/runtime/sessions")
-        if session.get("follower_id") and session.get("status") in {"starting", "running"}
-    }
-    if not sessions:
-        msg = "Studio has no live robot session. Open the MuJoCo follower in Studio's recording view first."
-        raise StudioError(msg)
-    for project in get_json(base_url, "/api/projects"):
-        project_id = str(project["id"])
-        robots = get_json(base_url, f"/api/projects/{project_id}/robots")
-        for robot in robots:
-            session = sessions.get(str(robot.get("id")))
-            payload = robot.get("payload") or {}
-            if session is None or not _is_mujoco_follower(robot.get("type")) or payload.get("name") != owner_name:
-                continue
-            leader_name = session.get("leader_name")
-            leader_id = None
-            if leader_name:
-                leader_id = next(
-                    (str(r["id"]) for r in robots if r.get("name") == leader_name and r.get("id") != robot.get("id")),
-                    None,
-                )
-                if leader_id is None:
-                    msg = f"Studio's session uses leader {leader_name!r}, which is not in the follower's project"
-                    raise StudioError(msg)
-            return StudioTarget(
-                project_id=project_id,
-                follower_id=str(robot["id"]),
-                follower_name=str(robot.get("name", "")),
-                leader_id=leader_id,
-                leader_name=leader_name,
-            )
-    msg = f"No live Studio session drives the simulation {owner_name!r}. Open it in Studio's recording view first."
-    raise StudioError(msg)
-
-
 # ----------------------------------------------------------------------
-# The websocket link
+# The relay, between the simulation thread and Studio's recording page
 # ----------------------------------------------------------------------
 
 
 class StudioLinkLike(Protocol):
-    """What `AutoRecorder` needs from a link; `StudioLink` or a test double."""
+    """What the recorders need from a link; a `RelayLink` or a test double."""
 
     @property
     def phase(self) -> str:
@@ -227,16 +121,16 @@ class StudioLinkLike(Protocol):
 
     @property
     def target(self) -> StudioTarget | None:
-        """The session the link attached to."""
+        """The session the link relays for."""
         ...
 
     @property
     def state(self) -> dict[str, Any] | None:
-        """The latest Studio state event payload."""
+        """Studio's session as the recorders read it: ``dataset_loaded``, ``is_recording``, ``follower_source``."""
         ...
 
     def start(self) -> None:
-        """Connect in the background."""
+        """Start waiting for Studio."""
         ...
 
     def send(self, event: str, data: Mapping[str, Any] | None = None, request_id: str | None = None) -> None:
@@ -248,78 +142,98 @@ class StudioLinkLike(Protocol):
         ...
 
     def close(self) -> None:
-        """Detach from Studio; its session keeps running."""
+        """Stop relaying; Studio's session keeps running."""
         ...
 
 
-class StudioLink:
-    """Background thread that attaches to Studio's runtime websocket and relays commands and events."""
+_COMMANDS = {"start_recording": "start_episode", "save_episode": "save_episode", "discard_episode": "discard_episode"}
+"""The recorders' commands, as Studio's session names them."""
 
-    def __init__(
-        self,
-        base_url: str,
-        owner_name: str,
-        *,
-        discover: Callable[[str, str], StudioTarget] = discover_session,
-        connect: Callable[[str], Any] | None = None,
-    ) -> None:
-        """Prepare a link; `start` connects on a background thread."""
-        self._base_url = validate_studio_url(base_url)
-        self._owner_name = owner_name
-        self._discover = discover
-        self._connect = connect
+
+class RelayLink:
+    """One recording run's commands for Studio, and what Studio's recording page answered.
+
+    The simulation thread sends and reads; :meth:`StudioRelay.exchange` (the HTTP server's
+    thread) hands the commands over and brings the session state and the results back.
+    """
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic, silence_s: float = RELAY_SILENCE_S) -> None:
+        """Start idle; :meth:`start` waits for the first exchange."""
+        self._clock = clock
+        self._silence_s = silence_s
         self._lock = threading.Lock()
-        self._phase = "idle"
-        self._error: str | None = None
-        self._target: StudioTarget | None = None
-        self._state: dict[str, Any] | None = None
+        self._started = False
+        self._closed = False
+        self._last_exchange: float | None = None
+        self._session: dict[str, Any] | None = None
+        self._outgoing: list[dict[str, Any]] = []
         self._acks: dict[str, dict[str, Any]] = {}
-        self._outgoing: queue.Queue[dict[str, Any]] = queue.Queue()
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
 
     @property
     def phase(self) -> str:
-        """``idle``, ``connecting``, ``connected``, ``closed`` or ``error``."""
+        """``idle``, ``connecting`` until Studio first answers, ``connected``, ``closed``, or ``error`` once silent."""
         with self._lock:
-            return self._phase
+            if self._closed:
+                return "closed"
+            if not self._started:
+                return "idle"
+            if self._last_exchange is None:
+                return "connecting"
+            if self._clock() - self._last_exchange > self._silence_s:
+                return "error"
+            return "connected"
 
     @property
     def error(self) -> str | None:
-        """Why the link failed, if it did."""
-        with self._lock:
-            return self._error
+        """Why the link failed: Studio's recording page stopped relaying."""
+        return NO_STUDIO if self.phase == "error" else None
 
     @property
     def target(self) -> StudioTarget | None:
-        """The session this link attached to."""
+        """The follower and leader of the session the relaying page drives."""
         with self._lock:
-            return self._target
+            session = self._session
+        if session is None or not session.get("follower"):
+            return None
+        leader = session.get("leader")
+        return StudioTarget(str(session["follower"]), str(leader) if leader else None)
 
     @property
     def state(self) -> dict[str, Any] | None:
-        """The latest Studio state event payload (``is_recording``, ``dataset_loaded``, ...)."""
+        """The relaying page's session, as the recorders read it; ``None`` before the first exchange."""
         with self._lock:
-            return None if self._state is None else dict(self._state)
+            session = self._session
+        if session is None:
+            return None
+        return {
+            "dataset_loaded": bool(session.get("dataset")),
+            "is_recording": bool(session.get("recording")),
+            "follower_source": "teleop" if session.get("teleop") else None,
+        }
 
     def start(self) -> None:
-        """Connect on a background thread."""
+        """Wait for Studio's recording page."""
         with self._lock:
-            self._phase = "connecting"
-        self._thread = threading.Thread(target=self._run, name="studio-link", daemon=True)
-        self._thread.start()
+            self._started = True
 
     def send(self, event: str, data: Mapping[str, Any] | None = None, request_id: str | None = None) -> None:
-        """Queue one command for Studio."""
-        message: dict[str, Any] = {"event": event}
-        if data is not None:
-            message["data"] = dict(data)
-        if request_id is not None:
-            message["request_id"] = request_id
-        self._outgoing.put(message)
+        """Queue one command for the next exchange.
+
+        Raises:
+            ValueError: For a command Studio's session does not take from the relay.
+        """
+        command = _COMMANDS.get(event)
+        if command is None:
+            msg = f"Studio's recording page relays no {event!r}"
+            raise ValueError(msg)
+        message: dict[str, Any] = {"command": command, "request_id": request_id or uuid.uuid4().hex}
+        if command == "start_episode":
+            message["task"] = str((data or {}).get("task", ""))
+        with self._lock:
+            self._outgoing.append(message)
 
     def take_ack(self, request_id: str) -> dict[str, Any] | None:
-        """Pop Studio's acknowledgement for `request_id`, once it arrived.
+        """Pop Studio's result for `request_id`, once a relay brought it.
 
         Returns:
             ``{"request_id", "ok", "error"}``, or ``None`` while still pending.
@@ -327,84 +241,63 @@ class StudioLink:
         with self._lock:
             return self._acks.pop(request_id, None)
 
-    def close(self, timeout_s: float = 2.0) -> None:
-        """Detach from Studio; its session keeps running."""
-        self._stop.set()
-        thread = self._thread
-        if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout_s)
-
-    def _fail(self, message: str) -> None:
-        logger.warning("Studio link: {}", message)
+    def close(self) -> None:
+        """Stop relaying; commands already queued still go out with the next exchange."""
         with self._lock:
-            self._phase, self._error = "error", message
+            self._closed = True
 
-    def _run(self) -> None:
-        try:
-            target = self._discover(self._base_url, self._owner_name)
-        except StudioError as exc:
-            self._fail(str(exc))
-            return
-        except Exception as exc:  # noqa: BLE001 - e.g. a response shape from another Studio version
-            self._fail(f"Could not read Studio's sessions: {exc!r}")
-            return
+    def exchange(self, session: Mapping[str, Any], results: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        """Take Studio's session state and results, and hand over the queued commands.
+
+        Returns:
+            The commands queued since the last exchange, oldest first.
+        """
         with self._lock:
-            self._target = target
-        ws_url = self._base_url.replace("http", "ws", 1) + f"/api/projects/{target.project_id}/runtime/ws"
-        try:
-            ws = self._open(ws_url)
-        except Exception as exc:  # noqa: BLE001 - refused, bad URL or handshake rejected: all end the link
-            self._fail(f"Could not open {ws_url}: {exc}")
-            return
-        try:
-            ws.send(json.dumps({"follower_id": target.follower_id, "leader_id": target.leader_id, "camera_ids": []}))
-            with self._lock:
-                self._phase = "connected"
-            logger.info("Attached to Studio session for {!r} (leader {!r})", target.follower_name, target.leader_name)
-            self._pump(ws)
-        except Exception as exc:  # noqa: BLE001 - any websocket failure ends the link the same way
-            self._fail(f"Studio connection lost: {exc}")
-        finally:
-            ws.close()
+            if not self._closed:
+                self._last_exchange = self._clock()
+                self._session = dict(session)
+                for result in results:
+                    request_id = str(result.get("request_id", ""))
+                    self._acks[request_id] = {
+                        "request_id": request_id,
+                        "ok": bool(result.get("ok")),
+                        "error": result.get("error"),
+                    }
+            commands, self._outgoing = self._outgoing, []
+            return commands
+
+
+class StudioRelay:
+    """``POST /studio/relay``: where Studio's recording page picks up the current run's commands."""
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic, silence_s: float = RELAY_SILENCE_S) -> None:
+        """Start with no run."""
+        self._clock = clock
+        self._silence_s = silence_s
+        self._lock = threading.Lock()
+        self._link: RelayLink | None = None
+
+    def open(self) -> RelayLink:
+        """Return a link for a new run; the previous run's link no longer gets exchanges once drained."""
+        link = RelayLink(self._clock, self._silence_s)
         with self._lock:
-            if self._phase == "connected":
-                self._phase = "closed"
+            previous, self._link = self._link, link
+        if previous is not None:
+            previous.close()
+        return link
 
-    def _open(self, ws_url: str) -> Any:  # noqa: ANN401 - a websockets connection
-        if self._connect is not None:
-            return self._connect(ws_url)
-        from websockets.sync.client import connect  # noqa: PLC0415
+    def exchange(self, session: Mapping[str, Any], results: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+        """Relay one exchange with Studio's recording page (the HTTP server's thread).
 
-        return connect(ws_url, open_timeout=5.0, max_size=2**22)
-
-    def _pump(self, ws: Any) -> None:  # noqa: ANN401 - a websockets connection
-        while not self._stop.is_set():
-            self._flush(ws)
-            try:
-                raw = ws.recv(timeout=0.05)
-            except TimeoutError:
-                continue
-            self._handle(json.loads(raw))
-        self._flush(ws)  # a command queued just before close, such as the switch back to hold
-
-    def _flush(self, ws: Any) -> None:  # noqa: ANN401 - a websockets connection
-        while True:
-            try:
-                ws.send(json.dumps(self._outgoing.get_nowait()))
-            except queue.Empty:
-                return
-
-    def _handle(self, message: Mapping[str, Any]) -> None:
-        event = message.get("event")
-        if event == "state":
-            with self._lock:
-                self._state = dict(message.get("data") or {})
-        elif event == "ack":
-            data = dict(message.get("data") or {})
-            with self._lock:
-                self._acks[str(data.get("request_id"))] = data
-        elif event == "error":
-            logger.warning("Studio reported: {} ({})", message.get("message"), message.get("error_code"))
+        Returns:
+            ``{"active", "commands"}``: whether a run is under way, and its commands for Studio.
+        """
+        with self._lock:
+            link = self._link
+        if link is None:
+            return {"active": False, "commands": []}
+        commands = link.exchange(session, results)
+        return {"active": link.phase not in {"idle", "closed"}, "commands": commands}
 
 
 # ----------------------------------------------------------------------
@@ -505,7 +398,7 @@ class _RecorderBase:
         self._counters = _Counters()
         self._link = self._link_factory()
         self._link.start()
-        self._set_phase("connecting", "Looking for Studio's session...")
+        self._set_phase("connecting", "Waiting for Studio's recording page...")
 
     def disable(self, message: str = "", *, discard: bool = False) -> None:
         """Stop recording; an episode Studio is still recording stays for the user to save or discard.
@@ -616,15 +509,14 @@ class AutoRecorder(_RecorderBase):
         if link is None or self._phase in {"off", "done", "stopped", "error"}:
             return RecorderDirective()
         if link.phase in {"error", "closed"}:
-            self._finish("error", link.error or "Studio closed the connection.")
+            self._finish("error", link.error or "Studio stopped relaying.")
             return RecorderDirective()
         state = link.state
         if self._phase == "connecting":
             if link.phase == "connected" and state is not None:
                 self._set_phase("waiting", "")
             elif self._clock() - self._since > CONNECT_TIMEOUT_S:
-                reason = "sent no session state" if link.phase == "connected" else "did not answer in time"
-                self._finish("error", f"Studio {reason}; is the robot session running?")
+                self._finish("error", NO_STUDIO)
                 return RecorderDirective()
             return RecorderDirective(hold_feed=True)
         if state is None:
@@ -645,7 +537,7 @@ class AutoRecorder(_RecorderBase):
         if not state.get("dataset_loaded"):
             self._message = "Waiting for Studio: open a dataset in the recording view."
         elif state.get("follower_source") != "teleop":
-            self._message = "Waiting for Studio: start teleoperation (with the virtual leader for the autopilot)."
+            self._message = "Waiting for Studio: turn teleoperation on."
         elif state.get("is_recording"):
             self._message = "Waiting for Studio: save or discard the episode it is recording."
         else:
@@ -710,7 +602,7 @@ class BucketSortProgress:
     instruction: str | None
     """The current episode's worded instruction, the Studio episode's task."""
     leading: bool
-    """Whether the autopilot runs as Studio's virtual leader (mode ``leader``)."""
+    """Whether the autopilot leads Studio's teleoperation (mode ``leader``)."""
     outcome: str | None = None
     """The demonstrator's episode outcome: ``running``, ``success``, ``failed``, ``stalled`` or ``None``."""
     clean: bool | None = None
@@ -819,7 +711,7 @@ class BucketSortRecorder(_RecorderBase):
         if link is None or not self.active:
             return BucketSortDirective()
         if link.phase in {"error", "closed"}:
-            self._finish("error", link.error or "Studio closed the connection.")
+            self._finish("error", link.error or "Studio stopped relaying.")
             return BucketSortDirective()
         state = link.state
         if self._phase == "connecting":
@@ -845,10 +737,10 @@ class BucketSortRecorder(_RecorderBase):
             self._message = "Waiting for Studio: open a dataset in the recording view."
         elif state.get("is_recording"):
             self._message = "Waiting for Studio: save or discard the episode it is recording."
-        elif not progress.leading:
-            self._message = "Waiting for the autopilot: set it to 'Virtual leader (Studio teleop)'."
         elif state.get("follower_source") != "teleop":
-            self._message = "Waiting for Studio: start teleoperation with the MuJoCo virtual leader."
+            self._message = "Waiting for Studio: turn teleoperation on, with the autopilot as leader."
+        elif not progress.leading:
+            self._message = "Waiting for the autopilot to lead: teleoperate with the autopilot as leader in Studio."
         else:
             self._generation = progress.generation
             self._set_phase("resetting", "Resetting the scene for a new episode...")
@@ -859,8 +751,7 @@ class BucketSortRecorder(_RecorderBase):
         if link.phase == "connected" and link.state is not None:
             self._set_phase("waiting", "")
         elif self._clock() - self._since > CONNECT_TIMEOUT_S:
-            reason = "sent no session state" if link.phase == "connected" else "did not answer in time"
-            self._finish("error", f"Studio {reason}; is the robot session running?")
+            self._finish("error", NO_STUDIO)
             return BucketSortDirective()
         return BucketSortDirective(hold_arm=True)
 

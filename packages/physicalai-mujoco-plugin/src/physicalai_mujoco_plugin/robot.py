@@ -37,7 +37,6 @@ from physicalai_mujoco_plugin.profiles import DefaultUnit, RobotProfile, get_pro
 from physicalai_mujoco_plugin.profiles.franka import with_grip_force
 from physicalai_mujoco_plugin.scene_objects import SceneObjects, SpawnArea
 from physicalai_mujoco_plugin.sim import Sim, default_cameras, joint_names_before_load, load_sim, resolve_scene
-from physicalai_mujoco_plugin.studio_recorder import DEFAULT_STUDIO_URL
 from physicalai_mujoco_plugin.viewer import ViewerTheme
 
 if TYPE_CHECKING:
@@ -105,7 +104,6 @@ class MuJoCoRobot(OperatorControls):
         http_host: str = "127.0.0.1",
         http_port: int = 0,
         owner_name: str = "",
-        studio_url: str = DEFAULT_STUDIO_URL,
         seed: int | None = None,
         exit_with_pid: int | None = None,
         grip_force_n: float | None = None,
@@ -140,8 +138,7 @@ class MuJoCoRobot(OperatorControls):
                 simulation itself.
             http_host: HTTP camera and control server bind address.
             http_port: HTTP port; ``0`` disables the server.
-            owner_name: The shared-robot owner name, used to find its Studio session.
-            studio_url: Studio backend that automatic episode recording attaches to.
+            owner_name: The shared-robot owner name.
             seed: Fixed seed for scene resets; ``None`` randomizes.
             exit_with_pid: The PID of the process that starts this owner, its parent: once this
                 process is no longer its child, the shared owner shuts down as on ``POST /shutdown``.
@@ -182,7 +179,7 @@ class MuJoCoRobot(OperatorControls):
             "torque_mode": torque_mode, "substeps": substeps, "rate_hz": rate_hz, "cameras": cameras,
             "overview": overview, "enable_viewer": enable_viewer, "viser_host": viser_host, "viser_port": viser_port,
             "viewer_theme": viewer_theme, "http_host": http_host, "http_port": http_port, "owner_name": owner_name,
-            "studio_url": studio_url, "seed": seed, "exit_with_pid": exit_with_pid,
+            "seed": seed, "exit_with_pid": exit_with_pid,
             "grip_force_n": grip_force_n, "http_fallback_port": http_fallback_port,
         }  # fmt: skip
         """Constructor arguments, for pickling (``__getstate__``)."""
@@ -205,7 +202,6 @@ class MuJoCoRobot(OperatorControls):
         self._http_host, self._http_port = http_host, http_port
         self._http_fallback_port = http_fallback_port
         self._owner_name = owner_name
-        self._studio_url = studio_url
         self._seed = seed
         self._rng = np.random.default_rng()
         self._reseed_if_fixed()
@@ -298,11 +294,9 @@ class MuJoCoRobot(OperatorControls):
             raise
         if self._automation is None:
             self._automation = ConveyorAutomation(
-                self._studio_url,
                 joint_names=tuple(sim.joint_names),
                 unit=self._unit,
                 to_units=self._targets_to_units,
-                owner_name=lambda: self._owner_name,
             )
         self._sim = sim
         if self._substeps_arg is None:

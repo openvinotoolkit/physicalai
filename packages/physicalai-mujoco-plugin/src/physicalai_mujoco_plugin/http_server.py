@@ -46,6 +46,7 @@ from physicalai_mujoco_plugin.studio_recorder import (
     MAX_RECOVERY_FRACTION,
     MAX_TASK_CHARS,
     RecordingOptions,
+    StudioRelay,
 )
 
 if TYPE_CHECKING:
@@ -202,7 +203,7 @@ class AutopilotRequest(BaseModel):
 
 
 class StudioRecordingRequest(BaseModel):
-    """Body for ``POST /studio/recording``; the Studio URL is a launch option, not a request field.
+    """Body for ``POST /studio/recording``.
 
     The bucket_sort scene ignores ``task``: each episode's instruction is its task. Only it uses
     ``recovery_fraction`` (the share of episodes that start from a stuck pose) and ``max_attempts``
@@ -226,6 +227,34 @@ class StudioRecordingRequest(BaseModel):
             msg = "task must not be blank"
             raise ValueError(msg)
         return task
+
+
+class StudioRelaySession(BaseModel):
+    """The session of Studio's recording page, as it relays it."""
+
+    dataset: bool
+    """Whether a dataset is loaded to record into."""
+    recording: bool
+    """Whether an episode is being recorded."""
+    teleop: bool
+    """Whether teleoperation drives the follower."""
+    follower: Annotated[str, Field(max_length=200)] | None = None
+    leader: Annotated[str, Field(max_length=200)] | None = None
+
+
+class StudioRelayResult(BaseModel):
+    """How one relayed command went in Studio."""
+
+    request_id: Annotated[str, Field(min_length=1, max_length=64)]
+    ok: bool
+    error: Annotated[str, Field(max_length=2000)] | None = None
+
+
+class StudioRelayRequest(BaseModel):
+    """Body for ``POST /studio/relay`` (see :mod:`physicalai_mujoco_plugin.studio_recorder`)."""
+
+    session: StudioRelaySession
+    results: Annotated[list[StudioRelayResult], Field(max_length=16)] = []
 
 
 class OverviewRequest(BaseModel):
@@ -434,6 +463,7 @@ def build_app(
     get_status: Callable[[], dict[str, Any]],
     get_leader: Callable[[], dict[str, Any]] | None = None,
     check_replay: Callable[[np.ndarray], str | None] | None = None,
+    studio_relay: StudioRelay | None = None,
     jpeg_quality: int = 85,
 ) -> FastAPI:
     """Build the FastAPI application serving camera streams and control.
@@ -460,6 +490,8 @@ def build_app(
         check_replay: Checks ``POST /replay`` frames of shape ``(frames, joints)`` against the
             robot's conversions and returns why they cannot be shown unchanged, or ``None``.
             Without it, every replay is refused with ``409``.
+        studio_relay: Where Studio's recording page relays automatic recording, at
+            ``POST /studio/relay``; no route without it.
         jpeg_quality: JPEG quality for streams and snapshots.
 
     Returns:
@@ -524,6 +556,14 @@ def build_app(
     _add_sim_control_routes(app, commands=commands, get_status=get_status)
     _add_replay_routes(app, commands=commands, get_status=get_status, check=check_replay)
     _add_automation_routes(app, commands=commands, get_status=get_status, get_leader=get_leader)
+    if studio_relay is not None:
+
+        @app.post("/studio/relay")
+        def relay_studio(request: StudioRelayRequest) -> dict[str, Any]:
+            return studio_relay.exchange(
+                request.session.model_dump(), [result.model_dump() for result in request.results]
+            )
+
     return app
 
 

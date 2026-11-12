@@ -895,10 +895,10 @@ class SimControlPanel:
             toggle = gui.add_checkbox(
                 "Record in Studio",
                 initial_value=active,
-                hint="Save each conveyor episode to the dataset open in Studio's recording view"
+                hint="Save each conveyor episode to the dataset open on Studio's recording page; keep the page open"
                 if conveyor
-                else "Save each episode the autopilot leads to the dataset open in Studio's recording view; "
-                "Studio teleoperates the arm with the MuJoCo virtual leader",
+                else "Save each episode the autopilot leads to the dataset open on Studio's recording page; "
+                "Studio teleoperates the arm with the autopilot as leader. Keep the page open",
             )
             if conveyor:
                 task = gui.add_text("Task", initial_value=str(studio.get("task") or DEFAULT_TASK))

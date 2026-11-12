@@ -30,13 +30,12 @@ from physicalai_mujoco_plugin.autopilot import Autopilot
 from physicalai_mujoco_plugin.conveyor import DEFAULT_BELT_SPEED, ConveyorSort
 from physicalai_mujoco_plugin.studio_recorder import (
     DEFAULT_MAX_ATTEMPTS,
-    DEFAULT_STUDIO_URL,
     AutoRecorder,
     BucketSortProgress,
     BucketSortRecorder,
     RecordingOptions,
-    StudioLink,
-    validate_studio_url,
+    RelayLink,
+    StudioRelay,
 )
 
 if TYPE_CHECKING:
@@ -82,23 +81,20 @@ class ConveyorAutomation:
 
     def __init__(
         self,
-        studio_url: str = DEFAULT_STUDIO_URL,
         *,
         joint_names: tuple[str, ...],
         unit: str,
         to_units: Callable[[np.ndarray], np.ndarray],
-        owner_name: Callable[[], str],
     ) -> None:
         """Start with no scene attached.
 
         Args:
-            studio_url: Studio backend that automatic recording attaches to.
             joint_names: The robot's joint order; leader poses use it.
             unit: The robot's joint unit, reported with each leader pose.
             to_units: Converts joint radians to the robot's unit.
-            owner_name: Returns the simulation's transport name, used to find its Studio session.
         """
-        self.studio_url = validate_studio_url(studio_url)
+        self.studio_relay = StudioRelay()
+        """Where Studio's recording page picks up the recorders' commands (``POST /studio/relay``)."""
         self.autopilot = Autopilot()
         self.recorder = AutoRecorder(self._open_link)
         """Records conveyor episodes."""
@@ -109,7 +105,6 @@ class ConveyorAutomation:
         self._joint_names = tuple(joint_names)
         self._unit = unit
         self._to_units = to_units
-        self._owner_name = owner_name
         self._conveyor: ConveyorSort | None = None
         self._bucket_task: BucketSortTask | None = None
         self._recorder_reset = False
@@ -511,8 +506,8 @@ class ConveyorAutomation:
         """Return the ``autopilot`` and ``studio`` sections of ``/health`` and the viewer."""
         return {"autopilot": self.autopilot.status(), "studio": self.studio_recorder.status()}
 
-    def _open_link(self) -> StudioLink:
-        return StudioLink(self.studio_url, self._owner_name())
+    def _open_link(self) -> RelayLink:
+        return self.studio_relay.open()
 
 
 def _scene_demonstrator(

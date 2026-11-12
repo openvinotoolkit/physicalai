@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-import json
 import threading
 import time
 from dataclasses import dataclass, field
@@ -11,8 +10,6 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pytest
-from websockets.sync.server import serve
-
 from physicalai_mujoco_plugin.conveyor_automation import ConveyorAutomation
 from physicalai_mujoco_plugin.http_server import SetStudioRecordingCommand
 from physicalai_mujoco_plugin.robot import MuJoCoRobot
@@ -29,18 +26,14 @@ from physicalai_mujoco_plugin.studio_recorder import (
     BucketSortProgress,
     BucketSortRecorder,
     RecordingOptions,
-    StudioLink,
+    StudioRelay,
     StudioTarget,
-    discover_session,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
 
-FOLLOWER = "0b6a3c5e-5d0e-4d8e-9f0c-1c3e8b1f9a11"
-LEADER = "3c1e9a7f-6b2d-4f0e-8a5c-9d7b2e4f1a33"
-PROJECT = "7f0e7b51-2b7a-4f57-8d4e-2c4b1f0e6a22"
-TARGET = StudioTarget(PROJECT, FOLLOWER, "Franka", LEADER, "Autopilot")
+TARGET = StudioTarget("Franka", "Autopilot")
 HOLDING = {"connected": True, "follower_source": "hold", "dataset_loaded": True, "is_recording": False}
 TELEOP = {**HOLDING, "follower_source": "teleop"}
 TASK_ID = 1
@@ -313,8 +306,8 @@ def test_a_reset_or_leaving_leader_mode_discards_the_episode(change: dict[str, A
     [
         ({**TELEOP, "dataset_loaded": False}, True, "open a dataset"),
         ({**TELEOP, "is_recording": True}, True, "save or discard"),
-        (TELEOP, False, "Virtual leader"),
-        (HOLDING, True, "start teleoperation"),
+        (TELEOP, False, "autopilot to lead"),
+        (HOLDING, True, "turn teleoperation on"),
     ],
 )
 def test_waits_until_studio_and_the_autopilot_are_ready(state: dict[str, Any], leading: bool, message: str) -> None:  # noqa: FBT001
@@ -373,28 +366,13 @@ def test_switching_off_leaves_studio_teleoperating_and_leaving_teleop_stops() ->
     assert link.events()[-1] == "start_recording"
 
 
-def test_discovery_finds_a_follower_of_any_mujoco_profile() -> None:
-    robots = [
-        {"id": FOLLOWER, "name": "Franka", "type": "MuJoCo_FrankaResearch3_Follower", "payload": {"name": "sim"}},
-        {"id": LEADER, "name": "Autopilot", "type": "MuJoCo_Virtual_Leader", "payload": {"http_port": 8080}},
-    ]
-    routes = {
-        "/api/runtime/sessions": [{"follower_id": FOLLOWER, "status": "running", "leader_name": "Autopilot"}],
-        "/api/projects": [{"id": PROJECT}],
-        f"/api/projects/{PROJECT}/robots": robots,
-    }
-    assert discover_session("http://studio", "sim", get_json=lambda _base, path: routes[path]) == TARGET
-
-
 # ----------------------------------------------------------------------
 # Scene checks
 # ----------------------------------------------------------------------
 
 
 def _automation() -> ConveyorAutomation:
-    return ConveyorAutomation(
-        joint_names=("j",), unit="rad", to_units=lambda q: q, owner_name=lambda: "sim"
-    )
+    return ConveyorAutomation(joint_names=("j",), unit="rad", to_units=lambda q: q)
 
 
 def test_recording_needs_the_conveyor_or_bucket_sort_scene() -> None:
@@ -407,51 +385,54 @@ def test_recording_needs_the_conveyor_or_bucket_sort_scene() -> None:
 
 
 # ----------------------------------------------------------------------
-# The whole loop against a fake Studio over a real websocket
+# The whole loop against a fake Studio recording page, relaying
 # ----------------------------------------------------------------------
 
 
 class FakeStudio:
-    """Speaks the runtime websocket protocol, teleoperating with a leader."""
+    """Studio's recording page, teleoperating with a leader: relays the simulation's recording once attached."""
 
     def __init__(self) -> None:
         self.received: list[dict[str, Any]] = []
         self.state = dict(TELEOP)
-        self._server = serve(self._handle, "127.0.0.1", 0)
-        self.port = int(self._server.socket.getsockname()[1])
-        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        self._results: list[dict[str, Any]] = []
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
 
-    def _send_state(self, ws: Any) -> None:  # noqa: ANN401
-        ws.send(json.dumps({"event": "state", "data": self.state}))
+    def attach(self, relay: StudioRelay) -> None:
+        self._thread = threading.Thread(target=self._run, args=(relay,), daemon=True)
+        self._thread.start()
 
-    def _handle(self, ws: Any) -> None:  # noqa: ANN401
-        json.loads(ws.recv())
-        self._send_state(ws)
-        for raw in ws:
-            message = json.loads(raw)
-            self.received.append(message)
-            event = message["event"]
-            if event == "set_follower_source":
-                self.state = {**self.state, "follower_source": message["data"]["follower_source"]}
-            elif event == "start_recording":
-                self.state = {**self.state, "is_recording": True, "task": message["data"]["task"]}
-            elif event in {"save_episode", "discard_episode"}:
-                self.state = {**self.state, "is_recording": False}
-                ws.send(json.dumps({"event": "ack", "data": {"request_id": message["request_id"], "ok": True}}))
-            self._send_state(ws)
+    def _run(self, relay: StudioRelay) -> None:
+        while not self._stop.is_set():
+            session = {
+                "dataset": self.state["dataset_loaded"],
+                "recording": self.state["is_recording"],
+                "teleop": self.state["follower_source"] == "teleop",
+                "follower": "Franka",
+                "leader": "Autopilot",
+            }
+            results, self._results = self._results, []
+            for command in relay.exchange(session, results)["commands"]:
+                self.received.append(command)
+                self.state = {**self.state, "is_recording": command["command"] == "start_episode"}
+                self._results.append({"request_id": command["request_id"], "ok": True, "error": None})
+            time.sleep(0.01)
 
     def events(self) -> list[str]:
-        return [message["event"] for message in self.received]
+        return [command["command"] for command in self.received]
 
     def close(self) -> None:
-        self._server.shutdown()
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join()
 
 
 @pytest.fixture
 def studio() -> Iterator[FakeStudio]:
-    server = FakeStudio()
-    yield server
-    server.close()
+    page = FakeStudio()
+    yield page
+    page.close()
 
 
 def _wait(predicate: Any, timeout_s: float = 5.0) -> None:  # noqa: ANN401
@@ -516,9 +497,7 @@ def test_simulation_records_a_led_bucket_sort_episode_into_studio(
     if success_dwell_s is not None:  # shorter than the recorder's success hold: the recorder still saves
         robot._episode_auto_reset.set_dwell(success_dwell_s)  # noqa: SLF001
     automation = robot._automation  # noqa: SLF001
-    automation.bucket_recorder = BucketSortRecorder(
-        lambda: StudioLink(f"http://127.0.0.1:{studio.port}", "sim", discover=lambda _url, _owner: TARGET)
-    )
+    studio.attach(automation.studio_relay)
     task = robot._sim.on_reset  # noqa: SLF001
     gripper = robot.joint_names.index("gripper")
     recorded: list[tuple[float, float]] = []  # (action, state) of the gripper while Studio records
@@ -544,10 +523,10 @@ def test_simulation_records_a_led_bucket_sort_episode_into_studio(
         while "save_episode" not in studio.events() and "discard_episode" not in studio.events():
             assert time.monotonic() < deadline, automation.status()
             teleop_tick()
-        assert studio.events() == ["start_recording", "save_episode"]
+        assert studio.events() == ["start_episode", "save_episode"]
         # The recorder reset the scene and recorded that episode's instruction as the task.
         assert task.reset_count == resets + 1
-        assert studio.received[0]["data"] == {"task": task.instruction.text}
+        assert studio.received[0]["task"] == task.instruction.text
         assert robot._http_status()["studio"]["task"] == task.instruction.text  # noqa: SLF001
         assert robot._http_status()["episode"]["success"]  # noqa: SLF001
         assert robot._http_status()["overview_locked"]  # noqa: SLF001
@@ -557,7 +536,7 @@ def test_simulation_records_a_led_bucket_sort_episode_into_studio(
 
         def next_started() -> bool:
             teleop_tick()
-            return studio.events().count("start_recording") == 2
+            return studio.events().count("start_episode") == 2
 
         _wait(next_started)
         assert task.reset_count == resets + 2  # a fresh layout for the next episode
@@ -572,7 +551,7 @@ def test_simulation_records_a_led_bucket_sort_episode_into_studio(
 
         robot._commands.put(SetStudioRecordingCommand(options=None))  # noqa: SLF001
         robot.get_observation()
-        assert "set_follower_source" not in studio.events()
+        assert studio.events().count("start_episode") == 2
     finally:
         robot.disconnect()
 
@@ -580,10 +559,8 @@ def test_simulation_records_a_led_bucket_sort_episode_into_studio(
 def _stuck_recorder(robot: MuJoCoRobot, studio: FakeStudio, **fields: Any) -> BucketSortRecorder:  # noqa: ANN401
     """Record with every episode starting stuck (a chance of 0 is below any share but 0)."""
     automation = robot._automation  # noqa: SLF001
-    automation.bucket_recorder = BucketSortRecorder(
-        lambda: StudioLink(f"http://127.0.0.1:{studio.port}", "sim", discover=lambda _url, _owner: TARGET),
-        chance=lambda: 0.0,
-    )
+    automation.bucket_recorder = BucketSortRecorder(automation._open_link, chance=lambda: 0.0)  # noqa: SLF001
+    studio.attach(automation.studio_relay)
     automation.set_autopilot("leader")
     options = RecordingOptions(keep="all", recovery_fraction=MAX_RECOVERY_FRACTION, max_attempts=3, **fields)
     robot._commands.put(SetStudioRecordingCommand(options=options))  # noqa: SLF001
@@ -609,7 +586,7 @@ def test_an_episode_that_starts_stuck_is_recorded_from_the_stuck_pose(studio: Fa
             if studio.state.get("is_recording"):
                 frames.append((action, np.asarray(state, dtype=np.float64)))
             robot.send_action(action.astype(np.float32))
-        assert studio.events() == ["start_recording", "save_episode"], automation.status()
+        assert studio.events() == ["start_episode", "save_episode"], automation.status()
         assert recorder.status()["stuck_starts"] == 1
         assert automation.autopilot.demonstrator.max_attempts == 3  # noqa: PLR2004
         action, state = frames[0]
@@ -676,7 +653,7 @@ def test_a_stuck_start_that_moves_the_layout_falls_back_to_a_normal_start(studio
         resets = task.reset_count
         home = robot.get_observation().joint_positions.copy()
         deadline = time.monotonic() + 30.0
-        while "start_recording" not in studio.events():
+        while "start_episode" not in studio.events():
             assert time.monotonic() < deadline, robot._automation.status()  # noqa: SLF001
             robot.get_observation()
         assert task.reset_count == resets + 2  # the episode's reset, then one more after the disturbing move
@@ -703,9 +680,7 @@ def test_the_other_franka_robots_record_through_the_same_leader(
     robot = MuJoCoRobot(profile, scene="bucket_sort", cameras=[], http_port=0, seed=1)
     robot.connect()
     automation = robot._automation  # noqa: SLF001
-    automation.bucket_recorder = BucketSortRecorder(
-        lambda: StudioLink(f"http://127.0.0.1:{studio.port}", "sim", discover=lambda _url, _owner: TARGET)
-    )
+    studio.attach(automation.studio_relay)
     columns = [robot.joint_names.index(name) for name in grippers]
     squeeze = 0.0
     try:
@@ -721,7 +696,7 @@ def test_the_other_franka_robots_record_through_the_same_leader(
             if studio.state.get("is_recording"):
                 squeeze = min(squeeze, *(float(action[c] - state[c]) for c in columns))
             robot.send_action(action)
-        assert studio.events() == ["start_recording", "save_episode"]
+        assert studio.events() == ["start_episode", "save_episode"]
         assert robot._http_status()["episode"]["success"]  # noqa: SLF001
         # The Panda's actuator8 channel is one finger's travel, half the hand's opening.
         assert squeeze < (-0.0025 if per_finger else -0.005), squeeze

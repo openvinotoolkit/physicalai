@@ -46,7 +46,6 @@ from physicalai_mujoco_plugin.constants import (
 from physicalai_mujoco_plugin.profiles import RobotProfile, get_profile, list_profiles
 from physicalai_mujoco_plugin.profiles.dataset import FRANKA_HAND_PEAK_FORCE_N
 from physicalai_mujoco_plugin.profiles.franka import with_grip_force
-from physicalai_mujoco_plugin.studio_recorder import DEFAULT_STUDIO_URL, validate_studio_url
 from physicalai_mujoco_plugin.viewer import ViewerTheme
 
 if TYPE_CHECKING:
@@ -313,12 +312,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "exits when this command is killed"
         ),
     )
-    start.add_argument(
-        "--studio-url",
-        type=str,
-        default=DEFAULT_STUDIO_URL,
-        help=f"Physical AI Studio backend for automatic episode recording (default: {DEFAULT_STUDIO_URL})",
-    )
+    # Studio's recording page relays automatic recording now; the option stays for old command lines.
+    start.add_argument("--studio-url", type=str, default=None, help=argparse.SUPPRESS)
 
     sub.add_parser("profiles", help="List registered robot profiles")
     sub.add_parser("prefetch", help="Download the supported robot models from MuJoCo Menagerie")
@@ -562,6 +557,12 @@ def _start(args: argparse.Namespace) -> None:
         _run_start(args, status)
 
 
+def _warn_ignored_options(args: argparse.Namespace) -> None:
+    """Say which options of older command lines no longer do anything."""
+    if getattr(args, "studio_url", None) is not None:
+        logger.warning("--studio-url is ignored: Studio's recording page relays automatic recording now")
+
+
 def _run_start(args: argparse.Namespace, status: _StatusWriter) -> None:  # noqa: PLR0914, PLR0915
     _use_egl_when_headless()
     shutdown = threading.Event()
@@ -579,6 +580,7 @@ def _run_start(args: argparse.Namespace, status: _StatusWriter) -> None:  # noqa
     scene_id, num_arms = _resolve_scene(args, profile)
     _check_overview(args, scene_id)
     owner_name = _resolve_owner_name(args, profile.name, num_arms)
+    _warn_ignored_options(args)
     xml_path = args.model if args.model is not None else get_scene(scene_id).scene_xml_path  # type: ignore[arg-type]
     status.phase("fetch")
     _fetch_robot_models(xml_path, profile, status.download if status.enabled else None)
@@ -608,7 +610,6 @@ def _run_start(args: argparse.Namespace, status: _StatusWriter) -> None:  # noqa
         http_host=args.http_host,
         http_port=http_port,
         owner_name=owner_name,
-        studio_url=validate_studio_url(args.studio_url),
         # The owner runs in its own session; it watches this process so a hard kill stops it too.
         exit_with_pid=os.getpid() if args.exit_with_parent else None,
         grip_force_n=args.grip_force,

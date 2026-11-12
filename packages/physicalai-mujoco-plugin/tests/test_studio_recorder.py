@@ -1,94 +1,126 @@
-"""Automatic Studio episode recording: discovery, the websocket link and the episode cycle."""
+"""Automatic Studio episode recording: the relay to Studio's recording page and the episode cycle."""
 
 from __future__ import annotations
 
-import json
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from websockets.sync.server import serve
 
 from physicalai_mujoco_plugin.http_server import SetStudioRecordingCommand
 from physicalai_mujoco_plugin.robot import MuJoCoRobot
 from physicalai_mujoco_plugin.scene_registry import get_scene
 from physicalai_mujoco_plugin.studio_recorder import (
     CONNECT_TIMEOUT_S,
+    NO_STUDIO,
+    RELAY_SILENCE_S,
     AutoRecorder,
     RecordingOptions,
-    StudioError,
-    StudioLink,
+    RelayLink,
+    StudioRelay,
     StudioTarget,
-    discover_session,
-    validate_studio_url,
 )
 from physicalai_mujoco_plugin.viser_controls import _studio_markdown
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping
+    from collections.abc import Iterator, Mapping
 
-FOLLOWER = "9fd891f9-11a3-41af-b0e0-8162c2393536"
-LEADER = "6d3faa01-3324-4007-b98d-05fc73144a8d"
-PROJECT = "bb3a7254-177a-4a3c-b70a-f47d193ceb80"
-TARGET = StudioTarget(PROJECT, FOLLOWER, "Mary Jane", LEADER, "Autopilot")
+TARGET = StudioTarget("Mary Jane", "Autopilot")
 READY = {"connected": True, "follower_source": "teleop", "dataset_loaded": True, "is_recording": False}
+SESSION = {"dataset": True, "recording": False, "teleop": True, "follower": "Mary Jane", "leader": "Autopilot"}
+"""What Studio's recording page relays when it is ready: a dataset loaded, teleoperating, not recording."""
 
 
 # ----------------------------------------------------------------------
-# Discovery
+# The relay
 # ----------------------------------------------------------------------
 
 
-def _studio_rest(sessions: list[dict[str, Any]]) -> Any:  # noqa: ANN401
-    robots = [
-        {"id": FOLLOWER, "name": "Mary Jane", "type": "MuJoCo_SO101_Follower", "payload": {"name": "mujoco-so101-follow"}},
-        {"id": LEADER, "name": "Autopilot", "type": "MuJoCo_Virtual_Leader", "payload": {"http_port": 8080}},
+class Clock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_a_link_connects_on_the_first_exchange_and_fails_once_studio_falls_silent() -> None:
+    clock = Clock()
+    link = RelayLink(clock)
+    assert link.phase == "idle"
+    link.start()
+    assert (link.phase, link.state, link.target) == ("connecting", None, None)
+
+    link.exchange(SESSION, [])
+    assert link.phase == "connected"
+    assert link.state == {"dataset_loaded": True, "is_recording": False, "follower_source": "teleop"}
+    assert link.target == TARGET
+
+    clock.now += RELAY_SILENCE_S + 0.1
+    assert link.phase == "error"
+    assert link.error == NO_STUDIO
+    link.close()
+    assert link.phase == "closed"
+
+
+def test_a_link_hands_over_studios_own_commands_and_takes_back_their_results() -> None:
+    link = RelayLink()
+    link.start()
+    link.send("start_recording", {"task": "Sort"}, request_id="a")
+    link.send("save_episode", request_id="b")
+    link.send("discard_episode")
+
+    commands = link.exchange(SESSION, [])
+    assert commands[:2] == [
+        {"command": "start_episode", "request_id": "a", "task": "Sort"},
+        {"command": "save_episode", "request_id": "b"},
     ]
-    routes = {
-        "/api/runtime/sessions": sessions,
-        "/api/projects": [{"id": "other"}, {"id": PROJECT}],
-        "/api/projects/other/robots": [],
-        f"/api/projects/{PROJECT}/robots": robots,
+    assert commands[2]["command"] == "discard_episode"
+    assert commands[2]["request_id"]  # Studio's session needs one for every command
+    assert link.exchange(SESSION, []) == []  # each command goes out once
+
+    assert link.take_ack("b") is None
+    link.exchange(SESSION, [{"request_id": "b", "ok": False, "error": "disk full"}])
+    assert link.take_ack("b") == {"request_id": "b", "ok": False, "error": "disk full"}
+    assert link.take_ack("b") is None
+    with pytest.raises(ValueError, match="relays no"):
+        link.send("set_follower_source")
+
+
+def test_the_relay_hands_out_the_current_run_and_drains_the_last_one() -> None:
+    relay = StudioRelay()
+    assert relay.exchange(SESSION, []) == {"active": False, "commands": []}
+
+    first = relay.open()
+    first.start()
+    assert relay.exchange(SESSION, []) == {"active": True, "commands": []}
+    first.send("discard_episode", request_id="last")
+    first.close()  # switched off: the discard queued just before still goes out, once
+    assert relay.exchange(SESSION, []) == {
+        "active": False,
+        "commands": [{"command": "discard_episode", "request_id": "last"}],
     }
-    return lambda _base, path: routes[path]
+    assert relay.exchange(SESSION, []) == {"active": False, "commands": []}
+
+    second = relay.open()
+    second.start()
+    assert first.phase == "closed"
+    second.send("save_episode", request_id="s")
+    assert relay.exchange(SESSION, [])["commands"] == [{"command": "save_episode", "request_id": "s"}]
 
 
-def test_discovers_the_live_session_and_its_leader() -> None:
-    sessions = [{"follower_id": FOLLOWER, "status": "running", "leader_name": "Autopilot"}]
-    target = discover_session("http://studio", "mujoco-so101-follow", get_json=_studio_rest(sessions))
-    assert target == TARGET
-
-
-@pytest.mark.parametrize(
-    ("owner", "sessions", "match"),
-    [
-        ("mujoco-so101-follow", [], "no live robot session"),
-        ("another-sim", [{"follower_id": FOLLOWER, "status": "running"}], "No live Studio session drives"),
-        ("mujoco-so101-follow", [{"follower_id": FOLLOWER, "status": "stopped"}], "no live robot session"),
-        (
-            "mujoco-so101-follow",
-            [{"follower_id": FOLLOWER, "status": "running", "leader_name": "Gone"}],
-            "not in the follower's project",
-        ),
-    ],
-)
-def test_discovery_explains_what_is_missing(owner: str, sessions: list[dict[str, Any]], match: str) -> None:
-    with pytest.raises(StudioError, match=match):
-        discover_session("http://studio", owner, get_json=_studio_rest(sessions))
-
-
-def test_unreachable_studio_is_a_studio_error() -> None:
-    with pytest.raises(StudioError, match="not reachable"):
-        discover_session("http://127.0.0.1:1", "mujoco-so101-follow")
-
-
-@pytest.mark.parametrize("url", ["ftp://studio", "http://studio/api", "http://user:pw@studio", "studio:7860"])
-def test_studio_url_must_be_a_bare_http_origin(url: str) -> None:
-    with pytest.raises(ValueError, match="Studio URL"):
-        validate_studio_url(url)
-    assert validate_studio_url("http://127.0.0.1:7860/") == "http://127.0.0.1:7860"
+def test_a_run_stops_when_studio_never_picks_it_up() -> None:
+    clock = Clock()
+    relay = StudioRelay(clock)
+    recorder = AutoRecorder(relay.open, clock=clock)
+    recorder.enable(RecordingOptions())
+    recorder.update(0, None)
+    assert recorder.phase == "connecting"
+    clock.now += CONNECT_TIMEOUT_S + 0.1
+    recorder.update(0, None)
+    assert (recorder.phase, recorder.status()["message"]) == ("error", NO_STUDIO)
 
 
 # ----------------------------------------------------------------------
@@ -182,7 +214,7 @@ def test_episodes_with_mistakes_are_discarded_unless_keeping_all() -> None:
     ("state", "message"),
     [
         ({**READY, "dataset_loaded": False}, "open a dataset"),
-        ({**READY, "follower_source": "hold"}, "start teleoperation"),
+        ({**READY, "follower_source": "hold"}, "turn teleoperation on"),
         ({**READY, "is_recording": True}, "save or discard"),
     ],
 )
@@ -239,7 +271,7 @@ def test_gives_up_when_studio_never_sends_its_state(link_phase: str) -> None:
     now[0] = CONNECT_TIMEOUT_S + 1.0
     assert not recorder.update(0, None).hold_feed
     assert recorder.phase == "error"
-    assert "robot session" in recorder.status()["message"]
+    assert recorder.status()["message"] == NO_STUDIO
     assert link.closed
 
 
@@ -295,54 +327,37 @@ def test_studio_markdown() -> None:
 
 
 # ----------------------------------------------------------------------
-# A fake Studio over a real websocket
+# A fake Studio recording page, relaying
 # ----------------------------------------------------------------------
 
 
 class FakeStudio:
-    """Speaks the runtime websocket protocol the way Studio's backend does."""
+    """Studio's recording page: relays a simulation's automatic recording as its buttons would."""
 
-    def __init__(self) -> None:
-        self.handshake: dict[str, Any] | None = None
+    def __init__(self, relay: StudioRelay, session: Mapping[str, Any] = SESSION) -> None:
         self.received: list[dict[str, Any]] = []
-        self.state = dict(READY)
-        self._server = serve(self._handle, "127.0.0.1", 0)
-        self.port = int(self._server.socket.getsockname()[1])
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self.session = dict(session)
+        self._relay = relay
+        self._results: list[dict[str, Any]] = []
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
-    def _send_state(self, ws: Any) -> None:  # noqa: ANN401
-        ws.send(json.dumps({"event": "state", "data": self.state}))
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            results, self._results = self._results, []
+            for command in self._relay.exchange(dict(self.session), results)["commands"]:
+                self.received.append(command)
+                self.session["recording"] = command["command"] == "start_episode"
+                self._results.append({"request_id": command["request_id"], "ok": True, "error": None})
+            time.sleep(0.01)
 
-    def _handle(self, ws: Any) -> None:  # noqa: ANN401
-        assert ws.request.path == f"/api/projects/{PROJECT}/runtime/ws"
-        self.handshake = json.loads(ws.recv())
-        self._send_state(ws)
-        for raw in ws:
-            message = json.loads(raw)
-            self.received.append(message)
-            event = message["event"]
-            if event == "start_recording":
-                self.state = {**self.state, "is_recording": True, "task": message["data"]["task"]}
-                self._send_state(ws)
-            elif event in {"save_episode", "discard_episode"}:
-                self.state = {**self.state, "is_recording": False}
-                self._send_state(ws)
-                ws.send(json.dumps({"event": "ack", "data": {"request_id": message["request_id"], "ok": True}}))
+    def commands(self) -> list[str]:
+        return [command["command"] for command in self.received]
 
     def close(self) -> None:
-        self._server.shutdown()
-
-
-@pytest.fixture
-def studio() -> Iterator[FakeStudio]:
-    server = FakeStudio()
-    yield server
-    server.close()
-
-
-def _link(studio: FakeStudio) -> StudioLink:
-    return StudioLink(f"http://127.0.0.1:{studio.port}", "mujoco-so101-follow", discover=lambda _url, _owner: TARGET)
+        self._stop.set()
+        self._thread.join()
 
 
 def _wait(predicate: Any, timeout_s: float = 5.0) -> None:  # noqa: ANN401
@@ -352,82 +367,33 @@ def _wait(predicate: Any, timeout_s: float = 5.0) -> None:  # noqa: ANN401
         time.sleep(0.01)
 
 
-def test_link_attaches_with_the_sessions_handshake_and_relays_acks(studio: FakeStudio) -> None:
-    link = _link(studio)
-    link.start()
+def test_a_relayed_cycle_starts_and_saves_through_studios_page() -> None:
+    relay = StudioRelay()
+    recorder = AutoRecorder(relay.open)
+    studio = FakeStudio(relay)
     try:
-        _wait(lambda: link.state is not None)
-        assert link.phase == "connected"
-        assert studio.handshake == {"follower_id": FOLLOWER, "leader_id": LEADER, "camera_ids": []}
-        link.send("save_episode", request_id="r1")
-        _wait(lambda: studio.received)
-        ack = None
-        while ack is None:
-            ack = link.take_ack("r1")
-            time.sleep(0.01)
-        assert ack["ok"] is True
+        recorder.enable(RecordingOptions(task="Sort", keep="all"))
+
+        def started() -> bool:
+            recorder.update(0, None)
+            return recorder.phase == "recording"
+
+        _wait(started)
+        assert studio.received == [{"command": "start_episode", "request_id": studio.received[0]["request_id"], "task": "Sort"}]
+        assert recorder.status()["follower"] == "Mary Jane"
+
+        def saved() -> bool:
+            recorder.update(1, {"right": 10})
+            return recorder.status()["saved"] == 1
+
+        _wait(saved)
+        assert studio.commands() == ["start_episode", "save_episode"]
     finally:
-        link.close()
-    assert all(message["event"] != "disconnect" for message in studio.received), "never stop Studio's session"
-
-
-def test_link_reports_a_failed_discovery() -> None:
-    def fail(_url: str, _owner: str) -> StudioTarget:
-        raise StudioError("Studio is not reachable")
-
-    link = StudioLink("http://127.0.0.1:1", "mujoco-so101-follow", discover=fail)
-    link.start()
-    _wait(lambda: link.phase == "error")
-    assert link.error == "Studio is not reachable"
-
-
-def _unexpected_sessions_shape(_url: str, _owner: str) -> StudioTarget:
-    raise KeyError("follower_id")  # e.g. a response from another Studio version
-
-
-def _found_target(_url: str, _owner: str) -> StudioTarget:
-    return TARGET
-
-
-def _rejected_handshake(_url: str) -> Any:  # noqa: ANN401
-    raise RuntimeError("server rejected WebSocket connection: HTTP 403")  # not an OSError
-
-
-@pytest.mark.parametrize(
-    ("discover", "connect", "match"),
-    [
-        (_unexpected_sessions_shape, None, "Could not read Studio's sessions"),
-        (_found_target, _rejected_handshake, "Could not open"),
-    ],
-    ids=["unexpected-discovery-error", "rejected-handshake"],
-)
-def test_link_turns_any_startup_failure_into_an_error(
-    discover: Callable[[str, str], StudioTarget], connect: Callable[[str], Any] | None, match: str
-) -> None:
-    """Otherwise the link stays "connecting" and the recorder holds the belt forever."""
-    link = StudioLink("http://127.0.0.1:1", "mujoco-so101-follow", discover=discover, connect=connect)
-    link.start()
-    _wait(lambda: link.phase == "error")
-    assert match in (link.error or "")
-
-
-def test_invalid_json_from_studio_is_a_studio_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    import http.client
-
-    class Response:
-        status = 200
-
-        def read(self) -> bytes:
-            return b"<html>proxy login</html>"
-
-    monkeypatch.setattr(http.client.HTTPConnection, "request", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(http.client.HTTPConnection, "getresponse", lambda _self: Response())
-    with pytest.raises(StudioError, match="invalid JSON"):
-        discover_session("http://127.0.0.1:1", "mujoco-so101-follow")
+        studio.close()
 
 
 @pytest.mark.slow
-def test_simulation_records_an_autopilot_episode_into_studio(studio: FakeStudio) -> None:
+def test_simulation_records_an_autopilot_episode_into_studio() -> None:
     scene = get_scene("conveyor_sort")
     robot = MuJoCoRobot(
         scene=scene.scene_id,
@@ -436,13 +402,13 @@ def test_simulation_records_an_autopilot_episode_into_studio(studio: FakeStudio)
         owner_name="mujoco-so101-follow",
     )
     robot.connect()
-    robot._automation.recorder = AutoRecorder(lambda: _link(studio))
+    studio = FakeStudio(robot._automation.studio_relay)
     try:
         robot._set_belt_speed(0.05)
         robot._automation.set_autopilot("drive")
         robot._commands.put(SetStudioRecordingCommand(options=RecordingOptions(task="Sort the belt", keep="all")))
         deadline = time.monotonic() + 60.0
-        while not any(m["event"] == "save_episode" for m in studio.received):
+        while "save_episode" not in studio.commands():
             assert time.monotonic() < deadline, robot._automation.recorder.status()
             robot.get_observation()
         episode = robot._http_status()["episode"]
@@ -453,13 +419,14 @@ def test_simulation_records_an_autopilot_episode_into_studio(studio: FakeStudio)
         # Once Studio confirms, the next episode starts on a cleared belt.
         def next_started() -> bool:
             robot.get_observation()
-            return [m["event"] for m in studio.received].count("start_recording") == 2
+            return studio.commands().count("start_episode") == 2
 
         _wait(next_started)
-        assert [m["event"] for m in studio.received] == ["start_recording", "save_episode", "start_recording"]
-        assert studio.received[0]["data"] == {"task": "Sort the belt"}
+        assert studio.commands() == ["start_episode", "save_episode", "start_episode"]
+        assert studio.received[0]["task"] == "Sort the belt"
         assert robot._automation.recorder.status()["saved"] == 1
         # A fresh episode: the fake Studio confirms at once, so at most its first item is out.
         assert robot._http_status()["episode"]["spawned"] <= 1
     finally:
+        studio.close()
         robot.disconnect()

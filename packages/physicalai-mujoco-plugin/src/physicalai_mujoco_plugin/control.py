@@ -564,6 +564,7 @@ class OperatorControls:
             get_status=self._http_status,
             check_replay=self._replay_problem,
             get_leader=self._automation.leader_snapshot,  # type: ignore[union-attr]
+            studio_relay=self._automation.studio_relay,  # type: ignore[union-attr]
         )
         # The fallback port covers a port that another process took after `start` found it free.
         for port in dict.fromkeys(p for p in (self._http_port, self._http_fallback_port) if p):

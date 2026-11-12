@@ -36,7 +36,7 @@ from physicalai_mujoco_plugin.http_server import (
     build_app,
     encode_jpeg,
 )
-from physicalai_mujoco_plugin.studio_recorder import RecordingOptions
+from physicalai_mujoco_plugin.studio_recorder import RecordingOptions, StudioRelay
 from physicalai_mujoco_plugin.viewer import ViewerService
 
 
@@ -537,6 +537,41 @@ class TestAutomationRoutes:
 
     def test_no_leader_route_without_a_source(self, client: TestClient) -> None:
         assert client.get("/leader").status_code == 404
+
+    def test_studio_relay_exchanges_with_the_current_run(self, app_context: dict) -> None:
+        relay = StudioRelay()
+        client = TestClient(
+            build_app(
+                service_name="mujoco-so101",
+                buffers=app_context["buffers"],
+                commands=app_context["commands"],
+                get_status=lambda: app_context["status"],
+                studio_relay=relay,
+            )
+        )
+        session = {"dataset": True, "recording": False, "teleop": True, "follower": "Arm", "leader": None}
+        assert client.post("/studio/relay", json={"session": session}).json() == {"active": False, "commands": []}
+
+        link = relay.open()
+        link.start()
+        link.send("save_episode", request_id="r1")
+        body = {"session": session, "results": [{"request_id": "r0", "ok": True}]}
+        assert client.post("/studio/relay", json=body).json() == {
+            "active": True,
+            "commands": [{"command": "save_episode", "request_id": "r1"}],
+        }
+        assert link.take_ack("r0") == {"request_id": "r0", "ok": True, "error": None}
+        assert link.state == {"dataset_loaded": True, "is_recording": False, "follower_source": "teleop"}
+        for bad in (
+            {"session": {**session, "teleop": "maybe"}},
+            {"session": session, "results": [{"request_id": "", "ok": True}]},
+            {"session": session, "results": [{"request_id": "r", "ok": True}] * 17},
+            {"results": []},
+        ):
+            assert client.post("/studio/relay", json=bad).status_code == 422, bad
+
+    def test_no_studio_relay_route_without_one(self, client: TestClient) -> None:
+        assert client.post("/studio/relay", json={}).status_code == 404
 
     def test_autopilot_needs_a_scene_with_one(self, leader_app: dict) -> None:
         client = leader_app["client"]

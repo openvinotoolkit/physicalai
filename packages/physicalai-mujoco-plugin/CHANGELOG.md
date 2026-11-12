@@ -9,6 +9,10 @@
 * **mujoco:** Every MuJoCo follower in Studio has a 3D model. The SO-101s keep their URDFs; the others, the WidowX AI's included, get a URDF built from the robot's MuJoCo model on first use and cached per user, so the robot page and dataset playback no longer wait forever on "Loading robot model...".
 * **mujoco:** Studio's MuJoCo follower probes report an owner as online only when it drives that entry's joints, so the single-arm entry no longer attaches to a bimanual simulation or the other way round.
 
+### Fixed
+
+* **mujoco:** **Record in Studio** works with Studio's current runtime sessions again. Studio's recording page relays the run (`POST /studio/relay`): it picks up the simulation's start, save and discard requests and runs them as its own buttons do, so the simulation needs no Studio address and no longer looks for a session list Studio removed. Keep the recording page open while it records. `--studio-url` is ignored, and `MuJoCoRobot` no longer takes `studio_url`.
+
 ## [0.5.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-mujoco-plugin-v0.4.0...physicalai-mujoco-plugin-v0.5.0) (2026-10-30)
 
 
