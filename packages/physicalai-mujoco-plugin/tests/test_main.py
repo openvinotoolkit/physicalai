@@ -1202,6 +1202,23 @@ class TestPorts:
         assert held is not None
         held.close()
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX only: the owner reuses the address there")
+    def test_bound_socket_takes_a_port_whose_connections_are_still_closing(self) -> None:
+        """A simulation started again right after a stop keeps its port, as the owner can bind it."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind(("127.0.0.1", 0))
+            server.listen(1)
+            port = server.getsockname()[1]
+            client = socket.create_connection(("127.0.0.1", port))
+            accepted, _ = server.accept()
+            accepted.close()  # the server side closes first, so its end of the port waits in TIME_WAIT
+            client.recv(1)
+            client.close()
+        held = cli._bound_socket("127.0.0.1", port)  # noqa: SLF001
+        assert held is not None
+        held.close()
+
     @pytest.mark.parametrize(("url_host", "expected"), [("0.0.0.0", "127.0.0.1"), ("::", "[::1]"), ("::1", "[::1]")])  # noqa: S104
     def test_local_url_reaches_bind_all_hosts_on_loopback(self, url_host: str, expected: str) -> None:
         assert cli._local_url(url_host, 80) == f"http://{expected}:80"  # noqa: SLF001

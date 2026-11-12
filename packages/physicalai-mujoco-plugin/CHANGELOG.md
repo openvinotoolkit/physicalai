@@ -9,6 +9,10 @@
 * **mujoco:** Every MuJoCo follower in Studio has a 3D model. The SO-101s keep their URDFs; the others, the WidowX AI's included, get a URDF built from the robot's MuJoCo model on first use and cached per user, so the robot page and dataset playback no longer wait forever on "Loading robot model...".
 * **mujoco:** Studio's MuJoCo follower probes report an owner as online only when it drives that entry's joints, so the single-arm entry no longer attaches to a bimanual simulation or the other way round.
 
+### Fixed
+
+* **mujoco:** A simulation started again right after it stopped keeps its HTTP port with `--http-port-fallback`. The port check now reuses the address as the server does, so connections still closing on the port (`TIME_WAIT`) no longer count as another process using it. Studio's sessions kept looking for the cameras on the old port.
+
 ## [0.5.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-mujoco-plugin-v0.4.0...physicalai-mujoco-plugin-v0.5.0) (2026-10-30)
 
 

@@ -831,6 +831,10 @@ def _server_ports(args: argparse.Namespace) -> tuple[int, int, int | None]:
 def _bound_socket(host: str, port: int) -> socket.socket | None:
     """Return a socket bound to *port* on *host*, as the owner's HTTP server binds it, or ``None``.
 
+    Like the owner's server (uvicorn), it reuses the address on POSIX: a port whose last
+    connections are still closing (``TIME_WAIT``, for a minute or so after a simulation on it
+    stopped) is free for the owner, so a simulation started again right away keeps its port.
+
     Returns:
         The bound socket, for the caller to close, or ``None`` when *port* cannot be bound, for
         example because another process listens there.
@@ -841,6 +845,8 @@ def _bound_socket(host: str, port: int) -> socket.socket | None:
     except OSError:
         return None
     try:
+        if os.name != "nt":  # on Windows, SO_REUSEADDR would take a port another process listens on
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind(address)
     except OSError:
         sock.close()
