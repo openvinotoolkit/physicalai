@@ -128,8 +128,10 @@ def test_a_run_fails_when_its_page_moves_to_another_session_or_dataset(moved: di
     link.send("discard_episode", request_id="d")
 
     assert link.exchange(dataclasses.replace(PAGE, **moved), SESSION, []) is None
-    assert link.phase == "closed"
+    assert (link.phase, link.error) == ("error", "Studio's recording page moved to another session or dataset.")
     assert not link.pending  # nothing it asked for applies to the other session or dataset
+    link.close()  # the recorder read why
+    assert link.phase == "closed"
 
 
 def test_a_long_save_keeps_the_run_alive_while_the_page_keeps_relaying() -> None:
@@ -200,9 +202,78 @@ def test_a_new_run_keeps_the_last_runs_discard_for_its_page() -> None:
     second.send("start_recording", {"task": "Sort"}, request_id="next")
 
     reply = relay.exchange(PAGE, SESSION, [])
-    assert (reply["active"], _ids(reply["commands"])) == (True, ["last", "next"])
+    assert (reply["active"], _ids(reply["commands"])) == (True, ["last"])  # the new run waits for it
     assert first.phase == "closed"
     assert _ids(relay.exchange(PAGE, SESSION, _ok("last"))["commands"]) == ["next"]
+
+
+def test_a_new_runs_commands_wait_until_the_page_answered_the_last_runs_discard() -> None:
+    relay = StudioRelay()
+    first = relay.open()
+    first.start()
+    relay.exchange(PAGE, SESSION, [])
+    first.send("discard_episode", request_id="last")
+    second = relay.open()
+    second.start()
+    second.send("start_recording", {"task": "Sort"}, request_id="next")
+
+    assert _ids(relay.exchange(PAGE, SESSION, [])["commands"]) == ["last"]
+    second.close()  # the new run is switched off while the page still discards
+    assert _ids(relay.exchange(PAGE, SESSION, [])["commands"]) == ["last"]
+    assert relay.exchange(PAGE, SESSION, _ok("last"))["commands"] == []  # its start never went out
+
+
+def test_a_page_may_relay_before_it_loaded_a_dataset() -> None:
+    clock = Clock()
+    relay = StudioRelay(clock)
+    recorder = AutoRecorder(relay.open, clock=clock)
+    recorder.enable(RecordingOptions())
+    bare = RelayContext("page-1", None, None)
+    relay.exchange(bare, {**SESSION, "dataset": False}, [])
+    recorder.update(0, None)
+    recorder.update(0, None)
+    assert "open a dataset" in recorder.status()["message"]
+
+    relay.exchange(PAGE, SESSION, [])  # the session and the dataset are loaded now
+    recorder.update(0, None)
+    assert recorder.phase == "starting"
+    other = RelayContext("page-2", "session-1", "dataset-1")
+    assert relay.exchange(other, SESSION, [])["owner"] is False
+
+
+def test_a_page_that_moves_to_another_dataset_stops_the_run_saying_so() -> None:
+    relay = StudioRelay()
+    recorder = AutoRecorder(relay.open)
+    recorder.enable(RecordingOptions())
+    relay.exchange(PAGE, SESSION, [])
+    recorder.update(0, None)
+    relay.exchange(dataclasses.replace(PAGE, dataset_id="dataset-9"), SESSION, [])
+    recorder.update(0, None)
+
+    assert recorder.phase == "error"
+    assert recorder.status()["message"] == "Studio's recording page moved to another session or dataset."
+    assert relay.exchange(PAGE, SESSION, [])["active"] is False
+
+
+def test_a_start_answered_after_the_recording_state_is_read_and_not_kept() -> None:
+    relay = StudioRelay()
+    recorder = AutoRecorder(relay.open)
+    recorder.enable(RecordingOptions(keep="all"))
+    relay.exchange(PAGE, SESSION, [])
+    recorder.update(0, None)
+    for episode in range(1, 6):
+        recorder.update(episode - 1, None)  # waiting: start
+        start = relay.exchange(PAGE, SESSION, [])["commands"][0]
+        relay.exchange(PAGE, {**SESSION, "recording": True}, [])  # the state first
+        recorder.update(episode - 1, None)
+        assert recorder.phase == "recording"
+        relay.exchange(PAGE, {**SESSION, "recording": True}, _ok(start["request_id"]))  # then the result
+        recorder.update(episode, {"right": 10})
+        save = relay.exchange(PAGE, {**SESSION, "recording": True}, [])["commands"][0]
+        relay.exchange(PAGE, SESSION, _ok(save["request_id"]))
+        recorder.update(episode, None)
+        assert recorder.status()["saved"] == episode
+    assert not recorder._link._acks  # noqa: SLF001 - every result was read
 
 
 def test_no_run_hands_out_nothing() -> None:

@@ -198,12 +198,12 @@ class RelayLink:
             return self._phase()
 
     def _phase(self) -> str:
+        if self._failure is not None:
+            return "error"  # until the recorder read why and closed the link
         if self._closed:
             return "closed"
         if not self._started:
             return "idle"
-        if self._failure is not None:
-            return "error"
         if self._last_exchange is None:
             return "connecting"
         if self._clock() - self._last_exchange > self._silence_s:
@@ -288,6 +288,7 @@ class RelayLink:
         """Stop relaying: cancel what Studio has not answered yet, except discards, which still go out."""
         with self._lock:
             self._closed = True
+            self._failure = None
             self._acks.clear()
             self._outgoing = {
                 request_id: command
@@ -308,7 +309,15 @@ class RelayLink:
                 self._owner = context
             if self._owner is None or context.client != self._owner.client:
                 return None
-            if context != self._owner:
+            if self._failure is not None:
+                return None
+            # The session and dataset bind once known: a page may relay before it has loaded either.
+            owner = self._owner = RelayContext(
+                self._owner.client,
+                self._owner.session_id or context.session_id,
+                self._owner.dataset_id or context.dataset_id,
+            )
+            if context.session_id not in {None, owner.session_id} or context.dataset_id not in {None, owner.dataset_id}:
                 # The page loaded another session or dataset: what this run asked for no longer applies.
                 self._failure = "Studio's recording page moved to another session or dataset."
                 self._closed = True
@@ -375,13 +384,17 @@ class StudioRelay:
                     commands.extend(handed)
                 if not ended.pending or not ended.owned:  # answered, or no page ever relayed it
                     self._ended.remove(ended)
+            # Until this page answered an ended run's discards, the new run's commands wait: a page
+            # works through what it gets in order, and the run may end before it got that far.
+            cleaning_up = bool(commands)
             link = self._link
             active = link is not None and link.phase not in {"idle", "closed"}
             if link is not None:
                 handed = link.exchange(context, session, results)
                 if handed is not None:
                     owner = True
-                    commands.extend(handed)
+                    if not cleaning_up:
+                        commands.extend(handed)
                 if link.phase == "closed" and link.pending:
                     self._ended.append(link)
                     self._link = None
@@ -462,6 +475,8 @@ class _RecorderBase:
         self._since = 0.0
         self._episode_base = 0
         self._request_id: str | None = None
+        self._start_request: str | None = None
+        """The start Studio has not answered yet; read in every phase, as its result may come late."""
         self._pending_keep = True
         self._counters = _Counters()
 
@@ -485,6 +500,7 @@ class _RecorderBase:
         self.disable()
         self._options = options
         self._counters = _Counters()
+        self._start_request = None
         self._link = self._link_factory()
         self._link.start()
         self._set_phase("connecting", "Waiting for Studio's recording page...")
@@ -562,14 +578,23 @@ class _RecorderBase:
             return "ended"
         return "next"
 
+    def _send_start(self, link: StudioLinkLike, task: str) -> None:
+        self._start_request = uuid.uuid4().hex
+        link.send("start_recording", {"task": task}, request_id=self._start_request)
+
     def _start_went_through(self, link: StudioLinkLike) -> bool:
-        """Read Studio's answer to the start in flight; stop with its reason if it refused.
+        """Read Studio's answer to the last start, once it came; stop with its reason if it refused.
 
         Returns:
             ``False`` once the run stopped.
         """
-        ack = link.take_ack(self._request_id or "")
-        if ack is not None and not ack.get("ok"):
+        if self._start_request is None:
+            return True
+        ack = link.take_ack(self._start_request)
+        if ack is None:
+            return True
+        self._start_request = None
+        if not ack.get("ok"):
             self._finish("error", f"Studio could not start the episode: {ack.get('error') or 'unknown error'}")
             return False
         return True
@@ -620,8 +645,8 @@ class AutoRecorder(_RecorderBase):
                 self._finish("error", NO_STUDIO)
                 return RecorderDirective()
             return RecorderDirective(hold_feed=True)
-        if state is None:
-            return RecorderDirective(hold_feed=True)
+        if state is None or not self._start_went_through(link):
+            return RecorderDirective(hold_feed=self.active)  # a refused start ended the run
         handler = {
             "waiting": self._update_waiting,
             "starting": self._update_starting,
@@ -642,18 +667,15 @@ class AutoRecorder(_RecorderBase):
         elif state.get("is_recording"):
             self._message = "Waiting for Studio: save or discard the episode it is recording."
         else:
-            self._request_id = uuid.uuid4().hex
-            link.send("start_recording", {"task": self._options.task}, request_id=self._request_id)
+            self._send_start(link, self._options.task)
             self._episode_base = episode_count
             self._set_phase("starting", "Starting a Studio episode...")
             return RecorderDirective(hold_feed=True, clear_belt=True)
         return RecorderDirective(hold_feed=True)
 
     def _update_starting(
-        self, link: StudioLinkLike, state: Mapping[str, Any], episode_count: int, _last: Mapping[str, int] | None
+        self, _link: StudioLinkLike, state: Mapping[str, Any], episode_count: int, _last: Mapping[str, int] | None
     ) -> RecorderDirective:
-        if not self._start_went_through(link):
-            return RecorderDirective()
         if state.get("is_recording"):
             self._episode_base = episode_count
             self._set_phase("recording", f"Recording episode {self._counters.saved + 1}.")
@@ -819,8 +841,8 @@ class BucketSortRecorder(_RecorderBase):
         state = link.state
         if self._phase == "connecting":
             return self._update_connecting(link)
-        if state is None:
-            return BucketSortDirective(hold_arm=True)
+        if state is None or not self._start_went_through(link):
+            return BucketSortDirective(hold_arm=self.active)  # a refused start ended the run
         handler = {
             "waiting": self._update_waiting,
             "resetting": self._update_resetting,
@@ -876,8 +898,7 @@ class BucketSortRecorder(_RecorderBase):
 
     def _start(self, link: StudioLinkLike, progress: BucketSortProgress) -> BucketSortDirective:
         self._task = (progress.instruction or "")[:MAX_TASK_CHARS]
-        self._request_id = uuid.uuid4().hex
-        link.send("start_recording", {"task": self._task}, request_id=self._request_id)
+        self._send_start(link, self._task)
         self._set_phase("starting", "Starting a Studio episode...")
         return BucketSortDirective(hold_arm=True)
 
@@ -919,10 +940,8 @@ class BucketSortRecorder(_RecorderBase):
         return BucketSortDirective(hold_arm=True, reset_scene=True)
 
     def _update_starting(
-        self, link: StudioLinkLike, state: Mapping[str, Any], _progress: BucketSortProgress
+        self, _link: StudioLinkLike, state: Mapping[str, Any], _progress: BucketSortProgress
     ) -> BucketSortDirective:
-        if not self._start_went_through(link):
-            return BucketSortDirective()
         if state.get("is_recording"):
             self._set_phase("recording", f"Recording episode {self._counters.saved + 1}: {self._task}")
             self._success_at = self._placed_since = None
