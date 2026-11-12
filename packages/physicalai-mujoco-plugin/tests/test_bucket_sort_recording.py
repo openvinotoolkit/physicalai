@@ -722,6 +722,7 @@ def test_the_conveyor_scene_keeps_its_own_recorder() -> None:
         assert automation.bucket_recorder.phase == "off"
         assert automation.studio_recorder is automation.recorder
         assert automation.status()["studio"]["task"] == "Sort"
-        assert "task_source" not in automation.status()["studio"]
+        assert automation.status()["studio"]["task_source"] == "task"
+        assert automation.status()["studio"]["available"] is True
     finally:
         robot.disconnect()

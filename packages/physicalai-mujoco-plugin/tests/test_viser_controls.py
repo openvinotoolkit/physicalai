@@ -25,17 +25,14 @@ from physicalai_mujoco_plugin.http_server import (
     SetObjectPoseCommand,
     SetOverviewCommand,
     SetSeedCommand,
-    SetStudioRecordingCommand,
     ShutdownCommand,
     StopReplayCommand,
     SwitchSceneCommand,
 )
 from physicalai_mujoco_plugin.scene_registry import ViewerView
-from physicalai_mujoco_plugin.studio_recorder import RecordingOptions
 from physicalai_mujoco_plugin.viser_controls import (
     AUTOPILOT_LABELS,
     CUSTOM_MODEL_LABEL,
-    KEEP_LABELS,
     NO_FOLLOW_LABEL,
     OVERVIEW_HINT,
     CameraFollow,
@@ -421,18 +418,15 @@ class TestEpisodeControls:
             SetAutopilotCommand(mode="off"),
         ]
 
-    def test_bucket_sort_records_in_studio_with_each_instruction_as_the_task(self) -> None:
-        """The Record / Keep / Episodes controls are there; the Task field is not, the instruction is the task."""
-        _, server, commands = build_panel(self._bucket_sort_state())
-        assert "Task" not in server.gui.handles
-        server.gui.handles["Keep"].value = KEEP_LABELS["all"]
-        server.gui.handles["Episodes (0 = no limit)"].value = 3
-        server.gui.handles["Record in Studio"].fire(True)
-        server.gui.handles["Record in Studio"].fire(False)
-        assert commands == [
-            SetStudioRecordingCommand(options=RecordingOptions(keep="all", max_episodes=3)),
-            SetStudioRecordingCommand(options=None),
-        ]
+    def test_bucket_sort_shows_studio_recording_but_starts_it_from_studio(self) -> None:
+        """Studio's recording page starts and sets up automatic recording; the panel only shows how it goes."""
+        panel, server, commands = build_panel(self._bucket_sort_state())
+        for control in ("Record in Studio", "Task", "Keep", "Episodes (0 = no limit)", "Stuck starts"):
+            assert control not in server.gui.handles
+        recording = {"phase": "recording", "message": "Recording episode 2.", "saved": 1}
+        panel.refresh(dataclasses.replace(self._bucket_sort_state(), studio=recording), now=1.0)
+        assert "Recording episode 2." in panel._handles.studio_status.content  # noqa: SLF001
+        assert commands == []
 
     def test_a_scene_without_a_demonstrator_has_no_autopilot_folder(self) -> None:
         _, server, _ = build_panel(make_state(autopilot={"available": False, "unavailable_reason": None, "mode": "off"}))

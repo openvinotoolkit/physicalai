@@ -504,7 +504,10 @@ class ConveyorAutomation:
 
     def status(self) -> dict[str, dict[str, object]]:
         """Return the ``autopilot`` and ``studio`` sections of ``/health`` and the viewer."""
-        return {"autopilot": self.autopilot.status(), "studio": self.studio_recorder.status()}
+        # ``available``: whether this scene can record automatically (conveyor and bucket_sort).
+        available = self._conveyor is not None or self._bucket_task is not None
+        studio = {**self.studio_recorder.status(), "available": available}
+        return {"autopilot": self.autopilot.status(), "studio": studio}
 
     def _open_link(self) -> RelayLink:
         return self.studio_relay.open()

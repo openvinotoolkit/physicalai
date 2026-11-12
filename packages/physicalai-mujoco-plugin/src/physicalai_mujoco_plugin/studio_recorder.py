@@ -546,6 +546,7 @@ class _RecorderBase:
             "discarded": self._counters.discarded,
             "follower": target.follower_name if target is not None else None,
             "leader": target.leader_name if target is not None else None,
+            "task_source": "task",
         }
 
     # -- helpers --------------------------------------------------------

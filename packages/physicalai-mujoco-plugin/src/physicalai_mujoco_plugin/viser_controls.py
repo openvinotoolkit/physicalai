@@ -43,19 +43,9 @@ from physicalai_mujoco_plugin.http_server import (
     SetObjectPoseCommand,
     SetOverviewCommand,
     SetSeedCommand,
-    SetStudioRecordingCommand,
     ShutdownCommand,
     StopReplayCommand,
     SwitchSceneCommand,
-)
-from physicalai_mujoco_plugin.studio_recorder import (
-    DEFAULT_MAX_ATTEMPTS,
-    DEFAULT_TASK,
-    MAX_ATTEMPTS,
-    MAX_EPISODES,
-    MAX_RECOVERY_FRACTION,
-    MAX_TASK_CHARS,
-    RecordingOptions,
 )
 
 if TYPE_CHECKING:
@@ -66,7 +56,6 @@ if TYPE_CHECKING:
     from physicalai_mujoco_plugin.floating import BaseStatus
     from physicalai_mujoco_plugin.http_server import FrameBuffer, SimCommand
     from physicalai_mujoco_plugin.scene_registry import ViewerView
-    from physicalai_mujoco_plugin.studio_recorder import KeepPolicy
 
 CUSTOM_MODEL_LABEL = "Custom model"
 """Scene dropdown entry shown when the loaded model is not a registered scene."""
@@ -358,7 +347,6 @@ class _Handles:
     robot: Any = None
     autopilot_mode: Any = None
     replay: Any = None
-    studio_toggle: Any = None
     studio_status: Any = None
     drag_toggle: Any = None
     gizmos: dict[str, Any] = field(default_factory=dict)
@@ -478,8 +466,6 @@ AUTOPILOT_LABELS: dict[AutopilotMode, str] = {
     "leader": "Virtual leader (Studio teleop)",
 }
 _AUTOPILOT_BY_LABEL: dict[str, AutopilotMode] = {label: mode for mode, label in AUTOPILOT_LABELS.items()}
-KEEP_LABELS: dict[KeepPolicy, str] = {"perfect": "Perfect episodes only", "all": "All episodes"}
-_KEEP_BY_LABEL: dict[str, KeepPolicy] = {label: keep for keep, label in KEEP_LABELS.items()}
 
 
 def _autopilot_markdown(autopilot: Mapping[str, Any]) -> str:
@@ -890,76 +876,11 @@ class SimControlPanel:
                 # Automatic Studio recording runs conveyor and bucket_sort episodes only.
                 self._bind_autopilot_mode(mode)
                 return
-            studio = state.studio
-            active = studio.get("phase", "off") not in {"off", "done", "stopped", "error"}
-            toggle = gui.add_checkbox(
-                "Record in Studio",
-                initial_value=active,
-                hint="Save each conveyor episode to the dataset open on Studio's recording page; keep the page open"
-                if conveyor
-                else "Save each episode the autopilot leads to the dataset open on Studio's recording page; "
-                "Studio teleoperates the arm with the autopilot as leader. Keep the page open",
-            )
-            if conveyor:
-                task = gui.add_text("Task", initial_value=str(studio.get("task") or DEFAULT_TASK))
-            else:
-                # The instruction is each episode's task, so there is no task to type.
-                task = None
-                gui.add_markdown("**Task:** each episode's instruction. Needs the autopilot on 'Virtual leader'.")
-            keep = gui.add_dropdown(
-                "Keep",
-                options=tuple(KEEP_LABELS.values()),
-                initial_value=KEEP_LABELS.get(studio.get("keep", "perfect"), KEEP_LABELS["perfect"]),
-            )
-            budget = gui.add_number(
-                "Episodes (0 = no limit)",
-                initial_value=int(studio.get("max_episodes") or 0),
-                min=0,
-                max=MAX_EPISODES,
-                step=1,
-            )
-            recovery = attempts = None
-            if not conveyor:
-                recovery = gui.add_number(
-                    "Stuck starts",
-                    initial_value=float(studio.get("recovery_fraction") or 0.0),
-                    min=0.0,
-                    max=MAX_RECOVERY_FRACTION,
-                    step=0.05,
-                    hint="Share of episodes that start with the hand closed and empty where it would carry "
-                    "the object, so the policy learns to recover; the move there is not recorded",
-                )
-                attempts = gui.add_number(
-                    "Attempts per episode",
-                    initial_value=int(studio.get("max_attempts") or DEFAULT_MAX_ATTEMPTS),
-                    min=1,
-                    max=MAX_ATTEMPTS,
-                    step=1,
-                    hint="Tries the autopilot gets, retries included, before it gives the episode up",
-                )
-            studio_status = gui.add_markdown(_studio_markdown(studio))
-        self._handles.studio_toggle = toggle
+            # Automatic recording is started and set up from Studio's recording page; this shows how it goes.
+            gui.add_markdown("**Recording:** start it on Studio's recording page, with the autopilot as leader.")
+            studio_status = gui.add_markdown(_studio_markdown(state.studio))
         self._handles.studio_status = studio_status
         self._bind_autopilot_mode(mode)
-
-        @toggle.on_update
-        def _on_toggle(event: object) -> None:
-            if _is_server_event(event):
-                return
-            options = None
-            if toggle.value:
-                text = (str(task.value).strip()[:MAX_TASK_CHARS] if task is not None else "") or DEFAULT_TASK
-                episodes = min(max(int(budget.value), 0), MAX_EPISODES)
-                share = min(max(float(recovery.value), 0.0), MAX_RECOVERY_FRACTION) if recovery is not None else 0.0
-                tries = min(max(int(attempts.value), 1), MAX_ATTEMPTS) if attempts is not None else DEFAULT_MAX_ATTEMPTS
-                options = RecordingOptions(
-                    task=text,
-                    keep=_KEEP_BY_LABEL[str(keep.value)],
-                    max_episodes=episodes,
-                    recovery_fraction=share,
-                    max_attempts=tries,
-                )
-            self._submit(SetStudioRecordingCommand(options=options))
 
     def _bind_autopilot_mode(self, mode: Any) -> None:  # noqa: ANN401 - a viser dropdown
         @mode.on_update
@@ -1164,8 +1085,7 @@ class SimControlPanel:
             mode, status = handles.autopilot_mode
             mode.value = AUTOPILOT_LABELS.get(state.autopilot.get("mode", "off"), "Off")
             status.content = _autopilot_markdown(state.autopilot)
-        if handles.studio_toggle is not None:
-            handles.studio_toggle.value = state.studio.get("phase", "off") not in {"off", "done", "stopped", "error"}
+        if handles.studio_status is not None:
             handles.studio_status.content = _studio_markdown(state.studio)
         if handles.scene_dropdown is not None:
             label = _scene_label(state)
