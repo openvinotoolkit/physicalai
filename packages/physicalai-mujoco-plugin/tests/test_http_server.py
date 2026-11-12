@@ -567,7 +567,7 @@ class TestAutomationRoutes:
         assert client.post("/studio/relay", json=body).json() == {
             "active": True,
             "owner": True,
-            "commands": [{"command": "save_episode", "request_id": "r1"}],
+            "commands": [{"command": "save_episode", "request_id": "r1", "dataset_id": "d1", "episode_id": None}],
         }
         answered = {**body, "results": [{"request_id": "r1", "ok": True}]}
         assert client.post("/studio/relay", json=answered).json()["commands"] == []

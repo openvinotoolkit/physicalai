@@ -35,10 +35,13 @@ The relay exchange, request then response::
      "results": [{"request_id": "...", "ok": true, "error": null}]}
 
     {"active": true, "owner": true,
-     "commands": [{"command": "start_episode", "request_id": "...", "task": "..."}]}
+     "commands": [{"command": "start_episode", "request_id": "...", "task": "...",
+                   "dataset_id": "...", "episode_id": "..."}]}
 
 ``commands`` are Studio's own session commands: ``start_episode`` (with ``task``),
-``save_episode`` and ``discard_episode``. The first page to exchange owns a run (``owner``);
+``save_episode`` and ``discard_episode``, each with the dataset the run records into and the
+episode it is about (the start's request id), for Studio to refuse it on another one; a page
+that does not know its dataset at the moment gets none. The first page to exchange owns a run (``owner``);
 another page gets no commands, and the run fails if its page turns up on another session or
 dataset. A command comes with every exchange until its result does, so the page runs each
 ``request_id`` once and sends its result until the command no longer comes. ``active`` turns
@@ -190,6 +193,8 @@ class RelayLink:
         self._outgoing: dict[str, dict[str, Any]] = {}
         """Commands handed over until their result comes back, by request id, oldest first."""
         self._acks: dict[str, dict[str, Any]] = {}
+        self._episode: str | None = None
+        """The episode this run started last, by its start's request id."""
 
     @property
     def phase(self) -> str:
@@ -269,9 +274,12 @@ class RelayLink:
             msg = f"Studio's recording page relays no {event!r}"
             raise ValueError(msg)
         message: dict[str, Any] = {"command": command, "request_id": request_id or uuid.uuid4().hex}
-        if command == "start_episode":
-            message["task"] = str((data or {}).get("task", ""))
         with self._lock:
+            if command == "start_episode":
+                message["task"] = str((data or {}).get("task", ""))
+                self._episode = message["request_id"]
+            # Studio refuses to end another episode than the one this run started.
+            message["episode_id"] = self._episode
             if not self._closed:
                 self._outgoing[message["request_id"]] = message
 
@@ -334,7 +342,10 @@ class RelayLink:
             if not self._closed:
                 self._last_exchange = self._clock()
                 self._session = dict(session)
-            return list(self._outgoing.values())
+            if owner.dataset_id is not None and (context.session_id is None or context.dataset_id is None):
+                return []  # the page does not know its dataset right now: nothing to run until it does
+            # Studio refuses a command for another dataset than the one this run is on.
+            return [{**command, "dataset_id": owner.dataset_id} for command in self._outgoing.values()]
 
 
 MAX_ENDED_RUNS = 4

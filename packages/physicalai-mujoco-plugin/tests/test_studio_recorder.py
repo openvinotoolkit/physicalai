@@ -91,9 +91,10 @@ def test_a_command_comes_with_every_exchange_until_its_result_does() -> None:
     link.send("start_recording", {"task": "Sort"}, request_id="a")
     link.send("save_episode", request_id="b")
 
+    # Each names the dataset of the run and the episode it is about, for Studio to refuse on another.
     assert link.exchange(PAGE, SESSION, []) == [
-        {"command": "start_episode", "request_id": "a", "task": "Sort"},
-        {"command": "save_episode", "request_id": "b"},
+        {"command": "start_episode", "request_id": "a", "task": "Sort", "dataset_id": "dataset-1", "episode_id": "a"},
+        {"command": "save_episode", "request_id": "b", "dataset_id": "dataset-1", "episode_id": "a"},
     ]
     # The reply was lost: the next exchange hands the same commands over again.
     assert _ids(link.exchange(PAGE, SESSION, [])) == ["a", "b"]
@@ -185,7 +186,9 @@ def test_ending_a_run_cancels_what_studio_has_not_answered_but_its_discards() ->
     assert relay.exchange(PAGE, SESSION, []) == {
         "active": False,
         "owner": True,
-        "commands": [{"command": "discard_episode", "request_id": "last"}],
+        "commands": [
+            {"command": "discard_episode", "request_id": "last", "dataset_id": "dataset-1", "episode_id": "start"}
+        ],
     }
     assert relay.exchange(PAGE, SESSION, _ok("last"))["commands"] == []
     assert relay.exchange(PAGE, SESSION, []) == {"active": False, "owner": False, "commands": []}  # all answered
@@ -274,6 +277,24 @@ def test_a_start_answered_after_the_recording_state_is_read_and_not_kept() -> No
         recorder.update(episode, None)
         assert recorder.status()["saved"] == episode
     assert not recorder._link._acks  # noqa: SLF001 - every result was read
+
+
+@pytest.mark.parametrize("ended", [False, True], ids=["start of the run", "discard of an ended run"])
+def test_a_page_that_lost_its_dataset_for_a_moment_gets_no_command_for_it(ended: bool) -> None:  # noqa: FBT001
+    relay = StudioRelay()
+    link = relay.open()
+    link.start()
+    relay.exchange(PAGE, SESSION, [])
+    link.send("start_recording", {"task": "Sort"}, request_id="start")
+    if ended:
+        link.send("discard_episode", request_id="last")
+        link.close()
+    unloaded = dataclasses.replace(PAGE, dataset_id=None)  # the dataset was unloaded; another may be loading
+
+    for page in (unloaded, dataclasses.replace(PAGE, session_id=None)):
+        assert relay.exchange(page, {**SESSION, "dataset": False}, [])["commands"] == []
+    assert relay.exchange(dataclasses.replace(PAGE, dataset_id="dataset-2"), SESSION, [])["commands"] == []
+    assert relay.exchange(PAGE, SESSION, [])["commands"] == []  # the run is over: nothing for dataset-1 any more
 
 
 def test_no_run_hands_out_nothing() -> None:
@@ -552,7 +573,7 @@ def test_a_relayed_cycle_starts_and_saves_through_studios_page() -> None:
             return recorder.phase == "recording"
 
         _wait(started)
-        assert studio.received == [{"command": "start_episode", "request_id": studio.received[0]["request_id"], "task": "Sort"}]
+        assert [(command["command"], command["task"]) for command in studio.received] == [("start_episode", "Sort")]
         assert recorder.status()["follower"] == "Mary Jane"
 
         def saved() -> bool:
