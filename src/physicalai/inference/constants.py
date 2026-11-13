@@ -16,6 +16,7 @@ STATE_PASSTHROUGH = "state_passthrough"
 TOKENIZED_PROMPT = "tokenized_prompt"
 TOKENIZED_PROMPT_MASK = "tokenized_prompt_mask"
 IMAGE_MASKS = "image_masks"
+NOISE = "noise"
 
 PREV_CHUNK_LEFT_OVER = "prev_chunk_left_over"
 RTC_INFERENCE_DELAY = "inference_delay"
@@ -27,6 +28,7 @@ __all__ = [
     "ACTION",
     "IMAGES",
     "IMAGE_MASKS",
+    "NOISE",
     "PREV_CHUNK_LEFT_OVER",
     "RTC_EXECUTION_HORIZON",
     "RTC_INFERENCE_DELAY",

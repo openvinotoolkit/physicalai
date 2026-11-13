@@ -106,8 +106,9 @@ jobs:
           # heavy torch/CUDA dependencies. This test job still runs
           # `packages/*/tests`, so we install LeRobot + the plugin explicitly.
           # `--no-deps` keeps the workspace's editable studio plugin instead of
-          # replacing it with an older published SDK.
-          uv pip install --python .venv/bin/python lerobot pytest-anyio
+          # replacing it with an older published SDK. LeRobot is pinned so a new
+          # release cannot break main between commits; bump it with the plugin.
+          uv pip install --python .venv/bin/python "lerobot==0.7.0" pytest-anyio
           uv pip install --python .venv/bin/python --no-deps -e packages/physicalai-lerobot-plugin
 
       # The MuJoCo plugin downloads its robot models from MuJoCo Menagerie. The

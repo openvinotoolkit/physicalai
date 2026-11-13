@@ -8,7 +8,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from physicalai.inference.constants import IMAGE_MASKS, IMAGES, STATE, TASK
+from physicalai.inference.constants import IMAGE_MASKS, IMAGES, NOISE, STATE, TASK
 
 from .base import Preprocessor
 
@@ -25,20 +25,33 @@ class Pi05Preprocessor(Preprocessor):
 
     Tokenization is handled separately (e.g. by ``HFTokenizer``).
 
+    When ``noise_shape`` is set, it also draws the flow-matching start noise,
+    ``N(0, 1)`` of shape ``(batch, *noise_shape)``, fresh on every call. Exports
+    take the noise as a graph input because OpenVINO's GPU plugin returns the
+    same values from in-graph random ops on every call. Noise already present
+    in the inputs is kept, which makes a run reproducible.
+
     Args:
         image_resolution: Target (height, width) for images.
         empty_cameras: Number of extra -1-filled camera slots to append.
+        noise_shape: Per-sample ``(chunk_size, max_action_dim)`` of the start
+            noise, or ``None`` for exports that sample it inside the graph.
+        seed: Seed for the noise generator. ``None`` draws a fresh seed.
     """
 
     def __init__(
         self,
         image_resolution: tuple[int, int] = (224, 224),
         empty_cameras: int = 0,
+        noise_shape: tuple[int, int] | None = None,
+        seed: int | None = None,
     ) -> None:
         """Initialize the Pi0.5 preprocessor."""
         super().__init__()
         self._image_resolution = image_resolution
         self._empty_cameras = empty_cameras
+        self._noise_shape = tuple(noise_shape) if noise_shape is not None else None
+        self._rng = np.random.default_rng(seed)
 
     def __call__(self, inputs: dict[str, np.ndarray | list[str]]) -> dict[str, np.ndarray | list[str]]:
         """Preprocess images and text for Pi0.5 inference.
@@ -53,6 +66,8 @@ class Pi05Preprocessor(Preprocessor):
             - ``images``: stacked ``(n_cameras, batch, C, H, W)`` float32 array
             - ``image_masks``: stacked ``(n_cameras, batch)`` bool array
             - ``task``: list of formatted prompt strings
+            - ``noise``: ``(batch, *noise_shape)`` float32 array, when
+              ``noise_shape`` is set and the inputs carry no noise
         """
         # --- images ---
         images, img_masks = self._preprocess_images(inputs)
@@ -87,6 +102,9 @@ class Pi05Preprocessor(Preprocessor):
             prompts.append(f"Task: {cleaned}, State: {state_str};\nAction: ")
 
         inputs[TASK] = prompts
+
+        if self._noise_shape is not None and NOISE not in inputs:
+            inputs[NOISE] = self._rng.standard_normal((state.shape[0], *self._noise_shape), dtype=np.float32)
 
         return inputs
 
