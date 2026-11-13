@@ -13,12 +13,15 @@ import numpy as np
 
 from physicalai.config import export_config
 from physicalai.inference.constants import IMAGES, STATE, TASK
+from physicalai.inference.manifest import ObservationHistorySpec
 from physicalai.runtime.action_sources.base import ActionSource
 from physicalai.runtime.events import MetricsEvent
 from physicalai.runtime.execution.base import Execution
 from physicalai.runtime.execution.queue import ChunkedActionQueue
 from physicalai.runtime.execution.sync import SyncExecution
 from physicalai.runtime.smoothers import LerpSmoother
+
+from .observation_history import ObservationHistory
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -44,7 +47,14 @@ class PolicySource(ActionSource):
         *,
         task: str | None = None,
     ) -> None:
-        """Initialize a policy-backed action source."""
+        """Initialize a policy-backed action source.
+
+        Args:
+            model: Model used for inference.
+            execution: Inference scheduling strategy.
+            action_queue: Queue of predicted actions.
+            task: Current task instruction.
+        """
         self._model = model
         self._execution = execution or SyncExecution()
         self._action_queue = action_queue or ChunkedActionQueue(
@@ -57,6 +67,8 @@ class PolicySource(ActionSource):
         self._session_id: str = ""
         self._connected = False
         self._state_lock = threading.RLock()
+        history = getattr(getattr(getattr(model, "manifest", None), "model", None), "observation_history", None)
+        self._history = ObservationHistory(history) if isinstance(history, ObservationHistorySpec) else None
 
     def set_task(self, task: str | None) -> None:
         """Update the task string used for the *next* inference request."""
@@ -90,6 +102,8 @@ class PolicySource(ActionSource):
             except BaseException:
                 self._execution.stop()
                 raise
+            if self._history is not None:
+                self._history.reset()
             self._connected = True
 
     def reset(self, *, reset_model: bool = True) -> None:
@@ -119,6 +133,8 @@ class PolicySource(ActionSource):
                 self._action_queue.reset()
                 self._last = None
                 self._warmed_up = False
+                if self._history is not None:
+                    self._history.reset()
 
     def warmup(self, observation: dict[str, Any]) -> None:
         """Seed the action queue so the next :meth:`update` does not block.
@@ -160,6 +176,9 @@ class PolicySource(ActionSource):
         """
         with self._state_lock:
             model_input = self._to_model_input(robot_state, camera_frames)
+            if self._history is not None:
+                names = tuple(sorted((robot_state.images or {}).keys() | camera_frames.keys()))
+                model_input = self._history.window(model_input, record=True, camera_names=names, stack=False)
 
             if not self._warmed_up:
                 self.warmup(model_input)
@@ -196,6 +215,8 @@ class PolicySource(ActionSource):
                 self._execution.stop()
             finally:
                 self._connected = False
+                if self._history is not None:
+                    self._history.reset()
                 close_model = getattr(type(self._model), "close", None)
                 if close_model is not None:
                     close_model(self._model)
@@ -226,10 +247,18 @@ class PolicySource(ActionSource):
         return model_input
 
     def to_model_input(self, robot_obs: RobotObservation, camera_frames: Mapping[str, Frame]) -> dict[str, Any]:
-        """Public wrapper for model-input conversion (used by callers/tests).
+        """Preview model input without recording an observation.
+
+        With manifest history enabled, includes the supplied current observation
+        in a temporal window without advancing history. The result can be passed
+        to :meth:`warmup`; only :meth:`update` records observations.
 
         Returns:
             Dictionary ready for model inference.
         """
         with self._state_lock:
-            return self._to_model_input(robot_obs, camera_frames)
+            inputs = self._to_model_input(robot_obs, camera_frames)
+            if self._history is not None:
+                names = tuple(sorted((robot_obs.images or {}).keys() | camera_frames.keys()))
+                return self._history.window(inputs, record=False, camera_names=names, stack=False)
+            return inputs

@@ -181,6 +181,10 @@ class InferenceModel:
             if preprocessors is not None
             else self._load_processors(self.manifest.model.preprocessors, Preprocessor)
         )
+        history = self.manifest.model.observation_history
+        if history is not None and history.preprocessor is not None:
+            # Format selected history before policy-specific processing.
+            self.preprocessors = self._load_processors([history.preprocessor], Preprocessor) + self.preprocessors
         self.postprocessors: list[Postprocessor] = (
             postprocessors
             if postprocessors is not None
