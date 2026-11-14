@@ -16,6 +16,32 @@
 - Add the `noise` preprocessor, which draws fresh flow-matching start noise on
   every call for exports that take the noise as a graph input.
 
+## [0.5.0](https://github.com/openvinotoolkit/physicalai/compare/v0.4.0...v0.5.0) (2026-11-14)
+
+
+### ✨ Features
+
+* **inference:** add a noise preprocessor for flow-matching exports ([#455](https://github.com/openvinotoolkit/physicalai/issues/455)) ([8381d43](https://github.com/openvinotoolkit/physicalai/commit/8381d439c2660d357b4b9d633f28ea7e7ed42c81))
+* **inference:** add VLA-JEPA preprocessor ([#441](https://github.com/openvinotoolkit/physicalai/issues/441)) ([b6b846a](https://github.com/openvinotoolkit/physicalai/commit/b6b846ae9ea37d77b55dc032eba16a3a2427cc37))
+
+
+### 🐛 Bug Fixes
+
+* **transport:** disable TCP listeners on non-owner robot sessions ([#456](https://github.com/openvinotoolkit/physicalai/issues/456)) ([b4461cc](https://github.com/openvinotoolkit/physicalai/commit/b4461cc03adacad5a9d37bb1b2cbae31f4e7e0b3))
+
+
+### 👷 CI/CD
+
+* Automerge configuration for renovate bot PRs ([#452](https://github.com/openvinotoolkit/physicalai/issues/452)) ([ed33556](https://github.com/openvinotoolkit/physicalai/commit/ed33556c73c02a7ec8fddfa2eea4778a68223ee8))
+
+
+### 🔧 Chores
+
+* **deps:** lock file maintenance ([#449](https://github.com/openvinotoolkit/physicalai/issues/449)) ([fba2633](https://github.com/openvinotoolkit/physicalai/commit/fba2633a8a8b64ac28805f01ec2e6f66ee6fbfb0))
+* **deps:** lock file maintenance ([#457](https://github.com/openvinotoolkit/physicalai/issues/457)) ([0ec06e9](https://github.com/openvinotoolkit/physicalai/commit/0ec06e9f38ac69170f391cf8343d83f7c6081668))
+* **main:** release physicalai-lerobot-plugin 0.4.1 ([#386](https://github.com/openvinotoolkit/physicalai/issues/386)) ([c354d75](https://github.com/openvinotoolkit/physicalai/commit/c354d751b17951b1c7f4922b67f5abb8c388cedf))
+* **main:** release physicalai-trossen-plugin 0.3.0 ([#383](https://github.com/openvinotoolkit/physicalai/issues/383)) ([605304d](https://github.com/openvinotoolkit/physicalai/commit/605304d1859c598ab397fd6cc7560a0105da7a1e))
+
 ## [0.4.0](https://github.com/openvinotoolkit/physicalai/compare/v0.3.0...v0.4.0) (2026-11-06)
 
 
