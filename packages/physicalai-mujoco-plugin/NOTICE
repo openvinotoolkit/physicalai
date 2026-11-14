@@ -15,3 +15,9 @@ and converted to MuJoCo's MSH format.
 urdf/scenes/yahtzee/assets/wood_19.png is Wood_19-512x512.png from
 "Tiny Texture Pack 2" by Screaming Brain Studios, released under CC0 1.0:
 https://opengameart.org/content/tiny-texture-pack-2
+
+urdf/scenes/openarm_cell/scene.xml takes the OpenArm Cell's dimensions and camera
+poses from v2/cell/cell.xml of https://github.com/enactic/openarm_mujoco
+(openarm-mujoco 2.3.0, Copyright 2026 Enactic, Inc.), released under Apache-2.0.
+The OpenArm model itself is not distributed with this package; it is downloaded
+from the openarm-mujoco source archive on PyPI when first used.
