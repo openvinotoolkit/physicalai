@@ -19,6 +19,7 @@ from physicalai_studio_plugin import (
     RobotAdapterOptions,
     RobotAsset,
     RobotCatalogDefinition,
+    robot_field_ui,
     robot_payload_ui,
 )
 from pydantic import BaseModel, ConfigDict, Field
@@ -37,6 +38,18 @@ class TrossenSingleArmPayload(BaseModel):
     """Connection configuration for a Trossen single-arm robot."""
 
     connection_string: str = Field(..., description="IP address of the robot")
+    goal_time_scale: float = Field(
+        default=3.0,
+        gt=0,
+        allow_inf_nan=False,
+        title="Goal time multiplier",
+        description=(
+            "Multiplier for action goal times. At 100 Hz, 3 gives a 30 ms motion goal. "
+            "Larger values increase motion overlap and smoothing but add tracking lag. "
+            "Only affects follower position commands."
+        ),
+        json_schema_extra=robot_field_ui({"advanced_configuration": True}),
+    )
 
     model_config = ConfigDict(
         json_schema_extra={  # pyrefly: ignore [bad-argument-type]
@@ -58,6 +71,18 @@ class TrossenBimanualPayload(BaseModel):
 
     connection_string_left: str = Field(..., description="IP address of the left arm")
     connection_string_right: str = Field(..., description="IP address of the right arm")
+    goal_time_scale: float = Field(
+        default=3.0,
+        gt=0,
+        allow_inf_nan=False,
+        title="Goal time multiplier",
+        description=(
+            "Multiplier for action goal times on both arms. At 100 Hz, 3 gives a 30 ms motion goal. "
+            "Larger values increase motion overlap and smoothing but add tracking lag. "
+            "Only affects follower position commands."
+        ),
+        json_schema_extra=robot_field_ui({"advanced_configuration": True}),
+    )
 
     model_config = ConfigDict(
         json_schema_extra={  # pyrefly: ignore [bad-argument-type]
@@ -162,7 +187,7 @@ async def _build_trossen_single_arm_driver(
         msg = f"Expected TrossenSingleArmPayload, got {type(payload).__name__}"
         raise TypeError(msg)
     role = "follower" if robot.type == "Trossen_WidowXAI_Follower" else "leader"
-    return WidowXAI(ip=payload.connection_string, role=role)
+    return WidowXAI(ip=payload.connection_string, role=role, goal_time_scale=payload.goal_time_scale)
 
 
 async def _build_trossen_bimanual_driver(
@@ -174,8 +199,8 @@ async def _build_trossen_bimanual_driver(
         raise TypeError(msg)
     role = "follower" if robot.type == "Trossen_Bimanual_WidowXAI_Follower" else "leader"
     return BimanualWidowXAI(
-        left=WidowXAI(ip=payload.connection_string_left, role=role),
-        right=WidowXAI(ip=payload.connection_string_right, role=role),
+        left=WidowXAI(ip=payload.connection_string_left, role=role, goal_time_scale=payload.goal_time_scale),
+        right=WidowXAI(ip=payload.connection_string_right, role=role, goal_time_scale=payload.goal_time_scale),
     )
 
 
