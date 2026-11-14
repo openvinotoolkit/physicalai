@@ -66,8 +66,9 @@ class ResizePreprocessor(Preprocessor):
 
         Image arrays may be in channels-first ``(batch, channels, height,
         width)`` or channels-last ``(batch, height, width, channels)`` layout
-        as specified by ``image_layout`` or inferred when it is ``None``,
-        with ``uint8`` (normalized to ``float32`` in [0, 1]) or floating-point
+        as specified by ``image_layout`` or inferred when it is ``None``.
+        Temporal inputs ``(B,T,C,H,W)`` and ``(B,T,H,W,C)`` are also accepted.
+        Inputs use ``uint8`` (normalized to ``float32`` in [0, 1]) or floating-point
         values. The output is always in channels-first layout and ``float32``.
 
         Args:
@@ -80,17 +81,30 @@ class ResizePreprocessor(Preprocessor):
         images_value = outputs.get(IMAGES)
 
         if isinstance(images_value, dict):
-            outputs[IMAGES] = {key: self._resize_with_ar_pad(value) for key, value in images_value.items()}
+            outputs[IMAGES] = {key: self._resize_temporal(value) for key, value in images_value.items()}
         elif isinstance(images_value, np.ndarray):
-            outputs[IMAGES] = self._resize_with_ar_pad(images_value)
+            outputs[IMAGES] = self._resize_temporal(images_value)
         else:
             image_keys = [key for key in outputs if key.startswith(IMAGES) and "is_pad" not in key]
             for key in image_keys:
                 value = outputs[key]
                 if isinstance(value, np.ndarray):
-                    outputs[key] = self._resize_with_ar_pad(value)
+                    outputs[key] = self._resize_temporal(value)
 
         return outputs
+
+    def _resize_temporal(self, img: np.ndarray) -> np.ndarray:
+        """Resize images while preserving an optional temporal axis.
+
+        Returns:
+            Resized images in channels-first layout.
+        """
+        temporal_img_dim = 5
+        if img.ndim != temporal_img_dim:
+            return self._resize_with_ar_pad(img)
+        batch, timesteps = img.shape[:2]
+        resized = self._resize_with_ar_pad(img.reshape(batch * timesteps, *img.shape[2:]))
+        return resized.reshape(batch, timesteps, *resized.shape[1:])
 
     def _validate_channel_count(self, shape: tuple[int, ...]) -> None:
         """Validate explicit layouts while preserving legacy automatic detection.
