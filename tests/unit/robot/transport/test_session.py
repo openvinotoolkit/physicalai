@@ -8,6 +8,8 @@ import time
 import uuid
 from typing import TYPE_CHECKING
 
+import pytest
+
 from physicalai.robot.transport._ids import derive_endpoint_port
 from physicalai.robot.transport._session import open_session
 
@@ -55,20 +57,18 @@ class TestSessionConfig:
     def _captured_config(self, *, name: str | None = None, listen: bool = False, allow_remote: bool = False) -> zenoh.Config:
         import zenoh
 
-        original_open = zenoh.open
-        captured: dict[str, zenoh.Config] = {}
+        # Inspect even vulnerable configurations without opening network listeners.
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr(zenoh, "open", lambda config: config)
+            return open_session(name, listen=listen, allow_remote=allow_remote)
 
-        def _capture_and_open(config: zenoh.Config):  # type: ignore[no-untyped-def]
-            captured["config"] = config
-            return original_open(config)
-
-        zenoh.open = _capture_and_open  # type: ignore[assignment]
-        try:
-            session = open_session(name, listen=listen, allow_remote=allow_remote)
-            session.close()
-        finally:
-            zenoh.open = original_open  # type: ignore[assignment]
-        return captured["config"]
+    @pytest.mark.parametrize("name", ["left-arm", None], ids=["subscriber", "unnamed-client"])
+    @pytest.mark.parametrize("allow_remote", [False, True], ids=["local-only", "remote"])
+    def test_non_owner_does_not_listen(self, name: str | None, allow_remote: bool) -> None:
+        config = self._captured_config(name=name, allow_remote=allow_remote)
+        assert config.get_json("listen/endpoints") == "[]"
+        assert json.loads(config.get_json("scouting/multicast/enabled")) is allow_remote
+        assert json.loads(config.get_json("scouting/gossip/enabled")) is allow_remote
 
     def test_local_only_disables_scouting(self) -> None:
         config = self._captured_config(name="left-arm", listen=True, allow_remote=False)

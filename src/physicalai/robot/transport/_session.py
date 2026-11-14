@@ -3,12 +3,13 @@
 
 """Zenoh session helper shared by owner and subscriber endpoints.
 
-Secure by default: unless the caller explicitly opts into ``allow_remote``,
-multicast/gossip scouting is disabled and the owner's listen endpoint is
-bound to loopback only, so the transport is unreachable off-host — not
-merely undiscoverable. The caller that spawns an owner fixes this scope
-for the owner's entire lifetime; a later attacher's ``allow_remote`` value
-only configures its own session, never the running owner's.
+Non-owner sessions never open TCP listeners. Unless the caller explicitly
+opts into ``allow_remote``, multicast/gossip scouting is disabled and the
+owner's listen endpoint is bound to loopback only, so the transport is
+unreachable off-host — not merely undiscoverable. The caller that spawns
+an owner fixes this scope for the owner's entire lifetime; a later
+attacher's ``allow_remote`` value only configures its own session, never
+the running owner's.
 """
 
 from __future__ import annotations
@@ -42,9 +43,8 @@ def open_session(name: str | None = None, *, listen: bool = False, allow_remote:
     retries in the background until the owner is up).
 
     Args:
-        name: Robot name for endpoint derivation; ``None`` opens a
-            scouting-only session with no fixed endpoint (used by
-            :func:`discover_robots`).
+        name: Robot name for endpoint derivation; ``None`` opens a session
+            with no fixed endpoint (used by clients and discovery).
         listen: True for the owner (listen on the derived port), False for
             subscribers (connect to localhost, retrying every 100-500 ms
             until the owner listens).
@@ -61,7 +61,7 @@ def open_session(name: str | None = None, *, listen: bool = False, allow_remote:
     import zenoh  # noqa: PLC0415
 
     connect_endpoints: list[str] | None = None
-    listen_endpoints: list[str] | None = None
+    listen_endpoints: list[str] = []
     config = zenoh.Config()
     if name is not None:
         if listen:
