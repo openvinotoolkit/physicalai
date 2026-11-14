@@ -53,12 +53,10 @@ class BimanualSO101(BimanualRobot[SO101, SO101]):
         return self._left.role
 
     def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None:
-        """Send an exact 12-dimensional action to the two follower arms.
-
-        Raises:
-            RuntimeError: If the bimanual robot is a leader.
-        """
-        if self.role == "leader":
-            msg = "Cannot send actions to a leader robot."
-            raise RuntimeError(msg)
+        """Send an exact 12-dimensional action to the two arms; each refuses it with torque off."""
         super().send_action(action, goal_time=goal_time)
+
+    def set_torque(self, *, enabled: bool) -> None:
+        """Switch torque on or off on both arms; see :meth:`SO101.set_torque`."""
+        self._left.set_torque(enabled=enabled)
+        self._right.set_torque(enabled=enabled)

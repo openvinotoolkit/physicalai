@@ -281,8 +281,16 @@ class TestBimanualWidowXAISendAction:
 
     def test_leader_raises(self, mock_trossen_arm: MagicMock) -> None:
         robot = _make_bimanual(mock_trossen_arm, role="leader")
-        with pytest.raises(RuntimeError, match="Cannot send actions to a leader robot"):
+        with pytest.raises(RuntimeError, match="torque off"):
             robot.send_action(np.zeros(14, dtype=np.float32))
+
+    def test_leader_with_torque_on_accepts_actions_on_both_arms(self, mock_trossen_arm: MagicMock) -> None:
+        robot = _make_bimanual(mock_trossen_arm, role="leader")
+        robot.set_torque(enabled=True)
+        assert robot.left._torque_enabled and robot.right._torque_enabled  # noqa: SLF001
+        robot.send_action(np.zeros(14, dtype=np.float32))
+        robot.set_torque(enabled=False)
+        assert not robot.left._torque_enabled and not robot.right._torque_enabled  # noqa: SLF001
 
 
 # ---------------------------------------------------------------------------
