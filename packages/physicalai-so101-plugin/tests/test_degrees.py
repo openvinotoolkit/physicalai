@@ -171,7 +171,14 @@ def test_degree_actions_keep_existing_final_encoder_safety_clamp():
         parameters[servo_id] = int.from_bytes(bytes(data), "little")
         return True
     group = SimpleNamespace(clearParam=lambda: None, addParam=add_param, txPacket=lambda: 0)
-    arm._connection = SimpleNamespace(group_sync_write=group)
+    torque_group = SimpleNamespace(clearParam=lambda: None, addParam=lambda *args: True, txPacket=lambda: 0)
+    packet = SimpleNamespace(write1ByteTxRx=lambda *args: (0, 0))
+    arm._connection = SimpleNamespace(
+        group_sync_write=group,
+        group_sync_write_torque=torque_group,
+        packet_handler=packet,
+        port_handler=None,
+    )
     arm.send_action(np.array([-180] * 5 + [50], dtype=np.float64))
     assert list(parameters.values()) == [0] * 5 + [1600]
     arm.send_action(np.array([360] * 5 + [50], dtype=np.float64))
