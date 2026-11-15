@@ -191,6 +191,9 @@ class SO101(Robot):
 
         # Connection state (set during connect()) --------------------------
         self._connection: _SO101Connection | None = None
+        # Last torque value written on this connection. ``None`` means unknown,
+        # which forces the next ``send_action`` to re-enable torque.
+        self._torque_enabled: bool | None = None
 
         # Torque ON/OFF behavior on disconnect (default: True for follower, False for leader)
         self._torque_on_disconnect: bool = role == "follower"
@@ -376,6 +379,8 @@ class SO101(Robot):
         if self.is_connected():
             return  # already connected
 
+        self._torque_enabled = None
+
         # Open port ---------------------------------------------------------
         port_handler = PortHandler(self.port)
         if not port_handler.openPort():
@@ -444,6 +449,7 @@ class SO101(Robot):
             with contextlib.suppress(Exception):
                 port_handler.closePort()
             self._connection = None
+            self._torque_enabled = None
             raise
 
         logger.info(f"SO-101 connected on {self.port} (role={self.role}, servos={self.servo_ids})")
@@ -496,6 +502,7 @@ class SO101(Robot):
             )
         finally:
             self._connection = None
+            self._torque_enabled = None
             try:
                 conn.port_handler.closePort()
             except (OSError, RuntimeError):
@@ -540,7 +547,10 @@ class SO101(Robot):
         )
 
     def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None:
-        """Send joint position commands to all servos.
+        """Send joint position commands to all servos and enable torque.
+
+        Torque is only re-sent when the cached connection state says it is not
+        already enabled, so the steady-state control path is one sync write.
 
         Args:
             action: Array of shape ``(6,)`` with target joint positions in
@@ -564,6 +574,10 @@ class SO101(Robot):
 
         ticks = self._unit_to_ticks(action) if self._calibration is not None else np.round(action).astype(np.int32)
         self._write_joint_positions(ticks)
+        # Write the new goal before enabling torque so the arm does not move
+        # toward a stale goal. Skip the torque write when it is already on.
+        if self._torque_enabled is not True:
+            self._set_torque(enabled=True)
 
     def is_connected(self) -> bool:
         """Check if robot is connected.
@@ -723,17 +737,26 @@ class SO101(Robot):
             ser.reset_input_buffer()
 
     def _set_torque(self, *, enabled: bool) -> None:
-        """Enable or disable torque on all servos with one sync write."""
+        """Enable or disable torque on all servos with one sync write.
+
+        The written state is cached on the connection so that back-to-back
+        ``send_action`` calls do not re-send the same torque command. A failed
+        write leaves the cache unknown, which forces the next action to retry.
+        """
         conn = self._require_connection()
 
         value = 1 if enabled else 0
         conn.group_sync_write_torque.clearParam()
+        failed = False
         for name, servo_id in self.servo_ids.items():
             if not conn.group_sync_write_torque.addParam(servo_id, [value]):
                 logger.warning(f"Failed to add servo '{name}' (ID {servo_id}) to torque sync write")
+                failed = True
         comm_result = conn.group_sync_write_torque.txPacket()
         if comm_result != 0:
             logger.warning(f"Torque sync write failed with comm result {comm_result}")
+            failed = True
+        self._torque_enabled = None if failed else enabled
 
     def set_torque(self, *, enabled: bool) -> None:
         """Enable or disable torque on all servos.

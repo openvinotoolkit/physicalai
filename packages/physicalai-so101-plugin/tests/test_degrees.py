@@ -79,6 +79,7 @@ def test_degree_observation_and_follower_action_use_the_selected_units(monkeypat
     np.testing.assert_array_equal(observation.joint_positions, [0] * 5 + [50])
     written = []
     monkeypatch.setattr(arm, "_write_joint_positions", lambda ticks: written.append(ticks.copy()))
+    monkeypatch.setattr(arm, "_set_torque", lambda *, enabled: None)
     arm.send_action(np.array([180] * 5 + [50], dtype=np.float32))
     np.testing.assert_array_equal(written[0], [3647] * 5 + [1600])
 

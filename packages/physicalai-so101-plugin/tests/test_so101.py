@@ -503,8 +503,22 @@ class TestSO101Action:
         action = np.zeros(6, dtype=np.float32)
         robot.send_action(action)
 
+        # Torque is already enabled from connect(), so only the goal is written.
         goal.txPacket.assert_called_once()
         torque.txPacket.assert_not_called()
+
+    def test_action_enables_torque_after_writing_goal(self, mock_sdk: MagicMock) -> None:
+        robot = _create_robot(mock_sdk)
+        robot.connect()
+        for _ in range(2):
+            robot.set_torque(enabled=False)
+            goal = mock_sdk.sync_writes[GOAL_ADDR]
+            torque = mock_sdk.sync_writes[TORQUE_ADDR]
+            order: list[str] = []
+            goal.txPacket.side_effect = lambda: order.append("goal") or 0
+            torque.txPacket.side_effect = lambda: order.append("torque") or 0
+            robot.send_action(np.zeros(6, dtype=np.float32))
+            assert order[:2] == ["goal", "torque"]
 
     def test_disconnected_action_does_not_enable_torque(self, mock_sdk: MagicMock) -> None:
         robot = _create_robot(mock_sdk)
