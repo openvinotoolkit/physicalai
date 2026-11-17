@@ -4,6 +4,20 @@
 """Public API for the Physical AI Studio plugin."""
 
 from .assets import RobotAsset
+from .autopilot import (
+    AUTOPILOT_PATH,
+    AUTOPILOT_PROTOCOL,
+    AutopilotClient,
+    AutopilotError,
+    AutopilotInfo,
+    AutopilotSpec,
+    Episode,
+    EpisodeOptions,
+    EpisodeRequest,
+    LeaderFactory,
+    Outcome,
+    Phase,
+)
 from .catalog import (
     BuildRobotCallable,
     CatalogRobot,
@@ -35,10 +49,22 @@ from .ui_schema import (
 from .zero_calibration import RobotZeroCalibration
 
 __all__ = [
+    "AUTOPILOT_PATH",
+    "AUTOPILOT_PROTOCOL",
+    "AutopilotClient",
+    "AutopilotError",
+    "AutopilotInfo",
+    "AutopilotSpec",
     "BuildRobotCallable",
     "CatalogRobot",
     "CatalogRobotFactory",
+    "Episode",
+    "EpisodeOptions",
+    "EpisodeRequest",
+    "LeaderFactory",
+    "Outcome",
     "PayloadContainer",
+    "Phase",
     "PortScanner",
     "RobotAdapterOptions",
     "RobotAsset",

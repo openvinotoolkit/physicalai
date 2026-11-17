@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.12, <3.14"
 
 [manifest]
@@ -2193,12 +2193,14 @@ provides-extras = ["tests"]
 name = "physicalai-studio-plugin"
 source = { editable = "packages/physicalai-studio-plugin" }
 dependencies = [
+    { name = "httpx" },
     { name = "physicalai" },
     { name = "pydantic" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.27" },
     { name = "physicalai", editable = "." },
     { name = "pydantic", specifier = ">=2.12" },
 ]
