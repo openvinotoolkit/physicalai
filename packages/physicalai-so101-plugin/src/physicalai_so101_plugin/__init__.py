@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from physicalai_so101_plugin.bimanual_so101 import BimanualSO101Observation as BimanualSO101Observation
     from physicalai_so101_plugin.calibration import SO101Calibration as SO101Calibration
     from physicalai_so101_plugin.calibration import SO101JointCalibration as SO101JointCalibration
+    from physicalai_so101_plugin.setup import SO101SetupSession as SO101SetupSession
     from physicalai_so101_plugin.so101 import SO101 as SO101
     from physicalai_so101_plugin.so101 import SO101Observation as SO101Observation
 
@@ -26,6 +27,7 @@ __all__ = [
     "SO101Calibration",
     "SO101JointCalibration",
     "SO101Observation",
+    "SO101SetupSession",
     "get_urdf_path",
 ]
 
@@ -43,6 +45,8 @@ def __getattr__(name: str) -> object:
         return getattr(import_module("physicalai_so101_plugin.calibration"), name)
     if name in {"SO101", "SO101Observation"}:
         return getattr(import_module("physicalai_so101_plugin.so101"), name)
+    if name == "SO101SetupSession":
+        return getattr(import_module("physicalai_so101_plugin.setup"), name)
     if name in {"BimanualSO101", "BimanualSO101Observation"}:
         return getattr(import_module("physicalai_so101_plugin.bimanual_so101"), name)
     msg = f"module {__name__!r} has no attribute {name!r}"
