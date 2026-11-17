@@ -8,13 +8,15 @@ installed and behaves identically.
 ## `physicalai doctor`
 
 ```bash
-physicalai doctor [DEVICE] [--tree] [--json]
+physicalai doctor [DEVICE] [--tree] [--json] [--no-ansi]
 ```
 
 Inspect Linux USB cameras, serial adapters, negotiated link speeds, access, duplicate
 aliases, and shared hub uplinks without starting hardware. `DEVICE` is an optional
 USB device ID, endpoint path, or unique alias. `--tree` shows relevant USB ancestry;
 `--json` writes the structured [Python API report](diagnostics-api.md), without redaction.
+Colors and bold text are automatic in interactive terminals. `--no-ansi`, nonempty
+`NO_COLOR`, or `TERM=dumb` disables styling; redirected output and JSON stay plain.
 
 Returns `0` without observed errors (warnings are allowed), `1` for access/collection
 errors, or `2` for invalid arguments/selectors or unsupported hosts. See

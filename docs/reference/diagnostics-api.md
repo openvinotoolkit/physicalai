@@ -84,4 +84,5 @@ logs are outside scope. A 480 Mb/s camera is not automatically faulty. See
 
 `to_dict()` preserves raw device text and serials without terminal styling or
 redaction. Treat device names and paths as untrusted display text (escape them in the
-UI), and review reports before sharing. The terminal renderer escapes control characters.
+UI), and review reports before sharing. The terminal renderer escapes control characters
+and defaults to plain text; the CLI opts into ANSI styling only for interactive terminals.

@@ -10,7 +10,14 @@ pai doctor --tree
 pai doctor /dev/video0
 pai doctor /dev/ttyACM0
 pai doctor --json
+pai doctor --no-ansi
 ```
+
+Interactive terminals use bold headings, yellow USB 2 links, cyan USB 3.x links,
+and colored finding labels. Link colors identify USB generations, not proven faults.
+Use `--no-ansi` to disable both color and bold text. Formatting is also disabled for
+redirected output, `TERM=dumb`, or a nonempty `NO_COLOR` environment variable.
+JSON and the Python API report never contain presentation styling.
 
 ## Start with the negotiated link
 
