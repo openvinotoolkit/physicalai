@@ -295,14 +295,19 @@ class RTCExecution(Execution):
         thread (or timeout).
 
         Raises:
-            RuntimeError: If start() not called or thread dies during warmup.
-            WorkerDiedError: If the RTC thread dies during warmup.
+            RuntimeError: If start() was not called, another warmup is in
+                progress, the warmup times out, or it is cancelled by reset(),
+                stop(), a restart or a failed inference.
+            WorkerDiedError: If the RTC thread died before or during warmup.
         """
         if self._model is None or self._rtc_queue is None:
             raise RuntimeError(_NOT_STARTED)
 
         signal = _WarmupSignal()
         with self._obs_lock:
+            if self._death_cause is not None:
+                msg = f"RTC thread died before warmup: {self._death_cause}"
+                raise WorkerDiedError(msg) from self._death_cause
             if self._warmup_signal is not None:
                 msg = "RTCExecution warmup is already in progress"
                 raise RuntimeError(msg)
@@ -439,7 +444,35 @@ class RTCExecution(Execution):
             raise RuntimeError(msg)
 
     def _rtc_loop(self, stop_event: threading.Event) -> None:
-        """Background loop for one run: infer chunks and merge into queue.
+        """Run the worker loop for one run and record why it stopped early.
+
+        Nothing propagates out of this thread. An error anywhere in the loop,
+        not only inside the model, is kept in ``_death_cause`` so the control
+        thread sees it as ``WorkerDiedError`` on the next ``maybe_request()``.
+        A warmup that is waiting fails with it at once instead of waiting for
+        the warmup timeout.
+        """
+        try:
+            self._infer_until_stopped(stop_event)
+        except Exception as e:
+            if stop_event.is_set():
+                # This run has already ended, so its error must not fail a later one.
+                logger.exception("RTC worker failed after its run ended")
+                return
+            logger.exception("RTC inference thread died")
+            with self._obs_lock:
+                # Set under the lock so warmup() either sees the death or has
+                # already registered the signal woken below.
+                self._death_cause = e
+                signal = self._warmup_signal
+                if signal is not None and not signal.event.is_set():
+                    error = WorkerDiedError(f"RTC thread died during warmup: {e}")
+                    error.__cause__ = e
+                    signal.error = error
+                    signal.event.set()
+
+    def _infer_until_stopped(self, stop_event: threading.Event) -> None:
+        """Infer chunks and merge them into the queue until *stop_event* is set.
 
         Takes its own events rather than reading ``self``, so a worker that
         outlives ``stop()`` keeps observing its own set stop event even after a
@@ -553,15 +586,17 @@ class RTCExecution(Execution):
             Processed actions, or ``None`` when the incarnation has changed.
         """
         assert self._rtc_queue is not None  # noqa: S101
-        raw_actions = outputs[ACTION]
-        if raw_actions.ndim == 3:  # noqa: PLR2004
-            raw_actions = raw_actions[0]
-        processed_actions = raw_actions
-
         with self._obs_lock:
+            # Check before reading the outputs, so a malformed chunk from an
+            # episode that was reset mid-inference is discarded, not raised.
             if incarnation != self._incarnation:
                 self._cancel_signal_locked(signal, "RTCExecution warmup cancelled by reset")
                 return None
+
+            raw_actions = outputs[ACTION]
+            if raw_actions.ndim == 3:  # noqa: PLR2004
+                raw_actions = raw_actions[0]
+            processed_actions = raw_actions
 
             self._inference_count += 1
             self._lifetime_inferences += 1
