@@ -80,7 +80,8 @@ class _Lenient(BaseModel):
 class Episode(_Lenient):
     """An episode, in every episode answer."""
 
-    id: str = Field(min_length=1, max_length=128)
+    id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._~-]+$")
+    """URL-safe: used as a path segment in ``/episodes/{id}``."""
     """Chosen by the simulation, unique for its process's lifetime."""
     phase: Phase
     task: str | None = None
@@ -166,9 +167,28 @@ class AutopilotSpec(Generic[_PayloadT]):
         if type(self.protocol) is not int or self.protocol < 1:
             msg = f"protocol must be a positive integer, got {self.protocol!r}"
             raise ValueError(msg)
-        if not self.path.startswith("/") or self.path.endswith("/") or any(c in self.path for c in "?#"):
-            msg = f"path must be an absolute path without a query or a trailing slash, got {self.path!r}"
-            raise ValueError(msg)
+        _check_path(self.path)
+
+
+def _check_path(path: str) -> None:
+    """Refuse a *path* that is not a plain absolute path on the simulation's own server.
+
+    A URL or a network-path reference (``//host/...``) would make httpx send the request to another host, past
+    :func:`loopback_root`.
+
+    Raises:
+        ValueError: The path is not absolute, starts with ``//``, ends with ``/`` or has a query, a fragment,
+            a backslash or whitespace.
+    """
+    if (
+        not path.startswith("/")
+        or path.startswith("//")
+        or path.endswith("/")
+        or any(c in path for c in "?#\\")
+        or any(c.isspace() for c in path)
+    ):
+        msg = f"path must be an absolute path without a query or a trailing slash, got {path!r}"
+        raise ValueError(msg)
 
 
 # ----------------------------------------------------------------------
@@ -240,6 +260,7 @@ class AutopilotClient:
         import httpx  # noqa: PLC0415 - only the client needs it
 
         self.base_url = loopback_root(http_url)
+        _check_path(path)
         self.path = path
         self._httpx = httpx
         self._sync = httpx.Client(

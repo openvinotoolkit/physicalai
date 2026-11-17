@@ -141,3 +141,19 @@ def test_the_client_reports_a_silent_simulation_as_unreachable() -> None:
     with pytest.raises(AutopilotUnreachableError):
         client.info()
     client.close()
+
+
+@pytest.mark.parametrize("path", ["http://192.0.2.1:9000/autopilot/v1", "//192.0.2.1/autopilot/v1", "autopilot/v1", "/a b"])
+def test_the_client_refuses_a_path_that_could_leave_this_machine(path: str) -> None:
+    with pytest.raises(ValueError, match="path"):
+        AutopilotClient("http://127.0.0.1:8000", path=path)
+
+
+@pytest.mark.parametrize(("episode_id", "valid"), [("1a2b3c4d-7", True), ("ep_7.x~1", True), ("e#0007", False), ("a/b", False), ("a b", False)])
+def test_an_episode_id_is_a_url_safe_path_segment(episode_id: str, valid: bool) -> None:
+    payload = {"id": episode_id, "phase": "preparing"}
+    if valid:
+        assert Episode.model_validate(payload).id == episode_id
+    else:
+        with pytest.raises(ValidationError):
+            Episode.model_validate(payload)
