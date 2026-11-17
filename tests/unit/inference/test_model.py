@@ -522,6 +522,36 @@ class TestModelPathResolution:
         with pytest.raises(ValueError, match="escapes the export directory"):
             InferenceModel(export_dir, backend="onnx")
 
+    def test_declared_artifact_cannot_be_an_absolute_path(self, tmp_path: Path) -> None:
+        outside = tmp_path / "evil.onnx"
+        outside.touch()
+        export_dir = self._make_export_dir(tmp_path, str(outside), ["act.onnx"])
+        with pytest.raises(ValueError, match="escapes the export directory"):
+            InferenceModel(export_dir, backend="onnx")
+
+    @pytest.mark.parametrize("declared", [".", "./"])
+    def test_declared_artifact_must_name_a_file(self, tmp_path: Path, declared: str) -> None:
+        # "." would otherwise hand the export directory itself to the backend as the model.
+        export_dir = self._make_export_dir(tmp_path, declared, ["act.onnx"])
+        with pytest.raises(ValueError, match="does not name a file"):
+            InferenceModel(export_dir, backend="onnx")
+
+    def test_declared_artifact_keeps_a_hub_snapshot_symlink(self, tmp_path: Path) -> None:
+        # A Hugging Face Hub snapshot stores each file as a symlink into a sibling blobs/ store.
+        # The path must stay inside the snapshot; resolving it would point outside and be rejected.
+        blob = tmp_path / "blobs" / "0123abcd"
+        blob.parent.mkdir()
+        blob.write_bytes(b"onnx")
+        export_dir = self._make_export_dir(tmp_path, "model.onnx", [])
+        (export_dir / "model.onnx").symlink_to(blob)
+
+        path = InferenceModel(export_dir, backend="onnx")._get_model_path()
+
+        assert (export_dir / "model.onnx").is_symlink()
+        assert not blob.resolve().is_relative_to(export_dir.resolve())
+        assert path == export_dir.resolve() / "model.onnx"
+        assert path != path.resolve()
+
     def test_glob_fallback_is_deterministic(self, tmp_path: Path) -> None:
         # No declared artifact and a policy name that matches no file, so the lookup falls
         # through to the directory search, which must be stable and not in filesystem order.

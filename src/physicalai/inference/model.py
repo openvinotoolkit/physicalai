@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 import time
 from collections import deque
@@ -659,25 +658,32 @@ class InferenceModel:
         raise FileNotFoundError(msg)
 
     def _resolve_export_path(self, name: str) -> Path:
-        """Resolve a manifest-declared filename against the export directory.
+        r"""Resolve a manifest-declared filename against the export directory.
 
-        The containment check is lexical (``normpath``, no symlink following),
-        matching :func:`~physicalai.inference.component_factory.resolve_artifact`,
-        so a ``"../"`` or absolute path cannot select a file outside the export
-        directory.
+        The check is lexical and uses only the parts of *name*: a rooted or
+        drive-qualified name (any non-empty :attr:`~pathlib.PurePath.anchor`,
+        which also covers Windows paths such as ``\Windows\model.xml``) or a
+        ``".."`` component is rejected, so the returned path always lies inside
+        the export directory by name. The result is deliberately not resolved:
+        in a Hugging Face Hub snapshot the artifact is a symlink into a sibling
+        ``blobs/`` store, and following it would reject every downloaded model.
+        This matches :func:`~physicalai.inference.component_factory.resolve_artifact`.
 
         Returns:
             The absolute path to the artifact inside the export directory.
 
         Raises:
-            ValueError: If *name* escapes the export directory.
+            ValueError: If *name* escapes the export directory or names the
+                export directory itself (for example ``"."``).
         """
-        base = self.export_dir.resolve()
-        candidate = Path(os.path.normpath(base / name))
-        if not candidate.is_relative_to(base):
+        relative = Path(name)
+        if relative.anchor or ".." in relative.parts:
             msg = f"Model artifact {name!r} escapes the export directory"
             raise ValueError(msg)
-        return candidate
+        if not relative.parts:
+            msg = f"Model artifact {name!r} does not name a file in the export directory"
+            raise ValueError(msg)
+        return self.export_dir.resolve() / relative
 
     def __repr__(self) -> str:
         """Return string representation of the model."""
