@@ -180,7 +180,8 @@ RETRY_Y = (OBJECT_Y[0] - 0.02, OBJECT_Y[1] + 0.02)
 ``OBJECT_Y``), with room for the nudge a missed grasp gives it."""
 MAX_REPLANS = 3
 DEFAULT_MAX_ATTEMPTS = 2
-"""Attempts per episode, the retry included, unless a recorder asks for others (``RecordingOptions``)."""
+"""Attempts per episode, the retry included, unless an autopilot episode asks for others
+(``EpisodeOptions.max_attempts``)."""
 STUCK_PHASES = frozenset({"carry", "lower", "release"})
 """Where a stuck start puts the hand: on the way to the bucket or over it (``stuck_start``)."""
 STUCK_GRIP = (0.0, 0.03)

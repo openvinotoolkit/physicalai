@@ -28,7 +28,6 @@ from physicalai_mujoco_plugin.http_server import (
     SetObjectPoseCommand,
     SetOverviewCommand,
     SetSeedCommand,
-    SetStudioRecordingCommand,
     ShutdownCommand,
     StopReplayCommand,
     SwitchSceneCommand,
@@ -36,7 +35,6 @@ from physicalai_mujoco_plugin.http_server import (
     build_app,
     encode_jpeg,
 )
-from physicalai_mujoco_plugin.studio_recorder import RecordingOptions
 from physicalai_mujoco_plugin.viewer import ViewerService
 
 
@@ -546,39 +544,10 @@ class TestAutomationRoutes:
         assert client.post("/autopilot", json={"mode": "leader"}).status_code == 200
         assert leader_app["commands"].get_nowait() == SetAutopilotCommand(mode="leader")
 
-    def test_studio_recording_is_bounded_and_needs_the_conveyor(self, leader_app: dict) -> None:
-        client = leader_app["client"]
-        body = {"enabled": True, "task": "Sort", "keep": "all", "max_episodes": 5}
-        assert client.post("/studio/recording", json=body).status_code == 409
-        leader_app["status"]["episode"] = {"enabled": True, "kind": "conveyor"}
-        for bad in (
-            {"task": "x" * 201},
-            {"task": "   "},
-            {"keep": "most"},
-            {"max_episodes": -1},
-            {"studio_url": "http://evil"},
-        ):
-            assert client.post("/studio/recording", json={**body, **bad}).status_code == 422, bad
+    def test_studio_recording_is_gone(self, leader_app: dict) -> None:
+        response = leader_app["client"].post("/studio/recording", json={"enabled": True})
+        assert response.status_code == 404
         assert leader_app["commands"].empty()
-        assert client.post("/studio/recording", json=body).status_code == 200
-        command = leader_app["commands"].get_nowait()
-        assert command == SetStudioRecordingCommand(options=RecordingOptions(task="Sort", keep="all", max_episodes=5))
-        assert client.post("/studio/recording", json={"enabled": False}).status_code == 200
-        assert leader_app["commands"].get_nowait() == SetStudioRecordingCommand(options=None)
-        assert client.post("/studio/recording", json={**body, "task": "  Sort  "}).status_code == 200
-        assert leader_app["commands"].get_nowait().options.task == "Sort"  # stored trimmed
-
-    def test_studio_recording_runs_in_the_bucket_sort_scene_only_besides_the_conveyor(self, leader_app: dict) -> None:
-        client = leader_app["client"]
-        body = {"enabled": True, "keep": "perfect", "max_episodes": 2}
-        for kind in ("cube_on_plate", None):
-            leader_app["status"]["episode"] = {"enabled": True, "kind": kind}
-            response = client.post("/studio/recording", json=body)
-            assert response.status_code == 409
-            assert "conveyor or bucket_sort" in response.json()["detail"]
-        leader_app["status"]["episode"] = {"enabled": True, "kind": "bucket_sort"}
-        assert client.post("/studio/recording", json=body).status_code == 200
-        assert leader_app["commands"].get_nowait().options.max_episodes == 2
 
 
 class TestReplayRoutes:

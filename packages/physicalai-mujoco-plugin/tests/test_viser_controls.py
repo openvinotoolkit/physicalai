@@ -25,17 +25,14 @@ from physicalai_mujoco_plugin.http_server import (
     SetObjectPoseCommand,
     SetOverviewCommand,
     SetSeedCommand,
-    SetStudioRecordingCommand,
     ShutdownCommand,
     StopReplayCommand,
     SwitchSceneCommand,
 )
 from physicalai_mujoco_plugin.scene_registry import ViewerView
-from physicalai_mujoco_plugin.studio_recorder import RecordingOptions
 from physicalai_mujoco_plugin.viser_controls import (
     AUTOPILOT_LABELS,
     CUSTOM_MODEL_LABEL,
-    KEEP_LABELS,
     NO_FOLLOW_LABEL,
     OVERVIEW_HINT,
     CameraFollow,
@@ -421,18 +418,24 @@ class TestEpisodeControls:
             SetAutopilotCommand(mode="off"),
         ]
 
-    def test_bucket_sort_records_in_studio_with_each_instruction_as_the_task(self) -> None:
-        """The Record / Keep / Episodes controls are there; the Task field is not, the instruction is the task."""
-        _, server, commands = build_panel(self._bucket_sort_state())
-        assert "Task" not in server.gui.handles
-        server.gui.handles["Keep"].value = KEEP_LABELS["all"]
-        server.gui.handles["Episodes (0 = no limit)"].value = 3
-        server.gui.handles["Record in Studio"].fire(True)
-        server.gui.handles["Record in Studio"].fire(False)
-        assert commands == [
-            SetStudioRecordingCommand(options=RecordingOptions(keep="all", max_episodes=3)),
-            SetStudioRecordingCommand(options=None),
-        ]
+    def test_the_viewer_only_shows_studios_episode(self) -> None:
+        """Studio records from its own page: the viewer has no recording control, only a status line."""
+        state = self._bucket_sort_state()
+        _, server, commands = build_panel(state)
+        assert "Record in Studio" not in server.gui.handles
+        assert "Keep" not in server.gui.handles
+        assert commands == []
+        running = {"episode": {"id": "e-1", "phase": "running", "task": "put the CPU in the red bucket"}}
+        panel, _, _ = build_panel(dataclasses.replace(state, autopilot_episode=running))
+        content = panel._handles.studio_status.content  # noqa: SLF001
+        assert "running - put the CPU in the red bucket" in content
+        assert "ends Studio's episode" in content
+        ended = {"episode": {"id": "e-1", "phase": "ended", "outcome": "aborted", "reason": "The scene was reset."}}
+        panel.refresh(dataclasses.replace(state, autopilot_episode=ended), now=1)
+        assert panel._handles.studio_status.content == "**Studio episode:** ended, aborted (The scene was reset.)"  # noqa: SLF001
+
+    def test_the_manual_virtual_leader_is_labelled_for_manual_teleop(self) -> None:
+        assert AUTOPILOT_LABELS["leader"] == "Virtual leader (manual teleop)"
 
     def test_a_scene_without_a_demonstrator_has_no_autopilot_folder(self) -> None:
         _, server, _ = build_panel(make_state(autopilot={"available": False, "unavailable_reason": None, "mode": "off"}))
