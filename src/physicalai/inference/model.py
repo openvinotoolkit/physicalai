@@ -660,14 +660,18 @@ class InferenceModel:
     def _resolve_export_path(self, name: str) -> Path:
         r"""Resolve a manifest-declared filename against the export directory.
 
-        The check is lexical and uses only the parts of *name*: a rooted or
-        drive-qualified name (any non-empty :attr:`~pathlib.PurePath.anchor`,
-        which also covers Windows paths such as ``\Windows\model.xml``) or a
-        ``".."`` component is rejected, so the returned path always lies inside
-        the export directory by name. The result is deliberately not resolved:
-        in a Hugging Face Hub snapshot the artifact is a symlink into a sibling
-        ``blobs/`` store, and following it would reject every downloaded model.
-        This matches :func:`~physicalai.inference.component_factory.resolve_artifact`.
+        The check is lexical and uses the parts of *name* as the current
+        platform parses them: a rooted or drive-qualified name (any non-empty
+        :attr:`~pathlib.PurePath.anchor`) or a ``".."`` component is rejected,
+        so the returned path always lies inside the export directory by name.
+        On Windows this rejects names such as ``\Windows\model.xml``; on POSIX
+        a backslash is an ordinary filename character, so such a name is one
+        literal file inside the export directory.
+
+        The result is deliberately not resolved: in a Hugging Face Hub snapshot
+        the artifact is a symlink into a sibling ``blobs/`` store, and following
+        it would reject every downloaded model. This matches
+        :func:`~physicalai.inference.component_factory.resolve_artifact`.
 
         Returns:
             The absolute path to the artifact inside the export directory.
