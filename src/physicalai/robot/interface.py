@@ -54,6 +54,24 @@ class RobotObservation(Protocol):
 
 
 @runtime_checkable
+class TorqueControllable(Protocol):
+    """A robot whose motors can be switched on to be driven, or off to be moved by hand.
+
+    Independent of the robot's role: a leader with torque on accepts
+    :meth:`Robot.send_action` (to bring it to the follower, say), and a follower with
+    torque off can be posed by hand. With torque off, ``send_action`` raises.
+    """
+
+    def set_torque(self, *, enabled: bool) -> None:
+        """Switch torque on, holding the current position, or off, leaving the joints free.
+
+        Args:
+            enabled: ``True`` to hold and accept actions, ``False`` to release.
+        """
+        ...
+
+
+@runtime_checkable
 class Robot(Protocol):
     """Structural interface for robot implementations.
 

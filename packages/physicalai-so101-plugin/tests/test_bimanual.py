@@ -96,6 +96,9 @@ class _StubSO101(SO101):
             msg = f"Expected ({self.NUM_JOINTS},), got {action.shape}"
             raise ValueError(msg)
 
+    def set_torque(self, *, enabled: bool) -> None:
+        self._torque_enabled = enabled
+
 
 class TestBimanualSO101Construction:
     def test_construct(self) -> None:
@@ -350,7 +353,7 @@ class TestBimanualSO101Action:
         with pytest.raises(ValueError, match="Expected action shape"):
             robot.send_action(np.zeros(6, dtype=np.float32))
 
-    def test_leader_send_action_raises(self) -> None:
+    def test_set_torque_switches_both_arms(self) -> None:
         from physicalai_so101_plugin.bimanual_so101 import BimanualSO101
 
         left = _StubSO101(role="leader")
@@ -358,5 +361,7 @@ class TestBimanualSO101Action:
         robot = BimanualSO101(left=left, right=right)
         robot.connect()
 
-        with pytest.raises(RuntimeError, match="Cannot send actions to a leader"):
-            robot.send_action(np.zeros(12, dtype=np.float32))
+        robot.set_torque(enabled=True)
+        assert left._torque_enabled and right._torque_enabled  # noqa: SLF001
+        robot.set_torque(enabled=False)
+        assert not left._torque_enabled and not right._torque_enabled  # noqa: SLF001

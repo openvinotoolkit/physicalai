@@ -466,11 +466,32 @@ class TestSO101Action:
         mock_sdk.GroupSyncWrite.return_value.txPacket.assert_called_once()
 
     def test_send_action_leader_raises(self, mock_sdk: MagicMock) -> None:
-        """Leader raises RuntimeError on send_action()."""
+        """A leader, free by default, raises RuntimeError on send_action()."""
         robot = _create_robot(mock_sdk, role="leader")
         robot.connect()
 
-        with pytest.raises(RuntimeError, match="Cannot send actions to a leader arm"):
+        with pytest.raises(RuntimeError, match="torque off"):
+            robot.send_action(np.zeros(6, dtype=np.float32))
+
+    def test_leader_with_torque_on_accepts_actions_and_is_freed_on_disconnect(self, mock_sdk: MagicMock) -> None:
+        """set_torque(enabled=True) lets a leader be driven; disconnect leaves it free again."""
+        robot = _create_robot(mock_sdk, role="leader")
+        robot.connect()
+        robot.set_torque(enabled=True)
+        robot.send_action(np.zeros(6, dtype=np.float32))
+        mock_sdk.GroupSyncWrite.return_value.txPacket.assert_called()
+
+        write = mock_sdk.PacketHandler.return_value.write1ByteTxRx
+        write.reset_mock()
+        robot.disconnect()
+        assert [c.args[3] for c in write.call_args_list] == [0] * 6
+
+    def test_follower_with_torque_off_raises(self, mock_sdk: MagicMock) -> None:
+        """A follower released by hand refuses actions until torque is back on."""
+        robot = _create_robot(mock_sdk, role="follower")
+        robot.connect()
+        robot.set_torque(enabled=False)
+        with pytest.raises(RuntimeError, match="torque off"):
             robot.send_action(np.zeros(6, dtype=np.float32))
 
     def test_send_action_wrong_shape_raises(self, mock_sdk: MagicMock) -> None:

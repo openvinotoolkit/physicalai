@@ -27,7 +27,7 @@ from physicalai.robot.errors import (
     RobotProtocolMismatch,
     RobotTransportError,
 )
-from physicalai.robot.interface import Robot, RobotObservation
+from physicalai.robot.interface import Robot, RobotObservation, TorqueControllable
 from physicalai.robot.verify import verify_robot
 
 if TYPE_CHECKING:
@@ -51,6 +51,7 @@ __all__ = [
     "RobotObservation",
     "RobotProtocolMismatch",
     "RobotTransportError",
+    "TorqueControllable",
     "WidowXAI",
     "connect",
     "device_id_from_serial_port",

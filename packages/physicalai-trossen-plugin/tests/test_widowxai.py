@@ -257,10 +257,37 @@ class TestWidowXAIAction:
     """Tests for send_action()."""
 
     def test_send_action_leader_raises(self, mock_trossen_arm: MagicMock) -> None:
-        """Leader raises RuntimeError on send_action()."""
+        """A leader, free by default, raises RuntimeError on send_action()."""
         robot = _create_robot(mock_trossen_arm, role="leader")
 
-        with pytest.raises(RuntimeError, match="Cannot send actions to a leader arm"):
+        with pytest.raises(RuntimeError, match="torque off"):
+            robot.send_action(np.zeros(7, dtype=np.float32))  # type: ignore[union-attr]
+
+    def test_leader_with_torque_on_holds_then_accepts_actions(self, mock_trossen_arm: MagicMock) -> None:
+        """set_torque(enabled=True) holds the present position under position control, then takes actions."""
+        driver = mock_trossen_arm.TrossenArmDriver.return_value
+        robot = _create_robot(mock_trossen_arm, role="leader")
+        driver.get_all_positions.return_value = [0.1] * 7
+        driver.set_all_modes.reset_mock()
+        driver.set_all_positions.reset_mock()
+
+        robot.set_torque(enabled=True)  # type: ignore[union-attr]
+        driver.set_all_modes.assert_called_once_with(mock_trossen_arm.Mode.position)
+        assert driver.set_all_positions.call_args.args[0] == [0.1] * 7
+
+        robot.send_action(np.zeros(7, dtype=np.float32))  # type: ignore[union-attr]
+        assert driver.set_all_positions.call_count == 2
+
+    def test_torque_off_releases_into_zero_external_effort(self, mock_trossen_arm: MagicMock) -> None:
+        """set_torque(enabled=False) floats the arm and refuses further actions."""
+        driver = mock_trossen_arm.TrossenArmDriver.return_value
+        robot = _create_robot(mock_trossen_arm, role="follower")
+        driver.set_all_modes.reset_mock()
+
+        robot.set_torque(enabled=False)  # type: ignore[union-attr]
+        driver.set_all_modes.assert_called_once_with(mock_trossen_arm.Mode.external_effort)
+        assert driver.set_all_external_efforts.call_args.args[0] == [0.0] * 7
+        with pytest.raises(RuntimeError, match="torque off"):
             robot.send_action(np.zeros(7, dtype=np.float32))  # type: ignore[union-attr]
 
     def test_send_action_wrong_shape_raises(self, mock_trossen_arm: MagicMock) -> None:

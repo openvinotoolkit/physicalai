@@ -102,13 +102,13 @@ def test_redundant_boolean_alias_is_not_a_constructor_setting():
         robot(use_degrees=True)
 
 
-def test_degrees_requires_calibration_and_still_rejects_leader_actions():
+def test_degrees_requires_calibration_and_still_rejects_free_leader_actions():
     from physicalai_so101_plugin import SO101
     with pytest.raises(ValueError, match="calibration"):
         SO101("fake", unit="degrees")
     with pytest.raises(ValueError, match="ticks"):
         SO101("fake", allow_uncalibrated=True, unit="degrees")
-    with pytest.raises(RuntimeError, match="leader"):
+    with pytest.raises(RuntimeError, match="torque off"):
         robot(role="leader", unit="degrees").send_action(np.zeros(6))
 
 

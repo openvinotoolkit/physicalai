@@ -187,6 +187,8 @@ class SO101(Robot):
 
         # Torque ON/OFF behavior on disconnect (default: True for follower, False for leader)
         self._torque_on_disconnect: bool = role == "follower"
+        self._torque_enabled = role == "follower"
+        """What connect() sets torque to; tracked so send_action can refuse a free arm."""
 
     @classmethod
     def uncalibrated(
@@ -469,6 +471,8 @@ class SO101(Robot):
         try:
             if self._torque_on_disconnect:
                 self._hold_position()
+            elif self._torque_enabled:
+                self._set_torque(enabled=False)  # a leader driven by software is left free again
         except (OSError, RuntimeError):
             logger.exception(
                 "Failed to hold position while disconnecting SO-101; proceeding to close port.",
@@ -528,12 +532,12 @@ class SO101(Robot):
                 SO101 currently ignores this value.
 
         Raises:
-            RuntimeError: If the robot is in ``"leader"`` role.
+            RuntimeError: If torque is off, as on a leader until ``set_torque(enabled=True)``.
             ValueError: If the action shape does not match ``(6,)``.
         """
         _ = goal_time
-        if self.role == "leader":
-            msg = "Cannot send actions to a leader arm. Leader arms are read-only for teleoperation."
+        if not self._torque_enabled:
+            msg = "Cannot send actions with torque off; call set_torque(enabled=True) first."
             raise RuntimeError(msg)
 
         expected_shape = (self.NUM_JOINTS,)
@@ -702,13 +706,17 @@ class SO101(Robot):
                 logger.warning(f"Failed to set torque on servo '{name}' (ID {servo_id}): comm={comm_result}")
             if error != 0:
                 logger.warning(f"Torque write error on servo '{name}' (ID {servo_id}): err={error}")
+        self._torque_enabled = enabled
 
     def set_torque(self, *, enabled: bool) -> None:
-        """Enable or disable torque on all servos.
+        """Enable torque holding the current position, or disable it on all servos.
 
-        Public wrapper for adapter-level torque control.
+        Works in either role: a leader with torque on accepts :meth:`send_action`.
         """
-        self._set_torque(enabled=enabled)
+        if enabled:
+            self._hold_position()
+        else:
+            self._set_torque(enabled=False)
 
     def _hold_position(self) -> None:
         """Command all servos to hold their current position.
