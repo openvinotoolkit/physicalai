@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from collections import defaultdict
 from typing import TYPE_CHECKING
@@ -14,6 +15,36 @@ if TYPE_CHECKING:
 
 _USB2_HIGH_SPEED = 480
 _USB3_SUPER_SPEED = 5000
+_LINK_RATE = re.compile(r"\b\d+(?:\.\d+)? Mb/s(?: \(USB (?:2|3\.x)\))?")
+_HEADINGS = frozenset({
+    "USB connection diagnostics (Linux)",
+    "USB connections",
+    "Connection notes",
+    "Collection limitations",
+    "Other devices on shared upstream hubs:",
+})
+
+
+def _style(text: str) -> str:
+    # Style only after escaping device text and measuring the plain table widths.
+    def link(match: re.Match[str]) -> str:
+        value = match.group()
+        speed = float(value.split()[0])
+        code = "1;33" if speed == _USB2_HIGH_SPEED else "1;36" if speed >= _USB3_SUPER_SPEED else "1"
+        return f"\x1b[{code}m{value}\x1b[0m"
+
+    lines = []
+    for raw_line in text.split("\n"):
+        if raw_line in _HEADINGS or raw_line.startswith("Device "):
+            lines.append(f"\x1b[1m{raw_line}\x1b[0m")
+            continue
+        line = _LINK_RATE.sub(link, raw_line)
+        for severity, code in (("ERROR", "1;31"), ("WARNING", "1;33"), ("INFO", "1;34")):
+            if line.startswith(f"  {severity}:"):
+                line = line.replace(f"{severity}:", f"\x1b[{code}m{severity}:\x1b[0m", 1)
+                break
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _safe(value: str) -> str:
@@ -125,15 +156,17 @@ def _details(report: Report, device: Device) -> list[str]:
     return lines
 
 
-def render_report(report: Report, *, tree: bool = False) -> str:
+def render_report(report: Report, *, tree: bool = False, ansi: bool = False) -> str:
     """Render a compact overview or focused inspection, with terminal-safe text.
 
     Args:
         report: The same data returned to application/API callers.
         tree: Show relevant USB branches instead of the default device table.
+        ansi: Add terminal colors and bold text. Defaults to plain text; the
+            caller decides terminal support. Does not change the report data.
 
     Returns:
-        Plain text with actionable findings and explicit collection limitations.
+        Terminal-safe text with actionable findings and collection limitations.
     """
     inventory = report.inventory
     devices = [d for d in inventory.devices if d.relevant]
@@ -166,4 +199,5 @@ def render_report(report: Report, *, tree: bool = False) -> str:
     ])
     if selected is None:
         lines.append("Details: pai doctor <endpoint-or-device-id> · Topology: pai doctor --tree")
-    return "\n".join(lines)
+    text = "\n".join(lines)
+    return _style(text) if ansi else text

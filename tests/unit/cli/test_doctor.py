@@ -4,6 +4,7 @@
 """CLI dispatch uses the same public report as application consumers."""
 
 import json
+import sys
 from unittest.mock import Mock
 
 import pytest
@@ -85,3 +86,49 @@ def test_only_small_passive_command_surface_is_exposed() -> None:
     help_text = doctor.build_parser().format_help()
     assert "--tree" in help_text and "--json" in help_text
     assert all(option not in help_text for option in ("--stream", "--config", "--watch", "--strict"))
+
+
+@pytest.mark.parametrize(
+    "tty,no_color,term,args,styled",
+    [
+        (True, "", "xterm-256color", [], True),
+        (False, "", "xterm-256color", [], False),
+        (True, "1", "xterm-256color", [], False),
+        (True, "0", "xterm-256color", [], False),
+        (True, "", "dumb", [], False),
+        (True, "", "xterm-256color", ["--no-ansi"], False),
+    ],
+)
+def test_terminal_styling_detection(
+    report: Report,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tty: bool,
+    no_color: str,
+    term: str,
+    args: list[str],
+    styled: bool,
+) -> None:
+    monkeypatch.setattr(diagnostics, "diagnose", lambda selector: report)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: tty)
+    monkeypatch.setenv("NO_COLOR", no_color)
+    monkeypatch.setenv("TERM", term)
+    assert main(["doctor", *args]) == 0
+    assert ("\x1b[" in capsys.readouterr().out) is styled
+
+
+@pytest.mark.parametrize("args", [[], ["--no-ansi"]])
+def test_json_stays_plain_even_on_a_color_terminal(
+    report: Report,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    args: list[str],
+) -> None:
+    monkeypatch.setattr(diagnostics, "diagnose", lambda selector: report)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+    assert main(["doctor", "--json", *args]) == 0
+    output = capsys.readouterr().out
+    assert "\x1b" not in output
+    assert json.loads(output) == report.to_dict()
