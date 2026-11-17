@@ -5,6 +5,21 @@ The runtime CLI commands use the same schemas as the Python APIs.
 The canonical command is `physicalai`. A shorthand alias `pai` is also
 installed and behaves identically.
 
+## `physicalai doctor`
+
+```bash
+physicalai doctor [DEVICE] [--tree] [--json]
+```
+
+Inspect Linux USB cameras, serial adapters, negotiated link speeds, access, duplicate
+aliases, and shared hub uplinks without starting hardware. `DEVICE` is an optional
+USB device ID, endpoint path, or unique alias. `--tree` shows relevant USB ancestry;
+`--json` writes the structured [Python API report](diagnostics-api.md), without redaction.
+
+Returns `0` without observed errors (warnings are allowed), `1` for access/collection
+errors, or `2` for invalid arguments/selectors or unsupported hosts. See
+[Diagnose USB Connections](../how-to/cli/doctor.md) for USB speed interpretation.
+
 ## `physicalai run`
 
 ```bash
