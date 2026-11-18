@@ -73,7 +73,7 @@ def test_prepare_caches_by_locked_project_and_sync_profile(
         [
             sys.executable,
             "sync",
-            "--frozen",
+            "--locked",
             "--project",
             str(first.project),
             "--python",

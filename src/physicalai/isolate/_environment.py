@@ -79,6 +79,9 @@ class UvProvider:
     def prepare(self, environment: Environment, *, offline: bool = False) -> PreparedEnvironment:
         """Create or reuse a cached environment for *environment*.
 
+        ``uv sync --locked`` fails with :class:`subprocess.CalledProcessError` when ``uv.lock``
+        is out of date with ``pyproject.toml``.
+
         Args:
             environment: Project source and sync profile to prepare.
             offline: Prevent network access during project synchronization.
@@ -200,7 +203,7 @@ def _cache_root(configured: Path | None) -> Path:
 
 
 def _sync_command(uv: str, project: Path, profile: SyncProfile, *, offline: bool) -> list[str]:
-    command = [uv, "sync", "--frozen", "--project", str(project)]
+    command = [uv, "sync", "--locked", "--project", str(project)]
     if profile.python is not None:
         command.extend(["--python", profile.python])
     if profile.no_default_groups:
