@@ -20,7 +20,7 @@ from physicalai_studio_plugin.autopilot import (
     EpisodeOptions,
     EpisodeRequest,
 )
-from physicalai_studio_plugin.autopilot_examples import example, example_model, example_names
+from physicalai_studio_plugin.testing.autopilot import example, example_model, example_names
 
 from physicalai_mujoco_plugin.autopilot import (
     NATIVE_VIEWER_REASON,
