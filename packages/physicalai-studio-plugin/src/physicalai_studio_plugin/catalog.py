@@ -17,7 +17,6 @@ from .factory import CatalogRobotFactory
 
 if TYPE_CHECKING:
     from .assets import RobotAsset
-    from .autopilot import AutopilotSpec
     from .probe import RobotProbe
     from .simulation import SimulationLaunch
     from .zero_calibration import RobotZeroCalibration
@@ -96,9 +95,6 @@ class RobotCatalogDefinition(Generic[_PayloadT]):
     zero_calibration: RobotZeroCalibration[Any] | None = None
     simulation: SimulationLaunch[_PayloadT] | None = None
     """How Studio starts the simulation a simulated robot type attaches to; ``None`` for real robots."""
-    autopilot: AutopilotSpec[_PayloadT] | None = None
-    """How Physical AI Studio records the simulation's demonstrator (its autopilot); ``None`` when it has
-    none. Only for a follower whose ``simulation`` is set."""
 
 
 class RobotCatalogRegistry(Protocol):
