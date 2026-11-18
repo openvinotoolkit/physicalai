@@ -6,7 +6,7 @@ These standards apply to contributors and agents across the repository.
 
 - Use `uv` for Python dependency and test commands; do not use `pip` directly in contributor docs or automation.
 - Add type hints to functions.
-- Prefer `pathlib.Path` over string path manipulation.
+- Prefer `pathlib.Path` over string path manipulation. Also suggest replacing `os.path` calls with corresponding `pathlib` equivalents.
 - Use `ruff` for linting and formatting, and address all warnings.
 - Use Google-style docstrings for public Python APIs.
 - Use `loguru` logger in library code; avoid `print()` except in CLI output paths.

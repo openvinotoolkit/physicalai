@@ -57,7 +57,7 @@ def test_register_plugin_includes_all_registered_robot_and_teleoperator_types() 
     from lerobot.robots.config import RobotConfig
     from lerobot.teleoperators.config import TeleoperatorConfig
 
-    from physicalai_lerobot_plugin.studio_catalog import register_physicalai_studio_plugin
+    from physicalai_lerobot_plugin.studio_catalog import _ROBOTS_TO_SKIP, register_physicalai_studio_plugin
 
     registry = _FakeRegistry()
     register_physicalai_studio_plugin(registry)
@@ -65,7 +65,7 @@ def test_register_plugin_includes_all_registered_robot_and_teleoperator_types() 
     assert registry.definitions is not None
     definitions_by_type = {definition.type: definition for definition in registry.definitions}
     expected_follower_types = {
-        f"LeRobot_{type_str}_Follower" for type_str in RobotConfig.get_known_choices() if type_str != "mock_robot"
+        f"LeRobot_{type_str}_Follower" for type_str in RobotConfig.get_known_choices() if type_str not in _ROBOTS_TO_SKIP
     }
     expected_leader_types = {f"LeRobot_{type_str}_Leader" for type_str in TeleoperatorConfig.get_known_choices()}
 
@@ -85,7 +85,7 @@ def test_skip_list_excludes_test_only_robots() -> None:
 
     assert registry.definitions is not None
     types = {d.type for d in registry.definitions}
-    for skipped in ("LeRobot_mock_robot_Follower",):
+    for skipped in ("LeRobot_mock_robot_Follower", "LeRobot_sim_Follower"):
         assert skipped not in types
 
 

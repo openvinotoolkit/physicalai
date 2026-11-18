@@ -148,3 +148,22 @@ def test_does_not_import_mujoco() -> None:
     imported = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
     imported |= {node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
     assert not any(name.startswith("mujoco") for name in imported)
+
+
+def test_exposes_the_autopilot_episode_of_each_read(served: tuple[_Leader, int]) -> None:
+    leader, port = served
+    robot = MuJoCoVirtualLeader(http_port=port)
+    robot.connect()
+    try:
+        first = robot.get_observation()
+        assert (first.episode_id, first.phase, robot.episode_id, robot.phase) == (None, None, None, None)
+        leader.payload.update(episode_id="ab12-3", phase="running")  # same seq: the episode changed between ticks
+        same_tick = robot.get_observation()
+        assert (same_tick.episode_id, same_tick.phase) == ("ab12-3", "running")
+        assert (robot.episode_id, robot.phase) == ("ab12-3", "running")
+        assert same_tick.timestamp == first.timestamp  # still the same tick: the leader did not advance
+        leader.payload.update(seq=2, phase="ended")
+        assert robot.get_observation().phase == "ended"
+    finally:
+        robot.disconnect()
+    assert robot.episode_id is None

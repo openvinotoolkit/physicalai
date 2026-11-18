@@ -42,7 +42,6 @@ from physicalai_mujoco_plugin.profiles import DefaultUnit, RobotProfile, get_pro
 from physicalai_mujoco_plugin.profiles.franka import with_grip_force
 from physicalai_mujoco_plugin.scene_objects import SceneObjects, SpawnArea
 from physicalai_mujoco_plugin.sim import Sim, default_cameras, joint_names_before_load, load_sim, resolve_scene
-from physicalai_mujoco_plugin.studio_recorder import DEFAULT_STUDIO_URL
 from physicalai_mujoco_plugin.teleop import Teleop
 from physicalai_mujoco_plugin.viewer import ViewerTheme
 
@@ -113,7 +112,6 @@ class MuJoCoRobot(OperatorControls):
         http_host: str = "127.0.0.1",
         http_port: int = 0,
         owner_name: str = "",
-        studio_url: str = DEFAULT_STUDIO_URL,
         seed: int | None = None,
         exit_with_pid: int | None = None,
         grip_force_n: float | None = None,
@@ -150,8 +148,7 @@ class MuJoCoRobot(OperatorControls):
                 simulation itself.
             http_host: HTTP camera and control server bind address.
             http_port: HTTP port; ``0`` disables the server.
-            owner_name: The shared-robot owner name, used to find its Studio session.
-            studio_url: Studio backend that automatic episode recording attaches to.
+            owner_name: The shared-robot owner name.
             seed: Fixed seed for scene resets; ``None`` randomizes.
             exit_with_pid: The PID of the process that starts this owner, its parent: once this
                 process is no longer its child, the shared owner shuts down as on ``POST /shutdown``.
@@ -194,7 +191,7 @@ class MuJoCoRobot(OperatorControls):
             "torque_mode": torque_mode, "substeps": substeps, "rate_hz": rate_hz, "cameras": cameras,
             "overview": overview, "enable_viewer": enable_viewer, "viser_host": viser_host, "viser_port": viser_port,
             "viewer_theme": viewer_theme, "http_host": http_host, "http_port": http_port, "owner_name": owner_name,
-            "studio_url": studio_url, "seed": seed, "exit_with_pid": exit_with_pid,
+            "seed": seed, "exit_with_pid": exit_with_pid,
             "grip_force_n": grip_force_n, "http_fallback_port": http_fallback_port,
             "xr_host": xr_host, "xr_port": xr_port,
         }  # fmt: skip
@@ -218,7 +215,6 @@ class MuJoCoRobot(OperatorControls):
         self._http_host, self._http_port = http_host, http_port
         self._http_fallback_port = http_fallback_port
         self._owner_name = owner_name
-        self._studio_url = studio_url
         self._seed = seed
         self._rng = np.random.default_rng()
         self._reseed_if_fixed()
@@ -317,11 +313,9 @@ class MuJoCoRobot(OperatorControls):
             raise
         if self._automation is None:
             self._automation = ConveyorAutomation(
-                self._studio_url,
                 joint_names=tuple(sim.joint_names),
                 unit=self._unit,
                 to_units=self._targets_to_units,
-                owner_name=lambda: self._owner_name,
             )
         self._sim = sim
         if self._substeps_arg is None:
@@ -352,6 +346,7 @@ class MuJoCoRobot(OperatorControls):
             )
             if not self._viewer.open(sim.model, sim.data):
                 self._viewer, self._enable_viewer = None, False
+        self._report_native_viewer()
         self._cameras.start(sim.model, sim.data)
         self._start_http_server()
         self._start_xr_server()
@@ -614,6 +609,31 @@ class MuJoCoRobot(OperatorControls):
         self._objects.publish(sim.data)  # type: ignore[union-attr]
         self._teleop = Teleop(sim.model, sim.bindings, sim.channels, self._profile)  # type: ignore[union-attr]
         self._teleop.set_inputs(mouse=self._teleop_mouse)
+        self._publish_autopilot_scene()
+
+    def _publish_autopilot_scene(self) -> None:
+        """Tell the episode book which scene runs now and whether it has an autopilot (``GET /autopilot/v1``)."""
+        from physicalai_mujoco_plugin.autopilot import SceneSupport  # noqa: PLC0415
+
+        automation = self._automation
+        if automation is None:
+            return
+        scene = self._current_scene_id or "custom"
+        available = automation.autopilot.available
+        reason = None
+        if not available:
+            reason = automation.autopilot.status().get("unavailable_reason") or (
+                f"Scene {scene!r} has no autopilot; automatic recording needs the conveyor or bucket_sort scene."
+            )
+        automation.book.set_scene(
+            SceneSupport(
+                scene=scene,
+                supported=available,
+                reason=str(reason) if reason else None,
+                options=automation.episode_options,
+                joint_names=tuple(self.joint_names),
+            )
+        )
 
     def _switch_to_scene(self, scene_id: str) -> bool:
         """Hot-swap the simulation to another registered scene (DRV-7).
@@ -672,6 +692,7 @@ class MuJoCoRobot(OperatorControls):
                 # The replay's saved state belongs to the old model.
                 logger.info("Scene switch ended the replay")
                 self._replay = None
+                self._automation.book.set_busy(None)  # type: ignore[union-attr]
             self._sim = sim
             self._scene_config = scene
             self._last_sim_time = None
@@ -726,6 +747,8 @@ class MuJoCoRobot(OperatorControls):
         if not self._pending_scene_switch:
             return
         self._pending_scene_switch = False
+        if self._automation is not None:
+            self._automation.end_episode_now("The native viewer switched the scene.")
         try:
             scene_ids = list(self._compatible_scenes())
             current = self._current_scene_id
@@ -803,13 +826,14 @@ class MuJoCoRobot(OperatorControls):
             if self._episode_auto_reset is not None:
                 self._episode_auto_reset.update(model, data)
             if self._automation.take_reset_request():  # type: ignore[union-attr]
-                logger.info("Resetting the scene for the autopilot or for Studio recording")
+                logger.info("Resetting the scene for the autopilot or for an autopilot episode")
                 self._reset()
             self._objects.apply_held(model, data)
         self._objects.publish(data)
         if self._viewer is not None:
             if not self._viewer.sync(data):
                 self._viewer, self._enable_viewer = None, False
+                self._report_native_viewer()
             elif self._viewer.native is not None:
                 self._handle_viewer_reset()
         self._cameras.publish(data)
@@ -907,11 +931,19 @@ class MuJoCoRobot(OperatorControls):
             start += len(channels)
         return np.concatenate(parts)
 
+    def _report_native_viewer(self) -> None:
+        """Tell the episode book whether the native viewer is open: its mouse forces bypass the controls."""
+        if self._automation is not None:
+            native = self._viewer is not None and getattr(self._viewer, "native", None) is not None
+            self._automation.book.set_native_viewer(native)
+
     def _handle_viewer_reset(self) -> None:
         """Randomize the scene when the native viewer's reset button rewound the clock."""
         current = float(self._sim.data.time)  # type: ignore[union-attr]
         if self._last_sim_time is not None and current + 1e-9 < self._last_sim_time:
             logger.info("Viewer reset detected; randomizing")
+            if self._automation is not None:
+                self._automation.end_episode_now("The native viewer reset the scene.")
             # Like POST /reset: a replay ends, restoring its saved state, before the reset.
             self._stop_replay()
             self._reset()

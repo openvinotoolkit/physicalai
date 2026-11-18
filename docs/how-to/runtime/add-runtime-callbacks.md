@@ -27,6 +27,23 @@ runtime = RobotRuntime(
 
 The same callback instances receive every `run()` performed before the runtime is disconnected. Use the `start` and `shutdown` lifecycle events to separate per-run state. `RobotRuntime.disconnect()` or context exit closes callback resources exactly once and permanently disposes that runtime.
 
+## Console and JSONL output
+
+Use the built-in callbacks to print runtime events and record them locally:
+
+```python
+from physicalai.runtime import ConsoleCallback, JsonlCallback
+
+runtime = RobotRuntime(
+    robot=robot,
+    action_source=PolicySource(model=model, execution=execution),
+    fps=30,
+    callbacks=[ConsoleCallback(), JsonlCallback("runtime.jsonl")],
+)
+```
+
+These replace the removed `physicalai.runtime.observer` module and its standalone CLI. Console and JSONL callbacks consume events in the runtime process without opening a Zenoh session. JSONL output uses the callback format (`type` rather than the old observer's `topic` field); set `record_chunks=True` on `JsonlCallback` to include inference chunks.
+
 ## Monitor the Runtime in Rerun
 
 Install the optional visualization dependencies:

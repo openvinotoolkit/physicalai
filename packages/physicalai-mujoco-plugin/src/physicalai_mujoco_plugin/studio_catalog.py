@@ -35,6 +35,7 @@ from urllib.parse import urlsplit
 
 from loguru import logger
 from physicalai_studio_plugin import (
+    AutopilotSpec,
     CatalogRobotFactory,
     PayloadContainer,
     PortScanner,
@@ -46,6 +47,7 @@ from physicalai_studio_plugin import (
     SimulationScene,
     robot_field_ui,
 )
+from physicalai_studio_plugin.autopilot import loopback_root
 from pydantic import BaseModel, Field, create_model
 
 from physicalai.config import export_config
@@ -774,7 +776,26 @@ def _mujoco_robot_builder(
     return build
 
 
+def autopilot_leader(follower_payload: MuJoCoRobotPayload, http_url: str) -> MuJoCoVirtualLeader:
+    """Build the leader through which Physical AI Studio records the autopilot of the simulation at *http_url*.
+
+    The ``leader_for`` of the followers' :class:`AutopilotSpec`: a virtual leader reading ``GET /leader`` of
+    the simulation Studio started (*http_url*), not the payload's address. Each sample it reads carries the
+    simulation's ``episode_id`` and ``phase``, which it exposes.
+
+    *http_url* must be a root ``http://`` address with a port on this machine's loopback, or
+    ``loopback_root`` raises ``ValueError``.
+
+    Returns:
+        The unconnected leader.
+    """
+    _ = follower_payload
+    url = urlsplit(loopback_root(http_url))
+    return MuJoCoVirtualLeader(http_port=url.port or DEFAULT_HTTP_PORT, host=url.hostname or "127.0.0.1")
+
+
 def _follower_definition(entry: CatalogEntry) -> RobotCatalogDefinition:
+    launch = entry.simulation_launch()
     return RobotCatalogDefinition(
         type=entry.type,
         display_name=entry.display_name,
@@ -783,7 +804,10 @@ def _follower_definition(entry: CatalogEntry) -> RobotCatalogDefinition:
         robot_payload=_payload_model(entry),
         asset=_entry_asset(entry),
         probe=MuJoCoRobotProbe(entry),
-        simulation=entry.simulation_launch(),
+        simulation=launch,
+        # Only a simulation Studio starts is recorded automatically; whether its scene has a demonstrator
+        # is up to the running simulation (GET /autopilot/v1).
+        autopilot=AutopilotSpec(leader_for=autopilot_leader) if launch is not None else None,
     )
 
 

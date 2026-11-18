@@ -51,6 +51,7 @@ if TYPE_CHECKING:
 
 _ROBOTS_TO_SKIP: frozenset[str] = frozenset({
     "mock_robot",  # test-only
+    "sim",  # lerobot>=0.7: a gym env driven as a robot; its nested env choice has no Studio form
 })
 
 

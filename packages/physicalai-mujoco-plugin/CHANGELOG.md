@@ -4,6 +4,9 @@
 
 ### Added
 
+* **mujoco:** The autopilot protocol for Physical AI Studio (`/autopilot/v1`, protocol 1 of `physicalai-studio-plugin` 0.6): Studio starts an episode with `POST /autopilot/v1/episodes`, the simulation lays the scene out and reports it `ready` with its instruction, Studio begins it, the demonstrator leads Studio's follower as a virtual leader, and the simulation ends the episode once with its outcome (`success`, `failure`, `stalled` or `aborted`) and gives the scene settings back. One episode at a time, with ids chosen by the simulation; a new `POST` replaces the episode in progress. The conveyor and bucket_sort scenes support it; others say why not. Simulated follower entries carry an `AutopilotSpec` whose leader reads the simulation Studio started.
+* **mujoco:** An episode in progress ends as `aborted` after 1 s without a `GET /leader` read or a request under `/autopilot/v1`, and before any other change to the scene applies: a control request, a viewer control, the native viewer's reset, a scene switch or shutdown. Nothing answers `409` for these.
+* **mujoco:** `GET /leader` samples carry the autopilot episode's `episode_id` and `phase`, which `MuJoCoVirtualLeader` exposes on each observation and as attributes.
 * **mujoco:** Teleoperate the arms from the viewer: **Drag the grippers** in the **Teleop** folder (`POST /teleop`) shows a handle at each gripper, which inverse kinematics follows. Actions are ignored while it drives the arms.
 * **mujoco:** Teleoperate from a VR headset (Meta Quest): `start --xr-port` serves a WebXR page over HTTPS (a self-signed certificate made with `openssl`) that draws the simulation in 3D, life-size, over passthrough (meshes sent once, then the bodies' poses at 60 Hz), with the camera streams above it. Holding a controller's grip moves its arm's gripper with the controller, the trigger closes it. The page pairs with a six-digit code, and one page drives the arms at a time.
 * **mujoco:** OpenArm v2 twin (`openarm`, provisional): Enactic's bimanual MJCF under LeRobot's `BiOpenArmFollower` names and units, in the new `openarm_cell` scene with the cell's overhead camera. OpenArm is not in MuJoCo Menagerie, so the model downloads on first use from the pinned `openarm-mujoco` 2.3.0 source archive on PyPI into the Menagerie cache (`OPENARM_MUJOCO_ROOT` overrides it); `prefetch` fetches it too.
@@ -15,6 +18,11 @@
 * **mujoco:** `physicalai-mujoco-so101 start` downloads the robot model before it starts the simulation owner, with a progress bar, so a slow first download no longer fails as an owner startup timeout. The new `physicalai-mujoco-so101 prefetch` command downloads every robot model ahead of time for offline machines.
 * **mujoco:** Every MuJoCo follower in Studio has a 3D model. The SO-101s keep their URDFs; the others, the WidowX AI's included, get a URDF built from the robot's MuJoCo model on first use and cached per user, so the robot page and dataset playback no longer wait forever on "Loading robot model...".
 * **mujoco:** Studio's MuJoCo follower probes report an owner as online only when it drives that entry's joints, so the single-arm entry no longer attaches to a bimanual simulation or the other way round.
+* **mujoco:** The viewer's autopilot option for the hand-added MuJoCo Virtual Leader is labelled **Virtual leader (manual teleop)**. The overview camera is no longer locked while Studio records; a switch during an autopilot episode ends the episode.
+
+### Removed
+
+* **mujoco:** `POST /studio/recording` (now `404`), the viewer's **Record in Studio** controls, the `start --studio-url` option and `MuJoCoRobot(studio_url=...)`: the simulation no longer connects to Studio, whose websocket session it used has not worked since Studio's runtime sessions changed. Studio records the autopilot from its recording page instead.
 
 ## [0.5.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-mujoco-plugin-v0.4.0...physicalai-mujoco-plugin-v0.5.0) (2026-10-30)
 

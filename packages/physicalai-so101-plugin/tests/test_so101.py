@@ -407,6 +407,51 @@ class TestSO101Observation:
         assert state[0] == pytest.approx(-1.83, abs=0.1)
         assert state[1] == pytest.approx(5.15, abs=0.1)
 
+    def test_observation_retries_transient_comm_failure(self, mock_sdk: MagicMock) -> None:
+        """A single -6 (RX timeout) sync read is retried and the observation succeeds."""
+        from physicalai_so101_plugin import SO101
+
+        robot = SO101.uncalibrated(port="/dev/ttyUSB0")
+        robot.connect()
+        sync_read = mock_sdk.GroupSyncRead.return_value
+        sync_read.txRxPacket.reset_mock()
+        sync_read.txRxPacket.side_effect = [-6, 0]
+
+        obs = robot.get_observation()
+
+        assert obs.joint_positions.shape == (6,)
+        assert sync_read.txRxPacket.call_count == 2
+
+    def test_observation_retries_missing_servo_data(self, mock_sdk: MagicMock) -> None:
+        """A reply missing one servo's data is retried and the observation succeeds."""
+        from physicalai_so101_plugin import SO101
+
+        robot = SO101.uncalibrated(port="/dev/ttyUSB0")
+        robot.connect()
+        sync_read = mock_sdk.GroupSyncRead.return_value
+        sync_read.txRxPacket.reset_mock()
+        sync_read.isAvailable.side_effect = [False] + [True] * SO101.NUM_JOINTS
+
+        obs = robot.get_observation()
+
+        assert obs.joint_positions.shape == (6,)
+        assert sync_read.txRxPacket.call_count == 2
+
+    def test_observation_persistent_comm_failure_raises(self, mock_sdk: MagicMock) -> None:
+        """A bus that stays silent raises after SYNC_READ_ATTEMPTS sync reads."""
+        from physicalai_so101_plugin import SO101
+
+        robot = SO101.uncalibrated(port="/dev/ttyUSB0")
+        robot.connect()
+        sync_read = mock_sdk.GroupSyncRead.return_value
+        sync_read.txRxPacket.reset_mock()
+        sync_read.txRxPacket.return_value = -6
+
+        with pytest.raises(ConnectionError, match="comm result -6"):
+            robot.get_observation()
+
+        assert sync_read.txRxPacket.call_count == SO101.SYNC_READ_ATTEMPTS
+
 
 class TestSO101Action:
     """Tests for send_action()."""
