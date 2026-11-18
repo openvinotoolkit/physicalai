@@ -13,7 +13,7 @@ import httpx
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from physicalai_studio_plugin import RobotCatalogDefinition, autopilot
+from physicalai_studio_plugin import RobotCatalogDefinition, SimulationLaunch, SimulationScene, autopilot
 from physicalai_studio_plugin.autopilot import (
     LeaderFactory,
     AUTOPILOT_PATH,
@@ -27,7 +27,7 @@ from physicalai_studio_plugin.autopilot import (
     EpisodeRequest,
     loopback_root,
 )
-from physicalai_studio_plugin.autopilot_examples import example, example_model, example_names
+from physicalai_studio_plugin.testing.autopilot import example, example_model, example_names
 
 
 @pytest.mark.parametrize("name", example_names())
@@ -53,7 +53,7 @@ def test_options_are_bounded(options: dict) -> None:
         EpisodeOptions.model_validate(options)
 
 
-def test_the_spec_checks_its_version_and_path_and_a_definition_carries_it() -> None:
+def test_the_spec_checks_its_version_and_path_and_a_simulation_carries_it() -> None:
     leader = cast("LeaderFactory[object]", lambda follower_payload, http_url: object())
     spec = AutopilotSpec(leader_for=leader)
     assert (spec.protocol, spec.path) == (1, AUTOPILOT_PATH)
@@ -61,7 +61,16 @@ def test_the_spec_checks_its_version_and_path_and_a_definition_carries_it() -> N
     for bad in bads:
         with pytest.raises(ValueError, match="protocol|path"):
             AutopilotSpec(leader_for=leader, **bad)
-    assert "autopilot" in RobotCatalogDefinition.__dataclass_fields__
+    launch = SimulationLaunch[BaseModel](
+        scenes=(SimulationScene(id="bucket_sort", display_name="Bucket sort"),),
+        default_scene="bucket_sort",
+        payload_owner_name=lambda payload: "sim",
+        build_argv=lambda scene, owner_name, seed: ["sim", scene],
+        autopilot=spec,
+    )
+    assert launch.autopilot is spec
+    assert SimulationLaunch.__dataclass_fields__["autopilot"].default is None
+    assert "autopilot" not in RobotCatalogDefinition.__dataclass_fields__
 
 
 @pytest.mark.parametrize(
