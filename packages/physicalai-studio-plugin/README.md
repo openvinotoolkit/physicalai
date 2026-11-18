@@ -276,6 +276,7 @@ class SimulationLaunch(Generic[_PayloadT]):
     labels: tuple[str, ...] = ()
     build_standalone_argv: SimulationPayloadArgvBuilder[_PayloadT] | None = None
     build_payload_argv: SimulationPayloadArgvBuilder[_PayloadT] | None = None
+    autopilot: AutopilotSpec[_PayloadT] | None = None
 
     def owner_name(self, payload: _PayloadT) -> str: ...
     def argv(self, scene: str, payload: _PayloadT, seed: int | None = None) -> list[str]: ...
@@ -289,6 +290,7 @@ For simulated robot types whose `robot_builder` attaches to a running simulation
 - Set `build_payload_argv` instead of `build_argv` when the command line needs more of the payload than the owner name, for example to reuse the payload's HTTP port when it is free. That keeps the robot's cameras, the standalone command and runtime exports on the same address across starts. Set exactly one of the two.
 - `seed` is `None` for random scene layouts, or a fixed seed from `0` to `max_seed`. With `max_seed=None` the simulation takes no seed and Studio offers none.
 - With `build_standalone_argv`, the start dialog also shows `standalone_argv(scene, payload, seed)`: the command a user runs in a terminal to start the same simulation themselves, for example to drive it from their own script. Studio attaches to that simulation as it is, as one started outside Studio, so the command must publish under the payload's owner name and serve at the payload's addresses (not on free ports), and it leaves out the process contract below: it runs until the user stops it. Without `build_standalone_argv`, `standalone_argv` returns `None` and Studio shows no command.
+- Set `autopilot` (an `AutopilotSpec` from `physicalai_studio_plugin.autopilot`) when the simulation has a scripted demonstrator that Studio can record. Studio reaches it on the simulation's own HTTP server.
 
 `SimulationLaunch` rejects an empty `scenes`, duplicate scene ids, a `default_scene` that is not one of them, a negative `max_seed`, blank labels, and both or neither of `build_argv` and `build_payload_argv`; `argv` and `standalone_argv` reject an unknown scene, a blank owner name and an out-of-range seed with `ValueError`.
 
