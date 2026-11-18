@@ -82,12 +82,16 @@ def make_zenoh_config(
     mode: str,
     *,
     connect_endpoints: Sequence[str] | None = None,
-    listen_endpoints: Sequence[str] | None = None,
+    listen_endpoints: Sequence[str] | None = (),
     multicast_enabled: bool | None = False,
     gossip_enabled: bool | None = False,
     config: zenoh.Config | None = None,
 ) -> zenoh.Config:
-    """Build Zenoh config with explicit role, endpoints, and discovery policy.
+    """Build Zenoh config with listeners and scouting disabled by default.
+
+    Omitted listen endpoints disable listeners, including in a supplied config.
+    Pass explicit endpoints to listen, or ``listen_endpoints=None`` to preserve
+    the supplied config's listeners or Zenoh defaults, which can bind all interfaces.
 
     Returns:
         The supplied or newly created configuration with the requested settings.
@@ -111,12 +115,16 @@ def open_zenoh_session(
     mode: str,
     *,
     connect_endpoints: Sequence[str] | None = None,
-    listen_endpoints: Sequence[str] | None = None,
+    listen_endpoints: Sequence[str] | None = (),
     multicast_enabled: bool | None = False,
     gossip_enabled: bool | None = False,
     config: zenoh.Config | None = None,
 ) -> zenoh.Session:
-    """Open a Zenoh session using the shared role and discovery defaults.
+    """Open a Zenoh session with listeners and scouting disabled by default.
+
+    Pass explicit listen endpoints to accept connections. As in
+    :func:`make_zenoh_config`, explicit ``listen_endpoints=None`` preserves the
+    supplied config's listeners or Zenoh defaults, which can bind all interfaces.
 
     Returns:
         The configured open session.

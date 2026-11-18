@@ -252,7 +252,7 @@ def test_so101_uses_lerobots_resolved_calibration_path(tmp_path: Path, monkeypat
 
     monkeypatch.setattr(teleoperator, "HF_LEROBOT_CALIBRATION", tmp_path)
     bus_factory = Mock(side_effect=lambda **kwargs: SimpleNamespace(calibration=kwargs["calibration"]))
-    monkeypatch.setattr(so_leader, "FeetechMotorsBus", bus_factory)
+    monkeypatch.setattr(so_leader, "SerialMotorsBus", bus_factory)
     device = build_device(so_leader.SOLeader, SO101LeaderConfig(port="fake", id="leader"))
     with pytest.raises(RobotCalibrationError) as caught:
         connect_device(device)

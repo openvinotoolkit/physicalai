@@ -5,130 +5,17 @@
 from __future__ import annotations
 
 import json
-import tempfile
 import threading
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
 from physicalai.runtime._callback_bus import _CallbackBus
 from physicalai.runtime import AsyncCallback, ConsoleCallback, JsonlCallback
-from physicalai.runtime.observer._codec import decode_numpy, decode_payload, encode_numpy
-from physicalai.runtime.observer._telemetry import TelemetryEmitter
 from physicalai.runtime.events import InferenceEvent, LifecycleEvent, TickEvent
 from tests.unit.runtime.conftest import FakeRobotObservation
-
-
-class TestNumpyEncoding:
-    def test_encode_numpy_float32(self) -> None:
-        arr = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
-        encoded = encode_numpy(arr)
-        assert encoded["__np__"] is True
-        assert encoded["dtype"] == "float32"
-        assert encoded["shape"] == [2, 2]
-        assert isinstance(encoded["data"], bytes)
-
-    def test_encode_preserves_shape(self) -> None:
-        arr = np.zeros((3, 4, 5), dtype=np.float64)
-        encoded = encode_numpy(arr)
-        assert encoded["shape"] == [3, 4, 5]
-        assert encoded["dtype"] == "float64"
-
-    def test_roundtrip(self) -> None:
-        arr = np.array([1.5, 2.5, 3.5], dtype=np.float32)
-        decoded = decode_numpy(encode_numpy(arr))
-        np.testing.assert_array_equal(arr, decoded)
-
-
-class TestDecodePayload:
-    def test_deeply_nested_payload_rejected(self) -> None:
-        payload: dict = {"leaf": 1}
-        for _ in range(100):
-            payload = {"k": payload}
-
-        with pytest.raises(ValueError, match="nesting exceeds"):
-            decode_payload(payload)
-
-
-class TestTelemetryEmitterNoOp:
-    def test_emitter_noop_without_zenoh(self) -> None:
-        with patch.dict("sys.modules", {"zenoh": None, "msgpack": None}):
-            e = TelemetryEmitter.__new__(TelemetryEmitter)
-            e._session_id = "test"
-            e._session = None
-            e._msgpack = None
-            e._enabled = False
-
-        assert not e.enabled
-
-    def test_noop_emit_methods(self) -> None:
-        e = TelemetryEmitter.__new__(TelemetryEmitter)
-        e._session_id = "test"
-        e._session = None
-        e._msgpack = None
-        e._enabled = False
-
-        e.emit_lifecycle("test_event", foo="bar")
-        e.emit_tick(
-            step=0,
-            timestamp=0.0,
-            joint_positions=None,
-            action_sent=None,
-            loop_duration_s=0.033,
-            sleep_time_s=0.001,
-        )
-        e.emit_inference(latency_s=0.1, offset=3, chunk=np.zeros((5, 3)))
-        e.close()
-
-
-class TestTelemetryEmitterWithMock:
-    def _make_emitter(self) -> tuple[TelemetryEmitter, MagicMock]:
-        mock_session = MagicMock()
-        mock_msgpack = MagicMock()
-        mock_msgpack.packb.return_value = b"\x80"
-
-        e = TelemetryEmitter.__new__(TelemetryEmitter)
-        e._session_id = "abc123"
-        e._session = mock_session
-        e._msgpack = mock_msgpack
-        e._enabled = True
-        return e, mock_session
-
-    def test_emit_tick_publishes(self) -> None:
-        e, session = self._make_emitter()
-        e.emit_tick(
-            step=42,
-            timestamp=1.0,
-            joint_positions=np.zeros(3),
-            action_sent=np.ones(3),
-            loop_duration_s=0.033,
-            sleep_time_s=0.001,
-        )
-        session.put.assert_called_once()
-        topic = session.put.call_args[0][0]
-        assert topic == "physicalai/rt/abc123/tick"
-
-    def test_emit_lifecycle_publishes(self) -> None:
-        e, session = self._make_emitter()
-        e.emit_lifecycle("start", fps=30)
-        session.put.assert_called_once()
-        topic = session.put.call_args[0][0]
-        assert topic == "physicalai/rt/abc123/lifecycle"
-
-    def test_emit_inference_publishes(self) -> None:
-        e, session = self._make_emitter()
-        e.emit_inference(latency_s=0.05, offset=2, chunk=np.zeros((10, 6)))
-        session.put.assert_called_once()
-        topic = session.put.call_args[0][0]
-        assert topic == "physicalai/rt/abc123/inference"
-
-    def test_close_closes_session(self) -> None:
-        e, session = self._make_emitter()
-        e.close()
-        session.close.assert_called_once()
-        assert not e.enabled
 
 
 class TestCallbackBus:

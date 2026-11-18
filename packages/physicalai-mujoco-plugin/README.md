@@ -65,7 +65,7 @@ To drive the simulation from Physical AI Studio, see [Use with Physical AI Studi
 
 The viewer opens on its **Simulation** tab, which controls the simulation. The **Camera** tab controls whether the view follows a body. The **Visualization** and **Groups** tabs come from mjviser and control what is drawn. **Visualization** also toggles the target ghost: a see-through copy of every robot at the pose its joints are told to reach, on by default, so an arm that lags, is blocked or cannot reach a target shows as a gap between the arm and its ghost. It hides during a replay.
 
-- **Scene**: pick another scene for the running robot; every tabletop scene runs one or two arms, and a switch keeps the arm count. **Reset Scene** respawns the scene's objects while keeping the target fixed. **Home Arm** puts the arm joints and their position targets at the scene's home pose. An active policy or teleop session will drive the arm away again on its next action. During a replay ([`POST /replay`](#replay-recorded-joint-positions)), the folder shows the replayed frame and a **Stop Replay** button. **Overview camera** moves the `overview` camera between **Shoulder** and **Front** ([Overview camera styles](#overview-camera-styles)); it is disabled while automatic Studio recording runs.
+- **Scene**: pick another scene for the running robot; every tabletop scene runs one or two arms, and a switch keeps the arm count. **Reset Scene** respawns the scene's objects while keeping the target fixed. **Home Arm** puts the arm joints and their position targets at the scene's home pose. An active policy or teleop session will drive the arm away again on its next action. During a replay ([`POST /replay`](#replay-recorded-joint-positions)), the folder shows the replayed frame and a **Stop Replay** button. **Overview camera** moves the `overview` camera between **Shoulder** and **Front** ([Overview camera styles](#overview-camera-styles)).
 - **Robot**: the profile, its tier, the joint units, the overview camera style, and each floating base's height, tilt and hold.
 - **Performance**: the simulation speed as a multiple of real time, the control loop rate, and each camera's frame rate, over the last two seconds. Below 0.95x real time, the belt, arm and physics all run slower than the wall clock, while Studio records and policies run at wall-clock rates. Keep it at 1.00x when recording or evaluating.
 - **Randomization**: tick **Fixed seed** to reseed before every reset and scene switch, so object layouts repeat. Untick it to go back to random layouts.
@@ -202,33 +202,25 @@ Record from the dataset page as with a real robot (**Add episode**, **Start epis
 
 The same controls are available over HTTP (see [REST control API](#rest-control-api)) if you want to script resets between episodes.
 
-#### Record the conveyor autopilot, with automatic episodes
+#### Record the conveyor or bucket_sort autopilot automatically
 
-In `conveyor_sort`, the scripted demonstrator can act as the leader arm, and the simulation can save each conveyor episode to the open dataset. No one has to teleoperate, and no one has to press **Accept** or **Start episode**.
+In `conveyor_sort` and `bucket_sort`, Physical AI Studio can record what the scripted demonstrator does, with no one teleoperating and no one pressing **Start episode**. Start the simulation from Studio, open the dataset's recording page and use the **Automatic recording** panel. Studio drives the episodes over the simulation's autopilot protocol (see [Autopilot episodes](#autopilot-episodes-autopilotv1)):
+
+- For each episode the simulation lays the scene out (a cleared belt; a reset bucket_sort layout, optionally with a stuck start) with the belt feed held, and reports the episode ready with its instruction. Studio starts recording with that instruction as the task and begins the episode. From then on the demonstrator leads Studio's follower as a virtual leader: it only publishes targets on `GET /leader`, and Studio writes them to the arm. The recorded actions are the demonstrator's commands, so a grasp records the gripper closing past the object, which is what makes a position-controlled gripper squeeze.
+- The simulation decides how each episode ended. A conveyor episode succeeds with no wrong or missed item; a bucket_sort episode once the object has stayed in its bucket for 1 s of simulated time (a success after a retry reports `clean` false). An episode that runs too long (300 s of simulated time on the conveyor, 120 s in bucket_sort) is `stalled`. Studio keeps the successes.
+- Using the viewer, or any control endpoint, during an episode ends that episode (`aborted`) and then applies.
+
+**Stuck starts** (`recovery_fraction`, 0 to 0.5) starts that share of bucket_sort episodes with the hand closed and empty on the demonstrator's planned path to the bucket, where a policy that lost the object gets stuck; the arm moves there before the episode starts, and a move that shifts an object or bucket by more than 5 mm resets the scene for a normal start instead. **Attempts per episode** (`max_attempts`, 1 to 5, default 2) sets how many tries the demonstrator gets.
+
+#### Lead a follower with the autopilot by hand
+
+The **MuJoCo Virtual Leader** robot type still works as an advanced, manual path, for example to watch the demonstrator lead a follower in Studio's teleoperation view:
 
 1. In Studio, add a robot of type **MuJoCo Virtual Leader**. Its port is the simulation's `--http-port` (default `8080`). Use it as the leader of the MuJoCo environment. The leader takes its joints from the simulation, so the same type leads any MuJoCo follower.
-2. In the viewer's **Autopilot** folder, set **Autopilot** to **Virtual leader (Studio teleop)**. The demonstrator now only publishes its joint targets (`GET /leader`); the arm moves once Studio sends them back as actions.
-3. In Studio, open the dataset's recording view and start teleoperation. The demonstrator's targets become the recorded actions.
-4. In the viewer, set **Task** and **Keep**, then tick **Record in Studio**. The simulation attaches to Studio's running session. For each episode it clears the belt, starts a recording with the task, and holds the belt when the tenth item is scored. Then it saves the episode, or discards it if **Keep** is **Perfect episodes only** and the episode had a wrong or missed item.
-5. Untick **Record in Studio** to stop, or set **Episodes** to stop after that many saved episodes. Pressing stop in Studio also stops the automation.
+2. In the viewer's **Autopilot** folder, set **Autopilot** to **Virtual leader (manual teleop)** (`POST /autopilot {"mode": "leader"}`). The demonstrator now only publishes its joint targets (`GET /leader`); the arm moves once Studio sends them back as actions.
+3. In Studio, start teleoperation, and record by hand from the dataset page if you want to.
 
-**Record in Studio** also works with a physical leader arm. You teleoperate, and the simulation saves an episode each time the belt's ten items are scored.
-
-The simulation joins Studio's session the same way a second browser tab does. It finds the session through `GET /api/runtime/sessions` and never stops that session. Use `--studio-url` if Studio does not run at `http://127.0.0.1:7860`.
-
-**Autopilot** has a third mode, **Drive the arm**. It moves the arm directly and ignores incoming actions, which is useful for demos, but don't record the conveyor in this mode.
-
-#### Record the bucket_sort autopilot, with automatic episodes
-
-In `bucket_sort`, the demonstrator leads the MuJoCo FR3 follower the same way, as Studio's virtual leader. The recorded actions are the demonstrator's commands, so a grasp records the gripper closing past the object, which is what makes a position-controlled gripper squeeze. Recording the follower's reached positions instead would stop at the object's width.
-
-1. In Studio, use the **MuJoCo Virtual Leader** as the leader of the MuJoCo FR3 environment, as in step 1 above.
-2. In the viewer's **Autopilot** folder, set **Autopilot** to **Virtual leader (Studio teleop)**.
-3. In Studio, open the dataset's recording view and start teleoperation.
-4. Set **Keep** and **Episodes**, then tick **Record in Studio**. There is no **Task** field: each episode's worded instruction is its task. For each episode the simulation resets the scene, holds the arm at its reset pose, starts a recording with that episode's instruction, and lets the demonstrator move once Studio records. A success is saved once the object has stayed in its bucket for 1 s of simulated time, so each episode ends with the arm settling; with **Perfect episodes only**, a success after a retry (`clean` false) is discarded. A failed or stalled episode, a reset during the episode, or switching the autopilot out of **Virtual leader** discards the episode.
-5. Untick **Record in Studio** to stop, or set **Episodes** to stop after that many saved episodes. Pressing stop in Studio, or stopping teleoperation, also stops the automation.
-
-**Stuck starts** (0 to 0.5, `recovery_fraction`) starts that share of episodes with the hand closed and empty on the demonstrator's planned path to the bucket, where a policy that lost the object gets stuck; the arm moves there before the recording starts, and a move that shifts an object or bucket by more than 5 mm resets the scene for a normal start instead. **Attempts per episode** (1 to 5, `max_attempts`, default 2) sets how many tries the demonstrator gets, so with **Keep all** the episodes it recovers with a retry are saved too.
+**Autopilot** has a third mode, **Drive the arm**. It moves the arm directly and ignores incoming actions, which is useful for demos, but don't record in this mode.
 
 ### 5. Run a trained policy
 
@@ -276,7 +268,6 @@ Common options:
 - `--idle-timeout <seconds>`: seconds with zero subscribers before self-exit
   (default `10` without HTTP, disabled when HTTP is enabled so stream viewers keep the sim alive)
 - `--allow-remote`: allow non-loopback zenoh connections
-- `--studio-url <url>`: Physical AI Studio backend for automatic episode recording (default `http://127.0.0.1:7860`)
 
 ### Start from another program
 
@@ -445,7 +436,7 @@ The tabletop scenes place their `overview` camera in one of the two common third
 - `shoulder` (default): high behind the robot base, looking over it at the work area, like the over-the-shoulder camera of [BridgeData V2](https://rail-berkeley.github.io/bridgedata/). This is the scene file's own pose, and the SO-101's is unchanged from earlier releases, so datasets recorded and policies trained on it keep working. A gripper hovering at home can hide a spawned block from it.
 - `front`: across the work area from the robots, facing them, 45 degrees down at the spawn area's centre (between the arms with two), like the `agentview` camera of [robosuite](https://robosuite.ai) and [LIBERO](https://libero-project.github.io). Its distance and aim point grow with the arm's reach like the scene's layout, so every arm, the spawn area and the target stay in frame; in `single_pick_place` the arms at home hide neither a spawned block nor the target. ALOHA's front camera faces its arms from the side opposite its teleoperator.
 
-The camera is named `overview` in both styles, so the camera set and a dataset's camera features stay the same. Choose the style when the simulation starts, with `start --overview front` or `MuJoCoRobot(overview="front")`. While it runs, switch it with the viewer's **Overview camera** dropdown (Simulation tab, **Scene** folder) or `POST /overview`. The switch moves only the camera; the scene, arms and objects stay where they are, and later scene switches keep the style. Datasets and policies expect the view they were recorded with: don't switch during a recording, and keep one view per dataset. While automatic Studio recording runs, the switch is refused (`409`, and the dropdown is disabled).
+The camera is named `overview` in both styles, so the camera set and a dataset's camera features stay the same. Choose the style when the simulation starts, with `start --overview front` or `MuJoCoRobot(overview="front")`. While it runs, switch it with the viewer's **Overview camera** dropdown (Simulation tab, **Scene** folder) or `POST /overview`. The switch moves only the camera; the scene, arms and objects stay where they are, and later scene switches keep the style. Datasets and policies expect the view they were recorded with: don't switch during a recording, and keep one view per dataset. A switch during an autopilot episode ends the episode, like any other control.
 
 The style is not saved: it lasts as long as the simulation, and every start uses `--overview` or the `overview` argument (default `shoulder`). `floor_flat` and custom `--model` XMLs keep their own cameras and offer only `shoulder`; asking them for `front` fails at start, and `POST /overview` returns `409`. `GET /health` reports `overview_style`, the scene's `overview_styles`, and `overview_locked`, the reason a switch is refused now (or `null`).
 
@@ -496,31 +487,30 @@ curl -X POST http://127.0.0.1:8080/replay/stop
 curl -X POST http://127.0.0.1:8080/shutdown
 ```
 
-| Endpoint                    | Method | Description                                                                                                                                                                                                                                    |
-| --------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/`                         | GET    | Service info, endpoint index                                                                                                                                                                                                                   |
-| `/health`                   | GET    | Sim status: connected, scene, compatible scenes, overview style, seed, episode, timing, cameras                                                                                                                                                |
-| `/cameras`                  | GET    | Camera list with stream/snapshot URLs                                                                                                                                                                                                          |
-| `/cameras/{name}/mjpeg`     | GET    | MJPEG stream (`multipart/x-mixed-replace`)                                                                                                                                                                                                     |
-| `/cameras/{name}/frame.jpg` | GET    | Latest frame as a JPEG snapshot                                                                                                                                                                                                                |
-| `/scenes`                   | GET    | Current scene, available scene IDs, and IDs compatible with this robot                                                                                                                                                                         |
-| `/scenes/{scene_id}`        | POST   | Switch to a compatible scene (`409` for another arm count)                                                                                                                                                                                     |
-| `/reset`                    | POST   | Reset/randomize the scene; floating bases return to their start pose (held)                                                                                                                                                                    |
-| `/home`                     | POST   | Move the arm joints and targets to the scene's home pose                                                                                                                                                                                       |
-| `/overview`                 | POST   | `{"style": "shoulder" \| "front"}`: move the overview camera; `409` while Studio records                                                                                                                                                       |
-| `/seed`                     | POST   | `{"seed": <0..4294967295> or null}`: fix or clear the reset seed                                                                                                                                                                               |
-| `/episode/auto-reset`       | POST   | `{"enabled": bool, "dwell_s": 0.5..120}` (either field); `409` if unsupported                                                                                                                                                                  |
-| `/conveyor/belt-speed`      | POST   | `{"speed": 0..0.1}` belt speed in m/s; `409` if the scene has no conveyor belt                                                                                                                                                                 |
-| `/autopilot`                | POST   | `{"mode": "off" \| "drive" \| "leader"}`; `409` if the scene has no autopilot                                                                                                                                                                  |
-| `/leader`                   | GET    | Virtual leader pose: `seq`, `mode`, `unit`, `joint_names`, `joint_positions`                                                                                                                                                                   |
-| `/studio/recording`         | POST   | `{"enabled": bool, "task": str (1-200), "keep": "perfect" \| "all", "max_episodes": 0..10000, "recovery_fraction": 0..0.5, "max_attempts": 1..5}`; conveyor_sort or bucket_sort (which ignores `task` and alone uses the last two), else `409` |
-| `/objects`                  | GET    | Free-object joint names and world poses                                                                                                                                                                                                        |
-| `/objects/{joint}/pose`     | POST   | `{"position": [x, y, z], "wxyz": [w, x, y, z]}`: teleport a free object                                                                                                                                                                        |
-| `/replay`                   | POST   | `{"joint_positions": [[...], ...], "fps": 0..1000, "base": null}`: replay recorded joints                                                                                                                                                      |
-| `/replay/stop`              | POST   | End the replay and restore the simulation state from before it                                                                                                                                                                                 |
-| `/shutdown`                 | POST   | Gracefully stop the simulation owner                                                                                                                                                                                                           |
+| Endpoint                    | Method | Description                                                                                                                                                       |
+| --------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/`                         | GET    | Service info, endpoint index                                                                                                                                      |
+| `/health`                   | GET    | Sim status: connected, scene, compatible scenes, overview style, seed, episode, timing, cameras                                                                   |
+| `/cameras`                  | GET    | Camera list with stream/snapshot URLs                                                                                                                             |
+| `/cameras/{name}/mjpeg`     | GET    | MJPEG stream (`multipart/x-mixed-replace`)                                                                                                                        |
+| `/cameras/{name}/frame.jpg` | GET    | Latest frame as a JPEG snapshot                                                                                                                                   |
+| `/scenes`                   | GET    | Current scene, available scene IDs, and IDs compatible with this robot                                                                                            |
+| `/scenes/{scene_id}`        | POST   | Switch to a compatible scene (`409` for another arm count)                                                                                                        |
+| `/reset`                    | POST   | Reset/randomize the scene; floating bases return to their start pose (held)                                                                                       |
+| `/home`                     | POST   | Move the arm joints and targets to the scene's home pose                                                                                                          |
+| `/overview`                 | POST   | `{"style": "shoulder" \| "front"}`: move the overview camera                                                                                                      |
+| `/seed`                     | POST   | `{"seed": <0..4294967295> or null}`: fix or clear the reset seed                                                                                                  |
+| `/episode/auto-reset`       | POST   | `{"enabled": bool, "dwell_s": 0.5..120}` (either field); `409` if unsupported                                                                                     |
+| `/conveyor/belt-speed`      | POST   | `{"speed": 0..0.1}` belt speed in m/s; `409` if the scene has no conveyor belt                                                                                    |
+| `/autopilot`                | POST   | `{"mode": "off" \| "drive" \| "leader"}`; `409` if the scene has no autopilot                                                                                     |
+| `/leader`                   | GET    | Virtual leader pose: `seq`, `mode`, `unit`, `joint_names`, `joint_positions`, and the autopilot episode's `episode_id` and `phase` (both `null` before the first) |
+| `/objects`                  | GET    | Free-object joint names and world poses                                                                                                                           |
+| `/objects/{joint}/pose`     | POST   | `{"position": [x, y, z], "wxyz": [w, x, y, z]}`: teleport a free object                                                                                           |
+| `/replay`                   | POST   | `{"joint_positions": [[...], ...], "fps": 0..1000, "base": null}`: replay recorded joints                                                                         |
+| `/replay/stop`              | POST   | End the replay and restore the simulation state from before it                                                                                                    |
+| `/shutdown`                 | POST   | Gracefully stop the simulation owner                                                                                                                              |
 
-Control requests are queued and applied on the next control cycle. Invalid bodies return `422`, except for `/replay`. Object coordinates must be finite and within ±2 m.
+Control requests are queued and applied on the next control cycle. Invalid bodies return `422`, except for `/replay`. Object coordinates must be finite and within ±2 m. Each control request ends an [autopilot episode](#autopilot-episodes-autopilotv1) in progress before it applies.
 
 #### Replay recorded joint positions
 
@@ -532,13 +522,33 @@ Control requests are queued and applied on the next control cycle. Invalid bodie
 
 An invalid body returns `400` with the reason, a larger body `413`. A request while the simulation is disconnected returns `409`, as does one for a robot with a channel driven through a tendon or site instead of a hinge or slide joint (`unsupported_joints` in `GET /health`): such a position has no unique joint configuration to place.
 
-While a replay runs, actions are ignored, and scene automation (the conveyor, autopilot, Studio recording and episode auto-reset) pauses. After the last frame the replay holds it until `POST /replay/stop`, which restores the full simulation state from before the replay, so a policy or teleop session continues where it was. A new `POST /replay` replaces a running one and keeps that saved state. **Reset**, **Home** and object moves end the replay the same way before they apply. A scene switch ends it with the old scene. `GET /health` reports `replay`: `active`, `unsupported_joints` and, during a replay, `finished`, the shown `frame` (from 0), `frames` and `fps`. A native-viewer reset ends a replay like `POST /reset`.
+While a replay runs, actions are ignored, and scene automation (the conveyor, autopilot and episode auto-reset) pauses, and no autopilot episode can start. After the last frame the replay holds it until `POST /replay/stop`, which restores the full simulation state from before the replay, so a policy or teleop session continues where it was. A new `POST /replay` replaces a running one and keeps that saved state. **Reset**, **Home** and object moves end the replay the same way before they apply. A scene switch ends it with the old scene. `GET /health` reports `replay`: `active`, `unsupported_joints` and, during a replay, `finished`, the shown `frame` (from 0), `frames` and `fps`. A native-viewer reset ends a replay like `POST /reset`.
 
 With HTTP enabled, `Ctrl+C` in the start command requests owner shutdown through HTTP. If the HTTP endpoint is unavailable, the launcher sends SIGTERM to the original owner only after confirming its registered name and PID still match. It then disconnects the CLI subscriber. With HTTP disabled, the same verified signal path stops a local owner; detached owners also exit after their configured idle timeout once all subscribers leave. Use the named `stop` command to stop an owner directly.
 
 The `start` command also returns when its local owner exits through `stop`, HTTP, or the viewer's Shutdown control. Launcher cleanup checks the endpoint's owner name and the original owner's PID before forwarding an operator-requested shutdown. An invocation that attaches without a local owner record detaches instead of waiting indefinitely.
 
 HTTP control has no authentication and binds to loopback by default. Use explicit non-loopback bindings only on a trusted robot-cell network. The Viser viewer exposes the same controls, including moving objects and Shutdown, to anyone who can open it; it binds to loopback by default. Use `--viser-host 0.0.0.0` only when remote access is needed on a trusted network.
+
+### Autopilot episodes (`/autopilot/v1`)
+
+Physical AI Studio records the demonstrator through these endpoints (protocol 1, defined by `physicalai_studio_plugin.autopilot`, with example payloads in `physicalai_studio_plugin.autopilot_examples`). There is at most one episode at a time, and the simulation chooses its id.
+
+| Endpoint                            | Method | Answer                                                                                                                                                                                                 |
+| ----------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `/autopilot/v1`                     | GET    | `200`: `protocol`, `scene`, `supported`, `reason` (why not), `options` the scene takes, `joint_names`, and the current or last `episode`                                                               |
+| `/autopilot/v1/episodes`            | POST   | `{"options": {"max_attempts": 1..5, "recovery_fraction": 0..0.5}}` (both optional): `201`, the new episode, `preparing`. An episode in progress ends first as `aborted` ("Replaced by a new episode.") |
+| `/autopilot/v1/episodes/{id}`       | GET    | `200`: the episode                                                                                                                                                                                     |
+| `/autopilot/v1/episodes/{id}/begin` | POST   | `200`: `ready` becomes `running`; a running episode is returned as it is                                                                                                                               |
+| `/autopilot/v1/episodes/{id}/abort` | POST   | `200`: the episode ends as `aborted`; an ended one is returned as it is                                                                                                                                |
+
+An episode is `preparing` while the scene is laid out, `ready` (with its `task`) while it waits for `begin`, `running` while the demonstrator leads, and `ended` once, with its `outcome`: `success` (`clean` when there was no retry), `failure`, `stalled` or `aborted`, with a `reason`. While it is preparing and ready, `GET /leader` returns the start pose and the follower's actions are ignored. Once it ended, the demonstrator stops, `GET /leader` keeps returning its last target, and the scene settings from before the episode come back: the belt feed and the scene's own success reset. An ended episode stays readable until the next `POST`.
+
+Errors are `{"detail": {"code", "message"}}`: `409 unsupported` (the scene has no autopilot, the native MuJoCo viewer is open, or a replay runs), `422 bad_option` (an option the scene does not take, or an invalid body), `404 not_found` (not the current or last episode) and `409 wrong_phase` (`begin` before `ready`).
+
+- **Liveness.** While an episode is preparing, ready or running, every `GET /leader` and every request under `/autopilot/v1` is a sign of life. After 1 s of wall time without one, the episode ends as `aborted` ("Physical AI Studio stopped reading the leader."). Studio reads the leader at its control rate, so there is no separate heartbeat.
+- **Any other change ends the episode first.** Every control request (`/reset`, `/scenes/...`, `/autopilot`, `/replay`, `/overview`, ...), every viewer control, the native viewer's reset, a scene switch and shutdown end the episode as `aborted`, naming the change in the reason, and then apply.
+- **Two Physical AI Studios on one simulation can both write the follower.** The simulation does not tell writers apart, as with any robot attached over the transport; deciding who writes the arm is up to the Studio that owns the session. Don't connect two Studios to one simulation while one records it.
 
 ## Troubleshooting
 
@@ -651,7 +661,7 @@ See the [dimensioned schematic and IRL setup checklist](docs/bucket-sort-camera-
   - Heights, speeds, the grasp offset, the hand yaw, pauses and the release point are drawn per episode from the demonstrator's generator (`--seed` seeds it too).
   - Poses are read live: an object that moves or turns before the grasp re-plans the approach, and a named bucket that moves (pushed, or dragged in the viewer) between the start of the carry and the release re-plans the carry and the release.
   - A missed or dropped object gets one retry; then the episode is reported failed and the scene resets. `/health` `autopilot` reports `phase`, `instruction`, `episode`, `attempt`, `outcome` (`running`, `success`, `failed`, or `stalled` when the arm does not follow the published targets, as in `leader` mode with no client), `failure`, and `clean` (no attempt went wrong).
-  - With **Record in Studio**, each episode is saved to the dataset open in Studio, with its instruction as the task ([Record the bucket_sort autopilot](#record-the-bucket_sort-autopilot-with-automatic-episodes)).
+  - Studio records these episodes from its recording page, with each instruction as the task ([Record the conveyor or bucket_sort autopilot automatically](#record-the-conveyor-or-bucket_sort-autopilot-automatically)).
 
 The meshes come from the source CAD with `scripts/build_bucket_sort_meshes.py`, which decimates them, converts them to metres, splits each object by material so MuJoCo can colour it, and writes them in MuJoCo's binary MSH format (about half the size of the same meshes as OBJ, and binary in diffs; the repository sends `*.stl` to Git LFS, `*.msh` is committed as is). The CPU export holds one leg, which the script copies into the body's other five leg sockets, and the script cuts the resistor's bands out of its body mesh. It needs trimesh, pymeshlab and shapely, which the plugin does not depend on; its docstring has the command.
 

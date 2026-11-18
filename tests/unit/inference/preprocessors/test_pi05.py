@@ -8,7 +8,7 @@ import copy
 import numpy as np
 import pytest
 
-from physicalai.inference.constants import IMAGE_MASKS, IMAGES, TASK, STATE
+from physicalai.inference.constants import IMAGE_MASKS, IMAGES, NOISE, TASK, STATE
 from physicalai.inference.preprocessors import Preprocessor
 from physicalai.inference.preprocessors.pi05 import Pi05Preprocessor
 
@@ -202,6 +202,43 @@ class TestPi05PreprocessorState:
         state_part = prompt.split("State: ")[1].split(";")[0]
         bins = state_part.split()
         assert len(bins) == 2
+
+
+class TestPi05PreprocessorNoise:
+    def test_no_noise_by_default(self, preprocessor) -> None:
+        result = preprocessor(_make_inputs())
+        assert NOISE not in result
+
+    def test_noise_shape_and_dtype(self) -> None:
+        prep = Pi05Preprocessor(image_resolution=(64, 64), noise_shape=(50, 32))
+        result = prep(_make_inputs(batch=2))
+        assert result[NOISE].shape == (2, 50, 32)
+        assert result[NOISE].dtype == np.float32
+
+    def test_noise_is_fresh_on_every_call(self) -> None:
+        prep = Pi05Preprocessor(image_resolution=(64, 64), noise_shape=(50, 32))
+        first = prep(_make_inputs())[NOISE]
+        second = prep(_make_inputs())[NOISE]
+        assert not np.array_equal(first, second)
+
+    def test_noise_is_standard_normal(self) -> None:
+        prep = Pi05Preprocessor(image_resolution=(64, 64), noise_shape=(50, 32), seed=0)
+        noise = np.concatenate([prep(_make_inputs())[NOISE].ravel() for _ in range(20)])
+        assert abs(noise.mean()) < 0.03
+        assert abs(noise.std() - 1.0) < 0.03
+        assert noise.min() < -3.0
+
+    def test_seed_makes_noise_reproducible(self) -> None:
+        a = Pi05Preprocessor(image_resolution=(64, 64), noise_shape=(50, 32), seed=7)
+        b = Pi05Preprocessor(image_resolution=(64, 64), noise_shape=(50, 32), seed=7)
+        np.testing.assert_array_equal(a(_make_inputs())[NOISE], b(_make_inputs())[NOISE])
+
+    def test_caller_noise_is_kept(self) -> None:
+        prep = Pi05Preprocessor(image_resolution=(64, 64), noise_shape=(50, 32))
+        inputs = _make_inputs()
+        given = np.ones((1, 50, 32), dtype=np.float32)
+        inputs[NOISE] = given
+        assert prep(inputs)[NOISE] is given
 
 
 class TestPi05ResizeWithPad:
