@@ -287,7 +287,30 @@ class TestWidowXAIAction:
         assert sent[0] == pytest.approx(0.25, abs=0.01)
         assert sent[1] == pytest.approx(0.25, abs=0.01)
         assert sent[6] == pytest.approx(0.05, abs=1e-6)
-        assert call_args.args[1] == pytest.approx(0.1, abs=1e-6)
+        assert call_args.args[1] == pytest.approx(0.3, abs=1e-6)
+
+    @pytest.mark.parametrize("goal_time_scale", [1.0, 2.0, 3.0, 5.0])
+    def test_send_action_scales_control_tick(self, mock_trossen_arm: MagicMock, goal_time_scale: float) -> None:
+        """A 100 Hz control tick gets exactly one configured timing multiplier."""
+        from physicalai_trossen_plugin import WidowXAI
+
+        robot = WidowXAI(ip="192.168.1.1", goal_time_scale=goal_time_scale)
+        robot.connect()
+        driver = mock_trossen_arm.TrossenArmDriver.return_value
+        driver.set_all_positions.reset_mock()
+
+        robot.send_action(np.zeros(7, dtype=np.float32), goal_time=0.01)
+
+        driver.set_all_positions.assert_called_once_with([0.0] * 7, pytest.approx(0.01 * goal_time_scale), False)
+
+    @pytest.mark.parametrize("goal_time_scale", [0.0, -1.0, float("nan"), float("inf"), float("-inf")])
+    def test_invalid_goal_time_scale_raises(self, mock_trossen_arm: MagicMock, goal_time_scale: float) -> None:
+        """Reject invalid timing configuration before touching hardware."""
+        from physicalai_trossen_plugin import WidowXAI
+
+        with pytest.raises(ValueError, match="goal_time_scale must be finite and positive"):
+            WidowXAI(ip="192.168.1.1", goal_time_scale=goal_time_scale)
+        mock_trossen_arm.TrossenArmDriver.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

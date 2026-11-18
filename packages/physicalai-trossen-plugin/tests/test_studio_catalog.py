@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from xml.etree import ElementTree
 
 import pytest
+from pydantic import ValidationError
 
 from physicalai.config import Config
 from physicalai.robot import Robot
@@ -126,3 +128,63 @@ def test_drivers_export_plugin_construction_recipes() -> None:
         "init_args": {"ip": "192.168.1.10"},
     }
     assert Config.from_instance(bimanual).to_dict()["class_path"] == "physicalai_trossen_plugin.BimanualWidowXAI"
+
+
+@pytest.mark.parametrize("bimanual", [False, True])
+def test_payload_goal_time_defaults_and_advanced_schema(bimanual: bool) -> None:
+    from physicalai_studio_plugin import validate_robot_payload_ui
+    from physicalai_trossen_plugin.studio_catalog import TrossenBimanualPayload, TrossenSingleArmPayload
+
+    model = TrossenBimanualPayload if bimanual else TrossenSingleArmPayload
+    connections = (
+        {"connection_string_left": "192.168.1.10", "connection_string_right": "192.168.1.11"}
+        if bimanual
+        else {"connection_string": "192.168.1.10"}
+    )
+    assert model.model_validate(connections).goal_time_scale == 3.0
+    model.model_rebuild(raise_errors=True)
+    validate_robot_payload_ui(model)
+    field_schema = model.model_json_schema()["properties"]["goal_time_scale"]
+    assert field_schema["default"] == 3.0
+    assert field_schema["exclusiveMinimum"] == 0
+    assert field_schema["x-physicalai-ui"]["advanced_configuration"] is True
+    assert "goal_time_scale" not in model.model_json_schema()["required"]
+
+
+@pytest.mark.parametrize("bimanual", [False, True])
+@pytest.mark.parametrize("goal_time_scale", [0.0, -1.0, float("nan"), float("inf"), float("-inf")])
+def test_payload_rejects_invalid_goal_time_scale(bimanual: bool, goal_time_scale: float) -> None:
+    from physicalai_trossen_plugin.studio_catalog import TrossenBimanualPayload, TrossenSingleArmPayload
+
+    model = TrossenBimanualPayload if bimanual else TrossenSingleArmPayload
+    connections = (
+        {"connection_string_left": "192.168.1.10", "connection_string_right": "192.168.1.11"}
+        if bimanual
+        else {"connection_string": "192.168.1.10"}
+    )
+    with pytest.raises(ValidationError, match="goal_time_scale"):
+        model.model_validate({**connections, "goal_time_scale": goal_time_scale})
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("goal_time_scale", [None, 1.0, 5.0])
+async def test_builders_preserve_timing_in_exported_config(goal_time_scale: float | None) -> None:
+    from physicalai_trossen_plugin.studio_catalog import _definitions
+
+    for definition in _definitions():
+        connections = (
+            {"connection_string_left": "192.168.1.10", "connection_string_right": "192.168.1.11"}
+            if "Bimanual" in definition.type
+            else {"connection_string": "192.168.1.10"}
+        )
+        values = connections if goal_time_scale is None else {**connections, "goal_time_scale": goal_time_scale}
+        payload = definition.robot_payload.model_validate(values)
+        driver = await definition.robot_builder(SimpleNamespace(type=definition.type, payload=payload), MagicMock())
+        expected_scale = 3.0 if goal_time_scale is None else goal_time_scale
+        assert definition.adapter_options.goal_time_scale == 1.0
+        restored = Config.from_instance(driver).instantiate()
+        arms = (restored.left, restored.right) if "Bimanual" in definition.type else (restored,)
+        for arm in arms:
+            assert arm.goal_time_scale == expected_scale
+            assert arm.role == definition.role
+            assert not arm.is_connected()

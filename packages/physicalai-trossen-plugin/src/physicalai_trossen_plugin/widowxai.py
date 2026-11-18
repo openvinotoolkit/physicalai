@@ -26,6 +26,7 @@ Unit contract at the driver boundary:
 from __future__ import annotations
 
 import contextlib
+import math
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, Literal
@@ -86,6 +87,8 @@ class WidowXAI(Robot):
         ip: IP address of the robot arm (e.g. ``"192.168.1.2"``).
         role: ``"follower"`` (position control) or ``"leader"``
             (external effort mode for teleoperation).
+        goal_time_scale: Multiplier for action goal times. Defaults to three
+            control ticks so consecutive motion targets overlap.
 
     Note:
         Non-gripper joint positions are exposed in degrees for read/write at
@@ -97,18 +100,25 @@ class WidowXAI(Robot):
     NUM_JOINTS: ClassVar[int] = len(JOINT_ORDER)
     MAX_RELATIVE_TARGET: ClassVar[float] = 0.25
 
-    def __init__(self, ip: str, role: Literal["leader", "follower"] = "follower") -> None:
+    def __init__(
+        self, ip: str, role: Literal["leader", "follower"] = "follower", *, goal_time_scale: float = 3.0
+    ) -> None:
         """Initialize the WidowXAI driver.
 
         Raises:
-            ValueError: If role is not "leader" or "follower".
+            ValueError: If role is invalid or goal_time_scale is not finite and positive.
         """
         if role not in VALID_ROLES:
             msg = f"Invalid role {role!r}. Must be one of {VALID_ROLES}."
             raise ValueError(msg)
 
+        if not math.isfinite(goal_time_scale) or goal_time_scale <= 0:
+            msg = "goal_time_scale must be finite and positive."
+            raise ValueError(msg)
+
         self._ip = ip
         self._role = role
+        self._goal_time_scale = goal_time_scale
         self._driver: TrossenArmDriver | None = None
 
     @property
@@ -130,6 +140,11 @@ class WidowXAI(Robot):
     def role(self) -> str:
         """Robot role (``"leader"`` or ``"follower"``)."""
         return self._role
+
+    @property
+    def goal_time_scale(self) -> float:
+        """Multiplier applied to action goal times before sending them to the SDK."""
+        return self._goal_time_scale
 
     def _require_driver(self) -> TrossenArmDriver:
         if self._driver is None:
@@ -252,7 +267,8 @@ class WidowXAI(Robot):
             action: Array of shape ``(N,)`` where N >= 7. Only the first 7
                 elements (joint positions) are used; extra dimensions
                 (e.g. predicted velocities) are ignored.
-            goal_time: Minimum time (seconds) for the arm to reach the target.
+            goal_time: Requested time (seconds) to reach the target, multiplied
+                by ``goal_time_scale`` before sending it to the controller.
 
         Raises:
             RuntimeError: If called on a leader arm.
@@ -277,7 +293,11 @@ class WidowXAI(Robot):
         present_positions = np.asarray(driver.get_all_positions(), dtype=np.float32)
         safe_action = self._ensure_safe_goal_position(target_radians, present_positions, self.MAX_RELATIVE_TARGET)
 
-        driver.set_all_positions(trossen_arm.VectorDouble(safe_action.tolist()), goal_time, False)
+        # Overlapping targets give the controller room to blend motion despite
+        # scheduling jitter between leader sampling and follower commands.
+        driver.set_all_positions(
+            trossen_arm.VectorDouble(safe_action.tolist()), goal_time * self._goal_time_scale, False
+        )
 
     def is_connected(self) -> bool:
         """Return True when the SDK driver is configured."""

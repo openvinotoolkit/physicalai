@@ -24,6 +24,28 @@ For two arms, construct `BimanualWidowXAI` from left and right `WidowXAI`
 instances. Installing this distribution also registers the Trossen entries in
 the Physical AI Studio robot catalog.
 
+## Motion timing
+
+The driver multiplies each action's `goal_time` by `goal_time_scale`, which
+defaults to **3.0**. At Studio's 100 Hz robot control rate, a 10 ms command
+therefore gets a 30 ms motion goal. Overlapping motion goals reduce stop-start
+motion caused by scheduling jitter. This applies to follower position commands,
+not homing, visual identification, or leader force feedback.
+
+In Studio, enable **Advanced configuration** in the robot form and set
+**Goal time multiplier**. For a bimanual robot, the setting applies to both arms.
+Existing payloads without this field use the new default. Restart Studio after
+updating the plugin to reload its payload schemas.
+
+For standalone use, pass `goal_time_scale` to `WidowXAI`:
+
+```python
+robot = WidowXAI(ip="192.168.1.100", goal_time_scale=3.0)
+```
+
+Larger values increase motion overlap and smoothing but add tracking lag; `1.0`
+restores unscaled action timing.
+
 ## URDF assets
 
 This package vendors the generated URDFs and mesh assets required by its
