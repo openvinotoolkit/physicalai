@@ -21,6 +21,7 @@ from physicalai.inference.preprocessors.resize import ResizeMode, ResizePreproce
 from physicalai.inference.preprocessors.rldx1 import Rldx1Preprocessor, Rldx1RopePreprocessor, Rldx1TokenComposer
 from physicalai.inference.preprocessors.smolvla import ResizeSmolVLA
 from physicalai.inference.preprocessors.stats_normalizer import StatsNormalizer
+from physicalai.inference.preprocessors.task_index import TaskIndexPreprocessor
 from physicalai.inference.preprocessors.to_tensor import ToFloatTensorPreprocessor
 from physicalai.inference.preprocessors.vla_jepa import VLAJEPAPreprocessor
 from physicalai.inference.preprocessors.xr0 import XR0Preprocessor
@@ -44,6 +45,7 @@ __all__ = [
     "Rldx1RopePreprocessor",
     "Rldx1TokenComposer",
     "StatsNormalizer",
+    "TaskIndexPreprocessor",
     "ToFloatTensorPreprocessor",
     "VLAJEPAPreprocessor",
     "XR0Preprocessor",
