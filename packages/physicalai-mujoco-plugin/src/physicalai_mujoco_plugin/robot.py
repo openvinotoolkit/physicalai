@@ -256,6 +256,7 @@ class MuJoCoRobot(OperatorControls):
         self._replay: Replay | None = None
         self._teleop: Teleop | None = None
         self._teleop_mouse = False
+        self._teleop_reported = False
         self._xr_host, self._xr_port = xr_host, xr_port
         self._xr: XRServer | None = None
         self._xr_scene: SceneStream | None = None
@@ -853,12 +854,29 @@ class MuJoCoRobot(OperatorControls):
             self._teleop.set_inputs(headset=False)  # another page took over: what the last one held is let go
         self._xr_session = sample.session if sample is not None else None
         self._teleop.set_inputs(headset=sample is not None)
+        self._report_teleop()
         if not self._teleop.drives:
             return
         from physicalai_mujoco_plugin.xr import robot_controllers  # noqa: PLC0415
 
         controllers = robot_controllers(sample, self._teleop.view) if sample is not None else None
         self._teleop.tick(data, control_dt, controllers)  # type: ignore[arg-type]
+
+    def _report_teleop(self) -> None:
+        """Tell the episode book when teleoperation starts or stops driving the arms.
+
+        Starting ends an autopilot episode in progress and gives the scene settings back, like any other
+        change to the scene; while it drives, no episode may start.
+        """
+        driving = self._teleop is not None and self._teleop.drives
+        if driving == self._teleop_reported or self._automation is None:
+            return
+        self._teleop_reported = driving
+        if driving:
+            from physicalai_mujoco_plugin.autopilot import TELEOP_REASON  # noqa: PLC0415
+
+            self._automation.end_episode_now(TELEOP_REASON)
+        self._automation.book.set_teleop(driving)
 
     def _update_bases(self) -> None:
         """Detect falls, reset on one when the scene asks for it (DRV-9), and publish the base status."""

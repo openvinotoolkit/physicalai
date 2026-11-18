@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from physicalai_studio_plugin.autopilot import LEADER_TIMEOUT_S, Episode, EpisodeOptions, EpisodeRequest
 
 from physicalai_mujoco_plugin import control, conveyor_automation
-from physicalai_mujoco_plugin.autopilot import STOPPED_READING_REASON, STUDIO_ABORT_REASON
+from physicalai_mujoco_plugin.autopilot import STOPPED_READING_REASON, STUDIO_ABORT_REASON, TELEOP_REASON
 from physicalai_mujoco_plugin.conveyor_automation import CONVEYOR_TASK, DEFAULT_MAX_ATTEMPTS
 from physicalai_mujoco_plugin.http_server import (
     HomeCommand,
@@ -32,6 +32,7 @@ from physicalai_mujoco_plugin.http_server import (
     SetObjectPoseCommand,
     SetOverviewCommand,
     SetSeedCommand,
+    SetTeleopCommand,
     ShutdownCommand,
     StopReplayCommand,
     SwitchSceneCommand,
@@ -387,6 +388,11 @@ CHANGES: dict[str, tuple[Callable[[MuJoCoRobot], object], str, Callable[[MuJoCoR
         lambda r: r._replay is not None and not r._automation.book.info().supported,  # noqa: SLF001
     ),
     "replay_stop": (lambda _r: StopReplayCommand(), "A replay was stopped.", lambda r: r._replay is None),  # noqa: SLF001
+    "teleop": (
+        lambda _r: SetTeleopCommand(mouse=True),
+        "The viewer's gripper handles were switched.",
+        lambda r: r._teleop.drives and not r._automation.book.info().supported,  # noqa: SLF001
+    ),
     "shutdown": (lambda _r: ShutdownCommand(), "The simulation is shutting down.", lambda _r: True),
 }
 
@@ -434,6 +440,18 @@ def test_the_native_viewer_reset_ends_the_episode(conveyor_robot: MuJoCoRobot) -
     robot._handle_viewer_reset()  # noqa: SLF001
     assert _book(robot).get(episode.id).reason == "The native viewer reset the scene."
     assert not robot._automation.drives_arm  # noqa: SLF001 - manual control again
+
+
+def test_a_headset_taking_the_arms_ends_the_episode(conveyor_robot: MuJoCoRobot) -> None:
+    """A headset session drives the arms without a command: the tick that sees it ends the episode."""
+    robot = conveyor_robot
+    episode = _running(robot)
+    with patch.object(robot._teleop, "headset", True):  # noqa: SLF001
+        robot._report_teleop()  # noqa: SLF001 - as the tick does once a session's sample arrives
+    ended = _book(robot).get(episode.id)
+    assert (ended.outcome, ended.reason) == ("aborted", TELEOP_REASON)
+    assert not robot._automation.drives_arm  # noqa: SLF001 - the scene settings are given back
+    assert not _book(robot).info().supported
 
 
 def test_a_scene_reset_of_its_own_ends_the_episode(conveyor_robot: MuJoCoRobot) -> None:

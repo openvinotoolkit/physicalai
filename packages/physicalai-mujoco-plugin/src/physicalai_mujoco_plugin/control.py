@@ -132,6 +132,8 @@ class OperatorControls:
     _teleop: Teleop | None
     _teleop_mouse: bool
     """Whether the viewer's gripper handles are on, kept across scene switches."""
+    _teleop_reported: bool
+    """Whether the episode book last heard that teleoperation drives the arms."""
     _xr: XRServer | None
 
     @property
@@ -788,6 +790,8 @@ _CHANGES = {
     "SetObjectPoseCommand": "An object was moved.",
     "SetAutopilotCommand": "The autopilot mode changed.",
     "SetOverviewCommand": "The overview camera moved.",
+    "SetTeleopCommand": "The viewer's gripper handles were switched.",
+    "SetToolTargetCommand": "A gripper was dragged in the viewer.",
     "ReplayCommand": "A replay started.",
     "StopReplayCommand": "A replay was stopped.",
     "ShutdownCommand": "The simulation is shutting down.",
