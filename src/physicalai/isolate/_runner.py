@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess  # noqa: S404  # ruff: ignore[noqa-comments] - entrypoints use argv with shell disabled.
 from contextlib import ExitStack, contextmanager, suppress
 from importlib import resources
@@ -32,18 +33,39 @@ _HOST_INTERPRETER_VARIABLES = frozenset({
 })
 
 # Runs the entrypoint without putting its folder or the working directory on sys.path.
+# argv[1] is a lifeline pipe fd (or "-"); EOF means the host died, so the worker group is killed.
 _BOOTSTRAP = """\
 import sys
 if sys.path[:1] == [""]:
     del sys.path[0]
+import os
 import runpy
-sys.argv = sys.argv[1:]
+import signal
+import threading
+lifeline = sys.argv[1]
+sys.argv = sys.argv[2:]
+if lifeline != "-":
+    fd = int(lifeline)
+    os.set_inheritable(fd, False)
+    def _watch_host():
+        while os.read(fd, 1):
+            pass
+        os.killpg(0, signal.SIGKILL)
+    threading.Thread(target=_watch_host, name="physicalai-isolate-lifeline", daemon=True).start()
 runpy.run_path(sys.argv[0], run_name="__main__")
 """
 
+_POSIX = os.name == "posix"
+_GRACE_SECONDS = 5.0
+
 
 class Session:
-    """A running process launched from a prepared environment."""
+    """A running process launched from a prepared environment.
+
+    On POSIX the worker runs in its own process group: :meth:`terminate`, :meth:`kill`, and
+    :meth:`close` reach its subprocesses too, and the whole group is killed if the host exits
+    without closing the session. On Windows only the direct child is signalled.
+    """
 
     def __init__(
         self,
@@ -54,10 +76,11 @@ class Session:
         self._process = process
         self._command = tuple(command)
         self._release_entrypoint: Callable[[], None] | None = release_entrypoint
+        self._closed = False
 
     @property
     def args(self) -> tuple[str, ...]:
-        """Startup argv tuple, including the interpreter's ``-c`` bootstrap."""
+        """Startup argv tuple, including the interpreter's ``-c`` bootstrap and lifeline argument."""
         return self._command
 
     @property
@@ -129,27 +152,46 @@ class Session:
         return result
 
     def send_signal(self, sig: int) -> None:
-        """Send *sig* to the child process."""
+        """Send *sig* to the direct child process only."""
         self._process.send_signal(sig)
 
     def terminate(self) -> None:
-        """Ask the child process to terminate."""
-        self._process.terminate()
+        """Ask the child and its subprocesses to terminate."""
+        if _POSIX:
+            self._signal_group(signal.SIGTERM)
+        else:
+            self._process.terminate()
 
     def kill(self) -> None:
-        """Force-kill the child process."""
-        self._process.kill()
+        """Force-kill the child and its subprocesses."""
+        if _POSIX:
+            self._signal_group(signal.SIGKILL)
+        else:
+            self._process.kill()
 
-    def close(self, *, timeout: float = 5.0) -> None:
-        """Stop a running child and release its process and entrypoint resources."""
-        if self.poll() is None:
-            with suppress(ProcessLookupError):
-                self._process.terminate()
-            try:
-                self.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
-                self.wait()
+    def close(self, *, timeout: float = _GRACE_SECONDS) -> None:
+        """Stop the child and its subprocesses, then release session resources.
+
+        Closes the child's stdin pipe so it can exit on its own, then sends SIGTERM, then
+        SIGKILL, waiting up to *timeout* seconds after each of the first two steps.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        running = self.poll() is None
+        if running and self._process.stdin is not None:
+            with suppress(OSError):
+                self._process.stdin.close()
+            running = not self._exited_within(timeout)
+        if running:
+            self.terminate()
+            running = not self._exited_within(timeout)
+        if running:
+            self.kill()
+            self.wait()
+        if _POSIX:
+            # Remove subprocesses the worker left behind; the group ID stays reserved while any live.
+            self._signal_group(signal.SIGKILL)
         self._release_resources()
         for stream in (self._process.stdin, self._process.stdout, self._process.stderr):
             if stream is not None:
@@ -164,8 +206,23 @@ class Session:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        del exc_type, exc_value, traceback
+        del exc_value, traceback
+        if _POSIX and exc_type is not None and issubclass(exc_type, KeyboardInterrupt) and self.poll() is None:
+            # The worker's own process group does not receive the terminal's Ctrl+C.
+            self._signal_group(signal.SIGINT)
+            self._exited_within(_GRACE_SECONDS)
         self.close()
+
+    def _exited_within(self, timeout: float) -> bool:
+        try:
+            self.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return False
+        return True
+
+    def _signal_group(self, sig: int) -> None:
+        with suppress(ProcessLookupError):
+            os.killpg(self._process.pid, sig)
 
     def _release_resources(self) -> None:
         release = self._release_entrypoint
@@ -196,7 +253,8 @@ def run(
         entrypoint: Script, folder with ``__main__.py``, or importlib resource executed for this run.
         args: Arguments forwarded as individual argv items after the entrypoint.
         check: Raise :class:`subprocess.CalledProcessError` for a non-zero status.
-        timeout: Maximum seconds to wait for completion.
+        timeout: Maximum seconds to wait for completion; on expiry the worker and its
+            subprocesses are killed and :class:`subprocess.TimeoutExpired` is raised.
         cwd: Optional child working directory.
         env: Base child environment, defaulting to the host environment. Python path variables
             such as ``PYTHONPATH`` are removed even when set here, and the prepared environment
@@ -206,19 +264,32 @@ def run(
 
     Returns:
         The standard-library completed-process result.
+
+    Raises:
+        subprocess.CalledProcessError: If *check* is set and the worker exits with a non-zero status.
+        subprocess.TimeoutExpired: If the worker does not finish within *timeout*.
     """
-    with _entrypoint_path(entrypoint) as script:
-        command = _command(prepared, script, args)
-        return subprocess.run(  # noqa: S603  # ruff: ignore[noqa-comments] - explicit interpreter and entrypoint argv, no shell.
-            command,
-            check=check,
-            timeout=timeout,
-            cwd=cwd,
-            env=_child_environment(prepared, env),
-            input=input_data,
-            capture_output=capture_output,
-            shell=False,
-        )
+    session = start(
+        prepared,
+        entrypoint,
+        args,
+        cwd=cwd,
+        env=env,
+        stdin=None if input_data is None else subprocess.PIPE,
+        stdout=subprocess.PIPE if capture_output else None,
+        stderr=subprocess.PIPE if capture_output else None,
+    )
+    with session:
+        try:
+            stdout, stderr = session.communicate(input_data, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            session.kill()
+            raise
+        returncode = session.wait()
+    command = list(session.args)
+    if check and returncode:
+        raise subprocess.CalledProcessError(returncode, command, stdout, stderr)
+    return subprocess.CompletedProcess(command, returncode, stdout, stderr)
 
 
 def start(
@@ -255,16 +326,26 @@ def start(
     resources_stack = ExitStack()
     try:
         script = resources_stack.enter_context(_entrypoint_path(entrypoint))
-        command = _command(prepared, script, args)
-        process = subprocess.Popen(  # noqa: S603  # ruff: ignore[noqa-comments] - explicit interpreter and entrypoint argv, no shell.
-            command,
-            cwd=cwd,
-            env=_child_environment(prepared, env),
-            stdin=stdin,
-            stdout=stdout,
-            stderr=stderr,
-            shell=False,
-        )
+        lifeline = None
+        if _POSIX:
+            lifeline, lifeline_write = os.pipe()
+            resources_stack.callback(os.close, lifeline_write)
+        command = _command(prepared, script, args, lifeline)
+        try:
+            process = subprocess.Popen(  # noqa: S603  # ruff: ignore[noqa-comments] - explicit interpreter and entrypoint argv, no shell.
+                command,
+                cwd=cwd,
+                env=_child_environment(prepared, env),
+                stdin=stdin,
+                stdout=stdout,
+                stderr=stderr,
+                shell=False,
+                pass_fds=() if lifeline is None else (lifeline,),
+                process_group=0 if _POSIX else None,
+            )
+        finally:
+            if lifeline is not None:
+                os.close(lifeline)
     except BaseException:
         resources_stack.close()
         raise
@@ -292,14 +373,20 @@ def _check_entrypoint(path: Path) -> None:
         raise FileNotFoundError(msg)
 
 
-def _command(prepared: PreparedEnvironment, script: Path, args: Sequence[str]) -> list[str]:
+def _command(
+    prepared: PreparedEnvironment,
+    script: Path,
+    args: Sequence[str],
+    lifeline: int | None,
+) -> list[str]:
     if isinstance(args, str) or not all(isinstance(argument, str) for argument in args):
         msg = "Entrypoint arguments must be a sequence of strings."
         raise TypeError(msg)
     if not prepared.python.is_file():
         msg = f"Prepared environment has no Python interpreter at {prepared.python}."
         raise FileNotFoundError(msg)
-    return [str(prepared.python), "-c", _BOOTSTRAP, str(script), *args]
+    lifeline_argument = "-" if lifeline is None else str(lifeline)
+    return [str(prepared.python), "-c", _BOOTSTRAP, lifeline_argument, str(script), *args]
 
 
 def _child_environment(prepared: PreparedEnvironment, env: Mapping[str, str] | None) -> dict[str, str]:

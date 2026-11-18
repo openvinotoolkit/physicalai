@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
+import time
+from contextlib import suppress
 from dataclasses import fields
 from pathlib import Path
 from typing import Any
@@ -11,6 +14,8 @@ import pytest
 
 from physicalai.isolate import Environment, PreparedEnvironment, SyncProfile, run, start
 from physicalai.isolate._runner import _BOOTSTRAP
+
+posix_only = pytest.mark.skipif(os.name != "posix", reason="worker process groups are POSIX-only")
 
 
 def _prepared(path: Path) -> PreparedEnvironment:
@@ -34,6 +39,53 @@ def _activated(prepared: PreparedEnvironment, search_path: str = os.defpath) -> 
     }
 
 
+class _FakeChild:
+    pid = 123
+    stdin = stdout = stderr = None
+
+    def __init__(self) -> None:
+        self.returncode: int | None = None
+        self.communications: list[tuple[bytes | None, float | None]] = []
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        del timeout
+        self.returncode = 0
+        return 0
+
+    def communicate(self, input: bytes | None = None, timeout: float | None = None) -> tuple[bytes, bytes]:
+        self.communications.append((input, timeout))
+        self.returncode = 0
+        return b"out", b"err"
+
+
+def _fake_popen(
+    monkeypatch: pytest.MonkeyPatch,
+    child: _FakeChild,
+) -> list[tuple[list[str], dict[str, Any]]]:
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def fake_popen(command: list[str], **kwargs: Any) -> _FakeChild:
+        calls.append((command, kwargs))
+        return child
+
+    monkeypatch.setattr("physicalai.isolate._runner.subprocess.Popen", fake_popen)
+    # The fake pid must never reach a real process group.
+    monkeypatch.setattr("physicalai.isolate._runner.os.killpg", lambda pid, sig: None)
+    return calls
+
+
+def _launch(prepared: PreparedEnvironment, entrypoint: Path, kwargs: dict[str, Any]) -> list[str]:
+    lifeline = str(kwargs["pass_fds"][0]) if kwargs["pass_fds"] else "-"
+    return [str(prepared.python), "-c", _BOOTSTRAP, lifeline, str(entrypoint)]
+
+
+def _process_options() -> dict[str, Any]:
+    return {"shell": False, "process_group": 0 if os.name == "posix" else None}
+
+
 def test_run_passes_the_entrypoint_and_arguments_as_argv(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -41,14 +93,8 @@ def test_run_passes_the_entrypoint_and_arguments_as_argv(
     prepared = _prepared(tmp_path / "prepared")
     entrypoint = tmp_path / "worker with spaces.py"
     entrypoint.write_text("pass\n", encoding="utf-8")
-    calls: list[tuple[list[str], dict[str, Any]]] = []
-    completed = subprocess.CompletedProcess([], 0, stdout=b"done", stderr=b"")
-
-    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
-        calls.append((command, kwargs))
-        return completed
-
-    monkeypatch.setattr("physicalai.isolate._runner.subprocess.run", fake_run)
+    child = _FakeChild()
+    calls = _fake_popen(monkeypatch, child)
 
     result = run(
         prepared,
@@ -60,21 +106,19 @@ def test_run_passes_the_entrypoint_and_arguments_as_argv(
         timeout=5,
     )
 
-    assert result is completed
-    assert calls == [
-        (
-            [str(prepared.python), "-c", _BOOTSTRAP, str(entrypoint), "--label", "two words"],
-            {
-                "check": True,
-                "timeout": 5,
-                "cwd": tmp_path,
-                "env": {"WORKER_MODE": "test", **_activated(prepared)},
-                "input": None,
-                "capture_output": True,
-                "shell": False,
-            },
-        ),
-    ]
+    [(command, kwargs)] = calls
+    assert command == [*_launch(prepared, entrypoint, kwargs), "--label", "two words"]
+    assert len(kwargs.pop("pass_fds")) == (1 if os.name == "posix" else 0)
+    assert kwargs == {
+        "cwd": tmp_path,
+        "env": {"WORKER_MODE": "test", **_activated(prepared)},
+        "stdin": None,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        **_process_options(),
+    }
+    assert child.communications == [(None, 5)]
+    assert (result.args, result.returncode, result.stdout, result.stderr) == (command, 0, b"out", b"err")
     assert {field.name for field in fields(Environment)} == {"source", "profile"}
 
 
@@ -100,64 +144,23 @@ def test_start_returns_a_session_for_the_entrypoint_launched_now(
     prepared = _prepared(tmp_path / "prepared")
     entrypoint = tmp_path / "session.py"
     entrypoint.write_text("pass\n", encoding="utf-8")
-    calls: list[tuple[list[str], dict[str, Any]]] = []
-
-    class Child:
-        args: list[str] = []
-        pid = 123
-        returncode: int | None = None
-
-        def poll(self) -> int | None:
-            return self.returncode
-
-        def wait(self, timeout: float | None = None) -> int:
-            del timeout
-            self.returncode = 0
-            return 0
-
-        def communicate(
-            self,
-            input: bytes | None = None,
-            timeout: float | None = None,
-        ) -> tuple[bytes | None, bytes | None]:
-            del input, timeout
-            self.returncode = 0
-            return b"out", b"err"
-
-        def terminate(self) -> None:
-            self.returncode = -15
-
-        def kill(self) -> None:
-            self.returncode = -9
-
-        def send_signal(self, sig: int) -> None:
-            self.returncode = -sig
-
-    child = Child()
-
-    def fake_popen(command: list[str], **kwargs: Any) -> Child:
-        calls.append((command, kwargs))
-        return child
-
-    monkeypatch.setattr("physicalai.isolate._runner.subprocess.Popen", fake_popen)
+    calls = _fake_popen(monkeypatch, _FakeChild())
 
     session = start(prepared, entrypoint, args=("--once",), env={"SESSION": "yes"})
 
     assert session.pid == 123
     assert session.wait() == 0
-    assert calls == [
-        (
-            [str(prepared.python), "-c", _BOOTSTRAP, str(entrypoint), "--once"],
-            {
-                "cwd": None,
-                "env": {"SESSION": "yes", **_activated(prepared)},
-                "stdin": None,
-                "stdout": None,
-                "stderr": None,
-                "shell": False,
-            },
-        ),
-    ]
+    [(command, kwargs)] = calls
+    assert command == [*_launch(prepared, entrypoint, kwargs), "--once"]
+    assert len(kwargs.pop("pass_fds")) == (1 if os.name == "posix" else 0)
+    assert kwargs == {
+        "cwd": None,
+        "env": {"SESSION": "yes", **_activated(prepared)},
+        "stdin": None,
+        "stdout": None,
+        "stderr": None,
+        **_process_options(),
+    }
 
 
 def test_run_removes_host_python_settings_from_an_explicit_environment(
@@ -167,13 +170,7 @@ def test_run_removes_host_python_settings_from_an_explicit_environment(
     prepared = _prepared(tmp_path / "prepared")
     entrypoint = tmp_path / "worker.py"
     entrypoint.write_text("pass\n", encoding="utf-8")
-    environments: list[dict[str, str]] = []
-
-    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
-        environments.append(kwargs["env"])
-        return subprocess.CompletedProcess(command, 0)
-
-    monkeypatch.setattr("physicalai.isolate._runner.subprocess.run", fake_run)
+    calls = _fake_popen(monkeypatch, _FakeChild())
 
     run(
         prepared,
@@ -181,7 +178,7 @@ def test_run_removes_host_python_settings_from_an_explicit_environment(
         env={"PYTHONPATH": "/host", "VIRTUAL_ENV": "/host/venv", "PATH": "/usr/bin", "KEEP": "1"},
     )
 
-    assert environments == [{"KEEP": "1", **_activated(prepared, "/usr/bin")}]
+    assert [kwargs["env"] for _, kwargs in calls] == [{"KEEP": "1", **_activated(prepared, "/usr/bin")}]
 
 
 def test_children_do_not_import_from_the_host_python_path(
@@ -297,3 +294,172 @@ def test_entrypoints_must_be_a_file_or_a_folder_with_a_main_module(tmp_path: Pat
 
     with pytest.raises(FileNotFoundError, match="__main__.py"):
         run(prepared, folder)
+
+
+_SPAWNING_WORKER = """\
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+Path(sys.argv[1]).write_text(f"{os.getpid()} {child.pid}\\n", encoding="utf-8")
+time.sleep(60)
+"""
+
+_HOST = """\
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+from physicalai.isolate import PreparedEnvironment, SyncProfile, start
+prepared = PreparedEnvironment(path=Path(sys.argv[1]), key="b" * 64, profile=SyncProfile())
+pid_file = Path(sys.argv[3])
+start(prepared, sys.argv[2], args=(str(pid_file),), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+while not pid_file.exists():
+    time.sleep(0.05)
+os.kill(os.getpid(), signal.SIGKILL)
+"""
+
+
+def _read_pids(path: Path, timeout: float = 10.0) -> list[int]:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists() and (text := path.read_text(encoding="utf-8")).endswith("\n"):
+            return [int(pid) for pid in text.split()]
+        time.sleep(0.05)
+    msg = f"The worker did not write {path}."
+    raise AssertionError(msg)
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    with suppress(OSError):
+        # Zombies waiting for an unrelated parent to reap them count as stopped.
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+    return True
+
+
+def _survivors(pids: list[int], timeout: float = 5.0) -> list[int]:
+    deadline = time.monotonic() + timeout
+    while (alive := [pid for pid in pids if _alive(pid)]) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return alive
+
+
+def _kill(pids: list[int]) -> None:
+    for pid in pids:
+        with suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+
+
+@posix_only
+def test_workers_and_their_subprocesses_exit_when_the_host_is_killed(tmp_path: Path) -> None:
+    prepared = _linked_prepared(tmp_path / "prepared")
+    worker = tmp_path / "worker.py"
+    worker.write_text(_SPAWNING_WORKER, encoding="utf-8")
+    pid_file = tmp_path / "pids"
+
+    host = subprocess.run(
+        [sys.executable, "-c", _HOST, str(prepared.path), str(worker), str(pid_file)],
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert host.returncode == -signal.SIGKILL, host.stderr
+    pids = _read_pids(pid_file)
+
+    try:
+        assert _survivors(pids) == []
+    finally:
+        _kill(pids)
+
+
+@posix_only
+def test_close_stops_the_subprocesses_of_a_worker(tmp_path: Path) -> None:
+    prepared = _linked_prepared(tmp_path / "prepared")
+    worker = tmp_path / "worker.py"
+    worker.write_text(_SPAWNING_WORKER, encoding="utf-8")
+    pid_file = tmp_path / "pids"
+    session = start(prepared, worker, args=(str(pid_file),))
+    pids = _read_pids(pid_file)
+
+    try:
+        session.close(timeout=2)
+        assert _survivors(pids) == []
+    finally:
+        _kill(pids)
+
+
+@posix_only
+def test_run_timeout_stops_the_subprocesses_of_a_worker(tmp_path: Path) -> None:
+    prepared = _linked_prepared(tmp_path / "prepared")
+    worker = tmp_path / "worker.py"
+    worker.write_text(_SPAWNING_WORKER, encoding="utf-8")
+    pid_file = tmp_path / "pids"
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        run(prepared, worker, args=(str(pid_file),), timeout=2)
+    pids = _read_pids(pid_file)
+
+    try:
+        assert _survivors(pids) == []
+    finally:
+        _kill(pids)
+
+
+def test_close_lets_a_worker_exit_when_its_stdin_closes(tmp_path: Path) -> None:
+    prepared = _linked_prepared(tmp_path / "prepared")
+    worker = tmp_path / "worker.py"
+    worker.write_text("import sys\nsys.stdin.read()\n", encoding="utf-8")
+    session = start(prepared, worker, stdin=subprocess.PIPE)
+
+    session.close(timeout=10)
+
+    assert session.returncode == 0
+
+
+@posix_only
+def test_close_kills_a_worker_that_ignores_stdin_and_sigterm(tmp_path: Path) -> None:
+    prepared = _linked_prepared(tmp_path / "prepared")
+    worker = tmp_path / "worker.py"
+    worker.write_text(
+        "import signal\nimport time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "print('ready', flush=True)\n"
+        "time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    session = start(prepared, worker, stdout=subprocess.PIPE)
+    assert session.stdout is not None
+    session.stdout.readline()
+
+    session.close(timeout=0.5)
+
+    assert session.returncode == -signal.SIGKILL
+
+
+@posix_only
+def test_ctrl_c_in_the_host_is_forwarded_to_the_worker(tmp_path: Path) -> None:
+    prepared = _linked_prepared(tmp_path / "prepared")
+    worker = tmp_path / "worker.py"
+    worker.write_text(
+        "import signal\nimport sys\nimport time\n"
+        "signal.signal(signal.SIGINT, lambda *_: sys.exit(0))\n"
+        "print('ready', flush=True)\n"
+        "time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    session = start(prepared, worker, stdout=subprocess.PIPE)
+    assert session.stdout is not None
+    session.stdout.readline()
+
+    with pytest.raises(KeyboardInterrupt), session:
+        raise KeyboardInterrupt
+
+    assert session.returncode == 0
