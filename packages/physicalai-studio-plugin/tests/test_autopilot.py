@@ -1,11 +1,12 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""The autopilot protocol: the descriptor, the models, the examples and the client."""
+"""The autopilot protocol: the descriptor, the models and the client."""
 
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from typing import Any, cast
 
@@ -27,12 +28,79 @@ from physicalai_studio_plugin.autopilot import (
     EpisodeRequest,
     loopback_root,
 )
-from physicalai_studio_plugin.testing.autopilot import example, example_model, example_names
+
+# Payloads of protocol 1 as JSON decodes them, with the model each one is.
+EXAMPLES: dict[str, tuple[str, dict[str, Any]]] = {
+    # GET {path}: a scene with an autopilot, no episode yet.
+    "info_supported": (
+        "AutopilotInfo",
+        {
+            "protocol": 1,
+            "scene": "bucket_sort",
+            "supported": True,
+            "reason": None,
+            "options": ["max_attempts", "recovery_fraction"],
+            "joint_names": ["joint_0", "joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "gripper"],
+            "episode": None,
+        },
+    ),
+    # GET {path}: a scene without a demonstrator.
+    "info_unsupported": (
+        "AutopilotInfo",
+        {
+            "protocol": 1,
+            "scene": "tabletop_cube",
+            "supported": False,
+            "reason": "Scene 'tabletop_cube' has no autopilot; automatic recording needs conveyor or bucket_sort.",
+            "options": [],
+            "joint_names": [],
+            "episode": None,
+        },
+    ),
+    # POST {path}/episodes
+    "episode_request": ("EpisodeRequest", {"options": {"max_attempts": 3, "recovery_fraction": 0.2}}),
+    "episode_preparing": ("Episode", {"id": "e-0007", "phase": "preparing"}),
+    "episode_ready": ("Episode", {"id": "e-0007", "phase": "ready", "task": "Put the red cube in the blue bucket."}),
+    "episode_running": (
+        "Episode",
+        {"id": "e-0007", "phase": "running", "task": "Put the red cube in the blue bucket."},
+    ),
+    "episode_success_regrasp": (
+        "Episode",
+        {
+            "id": "e-0007",
+            "phase": "ended",
+            "task": "Put the red cube in the blue bucket.",
+            "outcome": "success",
+            "reason": "Success after a regrasp (the cube slipped).",
+            "clean": False,
+        },
+    ),
+    "episode_aborted_by_liveness": (
+        "Episode",
+        {
+            "id": "e-0008",
+            "phase": "ended",
+            "task": "Sort the items into the bin of their color.",
+            "outcome": "aborted",
+            "reason": "Physical AI Studio stopped reading the leader.",
+        },
+    ),
+    "error_wrong_phase": ("AutopilotError", {"code": "wrong_phase", "message": "Episode 'e-0007' is not ready."}),
+    "error_bad_option": (
+        "AutopilotError",
+        {"code": "bad_option", "message": "Scene 'conveyor_sort' does not take recovery_fraction."},
+    ),
+}
 
 
-@pytest.mark.parametrize("name", example_names())
+def example(name: str) -> dict[str, Any]:
+    return copy.deepcopy(EXAMPLES[name][1])
+
+
+@pytest.mark.parametrize("name", EXAMPLES)
 def test_every_example_validates_and_round_trips(name: str) -> None:
-    model: type[BaseModel] = getattr(autopilot, example_model(name))
+    model: type[BaseModel] = getattr(autopilot, EXAMPLES[name][0])
     parsed = model.model_validate(example(name))
     assert model.model_validate_json(parsed.model_dump_json()) == parsed
 
