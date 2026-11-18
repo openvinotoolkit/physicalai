@@ -450,8 +450,9 @@ class CatalogEntry:
 
         Returns:
             The entry's scenes, its profile's default scene, the payload's ``name`` as the owner name,
-            :meth:`start_argv`, ``start --seed``'s range, :meth:`launch_labels` and
-            :meth:`standalone_argv`.
+            :meth:`start_argv`, ``start --seed``'s range, :meth:`launch_labels`,
+            :meth:`standalone_argv` and the autopilot. Whether a scene has a demonstrator is up to the
+            running simulation (``GET /autopilot/v1``).
         """
         if self.profile.default_scene is None:
             return None
@@ -467,6 +468,7 @@ class CatalogEntry:
             max_seed=MAX_SEED,
             labels=self.launch_labels(),
             build_standalone_argv=self.standalone_argv,
+            autopilot=AutopilotSpec(leader_for=autopilot_leader),
         )
 
     def joint_names(self) -> tuple[str, ...]:
@@ -795,7 +797,6 @@ def autopilot_leader(follower_payload: MuJoCoRobotPayload, http_url: str) -> MuJ
 
 
 def _follower_definition(entry: CatalogEntry) -> RobotCatalogDefinition:
-    launch = entry.simulation_launch()
     return RobotCatalogDefinition(
         type=entry.type,
         display_name=entry.display_name,
@@ -804,10 +805,7 @@ def _follower_definition(entry: CatalogEntry) -> RobotCatalogDefinition:
         robot_payload=_payload_model(entry),
         asset=_entry_asset(entry),
         probe=MuJoCoRobotProbe(entry),
-        simulation=launch,
-        # Only a simulation Studio starts is recorded automatically; whether its scene has a demonstrator
-        # is up to the running simulation (GET /autopilot/v1).
-        autopilot=AutopilotSpec(leader_for=autopilot_leader) if launch is not None else None,
+        simulation=entry.simulation_launch(),
     )
 
 
