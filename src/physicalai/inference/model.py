@@ -627,7 +627,7 @@ class InferenceModel:
             if len(parts) >= min_parts_for_module_extraction:
                 return parts[-2]
 
-        model_files = list(self.export_dir.glob("*.*"))
+        model_files = sorted(self.export_dir.glob("*.*"))
         if model_files:
             name = model_files[0].stem
             for suffix in ["_policy", "_model"]:
@@ -684,16 +684,28 @@ class InferenceModel:
     def _get_model_path(self) -> Path:
         """Get path to model file based on backend.
 
-        Uses extensions registered in
-        :data:`~physicalai.inference.adapters.backend_registry` to locate
-        the artifact, in registration order.
+        Prefers the filename the manifest declares for this backend in
+        ``model.artifacts`` so the loaded model is exactly the reviewed
+        artifact. Only when the manifest declares none does it fall back to
+        ``<policy_name><ext>`` and then to a search of the export directory,
+        using extensions registered in
+        :data:`~physicalai.inference.adapters.backend_registry`.
 
         Returns:
             Path to model file.
 
         Raises:
-            FileNotFoundError: If no matching model file is found.
+            FileNotFoundError: If the declared artifact is missing, or no
+                matching model file is found.
         """
+        declared = self.manifest.model.artifacts.get(self.backend)
+        if declared:
+            model_path = self._resolve_export_path(declared)
+            if not model_path.exists():
+                msg = f"Model artifact {declared!r} declared in the manifest is missing from {self.export_dir}"
+                raise FileNotFoundError(msg)
+            return model_path
+
         extensions = adapter_registry.extensions_of(self.backend)
 
         if self.policy_name:
@@ -703,13 +715,45 @@ class InferenceModel:
                     return model_path
 
         for ext in extensions:
-            files = list(self.export_dir.glob(f"*{ext}"))
+            files = sorted(self.export_dir.glob(f"*{ext}"))
             if files:
                 return files[0]
 
         ext_str = " or ".join(extensions)
         msg = f"No {ext_str} model file found in {self.export_dir}"
         raise FileNotFoundError(msg)
+
+    def _resolve_export_path(self, name: str) -> Path:
+        r"""Resolve a manifest-declared filename against the export directory.
+
+        The check is lexical and uses the parts of *name* as the current
+        platform parses them: a rooted or drive-qualified name (any non-empty
+        :attr:`~pathlib.PurePath.anchor`) or a ``".."`` component is rejected,
+        so the returned path always lies inside the export directory by name.
+        On Windows this rejects names such as ``\Windows\model.xml``; on POSIX
+        a backslash is an ordinary filename character, so such a name is one
+        literal file inside the export directory.
+
+        The result is deliberately not resolved: in a Hugging Face Hub snapshot
+        the artifact is a symlink into a sibling ``blobs/`` store, and following
+        it would reject every downloaded model. This matches
+        :func:`~physicalai.inference.component_factory.resolve_artifact`.
+
+        Returns:
+            The absolute path to the artifact inside the export directory.
+
+        Raises:
+            ValueError: If *name* escapes the export directory or names the
+                export directory itself (for example ``"."``).
+        """
+        relative = Path(name)
+        if relative.anchor or ".." in relative.parts:
+            msg = f"Model artifact {name!r} escapes the export directory"
+            raise ValueError(msg)
+        if not relative.parts:
+            msg = f"Model artifact {name!r} does not name a file in the export directory"
+            raise ValueError(msg)
+        return self.export_dir.resolve() / relative
 
     def __repr__(self) -> str:
         """Return string representation of the model."""
