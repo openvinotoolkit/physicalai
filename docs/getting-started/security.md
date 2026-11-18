@@ -37,7 +37,9 @@ its contents.
 
 The `SharedRobot` network transport uses Zenoh `/action`, `/state`, and `/metadata` traffic to share one robot
 connection across processes. It has no application-level authentication, access control, or encryption of
-its own. Local-only mode is the default.
+its own. Local-only mode is the default: only the owner opens a TCP listener, bound to `127.0.0.1`.
+Subscriber, client, and discovery sessions do not open TCP listeners, even with `allow_remote=True`;
+remote-mode sessions use scouting and outbound connections to reach owners.
 
 If you enable `allow_remote=True` (`--allow_remote` on `physicalai robot serve`/`discover`), use it only on
 an isolated, firewalled robot-cell network (VLAN/firewall) or with Zenoh ACL/TLS configured yourself — the

@@ -833,3 +833,43 @@ class TestSimulationLaunch:
         result = subprocess.run(command, check=False, capture_output=True, text=True)  # noqa: S603
         assert result.returncode == 0
         assert "--seed" in result.stdout
+
+
+class TestAutopilot:
+    """Simulated followers say how Studio records their autopilot: through a virtual leader."""
+
+    def test_followers_with_a_simulation_have_an_autopilot_spec(self) -> None:
+        for definition in _definitions():
+            if definition.role == "leader":
+                assert definition.autopilot is None
+            else:
+                assert (definition.autopilot is not None) == (definition.simulation is not None), definition.type
+        spec = _definitions()[0].autopilot
+        assert spec is not None
+        assert (spec.protocol, spec.path) == (1, "/autopilot/v1")
+
+    def test_the_leader_reads_the_address_studio_found(self) -> None:
+        definition = _definitions()[0]
+        payload = MuJoCoSO101Payload(http_url="http://127.0.0.1:1")
+        leader = definition.autopilot.leader_for(payload, "http://127.0.0.1:43210")  # type: ignore[union-attr]
+        assert isinstance(leader, MuJoCoVirtualLeader)
+        assert (leader.host, leader.http_port) == ("127.0.0.1", 43210)
+        # It exports like any catalog driver, for Studio's recipe, with no binding to an instance.
+        init_args = Config.from_instance(leader).to_dict()["init_args"]
+        assert init_args["http_port"] == 43210  # noqa: PLR2004
+        assert "instance_id" not in init_args
+
+    @pytest.mark.parametrize(
+        "http_url",
+        [
+            "http://10.0.0.5:8080",
+            "http://127.0.0.1",
+            "https://127.0.0.1:8080",
+            "http://127.0.0.1:8080/api",
+            "http://user:pw@127.0.0.1:8080",
+        ],
+    )
+    def test_the_leader_reads_only_a_root_loopback_address(self, http_url: str) -> None:
+        definition = _definitions()[0]
+        with pytest.raises(ValueError, match="this machine|root"):
+            definition.autopilot.leader_for(MuJoCoSO101Payload(), http_url)  # type: ignore[union-attr]

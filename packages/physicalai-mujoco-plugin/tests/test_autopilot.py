@@ -197,29 +197,21 @@ def test_autopilot_markdown() -> None:
 
 
 @pytest.mark.parametrize("jump", ["reload", "reset"])
-def test_a_reload_or_reset_discards_the_studio_episode_in_progress(robot: MuJoCoRobot, jump: str) -> None:
-    from physicalai_mujoco_plugin.studio_recorder import AutoRecorder, RecordingOptions
+def test_a_reload_or_reset_outside_the_episode_aborts_it(robot: MuJoCoRobot, jump: str) -> None:
+    from physicalai_studio_plugin.autopilot import EpisodeRequest
 
-    sent: list[str] = []
-
-    class Link:
-        phase, error, target = "connected", None, None
-        state = {"dataset_loaded": True, "follower_source": "teleop", "is_recording": True}
-
-        def start(self) -> None: ...
-        def close(self) -> None: ...
-        def take_ack(self, _request_id: str) -> None: ...
-
-        def send(self, event: str, _data: object = None, request_id: str | None = None) -> None:
-            sent.append(event)
-
-    recorder = AutoRecorder(Link)
-    robot._automation.recorder = recorder
-    recorder.enable(RecordingOptions())
-    recorder._phase = "recording"  # mid-episode
+    automation = robot._automation
+    book = automation.book
+    assert book.info().supported, book.info().reason
+    episode = book.create(EpisodeRequest())
+    robot.get_observation()  # the sim thread takes the episode over
+    assert automation.drives_arm  # it holds the arm until the episode begins
     if jump == "reload":
         assert robot._switch_to_scene("conveyor_sort")
     else:
         robot._run_scene_reset()
-    assert sent == ["discard_episode"]
-    assert recorder.phase == "saving"
+    ended = book.get(episode.id)
+    assert (ended.phase, ended.outcome) == ("ended", "aborted")
+    assert "scene" in (ended.reason or "")
+    robot.get_observation()
+    assert not automation.drives_arm  # back to manual control
