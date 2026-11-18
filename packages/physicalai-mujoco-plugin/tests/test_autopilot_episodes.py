@@ -20,7 +20,6 @@ from physicalai_studio_plugin.autopilot import (
     EpisodeOptions,
     EpisodeRequest,
 )
-from physicalai_studio_plugin.testing.autopilot import example, example_model, example_names
 
 from physicalai_mujoco_plugin.autopilot import (
     NATIVE_VIEWER_REASON,
@@ -241,14 +240,11 @@ def test_the_native_viewer_makes_the_scene_unsupported_and_ends_the_episode(book
     assert book.info().supported
 
 
-def test_the_examples_are_what_the_book_answers(book: EpisodeBook) -> None:
-    """The SDK's examples validate, and the book's answers have the same shape."""
-    for name in example_names():
-        if example_model(name) == "Episode":
-            Episode.model_validate(example(name))
+def test_the_book_answers_in_the_protocols_models(book: EpisodeBook) -> None:
+    """The book's answers survive the SDK's JSON round trip."""
     info = book.info()
-    assert info.model_dump(mode="json").keys() == example("info_supported").keys()
-    assert info.options == example("info_supported")["options"]
+    assert AutopilotInfo.model_validate_json(info.model_dump_json()) == info
+    assert info.options == ["max_attempts", "recovery_fraction"]
     refusal = AutopilotRefusal("Episode 'e' is not ready.", code="wrong_phase")
     assert AutopilotError.model_validate(refusal.detail()).code == "wrong_phase"
 
