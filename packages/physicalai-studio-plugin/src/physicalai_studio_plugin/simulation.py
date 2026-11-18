@@ -13,6 +13,8 @@ from pydantic import BaseModel
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
+    from .autopilot import AutopilotSpec
+
 _PayloadT = TypeVar("_PayloadT", bound=BaseModel)
 _PayloadT_contra = TypeVar("_PayloadT_contra", bound=BaseModel, contravariant=True)
 
@@ -125,6 +127,8 @@ class SimulationLaunch(Generic[_PayloadT]):
             a scene, a payload and an optional seed, or ``None`` when the plugin offers none.
         build_payload_argv: Builds the command line for a scene, the robot's payload and an optional
             seed, in place of ``build_argv``.
+        autopilot: How Studio records the simulation's demonstrator (its autopilot), or ``None`` when
+            it has none.
     """
 
     scenes: tuple[SimulationScene, ...]
@@ -135,6 +139,7 @@ class SimulationLaunch(Generic[_PayloadT]):
     labels: tuple[str, ...] = ()
     build_standalone_argv: SimulationPayloadArgvBuilder[_PayloadT] | None = None
     build_payload_argv: SimulationPayloadArgvBuilder[_PayloadT] | None = None
+    autopilot: AutopilotSpec[_PayloadT] | None = None
 
     def __post_init__(self) -> None:
         """Validate the scenes, the default scene, the seed range, the labels and the builders.

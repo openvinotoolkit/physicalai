@@ -150,7 +150,7 @@ class LeaderFactory(Protocol[_PayloadT_contra]):
 class AutopilotSpec(Generic[_PayloadT]):
     """That a simulated robot type's simulation has an autopilot, and how to lead the follower from it.
 
-    Set it on :attr:`RobotCatalogDefinition.autopilot` of a follower whose ``simulation`` is set. Whether the
+    Set it on :attr:`SimulationLaunch.autopilot` of a simulated follower. Whether the
     running scene has one is :attr:`AutopilotInfo.supported`.
     """
 
