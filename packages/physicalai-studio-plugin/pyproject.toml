@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.12",
     "physicalai>=0.1.1",
+    "httpx>=0.27",
 ]
 
 [build-system]
