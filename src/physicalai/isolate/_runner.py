@@ -18,6 +18,29 @@ if TYPE_CHECKING:
 
     from ._environment import PreparedEnvironment
 
+# Host variables that redirect module lookup or interpreter identity away from the prepared venv.
+_HOST_INTERPRETER_VARIABLES = frozenset({
+    "PYTHONEXECUTABLE",
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "PYTHONPLATLIBDIR",
+    "PYTHONSAFEPATH",
+    "PYTHONUSERBASE",
+    "VIRTUAL_ENV",
+    "VIRTUAL_ENV_PROMPT",
+    "__PYVENV_LAUNCHER__",
+})
+
+# Runs the entrypoint without putting its folder or the working directory on sys.path.
+_BOOTSTRAP = """\
+import sys
+if sys.path[:1] == [""]:
+    del sys.path[0]
+import runpy
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+"""
+
 
 class Session:
     """A running process launched from a prepared environment."""
@@ -34,7 +57,7 @@ class Session:
 
     @property
     def args(self) -> tuple[str, ...]:
-        """Startup argv tuple."""
+        """Startup argv tuple, including the interpreter's ``-c`` bootstrap."""
         return self._command
 
     @property
@@ -165,28 +188,33 @@ def run(
 ) -> subprocess.CompletedProcess[bytes]:
     """Run a Python entrypoint to completion in a prepared environment.
 
+    Only the entrypoint's own code is importable: a single script, or a folder with
+    ``__main__.py`` whose modules sit inside that folder.
+
     Args:
         prepared: Environment returned by :func:`physicalai.isolate.prepare`.
-        entrypoint: Script path or importlib resource executed for this run.
+        entrypoint: Script, folder with ``__main__.py``, or importlib resource executed for this run.
         args: Arguments forwarded as individual argv items after the entrypoint.
         check: Raise :class:`subprocess.CalledProcessError` for a non-zero status.
         timeout: Maximum seconds to wait for completion.
         cwd: Optional child working directory.
-        env: Child environment, replacing the inherited environment when supplied.
+        env: Base child environment, defaulting to the host environment. Python path variables
+            such as ``PYTHONPATH`` are removed even when set here, and the prepared environment
+            is activated.
         input_data: Bytes sent to the child's stdin.
         capture_output: Capture stdout and stderr in the completed-process result.
 
     Returns:
         The standard-library completed-process result.
     """
-    with _entrypoint_file(entrypoint) as script:
+    with _entrypoint_path(entrypoint) as script:
         command = _command(prepared, script, args)
         return subprocess.run(  # noqa: S603  # ruff: ignore[noqa-comments] - explicit interpreter and entrypoint argv, no shell.
             command,
             check=check,
             timeout=timeout,
             cwd=cwd,
-            env=None if env is None else dict(env),
+            env=_child_environment(prepared, env),
             input=input_data,
             capture_output=capture_output,
             shell=False,
@@ -206,12 +234,17 @@ def start(
 ) -> Session:
     """Start an entrypoint and return a controllable process session.
 
+    Only the entrypoint's own code is importable: a single script, or a folder with
+    ``__main__.py`` whose modules sit inside that folder.
+
     Args:
         prepared: Environment returned by :func:`physicalai.isolate.prepare`.
-        entrypoint: Script path or importlib resource executed for this session.
+        entrypoint: Script, folder with ``__main__.py``, or importlib resource executed for this session.
         args: Arguments forwarded as individual argv items after the entrypoint.
         cwd: Optional child working directory.
-        env: Child environment, replacing the inherited environment when supplied.
+        env: Base child environment, defaulting to the host environment. Python path variables
+            such as ``PYTHONPATH`` are removed even when set here, and the prepared environment
+            is activated.
         stdin: Optional child stdin stream or subprocess stream constant.
         stdout: Optional child stdout stream or subprocess stream constant.
         stderr: Optional child stderr stream or subprocess stream constant.
@@ -221,12 +254,12 @@ def start(
     """
     resources_stack = ExitStack()
     try:
-        script = resources_stack.enter_context(_entrypoint_file(entrypoint))
+        script = resources_stack.enter_context(_entrypoint_path(entrypoint))
         command = _command(prepared, script, args)
         process = subprocess.Popen(  # noqa: S603  # ruff: ignore[noqa-comments] - explicit interpreter and entrypoint argv, no shell.
             command,
             cwd=cwd,
-            env=None if env is None else dict(env),
+            env=_child_environment(prepared, env),
             stdin=stdin,
             stdout=stdout,
             stderr=stderr,
@@ -239,22 +272,24 @@ def start(
 
 
 @contextmanager
-def _entrypoint_file(
+def _entrypoint_path(
     entrypoint: str | os.PathLike[str] | Traversable,
 ) -> Generator[Path, None, None]:
     if isinstance(entrypoint, (str, os.PathLike)):
         path = Path(entrypoint).expanduser().resolve()
-        if not path.is_file():
-            msg = f"Entrypoint is not a file: {path}."
-            raise FileNotFoundError(msg)
+        _check_entrypoint(path)
         yield path
         return
     with resources.as_file(entrypoint) as resource_path:
         path = Path(resource_path).resolve()
-        if not path.is_file():
-            msg = f"Entrypoint resource is not a file: {path}."
-            raise FileNotFoundError(msg)
+        _check_entrypoint(path)
         yield path
+
+
+def _check_entrypoint(path: Path) -> None:
+    if not (path.is_file() or (path / "__main__.py").is_file()):
+        msg = f"Entrypoint must be a file or a folder containing __main__.py: {path}."
+        raise FileNotFoundError(msg)
 
 
 def _command(prepared: PreparedEnvironment, script: Path, args: Sequence[str]) -> list[str]:
@@ -264,7 +299,22 @@ def _command(prepared: PreparedEnvironment, script: Path, args: Sequence[str]) -
     if not prepared.python.is_file():
         msg = f"Prepared environment has no Python interpreter at {prepared.python}."
         raise FileNotFoundError(msg)
-    return [str(prepared.python), str(script), *args]
+    return [str(prepared.python), "-c", _BOOTSTRAP, str(script), *args]
+
+
+def _child_environment(prepared: PreparedEnvironment, env: Mapping[str, str] | None) -> dict[str, str]:
+    base = os.environ if env is None else env
+    child = {key: value for key, value in base.items() if _variable_name(key) not in _HOST_INTERPRETER_VARIABLES}
+    path_key = next((key for key in child if _variable_name(key) == "PATH"), "PATH")
+    search_path = child.get(path_key, os.defpath)
+    child[path_key] = os.pathsep.join(part for part in (str(prepared.python.parent), search_path) if part)
+    child["VIRTUAL_ENV"] = str(prepared.venv)
+    return child
+
+
+def _variable_name(key: str) -> str:
+    # Windows environment variable names are case-insensitive.
+    return key.upper() if os.name == "nt" else key
 
 
 __all__ = ["Session", "run", "start"]

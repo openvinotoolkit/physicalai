@@ -17,7 +17,12 @@ Only load configs, exported policies, and manifests from sources you trust. See 
 
 `physicalai.isolate` prepares a separate Python environment and launches an entrypoint in a child process. The
 virtual environment isolates installed Python packages; it does not restrict filesystem, network, device, or
-operating-system privileges. `uv sync` can execute package build backends, and the launched entrypoint runs with
+operating-system privileges. The child does not inherit the host's `PYTHONPATH`, `PYTHONHOME`, or `VIRTUAL_ENV`;
+`VIRTUAL_ENV` and the front of `PATH` point at the prepared environment. Other environment variables pass through,
+so settings such as `LD_LIBRARY_PATH` still affect which native libraries the child loads. Neither the
+entrypoint script's folder nor the working directory is on the child's import path; a worker that spans several
+files must be a folder with `__main__.py`, and only modules inside that folder are importable. `uv sync` can execute
+package build backends, and the launched entrypoint runs with
 the privileges of the calling `physicalai` process. Full Git commit IDs and patch digests make sources
 reproducible; they do not establish that the code is safe. Prepare and run only projects and entrypoints you
 trust.
