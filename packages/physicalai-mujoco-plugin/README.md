@@ -532,7 +532,7 @@ HTTP control has no authentication and binds to loopback by default. Use explici
 
 ### Autopilot episodes (`/autopilot/v1`)
 
-Physical AI Studio records the demonstrator through these endpoints (protocol 1, defined by `physicalai_studio_plugin.autopilot`, with example payloads in `physicalai_studio_plugin.testing.autopilot`). There is at most one episode at a time, and the simulation chooses its id.
+Physical AI Studio records the demonstrator through these endpoints (protocol 1, defined by `physicalai_studio_plugin.autopilot`). There is at most one episode at a time, and the simulation chooses its id.
 
 | Endpoint                            | Method | Answer                                                                                                                                                                                                 |
 | ----------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
