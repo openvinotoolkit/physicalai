@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import os
 import shutil
 import subprocess  # noqa: S404  # ruff: ignore[noqa-comments] - uv uses fixed argv with shell disabled.
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +19,11 @@ try:
     import fcntl as _fcntl
 except ImportError:  # pragma: no cover - Windows does not provide fcntl.
     _fcntl = None
+
+if sys.platform == "win32":  # pragma: no cover - msvcrt exists only on Windows.
+    import msvcrt as _msvcrt
+else:
+    _msvcrt = None
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -301,10 +308,12 @@ def _remove_cache_path(path: Path) -> None:
 
 @contextlib.contextmanager
 def _exclusive(path: Path) -> Generator[None, None, None]:
-    """Serialize cache preparation across processes where file locking is available.
+    """Serialize cache preparation across processes.
 
     Raises:
         ValueError: If the lock path is a symbolic link.
+        RuntimeError: If the platform provides no file locking.
+        OSError: If Windows refuses the lock for a reason other than another holder.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_symlink():
@@ -315,14 +324,31 @@ def _exclusive(path: Path) -> Generator[None, None, None]:
         flags |= os.O_NOFOLLOW
     descriptor = os.open(path, flags, 0o600)
     with os.fdopen(descriptor, "a+b") as handle:
-        if _fcntl is None:
-            yield
-            return
-        _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
+        fd = handle.fileno()
+        if _fcntl is not None:
+            _fcntl.flock(fd, _fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                _fcntl.flock(fd, _fcntl.LOCK_UN)
+        elif _msvcrt is not None:
+            while True:
+                os.lseek(fd, 0, os.SEEK_SET)
+                try:
+                    _msvcrt.locking(fd, _msvcrt.LK_LOCK, 1)
+                    break
+                except OSError as exc:
+                    # LK_LOCK gives up after about 10 seconds; keep waiting like flock does.
+                    if exc.errno != errno.EDEADLOCK:
+                        raise
+            try:
+                yield
+            finally:
+                os.lseek(fd, 0, os.SEEK_SET)
+                _msvcrt.locking(fd, _msvcrt.LK_UNLCK, 1)
+        else:
+            msg = "Preparing isolated environments requires file locking (fcntl or msvcrt)."
+            raise RuntimeError(msg)
 
 
 def _python_path(venv: Path) -> Path:
