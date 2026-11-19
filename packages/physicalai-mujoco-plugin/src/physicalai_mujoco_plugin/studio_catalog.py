@@ -35,6 +35,7 @@ from urllib.parse import urlsplit
 
 from loguru import logger
 from physicalai_studio_plugin import (
+    AutopilotSpec,
     CatalogRobotFactory,
     PayloadContainer,
     PortScanner,
@@ -46,6 +47,7 @@ from physicalai_studio_plugin import (
     SimulationScene,
     robot_field_ui,
 )
+from physicalai_studio_plugin.autopilot import loopback_root
 from pydantic import BaseModel, Field, create_model
 
 from physicalai.config import export_config
@@ -448,8 +450,9 @@ class CatalogEntry:
 
         Returns:
             The entry's scenes, its profile's default scene, the payload's ``name`` as the owner name,
-            :meth:`start_argv`, ``start --seed``'s range, :meth:`launch_labels` and
-            :meth:`standalone_argv`.
+            :meth:`start_argv`, ``start --seed``'s range, :meth:`launch_labels`,
+            :meth:`standalone_argv` and the autopilot. Whether a scene has a demonstrator is up to the
+            running simulation (``GET /autopilot/v1``).
         """
         if self.profile.default_scene is None:
             return None
@@ -465,6 +468,7 @@ class CatalogEntry:
             max_seed=MAX_SEED,
             labels=self.launch_labels(),
             build_standalone_argv=self.standalone_argv,
+            autopilot=AutopilotSpec(leader_for=autopilot_leader),
         )
 
     def joint_names(self) -> tuple[str, ...]:
@@ -772,6 +776,24 @@ def _mujoco_robot_builder(
         return _SharedMuJoCoRobot(shared, joint_names, entry.start_hint(validated.name, validated.http_url))
 
     return build
+
+
+def autopilot_leader(follower_payload: MuJoCoRobotPayload, http_url: str) -> MuJoCoVirtualLeader:
+    """Build the leader through which Physical AI Studio records the autopilot of the simulation at *http_url*.
+
+    The ``leader_for`` of the followers' :class:`AutopilotSpec`: a virtual leader reading ``GET /leader`` of
+    the simulation Studio started (*http_url*), not the payload's address. Each sample it reads carries the
+    simulation's ``episode_id`` and ``phase``, which it exposes.
+
+    *http_url* must be a root ``http://`` address with a port on this machine's loopback, or
+    ``loopback_root`` raises ``ValueError``.
+
+    Returns:
+        The unconnected leader.
+    """
+    _ = follower_payload
+    url = urlsplit(loopback_root(http_url))
+    return MuJoCoVirtualLeader(http_port=url.port or DEFAULT_HTTP_PORT, host=url.hostname or "127.0.0.1")
 
 
 def _follower_definition(entry: CatalogEntry) -> RobotCatalogDefinition:

@@ -2,12 +2,23 @@
 
 ## Unreleased
 
+### Added
+
+* **mujoco:** The autopilot protocol for Physical AI Studio (`/autopilot/v1`, protocol 1 of `physicalai-studio-plugin` 0.6): Studio starts an episode with `POST /autopilot/v1/episodes`, the simulation lays the scene out and reports it `ready` with its instruction, Studio begins it, the demonstrator leads Studio's follower as a virtual leader, and the simulation ends the episode once with its outcome (`success`, `failure`, `stalled` or `aborted`) and gives the scene settings back. One episode at a time, with ids chosen by the simulation; a new `POST` replaces the episode in progress. The conveyor and bucket_sort scenes support it; others say why not. Simulated follower entries carry an `AutopilotSpec` whose leader reads the simulation Studio started.
+* **mujoco:** An episode in progress ends as `aborted` after 1 s without a `GET /leader` read or a request under `/autopilot/v1`, and before any other change to the scene applies: a control request, a viewer control, the native viewer's reset, a scene switch or shutdown. Nothing answers `409` for these.
+* **mujoco:** `GET /leader` samples carry the autopilot episode's `episode_id` and `phase`, which `MuJoCoVirtualLeader` exposes on each observation and as attributes.
+
 ### Changed
 
 * **mujoco:** The SO-101 arm is now MuJoCo Menagerie's `robotstudio_so101` loaded through the pinned `mujoco-menagerie` package (2026.9.4), which downloads it on first use (about 4 MB) into a per-user cache. Scenes hold no robot: `SceneConfig.load_model()` attaches the arm at each scene's `robot_mount` frame. Joint and camera names, normalized units, camera views and physics are unchanged. `urdf/so101/so101.xml`, `so101_robot_bodies.xml`, `so101_robot_config.xml` and `urdf/so101_dual/` are removed; `mujoco.MjModel.from_xml_path` on a scene file now gives a model without the arm.
 * **mujoco:** `physicalai-mujoco-so101 start` downloads the robot model before it starts the simulation owner, with a progress bar, so a slow first download no longer fails as an owner startup timeout. The new `physicalai-mujoco-so101 prefetch` command downloads every robot model ahead of time for offline machines.
 * **mujoco:** Every MuJoCo follower in Studio has a 3D model. The SO-101s keep their URDFs; the others, the WidowX AI's included, get a URDF built from the robot's MuJoCo model on first use and cached per user, so the robot page and dataset playback no longer wait forever on "Loading robot model...".
 * **mujoco:** Studio's MuJoCo follower probes report an owner as online only when it drives that entry's joints, so the single-arm entry no longer attaches to a bimanual simulation or the other way round.
+* **mujoco:** The viewer's autopilot option for the hand-added MuJoCo Virtual Leader is labelled **Virtual leader (manual teleop)**. The overview camera is no longer locked while Studio records; a switch during an autopilot episode ends the episode.
+
+### Removed
+
+* **mujoco:** `POST /studio/recording` (now `404`), the viewer's **Record in Studio** controls, the `start --studio-url` option and `MuJoCoRobot(studio_url=...)`: the simulation no longer connects to Studio, whose websocket session it used has not worked since Studio's runtime sessions changed. Studio records the autopilot from its recording page instead.
 
 ## [0.5.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-mujoco-plugin-v0.4.0...physicalai-mujoco-plugin-v0.5.0) (2026-10-30)
 
