@@ -26,6 +26,8 @@ execution = AsyncExecution(request_threshold=0.5)
 
 Use this mode when model latency should not block robot timing. `request_threshold` is the fraction of the action chunk still queued when the next inference starts. The control-loop rate stays on `RobotRuntime` as `fps`. Since inference backends typically release the GIL, thread-based execution works well for most use cases.
 
+`AsyncExecution` warns when the robot holds its last action because the next chunk arrived late. The warning suggests a `request_threshold` that avoids this, or says that inference is too slow for any threshold to help. It appears the first time this happens in a run and then every 50th time, and only when the threshold is above 0.
+
 ## Real-Time Chunking
 
 This mode runs real-time chunking on a background thread. Pair it with an `RTCActionQueue`.
