@@ -116,7 +116,7 @@ class MuJoCoRobot(OperatorControls):
         exit_with_pid: int | None = None,
         grip_force_n: float | None = None,
         http_fallback_port: int | None = None,
-        xr_host: str = "0.0.0.0",  # noqa: S104 - a headset on the local network opens the page
+        xr_host: str = "0.0.0.0",  # noqa: S104  # nosec B104 - a headset on the local network opens the page
         xr_port: int | None = None,
     ) -> None:
         """Create a disconnected simulation.
