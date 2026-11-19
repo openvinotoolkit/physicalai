@@ -25,7 +25,6 @@ logger = logging.getLogger(__name__)
 
 _JOIN_TIMEOUT_S: float = 10.0
 _STRAGGLER_GRACE_S: float = 2.0
-# Warn on the first dry arrival of a run, then on every 50th.
 _DRY_WARN_EVERY: int = 50
 
 
@@ -374,10 +373,6 @@ class AsyncExecution(Execution):
                     # After the push: a hold the control thread lands just
                     # before it still counts, and none can land after it.
                     dry_warning = self._dry_queue_warning(pops_since)
-                if dry_warning is not None:
-                    logger.warning(dry_warning)
-                self._inference_count += 1
-
                 if self._bus:
                     from physicalai.runtime.events import InferenceEvent  # noqa: PLC0415
 
@@ -393,6 +388,11 @@ class AsyncExecution(Execution):
 
                 with self._lock:
                     self._running_inference = False
+                # Logged once the worker is idle, so a slow handler delays the
+                # next inference but does not turn its request away.
+                if dry_warning is not None:
+                    logger.warning(dry_warning)
+                self._inference_count += 1
 
         except Exception as e:
             self._death_cause = e

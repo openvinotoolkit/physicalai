@@ -211,7 +211,14 @@ class TestAsyncThresholdShorterThanLatency:
                 control_tick.join(timeout=1.0)
                 assert not control_tick.is_alive(), "maybe_request waited for the log handler"
                 assert d.queue.remaining > 0, "the chunk waited for the log handler"
+
+                while d.queue.remaining >= d.count:  # play down to the next request
+                    d.queue.pop()
+                d.ex.maybe_request(_obs(d.tick))
+                assert d.ex._obs_slot is not None, "the request was turned away while the handler ran"  # noqa: SLF001
+                d.model.release.set()
                 handler.proceed.set()
+                assert _wait_for(lambda: d.ex.inference_count == 2), "the request never ran"
         finally:
             handler.proceed.set()
             module_logger.removeHandler(handler)
