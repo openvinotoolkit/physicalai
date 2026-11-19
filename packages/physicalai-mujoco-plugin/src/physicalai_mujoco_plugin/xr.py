@@ -244,7 +244,9 @@ def certificate(directory: Path, names: list[str]) -> tuple[str, str]:
         raise RuntimeError(msg)
     alt = ",".join(f"IP:{name}" if name.replace(".", "").isdigit() else f"DNS:{name}" for name in wanted.split(","))
     command = [
-        openssl, "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
+        # The key has no passphrase: the server loads it unattended, and only its owner can read it (chmod below)
+        openssl, "req", "-x509",  # nosemgrep: trailofbits.generic.openssl-insecure-flags.openssl-insecure-flags
+        "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
         "-days", "825", "-subj", "/CN=physicalai-mujoco", "-addext", f"subjectAltName={alt}",
         "-keyout", str(key), "-out", str(cert),
     ]  # fmt: skip
