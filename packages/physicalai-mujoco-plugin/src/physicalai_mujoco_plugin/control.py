@@ -192,17 +192,6 @@ class OperatorControls:
         """Return whether *xml_path* is the custom ``model_path``."""
         return self._model_path is not None and Path(xml_path).resolve() == Path(self._model_path).resolve()
 
-    def _overview_lock(self) -> str | None:  # noqa: PLR6301 - the status and the viewer read it
-        """Return why the overview camera must not move now.
-
-        Nothing locks it at present: a switch during an autopilot episode ends the episode, then applies,
-        like any other change to the scene.
-
-        Returns:
-            The reason, or ``None``.
-        """
-        return None
-
     def _overview_problem(self, style: str) -> str | None:
         """Return why the overview camera cannot switch to *style* now.
 
@@ -211,9 +200,6 @@ class OperatorControls:
         """
         if style == self._overview:
             return None
-        lock = self._overview_lock()
-        if lock is not None:
-            return lock
         if style not in self._overview_styles():
             if self._scene_config is None or self._custom_model_loaded():
                 return (
@@ -713,7 +699,6 @@ class OperatorControls:
                 "compatible_scenes": compatible,
                 "overview_style": self._overview,
                 "overview_styles": list(self._overview_styles()),
-                "overview_locked": self._overview_lock(),
                 "seed": self._seed,
                 "episode": self._episode_status(self._episode_auto_reset),
                 "replay": self._replay_status(),
@@ -774,7 +759,6 @@ class OperatorControls:
                 replay=self._replay_status(),
                 overview_style=self._overview,
                 overview_styles=self._overview_styles(),
-                overview_locked=self._overview_lock(),
                 teleop=self._teleop_status(),
                 **(self._automation.status() if self._automation is not None else {}),
             )

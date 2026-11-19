@@ -79,6 +79,7 @@ def test_degree_observation_and_follower_action_use_the_selected_units(monkeypat
     np.testing.assert_array_equal(observation.joint_positions, [0] * 5 + [50])
     written = []
     monkeypatch.setattr(arm, "_write_joint_positions", lambda ticks: written.append(ticks.copy()))
+    monkeypatch.setattr(arm, "_set_torque", lambda *, enabled: None)
     arm.send_action(np.array([180] * 5 + [50], dtype=np.float32))
     np.testing.assert_array_equal(written[0], [3647] * 5 + [1600])
 
@@ -171,7 +172,14 @@ def test_degree_actions_keep_existing_final_encoder_safety_clamp():
         parameters[servo_id] = int.from_bytes(bytes(data), "little")
         return True
     group = SimpleNamespace(clearParam=lambda: None, addParam=add_param, txPacket=lambda: 0)
-    arm._connection = SimpleNamespace(group_sync_write=group)
+    torque_group = SimpleNamespace(clearParam=lambda: None, addParam=lambda *args: True, txPacket=lambda: 0)
+    packet = SimpleNamespace(write1ByteTxRx=lambda *args: (0, 0))
+    arm._connection = SimpleNamespace(
+        group_sync_write=group,
+        group_sync_write_torque=torque_group,
+        packet_handler=packet,
+        port_handler=None,
+    )
     arm.send_action(np.array([-180] * 5 + [50], dtype=np.float64))
     assert list(parameters.values()) == [0] * 5 + [1600]
     arm.send_action(np.array([360] * 5 + [50], dtype=np.float64))

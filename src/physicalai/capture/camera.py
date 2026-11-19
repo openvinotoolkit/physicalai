@@ -117,10 +117,12 @@ class Camera(ABC):
         down the async executor if it was created.  Subclasses override
         :meth:`_do_disconnect`, not this method.
         """
-        self._do_disconnect()
-        if self.__executor is not None:
-            self.__executor.shutdown(wait=False, cancel_futures=True)
-            self.__executor = None
+        try:
+            self._do_disconnect()
+        finally:
+            if self.__executor is not None:
+                self.__executor.shutdown(wait=False, cancel_futures=True)
+                self.__executor = None
 
     @property
     @abstractmethod

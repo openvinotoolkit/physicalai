@@ -25,6 +25,7 @@ from physicalai.runtime.core import _RETURN_DURATION_S
 from physicalai.robot.interface import RobotObservation
 from physicalai.inference.model import InferenceModel
 from physicalai.inference.constants import IMAGES, STATE, TASK
+from physicalai.inference.preprocessors import MolmoAct2Preprocessor
 
 from physicalai.capture import Frame
 
@@ -647,6 +648,24 @@ class TestPolicySourceModelInput:
         assert IMAGES not in model_input
         np.testing.assert_array_equal(model_input[f"{IMAGES}.cam0"], frame0.data[np.newaxis])
         np.testing.assert_array_equal(model_input[f"{IMAGES}.cam1"], frame1.data[np.newaxis])
+
+    def test_single_camera_input_feeds_molmoact2_with_one_configured_camera(self) -> None:
+        """The bare ``images`` input of one camera is accepted by MolmoAct2."""
+        robot_obs = FakeRobotObservation(
+            joint_positions=np.array([0.1, 0.2], dtype=np.float32),
+            timestamp=0.0,
+            sensor_data=None,
+            images=None,
+        )
+        policy_source = self._policy_source(task="pick up the cube")
+        model_input = policy_source.to_model_input(robot_obs, {"top": _make_frame(255)})
+        preprocessor = MolmoAct2Preprocessor(image_keys=["top"], image_size=(28, 28))
+
+        result = preprocessor(model_input)
+
+        assert result[IMAGES].shape == (1, 1, 3, 28, 28)
+        assert float(result[IMAGES].min()) == 1.0
+        assert result[TASK][0].startswith("<|image|><|im_start|>")
 
     def test_single_robot_embedded_image_uses_bare_images_key(self) -> None:
         """A single robot-embedded image also uses the bare ``images`` key."""
