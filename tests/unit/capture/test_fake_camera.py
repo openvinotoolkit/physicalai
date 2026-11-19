@@ -35,6 +35,26 @@ class TestFakeCameraLifecycle:
         cam.disconnect()
         assert not cam.is_connected
 
+    def test_disconnect_cleans_up_executor_on_failure(self) -> None:
+        cam = FakeCamera()
+        cam.connect()
+        # Initialize executor via property
+        executor = cam._executor  # noqa: SLF001
+        assert not executor._shutdown  # noqa: SLF001
+
+        # Simulate hardware disconnect failure
+        def _failing_disconnect() -> None:
+            msg = "simulated hardware disconnect failure"
+            raise RuntimeError(msg)
+
+        cam._do_disconnect = _failing_disconnect  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError, match="simulated hardware disconnect failure"):
+            cam.disconnect()
+
+        # Executor must be shut down and reset
+        assert executor._shutdown  # noqa: SLF001
+        assert cam._Camera__executor is None  # noqa: SLF001
+
     def test_context_manager(self) -> None:
         with FakeCamera() as cam:
             assert cam.is_connected
