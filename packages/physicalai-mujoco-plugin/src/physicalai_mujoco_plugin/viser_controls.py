@@ -326,8 +326,6 @@ class PanelState:
     """Where the ``overview`` camera stands."""
     overview_styles: tuple[OverviewStyle, ...] = ("shoulder",)
     """The overview styles the scene offers; with one, the panel offers no switch."""
-    overview_locked: str | None = None
-    """Why the overview camera must not move now, or ``None``."""
 
 
 @dataclass
@@ -771,7 +769,6 @@ class SimControlPanel:
             "Overview camera",
             options=tuple(OVERVIEW_LABELS[style] for style in state.overview_styles),
             initial_value=OVERVIEW_LABELS[state.overview_style],
-            disabled=state.overview_locked is not None,
             hint=OVERVIEW_HINT,
         )
         self._handles.overview_dropdown = overview
@@ -1093,7 +1090,6 @@ class SimControlPanel:
                 handles.scene_dropdown.value = label
         if handles.overview_dropdown is not None:
             handles.overview_dropdown.value = OVERVIEW_LABELS[state.overview_style]
-            handles.overview_dropdown.disabled = state.overview_locked is not None
         if handles.fixed_seed is not None:
             handles.fixed_seed.value = state.seed is not None
             handles.seed_number.disabled = state.seed is None

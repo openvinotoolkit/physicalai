@@ -693,8 +693,9 @@ class TestStatus:
         assert status["connected"] is False
         assert status["scene"] == "single_pick_place"
         assert status["profile"] == "so101"
-        assert set(status["scenes"]) == {"single_pick_place", "yahtzee", "conveyor_sort", "bucket_sort", "floor_flat"}
+        assert set(status["scenes"]) == {"single_pick_place", "yahtzee", "conveyor_sort", "bucket_sort", "openarm_cell", "floor_flat"}
         assert "floor_flat" not in status["compatible_scenes"]
+        assert "openarm_cell" not in status["compatible_scenes"]
         assert status["objects"] == []
         assert status["cameras"] == [
             {
@@ -845,7 +846,6 @@ class TestOverviewStyle:
         book = robot._automation.book  # noqa: SLF001
         book.set_scene(SceneSupport(scene="single_pick_place", supported=True, reason=None))  # as if it had one
         episode = book.create(EpisodeRequest())
-        assert robot._http_status()["overview_locked"] is None  # noqa: SLF001 - nothing locks the camera
         app = build_app(
             service_name="sim",
             buffers={},

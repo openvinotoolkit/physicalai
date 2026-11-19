@@ -22,7 +22,7 @@ import pytest
 from loguru import logger
 
 from physicalai_mujoco_plugin import compose
-from physicalai_mujoco_plugin.cameras import offscreen_rendering_available
+from physicalai_mujoco_plugin.cameras import CAMERA_ONLY_GEOM_GROUP, camera_scene_option, offscreen_rendering_available
 from physicalai_mujoco_plugin.compose import (
     ROBOT_SPAWN_FRAME,
     compose_scene,
@@ -879,3 +879,24 @@ def test_default_cameras_are_the_same_in_every_tabletop_scene(name: str, arms: i
         names[scene_id] = [config.name for config in default_cameras(sim)]
         assert set(names[scene_id]) == robot_cameras | {"overview"}, scene_id
     assert len({tuple(cameras) for cameras in names.values()}) == 1, names
+
+
+_CAMERA_ONLY_BOX = """<mujoco><worldbody>
+  <camera name="eye" pos="0 0 1" xyaxes="1 0 0 0 1 0"/>
+  <geom type="box" size="0.3 0.3 0.01" rgba="1 0 0 1" group="5"/>
+</worldbody></mujoco>"""
+
+
+def test_camera_streams_render_the_camera_only_group_that_viewers_hide() -> None:
+    if not offscreen_rendering_available():
+        pytest.skip("needs offscreen rendering")
+    model = mujoco.MjModel.from_xml_string(_CAMERA_ONLY_BOX)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    assert mujoco.MjvOption().geomgroup[CAMERA_ONLY_GEOM_GROUP] == 0  # hidden by default, as in the viewers
+    with mujoco.Renderer(model, 32, 32) as renderer:
+        renderer.update_scene(data, camera="eye")
+        hidden = renderer.render()
+        renderer.update_scene(data, camera="eye", scene_option=camera_scene_option())
+        shown = renderer.render()
+    assert shown[16, 16, 0] > 150 > hidden[16, 16, 0]

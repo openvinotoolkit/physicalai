@@ -8,6 +8,8 @@ model on first use into a per-user cache (``MENAGERIE_CACHE_DIR`` overrides it).
 version fixes every model file. ``physicalai-mujoco start`` fetches the robot before it starts the
 simulation owner, so the download never runs against the owner's startup timeout. Offline machines
 can run ``physicalai-mujoco prefetch`` beforehand, or point ``MENAGERIE_ROOT`` at a checkout.
+Models that Menagerie does not have (OpenArm) come from pinned archives into the same cache
+(``external_models.py``).
 
 A scene marks each robot with an anchor frame: ``<frame name="{prefix}robot_mount">`` for a fixed
 base (arms), ``<frame name="{prefix}robot_spawn">`` for a floating base (legged robots). Composing
@@ -33,6 +35,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 from loguru import logger
 
+from physicalai_mujoco_plugin.external_models import EXTERNAL_MODELS, fetch_external
 from physicalai_mujoco_plugin.profiles import SO101_PROFILE, RobotProfile
 from physicalai_mujoco_plugin.profiles.derive import DerivedLayout, derive_profile
 from physicalai_mujoco_plugin.robot_cameras import (
@@ -136,6 +139,8 @@ class ComposedScene:
 def fetch_profile(profile: RobotProfile, progress: Callable[[int, int], None] | None = None) -> Path:
     """Put the profile's robot entry in the Menagerie cache, downloading it if needed.
 
+    A profile names a Menagerie model or one of the external models (OpenArm), which share the cache.
+
     The download shows a progress bar when stderr is a terminal.
 
     Args:
@@ -151,6 +156,9 @@ def fetch_profile(profile: RobotProfile, progress: Callable[[int, int], None] | 
     """
     import mujoco_menagerie  # noqa: PLC0415
 
+    external = EXTERNAL_MODELS.get(profile.menagerie_model)
+    if external is not None:
+        return fetch_external(external, profile.menagerie_entry, progress)
     try:
         robot = mujoco_menagerie.get(profile.menagerie_model)
         entry = robot.entry(profile.menagerie_entry or robot.default_model)
