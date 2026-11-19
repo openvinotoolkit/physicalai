@@ -4,10 +4,11 @@
 """The simulation's 3D scene for the headset: every visible geom as triangles, and the bodies' poses.
 
 The headset's page draws the scene itself. It fetches the geometry once (:meth:`SceneStream.blob`):
-each visible geom as an indexed triangle mesh in its body's frame, with its colour, and where the
-operator stands (``teleop.OperatorView``). After that, only the bodies' poses travel
-(:meth:`SceneStream.poses`, about 1 KB per frame). A new model or view, after a scene switch or
-edit, gets a new version number; the poses carry it, so the page knows to fetch the geometry again.
+each visible geom as an indexed triangle mesh in its body's frame, with its colour, where the
+operator stands (``teleop.OperatorView``) and the arms' grab points (``teleop.GrabPoint``). After
+that, only the bodies' poses travel (:meth:`SceneStream.poses`, about 1 KB per frame). A new model,
+view or set of grab points gets a new version number; the poses carry it, so the page knows to
+fetch the geometry again.
 
 Shown are the geoms of groups 0 to 2 (what the viewer shows by default), and the see-through geoms
 of group 3 whose material is a glass (its name says so), like the cell's walls: a browser can draw
@@ -17,7 +18,8 @@ Infinite planes (the floor) are left out: the headset shows the real floor.
 The blob is a little-endian ``uint32`` header length, the JSON header (padded to 4 bytes), the
 vertices (16 bytes each: ``float32`` x, y, z and ``int8`` normal x, y, z, pad), then the ``uint32``
 triangle indices. The header lists every geom as ``[body, r, g, b, a, first index, index count]``,
-and the view as ``{"eye": [x, y, z], "yaw": radians}``.
+the view as ``{"eye": [x, y, z], "yaw": radians}``, and every grab point as ``[body, x, y, z]`` (the point in
+the body's frame), numbered as ``Teleop.grab_state`` numbers them.
 """
 
 # MuJoCo model/data attributes are supplied by the C extension at runtime.
@@ -37,7 +39,7 @@ from physicalai_mujoco_plugin.studio_urdf import quat_to_matrix
 if TYPE_CHECKING:
     import mujoco
 
-    from physicalai_mujoco_plugin.teleop import OperatorView
+    from physicalai_mujoco_plugin.teleop import GrabPoint, OperatorView
 
 SHOWN_GROUPS = (0, 1, 2)
 GLASS_GROUP = 3
@@ -173,7 +175,9 @@ def shown(model: mujoco.MjModel, geom: int) -> bool:
     return group == GLASS_GROUP and material >= 0 and GLASS in model.material(material).name.lower()
 
 
-def scene_blob(model: mujoco.MjModel, view: OperatorView, version: int) -> bytes:
+def scene_blob(
+    model: mujoco.MjModel, view: OperatorView, version: int, grab_points: tuple[GrabPoint, ...] = ()
+) -> bytes:
     """Return the scene's geometry in the page's format (see the module's description).
 
     Returns:
@@ -205,6 +209,7 @@ def scene_blob(model: mujoco.MjModel, view: OperatorView, version: int) -> bytes
         "indices": index_count,
         "geoms": geoms,
         "view": {"eye": list(view.eye), "yaw": view.yaw},
+        "grabs": [[point.body, *point.offset] for point in grab_points],
     }).encode()
     header += b" " * (-len(header) % 4)
     parts = [np.uint32(len(header)).tobytes(), header]
@@ -220,15 +225,22 @@ class SceneStream:
         self._lock = threading.Lock()
         self._model: mujoco.MjModel | None = None
         self._view: OperatorView | None = None
+        self._grab_points: tuple[GrabPoint, ...] = ()
         self._version = 0
         self._blob: tuple[int, bytes] | None = None
         self._poses: bytes | None = None
 
-    def update(self, model: mujoco.MjModel, data: mujoco.MjData, view: OperatorView) -> None:
-        """Keep the bodies' poses after a step; a new model or view gets a new version."""
-        if model is not self._model or view != self._view:
+    def update(
+        self,
+        model: mujoco.MjModel,
+        data: mujoco.MjData,
+        view: OperatorView,
+        grab_points: tuple[GrabPoint, ...] = (),
+    ) -> None:
+        """Keep the bodies' poses after a step; a new model, view or set of grab points gets a new version."""
+        if model is not self._model or view != self._view or grab_points != self._grab_points:
             with self._lock:
-                self._model, self._view = model, view
+                self._model, self._view, self._grab_points = model, view, grab_points
                 self._version += 1
         poses = np.empty((model.nbody, 7), dtype=np.float32)
         poses[:, :3] = data.xpos
@@ -242,12 +254,12 @@ class SceneStream:
     def blob(self) -> bytes | None:
         """Return the newest model's geometry, gzip-compressed (built on first request), or ``None`` before a model."""
         with self._lock:
-            model, view, version = self._model, self._view, self._version
+            model, view, points, version = self._model, self._view, self._grab_points, self._version
             if model is None or view is None:
                 return None
             if self._blob is not None and self._blob[0] == version:
                 return self._blob[1]
-        blob = gzip.compress(scene_blob(model, view, version), compresslevel=5)
+        blob = gzip.compress(scene_blob(model, view, version, points), compresslevel=5)
         with self._lock:
             if self._version == version:
                 self._blob = (version, blob)

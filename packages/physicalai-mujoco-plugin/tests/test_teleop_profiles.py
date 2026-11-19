@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Headset teleoperation on every arm profile: each gripper closes and opens, and a still grip moves nothing."""
+"""Headset teleoperation on every arm profile: the viewpoint, a far grip, the grippers, and a still grip that moves nothing."""
 
 # MuJoCo model/data attributes are supplied by the C extension at runtime.
 # pyrefly: ignore-errors [missing-attribute]
@@ -12,6 +12,7 @@ import math
 import time
 from typing import TYPE_CHECKING
 
+import mujoco
 import numpy as np
 import pytest
 
@@ -145,3 +146,72 @@ def test_each_trigger_closes_its_own_robots_gripper_in_a_pair(name: str) -> None
         _ticks(robot, 5)
         assert left.channels.model_targets()[left.gripper.channel] == pytest.approx(left.gripper.closed)
         assert right.channels.model_targets()[right.gripper.channel] == pytest.approx(right.gripper.opened)
+
+
+FORWARD_M = 0.03
+PAIRS = ["so101", "trossen_wxai"]
+"""Profiles also run as two robots (``--bimanual``): one arm each, the left controller the left robot."""
+
+
+@pytest.mark.mujoco_smoke
+@pytest.mark.parametrize(
+    ("name", "bimanual"), [*((name, False) for name in ARM_PROFILES), *((name, True) for name in PAIRS)]
+)
+def test_a_far_grip_moves_each_gripper_ahead(name: str, bimanual: bool) -> None:  # noqa: FBT001
+    for robot in _robot(name, bimanual=bimanual):
+        teleop = _teleop(robot)
+        assert teleop.arms, "an arm profile gives the headset arms to drive"
+        if bimanual:
+            assert [sorted(arm.sides) for arm in teleop.arms] == [["left"], ["right"]]
+        view = teleop.view
+        ahead = np.array([math.cos(view.yaw), math.sin(view.yaw), 0.0])
+        for arm in teleop.arms:
+            teleop._forward(arm, arm.home)  # noqa: SLF001
+            top = max(float(teleop._data.xanchor[joint][2]) for joint in arm.joint_ids)  # noqa: SLF001
+            assert view.eye[2] > top, "the eyes stand above the arm"
+            assert arm.points[0].joint is None
+            if len(arm.joints) >= 5:  # noqa: PLR2004
+                assert len(arm.points) >= 2, "a longer arm offers a joint to grab"
+        for arm in teleop.arms:
+            side = sorted(arm.sides)[0]
+            far = _far(robot)  # no grab point near: the controller grabs its own arm's gripper
+            _send(robot, {side: (far, 0.0, 0.0)})
+            _ticks(robot, 1)
+            _send(robot, {side: (far, 1.0, 0.0)})
+            _ticks(robot, 1)
+            start = arm.target_pos.copy()
+            _send(robot, {side: (far + FORWARD_M * ahead, 1.0, 0.0)})
+            _ticks(robot, 100)
+            np.testing.assert_allclose(arm.target_pos, start + FORWARD_M * ahead, atol=1e-9)
+            reached, _ = teleop._tool(arm, arm.goal)  # noqa: SLF001
+            assert np.linalg.norm(reached - arm.target_pos) < 0.015, f"{arm.name} follows the controller"
+            _send(robot, {side: (far, 0.0, 0.0)})
+            _ticks(robot, 1)
+
+
+@pytest.mark.mujoco_smoke
+def test_letting_go_of_a_reachable_target_on_the_way_keeps_it() -> None:
+    """Let go of a handle before the arm gets there: the target stays, and the arm still reaches it.
+
+    The FR3's last joint turned 120 degrees takes the arm longer than one solve, and longer than the
+    drag; the target is out of reach only if the arm stops short of it.
+    """
+    for robot in _robot("franka_fr3"):
+        teleop = _teleop(robot)
+        teleop.set_inputs(mouse=True)
+        _ticks(robot, 2)
+        arm = teleop.arms[0]
+        turned = teleop._targets(arm)  # noqa: SLF001
+        turned[-1] += math.radians(120.0)
+        position, rotation = teleop._tool(arm, turned)  # noqa: SLF001
+        wxyz = np.zeros(4)
+        mujoco.mju_mat2Quat(wxyz, rotation.reshape(9))
+        teleop.set_target(arm.name, tuple(position), tuple(wxyz), dragging=True)
+        _ticks(robot, 5)
+        teleop.set_target(arm.name, tuple(position), tuple(wxyz), dragging=False)
+        _ticks(robot, 300)
+        np.testing.assert_allclose(arm.target_rot, rotation, atol=1e-6)
+        _, reached = teleop._tool(arm, teleop._targets(arm))  # noqa: SLF001
+        angle = math.degrees(math.acos(min(max((np.trace(reached.T @ rotation) - 1) / 2, -1.0), 1.0)))
+        assert angle < 1.0
+

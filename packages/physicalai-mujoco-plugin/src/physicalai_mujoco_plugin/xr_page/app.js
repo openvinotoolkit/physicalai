@@ -19,6 +19,7 @@ let cameras = [];
 const frames = {};
 let scene = null; // the newest geometry and view, as fetched
 let poses = null; // the newest poses: version, then x y z qw qx qy qz per body
+let grabs = { hover: {}, held: {} }; // the grab point each controller hovers and holds, by side
 let sceneLoading = false;
 let sceneFailed = -Infinity;
 let camerasChanged = false; // the camera list changed: the headset lays the panels out again
@@ -71,6 +72,7 @@ function connect() {
     scene = null;
     poses = null;
     loadCameras();
+    grabs = { hover: {}, held: {} };
     sceneLoading = false;
   };
   socket.onclose = () => {
@@ -78,7 +80,11 @@ function connect() {
     setTimeout(connect, 1000);
   };
   socket.onmessage = (event) => {
-    if (!(event.data instanceof ArrayBuffer)) return;
+    if (typeof event.data === "string") {
+      const message = JSON.parse(event.data);
+      if (message.type === "grabs") grabs = { hover: message.hover || {}, held: message.held || {} };
+      return;
+    }
     poses = new Float32Array(event.data);
     if (!scene || scene.version !== poses[0]) loadScene();
   };
@@ -282,6 +288,38 @@ void main() {
   float shade = 0.42 + 0.58 * abs(dot(normalize(worldNormal), light));
   outColor = vec4(color.rgb * shade * color.a, color.a);
 }`;
+// Grab points: a dot when a controller comes near, a pulsing ring when it hovers one, a filled ring
+// while it holds one. Drawn on quads that face the eye, over the robot (the joints are inside it).
+const MARKER_VERTEX = `#version 300 es
+in vec2 corner; uniform mat4 transform; out vec2 uv;
+void main() { uv = corner; gl_Position = transform * vec4(corner, 0.0, 1.0); }`;
+const MARKER_FRAGMENT = `#version 300 es
+precision mediump float;
+in vec2 uv; uniform vec4 color; uniform float kind; uniform float time; out vec4 outColor;
+void main() {
+  float r = length(uv);
+  if (r > 1.0) discard;
+  float alpha;
+  if (kind < 0.5) {
+    alpha = smoothstep(0.5, 0.3, r);
+  } else if (kind < 1.5) {
+    float radius = 0.7 + 0.06 * sin(time * 6.0);
+    float edge = abs(r - radius);
+    alpha = max(smoothstep(0.09, 0.03, edge), 0.5 * exp(-edge * edge * 60.0));
+  } else {
+    float ring = smoothstep(0.14, 0.06, abs(r - 0.72));
+    alpha = max(max(ring, 0.3 * smoothstep(0.64, 0.58, r)), smoothstep(0.22, 0.14, r));
+  }
+  alpha *= color.a;
+  outColor = vec4(color.rgb * alpha, alpha);
+}`;
+const MARKERS = {
+  near: { kind: 0, size: 0.022, color: [0.78, 0.9, 1.0] },
+  hover: { kind: 1, size: 0.045, color: [0.3, 0.85, 1.0] },
+  held: { kind: 2, size: 0.05, color: [1.0, 0.7, 0.25] },
+};
+const NEAR_M = 0.25; // a controller this close shows the grab points around it
+
 const PANEL_VERTEX = `attribute vec2 corner; uniform mat4 transform; varying vec2 uv;
 void main() {
   uv = vec2(corner.x * 0.5 + 0.5, 0.5 - corner.y * 0.5);
@@ -294,6 +332,8 @@ let meshes = null;
 let uniforms = null;
 let panelShader = null;
 let panelTransform = null;
+let markerShader = null;
+let markerUniforms = null;
 let quad = null;
 const textures = {};
 if (gl) {
@@ -305,6 +345,10 @@ if (gl) {
   };
   panelShader = program(PANEL_VERTEX, PANEL_FRAGMENT, ["corner"]);
   panelTransform = gl.getUniformLocation(panelShader, "transform");
+  markerShader = program(MARKER_VERTEX, MARKER_FRAGMENT, ["corner"]);
+  markerUniforms = Object.fromEntries(
+    ["transform", "color", "kind", "time"].map((name) => [name, gl.getUniformLocation(markerShader, name)]),
+  );
   quad = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, quad);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
@@ -331,7 +375,7 @@ function upload() {
   gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indices);
   gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, scene.indexData, gl.STATIC_DRAW);
   gl.bindVertexArray(null);
-  uploaded = { serial: scene.serial, epoch: scene.epoch, version: scene.version, vao, vertices, indices, geoms: scene.geoms, view: scene.view };
+  uploaded = { serial: scene.serial, epoch: scene.epoch, version: scene.version, vao, vertices, indices, geoms: scene.geoms, view: scene.view, grabs: scene.grabs };
 }
 
 // Each body's matrix in the room: the placement times the body's pose; null until both have arrived.
@@ -419,6 +463,63 @@ function drawPanels(viewProjection, panels) {
   }
 }
 
+// The grab points in the room, from the bodies' matrices: [x, y, z] each.
+function grabPositions(matrices) {
+  if (!matrices || !uploaded.grabs) return [];
+  return uploaded.grabs.map(([body, x, y, z]) => {
+    const m = matrices[body];
+    return [0, 1, 2].map((i) => m[i] * x + m[4 + i] * y + m[8 + i] * z + m[12 + i]);
+  });
+}
+
+// What to mark: the held and hovered points, and the points near a controller, faded with distance.
+function markers(points, controllers) {
+  const out = [];
+  const marked = new Set();
+  for (const [style, bySide] of [["held", grabs.held], ["hover", grabs.hover]]) {
+    for (const index of Object.values(bySide)) {
+      if (points[index] && !marked.has(index)) {
+        out.push({ position: points[index], style, alpha: 1 });
+        marked.add(index);
+      }
+    }
+  }
+  points.forEach((position, index) => {
+    if (marked.has(index)) return;
+    let nearest = Infinity;
+    for (const controller of controllers) nearest = Math.min(nearest, Math.hypot(...[0, 1, 2].map((i) => position[i] - controller[i])));
+    const alpha = Math.min(Math.max(1 - (nearest - 0.05) / (NEAR_M - 0.05), 0), 1) * 0.8;
+    if (alpha > 0) out.push({ position, style: "near", alpha });
+  });
+  return out;
+}
+
+function drawMarkers(viewProjection, cameraMatrix, list, time) {
+  if (!list.length) return;
+  const right = [cameraMatrix[0], cameraMatrix[1], cameraMatrix[2]];
+  const up = [cameraMatrix[4], cameraMatrix[5], cameraMatrix[6]];
+  gl.useProgram(markerShader);
+  gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  gl.disable(gl.DEPTH_TEST);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+  gl.uniform1f(markerUniforms.time, time / 1000);
+  for (const { position, style, alpha } of list) {
+    const { kind, size, color } = MARKERS[style];
+    const model = new Float32Array([
+      ...right.map((v) => v * size), 0, ...up.map((v) => v * size), 0, 0, 0, 0, 0, ...position, 1,
+    ]);
+    gl.uniformMatrix4fv(markerUniforms.transform, false, multiply(viewProjection, model));
+    gl.uniform4f(markerUniforms.color, ...color, alpha);
+    gl.uniform1f(markerUniforms.kind, kind);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+  gl.disable(gl.BLEND);
+  gl.enable(gl.DEPTH_TEST);
+}
+
 function drawView(viewProjection, matrices, panels) {
   drawMeshes(viewProjection, matrices, false);
   if (panels) drawPanels(viewProjection, panels);
@@ -442,8 +543,13 @@ function drawPage() {
     gl.enable(gl.DEPTH_TEST);
     const eye = [0, 1.6, 0];
     const target = [0, 1.25, -0.4]; // ahead and down, where the arms reach
-    const viewProjection = multiply(perspective(1.0, width / Math.max(height, 1), 0.05, 20), lookAt(eye, target));
-    drawView(viewProjection, bodyMatrices(PAGE_PLACE), null);
+    const camera = lookAt(eye, target);
+    const viewProjection = multiply(perspective(1.0, width / Math.max(height, 1), 0.05, 20), camera);
+    const matrices = bodyMatrices(PAGE_PLACE);
+    drawView(viewProjection, matrices, null);
+    const points = grabPositions(matrices);
+    const cameraMatrix = [camera[0], camera[4], camera[8], 0, camera[1], camera[5], camera[9], 0]; // its right and up rows
+    drawMarkers(viewProjection, cameraMatrix, markers(points, points), performance.now());
   }
   requestAnimationFrame(drawPage);
 }
@@ -474,7 +580,7 @@ async function detect() {
 // Reads the controllers: their poses, triggers and grips for the server, and the buttons and
 // thumbsticks that move the robot and toggle the cameras.
 function readInputs(xrFrame, space) {
-  const inputs = { controllers: {}, recenter: false, panels: false, raise: 0, push: 0, holding: false };
+  const inputs = { controllers: {}, sources: {}, recenter: false, panels: false, raise: 0, push: 0, holding: false };
   for (const source of xrFrame.session.inputSources) {
     const buttons = source.gamepad ? source.gamepad.buttons : [];
     const axes = source.gamepad ? source.gamepad.axes : [];
@@ -488,8 +594,18 @@ function readInputs(xrFrame, space) {
     if (!source.gripSpace || (source.handedness !== "left" && source.handedness !== "right")) continue;
     const grip = pose(xrFrame.getPose(source.gripSpace, space));
     if (grip) inputs.controllers[source.handedness] = { ...grip, trigger: value(0), squeeze: value(1) };
+    inputs.sources[source.handedness] = source;
   }
   return inputs;
+}
+
+// A short buzz in the controller that starts hovering or holding a grab point.
+function buzz(sources, before, after, intensity, ms) {
+  for (const [side, index] of Object.entries(after)) {
+    if (before[side] === index) continue;
+    const actuator = sources[side] && sources[side].gamepad && sources[side].gamepad.hapticActuators;
+    if (actuator && actuator[0] && actuator[0].pulse) actuator[0].pulse(intensity, ms);
+  }
 }
 
 start.onclick = async () => {
@@ -506,6 +622,7 @@ start.onclick = async () => {
   let showPanels = true;
   const held = { recenter: false, panels: false };
   let last = null;
+  let felt = { hover: {}, held: {} };
   session.addEventListener("end", () => {
     send({ type: "end" });
     session = null;
@@ -533,6 +650,9 @@ start.onclick = async () => {
       camerasChanged = false;
     }
     if (place && panels === null && cameras.length) panels = layout(place);
+    buzz(inputs.sources, felt.hover, grabs.hover, 0.25, 15);
+    buzz(inputs.sources, felt.held, grabs.held, 0.6, 30);
+    felt = grabs;
     const message = { type: "frame", head: pose(viewer), ...inputs.controllers };
     if (place) message.frame = { p: anchor(place), q: yaw(place) };
     send(message);
@@ -546,11 +666,14 @@ start.onclick = async () => {
     gl.enable(gl.DEPTH_TEST);
     updateTextures();
     const matrices = bodyMatrices(place);
+    const hands = Object.values(inputs.controllers).map((controller) => controller.p);
+    const marks = markers(grabPositions(matrices), hands);
     for (const view of viewer.views) {
       const viewport = layer.getViewport(view);
       gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
       const viewProjection = multiply(view.projectionMatrix, view.transform.inverse.matrix);
       drawView(viewProjection, matrices, showPanels ? panels : null);
+      drawMarkers(viewProjection, view.transform.matrix, marks, time);
     }
   });
 };
