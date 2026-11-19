@@ -464,7 +464,7 @@ The tabletop scenes place their `overview` camera in one of the two common third
 
 The camera is named `overview` in both styles, so the camera set and a dataset's camera features stay the same. Choose the style when the simulation starts, with `start --overview front` or `MuJoCoRobot(overview="front")`. While it runs, switch it with the viewer's **Overview camera** dropdown (Simulation tab, **Scene** folder) or `POST /overview`. The switch moves only the camera; the scene, arms and objects stay where they are, and later scene switches keep the style. Datasets and policies expect the view they were recorded with: don't switch during a recording, and keep one view per dataset. A switch during an autopilot episode ends the episode, like any other control.
 
-The style is not saved: it lasts as long as the simulation, and every start uses `--overview` or the `overview` argument (default `shoulder`). `floor_flat` and custom `--model` XMLs keep their own cameras and offer only `shoulder`; asking them for `front` fails at start, and `POST /overview` returns `409`. `GET /health` reports `overview_style`, the scene's `overview_styles`, and `overview_locked`, the reason a switch is refused now (or `null`).
+The style is not saved: it lasts as long as the simulation, and every start uses `--overview` or the `overview` argument (default `shoulder`). `floor_flat` and custom `--model` XMLs keep their own cameras and offer only `shoulder`; asking them for `front` fails at start, and `POST /overview` returns `409`. `GET /health` reports `overview_style` and the scene's `overview_styles`.
 
 ### REST control API
 

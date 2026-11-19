@@ -439,9 +439,8 @@ def build_app(
             (free-object poses), ``cameras`` (per-camera config),
             ``viewer_url`` (the viser page, served at ``GET /viewer``), and
             for floating bases ``floating_base``, ``fallen`` and ``bases``;
-            ``POST /overview`` reads ``overview_style``, ``overview_styles``
-            (the styles the scene offers) and ``overview_locked`` (why the
-            camera must not move now, or ``None``);
+            ``POST /overview`` reads ``overview_style`` and ``overview_styles``
+            (the styles the scene offers);
             ``POST /replay`` also reads ``joint_names``, ``profile`` and
             ``replay.unsupported_joints``.
         get_leader: Returns the virtual leader pose served at ``GET /leader``
@@ -641,13 +640,9 @@ def _add_sim_control_routes(
     @app.post("/overview")
     def overview(request: OverviewRequest) -> dict[str, Any]:
         status = get_status()
-        if request.style != status.get("overview_style"):
-            locked = status.get("overview_locked")
-            if locked:
-                raise HTTPException(status_code=409, detail=locked)
-            if request.style not in status.get("overview_styles", ()):
-                detail = f"The current scene has no {request.style} overview camera; it keeps its own cameras"
-                raise HTTPException(status_code=409, detail=detail)
+        if request.style != status.get("overview_style") and request.style not in status.get("overview_styles", ()):
+            detail = f"The current scene has no {request.style} overview camera; it keeps its own cameras"
+            raise HTTPException(status_code=409, detail=detail)
         commands.put(SetOverviewCommand(style=request.style))
         return {"status": "queued", "style": request.style}
 

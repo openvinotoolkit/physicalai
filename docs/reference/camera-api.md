@@ -64,3 +64,21 @@ automatic reconnection. Shared-publisher reconfiguration of IP cameras is unsupp
 and leaves the existing stream running.
 
 Camera instances are not thread-safe.
+
+## Multi-Camera Synchronisation
+
+`read_cameras()` and `async_read_cameras()` read from multiple cameras concurrently:
+
+```python
+from physicalai.capture import CaptureTimeoutError, read_cameras
+
+try:
+    synced = read_cameras(cameras, timeout=1.0)
+    print(f"Skew: {synced.max_skew_ms:.2f}ms")
+except CaptureTimeoutError as exc:
+    print(f"Read timed out: {exc}")
+```
+
+- When given an empty mapping (`cameras={}`), both functions return `SyncedFrames(frames={}, max_skew_ms=0.0)`.
+- If one or more cameras do not return a frame within `timeout` seconds, `CaptureTimeoutError` is raised with the set of unresponsive cameras.
+- `timeout` must be positive; non-positive values raise `ValueError`.

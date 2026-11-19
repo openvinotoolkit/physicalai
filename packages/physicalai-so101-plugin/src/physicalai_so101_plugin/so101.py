@@ -74,6 +74,7 @@ class _SO101Connection:
     packet_handler: Any
     group_sync_read: Any
     group_sync_write: Any
+    group_sync_write_torque: Any
 
 
 @dataclass
@@ -123,6 +124,12 @@ class SO101(Robot):
 
     SYNC_READ_ATTEMPTS: ClassVar[int] = 3
     """Total sync-read attempts per observation before a bus failure is raised."""
+
+    SYNC_READ_RETRY_DELAY_S: ClassVar[float] = 0.005
+    """Delay between sync-read retries so a busy or corrupt bus can recover."""
+
+    SYNC_TORQUE_SETTLE_S: ClassVar[float] = 0.02
+    """Settle time after a torque sync write before the next bus transaction."""
 
     def __init__(
         self,
@@ -184,6 +191,9 @@ class SO101(Robot):
 
         # Connection state (set during connect()) --------------------------
         self._connection: _SO101Connection | None = None
+        # Last torque value written on this connection. ``None`` means unknown,
+        # which forces the next ``send_action`` to re-enable torque.
+        self._torque_enabled: bool | None = None
 
         # Torque ON/OFF behavior on disconnect (default: True for follower, False for leader)
         self._torque_on_disconnect: bool = role == "follower"
@@ -369,6 +379,8 @@ class SO101(Robot):
         if self.is_connected():
             return  # already connected
 
+        self._torque_enabled = None
+
         # Open port ---------------------------------------------------------
         port_handler = PortHandler(self.port)
         if not port_handler.openPort():
@@ -403,12 +415,19 @@ class SO101(Robot):
                 STS3215Addr.GOAL_POSITION,
                 STS3215Len.GOAL_POSITION,
             )
+            group_sync_write_torque = GroupSyncWrite(
+                port_handler,
+                packet_handler,
+                STS3215Addr.TORQUE_ENABLE,
+                STS3215Len.TORQUE_ENABLE,
+            )
 
             self._connection = _SO101Connection(
                 port_handler=port_handler,
                 packet_handler=packet_handler,
                 group_sync_read=group_sync_read,
                 group_sync_write=group_sync_write,
+                group_sync_write_torque=group_sync_write_torque,
             )
 
             # Ping all servos ---------------------------------------------------
@@ -419,10 +438,18 @@ class SO101(Robot):
 
             # Configure torque based on role ------------------------------------
             self._set_torque(enabled=self.role == "follower")
+
+            # The broadcast torque write returns before the servos apply it.
+            # Settle and drop any status bytes so the first read is clean.
+            active = self._connection
+            if active is not None:
+                time.sleep(self.SYNC_TORQUE_SETTLE_S)
+                self._clear_input_buffer(active)
         except (OSError, RuntimeError):
             with contextlib.suppress(Exception):
                 port_handler.closePort()
             self._connection = None
+            self._torque_enabled = None
             raise
 
         logger.info(f"SO-101 connected on {self.port} (role={self.role}, servos={self.servo_ids})")
@@ -475,6 +502,7 @@ class SO101(Robot):
             )
         finally:
             self._connection = None
+            self._torque_enabled = None
             try:
                 conn.port_handler.closePort()
             except (OSError, RuntimeError):
@@ -519,7 +547,10 @@ class SO101(Robot):
         )
 
     def send_action(self, action: np.ndarray, *, goal_time: float = 0.1) -> None:
-        """Send joint position commands to all servos.
+        """Send joint position commands to all servos and enable torque.
+
+        Torque is only re-sent when the cached connection state says it is not
+        already enabled, so the steady-state control path is one sync write.
 
         Args:
             action: Array of shape ``(6,)`` with target joint positions in
@@ -543,6 +574,10 @@ class SO101(Robot):
 
         ticks = self._unit_to_ticks(action) if self._calibration is not None else np.round(action).astype(np.int32)
         self._write_joint_positions(ticks)
+        # Write the new goal before enabling torque so the arm does not move
+        # toward a stale goal. Skip the torque write when it is already on.
+        if self._torque_enabled is not True:
+            self._set_torque(enabled=True)
 
     def is_connected(self) -> bool:
         """Check if robot is connected.
@@ -686,22 +721,42 @@ class SO101(Robot):
             if error != 0:
                 logger.warning(f"Servo '{name}' (ID {servo_id}) returned error: {error}")
 
+    @staticmethod
+    def _clear_input_buffer(conn: _SO101Connection) -> None:
+        """Discard stale status bytes left by a broadcast sync write.
+
+        Broadcast sync writes are fire-and-forget. If a servo emits a status
+        packet anyway, the next sync read would parse it as part of its own
+        reply and fail with a corrupt-packet error.
+        """
+        port_handler = getattr(conn, "port_handler", None)
+        ser = getattr(port_handler, "ser", None)
+        if ser is None:
+            return
+        with contextlib.suppress(OSError, RuntimeError):
+            ser.reset_input_buffer()
+
     def _set_torque(self, *, enabled: bool) -> None:
-        """Enable or disable torque on all servos."""
+        """Enable or disable torque on all servos with one sync write.
+
+        The written state is cached on the connection so that back-to-back
+        ``send_action`` calls do not re-send the same torque command. A failed
+        write leaves the cache unknown, which forces the next action to retry.
+        """
         conn = self._require_connection()
 
         value = 1 if enabled else 0
+        conn.group_sync_write_torque.clearParam()
+        failed = False
         for name, servo_id in self.servo_ids.items():
-            comm_result, error = conn.packet_handler.write1ByteTxRx(
-                conn.port_handler,
-                servo_id,
-                STS3215Addr.TORQUE_ENABLE,
-                value,
-            )
-            if comm_result != 0:
-                logger.warning(f"Failed to set torque on servo '{name}' (ID {servo_id}): comm={comm_result}")
-            if error != 0:
-                logger.warning(f"Torque write error on servo '{name}' (ID {servo_id}): err={error}")
+            if not conn.group_sync_write_torque.addParam(servo_id, [value]):
+                logger.warning(f"Failed to add servo '{name}' (ID {servo_id}) to torque sync write")
+                failed = True
+        comm_result = conn.group_sync_write_torque.txPacket()
+        if comm_result != 0:
+            logger.warning(f"Torque sync write failed with comm result {comm_result}")
+            failed = True
+        self._torque_enabled = None if failed else enabled
 
     def set_torque(self, *, enabled: bool) -> None:
         """Enable or disable torque on all servos.
@@ -735,6 +790,7 @@ class SO101(Robot):
             ConnectionError: If every sync read attempt fails.
         """  # noqa: DOC502 — raised by the delegated _sync_read_positions_once(), but callers see it here.
         conn = self._require_connection()
+        self._clear_input_buffer(conn)
         for attempt in range(1, self.SYNC_READ_ATTEMPTS):
             try:
                 return self._sync_read_positions_once(conn)
@@ -742,6 +798,8 @@ class SO101(Robot):
                 logger.warning(
                     f"SO-101 sync read attempt {attempt}/{self.SYNC_READ_ATTEMPTS} on {self.port} failed: {exc}"
                 )
+                time.sleep(self.SYNC_READ_RETRY_DELAY_S)
+                self._clear_input_buffer(conn)
         return self._sync_read_positions_once(conn)
 
     def _sync_read_positions_once(self, conn: _SO101Connection) -> np.ndarray:
