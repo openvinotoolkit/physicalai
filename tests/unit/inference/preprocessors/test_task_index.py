@@ -36,19 +36,29 @@ def test_reused_inputs_are_not_changed() -> None:
     assert TASK_INDEX not in inputs
 
 
-def test_caller_index_is_kept() -> None:
+def test_caller_index_is_kept_without_a_prompt() -> None:
     given = np.array([[0]], dtype=np.int64)
-    assert TaskIndexPreprocessor(TASKS)({TASK_INDEX: given})[TASK_INDEX] is given
+    assert TaskIndexPreprocessor(TASKS)({TASK: None, TASK_INDEX: given})[TASK_INDEX] is given
 
 
-def test_unknown_task_raises() -> None:
+@pytest.mark.parametrize("index", [None, np.array([[0]], dtype=np.int64)])
+def test_prompt_takes_precedence_over_a_dataset_index(index: object) -> None:
+    inputs = {TASK: ["place"], TASK_INDEX: index}
+    result = TaskIndexPreprocessor(TASKS)(inputs)
+    np.testing.assert_array_equal(result[TASK_INDEX], [[1]])
+    assert inputs[TASK_INDEX] is index
+
+
+@pytest.mark.parametrize("index", [None, np.array([[0]], dtype=np.int64)])
+def test_unknown_task_raises(index: object) -> None:
     with pytest.raises(ValueError, match=r"Unknown task\(s\) \['dance'\].*'pick', 'place'"):
-        TaskIndexPreprocessor(TASKS)({TASK: ["dance"]})
+        TaskIndexPreprocessor(TASKS)({TASK: ["dance"], TASK_INDEX: index})
 
 
-def test_missing_task_raises() -> None:
+@pytest.mark.parametrize("inputs", [{}, {TASK: None, TASK_INDEX: None}])
+def test_missing_task_raises(inputs: dict) -> None:
     with pytest.raises(ValueError, match="takes one of the tasks"):
-        TaskIndexPreprocessor(TASKS)({})
+        TaskIndexPreprocessor(TASKS)(inputs)
 
 
 def test_instantiates_from_a_manifest_spec() -> None:

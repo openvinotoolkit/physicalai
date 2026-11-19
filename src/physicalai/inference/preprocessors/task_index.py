@@ -22,8 +22,8 @@ class TaskIndexPreprocessor(Preprocessor):
 
     For policies trained on a fixed set of tasks without a language model, such as
     a multi-task ACT: the export takes the task as an index, not as text, so only
-    the prompts it was trained on are valid. A ``task_index`` already present in
-    the inputs is kept.
+    the prompts it was trained on are valid. Prompts take precedence over dataset
+    indices; a supplied ``task_index`` is kept only when no prompt is provided.
 
     Args:
         tasks: The prompts the policy was trained on; a prompt's position is its index.
@@ -46,10 +46,10 @@ class TaskIndexPreprocessor(Preprocessor):
         Raises:
             ValueError: If ``task`` is missing or is not one of the known tasks.
         """
-        if TASK_INDEX in inputs:
-            return inputs
         task = inputs.get(TASK)
         if task is None:
+            if inputs.get(TASK_INDEX) is not None:
+                return inputs
             msg = f"This policy takes one of the tasks {list(self._index)} as `task`."
             raise ValueError(msg)
         prompts = [task] if isinstance(task, str) else [str(prompt) for prompt in np.atleast_1d(task)]
