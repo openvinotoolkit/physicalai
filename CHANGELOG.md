@@ -15,6 +15,8 @@
   training library or PyTorch.
 - Add the `noise` preprocessor, which draws fresh flow-matching start noise on
   every call for exports that take the noise as a graph input.
+- Add the `task_index` preprocessor, which maps a `task` prompt to the index a
+  multi-task export without a language model (such as a multi-task ACT) takes.
 
 ## [0.4.0](https://github.com/openvinotoolkit/physicalai/compare/v0.3.0...v0.4.0) (2026-11-06)
 
