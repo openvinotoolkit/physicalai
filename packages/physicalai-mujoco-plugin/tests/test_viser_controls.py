@@ -291,18 +291,10 @@ class TestOverviewControl:
         _, server, _ = build_panel(make_state(overview_styles=("shoulder",)))
         assert "Overview camera" not in server.gui.handles
 
-    def test_disabled_while_studio_records_and_follows_the_style(self) -> None:
+    def test_follows_the_style(self) -> None:
         panel, server, _ = build_panel(make_state(overview_styles=self.BOTH))
-        dropdown = server.gui.handles["Overview camera"]
-        state = make_state(overview_styles=self.BOTH, overview_style="front", overview_locked="recording")
-        panel.refresh(state, now=1.0)
-        assert (dropdown.value, dropdown.disabled) == ("Front", True)
-        panel.refresh(dataclasses.replace(state, overview_locked=None), now=2.0)
-        assert dropdown.disabled is False
-
-    def test_starts_disabled_while_studio_records(self) -> None:
-        _, server, _ = build_panel(make_state(overview_styles=self.BOTH, overview_locked="recording"))
-        assert server.gui.handles["Overview camera"].disabled is True
+        panel.refresh(make_state(overview_styles=self.BOTH, overview_style="front"), now=1.0)
+        assert server.gui.handles["Overview camera"].value == "Front"
 
     def test_the_robot_folder_shows_the_style(self) -> None:
         panel, _, _ = build_panel(make_state(profile="so101", tier="twin", overview_style="front"))

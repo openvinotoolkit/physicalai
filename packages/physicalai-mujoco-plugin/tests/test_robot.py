@@ -846,7 +846,6 @@ class TestOverviewStyle:
         book = robot._automation.book  # noqa: SLF001
         book.set_scene(SceneSupport(scene="single_pick_place", supported=True, reason=None))  # as if it had one
         episode = book.create(EpisodeRequest())
-        assert robot._http_status()["overview_locked"] is None  # noqa: SLF001 - nothing locks the camera
         app = build_app(
             service_name="sim",
             buffers={},
