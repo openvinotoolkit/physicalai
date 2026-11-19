@@ -5,15 +5,15 @@ from __future__ import annotations
 
 import os
 import signal
-import subprocess  # noqa: S404  # ruff: ignore[noqa-comments] - entrypoints use argv with shell disabled.
+import subprocess  # noqa: S404  # nosec B404  # ruff: ignore[noqa-comments] - entrypoints use argv with shell disabled.
 from contextlib import ExitStack, contextmanager, suppress
-from importlib import resources
+from importlib import resources  # nosemgrep  # Python 3.10+ only.
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Mapping, Sequence
-    from importlib.resources.abc import Traversable
+    from importlib.resources.abc import Traversable  # nosemgrep  # Python 3.10+ only.
     from types import TracebackType
     from typing import IO, Any, Self
 
@@ -332,7 +332,7 @@ def start(
             resources_stack.callback(os.close, lifeline_write)
         command = _command(prepared, script, args, lifeline)
         try:
-            process = subprocess.Popen(  # noqa: S603  # ruff: ignore[noqa-comments] - explicit interpreter and entrypoint argv, no shell.
+            process = subprocess.Popen(  # noqa: S603  # nosec B603  # ruff: ignore[noqa-comments] - explicit interpreter and entrypoint argv, no shell.
                 command,
                 cwd=cwd,
                 env=_child_environment(prepared, env),

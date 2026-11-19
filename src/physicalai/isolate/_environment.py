@@ -8,7 +8,7 @@ import errno
 import json
 import os
 import shutil
-import subprocess  # noqa: S404  # ruff: ignore[noqa-comments] - uv uses fixed argv with shell disabled.
+import subprocess  # noqa: S404  # nosec B404  # ruff: ignore[noqa-comments] - uv uses fixed argv with shell disabled.
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -187,7 +187,7 @@ def _build_environment(
         uv, project, environment.profile, offline=offline, verify_lock=environment.source.verify_lock
     )
     child_env = {**os.environ, "UV_PROJECT_ENVIRONMENT": str(root / "venv")}
-    subprocess.run(  # noqa: S603  # ruff: ignore[noqa-comments] - fixed uv subcommand, no shell.
+    subprocess.run(  # noqa: S603  # nosec B603  # ruff: ignore[noqa-comments] - fixed uv subcommand, no shell.
         command,
         cwd=project,
         env=child_env,

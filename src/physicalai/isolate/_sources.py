@@ -7,7 +7,7 @@ import hashlib
 import os
 import re
 import shutil
-import subprocess  # noqa: S404  # ruff: ignore[noqa-comments] - git uses fixed argv lists with shell disabled.
+import subprocess  # noqa: S404  # nosec B404  # ruff: ignore[noqa-comments] - git uses fixed argv lists with shell disabled.
 import tempfile
 import urllib.request
 from abc import ABC, abstractmethod
@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, ClassVar
 from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
-    from importlib.resources.abc import Traversable
+    from importlib.resources.abc import Traversable  # nosemgrep  # Python 3.10+ only.
     from typing import Any
 
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
@@ -536,7 +536,7 @@ def _download(url: str) -> bytes:
         url,
         headers={"User-Agent": "physicalai-isolate"},
     )
-    response_context = urllib.request.urlopen(  # noqa: S310  # ruff: ignore[noqa-comments] - HTTPS host, redirect, and digest are checked.
+    response_context = urllib.request.urlopen(  # noqa: S310  # nosec B310  # nosemgrep  # ruff: ignore[noqa-comments] - HTTPS host, redirect, and digest are checked.
         request,
         timeout=_DOWNLOAD_TIMEOUT_SECONDS,
     )
@@ -573,7 +573,7 @@ def _git(
         "GIT_TERMINAL_PROMPT": "0",
         **(extra_env or {}),
     }
-    result = subprocess.run(  # noqa: S603  # ruff: ignore[noqa-comments] - fixed git argv and shell disabled.
+    result = subprocess.run(  # noqa: S603  # nosec B603  # ruff: ignore[noqa-comments] - fixed git argv and shell disabled.
         [executable, *arguments],
         cwd=cwd,
         env=child_env,
