@@ -86,8 +86,10 @@ class UvProvider:
     def prepare(self, environment: Environment, *, offline: bool = False) -> PreparedEnvironment:
         """Create or reuse a cached environment for *environment*.
 
-        ``uv sync --locked`` fails with :class:`subprocess.CalledProcessError` when ``uv.lock``
-        is out of date with ``pyproject.toml``.
+        A bundled project's ``uv.lock`` must be current: ``uv sync --locked`` fails with
+        :class:`subprocess.CalledProcessError` when it is out of date with ``pyproject.toml``.
+        Other sources, such as an upstream :class:`GitProject`, install their lock as is
+        (``uv sync --frozen``); see :attr:`ProjectSource.verify_lock`.
 
         Args:
             environment: Project source and sync profile to prepare.
@@ -181,7 +183,9 @@ def _build_environment(
         msg = "The environment source changed while it was being prepared."
         raise RuntimeError(msg)
 
-    command = _sync_command(uv, project, environment.profile, offline=offline)
+    command = _sync_command(
+        uv, project, environment.profile, offline=offline, verify_lock=environment.source.verify_lock
+    )
     child_env = {**os.environ, "UV_PROJECT_ENVIRONMENT": str(root / "venv")}
     subprocess.run(  # noqa: S603  # ruff: ignore[noqa-comments] - fixed uv subcommand, no shell.
         command,
@@ -209,8 +213,8 @@ def _cache_root(configured: Path | None) -> Path:
     return (cache_home / "physicalai" / "isolate").resolve()
 
 
-def _sync_command(uv: str, project: Path, profile: SyncProfile, *, offline: bool) -> list[str]:
-    command = [uv, "sync", "--locked", "--project", str(project)]
+def _sync_command(uv: str, project: Path, profile: SyncProfile, *, offline: bool, verify_lock: bool) -> list[str]:
+    command = [uv, "sync", "--locked" if verify_lock else "--frozen", "--project", str(project)]
     if profile.python is not None:
         command.extend(["--python", profile.python])
     if profile.no_default_groups:
