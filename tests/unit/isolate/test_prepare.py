@@ -2,14 +2,25 @@ from __future__ import annotations
 
 import errno
 import os
+import shutil
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-from physicalai.isolate import BundledProject, Environment, SyncProfile, UvProvider, _environment, prepare
+from physicalai.isolate import (
+    BundledProject,
+    Environment,
+    GitProject,
+    ProjectSource,
+    SyncProfile,
+    UvProvider,
+    _environment,
+    prepare,
+)
 
 
 def _bundled_project(path: Path) -> Path:
@@ -105,6 +116,45 @@ def test_prepare_caches_by_locked_project_and_sync_profile(
     assert updated.path != first.path
     assert len(calls) == 3
 
+
+
+@dataclass(frozen=True)
+class _CopiedProject(ProjectSource):
+    """A non-bundled source, standing in for an upstream checkout such as a GitProject."""
+
+    path: Path
+
+    def identity(self) -> dict[str, str]:
+        return {"kind": "copied", "path": str(self.path)}
+
+    def materialize(self, destination: Path, *, offline: bool = False) -> None:
+        del offline
+        shutil.copytree(self.path, destination)
+
+
+def test_only_bundled_projects_have_their_lock_verified(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    assert BundledProject.verify_lock
+    assert not GitProject.verify_lock
+    project = _bundled_project(tmp_path / "project")
+    provider = UvProvider(cache_dir=tmp_path / "cache", uv=sys.executable)
+    modes: list[str] = []
+
+    def fake_uv(command: list[str], *, cwd: Path, env: dict[str, str], check: bool, shell: bool) -> None:
+        del cwd, check, shell
+        modes.append(command[2])
+        python = Path(env["UV_PROJECT_ENVIRONMENT"]) / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        python.parent.mkdir(parents=True, exist_ok=True)
+        python.write_bytes(b"prepared interpreter")
+
+    monkeypatch.setattr("physicalai.isolate._environment.subprocess.run", fake_uv)
+
+    prepare(Environment(source=BundledProject(project)), provider=provider)
+    prepare(Environment(source=_CopiedProject(project)), provider=provider)
+
+    assert modes == ["--locked", "--frozen"]
 
 def test_concurrent_prepares_for_the_same_key_build_the_environment_once(
     monkeypatch: pytest.MonkeyPatch,

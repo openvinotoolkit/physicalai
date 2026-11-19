@@ -13,7 +13,7 @@ import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
@@ -37,6 +37,13 @@ _GIT_IDENTITY = {
 
 class ProjectSource(ABC):
     """Source materialized as a locked uv project."""
+
+    # Whether ``prepare`` rejects a ``uv.lock`` that is out of date with ``pyproject.toml``
+    # (``uv sync --locked``) instead of installing the lock as is (``uv sync --frozen``).
+    # Only sources whose lock the caller maintains check it: an upstream lock cannot be
+    # fixed without pinning another revision, and the check reads every locked package,
+    # including other platforms' path wheels a checkout may hold only as Git LFS pointers.
+    verify_lock: ClassVar[bool] = False
 
     @abstractmethod
     def identity(self) -> dict[str, Any]:
@@ -62,6 +69,8 @@ class ProjectSource(ABC):
 @dataclass(frozen=True)
 class BundledProject(ProjectSource):
     """A uv project shipped with the calling distribution."""
+
+    verify_lock: ClassVar[bool] = True
 
     path: Path | Traversable
 
