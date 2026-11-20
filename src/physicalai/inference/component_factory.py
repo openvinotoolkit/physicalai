@@ -108,6 +108,7 @@ component_registry.register("resize", "physicalai.inference.preprocessors.Resize
 component_registry.register("smolvla_resize", "physicalai.inference.preprocessors.ResizeSmolVLA")
 component_registry.register("new_line", "physicalai.inference.preprocessors.NewLinePreprocessor")
 component_registry.register("noise", "physicalai.inference.preprocessors.NoisePreprocessor")
+component_registry.register("task_index", "physicalai.inference.preprocessors.TaskIndexPreprocessor")
 component_registry.register("hf_tokenizer", "physicalai.inference.preprocessors.HFTokenizer")
 component_registry.register("molmoact2", "physicalai.inference.preprocessors.MolmoAct2Preprocessor")
 component_registry.register("molmoact2_inputs", "physicalai.inference.preprocessors.MolmoAct2ModelInputs")

@@ -122,6 +122,7 @@ def test_registry_has_hand_written_profiles_and_any_menagerie_model() -> None:
         "rebot_b601",
         "franka_fr3",
         "franka_duo",
+        "openarm",
         "ur5e",
         "aloha",
         "so_arm100",

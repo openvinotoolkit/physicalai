@@ -693,8 +693,9 @@ class TestStatus:
         assert status["connected"] is False
         assert status["scene"] == "single_pick_place"
         assert status["profile"] == "so101"
-        assert set(status["scenes"]) == {"single_pick_place", "yahtzee", "conveyor_sort", "bucket_sort", "floor_flat"}
+        assert set(status["scenes"]) == {"single_pick_place", "yahtzee", "conveyor_sort", "bucket_sort", "openarm_cell", "floor_flat"}
         assert "floor_flat" not in status["compatible_scenes"]
+        assert "openarm_cell" not in status["compatible_scenes"]
         assert status["objects"] == []
         assert status["cameras"] == [
             {
@@ -835,31 +836,28 @@ class TestOverviewStyle:
         _assert_pose(_overview_pose(robot), _composed_overview_pose("yahtzee", "front"))
         assert robot._http_status()["overview_style"] == "front"  # noqa: SLF001
 
-    def test_refused_while_studio_records(self, scene_robot: MuJoCoRobot) -> None:
+    def test_a_switch_during_an_autopilot_episode_ends_it_then_applies(self, scene_robot: MuJoCoRobot) -> None:
+        from physicalai_studio_plugin.autopilot import EpisodeRequest  # noqa: PLC0415
+
+        from physicalai_mujoco_plugin.autopilot import SceneSupport  # noqa: PLC0415
         from physicalai_mujoco_plugin.http_server import build_app  # noqa: PLC0415
 
         robot = scene_robot
-        shoulder = _overview_pose(robot)
-        robot._automation.recorder._phase = "recording"  # noqa: SLF001
-        status = robot._http_status()  # noqa: SLF001
-        assert "Automatic Studio recording is on" in status["overview_locked"]
-        assert robot._panel_state().overview_locked == status["overview_locked"]  # noqa: SLF001
+        book = robot._automation.book  # noqa: SLF001
+        book.set_scene(SceneSupport(scene="single_pick_place", supported=True, reason=None))  # as if it had one
+        episode = book.create(EpisodeRequest())
         app = build_app(
-            service_name="sim", buffers={}, commands=robot._commands, get_status=robot._http_status  # noqa: SLF001
+            service_name="sim",
+            buffers={},
+            commands=robot._commands,  # noqa: SLF001
+            get_status=robot._http_status,  # noqa: SLF001
+            autopilot=book,
         )
-
-        response = TestClient(app).post("/overview", json={"style": "front"})
-        assert (response.status_code, response.json()["detail"]) == (409, status["overview_locked"])
-        assert robot._commands.empty()  # noqa: SLF001
-        # A switch that raced the recording's start is refused on the sim thread too.
-        robot._commands.put(SetOverviewCommand(style="front"))  # noqa: SLF001
-        robot.get_observation()
-        assert robot._overview == "shoulder"  # noqa: SLF001
-        _assert_pose(_overview_pose(robot), shoulder)
-
-        robot._automation.recorder._phase = "done"  # noqa: SLF001
-        assert robot._http_status()["overview_locked"] is None  # noqa: SLF001
         assert TestClient(app).post("/overview", json={"style": "front"}).status_code == 200
+        robot.get_observation()
+        ended = book.get(episode.id)
+        assert (ended.phase, ended.outcome, ended.reason) == ("ended", "aborted", "The overview camera moved.")
+        assert robot._overview == "front"  # noqa: SLF001
 
 
 class TestSceneSwitching:

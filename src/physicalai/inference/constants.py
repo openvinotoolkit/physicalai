@@ -10,6 +10,7 @@ autocomplete and safe refactoring across the inference module.
 IMAGES = "images"
 ACTION = "action"
 TASK = "task"
+TASK_INDEX = "task_index"
 STATE = "state"
 STATE_PASSTHROUGH = "state_passthrough"
 
@@ -36,6 +37,7 @@ __all__ = [
     "STATE",
     "STATE_PASSTHROUGH",
     "TASK",
+    "TASK_INDEX",
     "TOKENIZED_PROMPT",
     "TOKENIZED_PROMPT_MASK",
 ]

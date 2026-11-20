@@ -1,0 +1,87 @@
+<?xml version="1.0"?>
+<!-- The OpenArm Cell: Enactic's cage for the bimanual OpenArm, with its overhead camera.
+
+     Dimensions and camera poses come from enactic/openarm_mujoco 2.3.0 v2/cell/cell.xml (Apache-2.0),
+     moved so that the table top is z = 0 and the lifter, where the shoulders hang, is x = y = 0
+     (cell.xml's 0.185 0 1.005 is the origin here). The cell's meshes are drawn as boxes: they are in
+     the downloaded OpenArm archive, which a scene file cannot reference.
+
+     The lifter stays at the bottom of its 0.3 m travel, so robot_mount (the shoulder frame of
+     openarm_bimanual.xml) is 0.335 m above the table. The overview camera is the cell's ceiling
+     camera, an Intel RealSense D457 on the real cell: its colour sensor has a 65 degree vertical
+     field of view at 16:10.
+
+     The 3D viewer shows the cell's frame without its walls and roof, so the arms stay in sight from
+     any side: the walls are glass boxes in geom group 3, which collide but which viewers hide by
+     default (mjviser draws every geom opaque, so a see-through wall would still block the view).
+     The camera streams see the real cell's opaque black panels instead: each panel is a second,
+     slightly larger box in geom group 5, which only the cameras render (cameras.CAMERA_ONLY_GEOM_GROUP). -->
+<mujoco model="openarm_cell">
+  <compiler angle="radian" autolimits="true"/>
+  <option integrator="implicitfast" timestep="0.002" cone="elliptic" iterations="10" ls_iterations="20" impratio="10"/>
+  <include file="../scene_common.xml"/>
+  <default>
+    <default class="cell">
+      <geom type="box" material="cell_black" friction="1 0.005 0.001"/>
+      <default class="glass">
+        <geom material="cell_glass" group="3"/>
+      </default>
+      <default class="panel">
+        <geom group="5" contype="0" conaffinity="0"/>
+      </default>
+    </default>
+  </default>
+  <asset>
+    <material name="cell_black" rgba="0.247 0.247 0.247 1" reflectance="0.05" shininess="0.5"/>
+    <material name="cell_glass" rgba="0.80 0.90 0.95 0.12" reflectance="0" shininess="0.8" specular="0.6"/>
+    <material name="cell_sheet" rgba="0.95 0.94 0.90 1" reflectance="0.05" shininess="0.1"/>
+  </asset>
+  <worldbody>
+    <light name="cell_light" pos="0.24 0 0.78" dir="0 0 -1" directional="true" diffuse="0.6 0.6 0.6" castshadow="true"/>
+    <light pos="0.24 0 2.5" dir="0 0 -1" directional="false" diffuse="0.3 0.3 0.3" castshadow="false"/>
+    <geom name="floor" type="plane" size="0 0 0.01" pos="0 0 -1.005" material="floor" condim="3"/>
+
+    <!-- Table, legs, frame, walls (left, right, front; the back is open), roof and the lifter's rail. -->
+    <geom name="cell_table" class="cell" pos="0.24 0 -0.025" size="0.425 0.55 0.025"/>
+    <geom name="cell_sheet" type="box" pos="0.2375 0 0.0005" size="0.325 0.45 0.0005" material="cell_sheet"
+          contype="0" conaffinity="0"/>
+    <geom name="cell_leg_back_left" class="cell" pos="-0.165 0.53 -0.53" size="0.02 0.02 0.475"/>
+    <geom name="cell_leg_back_right" class="cell" pos="-0.165 -0.53 -0.53" size="0.02 0.02 0.475"/>
+    <geom name="cell_leg_front_left" class="cell" pos="0.645 0.53 -0.53" size="0.02 0.02 0.475"/>
+    <geom name="cell_leg_front_right" class="cell" pos="0.645 -0.53 -0.53" size="0.02 0.02 0.475"/>
+    <geom name="cell_post_back_left" class="cell" pos="-0.165 0.53 0.44" size="0.02 0.02 0.44"/>
+    <geom name="cell_post_back_right" class="cell" pos="-0.165 -0.53 0.44" size="0.02 0.02 0.44"/>
+    <geom name="cell_post_front_left" class="cell" pos="0.645 0.53 0.44" size="0.02 0.02 0.44"/>
+    <geom name="cell_post_front_right" class="cell" pos="0.645 -0.53 0.44" size="0.02 0.02 0.44"/>
+    <geom name="cell_top_left" class="cell" pos="0.24 0.53 0.86" size="0.425 0.02 0.02"/>
+    <geom name="cell_top_right" class="cell" pos="0.24 -0.53 0.86" size="0.425 0.02 0.02"/>
+    <geom name="cell_top_front" class="cell" pos="0.645 0 0.86" size="0.02 0.51 0.02"/>
+    <geom name="cell_top_back" class="cell" pos="-0.165 0 0.86" size="0.02 0.51 0.02"/>
+    <geom name="cell_left_wall" class="glass" pos="0.245 0.52 0.415" size="0.43 0.03 0.42"/>
+    <geom name="cell_right_wall" class="glass" pos="0.245 -0.52 0.415" size="0.43 0.03 0.42"/>
+    <geom name="cell_front_wall" class="glass" pos="0.665 0 0.415" size="0.03 0.49 0.42"/>
+    <geom name="cell_roof" class="glass" pos="0.24 0 0.848" size="0.425 0.55 0.033"/>
+    <geom name="cell_left_panel" class="panel" pos="0.245 0.52 0.415" size="0.432 0.032 0.422"/>
+    <geom name="cell_right_panel" class="panel" pos="0.245 -0.52 0.415" size="0.432 0.032 0.422"/>
+    <geom name="cell_front_panel" class="panel" pos="0.665 0 0.415" size="0.032 0.492 0.422"/>
+    <geom name="cell_roof_panel" class="panel" pos="0.24 0 0.848" size="0.427 0.552 0.035"/>
+    <geom name="cell_rail_back" class="cell" pos="-0.155 0 0.52" size="0.03 0.03 0.3"/>
+    <geom name="cell_rail_front" class="cell" pos="-0.0935 0 0.53" size="0.0315 0.039 0.29"/>
+    <geom name="cell_lifter" class="cell" pos="-0.01575 0 0.335" size="0.04575 0.031 0.061"/>
+
+    <body name="block1" pos="0.30 0.06 0.02">
+      <joint type="free" name="block1:joint" damping="0" frictionloss="0" armature="0"/>
+      <geom type="box" size="0.02 0.02 0.02" rgba="0.2 0.6 1.0 1" mass="0.05"/>
+    </body>
+    <body name="target" pos="0.32 -0.20 0.0015">
+      <geom name="target_disc" type="cylinder" size="0.05 0.001" rgba="0.2 1.0 0.2 0.35" contype="0" conaffinity="0"/>
+    </body>
+
+    <frame name="robot_mount" pos="0 0 0.335"/>
+
+    <!-- The D457, looking straight down with the front wall at the top of its image. -->
+    <body name="overview_camera_rig" pos="0.06 0 0.795">
+      <camera name="overview" mode="fixed" xyaxes="0 -1 0 1 0 0" fovy="66"/>
+    </body>
+  </worldbody>
+</mujoco>

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/openvinotoolkit/physicalai/compare/physicalai-rebot-b601-plugin-v0.9.0...physicalai-rebot-b601-plugin-v0.9.1) (2026-11-19)
+
+
+### 🐛 Bug Fixes
+
+* **rebot-b601:** time the RS gripper's stall checks instead of counting commands ([#454](https://github.com/openvinotoolkit/physicalai/issues/454)) ([dceb16b](https://github.com/openvinotoolkit/physicalai/commit/dceb16bbcc88ad5b494b0727e69e3b4ec1fd5bf8))
+
 ## [0.9.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-rebot-b601-plugin-v0.8.0...physicalai-rebot-b601-plugin-v0.9.0) (2026-11-05)
 
 

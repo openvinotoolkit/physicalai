@@ -46,7 +46,6 @@ from physicalai_mujoco_plugin.constants import (
 from physicalai_mujoco_plugin.profiles import RobotProfile, get_profile, list_profiles
 from physicalai_mujoco_plugin.profiles.dataset import FRANKA_HAND_PEAK_FORCE_N
 from physicalai_mujoco_plugin.profiles.franka import with_grip_force
-from physicalai_mujoco_plugin.studio_recorder import DEFAULT_STUDIO_URL, validate_studio_url
 from physicalai_mujoco_plugin.viewer import ViewerTheme
 
 if TYPE_CHECKING:
@@ -313,15 +312,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "exits when this command is killed"
         ),
     )
-    start.add_argument(
-        "--studio-url",
-        type=str,
-        default=DEFAULT_STUDIO_URL,
-        help=f"Physical AI Studio backend for automatic episode recording (default: {DEFAULT_STUDIO_URL})",
-    )
 
     sub.add_parser("profiles", help="List registered robot profiles")
-    sub.add_parser("prefetch", help="Download the supported robot models from MuJoCo Menagerie")
+    sub.add_parser("prefetch", help="Download the supported robot models (MuJoCo Menagerie, OpenArm)")
 
     stop = sub.add_parser("stop", help="Stop a running MuJoCo simulation owner")
     stop.add_argument(
@@ -608,7 +601,6 @@ def _run_start(args: argparse.Namespace, status: _StatusWriter) -> None:  # noqa
         http_host=args.http_host,
         http_port=http_port,
         owner_name=owner_name,
-        studio_url=validate_studio_url(args.studio_url),
         # The owner runs in its own session; it watches this process so a hard kill stops it too.
         exit_with_pid=os.getpid() if args.exit_with_parent else None,
         grip_force_n=args.grip_force,

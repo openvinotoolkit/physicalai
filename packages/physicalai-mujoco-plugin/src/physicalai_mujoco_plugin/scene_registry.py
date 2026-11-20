@@ -765,6 +765,25 @@ _SCENES: dict[str, SceneConfig] = {
         # view instead of a small robot in the middle of the floor.
         viewer_view=ViewerView(position=(-0.25, 1.42, 1.00), look_at=(0.32, 0.0, 0.22), fov_deg=51.6),
     ),
+    "openarm_cell": SceneConfig(
+        scene_id="openarm_cell",
+        display_name="OpenArm Cell",
+        description="The OpenArm's cage with its overhead camera: one block and a target disc on the sheet",
+        scene_xml_relpath="scenes/openarm_cell/scene.xml",
+        free_joints=("block1:joint",),
+        target_bodies=("target",),
+        # A disc between the hands, where both reach down to the table (tests/test_openarm.py).
+        spawn_center=(0.30, 0.0),
+        spawn_min_r=0.0,
+        spawn_max_r=0.12,
+        spawn_angle_half_deg=180.0,
+        robots=("openarm",),
+        # One model with both arms; the cell holds one of it.
+        arm_counts=(1,),
+        # From the front-left, through the front glass, which the viewer hides: the lifter's rail
+        # stays behind the arms.
+        viewer_view=ViewerView(position=(1.05, 0.55, 0.75), look_at=(0.12, 0.0, 0.2), fov_deg=50.0),
+    ),
     "floor_flat": SceneConfig(
         scene_id="floor_flat",
         display_name="Flat Floor",
@@ -776,7 +795,7 @@ _SCENES: dict[str, SceneConfig] = {
     ),
 }
 
-_FREEJOINT_SPAWN_SCENES = ("single_pick_place",)
+_FREEJOINT_SPAWN_SCENES = ("single_pick_place", "openarm_cell")
 """Scenes whose reset respawns their free objects in the spawn arc laid out for the robot."""
 
 _RESET_FUNCTIONS: dict[str, Callable[[SceneConfig, RobotProfile, int, tuple[int, ...]], ResetFn]] = {
