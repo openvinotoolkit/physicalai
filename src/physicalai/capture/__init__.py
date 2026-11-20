@@ -19,6 +19,7 @@ from physicalai.capture.camera import Camera, CameraType, ColorMode
 from physicalai.capture.discovery import DeviceInfo, discover_all
 from physicalai.capture.errors import (
     CaptureError,
+    CaptureSkewError,
     CaptureTimeoutError,
     MissingDependencyError,
     NotConnectedError,
@@ -50,6 +51,7 @@ __all__ = [  # noqa: RUF022
     "DepthMixin",
     # Errors
     "CaptureError",
+    "CaptureSkewError",
     "CaptureTimeoutError",
     "MissingDependencyError",
     "NotConnectedError",

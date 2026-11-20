@@ -77,6 +77,7 @@ class FakeCamera(Camera):
 
     def _make_frame(self) -> Frame:
         """Build a synthetic frame with the current sequence number."""
+        shape: tuple[int, ...]
         if self._color_mode == ColorMode.GRAY:
             shape = (self._height, self._width)
         else:
