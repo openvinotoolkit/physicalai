@@ -20,12 +20,13 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-MANIFEST_VERSION = "1.0"
+MANIFEST_VERSION = "1.1"
 MANIFEST_FORMAT = "policy_package"
 
 # Alias builtin ``type`` so it remains accessible inside classes that
@@ -245,6 +246,22 @@ class ComponentSpec(BaseModel):
         )
 
 
+class ObservationHistorySpec(BaseModel):
+    """Opt-in image and state history collected by PolicySource.
+
+    Attributes:
+        n_obs_steps: Observations per window, including the current observation.
+        stride: Received observation updates between selected frames.
+        preprocessor: History formatter prepended to the inference pipeline.
+            None leaves selected frames unstacked for the remaining pipeline.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    n_obs_steps: int = Field(ge=1, strict=True)
+    stride: int = Field(default=1, ge=1, strict=True)
+    preprocessor: ComponentSpec | None = Field(default_factory=lambda: ComponentSpec(type="stack_observation_history"))
+
+
 class ModelSpec(BaseModel):
     """Model inference specification.
 
@@ -253,6 +270,7 @@ class ModelSpec(BaseModel):
 
     Attributes:
         n_obs_steps: Number of observation steps the model expects.
+        observation_history: Opt-in image/state windowing by runtime PolicySource.
         runner: Runner component specification.
         artifacts: Mapping of logical name → filename,
             e.g. ``{"model": "model.onnx"}``.
@@ -268,6 +286,7 @@ class ModelSpec(BaseModel):
 
     model_config = ConfigDict(frozen=True)
     n_obs_steps: int = 1
+    observation_history: ObservationHistorySpec | None = None
     runner: ComponentSpec | None = None
     artifacts: dict[str, str] = Field(default_factory=dict)
     preprocessors: list[ComponentSpec] = Field(default_factory=list)
@@ -326,6 +345,16 @@ class Manifest(BaseModel):
     model: ModelSpec = Field(default_factory=ModelSpec)
     hardware: HardwareSpec = Field(default_factory=HardwareSpec)
     metadata: MetadataSpec = Field(default_factory=MetadataSpec)
+
+    @model_validator(mode="after")
+    def _history_requires_version_1_1(self) -> Manifest:
+        if self.model.observation_history is not None and (
+            re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)*", self.version) is None
+            or tuple(int(part) for part in self.version.split(".")) < (1, 1)
+        ):
+            msg = "Observation history requires manifest version 1.1 or greater (numeric major.minor version)"
+            raise ValueError(msg)
+        return self
 
     @classmethod
     def load(cls, path: str | Path) -> Manifest:

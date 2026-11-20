@@ -26,6 +26,7 @@ from physicalai.inference.manifest import (
     Manifest,
     MetadataSpec,
     ModelSpec,
+    ObservationHistorySpec,
     OrderedTensorSpec,
     PolicySource,
     PolicySpec,
@@ -319,10 +320,113 @@ class TestInstantiateComponent:
         }
 
 
+class TestObservationHistorySpec:
+    def test_loading_history_from_1_0_export_fails(self, tmp_path: Path) -> None:
+        path = tmp_path / "manifest.json"
+        path.write_text(json.dumps({
+            "version": "1.0",
+            "model": {"observation_history": {"n_obs_steps": 2}},
+        }))
+        with pytest.raises(ValidationError, match="requires manifest version 1.1 or greater"):
+            Manifest.load(path)
+
+    @pytest.mark.parametrize("version", ["1.1", "1.1.0", "1.2", "1.10", "2.0"])
+    def test_supported_manifest_versions(self, version: str) -> None:
+        manifest = Manifest.model_validate({
+            "version": version,
+            "model": {"observation_history": {"n_obs_steps": 2}},
+        })
+        assert manifest.version == version
+
+    @pytest.mark.parametrize("version", ["0.9", "1.0", "1.0.99", "1", "1.x", "1.1rc1", "", "-1.2"])
+    def test_history_requires_version_1_1(self, version: str) -> None:
+        with pytest.raises(ValidationError, match="requires manifest version 1.1 or greater"):
+            Manifest.model_validate({
+                "version": version,
+                "model": {"observation_history": {"n_obs_steps": 2}},
+            })
+
+    @pytest.mark.parametrize("history", [None, "omitted"])
+    @pytest.mark.parametrize("version", ["1.0", "legacy-version"])
+    def test_no_history_preserves_legacy_version_handling(self, version: str, history: str | None) -> None:
+        model = {} if history == "omitted" else {"observation_history": history}
+        manifest = Manifest.model_validate({"version": version, "model": model})
+        assert manifest.version == version
+        assert manifest.model.observation_history is None
+
+    def test_stride_defaults_to_one(self) -> None:
+        assert ObservationHistorySpec(n_obs_steps=3).stride == 1
+
+    def test_preprocessor_defaults_to_history_stacker(self) -> None:
+        spec = ObservationHistorySpec(n_obs_steps=3)
+        assert spec.preprocessor == ComponentSpec(type="stack_observation_history")
+        assert spec.model_dump(exclude_defaults=True) == {"n_obs_steps": 3}
+
+    @pytest.mark.parametrize("preprocessor", [{}, "stack_observation_history", False])
+    def test_rejects_invalid_preprocessor(self, preprocessor: Any) -> None:
+        with pytest.raises(ValidationError):
+            ObservationHistorySpec.model_validate({"n_obs_steps": 3, "preprocessor": preprocessor})
+
+    @pytest.mark.parametrize("field", ["n_obs_steps", "stride"])
+    @pytest.mark.parametrize("value", [0, -1, True, False, 1.0, 1.5, "2", None])
+    def test_requires_strict_positive_integers(self, field: str, value: Any) -> None:
+        with pytest.raises(ValidationError) as exc_info:
+            Manifest.model_validate({"model": {"observation_history": {"n_obs_steps": 2, field: value}}})
+        assert exc_info.value.errors()[0]["loc"] == ("model", "observation_history", field)
+
+    def test_requires_n_obs_steps(self) -> None:
+        with pytest.raises(ValidationError, match="n_obs_steps"):
+            ObservationHistorySpec.model_validate({"stride": 2})
+
+    def test_rejects_unknown_config_fields(self) -> None:
+        with pytest.raises(ValidationError, match="extra_forbidden"):
+            Manifest.model_validate({
+                "model": {"observation_history": {"n_obs_steps": 2, "strde": 3}},
+            })
+
+    @pytest.mark.parametrize(
+        "history",
+        [
+            None,
+            {"n_obs_steps": 1},
+            {"n_obs_steps": 3, "stride": 2},
+            {"n_obs_steps": 3, "preprocessor": None},
+            {
+                "n_obs_steps": 3,
+                "preprocessor": {"type": "custom_history", "axis": 2},
+            },
+            {
+                "n_obs_steps": 3,
+                "preprocessor": {"class_path": "myapp.transforms.History", "init_args": {"axis": 2}},
+            },
+        ],
+    )
+    def test_manifest_roundtrip(self, tmp_path: Path, history: dict[str, Any] | None) -> None:
+        model: dict[str, Any] = {"n_obs_steps": 7}
+        if history is not None:
+            model["observation_history"] = history
+        original = Manifest.model_validate({"model": model})
+        path = tmp_path / "manifest.json"
+
+        original.save(path)
+
+        loaded = Manifest.load(tmp_path)
+        assert loaded == original
+        assert loaded.model.n_obs_steps == 7
+        data = json.loads(path.read_text())
+        if history is None:
+            assert loaded.model.observation_history is None
+            assert "observation_history" not in data["model"]
+        else:
+            assert loaded.model.observation_history == ObservationHistorySpec.model_validate(history)
+            assert data["model"]["observation_history"] == history
+
+
 class TestModelSpec:
     def test_defaults(self) -> None:
         spec = ModelSpec()
         assert spec.n_obs_steps == 1
+        assert spec.observation_history is None
         assert spec.runner is None
         assert spec.artifacts == {}
         assert spec.preprocessors == []
@@ -442,7 +546,7 @@ class TestManifestFromDict:
         manifest = Manifest.model_validate({})
 
         assert manifest.format == "policy_package"
-        assert manifest.version == "1.0"
+        assert manifest.version == "1.1"
         assert manifest.policy.name == ""
         assert manifest.model.runner is None
         assert manifest.model.artifacts == {}
