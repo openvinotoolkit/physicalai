@@ -198,6 +198,22 @@ axis reversed to match the joint frame `ReBotB601RS` reports. Studio uses it for
 the driver for gravity compensation. The RS link masses are the ones Seeed corrected and checked
 against holding torques measured on a real arm (reBotArm_control_py, July 2026).
 
+## Migrating datasets recorded with 0.8 or older
+
+Plugin 0.9.0 moved the arm to LeRobot's joint frame. Datasets recorded with 0.8 or older (Physical AI
+Studio or `physicalai run`) keep the old frame, so a policy trained on them drives the arm the wrong
+way. Convert a copy, then import it into Studio as a new dataset and retrain:
+
+```bash
+python -m physicalai_rebot_b601_plugin.migrate_dataset OLD_DATASET_DIR NEW_DATASET_DIR
+```
+
+It needs `pyarrow` (installed with LeRobot and Studio), works on LeRobot v3 datasets, leaves the
+original untouched and refuses datasets that look converted already. The variant comes from the
+dataset's `robot_type`; pass `--variant rs` or `--variant dm` if it does not say. Datasets from
+Seeed's own LeRobot plugin use another frame and are not supported. The helper is temporary and will
+be removed once the plugin reaches version 0.11.0.
+
 ## Development
 
 ```bash
