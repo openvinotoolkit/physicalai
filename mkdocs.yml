@@ -43,6 +43,7 @@ nav:
           - Instantiate Components: how-to/config/instantiate-components.md
       - CLI:
           - Run: how-to/cli/run.md
+          - Diagnose USB Connections: how-to/cli/doctor.md
   - Explanation:
       - Overview: explanation/README.md
       - Architecture: explanation/architecture.md
@@ -56,6 +57,7 @@ nav:
   - Reference:
       - Overview: reference/README.md
       - CLI: reference/cli.md
+      - Diagnostics API: reference/diagnostics-api.md
       - Config Schema: reference/config-schema.md
       - Manifest Schema: reference/manifest-schema.md
       - Inference API: reference/inference-api.md
