@@ -179,7 +179,7 @@ class TestReadCameras:
             with pytest.raises(CaptureSkewError) as exc_info:
                 read_cameras(cameras, max_skew_ms=20.0)
             err = exc_info.value
-            assert isinstance(err, CaptureError)
+            assert issubclass(CaptureSkewError, CaptureError)
             assert err.skew_ms == pytest.approx(50.0)
             assert err.max_skew_ms == 20.0
             assert "50.0ms exceeds maximum allowed threshold of 20.0ms" in str(err)
@@ -302,7 +302,7 @@ class TestAsyncReadCameras:
                 with pytest.raises(CaptureSkewError) as exc_info:
                     await async_read_cameras(cameras, max_skew_ms=30.0)
                 err = exc_info.value
-                assert isinstance(err, CaptureError)
+                assert issubclass(CaptureSkewError, CaptureError)
                 assert err.skew_ms == pytest.approx(80.0)
                 assert err.max_skew_ms == 30.0
             finally:
