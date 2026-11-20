@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/openvinotoolkit/physicalai/compare/physicalai-so101-plugin-v0.3.0...physicalai-so101-plugin-v0.3.1) (2026-11-20)
+
+
+### 🚀 Performance Improvements
+
+* **so101:** reduce bus traffic for so101 writes ([#474](https://github.com/openvinotoolkit/physicalai/issues/474)) ([6c4952d](https://github.com/openvinotoolkit/physicalai/commit/6c4952d798d00f0594057339da55b1bc9461a45f))
+
 ## [0.3.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-so101-plugin-v0.2.0...physicalai-so101-plugin-v0.3.0) (2026-11-06)
 
 
