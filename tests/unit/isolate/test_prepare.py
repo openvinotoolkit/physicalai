@@ -1,0 +1,238 @@
+from __future__ import annotations
+
+import errno
+import os
+import shutil
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from pathlib import Path
+
+import pytest
+
+from physicalai.isolate import (
+    BundledProject,
+    Environment,
+    GitProject,
+    ProjectSource,
+    SyncProfile,
+    UvProvider,
+    _environment,
+    prepare,
+)
+
+
+def _bundled_project(path: Path) -> Path:
+    path.mkdir(parents=True)
+    (path / "pyproject.toml").write_text("[project]\nname = 'worker'\nversion = '0.1.0'\n", encoding="utf-8")
+    (path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    (path / "worker.py").write_text("VALUE = 1\n", encoding="utf-8")
+    return path
+
+
+def test_prepare_rejects_projects_without_a_lock_and_cleans_partial_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "unlocked"
+    project.mkdir()
+    (project / "pyproject.toml").write_text("[project]\nname='worker'\n", encoding="utf-8")
+    environment = Environment(source=BundledProject(project))
+    cache = tmp_path / "cache"
+    provider = UvProvider(cache_dir=cache, uv=sys.executable)
+
+    def unexpected_uv(*args: object, **kwargs: object) -> None:
+        pytest.fail("uv must not run for a project without uv.lock")
+
+    monkeypatch.setattr("physicalai.isolate._environment.subprocess.run", unexpected_uv)
+
+    with pytest.raises(FileNotFoundError, match="uv.lock"):
+        prepare(environment, provider=provider)
+
+    assert not (cache / environment.key()).exists()
+
+
+def test_prepare_caches_by_locked_project_and_sync_profile(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project = _bundled_project(tmp_path / "project")
+    environment = Environment(
+        source=BundledProject(project),
+        profile=SyncProfile(python="3.12", extras=("cpu",), groups=("worker",), no_default_groups=True),
+    )
+    provider = UvProvider(cache_dir=tmp_path / "cache", uv=sys.executable)
+    calls: list[list[str]] = []
+
+    def fake_uv(command: list[str], *, cwd: Path, env: dict[str, str], check: bool, shell: bool) -> None:
+        assert cwd == Path(command[command.index("--project") + 1])
+        assert check
+        assert not shell
+        calls.append(command)
+        venv = Path(env["UV_PROJECT_ENVIRONMENT"])
+        python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        python.parent.mkdir(parents=True, exist_ok=True)
+        python.write_bytes(b"prepared interpreter")
+
+    monkeypatch.setattr("physicalai.isolate._environment.subprocess.run", fake_uv)
+
+    first = prepare(environment, provider=provider, offline=True)
+    cached = prepare(environment, provider=provider)
+
+    assert first == cached
+    assert first.project.joinpath("worker.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert first.python.is_file()
+    assert calls == [
+        [
+            sys.executable,
+            "sync",
+            "--locked",
+            "--project",
+            str(first.project),
+            "--python",
+            "3.12",
+            "--no-default-groups",
+            "--group",
+            "worker",
+            "--extra",
+            "cpu",
+            "--offline",
+        ],
+    ]
+
+    alternate_profile = Environment(
+        source=BundledProject(project),
+        profile=SyncProfile(python="3.12", extras=("cu128",)),
+    )
+    alternate = prepare(alternate_profile, provider=provider)
+    assert alternate.key != first.key
+    assert alternate.path != first.path
+
+    (project / "worker.py").write_text("VALUE = 2\n", encoding="utf-8")
+    updated = prepare(environment, provider=provider)
+
+    assert updated.key != first.key
+    assert updated.path != first.path
+    assert len(calls) == 3
+
+
+
+@dataclass(frozen=True)
+class _CopiedProject(ProjectSource):
+    """A non-bundled source, standing in for an upstream checkout such as a GitProject."""
+
+    path: Path
+
+    def identity(self) -> dict[str, str]:
+        return {"kind": "copied", "path": str(self.path)}
+
+    def materialize(self, destination: Path, *, offline: bool = False) -> None:
+        del offline
+        shutil.copytree(self.path, destination)
+
+
+def test_only_bundled_projects_have_their_lock_verified(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    assert BundledProject.verify_lock
+    assert not GitProject.verify_lock
+    project = _bundled_project(tmp_path / "project")
+    provider = UvProvider(cache_dir=tmp_path / "cache", uv=sys.executable)
+    modes: list[str] = []
+
+    def fake_uv(command: list[str], *, cwd: Path, env: dict[str, str], check: bool, shell: bool) -> None:
+        del cwd, check, shell
+        modes.append(command[2])
+        python = Path(env["UV_PROJECT_ENVIRONMENT"]) / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        python.parent.mkdir(parents=True, exist_ok=True)
+        python.write_bytes(b"prepared interpreter")
+
+    monkeypatch.setattr("physicalai.isolate._environment.subprocess.run", fake_uv)
+
+    prepare(Environment(source=BundledProject(project)), provider=provider)
+    prepare(Environment(source=_CopiedProject(project)), provider=provider)
+
+    assert modes == ["--locked", "--frozen"]
+
+def test_concurrent_prepares_for_the_same_key_build_the_environment_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    environment = Environment(source=BundledProject(_bundled_project(tmp_path / "project")))
+    provider = UvProvider(cache_dir=tmp_path / "cache", uv=sys.executable)
+    syncs: list[list[str]] = []
+
+    def slow_uv(command: list[str], *, cwd: Path, env: dict[str, str], check: bool, shell: bool) -> None:
+        del cwd, check, shell
+        syncs.append(command)
+        python = Path(env["UV_PROJECT_ENVIRONMENT"]) / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        python.parent.mkdir(parents=True, exist_ok=True)
+        python.write_bytes(b"prepared interpreter")
+        time.sleep(0.5)
+        if not python.is_file():
+            msg = "Another prepare removed this environment while it was being built."
+            raise RuntimeError(msg)
+
+    monkeypatch.setattr("physicalai.isolate._environment.subprocess.run", slow_uv)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first, second = pool.map(lambda _: prepare(environment, provider=provider), range(2))
+
+    assert first == second
+    assert first.python.is_file()
+    assert len(syncs) == 1
+
+
+class _FakeMsvcrt:
+    LK_UNLCK = 0
+    LK_LOCK = 1
+
+    def __init__(self, failures: list[OSError]) -> None:
+        self.calls: list[tuple[int, int, int]] = []
+        self._failures = failures
+
+    def locking(self, fd: int, mode: int, nbytes: int) -> None:
+        self.calls.append((mode, nbytes, os.lseek(fd, 0, os.SEEK_CUR)))
+        if self._failures:
+            raise self._failures.pop(0)
+
+
+def test_windows_lock_keeps_waiting_for_a_busy_lock_and_releases_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake = _FakeMsvcrt([OSError(errno.EDEADLOCK, "locked by another process")])
+    monkeypatch.setattr(_environment, "_fcntl", None)
+    monkeypatch.setattr(_environment, "_msvcrt", fake)
+
+    with _environment._exclusive(tmp_path / "key.lock"):
+        assert fake.calls == [(fake.LK_LOCK, 1, 0), (fake.LK_LOCK, 1, 0)]
+
+    assert fake.calls[-1] == (fake.LK_UNLCK, 1, 0)
+
+
+def test_windows_lock_passes_on_unexpected_errors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = _FakeMsvcrt([PermissionError(errno.EACCES, "denied")])
+    monkeypatch.setattr(_environment, "_fcntl", None)
+    monkeypatch.setattr(_environment, "_msvcrt", fake)
+
+    with pytest.raises(PermissionError), _environment._exclusive(tmp_path / "key.lock"):
+        pytest.fail("The lock must not be entered.")
+
+    assert fake.calls == [(fake.LK_LOCK, 1, 0)]
+
+
+def test_prepare_refuses_to_run_without_file_locking(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    environment = Environment(source=BundledProject(_bundled_project(tmp_path / "project")))
+    monkeypatch.setattr(_environment, "_fcntl", None)
+    monkeypatch.setattr(_environment, "_msvcrt", None)
+
+    def unexpected_uv(*args: object, **kwargs: object) -> None:
+        pytest.fail("uv must not run without a lock")
+
+    monkeypatch.setattr("physicalai.isolate._environment.subprocess.run", unexpected_uv)
+
+    with pytest.raises(RuntimeError, match="file locking"):
+        prepare(environment, provider=UvProvider(cache_dir=tmp_path / "cache", uv=sys.executable))
