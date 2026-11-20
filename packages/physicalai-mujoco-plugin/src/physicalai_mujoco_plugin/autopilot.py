@@ -190,6 +190,10 @@ NATIVE_VIEWER_REASON = (
     "Start the simulation with the web viewer (viser) to record it automatically."
 )
 REPLACED_REASON = "Replaced by a new episode."
+TELEOP_REASON = (
+    "Teleoperation drives the arms: switch the viewer's gripper handles off and end the headset session "
+    "to record automatically."
+)
 STOPPED_READING_REASON = "Physical AI Studio stopped reading the leader."
 STUDIO_ABORT_REASON = "Physical AI Studio aborted the episode."
 
@@ -292,6 +296,7 @@ class EpisodeBook:
         self._last_sign = clock()
         self._scene = SceneSupport()
         self._native_viewer: str | None = None
+        self._teleop: str | None = None
         self._busy: str | None = None
 
     # -- the simulation thread -------------------------------------------
@@ -310,6 +315,17 @@ class EpisodeBook:
             self._native_viewer = NATIVE_VIEWER_REASON if open_ else None
             if open_:
                 self._end_locked(NATIVE_VIEWER_REASON)
+
+    def set_teleop(self, driving: bool) -> None:  # noqa: FBT001
+        """Report whether teleoperation drives the arms (the viewer's gripper handles or a headset).
+
+        While it does the scene supports no episode, and one in progress ends: the arms follow the
+        operator, not the demonstrator.
+        """
+        with self._lock:
+            self._teleop = TELEOP_REASON if driving else None
+            if driving:
+                self._end_locked(TELEOP_REASON)
 
     def set_busy(self, reason: str | None) -> None:
         """Report that something else drives the simulation (a replay), so no episode may start, or that it ended."""
@@ -487,7 +503,7 @@ class EpisodeBook:
 
     def _supported_locked(self) -> tuple[bool, str | None]:
         scene = self._scene
-        reason = self._native_viewer or self._busy
+        reason = self._native_viewer or self._teleop or self._busy
         if not scene.supported:
             return False, scene.reason or "The scene has no autopilot."
         return reason is None, reason
@@ -525,6 +541,7 @@ __all__ = [
     "REPLACED_REASON",
     "STOPPED_READING_REASON",
     "STUDIO_ABORT_REASON",
+    "TELEOP_REASON",
     "Autopilot",
     "AutopilotMode",
     "AutopilotRefusal",

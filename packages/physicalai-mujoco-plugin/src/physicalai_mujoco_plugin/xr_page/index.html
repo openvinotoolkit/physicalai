@@ -1,0 +1,40 @@
+<!doctype html>
+<!-- Copyright (C) 2026 Intel Corporation. SPDX-License-Identifier: Apache-2.0 -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>MuJoCo teleoperation</title>
+    <style>
+      body { font-family: system-ui, sans-serif; background: #16181d; color: #e8e8e8; margin: 0; padding: 32px; font-size: 22px; }
+      button { font-size: 30px; padding: 18px 40px; border-radius: 12px; border: 0; background: #3b82f6; color: #fff; }
+      button:disabled { background: #444; color: #999; }
+      li { margin: 8px 0; }
+      #status { color: #9ad; }
+      #view { width: 100%; max-width: 960px; aspect-ratio: 4 / 3; display: block; border-radius: 8px; background: #14161b; }
+      #pairing input { font-size: 30px; padding: 12px; border-radius: 8px; border: 0; letter-spacing: 4px; }
+      #preview { max-width: 320px; width: 40%; margin-top: 12px; border-radius: 8px; }
+    </style>
+  </head>
+  <body>
+    <h1>MuJoCo teleoperation</h1>
+    <p id="status">Connecting to the simulation&hellip;</p>
+    <form id="pairing" hidden>
+      <label>Pairing code <input id="code" inputmode="numeric" autocomplete="off" maxlength="6" size="7" /></label>
+      <button>Pair</button>
+    </form>
+    <p><button id="start" disabled>Start</button></p>
+    <ul>
+      <li>You stand in the robot, life-size: its arms reach out ahead of you, the way you look at the start.</li>
+      <li>
+        Hold a controller's <b>grip</b> button to move that arm: its gripper follows the controller. Release to stop;
+        the arm holds. Grip again to continue from there. The <b>trigger</b> closes the gripper.
+      </li>
+      <li><b>A</b> or <b>X</b>: bring the robot back in front of you. <b>B</b> or <b>Y</b>: show or hide the cameras.</li>
+      <li>Thumbsticks: left moves the robot down and up, right moves it nearer and farther (not while you hold an arm).</li>
+    </ul>
+    <canvas id="view"></canvas>
+    <img id="preview" alt="" />
+    <script src="app.js"></script>
+  </body>
+</html>

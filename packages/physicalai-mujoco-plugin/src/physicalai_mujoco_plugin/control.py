@@ -28,7 +28,7 @@ import queue
 import sys
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from loguru import logger
@@ -45,8 +45,10 @@ if TYPE_CHECKING:
     from physicalai_mujoco_plugin.scene_objects import SceneObjects, SpawnArea
     from physicalai_mujoco_plugin.scene_registry import SceneConfig
     from physicalai_mujoco_plugin.sim import Sim
+    from physicalai_mujoco_plugin.teleop import Teleop
     from physicalai_mujoco_plugin.viewer import ViewerService
     from physicalai_mujoco_plugin.viser_controls import PanelState
+    from physicalai_mujoco_plugin.xr import XRServer
 
 
 def _signal_owner_shutdown() -> None:
@@ -127,6 +129,12 @@ class OperatorControls:
     _overview: OverviewStyle
     _model_path: str | None
     _initial_scene: SceneConfig | None
+    _teleop: Teleop | None
+    _teleop_mouse: bool
+    """Whether the viewer's gripper handles are on, kept across scene switches."""
+    _teleop_reported: bool
+    """Whether the episode book last heard that teleoperation drives the arms."""
+    _xr: XRServer | None
 
     @property
     def joint_names(self) -> list[str]:
@@ -222,7 +230,11 @@ class OperatorControls:
     def _handle_command(self, command: SimCommand) -> None:
         from physicalai_mujoco_plugin import http_server as cmd  # noqa: PLC0415
 
-        if self._handle_replay_command(command) or self._handle_setting_command(command):
+        if (
+            self._handle_replay_command(command)
+            or self._handle_setting_command(command)
+            or self._handle_teleop_command(command)
+        ):
             return
         sim = self._sim
         if isinstance(command, cmd.ResetCommand):
@@ -267,6 +279,41 @@ class OperatorControls:
         else:
             return False
         return True
+
+    def _handle_teleop_command(self, command: SimCommand) -> bool:
+        """Switch the viewer's gripper handles, or move a gripper target after a viewer drag.
+
+        Returns:
+            Whether *command* was one of them.
+        """
+        from physicalai_mujoco_plugin import http_server as cmd  # noqa: PLC0415
+
+        if isinstance(command, cmd.SetToolTargetCommand):
+            if self._teleop is not None:
+                self._teleop.set_target(command.arm, command.position, command.wxyz, dragging=command.dragging)
+            return True
+        if not isinstance(command, cmd.SetTeleopCommand):
+            return False
+        self._teleop_mouse = command.mouse
+        if self._teleop is not None:
+            self._teleop.set_inputs(mouse=command.mouse)
+        logger.info("Gripper handles in the viewer {}", "on" if command.mouse else "off")
+        return True
+
+    def _teleop_status(self) -> dict[str, Any]:
+        """Return the teleoperation status for ``GET /`` and the viewer panel.
+
+        Returns:
+            The inputs and arm targets (no arms without a teleoperable robot), and the headset's
+            addresses and session (``None`` without ``--xr-port``).
+        """
+        status: dict[str, Any] = (
+            self._teleop.status()
+            if self._teleop is not None
+            else {"mouse": self._teleop_mouse, "headset": False, "arms": []}
+        )
+        status["xr"] = self._xr.status() if self._xr is not None else None
+        return status
 
     def _reset(self) -> None:
         """Restore the start state without changing the scene (DRV-8; ``reset()``, ``POST /reset``).
@@ -656,6 +703,7 @@ class OperatorControls:
                 "episode": self._episode_status(self._episode_auto_reset),
                 "replay": self._replay_status(),
                 "timing": self._timing_status(),
+                "teleop": self._teleop_status(),
                 **(self._automation.status() if self._automation is not None else {}),
                 "objects": [
                     {"joint": joint, "position": list(pose.position), "wxyz": list(pose.wxyz)}
@@ -711,6 +759,7 @@ class OperatorControls:
                 replay=self._replay_status(),
                 overview_style=self._overview,
                 overview_styles=self._overview_styles(),
+                teleop=self._teleop_status(),
                 **(self._automation.status() if self._automation is not None else {}),
             )
 
@@ -725,6 +774,8 @@ _CHANGES = {
     "SetObjectPoseCommand": "An object was moved.",
     "SetAutopilotCommand": "The autopilot mode changed.",
     "SetOverviewCommand": "The overview camera moved.",
+    "SetTeleopCommand": "The viewer's gripper handles were switched.",
+    "SetToolTargetCommand": "A gripper was dragged in the viewer.",
     "ReplayCommand": "A replay started.",
     "StopReplayCommand": "A replay was stopped.",
     "ShutdownCommand": "The simulation is shutting down.",

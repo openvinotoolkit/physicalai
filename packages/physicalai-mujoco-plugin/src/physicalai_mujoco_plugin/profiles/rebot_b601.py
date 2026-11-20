@@ -143,7 +143,7 @@ REBOT_B601_PROFILE = RobotProfile(
     cameras=(REBOT_B601_WRIST_CAMERA,),
     default_scene="single_pick_place",
     # The model has no tool site: the point between the finger tips, on the roll axis (link6 +z).
-    end_effectors=(EndEffector(body="link6", pos=(0.0, 0.0, 0.163)),),
+    end_effectors=(EndEffector(body="link6", pos=(0.0, 0.0, 0.163), gripper="gripper"),),
     reach=0.544,
 )
 

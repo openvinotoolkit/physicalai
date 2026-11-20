@@ -71,6 +71,7 @@ The viewer opens on its **Simulation** tab, which controls the simulation. The *
 - **Randomization**: tick **Fixed seed** to reseed before every reset and scene switch, so object layouts repeat. Untick it to go back to random layouts.
 - **Episode** (`single_pick_place` only): the cube respawns after it rests on the target for the success dwell. Turn **Auto-reset** off or change the dwell here. The panel shows the countdown and the number of completed episodes.
 - **Conveyor** (`conveyor_sort` only, in place of **Episode**): **Belt running** pauses or resumes the belt and the item feed. **Belt speed** sets the belt surface speed from 0 to 10 cm/s. The panel shows the items fed so far, the current and last episode's score, and the sorting rule.
+- **Teleop** (robots with end effectors): move the arms from the viewer instead of a leader arm, and see whether a headset drives them. While teleoperation drives the arms, actions from Studio or a policy are ignored. See [Teleoperate from the viewer or a headset](#teleoperate-from-the-viewer-or-a-headset).
 - **Objects**: tick **Drag objects** to show a handle on each free object. While you drag, the object stays at the handle's pose. When you let go, it falls from there with zero velocity. The target stays fixed.
 - **Cameras**: tick **Show previews** to see low-rate thumbnails of the rendered cameras. Previews start off because every open viewer receives them.
 - **Shutdown** asks for confirmation before stopping the owner (hidden with `--viewer-theme studio` or `compact`).
@@ -78,6 +79,30 @@ The viewer opens on its **Simulation** tab, which controls the simulation. The *
 On the **Camera** tab, **Follow** chooses a body for the view to stay on: a free object, the target, or a gripper. Orbiting and zooming keep the view on it. Panning away stops following, and **Follow** goes back to **None**. **None**, the default, is a free camera that nothing moves. While you drag the followed object, the view holds still, then glides back onto it when you let go. **FOV** and **Reset View** apply to every open viewer. The follow choice is shared too. Following moves the viewer cameras; the rendered scene itself never shifts.
 
 Switching scenes rebuilds the whole viewer for the new model. The follow, drag and preview settings carry over to the new scene; following an object the new scene lacks falls back to **None**. Changes made over HTTP show up in the panel within about half a second. Camera settings are viewer-only and have no HTTP endpoint.
+
+### Teleoperate from the viewer or a headset
+
+Tick **Drag the grippers** in the **Teleop** folder to show a handle at each gripper: drag its arrows to move the gripper and its rings to turn it. Inverse kinematics turns the handle's pose into joint targets every control tick, at most 3 rad/s per joint, and keeps each arm near its home posture where the gripper pose leaves it free, so a seven-joint arm's elbow does not drift. Letting go of a target the arm cannot reach puts the handle back where the gripper got to. Untick it to hand the arms back to actions. `POST /teleop` switches the handles over HTTP.
+
+#### From a VR headset (Meta Quest)
+
+Start the simulation with `--xr-port` to serve a WebXR page on your local network, over HTTPS:
+
+```bash
+physicalai-mujoco start --profile openarm --xr-port 8443
+```
+
+The log and the **Teleop** folder show its address, for example `https://<your-mac>.local:8443/` and `https://<LAN address>:8443/`, and a six-digit pairing code. The headset and the computer must be on the same network (on macOS, allow incoming connections for Python if the firewall asks).
+
+The page listens on every network interface. The pairing code keeps other devices from watching the cameras or driving the arms, but anyone who has it can, and the certificate proves nothing about who connects. Use it only on a network you trust, as with the robot's own transport, and keep it off guest or public Wi-Fi.
+
+1. Open the address in the headset's browser. The certificate is self-signed: choose **Advanced**, then **Proceed**, once. Enter the pairing code; the browser keeps it (the code stays the same across restarts, stored beside the certificate in the Menagerie cache).
+2. Press **Start**. The headset draws the simulation in 3D, life-size, over your room (passthrough): you look out from just above the robot's shoulders, its arms reaching ahead the way you looked. The camera streams float above it, the `overview` camera in the middle. For as long as the session runs, the arms ignore actions from Studio or a policy. One page drives the arms at a time: a second headset or browser watches until the first ends its session or disconnects.
+3. Hold a controller's **grip** button to move its arm (the left controller the left arm; either controller a robot with one arm): the gripper then moves and turns as the controller does from where you gripped, in the robot's directions as you see it. Release the grip and the arm holds; grip again to carry on from there, so you can move your hand back without moving the arm. Joint targets move at most 1.5 rad/s.
+4. The **trigger** closes that arm's gripper.
+5. **A** or **X** brings the robot back in front of you, **B** or **Y** shows or hides the cameras. The left thumbstick moves the robot down and up, the right one nearer and farther (pull back to watch it from behind). The robot stays put while you hold an arm.
+
+The page fetches the scene's meshes once (about 4 MB for the OpenArm cell) and then only the bodies' poses, 60 times a second. It draws the geoms the viewer shows (groups 0 to 2) and, see-through, group 3 geoms whose material is a glass, like the cell's walls; the floor is your room's. Opened on a computer, the page shows the view the headset starts with. Exit the session in the headset to hand the arms back.
 
 ### Bimanual simulation
 
@@ -209,6 +234,7 @@ In `conveyor_sort` and `bucket_sort`, Physical AI Studio can record what the scr
 - For each episode the simulation lays the scene out (a cleared belt; a reset bucket_sort layout, optionally with a stuck start) with the belt feed held, and reports the episode ready with its instruction. Studio starts recording with that instruction as the task and begins the episode. From then on the demonstrator leads Studio's follower as a virtual leader: it only publishes targets on `GET /leader`, and Studio writes them to the arm. The recorded actions are the demonstrator's commands, so a grasp records the gripper closing past the object, which is what makes a position-controlled gripper squeeze.
 - The simulation decides how each episode ended. A conveyor episode succeeds with no wrong or missed item; a bucket_sort episode once the object has stayed in its bucket for 1 s of simulated time (a success after a retry reports `clean` false). An episode that runs too long (300 s of simulated time on the conveyor, 120 s in bucket_sort) is `stalled`. Studio keeps the successes.
 - Using the viewer, or any control endpoint, during an episode ends that episode (`aborted`) and then applies.
+- Teleoperation that takes the arms (the viewer's gripper handles or a headset session) ends the episode the same way, and no episode starts until it stops.
 
 **Stuck starts** (`recovery_fraction`, 0 to 0.5) starts that share of bucket_sort episodes with the hand closed and empty on the demonstrator's planned path to the bucket, where a policy that lost the object gets stuck; the arm moves there before the episode starts, and a move that shifts an object or bucket by more than 5 mm resets the scene for a normal start instead. **Attempts per episode** (`max_attempts`, 1 to 5, default 2) sets how many tries the demonstrator gets.
 
@@ -458,6 +484,9 @@ curl -i http://127.0.0.1:8080/viewer
 curl -X POST http://127.0.0.1:8080/reset
 curl -X POST http://127.0.0.1:8080/home
 
+# Show the viewer's gripper handles, which then drive the arms; false hands the arms back to actions
+curl -X POST http://127.0.0.1:8080/teleop -H 'Content-Type: application/json' -d '{"mouse": true}'
+
 # Move the overview camera across the table, facing the robots, and back behind them
 curl -X POST http://127.0.0.1:8080/overview -H 'content-type: application/json' -d '{"style": "front"}'
 curl -X POST http://127.0.0.1:8080/overview -H 'content-type: application/json' -d '{"style": "shoulder"}'
@@ -544,7 +573,7 @@ Physical AI Studio records the demonstrator through these endpoints (protocol 1,
 
 An episode is `preparing` while the scene is laid out, `ready` (with its `task`) while it waits for `begin`, `running` while the demonstrator leads, and `ended` once, with its `outcome`: `success` (`clean` when there was no retry), `failure`, `stalled` or `aborted`, with a `reason`. While it is preparing and ready, `GET /leader` returns the start pose and the follower's actions are ignored. Once it ended, the demonstrator stops, `GET /leader` keeps returning its last target, and the scene settings from before the episode come back: the belt feed and the scene's own success reset. An ended episode stays readable until the next `POST`.
 
-Errors are `{"detail": {"code", "message"}}`: `409 unsupported` (the scene has no autopilot, the native MuJoCo viewer is open, or a replay runs), `422 bad_option` (an option the scene does not take, or an invalid body), `404 not_found` (not the current or last episode) and `409 wrong_phase` (`begin` before `ready`).
+Errors are `{"detail": {"code", "message"}}`: `409 unsupported` (the scene has no autopilot, the native MuJoCo viewer is open, teleoperation drives the arms, or a replay runs), `422 bad_option` (an option the scene does not take, or an invalid body), `404 not_found` (not the current or last episode) and `409 wrong_phase` (`begin` before `ready`).
 
 - **Liveness.** While an episode is preparing, ready or running, every `GET /leader` and every request under `/autopilot/v1` is a sign of life. After 1 s of wall time without one, the episode ends as `aborted` ("Physical AI Studio stopped reading the leader."). Studio reads the leader at its control rate, so there is no separate heartbeat.
 - **Any other change ends the episode first.** Every control request (`/reset`, `/scenes/...`, `/autopilot`, `/replay`, `/overview`, ...), every viewer control, the native viewer's reset, a scene switch and shutdown end the episode as `aborted`, naming the change in the reason, and then apply.

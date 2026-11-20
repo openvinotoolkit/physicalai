@@ -87,6 +87,11 @@ class EndEffector:
     """Tool point in ``body``'s frame; only used with ``body``."""
     axis: tuple[float, float, float] = (0.0, 0.0, 1.0)
     """Approach axis in the site's or body's frame."""
+    gripper: str | None = None
+    """The public channel that opens and closes this end effector's gripper, if it has one."""
+    gripper_opens_up: bool = True
+    """Whether the gripper channel's upper end (of its joint range, or of its actuator's control range
+    in model units for a tendon) is fully open; the other end is closed."""
 
 
 @dataclass(frozen=True)

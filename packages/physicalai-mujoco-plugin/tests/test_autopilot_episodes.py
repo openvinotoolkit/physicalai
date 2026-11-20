@@ -23,6 +23,7 @@ from physicalai_studio_plugin.autopilot import (
 
 from physicalai_mujoco_plugin.autopilot import (
     NATIVE_VIEWER_REASON,
+    TELEOP_REASON,
     REPLACED_REASON,
     STOPPED_READING_REASON,
     STUDIO_ABORT_REASON,
@@ -237,6 +238,18 @@ def test_the_native_viewer_makes_the_scene_unsupported_and_ends_the_episode(book
         book.create(EpisodeRequest())
     assert refused.value.code == "unsupported"
     book.set_native_viewer(False)  # noqa: FBT003
+    assert book.info().supported
+
+
+def test_teleoperation_makes_the_scene_unsupported_and_ends_the_episode(book: EpisodeBook) -> None:
+    episode = _ready(book)
+    book.set_teleop(True)  # noqa: FBT003
+    assert book.get(episode.id).reason == TELEOP_REASON
+    assert (book.info().supported, book.info().reason) == (False, TELEOP_REASON)
+    with pytest.raises(AutopilotRefusal) as refused:
+        book.create(EpisodeRequest())
+    assert refused.value.code == "unsupported"
+    book.set_teleop(False)  # noqa: FBT003
     assert book.info().supported
 
 
