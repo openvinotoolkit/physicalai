@@ -11,7 +11,7 @@ Physical AI Runtime is the deployment-side repo for the Physical AI workflow: lo
 - `src/physicalai/robot/`: robot protocol and hardware integrations.
 - `src/physicalai/cli/`: `physicalai` / `pai` host CLI (`run` and entry-point subcommands from other packages).
 - `src/physicalai/benchmark/`: inference performance tooling.
-- `packages/`: the shared `physicalai-studio-plugin` SDK, with its own `pyproject.toml`, `src/`, and `tests/`.
+- `plugins/physicalai-studio-plugin/`: the shared Studio plugin SDK, with its own `pyproject.toml`, `src/`, and `tests/`.
 - `plugins/robots/`: first-party robot plugin packages (`physicalai-so101-plugin`, `physicalai-trossen-plugin`, `physicalai-rebot-b601-plugin`, `physicalai-stararm-plugin`, `physicalai-lerobot-plugin`, `physicalai-mujoco-plugin`), including their catalog entries, tests, and robot assets.
 - `plugins/robots/physicalai-mujoco-plugin/`: MuJoCo simulation of the SO-101 (single-arm and bimanual) and other MuJoCo Menagerie robots (`MuJoCoRobot`, profiles in `profiles/`), viser viewer, MJPEG cameras, and Studio catalog entries. Its scene tests load real MuJoCo models without a display; fetch Git LFS assets before running them.
 - `skills/using/` and `skills/contributing/`: canonical customer and source-contribution agent skills. Committed adapters under `.claude/skills/` and `.agents/skills/` expose both locally; only `using/` is intended for the OEP catalog. See `skills/README.md`.

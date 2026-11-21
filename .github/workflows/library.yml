@@ -44,10 +44,9 @@ jobs:
             test:
               - src/**
               - tests/**
-              - packages/**/src/**
-              - packages/**/tests/**
-              - packages/**/urdf/**
-              - packages/**/pyproject.toml
+              - plugins/physicalai-studio-plugin/src/**
+              - plugins/physicalai-studio-plugin/tests/**
+              - plugins/physicalai-studio-plugin/pyproject.toml
               - plugins/robots/**/src/**
               - plugins/robots/**/tests/**
               - plugins/robots/**/urdf/**
@@ -134,7 +133,7 @@ jobs:
       - name: Run python unit tests
         env:
           MENAGERIE_CACHE_DIR: ${{ runner.temp }}/menagerie-cache
-        run: uv run pytest --import-mode=importlib tests/unit packages/*/tests plugins/robots/*/tests
+        run: uv run pytest --import-mode=importlib tests/unit plugins/physicalai-studio-plugin/tests plugins/robots/*/tests
 
       # Every supported MuJoCo robot profile in its default scene, and every arm's reach (no rendering), on the cached models.
       - name: Run MuJoCo profile smoke matrix and reachability checks

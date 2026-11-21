@@ -177,7 +177,7 @@ More robots ship as first-party plugins. Each plugin README covers setup and usa
 | [Star Arm](plugins/robots/physicalai-stararm-plugin/README.md)      | Fashion Star Arm 102 leaders and a follower                                                                          |
 | [LeRobot](plugins/robots/physicalai-lerobot-plugin/README.md)       | Robots and teleoperators from LeRobot configs                                                                        |
 
-To add your own robot to Physical AI Studio, see the [Studio plugin](packages/physicalai-studio-plugin/README.md).
+To add your own robot to Physical AI Studio, see the [Studio plugin](plugins/physicalai-studio-plugin/README.md).
 
 ```python
 from physicalai_so101_plugin import SO101

@@ -24,10 +24,10 @@
       "release-type": "simple",
       "package-name": "physicalai",
       "changelog-path": "CHANGELOG.md",
-      "exclude-paths": ["packages/*", "plugins/robots/*"],
+      "exclude-paths": ["packages/*", "plugins/physicalai-studio-plugin/*", "plugins/robots/*"],
       "include-component-in-tag": false
     },
-    "packages/physicalai-studio-plugin": {
+    "plugins/physicalai-studio-plugin": {
       "release-type": "python",
       "package-name": "physicalai-studio-plugin",
       "changelog-path": "CHANGELOG.md"
