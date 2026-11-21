@@ -132,14 +132,14 @@ python-version = "3.11"
 search-path = [
     "src",
     "packages/physicalai-studio-plugin/src",
-    "packages/physicalai-mujoco-plugin/src",
+    "plugins/robots/physicalai-mujoco-plugin/src",
 ]
 project-includes = [
     "src",
     "tests",
     "packages/physicalai-studio-plugin/src",
     "packages/physicalai-studio-plugin/tests",
-    "packages/physicalai-mujoco-plugin/src",
+    "plugins/robots/physicalai-mujoco-plugin/src",
 ]
 ignore-missing-imports = ["*"]
 

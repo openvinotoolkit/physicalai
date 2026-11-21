@@ -107,7 +107,7 @@ With the owner running, you can also relay the simulation back to itself using
 the [PhysicalAI CLI](https://github.com/openvinotoolkit/physicalai). The configuration is in this repository, so run it from a checkout:
 
 ```bash
-uv run --package physicalai-mujoco-plugin physicalai run --config packages/physicalai-mujoco-plugin/examples/runtime/teleop.yaml
+uv run --package physicalai-mujoco-plugin physicalai run --config plugins/robots/physicalai-mujoco-plugin/examples/runtime/teleop.yaml
 ```
 
 Press `Ctrl+C` to stop.
@@ -139,7 +139,7 @@ To use an unreleased version from a checkout of this repository, run `git lfs pu
 
 ```bash
 cd application/backend
-uv add --editable /path/to/physicalai/packages/physicalai-mujoco-plugin
+uv add --editable /path/to/physicalai/plugins/robots/physicalai-mujoco-plugin
 uv sync
 ```
 
@@ -372,7 +372,7 @@ Two profile fields drive this:
 - `RobotProfile.end_effectors`: each arm's tool frame, as a model site (`EndEffector(site="attachment_site")`) or a point in a body (`EndEffector(body="hand", pos=(0, 0, 0.110))`), and its approach `axis`, the direction in that frame that points out of the gripper or flange. Menagerie's tool sites are used where they exist; the SO-ARM100, Koch, PiPER, Panda, reBot B601 and the Franka twins use the point between their finger tips. The arms without a gripper (UR5e, Kinova Gen3) use their flange.
 - `RobotProfile.reach`: the farthest horizontal distance from the arm's base, toward the spawn area, at which the end effector reaches a point 2 cm above the table within 5 mm, with its approach axis within 15° of straight down (the SO-101: 0.367 m). A `reach` scene refuses a profile without one.
 
-The reachability test (`tests/test_reach.py`, marker `mujoco_smoke`) solves a damped least-squares IK for every arm on the centre and the extremes of its scaled spawn arc: within 1 cm, approach axis within 15° of straight down (the SO-101 needs 12° at the far edge of its own arc). With two arms, both reach the points on the arc's axis and the nearest arm reaches the others. It also measures each `reach` and checks the stored value to 1 cm. After changing an arm, print fresh measurements with `uv run python packages/physicalai-mujoco-plugin/tests/test_reach.py [profile ...]`.
+The reachability test (`tests/test_reach.py`, marker `mujoco_smoke`) solves a damped least-squares IK for every arm on the centre and the extremes of its scaled spawn arc: within 1 cm, approach axis within 15° of straight down (the SO-101 needs 12° at the far edge of its own arc). With two arms, both reach the points on the arc's axis and the nearest arm reaches the others. It also measures each `reach` and checks the stored value to 1 cm. After changing an arm, print fresh measurements with `uv run python plugins/robots/physicalai-mujoco-plugin/tests/test_reach.py [profile ...]`.
 
 Every profile in these tiers has a Studio follower entry for one robot. The twins (SO-101, WidowX AI, reBot B601), whose real robots have bimanual leaders, also have a bimanual entry; other arms run two from the CLI only (`start --bimanual`). Entries whose mapping onto the real driver is not established yet (`RobotProfile.provisional`, today the OpenArm) end in **(provisional)** and carry a `provisional` label in the start dialog.
 
@@ -621,7 +621,7 @@ The scene's textures and item pool (`conveyor_items.xml`) come from `scripts/gen
 `physicalai_mujoco_plugin.conveyor_demo.ConveyorDemonstrator` sorts items using privileged simulation state (item poses, the belt speed, the sorting rule). It is meant for generating consistent demonstrations, not as a policy. Each cycle, it waits over the belt, tracks the most downstream item in the pick window, grasps it with the jaw closing along the belt, and drops it in the bin the rule assigns. It writes the arm's joint targets directly and runs headless:
 
 ```bash
-cd packages/physicalai-mujoco-plugin
+cd plugins/robots/physicalai-mujoco-plugin
 uv run python scripts/run_conveyor_demo.py --speed 0.03 --episodes 3             # score
 uv run python scripts/run_conveyor_demo.py --sweep 0.01 0.03 0.05 0.07 --seeds 3  # success vs belt speed
 uv run python scripts/run_conveyor_demo.py --speed 0.03 --video /tmp/demo.mp4     # overview, wrist, orbit video
@@ -695,7 +695,7 @@ Fetch LFS assets before running the real-model tests too. They load MuJoCo model
 
 ```bash
 uv sync --all-packages --extra tests --extra transport
-uv run pytest --import-mode=importlib packages/physicalai-mujoco-plugin/tests
+uv run pytest --import-mode=importlib plugins/robots/physicalai-mujoco-plugin/tests
 uv build --package physicalai-mujoco-plugin
 ```
 
@@ -720,8 +720,8 @@ git fetch origin tag v0.2.0
 git worktree add /tmp/physicalai-v0.2.0 v0.2.0
 uv venv -p 3.12 /tmp/physicalai-v0.2.0-venv
 VIRTUAL_ENV=/tmp/physicalai-v0.2.0-venv uv pip install --no-sources "/tmp/physicalai-v0.2.0[transport]" \
-  -e packages/physicalai-mujoco-plugin pytest pytest-asyncio httpx
-/tmp/physicalai-v0.2.0-venv/bin/python -m pytest --import-mode=importlib packages/physicalai-mujoco-plugin/tests
+  -e plugins/robots/physicalai-mujoco-plugin pytest pytest-asyncio httpx
+/tmp/physicalai-v0.2.0-venv/bin/python -m pytest --import-mode=importlib plugins/robots/physicalai-mujoco-plugin/tests
 git worktree remove /tmp/physicalai-v0.2.0
 ```
 
@@ -732,11 +732,11 @@ git worktree remove /tmp/physicalai-v0.2.0
 - Run the repository hooks on the files you changed (`prek run --files <files>`). `prek run --all-files` also reformats unrelated files elsewhere in the repository.
 - The ruff hook runs with `--unsafe-fixes` and can rewrite code, for example by collapsing a lambda into a bound method. Run the tests again after the hooks.
 - Tests that step a real simulation for seconds are marked `@pytest.mark.slow`. Run the quick set with `-m "not slow"` while iterating, and the full suite before pushing.
-- The smoke matrix (`tests/test_smoke_matrix.py`) runs every supported profile in its default scene: it idles, holds the home pose and nudges the joints (each nudge larger than the tolerance, so dropped actions fail), and checks that the state stays finite, MuJoCo reports no instability and the joints track within 5° or 5 mm. Tendon grippers without a joint range (Panda, xArm7) are nudged within their `ctrlrange` and must cover half the nudge. The reachability test (`tests/test_reach.py`) checks every arm of a `layout="reach"` scene. Both are deselected by default; CI runs them in their own step. Run them after adding or changing a profile: `uv run pytest -m mujoco_smoke packages/physicalai-mujoco-plugin/tests`.
+- The smoke matrix (`tests/test_smoke_matrix.py`) runs every supported profile in its default scene: it idles, holds the home pose and nudges the joints (each nudge larger than the tolerance, so dropped actions fail), and checks that the state stays finite, MuJoCo reports no instability and the joints track within 5° or 5 mm. Tendon grippers without a joint range (Panda, xArm7) are nudged within their `ctrlrange` and must cover half the nudge. The reachability test (`tests/test_reach.py`) checks every arm of a `layout="reach"` scene. Both are deselected by default; CI runs them in their own step. Run them after adding or changing a profile: `uv run pytest -m mujoco_smoke plugins/robots/physicalai-mujoco-plugin/tests`.
 - Run the security scans used by CI:
 
   ```bash
-  uvx bandit -c .github/bandit_config.yml -r packages/physicalai-mujoco-plugin/src
+  uvx bandit -c .github/bandit_config.yml -r plugins/robots/physicalai-mujoco-plugin/src
   SEMGREP_RULES="p/default p/cwe-top-25 p/trailofbits p/owasp-top-ten" uvx semgrep scan --metrics=off <changed files>
   ```
 

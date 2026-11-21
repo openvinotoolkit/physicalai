@@ -22,7 +22,7 @@ with both arms, and the other points with the nearest arm; their reach is measur
 The test is deselected by default (marker ``mujoco_smoke``) and renders nothing. Run this file as a
 script to print the measured reaches and the errors at every sample point::
 
-    uv run python packages/physicalai-mujoco-plugin/tests/test_reach.py [profile ...]
+    uv run python plugins/robots/physicalai-mujoco-plugin/tests/test_reach.py [profile ...]
 """
 
 # MuJoCo's bindings are supplied by the C extension at runtime.

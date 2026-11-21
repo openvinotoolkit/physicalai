@@ -72,6 +72,6 @@ uv run jupyter lab examples/tutorials
 
 ### Related documentation
 
-- [MuJoCo plugin README](../../packages/physicalai-mujoco-plugin/README.md): robots, scenes and the viewer
+- [MuJoCo plugin README](../../plugins/robots/physicalai-mujoco-plugin/README.md): robots, scenes and the viewer
 - [Run a Policy on a Robot](../../docs/how-to/runtime/run-policy-on-robot.md)
 - [Load an Exported Policy](../../docs/how-to/inference/load-exported-policy.md)

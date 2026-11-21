@@ -72,4 +72,4 @@ exclude = [
 ]
 
 [tool.hatch.build.targets.sdist.force-include]
-"../../LICENSE" = "LICENSE"
+"../../../LICENSE" = "LICENSE"

@@ -122,7 +122,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/menagerie-cache
-          key: menagerie-${{ runner.os }}-${{ hashFiles('packages/physicalai-mujoco-plugin/pyproject.toml', 'packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/profiles/*.py') }}
+          key: menagerie-${{ runner.os }}-${{ hashFiles('plugins/robots/physicalai-mujoco-plugin/pyproject.toml', 'plugins/robots/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/profiles/*.py') }}
           restore-keys: |
             menagerie-${{ runner.os }}-
 
@@ -140,7 +140,7 @@ jobs:
       - name: Run MuJoCo profile smoke matrix and reachability checks
         env:
           MENAGERIE_CACHE_DIR: ${{ runner.temp }}/menagerie-cache
-        run: uv run pytest --import-mode=importlib -m mujoco_smoke packages/physicalai-mujoco-plugin/tests
+        run: uv run pytest --import-mode=importlib -m mujoco_smoke plugins/robots/physicalai-mujoco-plugin/tests
 
   required-check:
     name: Required Check library
