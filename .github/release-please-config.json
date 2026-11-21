@@ -42,7 +42,7 @@
       "package-name": "physicalai-lerobot-plugin",
       "changelog-path": "CHANGELOG.md"
     },
-    "packages/physicalai-stararm-plugin": {
+    "plugins/robots/physicalai-stararm-plugin": {
       "release-type": "python",
       "package-name": "physicalai-stararm-plugin",
       "changelog-path": "CHANGELOG.md"

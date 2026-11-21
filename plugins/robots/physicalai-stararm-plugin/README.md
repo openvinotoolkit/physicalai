@@ -46,14 +46,14 @@ with connect(robot) as arm:
 ## Run with the PhysicalAI CLI
 
 ```bash
-uv run physicalai run --config packages/physicalai-stararm-plugin/examples/runtime/teleop-hd-to-fl.yaml
-uv run physicalai run --config packages/physicalai-stararm-plugin/examples/runtime/teleop-ld-to-fl.yaml
-uv run physicalai run --config packages/physicalai-stararm-plugin/examples/runtime/read-joints-hd.yaml
-uv run physicalai run --config packages/physicalai-stararm-plugin/examples/runtime/read-joints-ld.yaml
-uv run physicalai run --config packages/physicalai-stararm-plugin/examples/runtime/read-joints-fl.yaml
-uv run physicalai run --config packages/physicalai-stararm-plugin/examples/runtime/move-joints-fl.yaml
-uv run physicalai run --config packages/physicalai-stararm-plugin/examples/runtime/hold-hd.yaml
-uv run physicalai run --config packages/physicalai-stararm-plugin/examples/runtime/policy-follow-hd.yaml
+uv run physicalai run --config plugins/robots/physicalai-stararm-plugin/examples/runtime/teleop-hd-to-fl.yaml
+uv run physicalai run --config plugins/robots/physicalai-stararm-plugin/examples/runtime/teleop-ld-to-fl.yaml
+uv run physicalai run --config plugins/robots/physicalai-stararm-plugin/examples/runtime/read-joints-hd.yaml
+uv run physicalai run --config plugins/robots/physicalai-stararm-plugin/examples/runtime/read-joints-ld.yaml
+uv run physicalai run --config plugins/robots/physicalai-stararm-plugin/examples/runtime/read-joints-fl.yaml
+uv run physicalai run --config plugins/robots/physicalai-stararm-plugin/examples/runtime/move-joints-fl.yaml
+uv run physicalai run --config plugins/robots/physicalai-stararm-plugin/examples/runtime/hold-hd.yaml
+uv run physicalai run --config plugins/robots/physicalai-stararm-plugin/examples/runtime/policy-follow-hd.yaml
 ```
 
 ## Zero-pose calibration
@@ -76,5 +76,5 @@ hd_urdf = urdf_dir / "stararm102" / "urdf" / "stararm102_hd_description.urdf"
 
 ```bash
 uv sync
-uv run pytest packages/physicalai-stararm-plugin/tests/
+uv run pytest plugins/robots/physicalai-stararm-plugin/tests/
 ```
