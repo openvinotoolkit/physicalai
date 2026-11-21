@@ -108,12 +108,12 @@ jobs:
           # The LeRobot plugin is intentionally excluded from the default UV
           # workspace in pyproject.toml so regular `uv sync` does not pull in
           # heavy torch/CUDA dependencies. This test job still runs
-          # `packages/*/tests`, so we install LeRobot + the plugin explicitly.
+          # `plugins/robots/*/tests`, so we install LeRobot + the plugin explicitly.
           # `--no-deps` keeps the workspace's editable studio plugin instead of
           # replacing it with an older published SDK. LeRobot is pinned so a new
           # release cannot break main between commits; bump it with the plugin.
           uv pip install --python .venv/bin/python "lerobot==0.7.0" pytest-anyio
-          uv pip install --python .venv/bin/python --no-deps -e packages/physicalai-lerobot-plugin
+          uv pip install --python .venv/bin/python --no-deps -e plugins/robots/physicalai-lerobot-plugin
 
       # The MuJoCo plugin downloads its robot models from MuJoCo Menagerie. The
       # plugin pins the mujoco-menagerie version, which fixes every model file,

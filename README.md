@@ -175,7 +175,7 @@ More robots ship as first-party plugins. Each plugin README covers setup and usa
 | [SO-101](plugins/robots/physicalai-so101-plugin/README.md)          | Single-arm and bimanual SO-101 drivers, Studio catalog, and URDF assets                                              |
 | [reBot B601](plugins/robots/physicalai-rebot-b601-plugin/README.md) | Seeed reBot B601-DM / B601-RS followers                                                                              |
 | [Star Arm](plugins/robots/physicalai-stararm-plugin/README.md)      | Fashion Star Arm 102 leaders and a follower                                                                          |
-| [LeRobot](packages/physicalai-lerobot-plugin/README.md)       | Robots and teleoperators from LeRobot configs                                                                        |
+| [LeRobot](plugins/robots/physicalai-lerobot-plugin/README.md)       | Robots and teleoperators from LeRobot configs                                                                        |
 
 To add your own robot to Physical AI Studio, see the [Studio plugin](packages/physicalai-studio-plugin/README.md).
 

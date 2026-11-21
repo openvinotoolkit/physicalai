@@ -3,7 +3,7 @@
 # Teleoperates a LeRobot follower with its matching leader teleoperator via
 # the built-in TeleopSource. Run from the repo root with:
 #
-#   uv run physicalai run --config packages/physicalai-lerobot-plugin/examples/runtime/teleop.yaml
+#   uv run physicalai run --config plugins/robots/physicalai-lerobot-plugin/examples/runtime/teleop.yaml
 #
 # Stop with Ctrl+C. Edit the ports and config types for your hardware.
 #

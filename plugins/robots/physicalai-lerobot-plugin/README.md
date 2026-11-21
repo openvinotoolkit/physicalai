@@ -32,7 +32,7 @@ subcommand executes a `RobotRuntime` from a YAML config. The bundled config
 teleoperates a LeRobot follower with its matching leader teleoperator:
 
 ```bash
-uv run physicalai run --config packages/physicalai-lerobot-plugin/examples/runtime/teleop.yaml
+uv run physicalai run --config plugins/robots/physicalai-lerobot-plugin/examples/runtime/teleop.yaml
 ```
 
 The example uses the `so101_follower` / `so101_leader` pair; set `config_type`
