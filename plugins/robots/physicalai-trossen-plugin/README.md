@@ -48,5 +48,5 @@ bimanual leader model includes left- and right-handed leader arms.
 
 ```bash
 uv sync
-uv run pytest packages/physicalai-trossen-plugin/tests
+uv run pytest plugins/robots/physicalai-trossen-plugin/tests
 ```
