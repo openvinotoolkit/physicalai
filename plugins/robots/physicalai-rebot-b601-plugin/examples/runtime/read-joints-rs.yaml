@@ -3,7 +3,7 @@
 # Reads and logs joint positions while holding the current pose. Run from the
 # repo root with:
 #
-#   uv run physicalai run --config packages/physicalai-rebot-b601-plugin/examples/runtime/read-joints-rs.yaml
+#   uv run physicalai run --config plugins/robots/physicalai-rebot-b601-plugin/examples/runtime/read-joints-rs.yaml
 
 runtime:
   robot:

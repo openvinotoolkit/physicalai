@@ -3,7 +3,7 @@
 # Relays a StarArm102HDLeader (Star Arm 102-HD, FashionStar UART) to a
 # B601-RS follower (RobStride, SocketCAN). Run from the repo root with:
 #
-#   uv run physicalai run --config packages/physicalai-rebot-b601-plugin/examples/runtime/teleop-rs.yaml
+#   uv run physicalai run --config plugins/robots/physicalai-rebot-b601-plugin/examples/runtime/teleop-rs.yaml
 #
 # Stop with Ctrl+C. Edit the ports for your hardware.
 

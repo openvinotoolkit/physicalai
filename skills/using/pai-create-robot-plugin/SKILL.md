@@ -8,7 +8,7 @@ license: Apache-2.0
 
 Build the Physical AI robot driver independently before adding Studio support. A plugin owns its driver, device integration, Pydantic payloads, catalog definitions, and optional assets. Studio owns project persistence, generated configuration forms, runtime orchestration, and the curated Plugins page.
 
-Read the [Studio robot plugin guide](https://github.com/open-edge-platform/physical-ai-studio/blob/main/application/docs/robot-plugins.md) and the [`physicalai-studio-plugin` SDK README](https://github.com/openvinotoolkit/physicalai/blob/main/packages/physicalai-studio-plugin/README.md) before editing. For complete plugin examples, use the packages under [`openvinotoolkit/physicalai/packages`](https://github.com/openvinotoolkit/physicalai/tree/main/packages), including [`physicalai-rebot-b601-plugin`](https://github.com/openvinotoolkit/physicalai/tree/main/packages/physicalai-rebot-b601-plugin).
+Read the [Studio robot plugin guide](https://github.com/open-edge-platform/physical-ai-studio/blob/main/application/docs/robot-plugins.md) and the [`physicalai-studio-plugin` SDK README](https://github.com/openvinotoolkit/physicalai/blob/main/packages/physicalai-studio-plugin/README.md) before editing. For complete plugin examples, use the packages under [`openvinotoolkit/physicalai/plugins/robots`](https://github.com/openvinotoolkit/physicalai/tree/main/plugins/robots), including [`physicalai-rebot-b601-plugin`](https://github.com/openvinotoolkit/physicalai/tree/main/plugins/robots/physicalai-rebot-b601-plugin).
 
 ## Workflow
 

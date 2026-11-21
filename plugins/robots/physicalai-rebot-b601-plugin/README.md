@@ -150,8 +150,8 @@ relay a `StarArm102HDLeader` to a B601 follower. They install
 `physicalai-stararm-plugin` for the command only:
 
 ```bash
-uv run --with physicalai-stararm-plugin physicalai run --config packages/physicalai-rebot-b601-plugin/examples/runtime/teleop-dm.yaml
-uv run --with physicalai-stararm-plugin physicalai run --config packages/physicalai-rebot-b601-plugin/examples/runtime/teleop-rs.yaml
+uv run --with physicalai-stararm-plugin physicalai run --config plugins/robots/physicalai-rebot-b601-plugin/examples/runtime/teleop-dm.yaml
+uv run --with physicalai-stararm-plugin physicalai run --config plugins/robots/physicalai-rebot-b601-plugin/examples/runtime/teleop-rs.yaml
 ```
 
 Press `Ctrl+C` to stop.
@@ -159,10 +159,10 @@ Press `Ctrl+C` to stop.
 ### Sinusoidal motion and joint reading
 
 ```bash
-uv run physicalai run --config packages/physicalai-rebot-b601-plugin/examples/runtime/move-joints-dm.yaml
-uv run physicalai run --config packages/physicalai-rebot-b601-plugin/examples/runtime/move-joints-rs.yaml
-uv run physicalai run --config packages/physicalai-rebot-b601-plugin/examples/runtime/read-joints-dm.yaml
-uv run physicalai run --config packages/physicalai-rebot-b601-plugin/examples/runtime/read-joints-rs.yaml
+uv run physicalai run --config plugins/robots/physicalai-rebot-b601-plugin/examples/runtime/move-joints-dm.yaml
+uv run physicalai run --config plugins/robots/physicalai-rebot-b601-plugin/examples/runtime/move-joints-rs.yaml
+uv run physicalai run --config plugins/robots/physicalai-rebot-b601-plugin/examples/runtime/read-joints-dm.yaml
+uv run physicalai run --config plugins/robots/physicalai-rebot-b601-plugin/examples/runtime/read-joints-rs.yaml
 ```
 
 ## Zero-pose calibration
@@ -202,7 +202,7 @@ against holding torques measured on a real arm (reBotArm_control_py, July 2026).
 
 ```bash
 uv sync
-uv run pytest packages/physicalai-rebot-b601-plugin/tests/
+uv run pytest plugins/robots/physicalai-rebot-b601-plugin/tests/
 ```
 
 ## Acknowledgments

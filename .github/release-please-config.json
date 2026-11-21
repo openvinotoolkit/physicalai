@@ -32,7 +32,7 @@
       "package-name": "physicalai-studio-plugin",
       "changelog-path": "CHANGELOG.md"
     },
-    "packages/physicalai-rebot-b601-plugin": {
+    "plugins/robots/physicalai-rebot-b601-plugin": {
       "release-type": "python",
       "package-name": "physicalai-rebot-b601-plugin",
       "changelog-path": "CHANGELOG.md"

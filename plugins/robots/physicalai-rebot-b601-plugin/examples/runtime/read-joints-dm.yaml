@@ -1,11 +1,9 @@
-# reBot B601-DM sinusoidal motion runtime config (move_joints).
+# reBot B601-DM read-joints runtime config.
 #
-# Drives every joint through a sine wave as an actuation smoke test. Run from
-# the repo root with:
+# Reads and logs joint positions while holding the current pose. Run from the
+# repo root with:
 #
-#   uv run physicalai run --config packages/physicalai-rebot-b601-plugin/examples/runtime/move-joints-dm.yaml
-#
-# Use with the arm suspended or in a safe configuration — the arm will move!
+#   uv run physicalai run --config plugins/robots/physicalai-rebot-b601-plugin/examples/runtime/read-joints-dm.yaml
 
 runtime:
   robot:
@@ -20,12 +18,14 @@ runtime:
       gripper_control_mode: force_pos # force_pos | mit
 
   action_source:
-    class_path: physicalai_rebot_b601_plugin.motion.SineWaveSource
-    init_args:
-      amplitude: 10 # degrees
-      frequency: 0.25 # Hz
+    class_path: physicalai_rebot_b601_plugin.motion.HoldPoseSource
 
-  fps: 20
+  callbacks:
+    - class_path: physicalai_rebot_b601_plugin.motion.JointLogger
+      init_args:
+        throttle_steps: 1
+
+  fps: 10
 
 run:
-  duration_s: 10
+  duration_s: 30

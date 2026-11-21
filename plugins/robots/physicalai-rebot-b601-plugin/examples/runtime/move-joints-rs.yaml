@@ -3,7 +3,7 @@
 # Drives every joint through a sine wave as an actuation smoke test. Run from
 # the repo root with:
 #
-#   uv run physicalai run --config packages/physicalai-rebot-b601-plugin/examples/runtime/move-joints-rs.yaml
+#   uv run physicalai run --config plugins/robots/physicalai-rebot-b601-plugin/examples/runtime/move-joints-rs.yaml
 #
 # Use with the arm suspended or in a safe configuration — the arm will move!
 

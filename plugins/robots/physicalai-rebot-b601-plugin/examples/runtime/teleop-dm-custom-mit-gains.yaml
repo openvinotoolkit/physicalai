@@ -3,7 +3,7 @@
 # Relays a StarArm102HDLeader (Star Arm 102-HD, FashionStar UART) to a
 # B601-DM follower (Damiao CAN). Run from the repo root with:
 #
-#   uv run physicalai run --config packages/physicalai-rebot-b601-plugin/examples/runtime/teleop-dm-custom-mit-gains.yaml
+#   uv run physicalai run --config plugins/robots/physicalai-rebot-b601-plugin/examples/runtime/teleop-dm-custom-mit-gains.yaml
 #
 # MIT control can cause rapid motion. Begin with the arm clear of obstacles,
 # use conservative gains, and tune one joint at a time. The standard DM

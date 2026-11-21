@@ -235,7 +235,7 @@ uv add physicalai-rebot-b601-plugin
 If you are developing the plugin locally (from the repo root):
 
 ```bash
-uv add -e packages/physicalai-rebot-b601-plugin
+uv add -e plugins/robots/physicalai-rebot-b601-plugin
 ```
 
 ---
