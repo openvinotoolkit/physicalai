@@ -110,6 +110,27 @@ class RTCActionQueue:
                 return None
             return self._raw[self._cursor :].copy()
 
+    def snapshot_left_over(self, from_index: int | None = None) -> tuple[int, np.ndarray | None]:
+        """Return a cursor and the raw tail starting there, read under one lock.
+
+        Reading the cursor and the tail in two calls lets a ``pop()`` land in
+        between, so the tail handed to the model and the trim applied by
+        :meth:`merge` can disagree by one action.
+
+        Args:
+            from_index: Cursor captured when the observation was read. The tail
+                then starts at the action sent on that tick, which is the action
+                the new chunk's index 0 stands for. ``None`` uses the live cursor.
+
+        Returns:
+            ``(index, tail)``; ``tail`` is ``None`` when nothing is left from ``index``.
+        """
+        with self._lock:
+            index = self._cursor if from_index is None else max(0, min(from_index, self._cursor))
+            if self._raw is None or index >= len(self._raw):
+                return index, None
+            return index, self._raw[index:].copy()
+
     def merge(
         self,
         raw: np.ndarray,

@@ -43,6 +43,27 @@ class RTCLatencyTracker(Callback):
     def __init__(self, window_size: int = 100) -> None:  # noqa: D107
         self._window: deque[float] = deque(maxlen=window_size)
         self._start_time: float = 0.0
+        # Estimate used while the window is empty (start of a run, after a reset).
+        self._fallback_s: float = 0.0
+
+    def record(self, elapsed_s: float) -> None:
+        """Add one measured latency, for callers that time the call themselves.
+
+        ``RTCExecution`` times every inference it runs and records it here, so
+        the tracker works without being registered as a model callback.
+        """
+        if elapsed_s > 0:
+            self._window.append(float(elapsed_s))
+
+    def seed(self, latency_s: float) -> None:
+        """Drop the measurements and use ``latency_s`` until a new one arrives.
+
+        Used for cold-start inferences: their duration (model compilation,
+        kernel builds) must not stay in the worst-case window, but it is a
+        better estimate of the delay than zero.
+        """
+        self._window.clear()
+        self._fallback_s = max(float(latency_s), 0.0)
 
     @override
     def on_predict_start(self, inputs: dict[str, Any]) -> None:
@@ -57,7 +78,13 @@ class RTCLatencyTracker(Callback):
 
     @override
     def on_reset(self) -> None:
-        """Clear recorded latencies."""
+        """Clear recorded latencies, keeping the worst one as the estimate.
+
+        A reset happens at every episode boundary. Forgetting the latency there
+        would make the first re-plan of each episode assume zero delay.
+        """
+        if self._window:
+            self._fallback_s = max(self._window)
         self._window.clear()
         self._start_time = 0.0
 
@@ -67,7 +94,7 @@ class RTCLatencyTracker(Callback):
 
         Returns 0.0 if no measurements recorded yet.
         """
-        return max(self._window) if self._window else 0.0
+        return max(self._window) if self._window else self._fallback_s
 
     @property
     def latest_latency_s(self) -> float:
@@ -100,7 +127,8 @@ class RTCLatencyTracker(Callback):
         """
         if self.max_latency_s <= 0:
             return 0
-        return math.ceil(self.max_latency_s * fps)
+        # The epsilon keeps a latency of exactly n ticks from rounding up to n + 1.
+        return math.ceil(self.max_latency_s * fps - 1e-6)
 
     @override
     def __repr__(self) -> str:

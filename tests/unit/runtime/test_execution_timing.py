@@ -3,7 +3,7 @@
 
 """Timing of action chunks against the tick their observation was read on.
 
-The fake model here returns chunks whose action ``k`` holds ``obs_tick + k``:
+The fake models here return chunks whose action ``k`` holds ``obs_tick + k``:
 the tick that action is meant for. A test then pops actions tick by tick and
 checks each one against the tick it is sent on.
 """
@@ -14,12 +14,13 @@ import logging
 import re
 import threading
 import time
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import pytest
 
-from physicalai.runtime import AsyncExecution, ChunkedActionQueue
+from physicalai.runtime import AsyncExecution, ChunkedActionQueue, RTCActionQueue, RTCExecution
 
 if TYPE_CHECKING:
     from physicalai.inference.model import InferenceModel
@@ -52,6 +53,37 @@ class _GatedModel:
             self.release.clear()
         tick = float(np.asarray(obs["state"]).reshape(-1)[0])
         return (tick + np.arange(CHUNK, dtype=np.float32))[:, None].repeat(2, axis=1)
+
+    def reset(self) -> None:
+        pass
+
+
+class _RTCModel:
+    """The RTC side of :class:`_GatedModel`: called with the RTC inputs, which it records.
+
+    Each call after the first waits for ``release``, which stays set once given.
+    """
+
+    chunk_size = CHUNK
+    manifest = SimpleNamespace(model_extra={})
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.calls = 0
+        self.rtc_inputs: list[dict[str, Any]] = []
+
+    def _gate(self) -> None:
+        self.calls += 1
+        if self.calls > 1:
+            self.entered.set()
+            self.release.wait(timeout=5.0)
+
+    def __call__(self, inputs: dict[str, Any]) -> dict[str, np.ndarray]:
+        self.rtc_inputs.append({k: np.array(v) for k, v in inputs.items() if k != "state"})
+        self._gate()
+        tick = float(np.asarray(inputs["state"]).reshape(-1)[0])
+        return {"action": (tick + np.arange(CHUNK, dtype=np.float32))[None, :, None].repeat(2, axis=2)}
 
     def reset(self) -> None:
         pass
@@ -251,3 +283,139 @@ class TestAsyncThresholdShorterThanLatency:
             d.queue.reset()
             d.deliver(ticks_in_flight=5)
         assert not _dry_warnings(caplog)
+
+
+class TestRTCAlignment:
+    def _run_until_second_chunk(self, **kwargs: Any) -> tuple[_RTCModel, RTCActionQueue, int, int]:
+        model, queue = _RTCModel(), RTCActionQueue()
+        ex = RTCExecution(chunk_size=CHUNK, fps=30.0, **kwargs)
+        ex.start(cast("InferenceModel", model), queue)
+        try:
+            ex.warmup(_obs(0))
+            tick = 0
+            request_tick = -1
+            while not model.entered.is_set():
+                ex.maybe_request(_obs(tick))
+                queue.pop()
+                request_tick = tick
+                tick += 1
+                model.entered.wait(timeout=0.05)
+            for _ in range(3):
+                queue.pop()
+                tick += 1
+            model.release.set()
+            assert _wait_for(lambda: ex.inference_count == 2)
+        finally:
+            ex.stop()
+        return model, queue, tick, request_tick
+
+    def test_new_chunk_starts_at_the_action_meant_for_the_current_tick(self) -> None:
+        _model, queue, tick, _ = self._run_until_second_chunk(execution_horizon=5)
+        sent = queue.pop()
+        assert sent is not None
+        assert sent[0] == tick
+
+    def test_left_over_starts_at_the_action_sent_with_the_observation(self) -> None:
+        """Index 0 of the tail and index 0 of the new chunk must stand for the same tick."""
+        model, _queue, _tick, request_tick = self._run_until_second_chunk(execution_horizon=5)
+        left_over = model.rtc_inputs[1]["prev_chunk_left_over"][0]
+        assert left_over[0, 0] == request_tick
+
+    def test_horizon_never_reaches_past_the_left_over_tail(self) -> None:
+        model, _queue, _tick, _ = self._run_until_second_chunk(execution_horizon=10, queue_threshold=4)
+        inputs = model.rtc_inputs[1]
+        left_over = inputs["prev_chunk_left_over"][0]
+        n_left = int(np.count_nonzero(left_over[:, 0]))
+        assert 0 < n_left < 10
+        assert int(inputs["execution_horizon"]) <= n_left
+        assert int(inputs["inference_delay"]) <= int(inputs["execution_horizon"])
+
+
+class _ClockedModel(_RTCModel):
+    """A model whose calls take ``latencies[i]`` seconds on an injected clock, with no real waiting."""
+
+    def __init__(self, latencies: list[float]) -> None:
+        super().__init__()
+        self.now = 0.0
+        self._latencies = latencies
+
+    def clock(self) -> float:
+        return self.now
+
+    def _gate(self) -> None:
+        self.now += self._latencies[min(self.calls, len(self._latencies) - 1)]
+        self.calls += 1
+
+
+def _replan_inputs(model: _ClockedModel, n_replans: int, **kwargs: Any) -> list[dict[str, Any]]:
+    """Run warmup plus ``n_replans`` re-plans and return the RTC inputs of each model call."""
+    queue = RTCActionQueue()
+    ex = RTCExecution(chunk_size=CHUNK, fps=30.0, clock=model.clock, **kwargs)
+    ex.start(cast("InferenceModel", model), queue)
+    try:
+        ex.warmup(_obs(0))
+        tick = 0
+        while ex.inference_count < 1 + n_replans and tick < 2000:
+            before = ex.inference_count
+            ex.maybe_request(_obs(tick))
+            if queue.below_threshold(ex.queue_threshold):
+                assert _wait_for(lambda before=before: ex.inference_count > before)
+            queue.pop()
+            tick += 1
+    finally:
+        ex.stop()
+    assert ex.inference_count >= 1 + n_replans
+    return model.rtc_inputs
+
+
+class TestRTCLatency:
+    """Finding 4: RTC must tell the model how many actions go out during inference."""
+
+    def test_delay_is_measured_without_a_tracker_from_the_first_replan(self) -> None:
+        inputs = _replan_inputs(_ClockedModel([0.29]), 3, execution_horizon=10)
+        assert [int(i["inference_delay"]) for i in inputs[1:4]] == [9, 9, 9]
+
+    def test_cold_start_latency_is_an_estimate_then_forgotten(self) -> None:
+        # Warmup takes 5 s (compilation). The first re-plan may only overestimate
+        # (clamped to the horizon); once a steady call is measured the 5 s is gone.
+        inputs = _replan_inputs(_ClockedModel([5.0, 0.29]), 3, execution_horizon=10, warmup_inferences=1)
+        delays = [int(i["inference_delay"]) for i in inputs[1:4]]
+        assert delays[0] == 10
+        assert delays[1:] == [9, 9]
+
+    def test_initial_latency_overrides_the_cold_start(self) -> None:
+        inputs = _replan_inputs(
+            _ClockedModel([5.0, 2.0, 0.29]), 3, execution_horizon=10, initial_latency_s=0.29,
+        )
+        assert [int(i["inference_delay"]) for i in inputs[1:4]] == [9, 9, 9]
+
+    def test_auto_threshold_tracks_the_delay(self) -> None:
+        model, queue = _ClockedModel([0.29]), RTCActionQueue()
+        ex = RTCExecution(chunk_size=CHUNK, fps=30.0, execution_horizon=10, clock=model.clock)
+        ex.start(cast("InferenceModel", model), queue)
+        try:
+            ex.warmup(_obs(0))
+            assert ex.queue_threshold == 10 + 9
+        finally:
+            ex.stop()
+
+    def test_threshold_shorter_than_the_delay_is_raised(self) -> None:
+        model, queue = _ClockedModel([0.29]), RTCActionQueue()
+        ex = RTCExecution(chunk_size=CHUNK, fps=30.0, execution_horizon=10, queue_threshold=3, clock=model.clock)
+        ex.start(cast("InferenceModel", model), queue)
+        try:
+            ex.warmup(_obs(0))
+            assert ex.queue_threshold == 10
+        finally:
+            ex.stop()
+
+    def test_tracker_keeps_its_estimate_across_a_reset(self) -> None:
+        from physicalai.inference.callbacks import RTCLatencyTracker
+
+        tracker = RTCLatencyTracker()
+        tracker.record(0.3)
+        assert tracker.compute_delay(30.0) == 9  # exactly nine ticks, not ten
+        tracker.on_reset()
+        assert tracker.compute_delay(30.0) == 9
+        tracker.seed(0.1)
+        assert tracker.compute_delay(30.0) == 3
