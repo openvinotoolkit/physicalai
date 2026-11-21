@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from physicalai.config import export_config
+from physicalai.inference.callbacks.rtc_latency import RTCLatencyTracker
 from physicalai.inference.constants import (
     ACTION,
     PREV_CHUNK_LEFT_OVER,
@@ -31,7 +32,8 @@ from physicalai.inference.constants import (
 from physicalai.runtime.execution.base import Execution, WorkerDiedError
 
 if TYPE_CHECKING:
-    from physicalai.inference.callbacks.rtc_latency import RTCLatencyTracker
+    from collections.abc import Callable
+
     from physicalai.inference.model import InferenceModel
     from physicalai.runtime._callback_bus import _CallbackBus
     from physicalai.runtime.execution.rtc_queue import RTCActionQueue
@@ -98,8 +100,16 @@ class RTCExecution(Execution):
         queue_threshold: Re-infer when queue drops below this level. If None,
             is dynamically computed as ``execution_horizon + latency_delay_actions``
             derived from worst-case inference latency and robot control rate (fps).
-        latency_tracker: Callback that measures inference latency.
-            If None, delay defaults to 0.
+        latency_tracker: Tracker holding the measured inference latency. If
+            None, the execution creates one. The execution times every
+            inference itself and records it in the tracker, so the tracker
+            does not have to be registered as a model callback.
+        initial_latency_s: Expected inference latency in seconds, used for
+            ``inference_delay`` until the first steady measurement. If None,
+            the duration of the warmup inference is used instead, which is an
+            overestimate on backends that compile on first use.
+        clock: Monotonic clock in seconds used to time inference
+            (default ``time.perf_counter``). Injectable for simulated time.
         warmup_inferences: Number of initial inferences treated as warmup.
             The latency tracker is reset after these to discard
             compilation/kernel-build overhead (e.g. OpenVINO first-run).
@@ -118,13 +128,20 @@ class RTCExecution(Execution):
         queue_threshold: int | None = None,
         latency_tracker: RTCLatencyTracker | None = None,
         warmup_inferences: int = 2,
+        initial_latency_s: float | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self._chunk_size_param = chunk_size
         self._execution_horizon = execution_horizon
         self._fps = fps
         self._max_guidance_weight = max_guidance_weight
         self._queue_threshold_param = queue_threshold
-        self._latency_tracker = latency_tracker
+        self._latency_tracker = latency_tracker if latency_tracker is not None else RTCLatencyTracker()
+        self._initial_latency_s = initial_latency_s
+        if initial_latency_s is not None:
+            self._latency_tracker.seed(initial_latency_s)
+        self._clock = clock or time.perf_counter
+        self._threshold_warned = False
         self._warmup_inferences = max(1, warmup_inferences)
 
         self._rtc_queue: RTCActionQueue | None = None
@@ -137,7 +154,8 @@ class RTCExecution(Execution):
         # Thread state
         self._obs_lock = threading.Lock()
         self._model_lock = threading.Lock()
-        self._obs_slot: tuple[dict[str, Any], int, _WarmupSignal | None] | None = None
+        # (observation, incarnation, warmup signal, queue cursor when the observation was read)
+        self._obs_slot: tuple[dict[str, Any], int, _WarmupSignal | None, int | None] | None = None
         self._warmup_signal: _WarmupSignal | None = None
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -211,10 +229,26 @@ class RTCExecution(Execution):
         ``latency_delay_actions`` is derived from the measured worst-case
         inference latency and robot control rate of the loop.
         """
+        delay = self._latency_tracker.compute_delay(self._fps)
+        chunk_size = self.chunk_size
         if self._queue_threshold_param is not None:
+            # The request has to go out while at least ``delay`` actions are
+            # still queued, or the queue runs dry before the chunk is back.
+            floor = min(delay + 1, chunk_size)
+            if self._queue_threshold_param < floor:
+                if not self._threshold_warned:
+                    self._threshold_warned = True
+                    logger.warning(
+                        "RTC queue_threshold %d is shorter than the inference delay (%d actions): "
+                        "the queue would run dry and the robot would stutter. Using %d.",
+                        self._queue_threshold_param,
+                        delay,
+                        floor,
+                    )
+                return floor
             return self._queue_threshold_param
-        delay = self._latency_tracker.compute_delay(self._fps) if self._latency_tracker is not None else 0
-        return self._execution_horizon + delay
+        # Never above the chunk size: a cold-start latency estimate can be huge.
+        return min(self._execution_horizon + delay, chunk_size)
 
     @property
     def inference_count(self) -> int:
@@ -313,7 +347,7 @@ class RTCExecution(Execution):
                 raise RuntimeError(msg)
             incarnation = self._incarnation
             self._warmup_signal = signal
-            self._obs_slot = (deepcopy(sample_observation), incarnation, signal)
+            self._obs_slot = (deepcopy(sample_observation), incarnation, signal, None)
 
         # Wait for the first chunk with a generous timeout
         timed_out = False
@@ -369,7 +403,9 @@ class RTCExecution(Execution):
             if not self._rtc_queue.below_threshold(self.queue_threshold):
                 return
             snapshot = {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in observation.items()}
-            self._obs_slot = (snapshot, self._incarnation, None)
+            # The cursor is read here, before this tick's pop: the model's action 0
+            # stands for the action sent on the tick the observation was read.
+            self._obs_slot = (snapshot, self._incarnation, None, self._rtc_queue.get_action_index())
 
     def reset(self, *, reset_model: bool = True) -> None:
         """Invalidate pending RTC work and optionally wait for active inference.
@@ -496,25 +532,23 @@ class RTCExecution(Execution):
             if request is None:
                 time.sleep(_IDLE_SLEEP_S)
                 continue
-            inputs, incarnation, signal = request
+            inputs, incarnation, signal, obs_cursor = request
             inputs = deepcopy(inputs)
 
-            # Build RTC-specific inputs
-            inputs = self._inject_rtc_inputs(inputs)
-
-            # Snapshot cursor before inference
-            action_index_before = self._rtc_queue.get_action_index()
+            # Build RTC-specific inputs. The left-over tail and the cursor used to
+            # trim the result come from one snapshot, anchored at the observation.
+            inputs, action_index_before = self._inject_rtc_inputs(inputs, obs_cursor)
 
             # Run inference (callbacks fire inside model.__call__)
             try:
-                t0 = time.perf_counter()
+                t0 = self._clock()
                 with self._model_lock:
                     with self._obs_lock:
                         if incarnation != self._incarnation:
                             self._cancel_signal_locked(signal, "RTCExecution warmup cancelled by reset")
                             continue
                     outputs = self._model(inputs)
-                    elapsed = time.perf_counter() - t0
+                    elapsed = self._clock() - t0
                 consecutive_errors = 0
             except Exception:
                 with self._obs_lock:
@@ -600,14 +634,21 @@ class RTCExecution(Execution):
 
             self._inference_count += 1
             self._lifetime_inferences += 1
-            if self._lifetime_inferences <= self._warmup_inferences and self._latency_tracker is not None:
-                self._latency_tracker.on_reset()
+            if self._lifetime_inferences <= self._warmup_inferences:
+                # Cold-start inferences are slow (compilation), so they must not
+                # stay in the worst-case window. They still give an estimate:
+                # the next re-plan uses it instead of assuming zero delay.
+                self._latency_tracker.seed(
+                    self._initial_latency_s if self._initial_latency_s is not None else elapsed,
+                )
                 logger.info(
-                    "Warmup inference %d/%d complete (%.2fs) — latency tracker reset",
+                    "Warmup inference %d/%d complete (%.2fs) — latency estimate seeded",
                     self._lifetime_inferences,
                     self._warmup_inferences,
                     elapsed,
                 )
+            else:
+                self._latency_tracker.record(elapsed)
 
             self._rtc_queue.merge(
                 raw_actions,
@@ -638,16 +679,24 @@ class RTCExecution(Execution):
         signal.error = RuntimeError(message)
         signal.event.set()
 
-    def _inject_rtc_inputs(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    def _inject_rtc_inputs(
+        self, inputs: dict[str, np.ndarray], obs_cursor: int | None = None
+    ) -> tuple[dict[str, np.ndarray], int]:
         """Add RTC-specific model inputs.
 
+        Args:
+            inputs: Model inputs for this request.
+            obs_cursor: Queue cursor when the observation was read, or ``None``
+                to use the live cursor.
+
         Returns:
-            Updated inputs dict with RTC keys added.
+            Updated inputs dict with RTC keys added, and the cursor the left-over
+            tail starts at (the baseline for trimming the result).
         """
         assert self._rtc_queue is not None  # noqa: S101
 
         # prev_chunk_left_over from queue
-        prev_chunk = self._rtc_queue.get_left_over()
+        action_index_before, prev_chunk = self._rtc_queue.snapshot_left_over(obs_cursor)
         if prev_chunk is None:
             prev_chunk_padded = np.zeros(
                 (1, self._chunk_size, inputs[STATE].shape[-1]),
@@ -667,7 +716,10 @@ class RTCExecution(Execution):
                 prev_chunk_padded = np.pad(prev_chunk_padded, ((0, 0), (0, pad_len), (0, 0)))
 
             max_guidance_weight = self._max_guidance_weight
-            execution_horizon = self._execution_horizon
+            # Guide only towards actions that exist. Past the tail the padded
+            # chunk is zeros, and a horizon reaching into it pulls the new chunk
+            # towards zero (LeRobot's RTC clamps the same way).
+            execution_horizon = min(self._execution_horizon, remaining)
             delay = self._clamped_delay(execution_horizon)
 
         updated_inputs: dict[str, np.ndarray | np.int64 | np.float32] = dict(inputs)
@@ -676,7 +728,7 @@ class RTCExecution(Execution):
         updated_inputs[RTC_MAX_GUIDANCE_WEIGHT] = np.float32(max_guidance_weight)
         updated_inputs[RTC_EXECUTION_HORIZON] = np.int64(execution_horizon)
 
-        return updated_inputs
+        return updated_inputs, action_index_before
 
     def _clamped_delay(self, execution_horizon: int) -> int:
         """Measured inference delay, held inside the range the model accepts.
@@ -687,8 +739,6 @@ class RTCExecution(Execution):
         Returns:
             Delay in actions, within ``[0, execution_horizon]``.
         """
-        if self._latency_tracker is None:
-            return 0
         delay = self._latency_tracker.compute_delay(self._fps)
         clamped = min(max(delay, 0), execution_horizon)
         if clamped != delay:

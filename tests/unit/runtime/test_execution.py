@@ -526,7 +526,7 @@ class TestRTCExecutionValidation:
         ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0, latency_tracker=tracker)
         ex._rtc_queue = queue  # noqa: SLF001
 
-        inputs = ex._inject_rtc_inputs({})  # noqa: SLF001
+        inputs, _ = ex._inject_rtc_inputs({})  # noqa: SLF001
 
         assert int(inputs["inference_delay"]) == 5
 
@@ -539,7 +539,7 @@ class TestRTCExecutionValidation:
         ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0, latency_tracker=tracker)
         ex._rtc_queue = RTCActionQueue()  # noqa: SLF001
 
-        inputs = ex._inject_rtc_inputs({"state": np.zeros((1, 3), dtype=np.float32)})  # noqa: SLF001
+        inputs, _ = ex._inject_rtc_inputs({"state": np.zeros((1, 3), dtype=np.float32)})  # noqa: SLF001
 
         assert int(inputs["inference_delay"]) == 0
         # The first chunk has no real predecessor, so guidance is suppressed with
@@ -686,7 +686,7 @@ class TestRTCExecutionObsSlot:
             ex.start(model, queue)
             try:
                 with ex._obs_lock:  # noqa: SLF001
-                    ex._obs_slot = ({"state": np.zeros(3, dtype=np.float32)}, ex._incarnation, None)  # noqa: SLF001
+                    ex._obs_slot = ({"state": np.zeros(3, dtype=np.float32)}, ex._incarnation, None, None)  # noqa: SLF001
                 assert entered.wait(timeout=5.0)
 
                 publisher = threading.Thread(
@@ -752,7 +752,7 @@ class TestRTCExecutionObsSlot:
         worker = ex._thread  # noqa: SLF001
         with ex._obs_lock:  # noqa: SLF001
             observation = {"state": np.zeros(3, dtype=np.float32)}
-            ex._obs_slot = (observation, ex._incarnation, None)  # noqa: SLF001
+            ex._obs_slot = (observation, ex._incarnation, None, None)  # noqa: SLF001
         assert entered.wait(timeout=5.0)
 
         reset_done = threading.Event()
@@ -789,7 +789,7 @@ class TestRTCExecutionObsSlot:
         try:
             with ex._obs_lock:  # noqa: SLF001
                 observation = {"state": np.zeros(3, dtype=np.float32)}
-                ex._obs_slot = (observation, ex._incarnation, None)  # noqa: SLF001
+                ex._obs_slot = (observation, ex._incarnation, None, None)  # noqa: SLF001
             deadline = time.monotonic() + 5.0
             while ex._obs_slot is not None and time.monotonic() < deadline:  # noqa: SLF001
                 time.sleep(0.001)
@@ -1280,7 +1280,7 @@ class TestRestartAfterStop:
         ex._death_cause = RuntimeError("died previously")  # noqa: SLF001
         with ex._obs_lock:  # noqa: SLF001
             stale = {"state": np.full(3, 99.0, dtype=np.float32)}
-            ex._obs_slot = (stale, ex._incarnation, None)  # noqa: SLF001
+            ex._obs_slot = (stale, ex._incarnation, None, None)  # noqa: SLF001
 
         ex.start(model, queue)
         try:
@@ -1313,7 +1313,7 @@ class TestRestartAfterStop:
 
         Compilation is paid once per process, so a second run must not discard
         its latency samples as though they were cold. Asserted on whether
-        ``on_reset()`` fires, so rewiring the gate to the per-run count is caught.
+        ``seed()`` fires (the cold-start estimate), so rewiring the gate to the per-run count is caught.
         """
         from physicalai.runtime import RTCActionQueue, RTCExecution
 
@@ -1334,18 +1334,18 @@ class TestRestartAfterStop:
             ex.warmup({"state": np.zeros(3, dtype=np.float32)})
             lifetime = ex._lifetime_inferences  # noqa: SLF001
             assert ex.inference_count >= 1
-            assert tracker.on_reset.call_count == 1
+            assert tracker.seed.call_count == 1
         finally:
             ex.stop()
 
-        tracker.on_reset.reset_mock()
+        tracker.seed.reset_mock()
         ex.start(model, queue)
         try:
             assert ex.inference_count == 0
             assert ex._lifetime_inferences == lifetime  # noqa: SLF001
             queue.clear()
             ex.warmup({"state": np.zeros(3, dtype=np.float32)})
-            tracker.on_reset.assert_not_called()
+            tracker.seed.assert_not_called()
         finally:
             ex.stop()
 
@@ -1417,7 +1417,7 @@ class TestStopTimeoutStraggler:
             model.side_effect = blocking
             ex.start(model, queue)
             with ex._obs_lock:  # noqa: SLF001
-                ex._obs_slot = (dict(obs), ex._incarnation, None)  # noqa: SLF001
+                ex._obs_slot = (dict(obs), ex._incarnation, None, None)  # noqa: SLF001
 
         assert entered.wait(timeout=5.0), "worker never entered inference"
         straggler = ex._thread  # noqa: SLF001
