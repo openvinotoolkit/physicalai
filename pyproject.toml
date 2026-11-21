@@ -3,7 +3,7 @@ requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [tool.uv.workspace]
-members = ["packages/*"]
+members = ["packages/*", "plugins/robots/*"]
 exclude = ["packages/physicalai-lerobot-plugin"]
 
 [tool.uv.sources]
@@ -83,7 +83,7 @@ robots = [
     "physicalai[so101]",
     "physicalai[trossen]",
 ]
-# First-party plugin packages from packages/. They require Python 3.12+, so on
+# First-party packages and robot plugins require Python 3.12+, so on
 # 3.11 these extras install nothing. The Trossen plugin also requires
 # trossen-arm, which is distributed only for macOS and Linux.
 # physicalai-lerobot-plugin is left out: it pulls in torch and downgrades shared
@@ -156,7 +156,7 @@ default-groups = ["dev"]
 target-version = "py311"
 line-length = 120
 preview = true
-include = ["src/**/*.py", "src/**/*.pyi", "packages/**/src/**/*.py", "packages/**/src/**/*.pyi"]
+include = ["src/**/*.py", "src/**/*.pyi", "packages/**/src/**/*.py", "packages/**/src/**/*.pyi", "plugins/*/**/src/**/*.py", "plugins/*/**/src/**/*.pyi"]
 exclude = [
     ".bzr",
     ".direnv",

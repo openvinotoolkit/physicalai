@@ -172,7 +172,7 @@ More robots ship as first-party plugins. Each plugin README covers setup and usa
 | Plugin                                                        | Robots                                                                                                               |
 | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | [MuJoCo](packages/physicalai-mujoco-plugin/README.md)         | Simulated single-arm and bimanual SO-101 and other MuJoCo Menagerie robots, with a browser viewer and camera streams |
-| [SO-101](packages/physicalai-so101-plugin/README.md)          | Single-arm and bimanual SO-101 drivers, Studio catalog, and URDF assets                                              |
+| [SO-101](plugins/robots/physicalai-so101-plugin/README.md)          | Single-arm and bimanual SO-101 drivers, Studio catalog, and URDF assets                                              |
 | [reBot B601](packages/physicalai-rebot-b601-plugin/README.md) | Seeed reBot B601-DM / B601-RS followers                                                                              |
 | [Star Arm](packages/physicalai-stararm-plugin/README.md)      | Fashion Star Arm 102 leaders and a follower                                                                          |
 | [LeRobot](packages/physicalai-lerobot-plugin/README.md)       | Robots and teleoperators from LeRobot configs                                                                        |

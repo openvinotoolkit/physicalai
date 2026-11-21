@@ -24,7 +24,7 @@
       "release-type": "simple",
       "package-name": "physicalai",
       "changelog-path": "CHANGELOG.md",
-      "exclude-paths": ["packages/*"],
+      "exclude-paths": ["packages/*", "plugins/robots/*"],
       "include-component-in-tag": false
     },
     "packages/physicalai-studio-plugin": {
@@ -52,7 +52,7 @@
       "package-name": "physicalai-mujoco-plugin",
       "changelog-path": "CHANGELOG.md"
     },
-    "packages/physicalai-so101-plugin": {
+    "plugins/robots/physicalai-so101-plugin": {
       "release-type": "python",
       "package-name": "physicalai-so101-plugin",
       "changelog-path": "CHANGELOG.md"

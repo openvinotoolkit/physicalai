@@ -101,12 +101,12 @@ The repository provides calibration examples and a teleoperation recipe under
 the serial ports and calibration paths:
 
 ```bash
-uv run physicalai run --config packages/physicalai-so101-plugin/examples/runtime/bimanual_teleop.yaml
+uv run physicalai run --config plugins/robots/physicalai-so101-plugin/examples/runtime/bimanual_teleop.yaml
 ```
 
 ## Development
 
 ```bash
 uv sync
-uv run pytest packages/physicalai-so101-plugin/tests
+uv run pytest plugins/robots/physicalai-so101-plugin/tests
 ```
