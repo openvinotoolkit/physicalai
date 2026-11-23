@@ -86,25 +86,28 @@ observation = {
 
 The expected keys and shapes come from the exported package and its preprocessing pipeline.
 
-With `model.observation_history` declared, `InferenceModel` prepends its
-`preprocessor` before the regular preprocessor list, including an explicitly
-supplied list. This optional `ComponentSpec` defaults to
-`{type: stack_observation_history}` and accepts a registered `type` or `class_path`
-with `init_args`. Do not also declare the same formatter in the regular list.
-Setting it to `null` disables only automatic formatting, not collection or temporal
-sampling; the remaining pipeline must format the full selected history.
+`ObservationHistorySpec` contains only `n_obs_steps` and `stride`, with no
+`preprocessor` field. `InferenceModel` does not automatically insert a history
+formatter. User/Studio exports must put `type: stack_observation_history`
+explicitly in the normal `model.preprocessors` list before policy processing, or
+choose a custom formatter there. A formatter accepts a registered `type` or
+`class_path` with `init_args`. An explicitly supplied `preprocessors` list must
+likewise include the required history formatter.
 
-With history enabled, `PolicySource` supplies fixed tuples of owned, read-only
-image/state frames. Executors pass them through unchanged; the default formatter
+With an explicit `observation_history` argument, `PolicySource` supplies fixed
+tuples of owned, read-only image/state frames. It does not discover history from
+`model.manifest`; callers can pass
+`observation_history=model.manifest.model.observation_history`.
+Executors pass the tuples through unchanged; `stack_observation_history`
 converts them on axis `1` into `B,T,...` arrays before policy preprocessing.
 Without history, behavior is unchanged. Task inputs remain unchanged. Direct
 callers supplying complete array windows get array passthrough, not additional
 stacking or history collection.
 
-`on_predict_start` callbacks run before preprocessors and must accept tuples,
-including when the history formatter is `null`. Do not combine this with another
-history-stacking callback. Remote serialization does not currently support these
-tuple frames; setting the formatter to `null` does not fix this. See
+`on_predict_start` callbacks run before preprocessors and must accept tuples.
+Do not combine this with another history-stacking callback. Remote serialization
+does not currently support these
+tuple frames; changing the formatter does not fix this. See
 [observation history](../how-to/inference/use-manifest.md#enable-observation-history).
 
 ## Remote Inference

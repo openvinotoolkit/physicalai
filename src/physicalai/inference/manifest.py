@@ -22,9 +22,12 @@ import inspect
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+if TYPE_CHECKING:
+    from physicalai.config import JsonValue
 
 MANIFEST_VERSION = "1.1"
 MANIFEST_FORMAT = "policy_package"
@@ -252,14 +255,15 @@ class ObservationHistorySpec(BaseModel):
     Attributes:
         n_obs_steps: Observations per window, including the current observation.
         stride: Received observation updates between selected frames.
-        preprocessor: History formatter prepended to the inference pipeline.
-            None leaves selected frames unstacked for the remaining pipeline.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     n_obs_steps: int = Field(ge=1, strict=True)
     stride: int = Field(default=1, ge=1, strict=True)
-    preprocessor: ComponentSpec | None = Field(default_factory=lambda: ComponentSpec(type="stack_observation_history"))
+
+    def to_config_value(self) -> JsonValue:
+        """Return sampling settings for constructor config export."""
+        return {"n_obs_steps": self.n_obs_steps, "stride": self.stride}
 
 
 class ModelSpec(BaseModel):

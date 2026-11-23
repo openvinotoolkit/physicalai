@@ -75,7 +75,7 @@ def test_deferred_window_is_fixed_readonly_owned_selection_without_stacking(stri
 
 
 @pytest.mark.parametrize("processors", ["first", "later", "empty", "absent", "mock", "spec-only"])
-def test_default_defers_history_regardless_of_preprocessors(processors: str) -> None:
+def test_explicit_history_defers_regardless_of_preprocessors(processors: str) -> None:
     model = RecordingModel(
         Manifest(
             model=ModelSpec(
@@ -92,7 +92,7 @@ def test_default_defers_history_regardless_of_preprocessors(processors: str) -> 
             "mock": MagicMock(),
             "spec-only": [ComponentSpec(type="stack_observation_history")],
         }[processors]
-    source = PolicySource(cast("InferenceModel", model))
+    source = PolicySource(cast("InferenceModel", model), observation_history=model.manifest.model.observation_history)
     inputs = source.to_model_input(_observation(5), {"top": _frame(5)})
     assert isinstance(inputs[IMAGES], tuple)
     assert isinstance(inputs[STATE], tuple)
@@ -101,24 +101,27 @@ def test_default_defers_history_regardless_of_preprocessors(processors: str) -> 
     _assert_state_window(inputs, [5, 5, 5])
 
 
-def test_null_history_formatter_supplies_full_tuples_without_inspecting_model() -> None:
+def test_explicit_history_supplies_full_tuples_without_inspecting_model() -> None:
     class RawModel(RecordingModel):
         def predict_action_chunk(self, inputs: dict[str, Any]) -> np.ndarray:
             self.calls.append(inputs)
             return np.ones((1, 2), dtype=np.float32)
 
-    model = RawModel(
-        Manifest(model=ModelSpec(observation_history=ObservationHistorySpec(n_obs_steps=3, preprocessor=None)))
-    )
-    with patch.object(RecordingModel, "preprocessors", new_callable=PropertyMock, create=True) as processors:
+    model = RawModel(Manifest())
+    with (
+        patch.object(RecordingModel, "preprocessors", new_callable=PropertyMock, create=True) as processors,
+        patch.object(RecordingModel, "manifest", new_callable=PropertyMock, create=True) as manifest,
+    ):
         processors.side_effect = AssertionError("PolicySource must not inspect model preprocessors")
+        manifest.side_effect = AssertionError("PolicySource must not inspect model manifest")
         source = PolicySource(
             cast("InferenceModel", model),
             execution=SyncExecution(request_threshold=0.0),
             action_queue=ChunkedActionQueue(),
+            observation_history=ObservationHistorySpec(n_obs_steps=3),
         )
         try:
-            source.connect(bus=_CallbackBus([]), session_id="null-history-formatter")
+            source.connect(bus=_CallbackBus([]), session_id="explicit-history")
             for value, expected in enumerate([[0, 0, 0], [0, 0, 1], [0, 1, 2], [1, 2, 3]]):
                 source.update(_observation(value), {"top": _frame(value)}, step=value)
                 inputs = model.calls[-1]
@@ -131,10 +134,13 @@ def test_null_history_formatter_supplies_full_tuples_without_inspecting_model() 
         finally:
             source.disconnect()
         processors.assert_not_called()
+        manifest.assert_not_called()
 
 
-def test_no_history_supplies_single_frame_arrays() -> None:
-    model = RecordingModel(Manifest(model=ModelSpec(n_obs_steps=7)))
+def test_omitted_history_supplies_single_frame_arrays_even_with_manifest_history() -> None:
+    model = RecordingModel(
+        Manifest(model=ModelSpec(n_obs_steps=7, observation_history=ObservationHistorySpec(n_obs_steps=3)))
+    )
     source = PolicySource(cast("InferenceModel", model), task="current task")
     frame = _frame(5)
     inputs = source.to_model_input(_observation(5), {"top": frame})
@@ -179,7 +185,10 @@ def test_deferred_queue_skips_and_invalid_updates_never_stack(stride: int, expec
         chunk_size=3,
     )
     source = PolicySource(
-        cast("InferenceModel", model), execution=SyncExecution(request_threshold=0.0), action_queue=ChunkedActionQueue()
+        cast("InferenceModel", model),
+        execution=SyncExecution(request_threshold=0.0),
+        action_queue=ChunkedActionQueue(),
+        observation_history=model.manifest.model.observation_history,
     )
     try:
         source.connect(bus=_CallbackBus([]), session_id="deferred-skips")
@@ -242,7 +251,12 @@ def test_worker_stacks_request_selection_only_after_intervening_updates(
         else RTCExecution(chunk_size=4, execution_horizon=2, queue_threshold=4)
     )
     queue = ChunkedActionQueue() if mode == "async" else RTCActionQueue()
-    source = PolicySource(cast("InferenceModel", model), execution=execution, action_queue=queue)
+    source = PolicySource(
+        cast("InferenceModel", model),
+        execution=execution,
+        action_queue=queue,
+        observation_history=model.manifest.model.observation_history,
+    )
     frame = _frame(0)
     try:
         source.connect(bus=_CallbackBus([]), session_id=f"deferred-{mode}")

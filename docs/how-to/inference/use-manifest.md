@@ -27,8 +27,8 @@ print(manifest.model.artifacts)
 
 ## Enable observation history
 
-Opt in to image and state windows collected by `PolicySource` in `manifest.json`
-(shown as YAML):
+Declare image and state windows for `PolicySource` in `manifest.json`, along with
+an explicit history formatter before policy preprocessing (shown as YAML):
 
 ```yaml
 version: "1.1"
@@ -36,11 +36,23 @@ model:
   observation_history:
     n_obs_steps: 3
     stride: 2
-    preprocessor: { type: stack_observation_history } # Optional; this is the default.
+  preprocessors:
+    - type: stack_observation_history
+    # Policy preprocessing follows.
 ```
 
-`PolicySource` automatically consumes this typed config. Without it, behavior is
-unchanged; the existing `model.n_obs_steps` metadata does not activate history.
+Pass the config explicitly to `PolicySource`; it does not discover history from
+`model.manifest`:
+
+```python
+source = PolicySource(
+    model,
+    observation_history=model.manifest.model.observation_history,
+)
+```
+
+Without an `observation_history` argument (or with `None`), behavior is unchanged;
+the existing `model.n_obs_steps` metadata does not activate history.
 `SinglePass` is unchanged. Standalone `InferenceModel.select_action` and
 `predict_action_chunk` do not collect this history: callers must supply complete
 windows themselves.
@@ -56,7 +68,7 @@ reject fields they do not recognize.
   nominal: history does not resample by timestamp.
 - Windows run oldest to newest, repeating the first frame for missing startup
   history. `PolicySource.reset()` clears history even with `reset_model=False`.
-- By default, images and state are stacked at inference time before policy preprocessing.
+- With `stack_observation_history`, images and state are stacked at inference time before policy preprocessing.
   Image axis order is preserved:
   `(B, H, W, C)` becomes `(B, T, H, W, C)`, and `(B, C, H, W)` becomes
   `(B, T, C, H, W)`. State changes from `(B, D)` to `(B, T, D)` using the
@@ -69,40 +81,32 @@ reject fields they do not recognize.
 
 ### Stacking and compatibility
 
-`observation_history.preprocessor` is an optional `ComponentSpec` or `null`,
-defaulting to `{type: stack_observation_history}`. `InferenceModel` prepends the
-declared formatter before the regular preprocessor list, including an explicitly
-supplied list. A formatter can use a registered `type` or `class_path` with
-`init_args`. Do not also declare the same formatter in the regular list.
+`ObservationHistorySpec` contains only `n_obs_steps` and `stride`, with no
+`preprocessor` field. `InferenceModel` does not automatically insert a history
+formatter. User/Studio exports must put `type: stack_observation_history`
+explicitly in the normal `model.preprocessors` list before policy processing,
+as above, or choose a custom formatter there. A formatter can use a registered
+`type` or `class_path` with `init_args`. An explicitly supplied `preprocessors`
+list must likewise include the required formatter.
 
-To leave history formatting to the remaining pipeline:
-
-```yaml
-model:
-  observation_history:
-    n_obs_steps: 3
-    preprocessor: null
-```
-
-`null` disables only the automatic formatter, not history collection or temporal
-sampling. The remaining pipeline receives the full selected history as raw fixed
-tuples and is responsible for formatting it. Omitting `observation_history` (or
-setting that whole field to `null`) disables history and leaves preprocessing
-unchanged.
+History collection and temporal sampling are independent of formatting. The
+pipeline receives the full selected history as raw fixed tuples and is responsible
+for formatting it. Omitting the manifest's `observation_history` (or setting it
+to `null`) provides no history config to pass to `PolicySource`.
 
 Deferred inputs contain fixed tuples of owned, read-only image/state frames, not
 the live history buffer. Executors pass these tuples through unchanged; the
-default formatter stacks them along axis `1` into the same `B,T,...` arrays described
+`stack_observation_history` formatter stacks them along axis `1` into the same `B,T,...` arrays described
 above. Task inputs are unchanged. Incoming frames still need copying on every
 update because camera buffers may be reused. No new threads are added: normal
 async/RTC inference stacks in the existing workers, while sync stacks in the
 control thread only when inference runs; warmup follows its execution strategy.
 
 `on_predict_start` callbacks run **before** preprocessors and therefore see tuples
-with history enabled, even when the formatter is `null`. Direct inference callers can still
+with history enabled. Direct inference callers can still
 supply complete array windows, which `StackObservationHistory` passes through
 unchanged. Remote serialization does not currently support these tuple frames;
-setting the formatter to `null` does not fix that limitation.
+changing the formatter does not fix that limitation.
 
 ## Declare inference callbacks
 

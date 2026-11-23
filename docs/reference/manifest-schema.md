@@ -59,7 +59,7 @@ Fields:
 | Field                 | Type                             | Description                                                           |
 | --------------------- | -------------------------------- | --------------------------------------------------------------------- |
 | `n_obs_steps`         | integer                          | Expected observation count (metadata only; does not activate history) |
-| `observation_history` | `ObservationHistorySpec` or null | Opt-in image/state history for `PolicySource`                         |
+| `observation_history` | `ObservationHistorySpec` or null | Image/state history config to pass explicitly to `PolicySource`       |
 | `artifacts`           | mapping                          | Logical artifact name to file path                                    |
 | `runner`              | `ComponentSpec`                  | Inference runner                                                      |
 | `preprocessors`       | list[`ComponentSpec`]            | Preprocessing pipeline                                                |
@@ -74,33 +74,35 @@ model:
   observation_history:
     n_obs_steps: 3
     stride: 2
-    preprocessor: { type: stack_observation_history } # Optional; this is the default.
+  preprocessors:
+    - type: stack_observation_history
+    # Policy preprocessing follows.
 ```
 
-`ObservationHistorySpec` requires a positive integer `n_obs_steps`; `stride` is
-a positive integer defaulting to `1`. Omitting `observation_history` or setting it
-to `null` leaves history disabled. `PolicySource` automatically consumes this typed config;
+`ObservationHistorySpec` has only two fields: a required positive integer
+`n_obs_steps` and a positive integer `stride` defaulting to `1`. It has no
+`preprocessor` field. `PolicySource` does not discover this config from the
+manifest; pass it explicitly as
+`observation_history=model.manifest.model.observation_history`. Omitting that
+argument or passing `None` leaves history disabled. Omitting the manifest field
+or setting it to `null` provides no history config.
 `SinglePass` is unchanged. The separate `model.n_obs_steps` remains metadata only.
 Images and state share the temporal window; task inputs remain non-temporal.
 History requires version `1.1` or greater. New manifests default to `1.1`;
 existing `1.0` manifests without history retain their previous behavior.
 
-`ObservationHistorySpec.preprocessor` is an optional `ComponentSpec` or `null`,
-defaulting to `{type: stack_observation_history}`. `InferenceModel` prepends the
-declared formatter before the regular preprocessor list, including an explicitly
-supplied list. It accepts a registered `type` or `class_path` with `init_args`.
-Do not also declare the same formatter in the regular list.
+`InferenceModel` does not automatically insert a history formatter. User/Studio
+exports must put `type: stack_observation_history` explicitly in the normal
+`model.preprocessors` list before policy processing, or choose a custom formatter
+there. It accepts a registered `type` or `class_path` with `init_args`. An explicitly
+supplied `preprocessors` list must likewise format the full selected history
+received as raw fixed tuples. Without history, the preprocessing pipeline is unchanged.
 
-Set `preprocessor: null` to disable only the automatic formatter. Collection and
-temporal sampling continue: the remaining pipeline receives the full selected
-history as raw fixed tuples and must format it. Without history, the preprocessing
-pipeline is unchanged.
-
-The default formatter stacks fixed tuples of owned, read-only image/state frames into
+`stack_observation_history` stacks fixed tuples of owned, read-only image/state frames into
 `B,T,...` arrays along axis `1`; complete arrays and task inputs pass through
 unchanged. `on_predict_start` callbacks run first and must be tuple-compatible;
 do not add another history-stacking callback. Remote serialization does not
-currently support these tuple frames; `preprocessor: null` does not fix this.
+currently support these tuple frames; changing the formatter does not fix this.
 See [usage and compatibility limits](../how-to/inference/use-manifest.md#enable-observation-history).
 
 ## Hardware

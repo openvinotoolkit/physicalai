@@ -37,7 +37,7 @@ class RecordingModel:
     resets: int = 0
 
     def predict_action_chunk(self, observation: dict[str, Any]) -> np.ndarray:
-        # Materialize at model entry, as the default inference formatter does.
+        # Materialize at model entry, as an explicitly configured stacker does.
         self.calls.append(StackObservationHistory()(observation))
         return np.full((self.chunk_size, 2), len(self.calls), dtype=np.float32)
 
@@ -58,6 +58,7 @@ def make_source() -> Iterator[Callable[..., tuple[PolicySource, RecordingModel]]
             cast("InferenceModel", model),
             execution=SyncExecution(request_threshold=0.0),
             action_queue=ChunkedActionQueue(),
+            observation_history=history,
         )
         source.connect(bus=_CallbackBus([]), session_id="history-test")
         sources.append(source)
@@ -100,11 +101,11 @@ class TemporalChannelsFirst(Preprocessor):
         return {**inputs, IMAGES: images.transpose(0, 1, 4, 2, 3)}
 
 
-@pytest.mark.parametrize("explicit_stacker", [False, True], ids=["automatic", "explicit"])
-def test_manifest_loaded_history_reaches_adapter_through_single_pass(tmp_path: Path, explicit_stacker: bool) -> None:
-    preprocessors = [{"class_path": f"{__name__}.TemporalChannelsFirst"}]
-    if explicit_stacker:
-        preprocessors.insert(0, {"type": "stack_observation_history"})
+def test_manifest_loaded_history_reaches_adapter_through_single_pass(tmp_path: Path) -> None:
+    preprocessors = [
+        {"type": "stack_observation_history"},
+        {"class_path": f"{__name__}.TemporalChannelsFirst"},
+    ]
     manifest = {
         "policy": {"name": "history"},
         "model": {
@@ -143,10 +144,15 @@ def test_manifest_loaded_history_reaches_adapter_through_single_pass(tmp_path: P
         assert model.manifest.model.n_obs_steps == 7
         assert model.manifest.model.observation_history == ObservationHistorySpec(n_obs_steps=3, stride=2)
         assert isinstance(model.runner, SinglePass)
-        assert len(model.preprocessors) == 2 + int(explicit_stacker)
+        assert len(model.preprocessors) == 2
         assert isinstance(model.preprocessors[-1], TemporalChannelsFirst)
         assert isinstance(model.preprocessors[0], StackObservationHistory)
-        source = PolicySource(model, execution=SyncExecution(request_threshold=0.0), action_queue=ChunkedActionQueue())
+        source = PolicySource(
+            model,
+            execution=SyncExecution(request_threshold=0.0),
+            action_queue=ChunkedActionQueue(),
+            observation_history=model.manifest.model.observation_history,
+        )
         try:
             source.connect(bus=_CallbackBus([]), session_id="manifest-history")
             for value in range(len(windows)):
@@ -178,7 +184,12 @@ def test_async_worker_snapshot_is_detached_while_delivered_history_advances(stri
         Manifest(model=ModelSpec(observation_history=ObservationHistorySpec(n_obs_steps=3, stride=stride)))
     )
     execution = AsyncExecution(request_threshold=1.0)
-    source = PolicySource(cast("InferenceModel", model), execution=execution, action_queue=ChunkedActionQueue())
+    source = PolicySource(
+        cast("InferenceModel", model),
+        execution=execution,
+        action_queue=ChunkedActionQueue(),
+        observation_history=model.manifest.model.observation_history,
+    )
     frame = _frame(0)
     try:
         source.connect(bus=_CallbackBus([]), session_id="async-history")

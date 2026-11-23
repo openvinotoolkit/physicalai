@@ -46,6 +46,7 @@ class PolicySource(ActionSource):
         action_queue: ActionQueue | None = None,
         *,
         task: str | None = None,
+        observation_history: ObservationHistorySpec | None = None,
     ) -> None:
         """Initialize a policy-backed action source.
 
@@ -54,6 +55,7 @@ class PolicySource(ActionSource):
             execution: Inference scheduling strategy.
             action_queue: Queue of predicted actions.
             task: Current task instruction.
+            observation_history: Image/state history sampling settings, or None for single observations.
         """
         self._model = model
         self._execution = execution or SyncExecution()
@@ -67,8 +69,11 @@ class PolicySource(ActionSource):
         self._session_id: str = ""
         self._connected = False
         self._state_lock = threading.RLock()
-        history = getattr(getattr(getattr(model, "manifest", None), "model", None), "observation_history", None)
-        self._history = ObservationHistory(history) if isinstance(history, ObservationHistorySpec) else None
+        self._history = (
+            ObservationHistory(ObservationHistorySpec.model_validate(observation_history))
+            if observation_history is not None
+            else None
+        )
 
     def set_task(self, task: str | None) -> None:
         """Update the task string used for the *next* inference request."""

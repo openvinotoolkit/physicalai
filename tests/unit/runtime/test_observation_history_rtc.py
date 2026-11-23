@@ -42,7 +42,7 @@ class _RTCModel:
     resets: int = 0
 
     def __call__(self, inputs: dict[str, Any]) -> dict[str, np.ndarray]:
-        # Materialize at model entry, as the default inference formatter does.
+        # Materialize at model entry, as an explicitly configured stacker does.
         self.calls.append(StackObservationHistory()(inputs))
         call = len(self.calls)
         if call in (2, 3):
@@ -63,7 +63,12 @@ def rtc_source(
         Manifest(model=ModelSpec(observation_history=ObservationHistorySpec(n_obs_steps=3, stride=request.param)))
     )
     execution = RTCExecution(chunk_size=4, execution_horizon=2, queue_threshold=4, fps=30.0)
-    source = PolicySource(cast("InferenceModel", model), execution=execution, action_queue=RTCActionQueue())
+    source = PolicySource(
+        cast("InferenceModel", model),
+        execution=execution,
+        action_queue=RTCActionQueue(),
+        observation_history=model.manifest.model.observation_history,
+    )
     try:
         source.connect(bus=_CallbackBus([]), session_id="rtc-history")
         yield source, model, execution

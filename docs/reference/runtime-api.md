@@ -112,6 +112,7 @@ PolicySource(
     action_queue: ActionQueue | None = None,
     *,
     task: str | None = None,
+    observation_history: ObservationHistorySpec | None = None,
 )
 
 source.reset(*, reset_model: bool = True) -> None
@@ -126,15 +127,18 @@ TeleopSource(
 
 Omitted `execution` defaults to `SyncExecution`. Omitted `action_queue` defaults to a `ChunkedActionQueue`.
 
-With `model.observation_history` declared, `PolicySource` collects history and
-delivers fixed tuples of owned, read-only image/state frames. `InferenceModel`
-prepends the declared history `preprocessor` before the regular list; it defaults
-to `{type: stack_observation_history}`. A registered `type` or `class_path` with
-`init_args` can select another formatter. `preprocessor: null` disables only that
-automatic formatter, not collection or temporal sampling; the remaining pipeline
-must format the full selected history. `on_predict_start` callbacks still see
-tuples before preprocessing; do not add another history-stacking callback. Remote
-serialization does not support these tuples, and `null` does not fix that limitation.
+With an explicit `observation_history` argument, `PolicySource` collects history and
+delivers fixed tuples of owned, read-only image/state frames. It does not discover
+history from `model.manifest`; pass
+`observation_history=model.manifest.model.observation_history` to use that config.
+`ObservationHistorySpec` contains only `n_obs_steps` and `stride`. `InferenceModel`
+does not automatically insert a history formatter. User/Studio exports must put
+`type: stack_observation_history` explicitly in `model.preprocessors` before policy
+processing, or choose a custom formatter there to format the full selected history.
+A registered `type` or `class_path` with `init_args` can select another formatter.
+`on_predict_start` callbacks still see tuples before preprocessing; do not add
+another history-stacking callback. Remote serialization does not support these
+tuples; changing the formatter does not fix that limitation.
 Without history, behavior is unchanged. See
 [observation history](../how-to/inference/use-manifest.md#enable-observation-history).
 
