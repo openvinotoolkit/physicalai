@@ -169,8 +169,8 @@ Robots implement a Protocol-based interface. Any class with `connect()`, `discon
 
 More robots ship as first-party plugins. Each plugin README covers setup and usage. Install them with the `plugin-*` extras (see [Installation](#installation)); the LeRobot plugin is installed manually with `pip install physicalai-lerobot-plugin`.
 
-| Plugin                                                        | Robots                                                                                                               |
-| ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Plugin                                                              | Robots                                                                                                               |
+| ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | [MuJoCo](plugins/robots/physicalai-mujoco-plugin/README.md)         | Simulated single-arm and bimanual SO-101 and other MuJoCo Menagerie robots, with a browser viewer and camera streams |
 | [SO-101](plugins/robots/physicalai-so101-plugin/README.md)          | Single-arm and bimanual SO-101 drivers, Studio catalog, and URDF assets                                              |
 | [reBot B601](plugins/robots/physicalai-rebot-b601-plugin/README.md) | Seeed reBot B601-DM / B601-RS followers                                                                              |
