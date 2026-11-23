@@ -23,7 +23,7 @@ from physicalai.inference.constants import (
     RTC_MAX_GUIDANCE_WEIGHT,
     STATE,
 )
-from physicalai.inference.manifest import Manifest, ModelSpec, ObservationHistorySpec
+from physicalai.inference.manifest import Manifest, ObservationHistorySpec
 from physicalai.inference.model import InferenceModel
 from physicalai.inference.preprocessors.observation_history import StackObservationHistory
 from physicalai.runtime import PolicySource, RTCActionQueue, RTCExecution
@@ -60,14 +60,14 @@ def rtc_source(
 ) -> Iterator[tuple[PolicySource, _RTCModel, RTCExecution]]:
     monkeypatch.setattr(rtc, "_WARMUP_TIMEOUT_S", 5.0)
     model = _RTCModel(
-        Manifest(model=ModelSpec(observation_history=ObservationHistorySpec(n_obs_steps=3, stride=request.param)))
+        Manifest(observation_history=ObservationHistorySpec(n_obs_steps=3, stride=request.param))
     )
     execution = RTCExecution(chunk_size=4, execution_horizon=2, queue_threshold=4, fps=30.0)
     source = PolicySource(
         cast("InferenceModel", model),
         execution=execution,
         action_queue=RTCActionQueue(),
-        observation_history=model.manifest.model.observation_history,
+        observation_history=model.manifest.observation_history,
     )
     try:
         source.connect(bus=_CallbackBus([]), session_id="rtc-history")
@@ -140,7 +140,7 @@ def test_rtc_snapshot_is_detached_while_updates_continue_history(
     # fresh observation; history must still include the intervening updates.
     _update(source, frame, 7)
     assert model.entered[1].wait(timeout=5.0)
-    history = model.manifest.model.observation_history
+    history = model.manifest.observation_history
     assert history is not None
     stride = history.stride
     _assert_window(model.calls[2], [5, 6, 7] if stride == 1 else [3, 5, 7])

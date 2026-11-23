@@ -778,7 +778,7 @@ class TestPipelineWiring:
         manifest = json.loads(manifest_path.read_text())
         manifest["version"] = "1.1"
         if has_history:
-            manifest["model"]["observation_history"] = {"n_obs_steps": 2}
+            manifest["observation_history"] = {"n_obs_steps": 2}
         manifest_types = (_AddKeyPreprocessor,) if override_processors else processor_types
         manifest["model"]["preprocessors"] = [
             {"class_path": f"{processor_type.__module__}.{processor_type.__name__}"}
@@ -831,7 +831,7 @@ class TestPipelineWiring:
         manifest_path = export_dir / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
         manifest["version"] = "1.1"
-        manifest["model"]["observation_history"] = {
+        manifest["observation_history"] = {
             "n_obs_steps": 3,
             "stride": 2,
         }

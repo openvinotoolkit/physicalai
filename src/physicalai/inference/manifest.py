@@ -21,6 +21,7 @@ from __future__ import annotations
 import inspect
 import json
 import re
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -274,7 +275,6 @@ class ModelSpec(BaseModel):
 
     Attributes:
         n_obs_steps: Number of observation steps the model expects.
-        observation_history: Opt-in image/state windowing by runtime PolicySource.
         runner: Runner component specification.
         artifacts: Mapping of logical name → filename,
             e.g. ``{"model": "model.onnx"}``.
@@ -290,7 +290,6 @@ class ModelSpec(BaseModel):
 
     model_config = ConfigDict(frozen=True)
     n_obs_steps: int = 1
-    observation_history: ObservationHistorySpec | None = None
     runner: ComponentSpec | None = None
     artifacts: dict[str, str] = Field(default_factory=dict)
     preprocessors: list[ComponentSpec] = Field(default_factory=list)
@@ -335,6 +334,7 @@ class Manifest(BaseModel):
         policy: Policy identity (name, source).
         model: Inference model specification (runner, artifacts,
             preprocessors, postprocessors).
+        observation_history: Opt-in image/state windowing by runtime PolicySource.
         hardware: Hardware descriptors (robots, cameras).
         metadata: Package metadata (creation info).
 
@@ -345,6 +345,7 @@ class Manifest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="allow")
     format: str = MANIFEST_FORMAT
     version: str = MANIFEST_VERSION
+    observation_history: ObservationHistorySpec | None = None
     policy: PolicySpec = Field(default_factory=PolicySpec)
     model: ModelSpec = Field(default_factory=ModelSpec)
     hardware: HardwareSpec = Field(default_factory=HardwareSpec)
@@ -352,12 +353,12 @@ class Manifest(BaseModel):
 
     @model_validator(mode="after")
     def _history_requires_version_1_1(self) -> Manifest:
-        if self.model.observation_history is not None and (
+        if self.observation_history is not None and (
             re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)*", self.version) is None
             or tuple(int(part) for part in self.version.split(".")) < (1, 1)
         ):
             msg = "Observation history requires manifest version 1.1 or greater (numeric major.minor version)"
-            raise ValueError(msg)
+            warnings.warn(msg, UserWarning, stacklevel=2)
         return self
 
     @classmethod

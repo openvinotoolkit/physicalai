@@ -127,20 +127,7 @@ TeleopSource(
 
 Omitted `execution` defaults to `SyncExecution`. Omitted `action_queue` defaults to a `ChunkedActionQueue`.
 
-With an explicit `observation_history` argument, `PolicySource` collects history and
-delivers fixed tuples of owned, read-only image/state frames. It does not discover
-history from `model.manifest`; pass
-`observation_history=model.manifest.model.observation_history` to use that config.
-`ObservationHistorySpec` contains only `n_obs_steps` and `stride`. `InferenceModel`
-does not automatically insert a history formatter. User/Studio exports must put
-`type: stack_observation_history` explicitly in `model.preprocessors` before policy
-processing, or choose a custom formatter there to format the full selected history.
-A registered `type` or `class_path` with `init_args` can select another formatter.
-`on_predict_start` callbacks still see tuples before preprocessing; do not add
-another history-stacking callback. Remote serialization does not support these
-tuples; changing the formatter does not fix that limitation.
-Without history, behavior is unchanged. See
-[observation history](../how-to/inference/use-manifest.md#enable-observation-history).
+See [observation history](manifest-schema.md#observation-history) for optional collection settings.
 
 `reset()` starts a fresh policy episode without stopping the execution worker. It discards queued, pending, and in-flight actions, clears the last action, and resets model state by default. If inference is already running, reset waits for that model call to finish before resetting model state, while rejecting its stale result. Model or execution reset errors propagate to the caller. Pass `reset_model=False` only when model state should continue across the episode boundary. Custom execution strategies must implement `Execution.reset()` before they can support this operation.
 

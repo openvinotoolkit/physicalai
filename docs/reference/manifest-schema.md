@@ -14,13 +14,14 @@ hardware: {}
 
 Fields:
 
-| Field      | Type   | Description                               |
-| ---------- | ------ | ----------------------------------------- |
-| `format`   | string | Manifest format, usually `policy_package` |
-| `version`  | string | Manifest schema version                   |
-| `policy`   | object | Policy identity and source metadata       |
-| `model`    | object | Artifacts and inference pipeline          |
-| `hardware` | object | Expected robot and camera metadata        |
+| Field                 | Type           | Description                               |
+| --------------------- | -------------- | ----------------------------------------- |
+| `format`              | string         | Manifest format, usually `policy_package` |
+| `version`             | string         | Manifest schema version                   |
+| `observation_history` | object or null | Optional observation collection settings  |
+| `policy`              | object         | Policy identity and source metadata       |
+| `model`               | object         | Artifacts and inference pipeline          |
+| `hardware`            | object         | Expected robot and camera metadata        |
 
 ## Policy
 
@@ -56,54 +57,29 @@ model:
 
 Fields:
 
-| Field                 | Type                             | Description                                                           |
-| --------------------- | -------------------------------- | --------------------------------------------------------------------- |
-| `n_obs_steps`         | integer                          | Expected observation count (metadata only; does not activate history) |
-| `observation_history` | `ObservationHistorySpec` or null | Image/state history config to pass explicitly to `PolicySource`       |
-| `artifacts`           | mapping                          | Logical artifact name to file path                                    |
-| `runner`              | `ComponentSpec`                  | Inference runner                                                      |
-| `preprocessors`       | list[`ComponentSpec`]            | Preprocessing pipeline                                                |
-| `postprocessors`      | list[`ComponentSpec`]            | Postprocessing pipeline                                               |
-| `callbacks`           | list[`ComponentSpec`]            | Inference lifecycle callbacks                                         |
+| Field            | Type                  | Description                                                           |
+| ---------------- | --------------------- | --------------------------------------------------------------------- |
+| `n_obs_steps`    | integer               | Expected observation count (metadata only; does not activate history) |
+| `artifacts`      | mapping               | Logical artifact name to file path                                    |
+| `runner`         | `ComponentSpec`       | Inference runner                                                      |
+| `preprocessors`  | list[`ComponentSpec`] | Preprocessing pipeline                                                |
+| `postprocessors` | list[`ComponentSpec`] | Postprocessing pipeline                                               |
+| `callbacks`      | list[`ComponentSpec`] | Inference lifecycle callbacks                                         |
 
-### Observation History
+## Observation History
 
 ```yaml
 version: "1.1"
+observation_history:
+  n_obs_steps: 3
+  stride: 2
 model:
-  observation_history:
-    n_obs_steps: 3
-    stride: 2
   preprocessors:
     - type: stack_observation_history
-    # Policy preprocessing follows.
 ```
 
-`ObservationHistorySpec` has only two fields: a required positive integer
-`n_obs_steps` and a positive integer `stride` defaulting to `1`. It has no
-`preprocessor` field. `PolicySource` does not discover this config from the
-manifest; pass it explicitly as
-`observation_history=model.manifest.model.observation_history`. Omitting that
-argument or passing `None` leaves history disabled. Omitting the manifest field
-or setting it to `null` provides no history config.
-`SinglePass` is unchanged. The separate `model.n_obs_steps` remains metadata only.
-Images and state share the temporal window; task inputs remain non-temporal.
-History requires version `1.1` or greater. New manifests default to `1.1`;
-existing `1.0` manifests without history retain their previous behavior.
-
-`InferenceModel` does not automatically insert a history formatter. User/Studio
-exports must put `type: stack_observation_history` explicitly in the normal
-`model.preprocessors` list before policy processing, or choose a custom formatter
-there. It accepts a registered `type` or `class_path` with `init_args`. An explicitly
-supplied `preprocessors` list must likewise format the full selected history
-received as raw fixed tuples. Without history, the preprocessing pipeline is unchanged.
-
-`stack_observation_history` stacks fixed tuples of owned, read-only image/state frames into
-`B,T,...` arrays along axis `1`; complete arrays and task inputs pass through
-unchanged. `on_predict_start` callbacks run first and must be tuple-compatible;
-do not add another history-stacking callback. Remote serialization does not
-currently support these tuple frames; changing the formatter does not fix this.
-See [usage and compatibility limits](../how-to/inference/use-manifest.md#enable-observation-history).
+For manifest version 1.1+, pass `observation_history=model.manifest.observation_history` explicitly to `PolicySource`; omission disables collection.
+Declare the history formatter before policy preprocessing; callbacks must accept frame tuples, and remote inference does not support them.
 
 ## Hardware
 

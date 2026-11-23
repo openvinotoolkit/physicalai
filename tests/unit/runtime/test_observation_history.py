@@ -53,7 +53,7 @@ def make_source() -> Iterator[Callable[..., tuple[PolicySource, RecordingModel]]
         n_obs_steps: int | None = 3, *, stride: int = 1, chunk_size: int = 1
     ) -> tuple[PolicySource, RecordingModel]:
         history = None if n_obs_steps is None else ObservationHistorySpec(n_obs_steps=n_obs_steps, stride=stride)
-        model = RecordingModel(Manifest(model=ModelSpec(n_obs_steps=7, observation_history=history)), chunk_size)
+        model = RecordingModel(Manifest(model=ModelSpec(n_obs_steps=7), observation_history=history), chunk_size)
         source = PolicySource(
             cast("InferenceModel", model),
             execution=SyncExecution(request_threshold=0.0),
@@ -108,10 +108,10 @@ def test_manifest_loaded_history_reaches_adapter_through_single_pass(tmp_path: P
     ]
     manifest = {
         "policy": {"name": "history"},
+        "observation_history": {"n_obs_steps": 3, "stride": 2},
         "model": {
             "artifacts": {"onnx": "history.onnx"},
             "n_obs_steps": 7,
-            "observation_history": {"n_obs_steps": 3, "stride": 2},
             "runner": {"type": "single_pass"},
             "preprocessors": preprocessors,
         },
@@ -142,7 +142,7 @@ def test_manifest_loaded_history_reaches_adapter_through_single_pass(tmp_path: P
         get_adapter.assert_called_once_with("onnx", device="cpu")
         adapter.load.assert_called_once_with(artifact)
         assert model.manifest.model.n_obs_steps == 7
-        assert model.manifest.model.observation_history == ObservationHistorySpec(n_obs_steps=3, stride=2)
+        assert model.manifest.observation_history == ObservationHistorySpec(n_obs_steps=3, stride=2)
         assert isinstance(model.runner, SinglePass)
         assert len(model.preprocessors) == 2
         assert isinstance(model.preprocessors[-1], TemporalChannelsFirst)
@@ -151,7 +151,7 @@ def test_manifest_loaded_history_reaches_adapter_through_single_pass(tmp_path: P
             model,
             execution=SyncExecution(request_threshold=0.0),
             action_queue=ChunkedActionQueue(),
-            observation_history=model.manifest.model.observation_history,
+            observation_history=model.manifest.observation_history,
         )
         try:
             source.connect(bus=_CallbackBus([]), session_id="manifest-history")
@@ -181,14 +181,14 @@ def test_async_worker_snapshot_is_detached_while_delivered_history_advances(stri
             return actions
 
     model = BlockingModel(
-        Manifest(model=ModelSpec(observation_history=ObservationHistorySpec(n_obs_steps=3, stride=stride)))
+        Manifest(observation_history=ObservationHistorySpec(n_obs_steps=3, stride=stride))
     )
     execution = AsyncExecution(request_threshold=1.0)
     source = PolicySource(
         cast("InferenceModel", model),
         execution=execution,
         action_queue=ChunkedActionQueue(),
-        observation_history=model.manifest.model.observation_history,
+        observation_history=model.manifest.observation_history,
     )
     frame = _frame(0)
     try:

@@ -78,8 +78,8 @@ def test_deferred_window_is_fixed_readonly_owned_selection_without_stacking(stri
 def test_explicit_history_defers_regardless_of_preprocessors(processors: str) -> None:
     model = RecordingModel(
         Manifest(
+            observation_history=ObservationHistorySpec(n_obs_steps=3),
             model=ModelSpec(
-                observation_history=ObservationHistorySpec(n_obs_steps=3),
                 preprocessors=[ComponentSpec(type="stack_observation_history")],
             )
         )
@@ -92,7 +92,7 @@ def test_explicit_history_defers_regardless_of_preprocessors(processors: str) ->
             "mock": MagicMock(),
             "spec-only": [ComponentSpec(type="stack_observation_history")],
         }[processors]
-    source = PolicySource(cast("InferenceModel", model), observation_history=model.manifest.model.observation_history)
+    source = PolicySource(cast("InferenceModel", model), observation_history=model.manifest.observation_history)
     inputs = source.to_model_input(_observation(5), {"top": _frame(5)})
     assert isinstance(inputs[IMAGES], tuple)
     assert isinstance(inputs[STATE], tuple)
@@ -139,7 +139,7 @@ def test_explicit_history_supplies_full_tuples_without_inspecting_model() -> Non
 
 def test_omitted_history_supplies_single_frame_arrays_even_with_manifest_history() -> None:
     model = RecordingModel(
-        Manifest(model=ModelSpec(n_obs_steps=7, observation_history=ObservationHistorySpec(n_obs_steps=3)))
+        Manifest(model=ModelSpec(n_obs_steps=7), observation_history=ObservationHistorySpec(n_obs_steps=3))
     )
     source = PolicySource(cast("InferenceModel", model), task="current task")
     frame = _frame(5)
@@ -181,14 +181,14 @@ def test_deferred_queue_skips_and_invalid_updates_never_stack(stride: int, expec
             return super().predict_action_chunk(materialized[-1])
 
     model = DeferredModel(
-        Manifest(model=ModelSpec(observation_history=ObservationHistorySpec(n_obs_steps=3, stride=stride))),
+        Manifest(observation_history=ObservationHistorySpec(n_obs_steps=3, stride=stride)),
         chunk_size=3,
     )
     source = PolicySource(
         cast("InferenceModel", model),
         execution=SyncExecution(request_threshold=0.0),
         action_queue=ChunkedActionQueue(),
-        observation_history=model.manifest.model.observation_history,
+        observation_history=model.manifest.observation_history,
     )
     try:
         source.connect(bus=_CallbackBus([]), session_id="deferred-skips")
@@ -242,7 +242,7 @@ def test_worker_stacks_request_selection_only_after_intervening_updates(
             return self(inputs)[ACTION][0]
 
     model = BlockingModel(
-        Manifest(model=ModelSpec(observation_history=ObservationHistorySpec(n_obs_steps=3, stride=stride))),
+        Manifest(observation_history=ObservationHistorySpec(n_obs_steps=3, stride=stride)),
         chunk_size=4,
     )
     execution = (
@@ -255,7 +255,7 @@ def test_worker_stacks_request_selection_only_after_intervening_updates(
         cast("InferenceModel", model),
         execution=execution,
         action_queue=queue,
-        observation_history=model.manifest.model.observation_history,
+        observation_history=model.manifest.observation_history,
     )
     frame = _frame(0)
     try:

@@ -240,7 +240,7 @@ class TestInstantiateComponent:
 
     def test_instantiate_rejects_invalid_flat_params(self) -> None:
         spec = ComponentSpec.model_validate({"type": "single_pass", "": ""})
-        with pytest.raises(TypeError, match='Empty nested key'):
+        with pytest.raises(TypeError, match="Empty nested key"):
             instantiate_component(spec)
 
     def test_instantiate_normalize_with_inline_list_stats(self) -> None:
@@ -321,38 +321,47 @@ class TestInstantiateComponent:
 
 
 class TestObservationHistorySpec:
-    def test_loading_history_from_1_0_export_fails(self, tmp_path: Path) -> None:
+    def test_loading_history_from_1_0_export_warns(self, tmp_path: Path) -> None:
         path = tmp_path / "manifest.json"
-        path.write_text(json.dumps({
-            "version": "1.0",
-            "model": {"observation_history": {"n_obs_steps": 2}},
-        }))
-        with pytest.raises(ValidationError, match="requires manifest version 1.1 or greater"):
-            Manifest.load(path)
+        path.write_text(
+            json.dumps({
+                "version": "1.0",
+                "observation_history": {"n_obs_steps": 2},
+            })
+        )
+        with pytest.warns(UserWarning, match="requires manifest version 1.1 or greater"):
+            manifest = Manifest.load(path)
+        assert manifest.observation_history == ObservationHistorySpec(n_obs_steps=2)
 
     @pytest.mark.parametrize("version", ["1.1", "1.1.0", "1.2", "1.10", "2.0"])
-    def test_supported_manifest_versions(self, version: str) -> None:
+    def test_supported_manifest_versions(self, version: str, recwarn: pytest.WarningsRecorder) -> None:
         manifest = Manifest.model_validate({
             "version": version,
-            "model": {"observation_history": {"n_obs_steps": 2}},
+            "observation_history": {"n_obs_steps": 2},
         })
         assert manifest.version == version
+        assert not recwarn
 
     @pytest.mark.parametrize("version", ["0.9", "1.0", "1.0.99", "1", "1.x", "1.1rc1", "", "-1.2"])
-    def test_history_requires_version_1_1(self, version: str) -> None:
-        with pytest.raises(ValidationError, match="requires manifest version 1.1 or greater"):
-            Manifest.model_validate({
+    def test_history_warns_without_version_1_1(self, version: str) -> None:
+        with pytest.warns(UserWarning, match="requires manifest version 1.1 or greater"):
+            manifest = Manifest.model_validate({
                 "version": version,
-                "model": {"observation_history": {"n_obs_steps": 2}},
+                "observation_history": {"n_obs_steps": 2},
             })
+        assert manifest.version == version
+        assert manifest.observation_history == ObservationHistorySpec(n_obs_steps=2)
 
     @pytest.mark.parametrize("history", [None, "omitted"])
     @pytest.mark.parametrize("version", ["1.0", "legacy-version"])
-    def test_no_history_preserves_legacy_version_handling(self, version: str, history: str | None) -> None:
-        model = {} if history == "omitted" else {"observation_history": history}
-        manifest = Manifest.model_validate({"version": version, "model": model})
+    def test_no_history_preserves_legacy_version_handling(
+        self, version: str, history: str | None, recwarn: pytest.WarningsRecorder
+    ) -> None:
+        data = {} if history == "omitted" else {"observation_history": history}
+        manifest = Manifest.model_validate({"version": version, **data})
         assert manifest.version == version
-        assert manifest.model.observation_history is None
+        assert manifest.observation_history is None
+        assert not recwarn
 
     def test_stride_defaults_to_one(self) -> None:
         assert ObservationHistorySpec(n_obs_steps=3).stride == 1
@@ -370,8 +379,8 @@ class TestObservationHistorySpec:
     @pytest.mark.parametrize("value", [0, -1, True, False, 1.0, 1.5, "2", None])
     def test_requires_strict_positive_integers(self, field: str, value: Any) -> None:
         with pytest.raises(ValidationError) as exc_info:
-            Manifest.model_validate({"model": {"observation_history": {"n_obs_steps": 2, field: value}}})
-        assert exc_info.value.errors()[0]["loc"] == ("model", "observation_history", field)
+            Manifest.model_validate({"observation_history": {"n_obs_steps": 2, field: value}})
+        assert exc_info.value.errors()[0]["loc"] == ("observation_history", field)
 
     def test_requires_n_obs_steps(self) -> None:
         with pytest.raises(ValidationError, match="n_obs_steps"):
@@ -380,7 +389,7 @@ class TestObservationHistorySpec:
     def test_rejects_unknown_config_fields(self) -> None:
         with pytest.raises(ValidationError, match="extra_forbidden"):
             Manifest.model_validate({
-                "model": {"observation_history": {"n_obs_steps": 2, "strde": 3}},
+                "observation_history": {"n_obs_steps": 2, "strde": 3},
             })
 
     @pytest.mark.parametrize(
@@ -392,10 +401,7 @@ class TestObservationHistorySpec:
         ],
     )
     def test_manifest_roundtrip(self, tmp_path: Path, history: dict[str, Any] | None) -> None:
-        model: dict[str, Any] = {"n_obs_steps": 7}
-        if history is not None:
-            model["observation_history"] = history
-        original = Manifest.model_validate({"model": model})
+        original = Manifest.model_validate({"model": {"n_obs_steps": 7}, "observation_history": history})
         path = tmp_path / "manifest.json"
 
         original.save(path)
@@ -404,24 +410,39 @@ class TestObservationHistorySpec:
         assert loaded == original
         assert loaded.model.n_obs_steps == 7
         data = json.loads(path.read_text())
+        assert data["version"] == "1.1"
+        assert "observation_history" not in data["model"]
         if history is None:
-            assert loaded.model.observation_history is None
-            assert "observation_history" not in data["model"]
+            assert loaded.observation_history is None
+            assert "observation_history" not in data
         else:
-            assert loaded.model.observation_history == ObservationHistorySpec.model_validate(history)
-            assert data["model"]["observation_history"] == history
+            assert loaded.observation_history == ObservationHistorySpec.model_validate(history)
+            assert data["observation_history"] == history
+
+    @pytest.mark.parametrize("history", [None, "omitted"])
+    def test_default_history_is_omitted_from_serialization(self, tmp_path: Path, history: str | None) -> None:
+        data = {} if history == "omitted" else {"observation_history": history}
+        manifest = Manifest.model_validate(data)
+        assert manifest.observation_history is None
+        assert "observation_history" not in manifest.model_dump(exclude_defaults=True)
+        path = tmp_path / "manifest.json"
+        manifest.save(path)
+        assert "observation_history" not in json.loads(path.read_text())
 
 
 class TestModelSpec:
     def test_defaults(self) -> None:
         spec = ModelSpec()
         assert spec.n_obs_steps == 1
-        assert spec.observation_history is None
+        assert "observation_history" not in ModelSpec.model_fields
         assert spec.runner is None
         assert spec.artifacts == {}
         assert spec.preprocessors == []
         assert spec.postprocessors == []
         assert spec.callbacks == []
+
+    def test_unrelated_unknown_fields_remain_ignored(self) -> None:
+        assert ModelSpec.model_validate({"custom_field": "value"}) == ModelSpec()
 
     def test_from_dict_full(self) -> None:
         spec = ModelSpec.model_validate({
@@ -908,6 +929,5 @@ class TestResolveArtifact:
         artifact_path = Path(resolved.flat_params["artifact"])
         sibling_bin = artifact_path.with_suffix(".bin")
         assert sibling_bin.exists(), (
-            f"Expected {sibling_bin} to exist next to the artifact, "
-            f"but artifact resolved to {artifact_path}"
+            f"Expected {sibling_bin} to exist next to the artifact, but artifact resolved to {artifact_path}"
         )
