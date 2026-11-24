@@ -171,6 +171,21 @@ For a Git checkout with patches, when the last patch series pins the resulting G
 
 A bundled project's `uv.lock` must be current with its `pyproject.toml` (`uv sync --locked`); a stale lock fails preparation. A Git project's lock is installed as is (`uv sync --frozen`): it cannot be fixed without pinning another commit, and checking it reads every locked package, including other platforms' path wheels that a checkout may hold only as Git LFS pointers.
 
+### 4.4 Cache listing and removal
+
+Applications share one cache (`PHYSICALAI_ISOLATE_CACHE`, by default `~/.cache/physicalai/isolate`), so each records its own metadata as **labels** when it prepares an environment:
+
+```python
+prepared = prepare(env, labels={"framework": "lerobot", "accelerator": "cuda"})
+for entry in list_prepared():                                # complete entries, with their labels
+    if entry.labels.get("framework") == "lerobot" and entry.key not in current_keys:
+        remove_prepared(entry)
+```
+
+Labels are string metadata, not identity: they do not change the cache key or equality, and preparing again with new labels replaces them without rebuilding. Preparing without labels keeps the recorded ones, so an application that reuses another's environment does not erase its labels. An application lists only entries carrying its own labels and never removes anything else.
+
+`list_prepared` skips entries that are still being prepared or were interrupted. `remove_prepared` takes the same per-key lock as preparation, so it never removes an environment mid-build, but it does not stop sessions already running from it.
+
 ## 5. Declaring where code comes from
 
 Integrations declare environments; the shared service materializes them. Declarations live with the integrating package (policy metadata, or a plugin `environments` module).
