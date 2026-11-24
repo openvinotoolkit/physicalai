@@ -33,6 +33,20 @@ if TYPE_CHECKING:
 
 _MARKER = ".physicalai-isolate.json"
 _MARKER_VERSION = 1
+# Host uv settings that contradict the sync command or change the environment outside its cache key.
+_UV_OVERRIDES = frozenset({
+    "UV_DEV",
+    "UV_FROZEN",
+    "UV_LOCKED",
+    "UV_NO_DEFAULT_GROUPS",
+    "UV_NO_DEV",
+    "UV_NO_EDITABLE",
+    "UV_NO_INSTALL_LOCAL",
+    "UV_NO_INSTALL_PROJECT",
+    "UV_NO_SOURCES",
+    "UV_PYTHON",
+    "VIRTUAL_ENV",
+})
 
 
 @dataclass(frozen=True)
@@ -101,10 +115,11 @@ class UvProvider:
         Raises:
             ValueError: If the cache path is invalid.
         """
+        # The configured cache root may be a symbolic link; entries inside it may not.
         cache_root = _cache_root(self.cache_dir)
         cache_root.mkdir(parents=True, exist_ok=True)
-        if cache_root.is_symlink() or not cache_root.is_dir():
-            msg = f"Environment cache must be a directory, not a symbolic link: {cache_root}."
+        if not cache_root.is_dir():
+            msg = f"Environment cache must be a directory: {cache_root}."
             raise ValueError(msg)
 
         key = environment.key()
@@ -183,10 +198,11 @@ def _build_environment(
         msg = "The environment source changed while it was being prepared."
         raise RuntimeError(msg)
 
-    command = _sync_command(
-        uv, project, environment.profile, offline=offline, verify_lock=environment.source.verify_lock
-    )
-    child_env = {**os.environ, "UV_PROJECT_ENVIRONMENT": str(root / "venv")}
+    # Duck-typed sources only need identity(), materialize(), and provenance().
+    verify_lock = getattr(environment.source, "verify_lock", False) is True
+    command = _sync_command(uv, project, environment.profile, offline=offline, verify_lock=verify_lock)
+    child_env = {key: value for key, value in os.environ.items() if key.upper() not in _UV_OVERRIDES}
+    child_env["UV_PROJECT_ENVIRONMENT"] = str(root / "venv")
     subprocess.run(  # noqa: S603  # nosec B603  # ruff: ignore[noqa-comments] - fixed uv subcommand, no shell.
         command,
         cwd=project,

@@ -8,6 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -236,3 +237,85 @@ def test_prepare_refuses_to_run_without_file_locking(monkeypatch: pytest.MonkeyP
 
     with pytest.raises(RuntimeError, match="file locking"):
         prepare(environment, provider=UvProvider(cache_dir=tmp_path / "cache", uv=sys.executable))
+
+
+def _recording_uv(records: list[tuple[list[str], dict[str, str]]]) -> Any:
+    def fake_uv(command: list[str], *, cwd: Path, env: dict[str, str], check: bool, shell: bool) -> None:
+        del cwd, check, shell
+        records.append((command, env))
+        python = Path(env["UV_PROJECT_ENVIRONMENT"]) / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        python.parent.mkdir(parents=True, exist_ok=True)
+        python.write_bytes(b"prepared interpreter")
+
+    return fake_uv
+
+
+def test_prepare_ignores_host_uv_settings_that_change_the_sync(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    for name in ("UV_FROZEN", "UV_LOCKED", "UV_NO_DEFAULT_GROUPS", "UV_NO_SOURCES"):
+        monkeypatch.setenv(name, "1")
+    monkeypatch.setenv("UV_PYTHON", "3.10")
+    monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "host-venv"))
+    monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "uv-cache"))
+    records: list[tuple[list[str], dict[str, str]]] = []
+    monkeypatch.setattr("physicalai.isolate._environment.subprocess.run", _recording_uv(records))
+    environment = Environment(source=BundledProject(_bundled_project(tmp_path / "project")))
+
+    prepare(environment, provider=UvProvider(cache_dir=tmp_path / "cache", uv=sys.executable))
+
+    [(_, env)] = records
+    removed = {"UV_FROZEN", "UV_LOCKED", "UV_NO_DEFAULT_GROUPS", "UV_NO_SOURCES", "UV_PYTHON", "VIRTUAL_ENV"}
+    assert removed.isdisjoint(env)
+    assert env["UV_CACHE_DIR"] == str(tmp_path / "uv-cache")
+
+
+@dataclass(frozen=True)
+class _DuckTypedProject:
+    """A source that provides only the methods Environment requires."""
+
+    path: Path
+
+    def identity(self) -> dict[str, str]:
+        return {"kind": "duck", "path": str(self.path)}
+
+    def provenance(self) -> dict[str, str]:
+        return self.identity()
+
+    def materialize(self, destination: Path, *, offline: bool = False) -> None:
+        del offline
+        shutil.copytree(self.path, destination)
+
+
+def test_prepare_installs_the_lock_as_is_for_sources_without_a_lock_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    records: list[tuple[list[str], dict[str, str]]] = []
+    monkeypatch.setattr("physicalai.isolate._environment.subprocess.run", _recording_uv(records))
+    environment = Environment(source=_DuckTypedProject(_bundled_project(tmp_path / "project")))  # type: ignore[arg-type]
+
+    prepare(environment, provider=UvProvider(cache_dir=tmp_path / "cache", uv=sys.executable))
+
+    [(command, _)] = records
+    assert command[2] == "--frozen"
+
+
+def test_prepare_accepts_a_cache_directory_behind_a_symbolic_link(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "disk" / "cache"
+    target.mkdir(parents=True)
+    link = tmp_path / "cache"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks are unavailable")
+    monkeypatch.setattr("physicalai.isolate._environment.subprocess.run", _recording_uv([]))
+    environment = Environment(source=BundledProject(_bundled_project(tmp_path / "project")))
+
+    prepared = prepare(environment, provider=UvProvider(cache_dir=link, uv=sys.executable))
+
+    assert prepared.path.parent == target.resolve()
