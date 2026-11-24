@@ -183,6 +183,14 @@ def render_report(report: Report, *, tree: bool = False, ansi: bool = False) -> 
         lines.extend("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip() for row in rows)
     if not devices and selected is None:
         lines.append("No USB camera/serial endpoints found. Check collection limitations and device connections.")
+    memory = inventory.usbfs_memory_mb
+    limit = "unavailable" if memory is None else "unlimited (0)" if memory == 0 else f"{memory} MB"
+    lines.extend([
+        "",
+        f"Host USB transfer memory: usbcore.usbfs_memory_mb = {limit} (system-wide)",
+        "  Applies to usbfs/libusb transfers, not USB bandwidth; camera backend use is unknown.",
+        "  Troubleshooting: https://github.com/openvinotoolkit/physicalai/blob/main/docs/how-to/cli/doctor.md#usb-transfer-memory",
+    ])
     if report.findings:
         lines.extend(["", "Connection notes"])
         for finding in report.findings:

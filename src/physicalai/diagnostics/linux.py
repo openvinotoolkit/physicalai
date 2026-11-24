@@ -78,6 +78,7 @@ class LinuxCollector:
     def collect(self) -> Inventory:
         """Return a snapshot; report collection failures rather than hiding them."""
         inventory = Inventory()
+        self._usbfs_memory(inventory)
         try:
             devices = self._usb_devices(inventory)
         except OSError as exc:
@@ -111,6 +112,18 @@ class LinuxCollector:
                 except OSError as exc:
                     inventory.errors.append(f"{entry.name}: {exc}")
         return inventory
+
+    def _usbfs_memory(self, inventory: Inventory) -> None:
+        path = self.sysfs / "module/usbcore/parameters/usbfs_memory_mb"
+        try:
+            value = int(path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError) as exc:
+            inventory.notes.append(f"usbfs transfer-memory limit unavailable ({path}): {exc}")
+            return
+        if value < 0:
+            inventory.notes.append(f"usbfs transfer-memory limit unavailable ({path}): expected a nonnegative integer.")
+            return
+        inventory.usbfs_memory_mb = value
 
     def _usb_devices(self, inventory: Inventory) -> dict[Path, Device]:
         devices: dict[Path, Device] = {}

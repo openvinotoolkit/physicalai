@@ -79,6 +79,50 @@ def test_groups_endpoints_with_physical_usb_devices(collector: LinuxCollector) -
     assert {call.args[0].name for call in collector.video_role.call_args_list} == {"video0", "video1"}
 
 
+@pytest.mark.parametrize("value", [0, 16, 256, 1024])
+def test_usbfs_memory_is_collected_without_changing_setting(collector: LinuxCollector, value: int) -> None:
+    path = collector.sysfs / "module/usbcore/parameters/usbfs_memory_mb"
+    write(path, f"{value}\n")
+    inventory = collector.collect()
+    assert inventory.usbfs_memory_mb == value
+    assert path.read_text() == f"{value}\n"
+    assert not inventory.errors and not inventory.notes
+
+
+@pytest.mark.parametrize("value", ["", "-1", "nan", "16 MB", "1.5"])
+def test_invalid_usbfs_memory_is_a_limitation_not_an_error(collector: LinuxCollector, value: str) -> None:
+    write(collector.sysfs / "module/usbcore/parameters/usbfs_memory_mb", value)
+    inventory = collector.collect()
+    assert inventory.usbfs_memory_mb is None
+    assert any("usbfs transfer-memory limit unavailable" in note for note in inventory.notes)
+    assert not inventory.errors
+    assert inventory.resolve(str(collector.dev / "video0"))[1] is not None
+
+
+def test_missing_usbfs_memory_is_a_limitation_not_an_error(collector: LinuxCollector) -> None:
+    inventory = collector.collect()
+    assert inventory.usbfs_memory_mb is None
+    assert any("usbfs transfer-memory limit unavailable" in note for note in inventory.notes)
+    assert not inventory.errors
+
+
+def test_unreadable_usbfs_memory_is_a_limitation_not_an_error(
+    collector: LinuxCollector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    read_text = Path.read_text
+
+    def denied(path: Path, encoding: str | None = None, errors: str | None = None) -> str:
+        if path.name == "usbfs_memory_mb":
+            raise PermissionError("parameter denied")
+        return read_text(path, encoding=encoding, errors=errors)
+
+    monkeypatch.setattr(Path, "read_text", denied)
+    inventory = collector.collect()
+    assert inventory.usbfs_memory_mb is None
+    assert any("parameter denied" in note for note in inventory.notes)
+    assert not inventory.errors
+
+
 def test_serial_enumeration_does_not_open_ports(collector: LinuxCollector, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(os, "open", Mock(side_effect=AssertionError("No device opens allowed")))
     device, endpoint = collector.collect().resolve(str(collector.dev / "ttyACM0"))

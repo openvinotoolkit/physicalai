@@ -166,6 +166,14 @@ def test_pure_checks_do_not_mutate_evidence(inventory: Inventory) -> None:
     assert inventory == previous
 
 
+@pytest.mark.parametrize("memory", [None, 0, 16, 256])
+def test_usbfs_memory_does_not_infer_a_problem(inventory: Inventory, memory: int | None) -> None:
+    expected = assess(inventory)
+    inventory.usbfs_memory_mb = memory
+    assert assess(inventory) == expected
+    assert not Report(inventory, expected).has_errors
+
+
 def test_cycles_do_not_hang_ancestry_or_checks(inventory: Inventory) -> None:
     inventory.devices[2].parent_id = "1-1.1"
     assert len(inventory.ancestors(inventory.devices[4])) == 2
@@ -193,22 +201,33 @@ def test_public_api_returns_typed_data_without_printing(
 def test_selected_api_retains_topology_but_limits_findings(
     inventory: Inventory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    inventory.usbfs_memory_mb = 16
     inventory.devices[-1].endpoints = [Endpoint("/dev/ttyUSB9", "serial")]
     monkeypatch.setattr(api, "collect_inventory", lambda: inventory)
     report = diagnose("/dev/video0")
     assert report.selected_device_id == "1-1.1.1"
     assert report.selected_endpoint == "/dev/video0"
     assert report.inventory is inventory
+    assert report.inventory.usbfs_memory_mb == 16
     assert all("1-1.1.1" in f.devices for f in report.findings)
     assert not report.has_errors
     assert diagnose("/dev/ttyUSB9").has_errors
 
 
-def test_report_can_be_a_pydantic_or_fastapi_response(inventory: Inventory) -> None:
+@pytest.mark.parametrize("memory", [None, 0, 16, 256])
+def test_report_can_be_a_pydantic_or_fastapi_response(inventory: Inventory, memory: int | None) -> None:
+    inventory.usbfs_memory_mb = memory
     report = Report(inventory, assess(inventory))
     adapter = TypeAdapter(Report)
     assert adapter.validate_python(report.to_dict()).to_dict() == report.to_dict()
     assert adapter.json_schema()["title"] == "Report"
+
+
+def test_reports_without_usbfs_memory_remain_readable(inventory: Inventory) -> None:
+    document = json.loads(json.dumps(Report(inventory, []).to_dict()))
+    del document["inventory"]["usbfs_memory_mb"]
+    report = TypeAdapter(Report).validate_python(document)
+    assert report.inventory.usbfs_memory_mb is None
 
 
 def test_serialized_report_is_detached_from_evidence(inventory: Inventory) -> None:

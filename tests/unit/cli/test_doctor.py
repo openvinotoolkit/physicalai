@@ -48,9 +48,22 @@ def test_json_is_the_unstyled_api_document(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    report.inventory.usbfs_memory_mb = 256
     monkeypatch.setattr(diagnostics, "diagnose", lambda selector: report)
     assert main(["doctor", "--json"]) == 0
     assert json.loads(capsys.readouterr().out) == report.to_dict()
+
+
+@pytest.mark.parametrize("memory", [None, 0, 16, 256])
+def test_usbfs_memory_is_informational(
+    report: Report, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], memory: int | None
+) -> None:
+    report.inventory.usbfs_memory_mb = memory
+    monkeypatch.setattr(diagnostics, "diagnose", lambda selector: report)
+    assert main(["doctor", "--no-ansi"]) == 0
+    output = capsys.readouterr().out
+    assert "usbcore.usbfs_memory_mb" in output
+    assert "WARNING" not in output and "ERROR" not in output
 
 
 def test_warning_is_success_but_access_error_fails(report: Report, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -44,6 +44,77 @@ try separate upstream connections and repeat the same workload.
 Doctor reports signaling rates only. It does not estimate available bandwidth or
 measure frame rate, payload throughput, or USB utilization.
 
+## USB transfer memory
+
+Doctor also shows `usbcore.usbfs_memory_mb`, Linux's **system-wide memory ceiling
+for outstanding usbfs transfers**, read from
+`/sys/module/usbcore/parameters/usbfs_memory_mb`. This is a host setting shared by
+usbfs users, not a per-camera allowance, memory-usage measurement, or USB bandwidth
+limit. Increasing it does not reserve that amount of memory immediately. A value
+of `0` means unlimited; `unavailable` means doctor could not read a valid value.
+An unavailable value is a collection limitation, not a failing exit status.
+
+This setting matters for camera SDKs that stream through **usbfs/libusb**. It does
+not govern video buffers managed by a native kernel V4L2 driver. For example,
+RealSense's RSUSB backend uses userspace USB transfers; its native Linux V4L2
+video backend uses kernel-managed transfers. Using `pyrealsense2` alone does not
+identify which backend the installed librealsense build uses. Doctor does not
+detect the streaming backend, measure outstanding transfers, or determine whether
+the ceiling is sufficient, so it does not label a value such as 16 MB unhealthy.
+
+### Try a temporary increase
+
+Consider this experiment when the camera SDK reports transfer-buffer allocation
+or submission failures consistent with exhausted usbfs memory, especially with
+multiple cameras or large queued transfers. A generic frame timeout alone does
+not establish this cause. First check the negotiated link, cable, power, and
+shared upstream connections; increasing transfer memory cannot fix bandwidth
+congestion, a USB 2 fallback, or repeated disconnects.
+
+On the affected Linux host, record the current setting and, **if it is below
+256 MB and not already unlimited**, try a 256 MB ceiling:
+
+```bash
+# Save the current value in this shell before changing it.
+original_usbfs_memory_mb=$(cat /sys/module/usbcore/parameters/usbfs_memory_mb)
+echo "$original_usbfs_memory_mb"
+
+# Temporary change; requires administrator permission on the host.
+echo 256 | sudo tee /sys/module/usbcore/parameters/usbfs_memory_mb
+```
+
+Stop and restart the camera stream in Studio or Runtime, then repeat the same
+resolution, FPS, streams, and camera count. Re-run `pai doctor` to confirm the
+setting. Only the manual setting change requires administrator permission;
+do not run Studio or Runtime as root.
+
+If the change does not help, restore the original value in the same shell:
+
+```bash
+echo "$original_usbfs_memory_mb" | sudo tee /sys/module/usbcore/parameters/usbfs_memory_mb
+```
+
+The temporary setting resets at reboot. Avoid an unlimited ceiling as a general
+workaround: a finite limit bounds memory available to outstanding usbfs transfers.
+
+### Persist only a confirmed improvement
+
+On a **GRUB-based Ubuntu installation**, edit `/etc/default/grub` with administrator
+permission. Preserve existing options and append `usbcore.usbfs_memory_mb=256`
+inside the existing `GRUB_CMDLINE_LINUX_DEFAULT` quotes. If that parameter is
+already present, update it rather than adding a duplicate. Then run:
+
+```bash
+sudo update-grub
+sudo reboot
+```
+
+After reboot, verify the value with `pai doctor` or `cat` as above. To undo the
+persistent change, restore the previous parameter (or remove the one you added),
+run `sudo update-grub`, and reboot again. Other bootloaders and distributions
+require their own kernel-command-line configuration; do not assume GRUB is in use.
+Doctor never writes this setting or edits boot configuration.
+
 ## Inspect an endpoint
 
 ```bash
@@ -70,8 +141,9 @@ the device is idle or operational; doctor does not inspect process ownership.
 
 `--json` writes the same versioned report returned by the
 [Python diagnostics API](../../reference/diagnostics-api.md). It contains device
-IDs, parent relationships, endpoints, findings, and collection limitations. A selected
-device scopes findings but retains the full USB inventory as topology context.
+IDs, parent relationships, endpoints, findings, the host usbfs memory ceiling, and
+collection limitations. A selected device scopes findings but retains the full USB
+inventory as topology context and the system-wide setting.
 `--tree` affects human formatting only.
 
 Reports are **not redacted**: review serials, device names, and paths before sharing.

@@ -77,11 +77,16 @@ class Finding:
 
 @dataclass
 class Inventory:
-    """A read-only snapshot, including failures that limit its completeness."""
+    """A read-only snapshot, including failures that limit its completeness.
+
+    ``usbfs_memory_mb`` is the system-wide usbfs transfer-memory ceiling, not
+    usage or USB bandwidth. Zero means unlimited; None means unavailable.
+    """
 
     devices: list[Device] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    usbfs_memory_mb: int | None = None
 
     def ancestors(self, device: Device) -> list[Device]:
         """Return the parent-to-root route, stopping on missing or cyclic data."""

@@ -56,7 +56,7 @@ The public models are dataclasses exported from `physicalai.diagnostics`:
 | Model       | Main fields                                                                                                                                                            |
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Report`    | `schema_version` (1), `platform` (`linux`), `collected_at` (UTC), `inventory`, `findings`, `selected_device_id`, `selected_endpoint`                                   |
-| `Inventory` | `devices`, `errors` (collection failures), `notes` (limitations)                                                                                                       |
+| `Inventory` | `devices`, `errors` (collection failures), `notes` (limitations), `usbfs_memory_mb` (system-wide transfer-memory ceiling)                                              |
 | `Device`    | `id`, `name`, `kind` (`controller`, `hub`, `device`), `parent_id`, `speed_mbps`, USB vendor/product IDs, reported `serial`, `root_hub`, `video_interface`, `endpoints` |
 | `Endpoint`  | `path`, `kind` (`video`, `serial`), `role` (`capture`, `metadata`, `unknown`), `readable`, `writable`, `aliases`, `query_error`                                        |
 | `Alias`     | `path`, current `target`, `claimed` (whether udev supplied the claim)                                                                                                  |
@@ -66,6 +66,21 @@ The public models are dataclasses exported from `physicalai.diagnostics`:
 informational limitations alone do not make it true. An empty inventory does not
 establish that hardware expected by a user is absent. Collection is not an atomic
 snapshot: refresh after connection changes.
+
+`Inventory.usbfs_memory_mb` is an optional integer read from
+`/sys/module/usbcore/parameters/usbfs_memory_mb`: positive values are the system-wide
+usbfs transfer-memory ceiling in MB, `0` means unlimited, and `None` (JSON `null`)
+means unavailable. Missing, unreadable, or invalid values add an inventory note,
+not an error. This additive schema-version-1 field defaults to `None` when omitted
+and remains in selected-device reports because it applies to the host, not one
+device. Consumers should tolerate additional report fields.
+
+The value is not current memory use, a bandwidth measurement, or evidence that
+capture will fail. It applies to usbfs/libusb transfers, not native kernel V4L2
+video buffers. Assessment does not infer a problem from the value or identify the
+camera SDK's streaming backend. See
+[USB transfer memory](../how-to/cli/doctor.md#usb-transfer-memory) for conditional
+troubleshooting steps; the API never changes the setting.
 
 Finding codes are `access`, `video_endpoint_missing`, `video_role_unknown`,
 `ambiguous_identity`, and `shared_usb_link`. For shared links, `hub_id` references
