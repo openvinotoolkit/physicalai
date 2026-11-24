@@ -112,6 +112,7 @@ PolicySource(
     action_queue: ActionQueue | None = None,
     *,
     task: str | None = None,
+    observation_history: ObservationHistorySpec | None = None,
 )
 
 source.reset(*, reset_model: bool = True) -> None
@@ -125,6 +126,8 @@ TeleopSource(
 ```
 
 Omitted `execution` defaults to `SyncExecution`. Omitted `action_queue` defaults to a `ChunkedActionQueue`.
+
+See [observation history](manifest-schema.md#observation-history) for optional collection settings.
 
 `reset()` starts a fresh policy episode without stopping the execution worker. It discards queued, pending, and in-flight actions, clears the last action, and resets model state by default. If inference is already running, reset waits for that model call to finish before resetting model state, while rejecting its stale result. Model or execution reset errors propagate to the caller. Pass `reset_model=False` only when model state should continue across the episode boundary. Custom execution strategies must implement `Execution.reset()` before they can support this operation.
 
@@ -153,7 +156,7 @@ The execution implementations shipped today are listed below.
 
 `RTCExecution` requires an `RTCActionQueue`. Its `fps` argument is the action-source rate (`RobotRuntime.fps`) used to convert measured inference latency into an action delay.
 
-> **Preview:** `RemoteExecution` is a planned API and is not part of the current package release.
+Remote inference uses `RemoteInferenceModel` with `SyncExecution`, `AsyncExecution`, or `RTCExecution`. The model sends inference requests to a remote server; the selected execution strategy schedules those requests. There is no separate `RemoteExecution` class. See [Run Inference Remotely](../how-to/runtime/run-inference-remotely.md).
 
 ## `ActionQueue`
 

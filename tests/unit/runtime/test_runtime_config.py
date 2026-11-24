@@ -209,6 +209,7 @@ class TestPolicySourceConfig:
         assert wire["class_path"] == "physicalai.runtime.PolicySource"
         assert "execution" not in wire["init_args"]
         assert "action_queue" not in wire["init_args"]
+        assert "observation_history" not in wire["init_args"]
         assert wire["init_args"]["task"] == "pick cube"
         assert wire["init_args"]["model"]["class_path"] == "physicalai.inference.InferenceModel"
 
@@ -216,6 +217,17 @@ class TestPolicySourceConfig:
         assert isinstance(restored._execution, SyncExecution)  # type: ignore[attr-defined]
         assert isinstance(restored._action_queue, ChunkedActionQueue)  # type: ignore[attr-defined]
         assert isinstance(restored._action_queue._smoother, LerpSmoother)  # type: ignore[attr-defined]
+
+    def test_explicit_history_round_trip(self, inference_model: Any, _patch_adapter: MagicMock) -> None:
+        from physicalai.inference.manifest import ObservationHistorySpec
+        from physicalai.runtime import PolicySource
+
+        source = PolicySource(
+            model=inference_model,
+            observation_history=ObservationHistorySpec(n_obs_steps=3, stride=2),
+        )
+        wire = _assert_construction_round_trip(source)
+        assert wire["init_args"]["observation_history"] == {"n_obs_steps": 3, "stride": 2}
 
     def test_explicit_nested_graph(self, inference_model: Any, _patch_adapter: MagicMock) -> None:
         from physicalai.runtime import (

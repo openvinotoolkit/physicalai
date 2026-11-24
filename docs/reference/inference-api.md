@@ -86,6 +86,8 @@ observation = {
 
 The expected keys and shapes come from the exported package and its preprocessing pipeline.
 
+Direct inference requires complete observation windows; see [observation history](manifest-schema.md#observation-history) for runtime collection.
+
 ## Remote Inference
 
 ```python
