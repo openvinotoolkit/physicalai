@@ -8,7 +8,7 @@ executables. It does not import other ``physicalai`` packages.
 """
 
 from ._environment import PreparedEnvironment, Provider, UvProvider, list_prepared, prepare, remove_prepared
-from ._runner import Session, run, start
+from ._runner import ExternalInterpreter, Session, run, start
 from ._sources import (
     BundledPatches,
     BundledProject,
@@ -24,6 +24,7 @@ __all__ = [
     "BundledPatches",
     "BundledProject",
     "Environment",
+    "ExternalInterpreter",
     "GitProject",
     "PatchFile",
     "PatchSeries",

@@ -161,6 +161,8 @@ One prepared environment may back several sessions over time. `run` waits for a 
 
 **Do not** put the worker script on the Environment declaration. Plugins already use different entrypoints on the same environment (train vs export vs infer). Those paths live next to the engine or adapter and are passed at launch.
 
+`ExternalInterpreter(python)` stands in for a prepared environment in `run` and `start` when the caller manages the interpreter, such as a user's own virtual environment chosen with Studio's `--interpreter`. The session behaves the same (bootstrap, process group, lifeline, `close()`), but isolate passes the environment through unchanged, including `PYTHONPATH`, so the child imports whatever that interpreter can.
+
 ### 4.3 Identity and provenance
 
 Preparation keys the cache by everything that determines **contents**: source identity, Python version, sync extras/profiles, and related pins.
