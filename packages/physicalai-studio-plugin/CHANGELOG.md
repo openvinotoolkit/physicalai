@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-studio-plugin-v0.5.0...physicalai-studio-plugin-v0.6.0) (2026-11-19)
+
+
+### ✨ Features
+
+* **studio-plugin:** add the autopilot contract ([#472](https://github.com/openvinotoolkit/physicalai/issues/472)) ([cd997b5](https://github.com/openvinotoolkit/physicalai/commit/cd997b5379a47ad9f1c4859d17814c33e02a5608))
+
 ## [0.5.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-studio-plugin-v0.4.0...physicalai-studio-plugin-v0.5.0) (2026-10-30)
 
 

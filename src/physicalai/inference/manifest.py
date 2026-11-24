@@ -20,12 +20,17 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
+import warnings
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-MANIFEST_VERSION = "1.0"
+if TYPE_CHECKING:
+    from physicalai.config import JsonValue
+
+MANIFEST_VERSION = "1.1"
 MANIFEST_FORMAT = "policy_package"
 
 # Alias builtin ``type`` so it remains accessible inside classes that
@@ -245,6 +250,23 @@ class ComponentSpec(BaseModel):
         )
 
 
+class ObservationHistorySpec(BaseModel):
+    """Opt-in image and state history collected by PolicySource.
+
+    Attributes:
+        n_obs_steps: Observations per window, including the current observation.
+        stride: Received observation updates between selected frames.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    n_obs_steps: int = Field(ge=1, strict=True)
+    stride: int = Field(default=1, ge=1, strict=True)
+
+    def to_config_value(self) -> JsonValue:
+        """Return sampling settings for constructor config export."""
+        return {"n_obs_steps": self.n_obs_steps, "stride": self.stride}
+
+
 class ModelSpec(BaseModel):
     """Model inference specification.
 
@@ -312,6 +334,7 @@ class Manifest(BaseModel):
         policy: Policy identity (name, source).
         model: Inference model specification (runner, artifacts,
             preprocessors, postprocessors).
+        observation_history: Opt-in image/state windowing by runtime PolicySource.
         hardware: Hardware descriptors (robots, cameras).
         metadata: Package metadata (creation info).
 
@@ -322,10 +345,21 @@ class Manifest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="allow")
     format: str = MANIFEST_FORMAT
     version: str = MANIFEST_VERSION
+    observation_history: ObservationHistorySpec | None = None
     policy: PolicySpec = Field(default_factory=PolicySpec)
     model: ModelSpec = Field(default_factory=ModelSpec)
     hardware: HardwareSpec = Field(default_factory=HardwareSpec)
     metadata: MetadataSpec = Field(default_factory=MetadataSpec)
+
+    @model_validator(mode="after")
+    def _history_requires_version_1_1(self) -> Manifest:
+        if self.observation_history is not None and (
+            re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)*", self.version) is None
+            or tuple(int(part) for part in self.version.split(".")) < (1, 1)
+        ):
+            msg = "Observation history requires manifest version 1.1 or greater (numeric major.minor version)"
+            warnings.warn(msg, UserWarning, stacklevel=2)
+        return self
 
     @classmethod
     def load(cls, path: str | Path) -> Manifest:
