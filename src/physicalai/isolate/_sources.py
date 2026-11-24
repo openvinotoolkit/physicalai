@@ -17,8 +17,11 @@ from typing import TYPE_CHECKING, ClassVar
 from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
-    from importlib.resources.abc import Traversable  # nosemgrep  # Python 3.10+ only.
-    from typing import Any
+    from http.client import HTTPMessage
+
+    # nosemgrep: python.lang.compatibility.python37.python37-compatibility-importlib2 - Runtime requires Python 3.11+.
+    from importlib.resources.abc import Traversable
+    from typing import IO, Any
 
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -33,6 +36,27 @@ _GIT_IDENTITY = {
     "GIT_COMMITTER_NAME": "physicalai-isolate",
     "GIT_COMMITTER_EMAIL": "physicalai-isolate@localhost",
 }
+# Variables that point git at another repository, such as the caller's inside a git hook
+# (``git rev-parse --local-env-vars``), plus the namespace selector.
+_GIT_REPOSITORY_VARIABLES = frozenset({
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_CONFIG",
+    "GIT_DIR",
+    "GIT_GRAFT_FILE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_NAMESPACE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_PREFIX",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE",
+    "GIT_WORK_TREE",
+})
+# Caches and local environments that are not part of a bundled project's contents.
+_IGNORED_PROJECT_NAMES = frozenset({".git", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".venv", "__pycache__"})
+_IGNORED_PROJECT_SUFFIXES = (".pyc", ".pyo")
 
 
 class ProjectSource(ABC):
@@ -168,9 +192,13 @@ class BundledPatches(PatchSeries):
         """Validate tree pins and explicit patch order.
 
         Raises:
+            TypeError: If *files* is a single string.
             ValueError: If the tree pin or an explicit patch name is invalid.
         """
         _validate_tree(self.tree)
+        if isinstance(self.files, str):
+            msg = "Bundled patch files must be a sequence of file names, not a single string."
+            raise TypeError(msg)
         if self.files is not None:
             object.__setattr__(self, "files", tuple(self.files))
             for name in self.files:
@@ -423,7 +451,8 @@ def _apply(series: PatchSeries, checkout: Path) -> None:
                 "commit.gpgsign=false",
                 "am",
                 "--quiet",
-                "--whitespace=fix",
+                # Apply patches byte for byte so the result matches the reviewed tree.
+                "--whitespace=nowarn",
                 "--committer-date-is-author-date",
                 *patch_paths,
             ],
@@ -459,7 +488,15 @@ def _validate_relative_directory(directory: str) -> None:
         raise ValueError(msg)
 
 
+def _reject_unsafe_characters(url: str, kind: str) -> None:
+    # urlsplit() silently drops tabs and newlines, so check the string that is stored and passed to git.
+    if any(character.isspace() or not character.isprintable() for character in url):
+        msg = f"{kind} URLs cannot contain whitespace or control characters: {url!r}."
+        raise ValueError(msg)
+
+
 def _github_slug(repository: str) -> str:
+    _reject_unsafe_characters(repository, "Patch repository")
     try:
         parsed = urlsplit(repository)
         port = parsed.port
@@ -484,6 +521,7 @@ def _github_slug(repository: str) -> str:
 
 
 def _validate_git_repository(repository: str) -> None:
+    _reject_unsafe_characters(repository, "Git project")
     try:
         parsed = urlsplit(repository)
         port = parsed.port
@@ -527,24 +565,54 @@ def _mirror_path(mirror: Path | Traversable, name: str) -> Path | Traversable:
     return path
 
 
-def _download(url: str) -> bytes:
+def _check_download_url(url: str) -> None:
     parsed = urlsplit(url)
     if parsed.scheme != "https" or parsed.hostname != "raw.githubusercontent.com":
         msg = f"Refusing to download from an unpinned location: {url}."
         raise ValueError(msg)
+
+
+class _PinnedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse a redirect away from raw.githubusercontent.com before requesting it."""
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: HTTPMessage,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        """Return the redirected request when it stays on the pinned host.
+
+        Returns:
+            The follow-up request, or ``None`` when urllib does not follow this status.
+
+        Raises:
+            ValueError: If the redirect leaves raw.githubusercontent.com over HTTPS.
+        """
+        try:
+            _check_download_url(newurl)
+        except ValueError:
+            fp.close()
+            raise
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _download(url: str) -> bytes:
+    _check_download_url(url)
     request = urllib.request.Request(  # noqa: S310  # ruff: ignore[noqa-comments] - URL is pinned to the validated HTTPS host.
         url,
         headers={"User-Agent": "physicalai-isolate"},
     )
-    response_context = urllib.request.urlopen(  # noqa: S310  # nosec B310  # nosemgrep  # ruff: ignore[noqa-comments] - HTTPS host, redirect, and digest are checked.
+    opener = urllib.request.build_opener(_PinnedRedirectHandler)
+    # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected - pinned HTTPS host.
+    response_context = opener.open(  # Redirects are checked by the handler and the content by its digest.
         request,
         timeout=_DOWNLOAD_TIMEOUT_SECONDS,
     )
     with response_context as response:
-        final_url = urlsplit(response.geturl())
-        if final_url.scheme != "https" or final_url.hostname != "raw.githubusercontent.com":
-            msg = f"Patch download redirected outside raw.githubusercontent.com: {response.geturl()}."
-            raise ValueError(msg)
         data = response.read(_MAX_PATCH_BYTES + 1)
     if len(data) > _MAX_PATCH_BYTES:
         msg = f"Patch download exceeded the {_MAX_PATCH_BYTES}-byte limit."
@@ -564,7 +632,7 @@ def _git(
         msg = "Git project sources require the 'git' executable on PATH."
         raise RuntimeError(msg)
     child_env = {
-        **os.environ,
+        **{key: value for key, value in os.environ.items() if key.upper() not in _GIT_REPOSITORY_VARIABLES},
         **_GIT_IDENTITY,
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_NOSYSTEM": "1",
@@ -605,6 +673,8 @@ def _tree_sha256(root: Path | Traversable) -> str:
             digest.update(relative.encode("utf-8"))
             digest.update(b"\0")
             for child in sorted(path.iterdir(), key=lambda item: item.name):
+                if _ignored_project_name(child.name):
+                    continue
                 child_relative = f"{relative}/{child.name}" if relative else child.name
                 visit(child, child_relative)
             return
@@ -622,6 +692,10 @@ def _tree_sha256(root: Path | Traversable) -> str:
     return digest.hexdigest()
 
 
+def _ignored_project_name(name: str) -> bool:
+    return name in _IGNORED_PROJECT_NAMES or name.endswith(_IGNORED_PROJECT_SUFFIXES)
+
+
 def _copy_tree(source: Path | Traversable, destination: Path) -> None:
     if isinstance(source, Path) and source.is_symlink():
         msg = f"Bundled project cannot be a symbolic link: {source}."
@@ -629,6 +703,8 @@ def _copy_tree(source: Path | Traversable, destination: Path) -> None:
     if source.is_dir():
         destination.mkdir(parents=True, exist_ok=True)
         for child in source.iterdir():
+            if _ignored_project_name(child.name):
+                continue
             if not child.name or child.name in {".", ".."} or "/" in child.name or "\\" in child.name:
                 msg = f"Invalid bundled project path component {child.name!r}."
                 raise ValueError(msg)

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import shutil
 import subprocess
+import urllib.request
+from http.client import HTTPMessage
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -261,3 +265,109 @@ def test_bundled_project_identity_tracks_all_project_files(tmp_path: Path) -> No
 
     assert (copied / "worker.py").read_text(encoding="utf-8") == "VALUE = 1\n"
     assert source.identity() != identity
+
+
+def test_git_commands_ignore_the_callers_repository(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # A git hook sets these for the caller's repository; git would act on it instead of cwd.
+    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY"):
+        monkeypatch.setenv(name, str(tmp_path / "caller" / name.lower()))
+    monkeypatch.setenv("GIT_SSL_CAINFO", str(tmp_path / "ca.pem"))
+    environments: list[dict[str, str]] = []
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        environments.append(kwargs["env"])
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(_sources.subprocess, "run", fake_run)
+    monkeypatch.setattr(_sources.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    _sources._git(["status"], cwd=tmp_path)
+
+    [env] = environments
+    assert {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY"}.isdisjoint(env)
+    assert env["GIT_SSL_CAINFO"] == str(tmp_path / "ca.pem")
+
+
+def _run_git(arguments: list[str], cwd: Path) -> None:
+    git = shutil.which("git")
+    assert git is not None
+    env = {
+        key: value for key, value in os.environ.items() if key.upper() not in _sources._GIT_REPOSITORY_VARIABLES
+    }
+    env.update(_sources._GIT_IDENTITY, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+    subprocess.run([git, *arguments], cwd=cwd, env=env, check=True, capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is unavailable")
+def test_patches_apply_byte_for_byte_including_trailing_whitespace(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    _run_git(["init", "--quiet"], checkout)
+    (checkout / "model.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _run_git(["add", "model.py"], checkout)
+    _run_git(["commit", "--quiet", "-m", "base"], checkout)
+    (checkout / "model.py").write_text("VALUE = 1\nTRAILING = 2  \n", encoding="utf-8")
+    _run_git(["commit", "--quiet", "-am", "add trailing whitespace"], checkout)
+    _run_git(["format-patch", "--quiet", "-1", "-o", str(tmp_path / "patches")], checkout)
+    _run_git(["reset", "--quiet", "--hard", "HEAD~1"], checkout)
+
+    _sources._apply(BundledPatches(tmp_path / "patches"), checkout)
+
+    assert (checkout / "model.py").read_text(encoding="utf-8") == "VALUE = 1\nTRAILING = 2  \n"
+
+
+def test_bundled_patch_files_must_not_be_a_single_string(tmp_path: Path) -> None:
+    with pytest.raises(TypeError, match="single string"):
+        BundledPatches(tmp_path, files="0001-enable.patch")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("suffix", ["\n", "\t", "\r", " ", "\x00"])
+def test_repository_urls_reject_whitespace_and_control_characters(suffix: str) -> None:
+    with pytest.raises(ValueError, match="whitespace or control characters"):
+        GitProject(f"https://github.com/example/worker.git{suffix}", _REVISION)
+
+    with pytest.raises(ValueError, match="whitespace or control characters"):
+        PublishedPatches(
+            repository=f"https://github.com/example/{suffix}worker",
+            revision=_REVISION,
+            directory="patches",
+            files=(PatchFile("0001-enable.patch", "0" * 64),),
+            tree=_TREE,
+        )
+
+
+def test_patch_downloads_refuse_redirects_away_from_the_pinned_host() -> None:
+    handler = _sources._PinnedRedirectHandler()
+    request = urllib.request.Request(f"https://raw.githubusercontent.com/example/worker/{_REVISION}/a.patch")
+    body = io.BytesIO(b"")
+
+    with pytest.raises(ValueError, match="unpinned location"):
+        handler.redirect_request(request, body, 302, "Found", HTTPMessage(), "https://example.com/a.patch")
+    assert body.closed
+
+    pinned = f"https://raw.githubusercontent.com/example/worker/{_REVISION}/b.patch"
+    followed = handler.redirect_request(request, io.BytesIO(b""), 302, "Found", HTTPMessage(), pinned)
+    assert followed is not None
+    assert followed.full_url == pinned
+
+
+def test_bundled_project_skips_caches_and_local_environments(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text("[project]\nname='worker'\n", encoding="utf-8")
+    (project / "worker.py").write_text("VALUE = 1\n", encoding="utf-8")
+    source = BundledProject(project)
+    identity = source.identity()
+
+    for name in ("__pycache__", ".venv", ".git", ".pytest_cache"):
+        (project / name).mkdir()
+        (project / name / "state").write_bytes(b"local state")
+    (project / "stale.pyc").write_bytes(b"bytecode")
+    copied = tmp_path / "copy"
+    source.materialize(copied)
+
+    assert source.identity() == identity
+    assert sorted(path.name for path in copied.iterdir()) == ["pyproject.toml", "worker.py"]
