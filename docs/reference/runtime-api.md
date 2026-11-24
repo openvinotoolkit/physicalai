@@ -156,7 +156,7 @@ The execution implementations shipped today are listed below.
 
 `RTCExecution` requires an `RTCActionQueue`. Its `fps` argument is the action-source rate (`RobotRuntime.fps`) used to convert measured inference latency into an action delay.
 
-> **Preview:** `RemoteExecution` is a planned API and is not part of the current package release.
+Remote inference uses `RemoteInferenceModel` with `SyncExecution`, `AsyncExecution`, or `RTCExecution`. The model sends inference requests to a remote server; the selected execution strategy schedules those requests. There is no separate `RemoteExecution` class. See [Run Inference Remotely](../how-to/runtime/run-inference-remotely.md).
 
 ## `ActionQueue`
 
