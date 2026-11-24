@@ -13,6 +13,11 @@ sources, callbacks. Currently, nothing restricts which class a `class_path` may 
 Only load configs, exported policies, and manifests from sources you trust. See also the `class_path` note in
 [Config Schema Reference](../reference/config-schema.md#security).
 
+`--config <path>` is an explicit path selector: it may name an absolute path or a file outside the current
+directory. This is intended for a trusted operator and does not confine the file beneath a project directory.
+Automation must not populate it from untrusted input unless the automation first applies an allowlist or its
+own base-directory containment policy.
+
 ## Isolated environments are not a security sandbox
 
 `physicalai.isolate` prepares a separate Python environment and launches an entrypoint in a child process. The
@@ -22,15 +27,9 @@ operating-system privileges. The child does not inherit the host's `PYTHONPATH`,
 so settings such as `LD_LIBRARY_PATH` still affect which native libraries the child loads. Neither the
 entrypoint script's folder nor the working directory is on the child's import path; a worker that spans several
 files must be a folder with `__main__.py`, and only modules inside that folder are importable. `uv sync` can execute
-package build backends, and the launched entrypoint runs with
-the privileges of the calling `physicalai` process. Full Git commit IDs and patch digests make sources
-reproducible; they do not establish that the code is safe. Prepare and run only projects and entrypoints you
-trust.
-
-`--config <path>` is an explicit path selector: it may name an absolute path or a file outside the current
-directory. This is intended for a trusted operator and does not confine the file beneath a project directory.
-Automation must not populate it from untrusted input unless the automation first applies an allowlist or its
-own base-directory containment policy.
+package build backends, and the launched entrypoint runs with the privileges of the calling `physicalai` process.
+Full Git commit IDs and patch digests make sources reproducible; they do not establish that the code is safe.
+Prepare and run only projects and entrypoints you trust.
 
 ## Use only trusted, reviewed policies
 
