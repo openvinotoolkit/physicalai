@@ -405,22 +405,27 @@ with runtime:
 <details>
 <summary><strong>Remote Execution</strong></summary>
 
-Remote execution sends observations to an inference server and receives actions over the network. Useful for running large models on a separate GPU machine.
-
-> **Preview:** This API is not yet implemented.
+Remote inference runs the policy on a separate inference server and returns actions over Zenoh. Use `RemoteInferenceModel` with an existing execution mode such as `AsyncExecution`:
 
 ```python
-from physicalai.runtime import RobotRuntime, PolicySource, RemoteExecution
+from physicalai.inference import RemoteInferenceModel
+from physicalai.runtime import RobotRuntime, PolicySource, AsyncExecution
 
 runtime = RobotRuntime(
     fps=30,
     robot=robot,
-    action_source=PolicySource(model=model, execution=RemoteExecution(endpoint="http://gpu-server:8080/infer")),
+    action_source=PolicySource(
+        model=RemoteInferenceModel(name="cell1-act"),
+        execution=AsyncExecution(),
+    ),
     cameras=cameras,
 )
 
-runtime.run(duration_s=60)
+with runtime:
+    runtime.run(duration_s=60)
 ```
+
+See [Run Inference Remotely](docs/how-to/runtime/run-inference-remotely.md) for server setup, networking, and client configuration.
 
 </details>
 

@@ -26,6 +26,9 @@ sys.modules.setdefault("scservo_sdk", MagicMock())
 # Fixtures: mock the feetech SDK
 # ---------------------------------------------------------------------------
 
+GOAL_ADDR = 42
+TORQUE_ADDR = 40
+
 SAMPLE_CALIBRATION: dict[str, Any] = {
     "shoulder_pan": {"id": 1, "drive_mode": 0, "homing_offset": 2048, "range_min": 707, "range_max": 3439},
     "shoulder_lift": {"id": 2, "drive_mode": 1, "homing_offset": 1024, "range_min": 669, "range_max": 3292},
@@ -39,6 +42,8 @@ SAMPLE_CALIBRATION: dict[str, Any] = {
 def _make_mock_sdk() -> MagicMock:
     """Build a mock ``scservo_sdk`` module with minimal behaviour."""
     sdk = MagicMock()
+    # Record the order registers are written so ordering tests can inspect it.
+    sdk.call_order: list[tuple[Any, ...]] = []
 
     # PortHandler
     port_handler = MagicMock()
@@ -48,8 +53,13 @@ def _make_mock_sdk() -> MagicMock:
 
     # PacketHandler
     packet_handler = MagicMock()
-    packet_handler.ping.return_value = (0, 0, 0)  # model, comm_result, error
-    packet_handler.write1ByteTxRx.return_value = (0, 0)
+    packet_handler.ping.return_value = (0, 0, 0)
+
+    def _write1(_port: Any, servo_id: int, address: int, value: int) -> tuple[int, int]:
+        sdk.call_order.append(("write1", int(address), int(servo_id), int(value)))
+        return (0, 0)
+
+    packet_handler.write1ByteTxRx.side_effect = _write1
     packet_handler.write2ByteTxRx.return_value = (0, 0)
     sdk.PacketHandler.return_value = packet_handler
 
@@ -62,11 +72,28 @@ def _make_mock_sdk() -> MagicMock:
     sync_read.getData.return_value = 2048
     sdk.GroupSyncRead.return_value = sync_read
 
-    # GroupSyncWrite
-    sync_write = MagicMock()
-    sync_write.addParam.return_value = True
-    sync_write.txPacket.return_value = 0
-    sdk.GroupSyncWrite.return_value = sync_write
+    # GroupSyncWrite: one instance per register (goal position vs torque enable).
+    sync_writes: dict[int, MagicMock] = {}
+
+    def _make_sync_write(_port: Any, _packet: Any, address: int, _length: int) -> MagicMock:
+        register = int(address)
+        sync_write = MagicMock()
+
+        def _add_param(servo_id: int, data: list[int]) -> bool:
+            sdk.call_order.append(("sync_add", register, int(servo_id), tuple(data)))
+            return True
+
+        def _tx_packet() -> int:
+            sdk.call_order.append(("sync_tx", register))
+            return 0
+
+        sync_write.addParam.side_effect = _add_param
+        sync_write.txPacket.side_effect = _tx_packet
+        sync_writes[register] = sync_write
+        return sync_write
+
+    sdk.GroupSyncWrite.side_effect = _make_sync_write
+    sdk.sync_writes = sync_writes
 
     return sdk
 
@@ -262,24 +289,26 @@ class TestSO101Lifecycle:
         robot = _create_robot(mock_sdk, role="follower")
         robot.connect()
 
-        # Filter to torque writes only (address 40 = TORQUE_ENABLE)
-        calls = mock_sdk.PacketHandler.return_value.write1ByteTxRx.call_args_list
-        torque_calls = [c for c in calls if (c.args[2] if len(c.args) > 2 else c[0][2]) == 40]
-        # Last 6 torque writes should be enable (value=1), preceding 6 are disable for config
-        final_torque_values = [c.args[3] if len(c.args) > 3 else c[0][3] for c in torque_calls[-6:]]
-        assert all(v == 1 for v in final_torque_values)
+        torque = mock_sdk.sync_writes[TORQUE_ADDR]
+        values = [call.args[1][0] for call in torque.addParam.call_args_list]
+        # Servo configuration disables torque first; the final sync write enables it.
+        assert values[-6:] == [1] * 6
 
     def test_leader_disables_torque(self, mock_sdk: MagicMock) -> None:
         """Leader role disables torque on connect."""
         robot = _create_robot(mock_sdk, role="leader")
         robot.connect()
 
-        # Filter to torque writes only (address 40 = TORQUE_ENABLE)
-        calls = mock_sdk.PacketHandler.return_value.write1ByteTxRx.call_args_list
-        torque_calls = [c for c in calls if (c.args[2] if len(c.args) > 2 else c[0][2]) == 40]
-        # All torque writes should be disable (value=0) — config disables, leader keeps disabled
-        torque_values = [c.args[3] if len(c.args) > 3 else c[0][3] for c in torque_calls]
-        assert all(v == 0 for v in torque_values)
+        torque = mock_sdk.sync_writes[TORQUE_ADDR]
+        values = [call.args[1][0] for call in torque.addParam.call_args_list]
+        assert all(value == 0 for value in values)
+
+    def test_connect_clears_stale_bus_bytes(self, mock_sdk: MagicMock) -> None:
+        """Broadcast torque sync writes drain stale status bytes afterwards."""
+        robot = _create_robot(mock_sdk)
+        robot.connect()
+
+        assert mock_sdk.PortHandler.return_value.ser.reset_input_buffer.call_count >= 1
 
     def test_port_open_failure_raises(self, mock_sdk: MagicMock) -> None:
         """ConnectionError if port cannot be opened."""
@@ -334,11 +363,17 @@ class TestSO101ServoConfiguration:
         robot = _create_robot(mock_sdk, role="follower")
         robot.connect()
 
-        calls_1byte, _ = self._get_write_calls(mock_sdk)
-
-        # First 6 write1ByteTxRx calls should be torque disable (addr=40, value=0)
-        first_six = [(c.args[2], c.args[3]) for c in calls_1byte[:6]]
-        assert all(addr == 40 and val == 0 for addr, val in first_six)
+        events = mock_sdk.call_order
+        torque_index = next(
+            index
+            for index, event in enumerate(events)
+            if event[0] == "sync_add" and event[1] == TORQUE_ADDR
+        )
+        first_register_index = next(
+            index for index, event in enumerate(events) if event[0] == "write1"
+        )
+        assert torque_index < first_register_index
+        assert events[torque_index][3] == (0,)
 
     def test_operating_mode_set_to_position(self, mock_sdk: MagicMock) -> None:
         """Operating mode is set to position control (0) for all servos."""
@@ -407,6 +442,51 @@ class TestSO101Observation:
         assert state[0] == pytest.approx(-1.83, abs=0.1)
         assert state[1] == pytest.approx(5.15, abs=0.1)
 
+    def test_observation_retries_transient_comm_failure(self, mock_sdk: MagicMock) -> None:
+        """A single -6 (RX timeout) sync read is retried and the observation succeeds."""
+        from physicalai_so101_plugin import SO101
+
+        robot = SO101.uncalibrated(port="/dev/ttyUSB0")
+        robot.connect()
+        sync_read = mock_sdk.GroupSyncRead.return_value
+        sync_read.txRxPacket.reset_mock()
+        sync_read.txRxPacket.side_effect = [-6, 0]
+
+        obs = robot.get_observation()
+
+        assert obs.joint_positions.shape == (6,)
+        assert sync_read.txRxPacket.call_count == 2
+
+    def test_observation_retries_missing_servo_data(self, mock_sdk: MagicMock) -> None:
+        """A reply missing one servo's data is retried and the observation succeeds."""
+        from physicalai_so101_plugin import SO101
+
+        robot = SO101.uncalibrated(port="/dev/ttyUSB0")
+        robot.connect()
+        sync_read = mock_sdk.GroupSyncRead.return_value
+        sync_read.txRxPacket.reset_mock()
+        sync_read.isAvailable.side_effect = [False] + [True] * SO101.NUM_JOINTS
+
+        obs = robot.get_observation()
+
+        assert obs.joint_positions.shape == (6,)
+        assert sync_read.txRxPacket.call_count == 2
+
+    def test_observation_persistent_comm_failure_raises(self, mock_sdk: MagicMock) -> None:
+        """A bus that stays silent raises after SYNC_READ_ATTEMPTS sync reads."""
+        from physicalai_so101_plugin import SO101
+
+        robot = SO101.uncalibrated(port="/dev/ttyUSB0")
+        robot.connect()
+        sync_read = mock_sdk.GroupSyncRead.return_value
+        sync_read.txRxPacket.reset_mock()
+        sync_read.txRxPacket.return_value = -6
+
+        with pytest.raises(ConnectionError, match="comm result -6"):
+            robot.get_observation()
+
+        assert sync_read.txRxPacket.call_count == SO101.SYNC_READ_ATTEMPTS
+
 
 class TestSO101Action:
     """Tests for send_action()."""
@@ -415,10 +495,36 @@ class TestSO101Action:
         """Follower can send actions."""
         robot = _create_robot(mock_sdk, role="follower")
         robot.connect()
+        goal = mock_sdk.sync_writes[GOAL_ADDR]
+        torque = mock_sdk.sync_writes[TORQUE_ADDR]
+        goal.txPacket.reset_mock()
+        torque.txPacket.reset_mock()
+
         action = np.zeros(6, dtype=np.float32)
         robot.send_action(action)
 
-        mock_sdk.GroupSyncWrite.return_value.txPacket.assert_called_once()
+        # Torque is already enabled from connect(), so only the goal is written.
+        goal.txPacket.assert_called_once()
+        torque.txPacket.assert_not_called()
+
+    def test_action_enables_torque_after_writing_goal(self, mock_sdk: MagicMock) -> None:
+        robot = _create_robot(mock_sdk)
+        robot.connect()
+        for _ in range(2):
+            robot.set_torque(enabled=False)
+            goal = mock_sdk.sync_writes[GOAL_ADDR]
+            torque = mock_sdk.sync_writes[TORQUE_ADDR]
+            order: list[str] = []
+            goal.txPacket.side_effect = lambda: order.append("goal") or 0
+            torque.txPacket.side_effect = lambda: order.append("torque") or 0
+            robot.send_action(np.zeros(6, dtype=np.float32))
+            assert order[:2] == ["goal", "torque"]
+
+    def test_disconnected_action_does_not_enable_torque(self, mock_sdk: MagicMock) -> None:
+        robot = _create_robot(mock_sdk)
+        with pytest.raises(ConnectionError, match="not connected"):
+            robot.send_action(np.zeros(6, dtype=np.float32))
+        mock_sdk.GroupSyncWrite.assert_not_called()
 
     def test_send_action_leader_raises(self, mock_sdk: MagicMock) -> None:
         """Leader raises RuntimeError on send_action()."""
@@ -432,20 +538,28 @@ class TestSO101Action:
         """ValueError on wrong action shape."""
         robot = _create_robot(mock_sdk, role="follower")
         robot.connect()
+        goal = mock_sdk.sync_writes[GOAL_ADDR]
+        torque = mock_sdk.sync_writes[TORQUE_ADDR]
+        goal.txPacket.reset_mock()
+        torque.txPacket.reset_mock()
 
         with pytest.raises(ValueError, match="Expected action shape"):
             robot.send_action(np.zeros(3, dtype=np.float32))
+        goal.txPacket.assert_not_called()
+        torque.txPacket.assert_not_called()
 
     def test_send_action_calibrated_clamps(self, mock_sdk: MagicMock, calibration_obj: Any) -> None:
         """Calibrated send_action clamps to joint range limits."""
         robot = _create_robot(mock_sdk, role="follower", calibration=calibration_obj)
         robot.connect()
+        goal = mock_sdk.sync_writes[GOAL_ADDR]
+        goal.txPacket.reset_mock()
         # Sending a large normalized value should be clamped internally.
         action = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 10.0], dtype=np.float32)
         robot.send_action(action)
 
         # Just verify it didn't crash — the clamping is internal
-        mock_sdk.GroupSyncWrite.return_value.txPacket.assert_called_once()
+        goal.txPacket.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

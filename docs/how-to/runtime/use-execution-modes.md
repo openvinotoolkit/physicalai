@@ -26,6 +26,8 @@ execution = AsyncExecution(request_threshold=0.5)
 
 Use this mode when model latency should not block robot timing. `request_threshold` is the fraction of the action chunk still queued when the next inference starts. The control-loop rate stays on `RobotRuntime` as `fps`. Since inference backends typically release the GIL, thread-based execution works well for most use cases.
 
+`AsyncExecution` warns when the robot holds its last action because the next chunk arrived late. The warning suggests a `request_threshold` that avoids this, or says that inference is too slow for any threshold to help. It appears the first time this happens in a run and then every 50th time, and only when the threshold is above 0.
+
 ## Real-Time Chunking
 
 This mode runs real-time chunking on a background thread. Pair it with an `RTCActionQueue`.
@@ -53,20 +55,23 @@ action_source:
 
 Use this mode for exports that expect real-time chunking inputs.
 
-## Remote
+## Remote Inference
 
-> **Preview:** `RemoteExecution` is not yet implemented.
-
-This mode would send inference requests to a policy server. The class is not in the current package. When it lands, it belongs on `PolicySource`, under `action_source.init_args`, like the other execution modes:
+Remote inference is supported through `RemoteInferenceModel`; choose `SyncExecution`, `AsyncExecution`, or `RTCExecution` to control how requests are scheduled. There is no separate `RemoteExecution` class.
 
 ```yaml
 action_source:
   class_path: physicalai.runtime.PolicySource
   init_args:
-    execution:
-      class_path: physicalai.runtime.RemoteExecution
+    model:
+      class_path: physicalai.inference.RemoteInferenceModel
       init_args:
-        endpoint: http://robot-server:8080
+        name: cell1-act
+    execution:
+      class_path: physicalai.runtime.AsyncExecution
+      init_args:
+        request_threshold: 0.5
+    task: "pick up the red cube and place it in the blue bowl"
 ```
 
-Use this mode when the robot host should not hold policy weights or accelerator dependencies.
+See [Run Inference Remotely](run-inference-remotely.md) for server setup, networking, and configuration details.

@@ -603,6 +603,113 @@ class TestRTCExecutionObsSlot:
         finally:
             ex.stop()
 
+    def test_refill_infers_on_fresh_observation_not_one_published_during_previous_inference(self) -> None:
+        """Observations published while a chunk is in flight must not seed the next refill.
+
+        ``maybe_request()`` keeps publishing while the queue is below threshold,
+        including while the worker is inside the model. If the slot survives the
+        merge, the next refill infers on a sample that is many ticks old, and
+        the robot replays part of the old trajectory.
+        """
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+
+        chunk_size = 20
+        horizon = 5
+        tick_s = 0.01
+        inference_s = 0.035
+        lock = threading.Lock()
+        tick = 0
+        staleness: list[int] = []
+
+        def predict(inputs: dict[str, Any]) -> dict[str, np.ndarray]:
+            with lock:
+                staleness.append(tick - int(inputs["state"][0]))
+            time.sleep(inference_s)
+            return {"action": np.zeros((1, chunk_size, 3), dtype=np.float32)}
+
+        model = _rtc_model(chunk_size=chunk_size, action_dim=3)
+        model.side_effect = predict
+        queue = RTCActionQueue()
+        ex = RTCExecution(chunk_size=chunk_size, execution_horizon=horizon, fps=1 / tick_s, queue_threshold=horizon)
+        ex.start(model, queue)
+        try:
+            ex.warmup({"state": np.zeros(3, dtype=np.float32)})
+            for _ in range(150):
+                with lock:
+                    tick += 1
+                    current = tick
+                ex.maybe_request({"state": np.full(3, current, dtype=np.float32)})
+                queue.pop()
+                time.sleep(tick_s)
+        finally:
+            ex.stop()
+
+        refills = staleness[1:]
+        assert len(refills) >= 3
+        assert max(refills) <= 2, f"refills inferred on stale observations: {refills}"
+
+    def test_maybe_request_does_not_publish_after_merge_that_raced_its_threshold_check(self) -> None:
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+
+        entered = threading.Event()
+        release_model = threading.Event()
+        check_passed = threading.Event()
+        resume_publish = threading.Event()
+        merged = threading.Event()
+        model = _rtc_model(chunk_size=20, action_dim=3)
+
+        def predict(_inputs: dict[str, Any]) -> dict[str, np.ndarray]:
+            if not entered.is_set():
+                entered.set()
+                assert release_model.wait(timeout=5.0)
+            return {"action": np.zeros((1, 20, 3), dtype=np.float32)}
+
+        model.side_effect = predict
+        queue = RTCActionQueue()
+        original_below_threshold = queue.below_threshold
+        original_merge = queue.merge
+        publisher: threading.Thread | None = None
+
+        def below_threshold(threshold: int) -> bool:
+            result = original_below_threshold(threshold)
+            if threading.current_thread() is publisher and not check_passed.is_set():
+                check_passed.set()
+                assert resume_publish.wait(timeout=5.0)
+            return result
+
+        def merge(*args: Any, **kwargs: Any) -> None:
+            original_merge(*args, **kwargs)
+            merged.set()
+
+        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0, queue_threshold=5)
+        with patch.object(queue, "below_threshold", new=below_threshold), patch.object(queue, "merge", new=merge):
+            ex.start(model, queue)
+            try:
+                with ex._obs_lock:  # noqa: SLF001
+                    ex._obs_slot = ({"state": np.zeros(3, dtype=np.float32)}, ex._incarnation, None)  # noqa: SLF001
+                assert entered.wait(timeout=5.0)
+
+                publisher = threading.Thread(
+                    target=ex.maybe_request,
+                    args=({"state": np.ones(3, dtype=np.float32)},),
+                )
+                publisher.start()
+                assert check_passed.wait(timeout=5.0)
+
+                release_model.set()
+                assert merged.wait(timeout=5.0)
+                resume_publish.set()
+                publisher.join(timeout=5.0)
+                assert not publisher.is_alive()
+
+                assert queue.remaining == 20
+                with ex._obs_lock:  # noqa: SLF001
+                    assert ex._obs_slot is None  # noqa: SLF001
+            finally:
+                release_model.set()
+                resume_publish.set()
+                ex.stop()
+
     def test_reset_rearms_warmup_without_restarting_worker(self) -> None:
         from physicalai.runtime import RTCActionQueue, RTCExecution
 
@@ -949,6 +1056,163 @@ class TestRTCExecutionObsSlot:
             release.set()
             warmup_thread.join(timeout=5.0)
             stop_thread.join(timeout=5.0)
+
+
+class TestRTCWorkerDeath:
+    """An error anywhere in the RTC worker must reach the control thread.
+
+    A chunk without an ``action`` key fails while it is merged, outside the
+    model call, which is a different path from a model that raises.
+    """
+
+    def test_warmup_fails_at_once_with_the_worker_error(self) -> None:
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+        from physicalai.runtime.execution import rtc
+
+        model = _rtc_model()
+        model.return_value = {"actions": np.zeros((1, 20, 3), dtype=np.float32)}
+        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0)
+
+        with patch.object(rtc, "_WARMUP_TIMEOUT_S", 10.0):
+            ex.start(model, RTCActionQueue())
+            try:
+                started = time.monotonic()
+                with pytest.raises(WorkerDiedError, match="died during warmup") as excinfo:
+                    ex.warmup({"state": np.zeros(3, dtype=np.float32)})
+                assert time.monotonic() - started < 5.0
+                assert isinstance(excinfo.value.__cause__, KeyError)
+            finally:
+                ex.stop()
+
+    def test_maybe_request_raises_after_the_worker_dies_mid_run(self) -> None:
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+
+        model = _rtc_model()
+        queue = RTCActionQueue()
+        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0)
+        observation = {"state": np.zeros(3, dtype=np.float32)}
+        ex.start(model, queue)
+        try:
+            ex.warmup(observation)
+            model.return_value = {"actions": np.zeros((1, 20, 3), dtype=np.float32)}
+            while queue.pop() is not None:
+                pass
+
+            ex.maybe_request(observation)
+            worker = ex._thread  # noqa: SLF001
+            assert worker is not None
+            worker.join(timeout=5.0)
+
+            assert not worker.is_alive()
+            with pytest.raises(WorkerDiedError, match="'action'"):
+                ex.maybe_request(observation)
+        finally:
+            ex.stop()
+
+    def test_error_after_the_run_ended_is_not_recorded(self) -> None:
+        from physicalai.runtime import RTCExecution
+
+        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0)
+        stop_event = threading.Event()
+
+        def fail_after_stop(event: threading.Event) -> None:
+            event.set()
+            msg = "late error"
+            raise RuntimeError(msg)
+
+        with patch.object(ex, "_infer_until_stopped", side_effect=fail_after_stop):
+            ex._rtc_loop(stop_event)  # noqa: SLF001
+
+        assert ex._death_cause is None  # noqa: SLF001
+
+    def test_warmup_fails_at_once_when_the_worker_died_before_it(self) -> None:
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+        from physicalai.runtime.execution import rtc
+
+        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0)
+        cause = RuntimeError("worker failed at start")
+
+        with (
+            patch.object(ex, "_infer_until_stopped", side_effect=cause),
+            patch.object(rtc, "_WARMUP_TIMEOUT_S", 10.0),
+        ):
+            ex.start(_rtc_model(), RTCActionQueue())
+            try:
+                worker = ex._thread  # noqa: SLF001
+                assert worker is not None
+                worker.join(timeout=5.0)
+                assert not worker.is_alive()
+
+                started = time.monotonic()
+                with pytest.raises(WorkerDiedError, match="died before warmup") as excinfo:
+                    ex.warmup({"state": np.zeros(3, dtype=np.float32)})
+                assert time.monotonic() - started < 5.0
+                assert excinfo.value.__cause__ is cause
+            finally:
+                ex.stop()
+
+    def test_malformed_chunk_from_a_reset_episode_is_discarded(self) -> None:
+        from physicalai.runtime import RTCActionQueue, RTCExecution
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def stale_then_good(_inputs: object) -> dict[str, np.ndarray]:
+            if not entered.is_set():
+                entered.set()
+                release.wait(timeout=5.0)
+                return {"actions": np.zeros((1, 20, 3), dtype=np.float32)}
+            return {"action": np.zeros((1, 20, 3), dtype=np.float32)}
+
+        model = _rtc_model()
+        model.side_effect = stale_then_good
+        ex = RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0)
+        observation = {"state": np.zeros(3, dtype=np.float32)}
+        ex.start(model, RTCActionQueue())
+        try:
+            ex.maybe_request(observation)
+            assert entered.wait(timeout=5.0)
+            ex.reset(reset_model=False)
+            ex.maybe_request(observation)
+            release.set()
+
+            deadline = time.monotonic() + 5.0
+            while ex.inference_count == 0 and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+            assert ex.inference_count == 1
+            assert ex._death_cause is None  # noqa: SLF001
+        finally:
+            ex.stop()
+
+    def test_runtime_stops_when_the_worker_dies(self) -> None:
+        from types import SimpleNamespace
+
+        from physicalai.runtime import PolicySource, RobotRuntime, RTCActionQueue, RTCExecution
+
+        robot = MagicMock()
+        robot.joint_names = ["a", "b", "c"]
+        robot.get_observation.return_value = SimpleNamespace(
+            state=np.zeros(3, dtype=np.float32),
+            joint_positions=np.zeros(3, dtype=np.float32),
+            images=None,
+        )
+        model = _rtc_model()
+        model.side_effect = [
+            {"action": np.zeros((1, 20, 3), dtype=np.float32)},
+            {"actions": np.zeros((1, 20, 3), dtype=np.float32)},
+        ]
+        source = PolicySource(
+            model=model,
+            execution=RTCExecution(chunk_size=20, execution_horizon=5, fps=30.0),
+            action_queue=RTCActionQueue(),
+        )
+        runtime = RobotRuntime(robot=robot, action_source=source, fps=30)
+
+        with runtime, pytest.raises(WorkerDiedError, match="'action'"):
+            runtime.run(duration_s=10.0)
+
+        assert runtime.last_run_reason == "error"
 
 
 def _blocking_model(entered: threading.Event, release: threading.Event, rows: int = 6) -> MagicMock:

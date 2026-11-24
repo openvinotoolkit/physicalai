@@ -6,8 +6,13 @@
 The simulation publishes a leader pose on ``GET /leader`` every control tick:
 the autopilot's targets when it runs in ``leader`` mode, otherwise the arm's
 current joints (so teleoperation holds still). Physical AI Studio builds this
-class for the *MuJoCo SO-101 Virtual Leader* catalog entry and records what it
-reads as the follower's actions.
+class for the *MuJoCo Virtual Leader* catalog entry and records what it reads as
+the follower's actions. The leader takes its joint names from the simulation, so
+it leads any profile and arm layout; Studio checks they match the follower's.
+
+Physical AI Studio also builds it to record the autopilot (``studio_catalog.autopilot_leader``). Every
+sample carries the simulation's current or last autopilot episode (``episode_id`` and ``phase``), which
+the leader exposes, so Studio can tell that the targets it records belong to its episode.
 
 This module must not import MuJoCo: Studio's environment may not carry the
 simulator's version, and a leader needs only HTTP.
@@ -18,7 +23,7 @@ from __future__ import annotations
 import http.client
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -27,7 +32,6 @@ from physicalai.config import export_config
 
 if TYPE_CHECKING:
     from physicalai.capture.frame import Frame
-from physicalai_mujoco_plugin.constants import SO101_JOINT_ORDER
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 DEFAULT_HTTP_PORT = 8080
@@ -41,6 +45,10 @@ class VirtualLeaderObservation:
     timestamp: float
     sensor_data: dict[str, np.ndarray] | None = None
     images: dict[str, Frame] | None = None
+    episode_id: str | None = None
+    """The simulation's current or last autopilot episode when the sample was read; ``None`` before the first."""
+    phase: str | None = None
+    """That episode's phase (``preparing``, ``ready``, ``running`` or ``ended``)."""
 
     @property
     def state(self) -> np.ndarray:
@@ -72,10 +80,15 @@ class MuJoCoVirtualLeader:
         self.http_port = int(http_port)
         self.host = host
         self.timeout_s = float(timeout_s)
-        self.joint_names = list(SO101_JOINT_ORDER)
+        self.joint_names: list[str] = []
+        """The simulation's joint names, read on `connect`."""
         self._conn: http.client.HTTPConnection | None = None
         self._last_seq: int | None = None
         self._last: VirtualLeaderObservation | None = None
+        self.episode_id: str | None = None
+        """The autopilot episode of the last sample read (see :attr:`VirtualLeaderObservation.episode_id`)."""
+        self.phase: str | None = None
+        """Its phase."""
 
     @property
     def device_ids(self) -> tuple[str, ...]:
@@ -83,10 +96,10 @@ class MuJoCoVirtualLeader:
         return ()
 
     def connect(self) -> None:
-        """Open the connection and check the simulation publishes a single-arm leader pose.
+        """Open the connection and take the joint names the simulation publishes.
 
         Raises:
-            ConnectionError: If the simulation is unreachable or publishes another joint layout.
+            ConnectionError: If the simulation is unreachable or publishes no joint names.
         """
         self._conn = http.client.HTTPConnection(self.host, self.http_port, timeout=self.timeout_s)
         try:
@@ -95,10 +108,11 @@ class MuJoCoVirtualLeader:
             self.disconnect()
             raise
         names = payload.get("joint_names")
-        if not isinstance(names, list) or names != self.joint_names:
+        if not isinstance(names, list) or not names or not all(isinstance(name, str) for name in names):
             self.disconnect()
-            msg = f"The simulation publishes leader joints {names}, expected {self.joint_names}"
+            msg = f"The simulation publishes no leader joint names, got {names!r}"
             raise ConnectionError(msg)
+        self.joint_names = list(names)
 
     def disconnect(self) -> None:
         """Close the connection."""
@@ -107,6 +121,7 @@ class MuJoCoVirtualLeader:
         self._conn = None
         self._last_seq = None
         self._last = None
+        self.episode_id = self.phase = None
 
     def is_connected(self) -> bool:
         """Report whether `connect` succeeded and `disconnect` was not called since.
@@ -120,7 +135,8 @@ class MuJoCoVirtualLeader:
         """Return the latest leader pose.
 
         The timestamp only advances when the simulation has ticked since the
-        last read, so a frozen simulation reads as a stalled leader.
+        last read, so a frozen simulation reads as a stalled leader. The
+        autopilot episode's id and phase are those of this read.
 
         Returns:
             The pose, in the follower's joint units.
@@ -136,7 +152,12 @@ class MuJoCoVirtualLeader:
         if not isinstance(seq, int):
             msg = "Leader pose has no sequence number; is the simulation up to date?"
             raise ConnectionError(msg)
+        episode_id, phase = payload.get("episode_id"), payload.get("phase")
+        self.episode_id = episode_id if isinstance(episode_id, str) else None
+        self.phase = phase if isinstance(phase, str) else None
         if self._last is not None and seq == self._last_seq:
+            if (self._last.episode_id, self._last.phase) != (self.episode_id, self.phase):
+                self._last = replace(self._last, episode_id=self.episode_id, phase=self.phase)
             return self._last
         try:
             positions = np.asarray(payload.get("joint_positions"), dtype=np.float32)
@@ -151,6 +172,8 @@ class MuJoCoVirtualLeader:
             joint_positions=positions,
             timestamp=time.monotonic(),
             sensor_data={"autopilot": np.asarray([payload.get("mode") == "leader"], dtype=np.float32)},
+            episode_id=self.episode_id,
+            phase=self.phase,
         )
         return self._last
 

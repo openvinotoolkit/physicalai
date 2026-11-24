@@ -31,4 +31,6 @@ def get_urdf_path() -> Path:
     """
     traversal = ir.files("physicalai_rebot_b601_plugin")
     with ir.as_file(traversal) as p:
-        return p.parent.parent.joinpath("urdf")
+        source_layout = p.parent.parent.joinpath("urdf")  # <plugin>/src/<package> -> <plugin>/urdf
+        wheel_layout = p.parent.joinpath("urdf")  # site-packages/<package> -> site-packages/urdf
+        return wheel_layout if not source_layout.is_dir() and wheel_layout.is_dir() else source_layout

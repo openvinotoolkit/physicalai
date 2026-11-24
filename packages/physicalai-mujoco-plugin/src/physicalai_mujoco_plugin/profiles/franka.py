@@ -10,11 +10,15 @@ metres (0 to 0.08); ``BimanualFrankaFR3`` prefixes them ``left_`` and ``right_``
 Menagerie's FR3 has no hand. Both profiles mount the Franka Hand of Menagerie's Panda package
 (``hand.xml``; the FR3 and the Panda share it) on the FR3 flange as Menagerie's Panda does:
 0.107 m out along link 7, turned -45 deg about it. The hand's actuator then drives the finger
-tendon as the width the real hand reports.
+tendon as the width the real hand reports, and grasps like the real hand: 70 N on each finger,
+at most 0.2 m/s (:func:`~physicalai_mujoco_plugin.profiles.dataset.tune_franka_hand_fingers`).
 
 The Duo is one model, like ALOHA's, with both arms where Franka's FR3 Duo mount puts them, so it
 attaches at a single ``robot_mount`` frame and its joint-space poses match the real Duo and the
-Franka GELLO Duo one to one.
+Franka GELLO Duo one to one. The arms stand on Franka's own stand, from ``franka_description``
+(``scripts/build_franka_duo_meshes.py``): the FR3 Duo mount (``fr3_duo_mount_v0_3``) on the
+carriage of the mobile FR3 Duo's column (``franka_spine_v0_1``), which stands on the floor behind
+the mount. The column's carriage slides; the CAD leaves its height open within its 0.85 m travel.
 """
 
 # MjSpec is supplied by the MuJoCo C extension at runtime.
@@ -23,10 +27,20 @@ Franka GELLO Duo one to one.
 from __future__ import annotations
 
 import math
+from dataclasses import replace
+from functools import partial
 from typing import TYPE_CHECKING
 
 from physicalai_mujoco_plugin.profiles._types import CameraSpec, EndEffector, RobotProfile
-from physicalai_mujoco_plugin.profiles.dataset import FRANKA_PANDA_PROFILE, exclude_franka_self_collisions
+from physicalai_mujoco_plugin.profiles.dataset import (
+    FRANKA_HAND_GRASP_FORCE_N,
+    FRANKA_HAND_PEAK_FORCE_N,
+    FRANKA_PANDA_PROFILE,
+    customize_franka_panda,
+    exclude_franka_self_collisions,
+    franka_hand_stiffness,
+    tune_franka_hand_fingers,
+)
 
 if TYPE_CHECKING:
     import mujoco
@@ -35,18 +49,39 @@ FRANKA_HAND_WIDTH_M = 0.08
 """The Franka Hand's full opening width: each finger travels 0.04 m."""
 _HAND_POS = (0.0, 0.0, 0.107)
 _HAND_QUAT = (0.9238795, 0.0, 0.0, -0.3826834)  # -45 deg about link 7, as in Menagerie's panda.xml
-# Menagerie's hand actuator pulls a tendon of half the finger sum with kp 100, kv 10 and +-100 N.
-# The tendon here is the full width (twice as long), so these halve per-finger force and damping
-# back to the same values at each finger joint.
-_HAND_KP, _HAND_KV, _HAND_FORCE_N = 25.0, 2.5, 50.0
 
 # franka_description accessories/fr3_duo_mount_v0_3/kinematics.yaml (release 2.9.0): each arm base is
 # 50.18 mm either side of the mount origin, rolled outward 51.2 deg, pitched -10 deg, yawed 26.5 deg.
 FRANKA_DUO_ARM_Y = 0.05018
 FRANKA_DUO_RPY = (0.89334809, -0.17456074, 0.46334506)
 """Right arm's mount roll, pitch, yaw (rad); the left arm's roll and yaw are negated."""
-FRANKA_DUO_HEIGHT = 0.30
-"""Mount origin above the ``robot_mount`` frame (m): an estimate of the Duo's column, which the CAD leaves open."""
+FRANKA_DUO_MOUNT_X = -0.025
+"""The mount origin (between the arm bases) along x from the ``robot_mount`` frame (m): far enough
+back that the column clears a table edge 0.17 m behind the frame (bucket_sort's)."""
+DUO_MOUNTING_POINT = (-0.037, 0.0, -0.05)
+"""The mount's mounting point (its frame, the bracket's foot on the carriage) from its origin
+(``fr3_duo_mount_v0_3/kinematics.yaml``)."""
+DUO_COVER_Z = 0.068
+"""The mount's cover above its mounting point (``fr3_duo_mount.xacro``)."""
+SPINE_CARRIAGE = (0.266711, 0.0, 0.1)
+"""The column's carriage, where the mounting point sits, from the column's foot at zero travel
+(``franka_spine_v0_1/kinematics.yaml``)."""
+SPINE_MAX_TRAVEL = 0.85
+"""How far the carriage slides up (``franka_spine.xacro``)."""
+FRANKA_DUO_HEIGHT = 0.25
+"""Mount origin above the ``robot_mount`` frame (m), from the column's carriage.
+
+The carriage sits ``SPINE_CARRIAGE`` (0.10 m) plus its travel above the column's foot, and the arm
+bases 0.05 m above the carriage: 0.15 m plus the travel above the floor. On a table 0.75 m above
+the floor (bucket_sort), where the column stands on the floor behind it, the full 0.85 m travel puts
+the arm bases 0.25 m above the table top; standing on the mount's own plane the column takes 0.10 m
+of travel for the same 0.25 m, so the Duo is the same robot in every scene."""
+SPINE_TRAVEL = FRANKA_DUO_HEIGHT + DUO_MOUNTING_POINT[2] - SPINE_CARRIAGE[2]
+"""The carriage's travel with the column standing on the mount's plane (0.10 m)."""
+DUO_STAND_BODY = "duo_spine"
+"""The column's body: a scene with its floor below the mount lowers it onto the floor (``RobotProfile.stand``)."""
+DUO_STAND_RGBA = {"black": (0.05, 0.05, 0.05, 1.0), "grey": (0.42, 0.42, 0.42, 1.0), "white": (0.95, 0.95, 0.95, 1.0)}
+"""The stand's colours: the sources' black, grey (the mount's metal) and white."""
 FRANKA_DUO_HOME_DEG = {
     "left": (0.0, 0.0, 0.0, -90.0, 0.0, 90.0, -45.0),
     "right": (0.0, 0.0, 0.0, -90.0, 0.0, 90.0, 45.0),
@@ -79,8 +114,11 @@ def _load_hand() -> mujoco.MjSpec:
     return mujoco.MjSpec.from_file(str(fetch_profile(FRANKA_PANDA_PROFILE).parent / "hand.xml"))
 
 
-def attach_franka_hand(arm: mujoco.MjSpec) -> None:
-    """Mount the Franka Hand on an FR3 arm spec, with a ``gripper`` actuator in width metres."""
+def attach_franka_hand(arm: mujoco.MjSpec, grip_force_n: float = FRANKA_HAND_GRASP_FORCE_N) -> None:
+    """Mount the Franka Hand on an FR3 arm spec, with a ``gripper`` actuator in width metres.
+
+    Each finger grips with up to *grip_force_n* newtons.
+    """
     import mujoco  # noqa: PLC0415
 
     hand = _load_hand()
@@ -100,16 +138,18 @@ def attach_franka_hand(arm: mujoco.MjSpec) -> None:
     split = next(tendon for tendon in arm.tendons if tendon.name == "split")
     arm.delete(split)
     actuator = arm.add_actuator(name="gripper", target="gripper_width", trntype=mujoco.mjtTrn.mjTRN_TENDON)
-    actuator.set_to_position(kp=_HAND_KP, kv=_HAND_KV)
+    # The tendon is the full finger sum, so its force is the force on each finger.
+    actuator.set_to_position(kp=franka_hand_stiffness(grip_force_n))
     actuator.ctrlrange = [0.0, FRANKA_HAND_WIDTH_M]
-    actuator.forcerange = [-_HAND_FORCE_N, _HAND_FORCE_N]
+    actuator.forcerange = [-grip_force_n, grip_force_n]
     actuator.ctrllimited = 1
     actuator.forcelimited = 1
+    tune_franka_hand_fingers(arm, grip_force_n=grip_force_n)
 
 
-def customize_franka_fr3(spec: mujoco.MjSpec) -> None:
+def customize_franka_fr3(spec: mujoco.MjSpec, grip_force_n: float = FRANKA_HAND_GRASP_FORCE_N) -> None:
     """FR3 with the Franka Hand; Franka's home pose with the hand open."""
-    attach_franka_hand(spec)
+    attach_franka_hand(spec, grip_force_n)
     exclude_franka_self_collisions(spec, link_prefix="fr3_")
     for key in list(spec.keys):
         spec.delete(key)
@@ -117,18 +157,64 @@ def customize_franka_fr3(spec: mujoco.MjSpec) -> None:
     spec.add_key(name="home", qpos=[*home, 0.04, 0.04], ctrl=[*home, FRANKA_HAND_WIDTH_M])
 
 
-def customize_franka_duo(spec: mujoco.MjSpec) -> None:
-    """Replace the loaded FR3 with two FR3s and hands on the Duo mount, named ``left_*`` and ``right_*``."""
+def _add_stand_part(
+    spec: mujoco.MjSpec, body: mujoco.MjsBody, part: str, colours: tuple[str, ...], z: float = 0.0
+) -> None:
+    """Give *body* a stand part's visual meshes (one per colour) and its collision hull, *z* up in the body.
+
+    The meshes are the plugin's own (``urdf/franka_duo/assets``), from ``franka_description``.
+    """
+    import mujoco  # noqa: PLC0415
+
+    from physicalai_mujoco_plugin._urdf import get_urdf_path  # noqa: PLC0415
+
+    assets = get_urdf_path() / "franka_duo" / "assets"
+    for colour in colours:
+        mesh = spec.add_mesh(name=f"{part}_{colour}", file=str(assets / f"{part}_{colour}.msh"))
+        mesh.inertia = mujoco.mjtMeshInertia.mjMESH_INERTIA_SHELL
+        body.add_geom(
+            type=mujoco.mjtGeom.mjGEOM_MESH,
+            meshname=mesh.name,
+            pos=[0.0, 0.0, z],
+            rgba=list(DUO_STAND_RGBA[colour]),
+            contype=0,
+            conaffinity=0,
+            group=2,
+            density=0.0,
+        )
+    hull = spec.add_mesh(name=f"{part}_collision", file=str(assets / f"{part}_collision.msh"))
+    body.add_geom(
+        type=mujoco.mjtGeom.mjGEOM_MESH, meshname=hull.name, pos=[0.0, 0.0, z], group=3, density=0.0, rgba=[0.5] * 4
+    )
+
+
+def _add_duo_stand(spec: mujoco.MjSpec) -> None:
+    """Add the Duo's mount and the column under it, standing on the ``robot_mount`` plane."""
+    x, _, z = DUO_MOUNTING_POINT
+    mount = spec.worldbody.add_body(name="duo_mount", pos=[FRANKA_DUO_MOUNT_X + x, 0.0, FRANKA_DUO_HEIGHT + z])
+    _add_stand_part(spec, mount, "duo_mount", ("grey",))
+    _add_stand_part(spec, mount, "duo_cover", ("white",), DUO_COVER_Z)
+    foot = (FRANKA_DUO_MOUNT_X + x - SPINE_CARRIAGE[0], 0.0, 0.0)
+    _add_stand_part(
+        spec, spec.worldbody.add_body(name=DUO_STAND_BODY, pos=list(foot)), "spine", ("black", "grey", "white")
+    )
+
+
+def customize_franka_duo(spec: mujoco.MjSpec, grip_force_n: float = FRANKA_HAND_GRASP_FORCE_N) -> None:
+    """Replace the loaded FR3 with two FR3s and hands on the Duo's stand, named ``left_*`` and ``right_*``."""
     arm = spec.copy()
-    customize_franka_fr3(arm)
+    customize_franka_fr3(arm, grip_force_n)
     for element in (*spec.keys, *spec.actuators, *spec.excludes):
         spec.delete(element)
     spec.delete(spec.body("base"))
     roll, pitch, yaw = FRANKA_DUO_RPY
     for side, sign in (("left", 1.0), ("right", -1.0)):
         quat = _rpy_quat(-roll, pitch, -yaw) if side == "left" else _rpy_quat(roll, pitch, yaw)
-        frame = spec.worldbody.add_frame(pos=[0.0, sign * FRANKA_DUO_ARM_Y, FRANKA_DUO_HEIGHT], quat=quat)
+        frame = spec.worldbody.add_frame(
+            pos=[FRANKA_DUO_MOUNT_X, sign * FRANKA_DUO_ARM_Y, FRANKA_DUO_HEIGHT], quat=quat
+        )
         frame.attach_body(arm.copy().body("base"), f"{side}_", "")
+    _add_duo_stand(spec)
     qpos, ctrl = [], []
     for side in ("left", "right"):
         home = [math.radians(v) for v in FRANKA_DUO_HOME_DEG[side]]
@@ -178,22 +264,51 @@ FRANKA_DUO_PROFILE = RobotProfile(
     cameras=(_wrist_camera("left_wrist", "left_hand"), _wrist_camera("right_wrist", "right_hand")),
     customize=customize_franka_duo,
     default_scene="single_pick_place",
+    stand=DUO_STAND_BODY,
     end_effectors=(
         EndEffector(body="left_hand", pos=_HAND_TIP),
         EndEffector(body="right_hand", pos=_HAND_TIP),
     ),
-    reach=0.815,  # from the tilted mount origin; one arm alone reaches 0.855 m
+    # From the tilted mount origin, 0.25 m up on its column (measured 0.837 m; 0.829 keeps the scaled spawn
+    # arc's outer corner within 15 degrees of straight down). One arm alone reaches 0.855 m.
+    reach=0.829,
 )
+
+_FRANKA_HAND_CUSTOMIZERS = (customize_franka_fr3, customize_franka_duo, customize_franka_panda)
+
+
+def with_grip_force(profile: RobotProfile, grip_force_n: float) -> RobotProfile:
+    """Return *profile* with its Franka Hand gripping with *grip_force_n* newtons per finger.
+
+    Returns:
+        A copy of the profile whose ``customize`` builds the hand for that force.
+
+    Raises:
+        ValueError: If the force is not above 0 and at most the hand's 140 N peak, or the profile
+            has no Franka Hand.
+    """
+    if not 0.0 < grip_force_n <= FRANKA_HAND_PEAK_FORCE_N:  # also rejects NaN
+        msg = f"The grip force must be above 0 N and at most {FRANKA_HAND_PEAK_FORCE_N:g} N, got {grip_force_n!r}"
+        raise ValueError(msg)
+    if profile.customize not in _FRANKA_HAND_CUSTOMIZERS:
+        msg = f"Profile {profile.name!r} has no Franka Hand, so --grip-force does not apply to it"
+        raise ValueError(msg)
+    return replace(profile, customize=partial(profile.customize, grip_force_n=grip_force_n))
+
 
 __all__ = [
     "FRANKA_DUO_ARM_Y",
     "FRANKA_DUO_HEIGHT",
     "FRANKA_DUO_HOME_DEG",
+    "FRANKA_DUO_MOUNT_X",
     "FRANKA_DUO_PROFILE",
     "FRANKA_DUO_RPY",
     "FRANKA_FR3_PROFILE",
     "FRANKA_HAND_WIDTH_M",
+    "SPINE_MAX_TRAVEL",
+    "SPINE_TRAVEL",
     "attach_franka_hand",
     "customize_franka_duo",
     "customize_franka_fr3",
+    "with_grip_force",
 ]

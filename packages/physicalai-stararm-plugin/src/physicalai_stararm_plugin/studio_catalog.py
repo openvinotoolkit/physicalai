@@ -93,6 +93,16 @@ class StarArm102LDPayload(BaseModel):
         json_schema_extra=robot_field_ui({"advanced_configuration": True}),
     )
 
+    follower_profile: Literal["native", "b601"] = Field(  # pyrefly: ignore [no-matching-overload]
+        default="native",
+        title="Follower arm",
+        description=(
+            "The follower this leader drives. 'b601' converts the leader's joints to the reBot B601's "
+            "LeRobot-style frame and ranges (gripper -270..0); 'native' keeps Star Arm values for a "
+            "Star Arm 102-FL follower."
+        ),
+    )
+
     model_config = ConfigDict(
         json_schema_extra=robot_payload_ui(  # pyrefly: ignore [bad-argument-type]
             [
@@ -192,6 +202,16 @@ class StarArm102HDPayload(BaseModel):
         json_schema_extra=robot_field_ui({"advanced_configuration": True}),
     )
 
+    follower_profile: Literal["native", "b601"] = Field(  # pyrefly: ignore [no-matching-overload]
+        default="native",
+        title="Follower arm",
+        description=(
+            "The follower this leader drives. 'b601' converts the leader's joints to the reBot B601's "
+            "LeRobot-style frame and ranges (gripper -270..0); 'native' keeps Star Arm values for a "
+            "Star Arm 102-FL follower."
+        ),
+    )
+
     model_config = ConfigDict(
         json_schema_extra=robot_payload_ui(  # pyrefly: ignore [bad-argument-type]
             [
@@ -286,6 +306,7 @@ async def _build_stararm_102_hd_driver(
         zero_on_connect=validated.zero_on_connect,
         control_mode=validated.control_mode,
         command_interval_ms=validated.command_interval_ms,
+        follower_profile=None if validated.follower_profile == "native" else validated.follower_profile,
     )
 
 
@@ -345,6 +366,7 @@ async def _build_stararm_102_ld_driver(
         unlock_on_connect=validated.unlock_on_connect,
         reset_multi_turn_on_connect=validated.reset_multi_turn_on_connect,
         zero_on_connect=validated.zero_on_connect,
+        follower_profile=None if validated.follower_profile == "native" else validated.follower_profile,
     )
 
 

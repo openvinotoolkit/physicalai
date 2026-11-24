@@ -11,6 +11,8 @@ the :class:`~physicalai.capture.errors.CaptureError` hierarchy.
 
 from __future__ import annotations
 
+from typing import Literal
+
 
 class RobotError(RuntimeError):
     """Base error for robot failures."""
@@ -53,6 +55,37 @@ class RobotTransportError(RobotError):
 
 class RobotNameConflict(RobotTransportError):  # noqa: N818 — conflict condition, not a generic error
     """Raised when a concurrent owner claimed the same name for different devices."""
+
+
+class RobotCalibrationError(RobotTransportError):
+    """Raised when robot setup requires operator-managed calibration.
+
+    The structured reason and optional file path survive owner startup IPC.
+    Calibration is a driver connection failure, not a new transport phase.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: Literal["missing", "invalid", "mismatch"],
+        calibration_path: str | None = None,
+    ) -> None:
+        """Initialize validated diagnostics without carrying vendor exceptions.
+
+        Raises:
+            ValueError: If the reason is unknown.
+            TypeError: If the calibration path is not a string or None.
+        """
+        if reason not in {"missing", "invalid", "mismatch"}:
+            msg = "Unknown robot calibration failure reason"
+            raise ValueError(msg)
+        if calibration_path is not None and not isinstance(calibration_path, str):
+            msg = "calibration_path must be a string or None"
+            raise TypeError(msg)
+        super().__init__(message, phase="connection_failed")
+        self.reason = reason
+        self.calibration_path = calibration_path
 
 
 class RobotDeviceAlreadyOwned(RobotTransportError):  # noqa: N818 — conflict condition, not a generic error

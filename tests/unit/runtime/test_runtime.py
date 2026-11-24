@@ -25,6 +25,7 @@ from physicalai.runtime.core import _RETURN_DURATION_S
 from physicalai.robot.interface import RobotObservation
 from physicalai.inference.model import InferenceModel
 from physicalai.inference.constants import IMAGES, STATE, TASK
+from physicalai.inference.preprocessors import MolmoAct2Preprocessor
 
 from physicalai.capture import Frame
 
@@ -647,6 +648,24 @@ class TestPolicySourceModelInput:
         assert IMAGES not in model_input
         np.testing.assert_array_equal(model_input[f"{IMAGES}.cam0"], frame0.data[np.newaxis])
         np.testing.assert_array_equal(model_input[f"{IMAGES}.cam1"], frame1.data[np.newaxis])
+
+    def test_single_camera_input_feeds_molmoact2_with_one_configured_camera(self) -> None:
+        """The bare ``images`` input of one camera is accepted by MolmoAct2."""
+        robot_obs = FakeRobotObservation(
+            joint_positions=np.array([0.1, 0.2], dtype=np.float32),
+            timestamp=0.0,
+            sensor_data=None,
+            images=None,
+        )
+        policy_source = self._policy_source(task="pick up the cube")
+        model_input = policy_source.to_model_input(robot_obs, {"top": _make_frame(255)})
+        preprocessor = MolmoAct2Preprocessor(image_keys=["top"], image_size=(28, 28))
+
+        result = preprocessor(model_input)
+
+        assert result[IMAGES].shape == (1, 1, 3, 28, 28)
+        assert float(result[IMAGES].min()) == 1.0
+        assert result[TASK][0].startswith("<|image|><|im_start|>")
 
     def test_single_robot_embedded_image_uses_bare_images_key(self) -> None:
         """A single robot-embedded image also uses the bare ``images`` key."""
@@ -1448,6 +1467,50 @@ class TestReturnToInitialState:
         assert robot.send_action.call_count == steps + self._RETURN_STEPS
         final_action = robot.send_action.call_args_list[-1].args[0]
         np.testing.assert_allclose(final_action, start, rtol=1e-6)
+
+    def test_skips_return_when_already_near_starting_pose(self) -> None:
+        start = np.array([10.0, 20.0, 30.0], dtype=np.float32)
+        near_start = start + np.array([0.5, -0.5, 1.0], dtype=np.float32)  # ~3.3% of ||start||
+        distant_target = np.zeros(3, dtype=np.float32)
+        robot = _make_mock_robot()
+
+        def get_observation() -> FakeRobotObservation:
+            return FakeRobotObservation(
+                joint_positions=start.copy() if robot.get_observation.call_count == 1 else near_start.copy(),
+                timestamp=time.monotonic(),
+                sensor_data=None,
+                images=None,
+            )
+
+        robot.get_observation.side_effect = get_observation
+        runtime, robot = _stop_runtime(
+            robot=robot,
+            action_source=FakeActionSource(next_action=distant_target),
+        )
+
+        with _frozen_time():
+            steps = runtime.run(duration_s=0.3, return_to_initial_state=True)
+
+        assert steps == 3
+        assert robot.send_action.call_count == steps + 1
+        for call in robot.send_action.call_args_list[:-1]:
+            np.testing.assert_array_equal(call.args[0], distant_target)
+        hold_command = robot.send_action.call_args
+        np.testing.assert_array_equal(hold_command.args[0], near_start)
+        assert hold_command.kwargs["goal_time"] == robot.send_action.call_args_list[-2].kwargs["goal_time"]
+
+    def test_returns_when_just_outside_tolerance(self) -> None:
+        start = np.array([10.0, 20.0, 30.0], dtype=np.float32)
+        off_start = start + np.array([0.0, 0.0, 4.0], dtype=np.float32)  # ~10.7% of ||start||
+        runtime, robot = _stop_runtime(
+            robot=_make_following_robot(start),
+            action_source=FakeActionSource(next_action=off_start),
+        )
+
+        with _frozen_time():
+            steps = runtime.run(duration_s=0.3, return_to_initial_state=True)
+
+        assert robot.send_action.call_count == steps + self._RETURN_STEPS
 
     def test_aborts_and_holds_pose_when_robot_stops_following(self) -> None:
         start = np.array([0.1, 0.2, 0.3], dtype=np.float32)

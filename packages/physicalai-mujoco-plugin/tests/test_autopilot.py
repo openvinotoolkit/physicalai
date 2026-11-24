@@ -29,12 +29,61 @@ def score(sim: MuJoCoRobot) -> dict[str, int]:
 
 def test_autopilot_is_only_available_with_a_conveyor() -> None:
     autopilot = Autopilot()
-    autopilot.bind(None, None)
+    autopilot.bind(None)
     autopilot.set_mode("drive")
     assert autopilot.mode == "off"
     assert autopilot.step(object(), TICK_S) is None
     with pytest.raises(ValueError, match="Unknown autopilot mode"):
         autopilot.set_mode("fly")  # type: ignore[arg-type]
+
+
+class _StubDemonstrator:
+    phase = "reach"
+    target = "cube"
+
+    def __init__(self) -> None:
+        self.resets = 0
+        self.applied: list[bool] = []
+        self.wants_reset = True
+
+    def reset(self) -> None:
+        self.resets += 1
+
+    def step(self, data: object, dt: float, *, apply: bool = True) -> np.ndarray:
+        self.applied.append(apply)
+        return np.zeros(2)
+
+    def status(self) -> dict[str, object]:
+        return {"attempt": 1}
+
+    def take_reset_request(self) -> bool:
+        wants, self.wants_reset = self.wants_reset, False
+        return wants
+
+
+def test_autopilot_steps_any_demonstrator_and_passes_its_status_through() -> None:
+    demo = _StubDemonstrator()
+    autopilot = Autopilot()
+    autopilot.bind(demo)
+    assert autopilot.status()["attempt"] is None  # scene fields stay, empty, while off
+    assert not autopilot.take_reset_request()  # nothing runs while off
+
+    autopilot.set_mode("leader")
+    assert demo.resets == 1
+    assert autopilot.step(object(), TICK_S) is not None
+    assert demo.applied == [False]  # leader mode only publishes the targets
+    status = autopilot.status()
+    assert (status["phase"], status["target"], status["attempt"]) == ("reach", "cube", 1)
+    assert autopilot.take_reset_request()
+    assert not autopilot.take_reset_request()
+
+
+def test_unavailable_reason_is_dropped_when_a_demonstrator_is_bound() -> None:
+    autopilot = Autopilot()
+    autopilot.bind(None, unavailable="two arms")
+    assert autopilot.status()["unavailable_reason"] == "two arms"
+    autopilot.bind(_StubDemonstrator(), unavailable="two arms")
+    assert autopilot.status()["unavailable_reason"] is None
 
 
 @pytest.mark.slow
@@ -148,29 +197,21 @@ def test_autopilot_markdown() -> None:
 
 
 @pytest.mark.parametrize("jump", ["reload", "reset"])
-def test_a_reload_or_reset_discards_the_studio_episode_in_progress(robot: MuJoCoRobot, jump: str) -> None:
-    from physicalai_mujoco_plugin.studio_recorder import AutoRecorder, RecordingOptions
+def test_a_reload_or_reset_outside_the_episode_aborts_it(robot: MuJoCoRobot, jump: str) -> None:
+    from physicalai_studio_plugin.autopilot import EpisodeRequest
 
-    sent: list[str] = []
-
-    class Link:
-        phase, error, target = "connected", None, None
-        state = {"dataset_loaded": True, "follower_source": "teleop", "is_recording": True}
-
-        def start(self) -> None: ...
-        def close(self) -> None: ...
-        def take_ack(self, _request_id: str) -> None: ...
-
-        def send(self, event: str, _data: object = None, request_id: str | None = None) -> None:
-            sent.append(event)
-
-    recorder = AutoRecorder(Link)
-    robot._automation.recorder = recorder
-    recorder.enable(RecordingOptions())
-    recorder._phase = "recording"  # mid-episode
+    automation = robot._automation
+    book = automation.book
+    assert book.info().supported, book.info().reason
+    episode = book.create(EpisodeRequest())
+    robot.get_observation()  # the sim thread takes the episode over
+    assert automation.drives_arm  # it holds the arm until the episode begins
     if jump == "reload":
         assert robot._switch_to_scene("conveyor_sort")
     else:
         robot._run_scene_reset()
-    assert sent == ["discard_episode"]
-    assert recorder.phase == "saving"
+    ended = book.get(episode.id)
+    assert (ended.phase, ended.outcome) == ("ended", "aborted")
+    assert "scene" in (ended.reason or "")
+    robot.get_observation()
+    assert not automation.drives_arm  # back to manual control

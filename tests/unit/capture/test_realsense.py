@@ -219,6 +219,71 @@ def test_read_latest_returns_cached_on_no_new_frame(realsense_cls: tuple) -> Non
     assert latest.sequence == first.sequence
 
 
+@pytest.mark.parametrize("method", ["read", "read_latest", "read_rgbd", "connect"])
+def test_cached_latest_reuses_color_conversion(realsense_cls: tuple, method: str) -> None:
+    camera_cls, native = realsense_cls
+    camera = camera_cls(serial_number="123", color_mode=ColorMode.GRAY)
+    camera.connect()
+    pipeline = native.pipeline.return_value
+    with mock.patch.object(camera, "_convert_color", wraps=camera._convert_color) as convert:
+        if method == "read_rgbd":
+            first, _ = camera.read_rgbd()
+        elif method == "connect":
+            pipeline.poll_for_frames.side_effect = None
+            pipeline.poll_for_frames.return_value = None
+            first = camera.read_latest()
+        else:
+            first = getattr(camera, method)()
+        pipeline.poll_for_frames.side_effect = None
+        pipeline.poll_for_frames.return_value = None
+        assert camera.read_latest() is first
+        assert camera.read_latest() is first
+        convert.assert_called_once()
+        pipeline.wait_for_frames.return_value.get_color_frame.return_value.get_data.return_value = np.full(
+            (2, 2, 3), 84, dtype=np.uint8
+        )
+        newest = camera.read()
+        assert convert.call_count == 2
+        assert newest.sequence > first.sequence
+        assert not np.array_equal(newest.data, first.data)
+
+
+def test_depth_acquisition_invalidates_cached_color(realsense_cls: tuple) -> None:
+    camera_cls, native = realsense_cls
+    camera = camera_cls(serial_number="123", color_mode=ColorMode.GRAY)
+    camera.connect()
+    first = camera.read()
+    native.pipeline.return_value.wait_for_frames.return_value.get_color_frame.return_value.get_data.return_value = np.full(
+        (2, 2, 3), 84, dtype=np.uint8
+    )
+    depth = camera.read_depth()
+    native.pipeline.return_value.poll_for_frames.side_effect = None
+    native.pipeline.return_value.poll_for_frames.return_value = None
+    with mock.patch.object(camera, "_convert_color", wraps=camera._convert_color) as convert:
+        newest = camera.read_latest()
+        assert not np.array_equal(newest.data, first.data)
+        assert newest.timestamp == depth.timestamp
+        assert camera.read_latest() is newest
+        convert.assert_called_once()
+
+
+def test_reconnect_discards_converted_cache(realsense_cls: tuple) -> None:
+    camera_cls, native = realsense_cls
+    camera = camera_cls(serial_number="123", color_mode=ColorMode.GRAY)
+    camera.connect()
+    first = camera.read()
+    camera.disconnect()
+    native.pipeline.return_value.wait_for_frames.return_value.get_color_frame.return_value.get_data.return_value = np.full(
+        (2, 2, 3), 84, dtype=np.uint8
+    )
+    camera.connect()
+    native.pipeline.return_value.poll_for_frames.side_effect = None
+    native.pipeline.return_value.poll_for_frames.return_value = None
+    newest = camera.read_latest()
+    assert newest is not first
+    assert newest.data[0, 0] != first.data[0, 0]
+
+
 def test_read_depth_returns_uint16(realsense_cls: tuple) -> None:
     """read_depth() returns uint16 depth frame with expected shape."""
     camera_cls, _ = realsense_cls

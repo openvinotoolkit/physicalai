@@ -292,3 +292,19 @@ def test_fl_follower_has_no_zero_calibration() -> None:
     from physicalai_stararm_plugin.studio_catalog import _definitions
 
     assert next(d for d in _definitions() if d.type == "StarArm_102_FL_Follower").zero_calibration is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("profile", "expected"), [("native", None), ("b601", "b601")])
+@pytest.mark.parametrize("leader", ["hd", "ld"])
+async def test_leader_builders_pass_the_follower_profile(leader: str, profile: str, expected: str | None) -> None:
+    from physicalai_stararm_plugin import studio_catalog
+
+    payload_cls = studio_catalog.StarArm102HDPayload if leader == "hd" else studio_catalog.StarArm102LDPayload
+    build = studio_catalog._build_stararm_102_hd_driver if leader == "hd" else studio_catalog._build_stararm_102_ld_driver
+    assert payload_cls(serial_number="X").follower_profile == "native"
+
+    payload = payload_cls(serial_number="X", follower_profile=profile)  # pyrefly: ignore[bad-argument-type]
+    driver = await build(_StubRobot(payload), cast(Any, _StubFactory()))
+
+    assert cast(Any, driver).follower_profile == expected

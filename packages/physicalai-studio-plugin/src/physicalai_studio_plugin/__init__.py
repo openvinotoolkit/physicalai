@@ -4,6 +4,20 @@
 """Public API for the Physical AI Studio plugin."""
 
 from .assets import RobotAsset
+from .autopilot import (
+    AUTOPILOT_PATH,
+    AUTOPILOT_PROTOCOL,
+    AutopilotClient,
+    AutopilotError,
+    AutopilotInfo,
+    AutopilotSpec,
+    Episode,
+    EpisodeOptions,
+    EpisodeRequest,
+    LeaderFactory,
+    Outcome,
+    Phase,
+)
 from .catalog import (
     BuildRobotCallable,
     CatalogRobot,
@@ -15,7 +29,7 @@ from .catalog import (
 from .factory import CatalogRobotFactory
 from .probe import PortScanner, RobotProbe
 from .schemas import SerialPortInfo
-from .simulation import SimulationArgvBuilder, SimulationLaunch, SimulationScene
+from .simulation import SimulationArgvBuilder, SimulationLaunch, SimulationPayloadArgvBuilder, SimulationScene
 from .transport import shared_robot_name
 from .ui_schema import (
     RobotFieldUiOptions,
@@ -35,10 +49,22 @@ from .ui_schema import (
 from .zero_calibration import RobotZeroCalibration
 
 __all__ = [
+    "AUTOPILOT_PATH",
+    "AUTOPILOT_PROTOCOL",
+    "AutopilotClient",
+    "AutopilotError",
+    "AutopilotInfo",
+    "AutopilotSpec",
     "BuildRobotCallable",
     "CatalogRobot",
     "CatalogRobotFactory",
+    "Episode",
+    "EpisodeOptions",
+    "EpisodeRequest",
+    "LeaderFactory",
+    "Outcome",
     "PayloadContainer",
+    "Phase",
     "PortScanner",
     "RobotAdapterOptions",
     "RobotAsset",
@@ -59,6 +85,7 @@ __all__ = [
     "SerialPortInfo",
     "SimulationArgvBuilder",
     "SimulationLaunch",
+    "SimulationPayloadArgvBuilder",
     "SimulationScene",
     "robot_field_ui",
     "robot_payload_ui",

@@ -75,6 +75,13 @@ class TestEndpointPort:
         b = derive_endpoint_port("right-arm")
         assert a != b
 
+    @pytest.mark.parametrize(
+        ("name", "expected_port"),
+        [("so101-act", 35301), ("cell1-act", 40332), ("cell2-pi05", 57704)],
+    )
+    def test_existing_robot_port_values_are_preserved(self, name: str, expected_port: int) -> None:
+        assert derive_endpoint_port(name) == expected_port
+
 
 def test_default_host_is_hostname() -> None:
     from physicalai.robot.transport._ids import default_host

@@ -28,7 +28,6 @@ from physicalai_mujoco_plugin.http_server import (
     SetObjectPoseCommand,
     SetOverviewCommand,
     SetSeedCommand,
-    SetStudioRecordingCommand,
     ShutdownCommand,
     StopReplayCommand,
     SwitchSceneCommand,
@@ -36,7 +35,6 @@ from physicalai_mujoco_plugin.http_server import (
     build_app,
     encode_jpeg,
 )
-from physicalai_mujoco_plugin.studio_recorder import RecordingOptions
 from physicalai_mujoco_plugin.viewer import ViewerService
 
 
@@ -58,7 +56,6 @@ def app_context(frame: np.ndarray) -> dict:
         "seed": None,
         "overview_style": "shoulder",
         "overview_styles": ["shoulder", "front"],
-        "overview_locked": None,
         "episode": {"enabled": True, "active": True, "phase": "idle"},
         "objects": [{"joint": "block1:joint", "position": [0.2, 0.0, 0.02], "wxyz": [1.0, 0.0, 0.0, 0.0]}],
         "cameras": [
@@ -286,14 +283,6 @@ class TestAppEndpoints:
     def test_overview_rejects_anything_but_a_style(self, client: TestClient, app_context: dict, body: dict) -> None:
         assert client.post("/overview", json=body).status_code == 422
         assert app_context["commands"].empty()
-
-    def test_overview_conflicts_while_studio_records(self, client: TestClient, app_context: dict) -> None:
-        app_context["status"]["overview_locked"] = "Automatic Studio recording is on"
-        response = client.post("/overview", json={"style": "front"})
-        assert (response.status_code, response.json()["detail"]) == (409, "Automatic Studio recording is on")
-        assert app_context["commands"].empty()
-        # Asking for the style already in place changes nothing, so it is not refused.
-        assert client.post("/overview", json={"style": "shoulder"}).status_code == 200
 
     def test_overview_conflicts_where_the_scene_has_no_such_style(
         self, client: TestClient, app_context: dict
@@ -546,27 +535,10 @@ class TestAutomationRoutes:
         assert client.post("/autopilot", json={"mode": "leader"}).status_code == 200
         assert leader_app["commands"].get_nowait() == SetAutopilotCommand(mode="leader")
 
-    def test_studio_recording_is_bounded_and_needs_the_conveyor(self, leader_app: dict) -> None:
-        client = leader_app["client"]
-        body = {"enabled": True, "task": "Sort", "keep": "all", "max_episodes": 5}
-        assert client.post("/studio/recording", json=body).status_code == 409
-        leader_app["status"]["episode"] = {"enabled": True, "kind": "conveyor"}
-        for bad in (
-            {"task": "x" * 201},
-            {"task": "   "},
-            {"keep": "most"},
-            {"max_episodes": -1},
-            {"studio_url": "http://evil"},
-        ):
-            assert client.post("/studio/recording", json={**body, **bad}).status_code == 422, bad
+    def test_studio_recording_is_gone(self, leader_app: dict) -> None:
+        response = leader_app["client"].post("/studio/recording", json={"enabled": True})
+        assert response.status_code == 404
         assert leader_app["commands"].empty()
-        assert client.post("/studio/recording", json=body).status_code == 200
-        command = leader_app["commands"].get_nowait()
-        assert command == SetStudioRecordingCommand(options=RecordingOptions(task="Sort", keep="all", max_episodes=5))
-        assert client.post("/studio/recording", json={"enabled": False}).status_code == 200
-        assert leader_app["commands"].get_nowait() == SetStudioRecordingCommand(options=None)
-        assert client.post("/studio/recording", json={**body, "task": "  Sort  "}).status_code == 200
-        assert leader_app["commands"].get_nowait().options.task == "Sort"  # stored trimmed
 
 
 class TestReplayRoutes:

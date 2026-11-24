@@ -27,6 +27,9 @@ Each row maps a harness file to the component it covers, its input space, and th
 | [`fuzz_lerp_smoother.py`](harnesses/fuzz_lerp_smoother.py)               | `LerpSmoother.merge(remaining, incoming)`                                    | 2D float arrays with arbitrary row counts, zero rows, NaN/Inf values, mismatched dims                                                  | I-15, I-16 |
 | [`fuzz_action_queue.py`](harnesses/fuzz_action_queue.py)                 | `ChunkedActionQueue.push_chunk(chunk, offset)` + `pop()`                     | Deterministic sequences of arbitrary chunks, extreme offsets, pushes, and pops                                                         | I-17       |
 | [`fuzz_transport_codec.py`](harnesses/fuzz_transport_codec.py)           | `decode_action`/`decode_state`/`decode_metadata`, `_unpack_payload`          | Raw bytes into the decode entry points; structure-aware action/state/metadata records with malformed `__np__` markers and missing keys | I-18, I-19 |
+| [`fuzz_shared_codec.py`](harnesses/fuzz_shared_codec.py)                 | `unpack_msgpack`/`decode_payload`, `pack_msgpack`/`encode_numpy`             | Raw bytes, tagged `__np__` arrays, nesting/depth gates, and round-trips; fuzz-derived `max_bytes`/`max_depth`                          | I-20, I-21 |
+| [`fuzz_remote_protocol.py`](harnesses/fuzz_remote_protocol.py)           | `decode_message`/`decode_predict_request`/`decode_predict_reply`, encoders   | Raw bytes and malformed protocol maps (version/seq/budget/timings/types/inputs/outputs); encoders and round-trips                      | I-22, I-23 |
+| [`fuzz_remote_images.py`](harnesses/fuzz_remote_images.py)               | `decode_images`, `decode_predict_request` (images), `encode_images`          | Raw bytes with JPEG/raw entries, malformed metadata/shapes/codecs, predict-request images; size-capped decode and round-trips          | I-24, I-25 |
 
 ## Key invariants for fuzzing oracles
 
@@ -88,6 +91,24 @@ For a deterministic sequence of `push_chunk` and `pop` calls, counters and remai
 
 **I-19 — Transport codec round-trip preserves value, dtype, and shape**
 For a genuinely valid `encode_action()`/`decode_action()`, `encode_state()`/`decode_state()`, or `encode_metadata()`/`decode_metadata()` round trip, the decoded value must equal the original byte-for-byte: dtype, shape (including 0-dimensional/scalar arrays), and values for arrays; exact equality for metadata primitives. `_ensure_contiguous()` is what makes the 0-d case hold — it behaves like `np.ascontiguousarray()` for `ndim >= 1`, but passes a genuine 0-d array through unchanged instead of promoting it to shape `(1,)`.
+
+**I-20 — Shared codec rejects malformed payloads with `ValueError`**
+`unpack_msgpack()`, `decode_payload()`, and `encode_numpy()` must raise only `ValueError` for arbitrary bytes, malformed `__np__` markers, non-numeric or invalid dtypes, shape/data-length mismatches, the aggregate array-byte gate, the nesting-depth gate, and invalid `max_bytes`/`max_depth` arguments. `MemoryError`, `RecursionError`, a hang, or any other undocumented exception is a finding.
+
+**I-21 — Shared codec round-trip preserves arrays and scalars**
+For a genuinely valid `pack_msgpack()`/`unpack_msgpack()` or `encode_numpy()`/`decode_payload()` round trip, every numeric or boolean ndarray (including 0-dimensional arrays) must preserve dtype, shape, and values, and NumPy integer/float scalars must preserve their value. NaN compares equal to NaN for this wire round-trip. Unsupported object/string array dtypes must be rejected with `ValueError` rather than encoded.
+
+**I-22 — Remote protocol decoders reject malformed input with `RemoteInferenceProtocolError`**
+`decode_message()`, `decode_predict_request()`, and `decode_predict_reply()` must raise only `RemoteInferenceProtocolError` for arbitrary bytes and structurally malformed maps (wrong or missing version, sequence, budget, timings, input/output containers, and extra keys), never `MemoryError`, `RecursionError`, a hang, or any other undocumented exception. Encoders may raise `ValueError` for invalid caller arguments and `RemoteInferenceProtocolError` for values that cannot be encoded.
+
+**I-23 — Remote protocol round-trip preserves metadata and arrays**
+For a genuinely valid predict request or reply, the decoded `protocol_version`, `seq`, `budget_ms`, `server_id`, and finite timing fields must match the encoded values, and every input/output ndarray must preserve dtype, shape, and values. A request with no images must decode with an empty `images` map, and a metadata message must round-trip exactly.
+
+**I-24 — Remote image decoding validates before allocation**
+`decode_images()` and the image path of `decode_predict_request()` must raise only `RemoteInferenceProtocolError` for non-`images.*` keys, malformed codec/dtype/data/shape metadata, wrong channel counts or batch dimensions, raw-length mismatches, truncated or corrupt JPEG data, and requests whose decoded images exceed the remaining `max_bytes` budget. Encoders raise `ValueError` for invalid image options and `RemoteInferenceProtocolError` for invalid image values, and must not allocate an image from a declared shape that exceeds the byte budget.
+
+**I-25 — Remote image round-trip preserves dtype and shape**
+A valid `uint8` `HxWx3` or `1xHxWx3` image encoded into a predict request and decoded back must preserve dtype `uint8` and its exact shape for both `raw` and `jpeg` codecs. JPEG is lossy, so pixel equality is not asserted; raw images must decode to writable arrays as well.
 
 ## Shared Test Utilities
 

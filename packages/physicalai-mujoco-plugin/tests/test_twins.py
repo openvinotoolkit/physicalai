@@ -13,6 +13,7 @@ dependency (``trossen-arm``, ``motorbridge``) is not installed.
 
 from __future__ import annotations
 
+
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -24,7 +25,12 @@ from defusedxml import ElementTree
 from physicalai.robot.interface import Robot
 from physicalai_mujoco_plugin.compose import fetch_profile, load_scene_model
 from physicalai_mujoco_plugin.profiles import get_profile, validate_profile
-from physicalai_mujoco_plugin.profiles.rebot_b601 import REBOT_B601_GRIPPER_SCALE, REBOT_B601_PROFILE
+from physicalai_mujoco_plugin.profiles.rebot_b601 import (
+    REBOT_B601_GRIPPER_SCALE,
+    REBOT_B601_MIT_KD,
+    REBOT_B601_MIT_KP,
+    REBOT_B601_PROFILE,
+)
 from physicalai_mujoco_plugin.profiles.trossen_wxai import TROSSEN_WXAI_PROFILE
 from physicalai_mujoco_plugin.robot import MuJoCoRobot
 from physicalai_mujoco_plugin.scene_registry import get_scene, list_scenes_naming, supported_arm_counts
@@ -105,16 +111,16 @@ class TestProfiles:
         constants = pytest.importorskip("physicalai_rebot_b601_plugin.constants", reason="needs the reBot B601 plugin")
         assert get_profile("rebot_b601") is REBOT_B601_PROFILE
         validate_profile(REBOT_B601_PROFILE)
-        assert REBOT_B601_PROFILE.provisional
+        assert not REBOT_B601_PROFILE.provisional  # confirmed on a real B601-RS
         assert _names(REBOT_B601_PROFILE) == constants.REBOT_B601_RS_JOINT_ORDER
         gripper = REBOT_B601_PROFILE.channels[-1]
         assert (gripper.actuators, gripper.unit, gripper.member_scales) == (("joint_left", "joint_right"), "degrees", (1.0,))
-        # #360's frame: the arm joints are Menagerie's one to one, the gripper -270 (open) to 0 (closed)
+        # The driver's frame: the arm joints are Menagerie's one to one, the gripper -270 (open) to 0 (closed)
         # across Menagerie's 0..0.05 m finger stroke.
         assert [channel.scale for channel in REBOT_B601_PROFILE.channels[:-1]] == [1.0] * 6
         assert {channel.offset for channel in REBOT_B601_PROFILE.channels} == {0.0}
         assert gripper.scale == pytest.approx(-270.0 / 0.05)
-        # The arm stops where #360's driver clips: the tighter of its limits and Menagerie's ranges.
+        # The arm stops where the driver clips: the tighter of its limits and Menagerie's ranges.
         ranges = {channel.name: channel.range for channel in REBOT_B601_PROFILE.channels[:-1]}
         assert ranges["shoulder_pan"] == pytest.approx(np.radians((-145.0, 145.0)))
         assert ranges["shoulder_lift"] == pytest.approx(np.radians((-170.0, 0.0)))
@@ -145,15 +151,15 @@ class TestProfiles:
         assert (REBOT_B601_GRIPPER_SCALE * 0.05, 0.0) == pytest.approx((lower, upper))
 
     def test_scenes_list_the_twins(self) -> None:
-        assert set(list_scenes_naming("trossen_wxai")) == {"single_pick_place"}
-        assert set(list_scenes_naming("rebot_b601")) == {"single_pick_place"}
+        assert set(list_scenes_naming("trossen_wxai")) == {"single_pick_place", "bucket_sort"}
+        assert set(list_scenes_naming("rebot_b601")) == {"single_pick_place", "bucket_sort"}
         for name in ("so101", "trossen_wxai", "rebot_b601"):
             assert supported_arm_counts(get_profile(name)) == (1, 2)
 
 
 @pytest.mark.requires_download
 class TestRebotMapping:
-    """The provisional reBot mapping follows #360's joint-frame URDF; not verified on hardware."""
+    """The reBot mapping follows the driver's joint-frame URDF, as confirmed on a real B601-RS."""
 
     def test_signs_follow_the_joint_frame_urdf(self) -> None:
         _rs_constants_in_the_lerobot_frame()
@@ -308,6 +314,29 @@ def test_rebot_wrist_camera_sits_on_the_d405_mount() -> None:
         np.testing.assert_allclose(-camera[:, 2], [-0.5, 0, np.sqrt(3) / 2], atol=1e-9)  # forward
         np.testing.assert_allclose(camera[:, 1], [np.sqrt(3) / 2, 0, 0.5], atol=1e-9)  # image up
         np.testing.assert_allclose(camera[:, 0], [0, 1, 0], atol=1e-9)  # image right
+    finally:
+        robot.disconnect()
+
+
+def test_rebot_runs_the_rs_drivers_gains() -> None:
+    constants = pytest.importorskip("physicalai_rebot_b601_plugin.constants", reason="needs the reBot B601 plugin")
+    assert REBOT_B601_MIT_KP == constants.REBOT_B601_RS_MIT_KP
+    assert REBOT_B601_MIT_KD == constants.REBOT_B601_RS_MIT_KD
+
+
+@pytest.mark.requires_download
+def test_rebot_holds_a_stretched_out_pose_like_the_real_arm() -> None:
+    robot = MuJoCoRobot("rebot_b601", scene="single_pick_place", cameras=[])
+    robot.connect()
+    try:
+        model = robot._sim.model  # noqa: SLF001
+        assert model.actuator("joint2").gainprm[0] == REBOT_B601_MIT_KP["shoulder_lift"]  # not Menagerie's 900
+        target = np.array([30.0, -60.0, -70.0, -20.0, 0.0, 0.0, 0.0], dtype=np.float32)  # held out, clear of the table
+        robot.send_action(target)
+        for _ in range(150):
+            observation = robot.get_observation()
+        # Gravity compensation: only friction is left to the servos (the real arm sags under 1 degree).
+        np.testing.assert_allclose(observation.joint_positions[:6], target[:6], atol=1.0)
     finally:
         robot.disconnect()
 

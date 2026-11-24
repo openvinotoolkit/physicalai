@@ -3,19 +3,22 @@
 
 """Zenoh session helper shared by owner and subscriber endpoints.
 
-Secure by default: unless the caller explicitly opts into ``allow_remote``,
-multicast/gossip scouting is disabled and the owner's listen endpoint is
-bound to loopback only, so the transport is unreachable off-host — not
-merely undiscoverable. The caller that spawns an owner fixes this scope
-for the owner's entire lifetime; a later attacher's ``allow_remote`` value
-only configures its own session, never the running owner's.
+Non-owner sessions never open TCP listeners. Unless the caller explicitly
+opts into ``allow_remote``, multicast/gossip scouting is disabled and the
+owner's listen endpoint is bound to loopback only, so the transport is
+unreachable off-host — not merely undiscoverable. The caller that spawns
+an owner fixes this scope for the owner's entire lifetime; a later
+attacher's ``allow_remote`` value only configures its own session, never
+the running owner's.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from ._ids import derive_endpoint_port
+from physicalai.transport import endpoint_for_key, open_zenoh_session
+
+from ._ids import robot_prefix
 
 # A subscriber usually opens its session before the owner it spawns is listening. Zenoh's
 # default connect retry backs off to multi-second periods (1 s, 2 s, 4 s, ...), so an owner
@@ -40,9 +43,8 @@ def open_session(name: str | None = None, *, listen: bool = False, allow_remote:
     retries in the background until the owner is up).
 
     Args:
-        name: Robot name for endpoint derivation; ``None`` opens a
-            scouting-only session with no fixed endpoint (used by
-            :func:`discover_robots`).
+        name: Robot name for endpoint derivation; ``None`` opens a session
+            with no fixed endpoint (used by clients and discovery).
         listen: True for the owner (listen on the derived port), False for
             subscribers (connect to localhost, retrying every 100-500 ms
             until the owner listens).
@@ -58,17 +60,23 @@ def open_session(name: str | None = None, *, listen: bool = False, allow_remote:
     """
     import zenoh  # noqa: PLC0415
 
+    connect_endpoints: list[str] | None = None
+    listen_endpoints: list[str] = []
     config = zenoh.Config()
-    config.insert_json5("mode", '"peer"')
-    if not allow_remote:
-        config.insert_json5("scouting/multicast/enabled", "false")
-        config.insert_json5("scouting/gossip/enabled", "false")
     if name is not None:
-        port = derive_endpoint_port(name)
         if listen:
             bind_host = "0.0.0.0" if allow_remote else "127.0.0.1"  # noqa: S104  # nosec B104: explicit remote opt-in
-            config.insert_json5("listen/endpoints", f'["tcp/{bind_host}:{port}"]')
+            listen_endpoints = [endpoint_for_key(robot_prefix(name), bind_host)]
+            connect_endpoints = []
         else:
-            config.insert_json5("connect/endpoints", f'["tcp/127.0.0.1:{port}"]')
+            connect_endpoints = [endpoint_for_key(robot_prefix(name), "127.0.0.1")]
+            listen_endpoints = []
             config.insert_json5("connect/retry", _CONNECT_RETRY)
-    return zenoh.open(config)
+    return open_zenoh_session(
+        mode="peer",
+        connect_endpoints=connect_endpoints,
+        listen_endpoints=listen_endpoints,
+        multicast_enabled=allow_remote,
+        gossip_enabled=allow_remote,
+        config=config,
+    )

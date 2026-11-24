@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from typing import TYPE_CHECKING, Any, cast
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 _JOIN_TIMEOUT_S: float = 10.0
 _STRAGGLER_GRACE_S: float = 2.0
+_DRY_WARN_EVERY: int = 50
 
 
 @export_config(class_path="physicalai.runtime.AsyncExecution")
@@ -41,7 +43,11 @@ class AsyncExecution(Execution):
             request_threshold: Queue fraction at which to request new inference.
                 When the action queue drops below this fraction of chunk_size,
                 a new inference is scheduled. E.g. 0.25 means "request when
-                only 25% of the chunk remains in the queue."
+                only 25% of the chunk remains in the queue." Set to 0.0 to
+                play the whole chunk and then request, as in SyncExecution;
+                the robot holds its last action until the chunk arrives. A
+                threshold above 0 that leaves fewer actions than inference
+                takes ticks also holds, and logs a warning.
             watchdog_timeout_s: If inference is stuck longer than this, force-reset.
         """
         self._threshold_frac = request_threshold
@@ -59,6 +65,9 @@ class AsyncExecution(Execution):
         self._running_inference = False
         self._request_time: float = 0.0
         self._pops_at_request: int = 0
+        self._holds_at_request: int = 0
+        self._left_at_request: int = 0
+        self._dry_arrivals: int = 0
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._death_cause: BaseException | None = None
@@ -100,6 +109,9 @@ class AsyncExecution(Execution):
             self._running_inference = False
             self._request_time = 0.0
             self._pops_at_request = 0
+            self._holds_at_request = 0
+            self._left_at_request = 0
+            self._dry_arrivals = 0
         # A death from the previous run must not fail this one.
         self._death_cause = None
         self._thread = threading.Thread(
@@ -155,7 +167,9 @@ class AsyncExecution(Execution):
                 msg = "AsyncExecution warmup cancelled by reset"
                 raise RuntimeError(msg)
             self._chunk_size = actions.shape[0]
-            self._threshold_count = int(self._chunk_size * self._threshold_frac)
+            # At least 1, as SyncExecution does: a count of 0 is never "below" an
+            # empty queue, so request_threshold=0 would play one chunk and then hold forever.
+            self._threshold_count = max(1, int(self._chunk_size * self._threshold_frac))
             self._queue.push_chunk(actions, offset=0)
 
     def maybe_request(self, observation: dict[str, Any]) -> None:
@@ -181,6 +195,8 @@ class AsyncExecution(Execution):
                 self._obs_slot = (snapshot, self._incarnation)
                 self._request_time = time.perf_counter()
                 self._pops_at_request = self._queue.total_pops
+                self._holds_at_request = self._queue.total_holds
+                self._left_at_request = self._queue.remaining
             self._obs_ready.set()
 
     def reset(self, *, reset_model: bool = True) -> None:
@@ -249,6 +265,44 @@ class AsyncExecution(Execution):
                 return 0.0
             return time.perf_counter() - self._request_time
 
+    def _dry_queue_warning(self, pops_since: int) -> str | None:
+        """Return a warning if the queue ran dry while this inference was running.
+
+        With a threshold above 0 the request is meant to overlap the queue. If
+        the queue still emptied before the chunk came back, the robot held its
+        last command: it stutters once per chunk, silently. Called under
+        ``_lock``; the caller logs outside it, so a slow log handler cannot
+        stall the control thread.
+        """
+        if self._queue is None or self._threshold_frac <= 0:
+            return None  # threshold 0: holding during inference is the chosen behaviour
+        holds = self._queue.total_holds - self._holds_at_request
+        if holds <= 0 or pops_since < 0:
+            return None  # no holds, or the queue was reset mid-request and its counters restarted
+        self._dry_arrivals += 1
+        if self._dry_arrivals != 1 and self._dry_arrivals % _DRY_WARN_EVERY != 0:
+            return None
+        ticks = pops_since + holds
+        if 2 * ticks > self._chunk_size:
+            # A chunk arrives trimmed by the ticks its inference took, so the
+            # next request starts with at most chunk_size - ticks actions.
+            advice = (
+                f"A {self._chunk_size}-action chunk cannot cover {ticks}-tick inferences "
+                "back to back; no request_threshold avoids this."
+            )
+        else:
+            # Trigger with ticks + 1 actions left, one more than the inference
+            # needs. Round up with half an action to spare: warmup truncates
+            # chunk_size * request_threshold, and 50 * 0.58 is 28.999...
+            count = min(ticks + 2, self._chunk_size)
+            suggested = min(1.0, math.ceil(100 * (count + 0.5) / self._chunk_size) / 100)
+            advice = f"Raise request_threshold to at least {suggested:.2f}."
+        return (
+            f"AsyncExecution: the queue ran dry for {holds} tick(s) while inference was running "
+            f"({self._dry_arrivals} time(s) this run). The request left {self._left_at_request} "
+            f"action(s), but inference took about {ticks} ticks. {advice}"
+        )
+
     def _force_reset(self) -> None:
         with self._lock:
             # The stuck call can still return. Its chunk describes an old
@@ -316,8 +370,9 @@ class AsyncExecution(Execution):
                     pops_since = self._queue.total_pops - self._pops_at_request
                     offset = min(max(pops_since, 0), len(actions) - 1)
                     self._queue.push_chunk(actions, offset=offset)
-                self._inference_count += 1
-
+                    # After the push: a hold the control thread lands just
+                    # before it still counts, and none can land after it.
+                    dry_warning = self._dry_queue_warning(pops_since)
                 if self._bus:
                     from physicalai.runtime.events import InferenceEvent  # noqa: PLC0415
 
@@ -333,6 +388,11 @@ class AsyncExecution(Execution):
 
                 with self._lock:
                     self._running_inference = False
+                # Logged once the worker is idle, so a slow handler delays the
+                # next inference but does not turn its request away.
+                if dry_warning is not None:
+                    logger.warning(dry_warning)
+                self._inference_count += 1
 
         except Exception as e:
             self._death_cause = e

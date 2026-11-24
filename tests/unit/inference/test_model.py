@@ -16,16 +16,18 @@ import pytest
 from loguru import logger
 
 from physicalai.inference.adapters import RuntimeAdapter
-from physicalai.inference.manifest import ComponentSpec, Manifest, ModelSpec
+from physicalai.inference.manifest import ComponentSpec, Manifest, ModelSpec, ObservationHistorySpec
 from physicalai.inference.model import InferenceModel
 from physicalai.inference.postprocessors.action_normalizer import ActionNormalizer
 from physicalai.inference.postprocessors.base import Postprocessor
 from physicalai.inference.preprocessors.base import Preprocessor
+from physicalai.inference.preprocessors.observation_history import StackObservationHistory
 from physicalai.inference.runners import (
     InferenceRunner,
     SinglePass,
     get_runner,
 )
+from physicalai.runtime.action_sources.observation_history import ObservationHistory
 
 
 class TestAdapter(RuntimeAdapter):
@@ -450,6 +452,99 @@ class TestPrepareInputsCollision:
             self._call({"obs": {"image": arr_b}, "obs.image": arr_a}, ["obs.image"])
 
 
+def _make_camera_export_dir(tmp_path: Path, cameras: list[str]) -> Path:
+    export_dir = _make_export_dir(tmp_path)
+    manifest_path = export_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["model"]["input_features"] = [
+        {
+            "class_path": "physicalai.inference.data.features.InferenceFeature",
+            "init_args": {"ftype": "VISUAL", "shape": [3, 4, 4], "name": f"images.{camera}", "dtype": "float32"},
+        }
+        for camera in cameras
+    ]
+    manifest_path.write_text(json.dumps(manifest))
+    return export_dir
+
+
+class _RecordInputs(Preprocessor):
+    def __init__(self) -> None:
+        self.seen: dict = {}
+
+    @override
+    def __call__(self, inputs: dict) -> dict:
+        self.seen = inputs
+        return inputs
+
+
+@pytest.mark.usefixtures("_patch_adapter")
+class TestCameraOrder:
+    """Cameras reach the preprocessors in the order the manifest declares them."""
+
+    @pytest.fixture(autouse=True)
+    def _passthrough_adapter(self, mock_adapter: MagicMock) -> None:
+        mock_adapter.input_names = []
+
+    @staticmethod
+    def _image(value: float) -> np.ndarray:
+        return np.full((1, 3, 4, 4), value, dtype=np.float32)
+
+    def test_flat_cameras_follow_manifest_order(self, tmp_path: Path) -> None:
+        record = _RecordInputs()
+        model = InferenceModel(_make_camera_export_dir(tmp_path, ["wrist", "overview"]), preprocessors=[record])
+
+        model({"state": np.zeros((1, 2)), "images.overview": self._image(1), "images.wrist": self._image(0)})
+
+        assert list(record.seen) == ["state", "images.wrist", "images.overview"]
+        assert record.seen["images.wrist"].max() == 0
+
+    def test_nested_cameras_follow_manifest_order(self, tmp_path: Path) -> None:
+        record = _RecordInputs()
+        model = InferenceModel(_make_camera_export_dir(tmp_path, ["wrist", "overview"]), preprocessors=[record])
+
+        model({"images": {"overview": self._image(1), "wrist": self._image(0)}})
+
+        assert list(record.seen["images"]) == ["wrist", "overview"]
+
+    def test_inputs_in_order_are_passed_through(self, tmp_path: Path) -> None:
+        record = _RecordInputs()
+        model = InferenceModel(_make_camera_export_dir(tmp_path, ["wrist", "overview"]), preprocessors=[record])
+        inputs = {"images.wrist": self._image(0), "images.overview": self._image(1)}
+
+        model(inputs)
+
+        assert record.seen is inputs
+
+    def test_unknown_cameras_keep_their_order_and_warn_once(self, tmp_path: Path) -> None:
+        record = _RecordInputs()
+        model = InferenceModel(_make_camera_export_dir(tmp_path, ["wrist", "overview"]), preprocessors=[record])
+        messages: list[str] = []
+        handler_id = logger.add(lambda message: messages.append(message.record["message"]), level="WARNING")
+
+        try:
+            for _ in range(2):
+                model({"images.top": self._image(1), "images.wrist": self._image(0)})
+        finally:
+            logger.remove(handler_id)
+
+        assert list(record.seen) == ["images.top", "images.wrist"]
+        assert sum("do not match the trained cameras" in message for message in messages) == 1
+
+    def test_pi05_stacks_cameras_in_training_order(self, tmp_path: Path, mock_adapter: MagicMock) -> None:
+        from physicalai.inference.preprocessors.pi05 import Pi05Preprocessor
+
+        model = InferenceModel(
+            _make_camera_export_dir(tmp_path, ["wrist", "overview"]),
+            preprocessors=[Pi05Preprocessor(image_resolution=(4, 4))],
+        )
+
+        model({"state": np.zeros((1, 2)), "images.overview": self._image(1), "images.wrist": self._image(0)})
+
+        stacked = mock_adapter.predict.call_args.args[0]["images"]
+        assert stacked[0].max() == -1  # wrist (0.0) normalized to [-1, 1]
+        assert stacked[1].min() == 1  # overview (1.0)
+
+
 @pytest.mark.usefixtures("_patch_adapter")
 class TestModelPathResolution:
     @pytest.mark.parametrize(
@@ -488,6 +583,79 @@ class TestModelPathResolution:
 
         with pytest.raises(FileNotFoundError, match="No .* model file found"):
             InferenceModel(export_dir, backend="onnx")._get_model_path()
+
+    @staticmethod
+    def _make_export_dir(tmp_path: Path, declared: str, files: list[str]) -> Path:
+        export_dir = tmp_path / "exports"
+        export_dir.mkdir()
+        manifest = {
+            "format": "policy_package",
+            "version": "1.0",
+            "policy": {"name": "act", "source": {"class_path": "physicalai.policies.act.ACT"}},
+            "model": {"artifacts": {"onnx": declared}},
+        }
+        with (export_dir / "manifest.json").open("w") as f:
+            json.dump(manifest, f)
+        for name in files:
+            (export_dir / name).touch()
+        return export_dir
+
+    def test_declared_artifact_is_loaded_over_other_files(self, tmp_path: Path) -> None:
+        # Both files exist; the manifest names model.onnx, so the extra act.onnx must not win.
+        export_dir = self._make_export_dir(tmp_path, "model.onnx", ["act.onnx", "model.onnx"])
+        assert InferenceModel(export_dir, backend="onnx")._get_model_path() == export_dir / "model.onnx"
+
+    def test_declared_artifact_missing_raises(self, tmp_path: Path) -> None:
+        # The declared file is absent; loading an unrelated file instead would be silent and wrong.
+        export_dir = self._make_export_dir(tmp_path, "act.onnx", ["zz_unreviewed.onnx"])
+        with pytest.raises(FileNotFoundError, match="declared in the manifest is missing"):
+            InferenceModel(export_dir, backend="onnx")
+
+    def test_declared_artifact_cannot_escape_export_dir(self, tmp_path: Path) -> None:
+        export_dir = self._make_export_dir(tmp_path, "../evil.onnx", ["act.onnx"])
+        (tmp_path / "evil.onnx").touch()
+        with pytest.raises(ValueError, match="escapes the export directory"):
+            InferenceModel(export_dir, backend="onnx")
+
+    def test_declared_artifact_cannot_be_an_absolute_path(self, tmp_path: Path) -> None:
+        outside = tmp_path / "evil.onnx"
+        outside.touch()
+        export_dir = self._make_export_dir(tmp_path, str(outside), ["act.onnx"])
+        with pytest.raises(ValueError, match="escapes the export directory"):
+            InferenceModel(export_dir, backend="onnx")
+
+    @pytest.mark.parametrize("declared", [".", "./"])
+    def test_declared_artifact_must_name_a_file(self, tmp_path: Path, declared: str) -> None:
+        # "." would otherwise hand the export directory itself to the backend as the model.
+        export_dir = self._make_export_dir(tmp_path, declared, ["act.onnx"])
+        with pytest.raises(ValueError, match="does not name a file"):
+            InferenceModel(export_dir, backend="onnx")
+
+    def test_declared_artifact_keeps_a_hub_snapshot_symlink(self, tmp_path: Path) -> None:
+        # A Hugging Face Hub snapshot stores each file as a symlink into a sibling blobs/ store.
+        # The path must stay inside the snapshot; resolving it would point outside and be rejected.
+        blob = tmp_path / "blobs" / "0123abcd"
+        blob.parent.mkdir()
+        blob.write_bytes(b"onnx")
+        export_dir = self._make_export_dir(tmp_path, "model.onnx", [])
+        (export_dir / "model.onnx").symlink_to(blob)
+
+        path = InferenceModel(export_dir, backend="onnx")._get_model_path()
+
+        assert (export_dir / "model.onnx").is_symlink()
+        assert not blob.resolve().is_relative_to(export_dir.resolve())
+        assert path == export_dir.resolve() / "model.onnx"
+        assert path != path.resolve()
+
+    def test_glob_fallback_is_deterministic(self, tmp_path: Path) -> None:
+        # No declared artifact and a policy name that matches no file, so the lookup falls
+        # through to the directory search, which must be stable and not in filesystem order.
+        export_dir = tmp_path / "exports"
+        export_dir.mkdir()
+        for name in ("c.onnx", "a.onnx", "b.onnx"):
+            (export_dir / name).touch()
+        path = InferenceModel(export_dir, policy_name="missing", backend="onnx")._get_model_path()
+        assert path == export_dir / "a.onnx"
 
 
 @pytest.mark.usefixtures("_patch_adapter")
@@ -654,6 +822,129 @@ class _ClampPostprocessor(Postprocessor):
 
 
 class TestPipelineWiring:
+    @pytest.mark.usefixtures("_patch_adapter")
+    @pytest.mark.parametrize("has_history", [False, True], ids=["no-history", "history"])
+    @pytest.mark.parametrize("override_processors", [False, True], ids=["manifest", "caller"])
+    @pytest.mark.parametrize(
+        "processor_types",
+        [
+            pytest.param((), id="empty"),
+            pytest.param((_RecordInputs, _AddKeyPreprocessor), id="no-stacker"),
+            pytest.param((StackObservationHistory, _RecordInputs, _AddKeyPreprocessor), id="stacker-front"),
+            pytest.param((_RecordInputs, StackObservationHistory, _AddKeyPreprocessor), id="stacker-middle"),
+            pytest.param(
+                (_RecordInputs, StackObservationHistory, _AddKeyPreprocessor, StackObservationHistory),
+                id="duplicate-stackers",
+            ),
+        ],
+    )
+    def test_history_does_not_change_configured_preprocessors(
+        self,
+        tmp_path: Path,
+        mock_adapter: MagicMock,
+        has_history: bool,
+        override_processors: bool,
+        processor_types: tuple[type[Preprocessor], ...],
+    ) -> None:
+        export_dir = _make_export_dir(tmp_path)
+        manifest_path = export_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["version"] = "1.1"
+        if has_history:
+            manifest["observation_history"] = {"n_obs_steps": 2}
+        manifest_types = (_AddKeyPreprocessor,) if override_processors else processor_types
+        manifest["model"]["preprocessors"] = [
+            {"class_path": f"{processor_type.__module__}.{processor_type.__name__}"}
+            for processor_type in manifest_types
+        ]
+        manifest_path.write_text(json.dumps(manifest))
+        processors: list[Preprocessor] = [processor_type() for processor_type in processor_types]
+        original_processors = processors.copy()
+
+        model = InferenceModel(export_dir, preprocessors=processors if override_processors else None)
+
+        expected_types = list(processor_types)
+        assert [type(processor) for processor in model.preprocessors] == expected_types
+        if override_processors:
+            assert processors == original_processors
+            assert model.preprocessors is processors
+
+        inputs = {
+            "state": np.zeros((1, 2, 4) if has_history else (1, 4), dtype=np.float32),
+            "images": np.zeros((1, 2, 3, 4, 4) if has_history else (1, 3, 4, 4), dtype=np.float32),
+        }
+        model(inputs)
+
+        adapter_inputs = mock_adapter.predict.call_args.args[0]
+        for key, value in inputs.items():
+            assert adapter_inputs[key] is value
+
+        if has_history:
+            selected = {
+                "state": (np.zeros((1, 4), dtype=np.float32), np.ones((1, 4), dtype=np.float32)),
+                "images": (np.zeros((1, 3, 4, 4), dtype=np.float32), np.ones((1, 3, 4, 4), dtype=np.float32)),
+            }
+            model(selected)
+            adapter_inputs = mock_adapter.predict.call_args.args[0]
+            for key, frames in selected.items():
+                if StackObservationHistory in processor_types:
+                    np.testing.assert_array_equal(adapter_inputs[key], np.stack(frames, axis=1))
+                else:
+                    assert adapter_inputs[key] is frames
+
+    @pytest.mark.usefixtures("_patch_adapter")
+    @pytest.mark.parametrize("override_processors", [False, True], ids=["manifest", "caller"])
+    def test_history_without_stacker_supplies_unformatted_inputs(
+        self,
+        tmp_path: Path,
+        mock_adapter: MagicMock,
+        override_processors: bool,
+    ) -> None:
+        export_dir = _make_export_dir(tmp_path)
+        manifest_path = export_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["version"] = "1.1"
+        manifest["observation_history"] = {
+            "n_obs_steps": 3,
+            "stride": 2,
+        }
+        processor_types = (_RecordInputs, _ScalePreprocessor, _AddKeyPreprocessor)
+        manifest["model"]["preprocessors"] = [
+            ComponentSpec.from_class(processor_type).model_dump(exclude_defaults=True)
+            for processor_type in processor_types
+        ]
+        manifest_path.write_text(json.dumps(manifest))
+        processors: list[Preprocessor] = [processor_type() for processor_type in processor_types]
+        model = InferenceModel(export_dir, preprocessors=processors if override_processors else None)
+
+        assert [type(processor) for processor in model.preprocessors] == list(processor_types)
+        if override_processors:
+            assert model.preprocessors is processors
+
+        history = ObservationHistory(ObservationHistorySpec(n_obs_steps=3, stride=2))
+        for value in range(5):
+            inputs = history.window(
+                {
+                    "state": np.full((1, 4), value, dtype=np.float32),
+                    "images": np.full((1, 3, 4, 4), value, dtype=np.float32),
+                    "task": ["current task"],
+                },
+                record=True,
+                camera_names=("top",),
+                stack=False,
+            )
+        model(inputs)
+
+        processor = model.preprocessors[0]
+        assert isinstance(processor, _RecordInputs)
+        assert processor.seen is inputs
+        adapter_inputs = mock_adapter.predict.call_args.args[0]
+        for key in ("state", "images"):
+            assert isinstance(adapter_inputs[key], tuple)
+            assert adapter_inputs[key] is inputs[key]
+            assert [int(frame.flat[0]) for frame in adapter_inputs[key]] == [0, 2, 4]
+        assert inputs["task"] == ["current task"]
+
     def test_empty_processors_is_noop(
         self,
         mock_export_dir_no_queue: Path,

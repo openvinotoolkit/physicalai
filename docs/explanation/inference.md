@@ -55,6 +55,31 @@ RobotRuntime
   -> robot.send_action(action)
 ```
 
+## Remote Inference
+
+`RemoteInferenceModel` provides the same inference interface over Zenoh. Its
+request timeout defaults to 2 seconds and applies to the handshake and each
+inference request. Set `request_timeout_s` when constructing the model to use a
+different budget:
+
+```python
+from physicalai.inference import RemoteInferenceModel
+
+model = RemoteInferenceModel(
+    name="my-policy",
+    host="192.0.2.10",
+    request_timeout_s=5.0,
+)
+```
+
+The optional `port` defaults to a deterministic port derived from `name`, shared
+by the client and server. `host` defaults to `127.0.0.1`; Zenoh endpoint strings
+are constructed internally.
+
+When a server-side request raises an exception, the server logs the exception
+details and returns a generic error reply. Exception text is not sent to the
+client.
+
 ## Performance Evaluation
 
 `InferenceLatencyBenchmark` measures per-chunk latency of an `InferenceModel` outside the runtime loop. It is intended for backend, device, and export-configuration comparisons; it is not a robot-loop profiler.

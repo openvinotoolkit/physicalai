@@ -57,7 +57,7 @@ def test_register_plugin_includes_all_registered_robot_and_teleoperator_types() 
     from lerobot.robots.config import RobotConfig
     from lerobot.teleoperators.config import TeleoperatorConfig
 
-    from physicalai_lerobot_plugin.studio_catalog import register_physicalai_studio_plugin
+    from physicalai_lerobot_plugin.studio_catalog import _ROBOTS_TO_SKIP, register_physicalai_studio_plugin
 
     registry = _FakeRegistry()
     register_physicalai_studio_plugin(registry)
@@ -65,7 +65,7 @@ def test_register_plugin_includes_all_registered_robot_and_teleoperator_types() 
     assert registry.definitions is not None
     definitions_by_type = {definition.type: definition for definition in registry.definitions}
     expected_follower_types = {
-        f"LeRobot_{type_str}_Follower" for type_str in RobotConfig.get_known_choices() if type_str != "mock_robot"
+        f"LeRobot_{type_str}_Follower" for type_str in RobotConfig.get_known_choices() if type_str not in _ROBOTS_TO_SKIP
     }
     expected_leader_types = {f"LeRobot_{type_str}_Leader" for type_str in TeleoperatorConfig.get_known_choices()}
 
@@ -85,7 +85,7 @@ def test_skip_list_excludes_test_only_robots() -> None:
 
     assert registry.definitions is not None
     types = {d.type for d in registry.definitions}
-    for skipped in ("LeRobot_mock_robot_Follower",):
+    for skipped in ("LeRobot_mock_robot_Follower", "LeRobot_sim_Follower"):
         assert skipped not in types
 
 
@@ -228,6 +228,10 @@ def test_make_payload_model_for_so100() -> None:
     assert payload.port == "/dev/ttyACM0"
     assert payload.disable_torque_on_disconnect is True
     assert payload.use_degrees is True
+    description = model.model_json_schema()["properties"]["id"]["description"]
+    assert "calibration filename without .json" in description
+    assert "leader for leader.json" in description
+    assert "not the Studio robot ID" in description
 
 
 def test_payload_schema_marks_id_as_required() -> None:
@@ -250,6 +254,9 @@ def test_payload_schema_marks_id_as_required() -> None:
     model = _make_payload_model(TeleoperatorConfig.get_known_choices()["so101_leader"])
 
     assert model.model_json_schema()["properties"]["id"]["x-physicalai-ui"] == {"required": True}
+    description = model.model_json_schema()["properties"]["id"]["description"]
+    assert "calibration filename without .json" in description
+    assert "Calibration directory" in description
 
 
 def test_make_payload_model_for_hope_jr_hand() -> None:
@@ -455,7 +462,7 @@ def test_make_teleop_builder_config_kwargs() -> None:
 
 
 def test_coerce_union_prefers_matching_shape() -> None:
-    from physicalai_lerobot_plugin.studio_catalog import _coerce_to_annotation
+    from physicalai_lerobot_plugin._config import coerce_to_annotation as _coerce_to_annotation
 
     assert _coerce_to_annotation(list[float] | float, 1.5) == 1.5
     assert _coerce_to_annotation(list[float] | float, [1.5, 2.5]) == [1.5, 2.5]

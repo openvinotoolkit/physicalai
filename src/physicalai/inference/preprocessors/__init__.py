@@ -14,6 +14,7 @@ from physicalai.inference.preprocessors.joint_frame import JointFramePreprocesso
 from physicalai.inference.preprocessors.lambda_processor import LambdaPreprocessor
 from physicalai.inference.preprocessors.molmoact2 import MolmoAct2ModelInputs, MolmoAct2Preprocessor
 from physicalai.inference.preprocessors.new_line import NewLinePreprocessor
+from physicalai.inference.preprocessors.noise import NoisePreprocessor
 from physicalai.inference.preprocessors.ov_tokenizer import OVTokenizer
 from physicalai.inference.preprocessors.patch_policy import PatchPolicyPreprocessor
 from physicalai.inference.preprocessors.pi05 import Pi05Preprocessor
@@ -21,7 +22,9 @@ from physicalai.inference.preprocessors.resize import ResizeMode, ResizePreproce
 from physicalai.inference.preprocessors.rldx1 import Rldx1Preprocessor, Rldx1RopePreprocessor, Rldx1TokenComposer
 from physicalai.inference.preprocessors.smolvla import ResizeSmolVLA
 from physicalai.inference.preprocessors.stats_normalizer import StatsNormalizer
+from physicalai.inference.preprocessors.task_index import TaskIndexPreprocessor
 from physicalai.inference.preprocessors.to_tensor import ToFloatTensorPreprocessor
+from physicalai.inference.preprocessors.vla_jepa import VLAJEPAPreprocessor
 from physicalai.inference.preprocessors.xr0 import XR0Preprocessor
 
 __all__ = [
@@ -32,6 +35,7 @@ __all__ = [
     "MolmoAct2ModelInputs",
     "MolmoAct2Preprocessor",
     "NewLinePreprocessor",
+    "NoisePreprocessor",
     "OVTokenizer",
     "PatchPolicyPreprocessor",
     "Pi05Preprocessor",
@@ -43,6 +47,8 @@ __all__ = [
     "Rldx1RopePreprocessor",
     "Rldx1TokenComposer",
     "StatsNormalizer",
+    "TaskIndexPreprocessor",
     "ToFloatTensorPreprocessor",
+    "VLAJEPAPreprocessor",
     "XR0Preprocessor",
 ]

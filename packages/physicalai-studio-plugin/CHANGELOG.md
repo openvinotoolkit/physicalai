@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.6.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-studio-plugin-v0.5.0...physicalai-studio-plugin-v0.6.0) (2026-11-19)
+
+
+### ✨ Features
+
+* **studio-plugin:** add the autopilot contract ([#472](https://github.com/openvinotoolkit/physicalai/issues/472)) ([cd997b5](https://github.com/openvinotoolkit/physicalai/commit/cd997b5379a47ad9f1c4859d17814c33e02a5608))
+
+## [0.5.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-studio-plugin-v0.4.0...physicalai-studio-plugin-v0.5.0) (2026-10-30)
+
+
+### ✨ Features
+
+* **mujoco:** record bucket_sort in Studio, run it on more arms, and give every robot a 3D model ([#404](https://github.com/openvinotoolkit/physicalai/issues/404)) ([70a360b](https://github.com/openvinotoolkit/physicalai/commit/70a360b15c749a64b8460cdbd3157a2b8726f925))
+
+
+### 🔧 Chores
+
+* deprecate `RobotAdapterOptions` ([#374](https://github.com/openvinotoolkit/physicalai/issues/374)) ([0ca5b8e](https://github.com/openvinotoolkit/physicalai/commit/0ca5b8e06c132aa2c83aa7a92bc6dfb79a7b231f))
+
 ## [0.4.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-studio-plugin-v0.3.0...physicalai-studio-plugin-v0.4.0) (2026-10-20)
 
 

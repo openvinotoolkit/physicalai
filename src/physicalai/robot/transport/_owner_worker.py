@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any
 from loguru import logger
 
 from physicalai.config import ConfigError
-from physicalai.robot.errors import RobotTransportError
+from physicalai.robot.errors import RobotCalibrationError, RobotTransportError
 from physicalai.robot.interface import Robot
 from physicalai.robot.transport._codec import (  # noqa: PLC2701
     ROBOT_TRANSPORT_PROTOCOL_VERSION,
@@ -105,6 +105,7 @@ def signal_error(
     *,
     phase: str | None = None,
     device_ids: tuple[str, ...] | None = None,
+    calibration_error: RobotCalibrationError | None = None,
 ) -> None:
     payload: dict[str, Any] = {"msg": msg}
     if tb:
@@ -113,6 +114,11 @@ def signal_error(
         payload["phase"] = phase
     if device_ids:
         payload["device_ids"] = list(device_ids)
+    if calibration_error is not None:
+        payload["calibration"] = {
+            "reason": calibration_error.reason,
+            "path": calibration_error.calibration_path,
+        }
     sys.stdout.write(f"ERROR:{json.dumps(payload)}\n")
     sys.stdout.flush()
     sys.stdout.close()
@@ -338,12 +344,15 @@ def _connect_and_build_metadata(
         The msgpack-encoded ``/metadata`` payload.
 
     Raises:
+        RobotCalibrationError: If the driver requires calibration setup.
         _StartupError: ``phase="connection_failed"`` if ``driver.connect()``
             raises.
     """
     try:
         logger.trace(f"Connecting robot driver for {config.name!r}")
         driver.connect()
+    except RobotCalibrationError:
+        raise
     except Exception as exc:
         msg = f"driver.connect() failed: {exc}"
         raise _StartupError(msg, phase="connection_failed") from exc
@@ -470,7 +479,7 @@ def _startup(config: RobotOwnerConfig) -> _Endpoints:
         with contextlib.suppress(Exception):
             driver.disconnect()
         locks.release_all()
-        if isinstance(exc, _StartupError):
+        if isinstance(exc, (_StartupError, RobotCalibrationError)):
             raise
         msg = f"unexpected startup failure after acquiring locks: {type(exc).__name__}: {exc}"
         raise _StartupError(msg, phase="unexpected_startup_failure") from exc
@@ -580,7 +589,13 @@ def main() -> int:
     except RobotTransportError as exc:
         if not stdout_restored:
             restore_stdout(saved_stdout_fd)
-        signal_error(str(exc), tb=traceback.format_exc(), phase=exc.phase, device_ids=exc.device_ids)
+        signal_error(
+            str(exc),
+            tb=traceback.format_exc(),
+            phase=exc.phase,
+            device_ids=exc.device_ids,
+            calibration_error=exc if isinstance(exc, RobotCalibrationError) else None,
+        )
         return 1
     except Exception as exc:  # noqa: BLE001
         if not stdout_restored:

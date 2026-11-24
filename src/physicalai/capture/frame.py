@@ -20,9 +20,12 @@ class Frame:
     Attributes:
         data: Image array. ``(H, W, 3)`` uint8 for colour,
             ``(H, W)`` uint8 for grayscale, ``(H, W)`` uint16 for depth.
-        timestamp: ``time.monotonic()`` at the moment of capture.
-        sequence: Monotonically increasing counter per source (0, 1, 2, …).
-            Gaps indicate dropped frames.
+        timestamp: Backend-local ``time.monotonic()`` acquisition time.
+            For IP streams this is decode/conversion completion, not source
+            capture time; network buffering is not represented. SharedCamera
+            preserves the publisher's timestamp, including on cached reads.
+        sequence: Monotonically increasing counter per connection (0, 1, 2, …).
+            Gaps indicate skipped local frames, not necessarily source drops.
     """
 
     data: NDArray[np.uint8] | NDArray[np.uint16]

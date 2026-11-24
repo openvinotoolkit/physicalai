@@ -2,11 +2,73 @@
 
 ## Unreleased
 
+### Added
+
+* **mujoco:** The autopilot protocol for Physical AI Studio (`/autopilot/v1`, protocol 1 of `physicalai-studio-plugin` 0.6): Studio starts an episode with `POST /autopilot/v1/episodes`, the simulation lays the scene out and reports it `ready` with its instruction, Studio begins it, the demonstrator leads Studio's follower as a virtual leader, and the simulation ends the episode once with its outcome (`success`, `failure`, `stalled` or `aborted`) and gives the scene settings back. One episode at a time, with ids chosen by the simulation; a new `POST` replaces the episode in progress. The conveyor and bucket_sort scenes support it; others say why not. Simulated follower entries carry an `AutopilotSpec` whose leader reads the simulation Studio started.
+* **mujoco:** An episode in progress ends as `aborted` after 1 s without a `GET /leader` read or a request under `/autopilot/v1`, and before any other change to the scene applies: a control request, a viewer control, the native viewer's reset, a scene switch or shutdown. Nothing answers `409` for these.
+* **mujoco:** `GET /leader` samples carry the autopilot episode's `episode_id` and `phase`, which `MuJoCoVirtualLeader` exposes on each observation and as attributes.
+* **mujoco:** OpenArm v2 twin (`openarm`, provisional): Enactic's bimanual MJCF under LeRobot's `BiOpenArmFollower` names and units, in the new `openarm_cell` scene with the cell's overhead camera. OpenArm is not in MuJoCo Menagerie, so the model downloads on first use from the pinned `openarm-mujoco` 2.3.0 source archive on PyPI into the Menagerie cache (`OPENARM_MUJOCO_ROOT` overrides it); `prefetch` fetches it too.
+* **mujoco:** Camera streams also render geom group 5 (`CAMERA_ONLY_GEOM_GROUP`), which viewers hide: the OpenArm Cell's opaque wall panels, whose glass stand-ins the viewer leaves out.
+
 ### Changed
 
 * **mujoco:** The SO-101 arm is now MuJoCo Menagerie's `robotstudio_so101` loaded through the pinned `mujoco-menagerie` package (2026.9.4), which downloads it on first use (about 4 MB) into a per-user cache. Scenes hold no robot: `SceneConfig.load_model()` attaches the arm at each scene's `robot_mount` frame. Joint and camera names, normalized units, camera views and physics are unchanged. `urdf/so101/so101.xml`, `so101_robot_bodies.xml`, `so101_robot_config.xml` and `urdf/so101_dual/` are removed; `mujoco.MjModel.from_xml_path` on a scene file now gives a model without the arm.
 * **mujoco:** `physicalai-mujoco-so101 start` downloads the robot model before it starts the simulation owner, with a progress bar, so a slow first download no longer fails as an owner startup timeout. The new `physicalai-mujoco-so101 prefetch` command downloads every robot model ahead of time for offline machines.
+* **mujoco:** Every MuJoCo follower in Studio has a 3D model. The SO-101s keep their URDFs; the others, the WidowX AI's included, get a URDF built from the robot's MuJoCo model on first use and cached per user, so the robot page and dataset playback no longer wait forever on "Loading robot model...".
 * **mujoco:** Studio's MuJoCo follower probes report an owner as online only when it drives that entry's joints, so the single-arm entry no longer attaches to a bimanual simulation or the other way round.
+* **mujoco:** The viewer's autopilot option for the hand-added MuJoCo Virtual Leader is labelled **Virtual leader (manual teleop)**. The overview camera is no longer locked while Studio records; a switch during an autopilot episode ends the episode.
+
+### Removed
+
+* **mujoco:** `POST /studio/recording` (now `404`), the viewer's **Record in Studio** controls, the `start --studio-url` option and `MuJoCoRobot(studio_url=...)`: the simulation no longer connects to Studio, whose websocket session it used has not worked since Studio's runtime sessions changed. Studio records the autopilot from its recording page instead.
+
+## [0.6.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-mujoco-plugin-v0.5.0...physicalai-mujoco-plugin-v0.6.0) (2026-11-20)
+
+
+### ✨ Features
+
+* **mujoco:** add the OpenArm v2 twin and the OpenArm Cell scene ([#435](https://github.com/openvinotoolkit/physicalai/issues/435)) ([761e832](https://github.com/openvinotoolkit/physicalai/commit/761e8324f5a4937b55dc603bdfce0bcd6b68f8da))
+* **mujoco:** serve the autopilot contract and drop the Studio recorder ([#473](https://github.com/openvinotoolkit/physicalai/issues/473)) ([bbb24c7](https://github.com/openvinotoolkit/physicalai/commit/bbb24c7e07e4cdf6d8f7011e73316fa8c7802462))
+* **mujoco:** show a target ghost of every robot in the viewer ([#438](https://github.com/openvinotoolkit/physicalai/issues/438)) ([6d3c5fb](https://github.com/openvinotoolkit/physicalai/commit/6d3c5fb75b9db4cd5f51fb67de610f531bc667f1))
+* **rebot-b601:** add feedforward, speed limits, safe start-up and park ([#433](https://github.com/openvinotoolkit/physicalai/issues/433)) ([75f24e4](https://github.com/openvinotoolkit/physicalai/commit/75f24e4adc4215b74354959ce9f41483bfc2135a))
+
+
+### ✅ Tests
+
+* **mujoco:** retry shared-owner port collisions ([#431](https://github.com/openvinotoolkit/physicalai/issues/431)) ([ee381b7](https://github.com/openvinotoolkit/physicalai/commit/ee381b7b7643d173e9b6b74e8702fa6e800b2943))
+
+
+### 🔧 Chores
+
+* **deps:** lock file maintenance ([#428](https://github.com/openvinotoolkit/physicalai/issues/428)) ([c45cf71](https://github.com/openvinotoolkit/physicalai/commit/c45cf71f0ff5ac0d7762c2a5b9e198fedc896355))
+
+## [0.5.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-mujoco-plugin-v0.4.0...physicalai-mujoco-plugin-v0.5.0) (2026-10-30)
+
+
+### ✨ Features
+
+* **mujoco:** add a scripted demonstrator for bucket_sort ([#400](https://github.com/openvinotoolkit/physicalai/issues/400)) ([3f0869f](https://github.com/openvinotoolkit/physicalai/commit/3f0869f3f4a3bcd189390cd16491fcb2bf445929))
+* **mujoco:** add the bucket_sort scene for the Franka FR3 ([#398](https://github.com/openvinotoolkit/physicalai/issues/398)) ([06df4b0](https://github.com/openvinotoolkit/physicalai/commit/06df4b07e15205848f8b8345c7a6b707038bf416))
+* **mujoco:** Franka FR3 with hand and FR3 Duo twins, ease streamed actions ([#393](https://github.com/openvinotoolkit/physicalai/issues/393)) ([ab545d8](https://github.com/openvinotoolkit/physicalai/commit/ab545d868754fbb5bb4d61449da7239c1f944f11))
+* **mujoco:** record bucket_sort in Studio, run it on more arms, and give every robot a 3D model ([#404](https://github.com/openvinotoolkit/physicalai/issues/404)) ([70a360b](https://github.com/openvinotoolkit/physicalai/commit/70a360b15c749a64b8460cdbd3157a2b8726f925))
+* **mujoco:** start Studio's viewer dark and close on the bucket_sort table ([#415](https://github.com/openvinotoolkit/physicalai/issues/415)) ([3c92c1f](https://github.com/openvinotoolkit/physicalai/commit/3c92c1f18527afc7feb019bdd255cc64d27c729b))
+
+
+### 🐛 Bug Fixes
+
+* **mujoco-plugin:** write the README for a PyPI install ([#389](https://github.com/openvinotoolkit/physicalai/issues/389)) ([a3b1359](https://github.com/openvinotoolkit/physicalai/commit/a3b1359be93a180d2b3e5696afe93069339a9034))
+* **mujoco:** require physicalai-studio-plugin 0.5.0 ([#423](https://github.com/openvinotoolkit/physicalai/issues/423)) ([ca89a35](https://github.com/openvinotoolkit/physicalai/commit/ca89a35bcf4a2da824749d9e24f6e8bd190c06e1))
+* **mujoco:** show camera previews in the viewer on first start ([#399](https://github.com/openvinotoolkit/physicalai/issues/399)) ([e93eb9c](https://github.com/openvinotoolkit/physicalai/commit/e93eb9c575c01672873540098c4fa3320e092577))
+
+
+### 📚 Documentation
+
+* add a tutorial that runs a policy in the MuJoCo simulation ([#380](https://github.com/openvinotoolkit/physicalai/issues/380)) ([7308fcc](https://github.com/openvinotoolkit/physicalai/commit/7308fcc45ebd624110d0c3a50fce4a06cf87dae8))
+
+
+### 🔧 Chores
+
+* deprecate `RobotAdapterOptions` ([#374](https://github.com/openvinotoolkit/physicalai/issues/374)) ([0ca5b8e](https://github.com/openvinotoolkit/physicalai/commit/0ca5b8e06c132aa2c83aa7a92bc6dfb79a7b231f))
 
 ## [0.4.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-mujoco-plugin-v0.3.1...physicalai-mujoco-plugin-v0.4.0) (2026-10-20)
 

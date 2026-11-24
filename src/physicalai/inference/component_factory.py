@@ -103,16 +103,22 @@ component_registry = ComponentRegistry()
 component_registry.register("single_pass", "physicalai.inference.runners.SinglePass")
 
 # Preprocessors
+component_registry.register(
+    "stack_observation_history", "physicalai.inference.preprocessors.observation_history.StackObservationHistory"
+)
 component_registry.register("normalize", "physicalai.inference.preprocessors.StatsNormalizer")
 component_registry.register("resize", "physicalai.inference.preprocessors.ResizePreprocessor")
 component_registry.register("smolvla_resize", "physicalai.inference.preprocessors.ResizeSmolVLA")
 component_registry.register("new_line", "physicalai.inference.preprocessors.NewLinePreprocessor")
+component_registry.register("noise", "physicalai.inference.preprocessors.NoisePreprocessor")
+component_registry.register("task_index", "physicalai.inference.preprocessors.TaskIndexPreprocessor")
 component_registry.register("hf_tokenizer", "physicalai.inference.preprocessors.HFTokenizer")
 component_registry.register("molmoact2", "physicalai.inference.preprocessors.MolmoAct2Preprocessor")
 component_registry.register("molmoact2_inputs", "physicalai.inference.preprocessors.MolmoAct2ModelInputs")
 component_registry.register("ov_tokenizer", "physicalai.inference.preprocessors.OVTokenizer")
 component_registry.register("pi05", "physicalai.inference.preprocessors.Pi05Preprocessor")
 component_registry.register("xr0", "physicalai.inference.preprocessors.XR0Preprocessor")
+component_registry.register("vla_jepa", "physicalai.inference.preprocessors.VLAJEPAPreprocessor")
 component_registry.register("rldx1", "physicalai.inference.preprocessors.Rldx1Preprocessor")
 component_registry.register("rldx1_token_composer", "physicalai.inference.preprocessors.Rldx1TokenComposer")
 component_registry.register("rldx1_rope", "physicalai.inference.preprocessors.Rldx1RopePreprocessor")

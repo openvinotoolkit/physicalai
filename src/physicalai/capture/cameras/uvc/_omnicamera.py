@@ -100,6 +100,8 @@ class OmniCamera(Camera):
         self._sequence = 0
         self._cam: omni_camera.Camera | None = None
         self._last_frame: np.ndarray | None = None
+        self._latest_frame: Frame | None = None
+        self._last_timestamp = 0.0
 
     @staticmethod
     def _physical_cameras(infos: list[omni_camera.CameraInfo]) -> list[omni_camera.CameraInfo]:
@@ -320,6 +322,8 @@ class OmniCamera(Camera):
             raise CaptureTimeoutError(msg)
 
         self._last_frame = frame_data
+        self._latest_frame = None
+        self._last_timestamp = time.monotonic()
         self._connected = True
         self._sequence = seq
 
@@ -329,6 +333,8 @@ class OmniCamera(Camera):
         self._cam = None
         self._connected = False
         self._last_frame = None
+        self._latest_frame = None
+        self._last_timestamp = 0.0
 
     @property
     def is_connected(self) -> bool:
@@ -338,6 +344,16 @@ class OmniCamera(Camera):
     def device_id(self) -> str:
         return str(self._device_id_raw)
 
+    def _cache_frame(self, frame_data: np.ndarray, sequence: int) -> Frame:
+        if self._latest_frame is None or sequence != self._sequence:
+            converted = self._convert_color(frame_data)
+            if sequence != self._sequence or self._last_frame is None:
+                self._last_timestamp = time.monotonic()
+            self._sequence = sequence
+            self._last_frame = None
+            self._latest_frame = Frame(data=converted, timestamp=self._last_timestamp, sequence=sequence)
+        return self._latest_frame
+
     def read(self, timeout: float = 2.0) -> Frame:
         if not self._connected or self._cam is None:
             err = NotConnectedError()
@@ -346,12 +362,11 @@ class OmniCamera(Camera):
         deadline = time.monotonic() + timeout
         while True:
             try:
-                frame_data, seq = self._cam.poll_frame_np_with_seq()
-                if frame_data is not None and seq != self._sequence:
-                    converted = self._convert_color(frame_data)
-                    self._sequence = seq
-                    self._last_frame = frame_data
-                    return Frame(data=converted, timestamp=time.monotonic(), sequence=self._sequence)
+                result = self._cam.poll_frame_np_with_seq()
+                if result is not None:
+                    frame_data, seq = result
+                    if frame_data is not None and seq != self._sequence:
+                        return self._cache_frame(frame_data, seq)
                 last_error = None
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
@@ -372,23 +387,20 @@ class OmniCamera(Camera):
             raise err
 
         try:
-            frame_data, seq = self._cam.poll_frame_np_with_seq()
-            if frame_data is not None:
-                converted = self._convert_color(frame_data)
-                self._sequence = seq
-                self._last_frame = frame_data
-                return Frame(data=converted, timestamp=time.monotonic(), sequence=self._sequence)
+            result = self._cam.poll_frame_np_with_seq()
+            if result is not None:
+                frame_data, seq = result
+                if frame_data is not None:
+                    return self._cache_frame(frame_data, seq)
         except Exception as exc:
             self._do_disconnect()
             msg = f"Failed to read frame from device: {self.device_id}"
             raise CaptureError(msg) from exc
 
+        if self._latest_frame is not None:
+            return self._latest_frame
         if self._last_frame is not None:
-            return Frame(
-                data=self._convert_color(self._last_frame),
-                timestamp=time.monotonic(),
-                sequence=self._sequence,
-            )
+            return self._cache_frame(self._last_frame, self._sequence)
 
         msg = "No frame available"
         raise CaptureError(msg)

@@ -16,7 +16,6 @@ import dataclasses
 import importlib.machinery
 import sys
 import types
-from itertools import starmap
 from typing import TYPE_CHECKING, Any, Literal, TypeGuard, Union, cast, get_args, get_origin
 
 from loguru import logger
@@ -34,6 +33,8 @@ from physicalai_studio_plugin import (
 from pydantic import BaseModel, ConfigDict, Field, create_model
 from serial.tools import list_ports
 
+from physicalai_lerobot_plugin._calibration import build_device
+from physicalai_lerobot_plugin._config import materialize_config as _materialize_dataclass
 from physicalai_lerobot_plugin.constants import trust_unverified_plugins
 
 if TYPE_CHECKING:
@@ -50,6 +51,7 @@ if TYPE_CHECKING:
 
 _ROBOTS_TO_SKIP: frozenset[str] = frozenset({
     "mock_robot",  # test-only
+    "sim",  # lerobot>=0.7: a gym env driven as a robot; its nested env choice has no Studio form
 })
 
 
@@ -120,7 +122,6 @@ def _ensure_lerobot_third_party_plugins_imported() -> None:
 
 _REQUIRED_SENTINEL: Any = object()
 _PAYLOAD_MODEL_CACHE: dict[type, type[BaseModel]] = {}
-_PAIR_LEN: int = 2
 _NON_SERIAL_PORT_MODULES: frozenset[str] = frozenset({"reachy2", "yam_follower"})
 _ADVANCED_CONFIGURATION_NAME_MARKERS: frozenset[str] = frozenset({
     "calibration",
@@ -241,74 +242,6 @@ def _to_plain_data(value: object) -> object:
     return value
 
 
-def _coerce_to_annotation(  # noqa: C901, PLR0911, PLR0912
-    annotation: object,
-    value: object,
-) -> object:
-    if value is None:
-        return None
-
-    if annotation is Any:
-        return value
-
-    if _is_dataclass_type(annotation):
-        if isinstance(annotation, type) and isinstance(value, annotation):
-            return value
-        if isinstance(value, dict):
-            return _materialize_dataclass(annotation, value)
-        return value
-
-    origin = get_origin(annotation)
-    if origin is None:
-        return value
-
-    args = get_args(annotation)
-    if origin in {Union, types.UnionType}:
-        non_none_args = [arg for arg in args if arg is not type(None)]
-        for arg in non_none_args:
-            converted = _coerce_to_annotation(arg, value)
-            expected = get_origin(arg)
-            if expected is None and isinstance(arg, type):
-                if isinstance(converted, arg):
-                    return converted
-            elif expected is not None:
-                if expected is list and not isinstance(value, list):
-                    continue
-                if expected is dict and not isinstance(value, dict):
-                    continue
-                if expected is tuple and not isinstance(value, tuple | list):
-                    continue
-                if expected is set and not isinstance(value, set | list | tuple):
-                    continue
-                return converted
-        return value
-
-    if origin is list and args and isinstance(value, list):
-        return [_coerce_to_annotation(args[0], item) for item in value]
-    if origin is tuple and args and isinstance(value, tuple | list):
-        if len(args) == _PAIR_LEN and args[1] is Ellipsis:
-            return tuple(_coerce_to_annotation(args[0], item) for item in value)
-        return tuple(starmap(_coerce_to_annotation, zip(args, value, strict=False)))
-    if origin is dict and len(args) == _PAIR_LEN and isinstance(value, dict):
-        key_type, val_type = args
-        return {
-            _coerce_to_annotation(key_type, key): _coerce_to_annotation(val_type, val) for key, val in value.items()
-        }
-    if origin is set and args and isinstance(value, set | list | tuple):
-        return {_coerce_to_annotation(args[0], item) for item in value}
-
-    return value
-
-
-def _materialize_dataclass(config_cls: type[object], payload_data: dict[str, object]) -> object:
-    kwargs: dict[str, object] = {}
-    for f in dataclasses.fields(config_cls):
-        if f.name not in payload_data:
-            continue
-        kwargs[f.name] = _coerce_to_annotation(f.type, payload_data[f.name])
-    return config_cls(**kwargs)
-
-
 def _config_to_kwargs(config: object) -> dict[str, object]:
     if not dataclasses.is_dataclass(config):
         msg = f"Expected dataclass instance, got {type(config)!r}"
@@ -397,18 +330,25 @@ def _make_payload_model(config_cls: type[Any]) -> type[BaseModel]:
     field_defs: dict[str, tuple[Any, Any]] = {}
     for f in dataclasses.fields(config_cls):
         pydantic_type, default_val = _resolve_field_type(f)
+        description = f.name
         ui_options: RobotFieldUiOptions = {}
         if f.name == "id":
             ui_options["required"] = True
+            description = (
+                "LeRobot identifier used to select saved calibration files, not the Studio robot ID. "
+                "For a single arm, enter the calibration filename without .json "
+                "(for example, leader for leader.json). "
+                "Files are loaded from Calibration directory, or LeRobot's default directory when unset."
+            )
         if any(marker in f.name for marker in _ADVANCED_CONFIGURATION_NAME_MARKERS):
             ui_options["advanced_configuration"] = True
         extra = robot_field_ui(ui_options) if ui_options else None
         if default_val is _REQUIRED_SENTINEL:
-            field_defs[f.name] = (pydantic_type, Field(..., description=f.name, json_schema_extra=extra))
+            field_defs[f.name] = (pydantic_type, Field(..., description=description, json_schema_extra=extra))
         else:
             field_defs[f.name] = (
                 pydantic_type,
-                Field(default=default_val, description=f.name, json_schema_extra=extra),
+                Field(default=default_val, description=description, json_schema_extra=extra),
             )
 
     payload_model = create_model(
@@ -511,7 +451,7 @@ def _make_builder(
         lerobot_config = _materialize_dataclass(config_cls, payload_data)
         await _resolve_ports_in_dataclass(lerobot_config, factory)
         config_kwargs = _config_to_kwargs(lerobot_config)
-        lerobot_robot = make_robot_from_config(lerobot_config)
+        lerobot_robot = build_device(make_robot_from_config, lerobot_config)
         return LeRobotAdapter(
             config_type,
             config_kwargs,
@@ -562,7 +502,7 @@ def _make_teleop_builder(
         teleop_config = _materialize_dataclass(config_cls, payload_data)
         await _resolve_ports_in_dataclass(teleop_config, factory)
         config_kwargs = _config_to_kwargs(teleop_config)
-        teleoperator = make_teleoperator_from_config(teleop_config)
+        teleoperator = build_device(make_teleoperator_from_config, teleop_config)
         return LeRobotTeleoperatorAdapter(
             config_type,
             config_kwargs,

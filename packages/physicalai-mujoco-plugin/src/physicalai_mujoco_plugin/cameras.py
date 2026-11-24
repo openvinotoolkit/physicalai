@@ -31,6 +31,28 @@ if TYPE_CHECKING:
 
 GL_PROBE_TIMEOUT_S = 10.0
 """How long the rendering probe may take; a host without a usable GL backend can hang instead of failing."""
+CAMERA_ONLY_GEOM_GROUP = 5
+"""Geom group that camera streams render and the viewers hide (MuJoCo and mjviser show groups 0-2).
+
+A scene puts geometry there that the cameras must see as on the real robot but that would block
+the operator's view in the 3D viewer, such as the OpenArm Cell's opaque walls behind its glass ones.
+"""
+
+
+@functools.cache
+def camera_scene_option() -> object:
+    """Return the scene option of camera streams: MuJoCo's default, plus :data:`CAMERA_ONLY_GEOM_GROUP`.
+
+    Returns:
+        A ``mujoco.MjvOption``, shared and never modified after this call.
+    """
+    import mujoco  # noqa: PLC0415
+
+    option = mujoco.MjvOption()
+    option.geomgroup[CAMERA_ONLY_GEOM_GROUP] = 1
+    return option
+
+
 _GL_PROBE = """
 import mujoco
 with mujoco.Renderer(mujoco.MjModel.from_xml_string("<mujoco/>"), 8, 8) as renderer:
@@ -291,7 +313,7 @@ class CameraService:
                 continue
 
             try:
-                renderer.update_scene(data, camera=config.name)
+                renderer.update_scene(data, camera=config.name, scene_option=camera_scene_option())
                 # mujoco.Renderer already returns the image upright (it flips the
                 # OpenGL read-back itself), so the frame is used as rendered.
                 frame = renderer.render()[:, :, :3]
@@ -341,4 +363,12 @@ class CameraService:
                 renderer.close()
 
 
-__all__ = ["GL_PROBE_TIMEOUT_S", "CameraConfig", "CameraService", "RenderingProbe", "offscreen_rendering_available"]
+__all__ = [
+    "CAMERA_ONLY_GEOM_GROUP",
+    "GL_PROBE_TIMEOUT_S",
+    "CameraConfig",
+    "CameraService",
+    "RenderingProbe",
+    "camera_scene_option",
+    "offscreen_rendering_available",
+]

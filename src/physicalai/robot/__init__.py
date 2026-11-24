@@ -19,6 +19,7 @@ from physicalai.robot.composite import BimanualRobot, CompositeRobot, CompositeR
 from physicalai.robot.connect import connect
 from physicalai.robot.device_ids import device_id_from_serial_port
 from physicalai.robot.errors import (
+    RobotCalibrationError,
     RobotDeviceAlreadyOwned,
     RobotError,
     RobotNameConflict,
@@ -42,6 +43,7 @@ __all__ = [
     "CompositeRobot",
     "CompositeRobotObservation",
     "Robot",
+    "RobotCalibrationError",
     "RobotDeviceAlreadyOwned",
     "RobotError",
     "RobotNameConflict",

@@ -13,6 +13,11 @@ onto a command queue that the simulation thread drains, so MuJoCo
 *stepping* only ever happens on the simulation thread; the status callback
 passed to :func:`build_app` runs on the HTTP thread and is responsible for
 its own locking.
+
+Physical AI Studio records the autopilot through ``/autopilot/v1`` (protocol 1 of
+``physicalai_studio_plugin.autopilot``): those routes answer from the
+:class:`~.autopilot.EpisodeBook` directly and never touch MuJoCo. A control request
+queued here ends an episode in progress before it applies (see ``control.py``).
 """
 
 from __future__ import annotations
@@ -33,18 +38,19 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, ValidationError, field_validator, model_validator
+from physicalai_studio_plugin.autopilot import AUTOPILOT_PATH, AutopilotError, EpisodeRequest
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, ValidationError, model_validator
 from starlette.concurrency import run_in_threadpool
 
+from physicalai_mujoco_plugin.autopilot import AutopilotRefusal
 from physicalai_mujoco_plugin.compose import OverviewStyle  # noqa: TC001 - pydantic reads it at runtime
 from physicalai_mujoco_plugin.constants import MAX_SEED
-from physicalai_mujoco_plugin.studio_recorder import DEFAULT_TASK, MAX_EPISODES, MAX_TASK_CHARS, RecordingOptions
 
 if TYPE_CHECKING:
     import queue
     from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 
-    from physicalai_mujoco_plugin.autopilot import AutopilotMode
+    from physicalai_mujoco_plugin.autopilot import AutopilotMode, EpisodeBook
 
 _MJPEG_BOUNDARY = "mujoco-frame"
 _FRAME_WAIT_TIMEOUT_S = 1.0
@@ -138,13 +144,6 @@ class SetAutopilotCommand:
     mode: AutopilotMode
 
 
-@dataclass(frozen=True)
-class SetStudioRecordingCommand:
-    """Switch automatic Studio episode recording on with `options`, or off with ``None``."""
-
-    options: RecordingOptions | None
-
-
 @dataclass(frozen=True, eq=False)
 class ReplayCommand:
     """Play recorded joint positions back kinematically until a :class:`StopReplayCommand`."""
@@ -170,7 +169,6 @@ SimCommand = (
     | SetBeltSpeedCommand
     | SetObjectPoseCommand
     | SetAutopilotCommand
-    | SetStudioRecordingCommand
     | ReplayCommand
     | StopReplayCommand
 )
@@ -189,26 +187,6 @@ class AutopilotRequest(BaseModel):
     """Body for ``POST /autopilot``."""
 
     mode: Literal["off", "drive", "leader"]
-
-
-class StudioRecordingRequest(BaseModel):
-    """Body for ``POST /studio/recording``; the Studio URL is a launch option, not a request field."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool
-    task: Annotated[str, Field(min_length=1, max_length=MAX_TASK_CHARS)] = DEFAULT_TASK
-    keep: Literal["all", "perfect"] = "perfect"
-    max_episodes: Annotated[int, Field(ge=0, le=MAX_EPISODES)] = 0
-
-    @field_validator("task")
-    @classmethod
-    def _task_has_text(cls, task: str) -> str:
-        task = task.strip()
-        if not task:
-            msg = "task must not be blank"
-            raise ValueError(msg)
-        return task
 
 
 class OverviewRequest(BaseModel):
@@ -417,6 +395,7 @@ def build_app(
     get_status: Callable[[], dict[str, Any]],
     get_leader: Callable[[], dict[str, Any]] | None = None,
     check_replay: Callable[[np.ndarray], str | None] | None = None,
+    autopilot: EpisodeBook | None = None,
     jpeg_quality: int = 85,
 ) -> FastAPI:
     """Build the FastAPI application serving camera streams and control.
@@ -433,16 +412,18 @@ def build_app(
             (free-object poses), ``cameras`` (per-camera config),
             ``viewer_url`` (the viser page, served at ``GET /viewer``), and
             for floating bases ``floating_base``, ``fallen`` and ``bases``;
-            ``POST /overview`` reads ``overview_style``, ``overview_styles``
-            (the styles the scene offers) and ``overview_locked`` (why the
-            camera must not move now, or ``None``);
+            ``POST /overview`` reads ``overview_style`` and ``overview_styles``
+            (the styles the scene offers);
             ``POST /replay`` also reads ``joint_names``, ``profile`` and
             ``replay.unsupported_joints``.
         get_leader: Returns the virtual leader pose served at ``GET /leader``
-            (see ``ConveyorAutomation.leader_snapshot``); no route without it.
+            (see ``ConveyorAutomation.read_leader``, which also counts the read as a sign of
+            life of an autopilot episode); no route without it.
         check_replay: Checks ``POST /replay`` frames of shape ``(frames, joints)`` against the
             robot's conversions and returns why they cannot be shown unchanged, or ``None``.
             Without it, every replay is refused with ``409``.
+        autopilot: The episode book served under ``/autopilot/v1`` (``ConveyorAutomation.book``);
+            no such routes without it.
         jpeg_quality: JPEG quality for streams and snapshots.
 
     Returns:
@@ -451,9 +432,14 @@ def build_app(
     app = FastAPI(title=f"{service_name} camera server")
 
     @app.exception_handler(RequestValidationError)
-    async def validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:  # noqa: RUF029
+    async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:  # noqa: RUF029
         # Leave out the echoed input: a rejected NaN/Infinity cannot be JSON-encoded.
         detail = [{"loc": list(error["loc"]), "msg": error["msg"], "type": error["type"]} for error in exc.errors()]
+        if autopilot is not None and _under(request.url.path, AUTOPILOT_PATH):
+            # The autopilot protocol answers every error with an AutopilotError.
+            message = "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in detail[:_MAX_REPORTED_ERRORS])
+            error = AutopilotError(code="bad_option", message=message or "Invalid request.")
+            return JSONResponse(status_code=422, content={"detail": error.model_dump()})
         return JSONResponse(status_code=422, content={"detail": detail})
 
     @app.get("/")
@@ -479,6 +465,9 @@ def build_app(
                 "replay": "POST /replay",
                 "replay_stop": "POST /replay/stop",
                 "shutdown": "POST /shutdown",
+                "leader": "/leader",
+                "autopilot": "POST /autopilot",
+                "autopilot_episodes": AUTOPILOT_PATH,
                 "viewer": "/viewer",
             },
             "cameras": [camera["name"] for camera in status["cameras"]],
@@ -507,6 +496,8 @@ def build_app(
     _add_sim_control_routes(app, commands=commands, get_status=get_status)
     _add_replay_routes(app, commands=commands, get_status=get_status, check=check_replay)
     _add_automation_routes(app, commands=commands, get_status=get_status, get_leader=get_leader)
+    if autopilot is not None:
+        _add_autopilot_routes(app, autopilot)
     return app
 
 
@@ -620,13 +611,9 @@ def _add_sim_control_routes(
     @app.post("/overview")
     def overview(request: OverviewRequest) -> dict[str, Any]:
         status = get_status()
-        if request.style != status.get("overview_style"):
-            locked = status.get("overview_locked")
-            if locked:
-                raise HTTPException(status_code=409, detail=locked)
-            if request.style not in status.get("overview_styles", ()):
-                detail = f"The current scene has no {request.style} overview camera; it keeps its own cameras"
-                raise HTTPException(status_code=409, detail=detail)
+        if request.style != status.get("overview_style") and request.style not in status.get("overview_styles", ()):
+            detail = f"The current scene has no {request.style} overview camera; it keeps its own cameras"
+            raise HTTPException(status_code=409, detail=detail)
         commands.put(SetOverviewCommand(style=request.style))
         return {"status": "queued", "style": request.style}
 
@@ -792,17 +779,44 @@ def _add_automation_routes(
         commands.put(SetAutopilotCommand(mode=request.mode))
         return {"status": "queued", "mode": request.mode}
 
-    @app.post("/studio/recording")
-    def studio_recording(request: StudioRecordingRequest) -> dict[str, Any]:
-        if request.enabled and get_status().get("episode", {}).get("kind") != "conveyor":
-            raise HTTPException(status_code=409, detail="Automatic Studio recording needs the conveyor scene")
-        options = (
-            RecordingOptions(task=request.task, keep=request.keep, max_episodes=request.max_episodes)
-            if request.enabled
-            else None
-        )
-        commands.put(SetStudioRecordingCommand(options=options))
-        return {"status": "queued", "enabled": request.enabled}
+
+def _under(path: str, root: str) -> bool:
+    """Return whether the request *path* is *root* or below it."""
+    return path == root or path.startswith(f"{root}/")
+
+
+def _add_autopilot_routes(app: FastAPI, book: EpisodeBook, path: str = AUTOPILOT_PATH) -> None:
+    """Serve protocol 1 of the autopilot (``physicalai_studio_plugin.autopilot``) from *book*.
+
+    Every answer is the book's, under its lock; errors are ``{"detail": AutopilotError}``. Each request is a
+    sign of life of the episode in progress.
+    """
+
+    def answer(call: Callable[[], BaseModel]) -> dict[str, Any]:
+        try:
+            return call().model_dump(mode="json")
+        except AutopilotRefusal as refusal:
+            raise HTTPException(status_code=refusal.status_code, detail=refusal.detail()) from refusal
+
+    @app.get(path)
+    def autopilot_info() -> dict[str, Any]:
+        return answer(book.info)
+
+    @app.post(f"{path}/episodes", status_code=201)
+    def start_episode(request: EpisodeRequest | None = None) -> dict[str, Any]:
+        return answer(lambda: book.create(request if request is not None else EpisodeRequest()))
+
+    @app.get(f"{path}/episodes/{{episode_id}}")
+    def get_episode(episode_id: str) -> dict[str, Any]:
+        return answer(lambda: book.get(episode_id))
+
+    @app.post(f"{path}/episodes/{{episode_id}}/begin")
+    def begin_episode(episode_id: str) -> dict[str, Any]:
+        return answer(lambda: book.begin(episode_id))
+
+    @app.post(f"{path}/episodes/{{episode_id}}/abort")
+    def abort_episode(episode_id: str) -> dict[str, Any]:
+        return answer(lambda: book.abort(episode_id))
 
 
 class HttpServer:

@@ -99,11 +99,26 @@ def test_an_incomplete_pose_is_a_connection_error(served: tuple[_Leader, int], p
         robot.disconnect()
 
 
-def test_rejects_a_simulation_with_another_joint_layout(served: tuple[_Leader, int]) -> None:
+def test_takes_the_joint_layout_the_simulation_publishes(served: tuple[_Leader, int]) -> None:
     leader, port = served
-    leader.payload = {**leader.payload, "joint_names": ["left_shoulder_pan"]}
+    names = [f"{side}_{joint}" for side in ("left", "right") for joint in ("fr3_joint1", "fr3_joint2", "gripper")]
+    leader.payload = {**leader.payload, "joint_names": names, "joint_positions": [0.0] * len(names)}
     robot = MuJoCoVirtualLeader(http_port=port)
-    with pytest.raises(ConnectionError, match="expected"):
+    assert robot.joint_names == []  # known only once connected
+    robot.connect()
+    try:
+        assert robot.joint_names == names
+        assert robot.get_observation().joint_positions.shape == (len(names),)
+    finally:
+        robot.disconnect()
+
+
+@pytest.mark.parametrize("names", [None, [], ["shoulder_pan", 3]])
+def test_rejects_a_simulation_without_joint_names(served: tuple[_Leader, int], names: object) -> None:
+    leader, port = served
+    leader.payload = {**leader.payload, "joint_names": names}
+    robot = MuJoCoVirtualLeader(http_port=port)
+    with pytest.raises(ConnectionError, match="no leader joint names"):
         robot.connect()
     assert not robot.is_connected()
 
@@ -133,3 +148,22 @@ def test_does_not_import_mujoco() -> None:
     imported = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
     imported |= {node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
     assert not any(name.startswith("mujoco") for name in imported)
+
+
+def test_exposes_the_autopilot_episode_of_each_read(served: tuple[_Leader, int]) -> None:
+    leader, port = served
+    robot = MuJoCoVirtualLeader(http_port=port)
+    robot.connect()
+    try:
+        first = robot.get_observation()
+        assert (first.episode_id, first.phase, robot.episode_id, robot.phase) == (None, None, None, None)
+        leader.payload.update(episode_id="ab12-3", phase="running")  # same seq: the episode changed between ticks
+        same_tick = robot.get_observation()
+        assert (same_tick.episode_id, same_tick.phase) == ("ab12-3", "running")
+        assert (robot.episode_id, robot.phase) == ("ab12-3", "running")
+        assert same_tick.timestamp == first.timestamp  # still the same tick: the leader did not advance
+        leader.payload.update(seq=2, phase="ended")
+        assert robot.get_observation().phase == "ended"
+    finally:
+        robot.disconnect()
+    assert robot.episode_id is None

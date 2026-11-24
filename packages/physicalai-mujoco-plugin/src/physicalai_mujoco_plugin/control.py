@@ -12,6 +12,9 @@ of stepping physics, and ignores actions. ``POST /replay/stop`` restores the phy
 before the replay, so the simulation continues as if the replay never ran. A reset, home or object
 pose command ends the replay the same way before it applies; a scene switch drops it with the old
 model.
+
+Every queued command is a change to the scene: an autopilot episode in progress (``/autopilot/v1``,
+see ``autopilot.py``) ends as ``aborted``, naming the change, before the command applies.
 """
 
 # MuJoCo model/data attributes are supplied by the C extension at runtime.
@@ -114,6 +117,7 @@ class OperatorControls:
     _http_server: HttpServer | None
     _http_host: str
     _http_port: int
+    _http_fallback_port: int | None
     _owner_name: str
     _base_status: tuple[BaseStatus, ...]
     _viewer: ViewerService | None
@@ -180,19 +184,6 @@ class OperatorControls:
         """Return whether *xml_path* is the custom ``model_path``."""
         return self._model_path is not None and Path(xml_path).resolve() == Path(self._model_path).resolve()
 
-    def _overview_lock(self) -> str | None:
-        """Return why the overview camera must not move now: automatic Studio recording is on.
-
-        Returns:
-            The reason, or ``None``.
-        """
-        if self._automation is not None and self._automation.recorder.active:
-            return (
-                "Automatic Studio recording is on, and a dataset keeps the view it was recorded with; "
-                "switch recording off to move the overview camera"
-            )
-        return None
-
     def _overview_problem(self, style: str) -> str | None:
         """Return why the overview camera cannot switch to *style* now.
 
@@ -201,9 +192,6 @@ class OperatorControls:
         """
         if style == self._overview:
             return None
-        lock = self._overview_lock()
-        if lock is not None:
-            return lock
         if style not in self._overview_styles():
             if self._scene_config is None or self._custom_model_loaded():
                 return (
@@ -222,6 +210,9 @@ class OperatorControls:
                 command = self._commands.get_nowait()
             except queue.Empty:
                 return
+            if self._automation is not None:
+                # Any change to the scene ends an autopilot episode first, which gives the scene back.
+                self._automation.end_episode_now(_change_reason(command))
             try:
                 self._handle_command(command)
             except Exception as exc:  # noqa: BLE001
@@ -249,8 +240,6 @@ class OperatorControls:
             self._go_home()
         elif isinstance(command, cmd.SetAutopilotCommand):
             self._automation.set_autopilot(command.mode)  # type: ignore[union-attr]
-        elif isinstance(command, cmd.SetStudioRecordingCommand):
-            self._automation.set_studio_recording(command.options)  # type: ignore[union-attr]
         elif isinstance(command, cmd.SetObjectPoseCommand) and sim is not None:
             self._objects.set_pose(
                 sim.model, sim.data, command.joint, command.position, command.wxyz, hold=command.hold
@@ -329,7 +318,7 @@ class OperatorControls:
             return
         if self._episode_auto_reset is not None:
             self._episode_auto_reset.notify_manual_reset()
-        self._automation.reset()  # type: ignore[union-attr]
+        self._automation.reset(self._arm_targets())  # type: ignore[union-attr]
 
     def _handle_replay_command(self, command: SimCommand) -> bool:
         """Start or stop a replay, and end it before a command that edits the physics state.
@@ -378,6 +367,8 @@ class OperatorControls:
             mujoco.mj_getState(sim.model, sim.data, saved, spec)  # type: ignore[union-attr]
         with self._state_lock:
             self._replay = Replay(command.joint_positions, command.fps, saved)
+        if self._automation is not None:
+            self._automation.book.set_busy("A replay is running; stop it first.")
         logger.info(
             "Replaying {} frames at {:g} fps; actions are ignored until the replay is stopped",
             len(command.joint_positions),
@@ -396,6 +387,8 @@ class OperatorControls:
         mujoco.mj_forward(sim.model, sim.data)  # type: ignore[union-attr]
         with self._state_lock:
             self._replay = None
+        if self._automation is not None:
+            self._automation.book.set_busy(None)
         logger.info("Replay stopped; the simulation continues from where it was before the replay")
 
     def _show_replay_frame(self, control_dt: float) -> None:
@@ -462,7 +455,7 @@ class OperatorControls:
 
         sim = self._sim
         scene = self._scene_config
-        scene_home = dict(scene.home_pose(len(sim.bindings))) if scene is not None else {}  # type: ignore[union-attr]
+        scene_home = dict(scene.home_pose(len(sim.bindings), self._profile)) if scene is not None else {}  # type: ignore[union-attr]
         for binding, channels in zip(sim.bindings, sim.channels, strict=True):  # type: ignore[union-attr]
             home = {joint: values[0] for joint, values in binding.layout.home_qpos.items() if len(values) == 1}
             home.update({joint: value for joint, value in scene_home.items() if joint in home})
@@ -508,17 +501,27 @@ class OperatorControls:
             logger.warning("Scene '{}' has no conveyor belt", self._current_scene_id)
 
     def _init_episode_auto_reset(self) -> None:
-        """Attach the scene's episode controller: the conveyor's, else the cube-on-plate auto-reset."""
+        """Attach the scene's episode controller: the conveyor's, bucket sort's, else the cube-on-plate auto-reset."""
+        from physicalai_mujoco_plugin.bucket_sort import BucketSortEpisode, BucketSortTask  # noqa: PLC0415
         from physicalai_mujoco_plugin.episode_auto_reset import EpisodeAutoReset  # noqa: PLC0415
 
         model = self._sim.model  # type: ignore[union-attr]
+        task = self._sim.on_reset  # type: ignore[union-attr]
         helper = self._automation.attach_scene(  # type: ignore[union-attr]
             model,
             rng=self._rng,
             active=self._auto_reset_active,
             robots=len(self._sim.bindings),  # type: ignore[union-attr]
             robot_roots=self._sim.robot_roots,  # type: ignore[union-attr]
+            bucket_task=task if isinstance(task, BucketSortTask) else None,
+            seed=self._seed,
+            profile=self._profile.name,
         )
+        if helper is None and isinstance(task, BucketSortTask):
+            helper = BucketSortEpisode(
+                task, self._run_scene_reset, success_dwell_s=self._auto_reset_dwell_s, active=self._auto_reset_active
+            )
+            self._automation.bind_bucket_episode(helper)  # type: ignore[union-attr]
         if helper is None:
             area = self._area
             helper = EpisodeAutoReset.maybe_create(
@@ -552,16 +555,20 @@ class OperatorControls:
             commands=self._commands,
             get_status=self._http_status,
             check_replay=self._replay_problem,
-            get_leader=self._automation.leader_snapshot,  # type: ignore[union-attr]
+            get_leader=self._automation.read_leader,  # type: ignore[union-attr]
+            autopilot=self._automation.book,  # type: ignore[union-attr]
         )
-        server = HttpServer(app, self._http_host, self._http_port)
-        try:
-            server.start()
-        except (OSError, RuntimeError) as exc:
-            logger.warning("Failed to start HTTP server on {}:{}: {}", self._http_host, self._http_port, exc)
+        # The fallback port covers a port that another process took after `start` found it free.
+        for port in dict.fromkeys(p for p in (self._http_port, self._http_fallback_port) if p):
+            server = HttpServer(app, self._http_host, port)
+            try:
+                server.start()
+            except (OSError, RuntimeError) as exc:
+                logger.warning("Failed to start HTTP server on {}:{}: {}", self._http_host, port, exc)
+                continue
+            self._http_server = server
+            logger.info("HTTP camera server running at {}", server.url)
             return
-        self._http_server = server
-        logger.info("HTTP camera server running at {}", server.url)
 
     def _start_process_watch(self) -> None:
         """Shut the owner down, as ``POST /shutdown`` does, once its parent ``exit_with_pid`` is gone.
@@ -645,7 +652,6 @@ class OperatorControls:
                 "compatible_scenes": compatible,
                 "overview_style": self._overview,
                 "overview_styles": list(self._overview_styles()),
-                "overview_locked": self._overview_lock(),
                 "seed": self._seed,
                 "episode": self._episode_status(self._episode_auto_reset),
                 "replay": self._replay_status(),
@@ -696,6 +702,7 @@ class OperatorControls:
                 object_bodies=dict(self._objects.joint_bodies),
                 view_center=tuple(float(v) for v in model.stat.center) if model is not None else (0.0, 0.0, 0.0),  # type: ignore[arg-type]
                 view_extent=float(model.stat.extent) if model is not None else 1.0,
+                view=self._scene_config.viewer_view if self._scene_config is not None else None,
                 timing=self._timing_status(),
                 profile=self._profile.name,
                 tier=self._profile.tier,
@@ -704,9 +711,35 @@ class OperatorControls:
                 replay=self._replay_status(),
                 overview_style=self._overview,
                 overview_styles=self._overview_styles(),
-                overview_locked=self._overview_lock(),
                 **(self._automation.status() if self._automation is not None else {}),
             )
+
+
+_CHANGES = {
+    "ResetCommand": "The scene was reset.",
+    "SwitchSceneCommand": "The scene was switched.",
+    "HomeCommand": "The arm was sent home.",
+    "SetSeedCommand": "The seed changed.",
+    "SetAutoResetCommand": "The episode auto-reset settings changed.",
+    "SetBeltSpeedCommand": "The belt speed changed.",
+    "SetObjectPoseCommand": "An object was moved.",
+    "SetAutopilotCommand": "The autopilot mode changed.",
+    "SetOverviewCommand": "The overview camera moved.",
+    "ReplayCommand": "A replay started.",
+    "StopReplayCommand": "A replay was stopped.",
+    "ShutdownCommand": "The simulation is shutting down.",
+}
+"""How the reason of an autopilot episode a command ends names the change."""
+
+
+def _change_reason(command: object) -> str:
+    """Return the reason an autopilot episode ends with when *command* applies.
+
+    Returns:
+        A sentence naming the change.
+    """
+    name = type(command).__name__
+    return _CHANGES.get(name, f"The scene changed ({name.removesuffix('Command')}).")
 
 
 __all__ = ["OperatorControls"]

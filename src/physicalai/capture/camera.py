@@ -117,10 +117,12 @@ class Camera(ABC):
         down the async executor if it was created.  Subclasses override
         :meth:`_do_disconnect`, not this method.
         """
-        self._do_disconnect()
-        if self.__executor is not None:
-            self.__executor.shutdown(wait=False, cancel_futures=True)
-            self.__executor = None
+        try:
+            self._do_disconnect()
+        finally:
+            if self.__executor is not None:
+                self.__executor.shutdown(wait=False, cancel_futures=True)
+                self.__executor = None
 
     @property
     @abstractmethod
@@ -164,9 +166,10 @@ class Camera(ABC):
     def read(self, timeout: float = 2.0) -> Frame:
         """Read the next frame.  Blocks until available.
 
-        Frames are returned in sequence; no frames are skipped.  Use for
-        recording, sequential processing, or any case where every frame
-        matters.
+        Hardware backends return frames in sequence. Live latest-slot
+        backends (IPCamera and SharedCamera) can skip intermediate frames;
+        they wait for a newer locally acquired/delivered frame instead.
+        These live backends do not provide lossless recording.
 
         Args:
             timeout: Maximum seconds to wait for a new frame.

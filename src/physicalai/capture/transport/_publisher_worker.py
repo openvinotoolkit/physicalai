@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from types import FrameType
 
     from physicalai.capture.camera import Camera
+    from physicalai.capture.frame import Frame
 
 _MAX_CONSECUTIVE_FAILURES = 5
 _CONTROL_MAX_SLICE_LEN = 4096
@@ -179,6 +180,22 @@ def _camera_fps_from_config(config: dict[str, object]) -> int:
     return int(fps)
 
 
+def _pace_capture(iteration_start: float, fps: int) -> None:
+    """Rate-limit unpaced capture, including acquisition and publish work."""
+    if fps > 0:
+        shutdown.wait(max(0.0, 1.0 / fps - (time.monotonic() - iteration_start)))
+
+
+def _read_live_frame(camera: Camera) -> Frame:
+    """Wait for acquisition, then discard any backlog before live publication.
+
+    Returns:
+        The newest available frame after the blocking acquisition.
+    """
+    camera.read(timeout=1.0)
+    return camera.read_latest()
+
+
 class _PublisherState:
     """Mutable holder for camera/publisher resources shared between threads.
 
@@ -274,6 +291,8 @@ def _handle_reconfigure(state: _PublisherState, request: dict, service_name: str
     Returns:
         Response dict with ``ok`` and optional ``error``.
     """
+    from physicalai.capture.cameras.ip import IPCamera  # noqa: PLC0415
+
     from ._spec import validate_reconfigure_request  # noqa: PLC0415
 
     try:
@@ -282,8 +301,11 @@ def _handle_reconfigure(state: _PublisherState, request: dict, service_name: str
         return {"ok": False, "error": f"invalid reconfigure request: {exc}"}
 
     with state.lock:
-        old_config = state.config.copy()
         old_camera = state.camera
+        if isinstance(old_camera, IPCamera):
+            return {"ok": False, "error": "IP camera reconfiguration is not supported"}
+
+        old_config = state.config.copy()
         old_fps = state.camera_fps
 
         local_camera = old_config["camera"]
@@ -299,6 +321,7 @@ def _handle_reconfigure(state: _PublisherState, request: dict, service_name: str
             old_camera.disconnect()
         except Exception:  # noqa: BLE001
             logger.warning(f"Old camera disconnect failed during reconfigure for {service_name}")
+            return {"ok": False, "error": "camera disconnect failed during reconfigure"}
 
         try:
             new_camera = build_camera(new_config)
@@ -441,12 +464,13 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0914, PLR0915
         last_node_check = 0.0
         consecutive_failures = 0
         while not shutdown.is_set():
+            iteration_start = time.monotonic()
             with state.lock:
                 current_camera = state.camera
                 current_fps = state.camera_fps
 
             try:
-                frame = current_camera.read(timeout=1.0)
+                frame = _read_live_frame(current_camera)
             except CaptureError:
                 with state.lock:
                     if state.camera is not current_camera:
@@ -476,10 +500,9 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0914, PLR0915
             with contextlib.suppress(Exception):
                 notifier.notify_with_custom_event_id(iox2.EventId.new(0))
 
-            # Yield CPU until next frame is likely ready
-            if current_fps > 0:
-                sleep_percentage = 0.85
-                time.sleep(sleep_percentage / current_fps)
+            # Limit unpaced cameras without adding a full sleep after a
+            # blocking read. IP cameras drain independently of this pacing.
+            _pace_capture(iteration_start, current_fps)
 
             now = time.monotonic()
             if now - last_node_check >= node_check_interval:

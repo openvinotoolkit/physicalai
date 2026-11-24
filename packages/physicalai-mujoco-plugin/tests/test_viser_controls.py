@@ -20,6 +20,7 @@ from physicalai_mujoco_plugin.http_server import (
     FrameBuffer,
     HomeCommand,
     ResetCommand,
+    SetAutopilotCommand,
     SetAutoResetCommand,
     SetObjectPoseCommand,
     SetOverviewCommand,
@@ -28,7 +29,9 @@ from physicalai_mujoco_plugin.http_server import (
     StopReplayCommand,
     SwitchSceneCommand,
 )
+from physicalai_mujoco_plugin.scene_registry import ViewerView
 from physicalai_mujoco_plugin.viser_controls import (
+    AUTOPILOT_LABELS,
     CUSTOM_MODEL_LABEL,
     NO_FOLLOW_LABEL,
     OVERVIEW_HINT,
@@ -288,18 +291,10 @@ class TestOverviewControl:
         _, server, _ = build_panel(make_state(overview_styles=("shoulder",)))
         assert "Overview camera" not in server.gui.handles
 
-    def test_disabled_while_studio_records_and_follows_the_style(self) -> None:
+    def test_follows_the_style(self) -> None:
         panel, server, _ = build_panel(make_state(overview_styles=self.BOTH))
-        dropdown = server.gui.handles["Overview camera"]
-        state = make_state(overview_styles=self.BOTH, overview_style="front", overview_locked="recording")
-        panel.refresh(state, now=1.0)
-        assert (dropdown.value, dropdown.disabled) == ("Front", True)
-        panel.refresh(dataclasses.replace(state, overview_locked=None), now=2.0)
-        assert dropdown.disabled is False
-
-    def test_starts_disabled_while_studio_records(self) -> None:
-        _, server, _ = build_panel(make_state(overview_styles=self.BOTH, overview_locked="recording"))
-        assert server.gui.handles["Overview camera"].disabled is True
+        panel.refresh(make_state(overview_styles=self.BOTH, overview_style="front"), now=1.0)
+        assert server.gui.handles["Overview camera"].value == "Front"
 
     def test_the_robot_folder_shows_the_style(self) -> None:
         panel, _, _ = build_panel(make_state(profile="so101", tier="twin", overview_style="front"))
@@ -381,6 +376,79 @@ class TestEpisodeControls:
         assert "Autopilot" in server.gui.folders
         assert "Autopilot" not in server.gui.handles  # no mode dropdown
         assert server.gui.handles["markdown"].content == f"Off: {reason}"
+
+    @staticmethod
+    def _bucket_sort_state(**autopilot: Any) -> PanelState:  # noqa: ANN401
+        return make_state(
+            scene_id="bucket_sort",
+            episode={
+                "enabled": True,
+                "kind": "bucket_sort",
+                "active": True,
+                "phase": "idle",
+                "episode_count": 0,
+                "success_dwell_s": 5.0,
+                "countdown_s": None,
+                "instruction": {"object": "cpu", "bucket": "red", "text": "put the CPU in the red bucket"},
+            },
+            autopilot={"available": True, "unavailable_reason": None, "mode": "off", **autopilot},
+        )
+
+    def test_a_scene_with_a_demonstrator_gets_the_autopilot_dropdown(self) -> None:
+        """bucket_sort has a demonstrator but not the conveyor: its Episode folder is followed by the Autopilot one."""
+        _, server, commands = build_panel(self._bucket_sort_state())
+        assert server.gui.folders.index("Autopilot") == server.gui.folders.index("Episode") + 1
+        dropdown = server.gui.handles["Autopilot"]
+        assert dropdown.value == "Off"
+        assert dropdown.options == tuple(AUTOPILOT_LABELS.values())
+        dropdown.fire(AUTOPILOT_LABELS["drive"])
+        dropdown.fire(AUTOPILOT_LABELS["leader"])
+        dropdown.fire(AUTOPILOT_LABELS["off"])
+        assert commands == [
+            SetAutopilotCommand(mode="drive"),
+            SetAutopilotCommand(mode="leader"),
+            SetAutopilotCommand(mode="off"),
+        ]
+
+    def test_the_viewer_only_shows_studios_episode(self) -> None:
+        """Studio records from its own page: the viewer has no recording control, only a status line."""
+        state = self._bucket_sort_state()
+        _, server, commands = build_panel(state)
+        assert "Record in Studio" not in server.gui.handles
+        assert "Keep" not in server.gui.handles
+        assert commands == []
+        running = {"episode": {"id": "e-1", "phase": "running", "task": "put the CPU in the red bucket"}}
+        panel, _, _ = build_panel(dataclasses.replace(state, autopilot_episode=running))
+        content = panel._handles.studio_status.content  # noqa: SLF001
+        assert "running - put the CPU in the red bucket" in content
+        assert "ends Studio's episode" in content
+        ended = {"episode": {"id": "e-1", "phase": "ended", "outcome": "aborted", "reason": "The scene was reset."}}
+        panel.refresh(dataclasses.replace(state, autopilot_episode=ended), now=1)
+        assert panel._handles.studio_status.content == "**Studio episode:** ended, aborted (The scene was reset.)"  # noqa: SLF001
+
+    def test_the_manual_virtual_leader_is_labelled_for_manual_teleop(self) -> None:
+        assert AUTOPILOT_LABELS["leader"] == "Virtual leader (manual teleop)"
+
+    def test_a_scene_without_a_demonstrator_has_no_autopilot_folder(self) -> None:
+        _, server, _ = build_panel(make_state(autopilot={"available": False, "unavailable_reason": None, "mode": "off"}))
+        assert "Episode" in server.gui.folders
+        assert "Autopilot" not in server.gui.folders
+        _, server, _ = build_panel()  # no autopilot status at all
+        assert "Autopilot" not in server.gui.folders
+
+    def test_the_autopilot_dropdown_and_status_follow_the_demonstrator(self) -> None:
+        """A mode chosen over HTTP, or the demonstrator's own progress, shows in the panel."""
+        panel, server, commands = build_panel(self._bucket_sort_state())
+        running = {"mode": "drive", "phase": "carry", "attempt": 1, "max_attempts": 2, "outcome": "running"}
+        panel.refresh(self._bucket_sort_state(**running), now=1.0)
+        mode, status = panel._handles.autopilot_mode  # noqa: SLF001
+        assert (mode.value, server.gui.handles["Autopilot"].value) == (AUTOPILOT_LABELS["drive"],) * 2
+        assert status.content == "**Autopilot:** carry, attempt 1/2"
+        panel.refresh(self._bucket_sort_state(**{**running, "phase": "return", "outcome": "success"}), now=2.0)
+        assert status.content == "**Autopilot:** return, attempt 1/2, success"
+        panel.refresh(self._bucket_sort_state(), now=3.0)
+        assert (mode.value, status.content) == (AUTOPILOT_LABELS["off"], "**Autopilot:** off")
+        assert commands == []  # the refresh only mirrors; it never sends a command
 
     def test_hidden_when_the_scene_has_no_auto_reset(self) -> None:
         _, server, _ = build_panel(make_state(episode={"enabled": False}))
@@ -816,6 +884,32 @@ class TestCameraTab:
         assert client.camera.fov == pytest.approx(np.deg2rad(90.0))
         np.testing.assert_allclose(client.camera.look_at, [0.1, 0.0, 0.2])
         np.testing.assert_allclose(client.camera.position, np.array([0.1, 0.0, 0.2]) + default_camera_position(2.0))
+
+    def test_a_scene_view_replaces_the_default_angle_and_sets_the_fov(self) -> None:
+        view = ViewerView(position=(-0.25, 1.42, 1.0), look_at=(0.32, 0.0, 0.22), fov_deg=51.6)
+        panel, server, _ = build_panel(make_state(view=view))
+        assert server.gui.handles["FOV (°)"].value == pytest.approx(51.6)
+        client = make_client()
+        server.connect_callbacks[0](client)
+        np.testing.assert_allclose(client.camera.position, view.position)
+        np.testing.assert_allclose(client.camera.look_at, view.look_at)
+        assert client.camera.fov == pytest.approx(np.deg2rad(51.6))
+
+        open_viewer = make_client(look_at=(1.0, 1.0, 1.0))
+        server.clients = {7: open_viewer}
+        other = ViewerView(position=(1.0, 0.0, 1.0), look_at=(0.0, 0.0, 0.0), fov_deg=70.0)
+        panel.build_camera_tab(make_state(view=other))  # a scene switch moves open viewers too
+        np.testing.assert_allclose(open_viewer.camera.look_at, other.look_at)
+        assert open_viewer.camera.fov == pytest.approx(np.deg2rad(70.0))
+        panel.build_camera_tab(make_state(view=view))
+        server.clients = {}
+
+        server.gui.handles["FOV (°)"].fire(70.0)
+        panel.build_camera_tab(make_state(view=view))  # a rebuild of the same scene keeps the slider
+        assert server.gui.handles["FOV (°)"].value == pytest.approx(70.0)
+        server.clients = {1: make_client(look_at=(1.0, 1.0, 1.0))}
+        server.gui.handles["Reset View"].fire()
+        np.testing.assert_allclose(server.clients[1].camera.look_at, view.look_at)
 
     def test_new_clients_look_at_the_followed_body(self) -> None:
         panel, server, _ = build_panel()

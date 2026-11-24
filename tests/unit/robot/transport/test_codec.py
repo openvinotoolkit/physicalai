@@ -18,6 +18,8 @@ from physicalai.robot.transport._codec import (
     encode_metadata,
     encode_state,
 )
+from physicalai.transport._codec import decode_payload as decode_shared_payload
+from physicalai.transport._codec import encode_numpy, pack_msgpack, unpack_msgpack
 
 
 class TestStateRoundtrip:
@@ -125,10 +127,8 @@ class TestMetadataRoundtrip:
         assert decode_metadata(encode_metadata(metadata)) == metadata
 
     def test_bad_payload_raises(self) -> None:
-        import msgpack
-
         with pytest.raises(TypeError, match="Expected a dict"):
-            decode_metadata(msgpack.packb([1, 2, 3]))
+            decode_metadata(pack_msgpack([1, 2, 3]))
 
     def test_oversized_payload_rejected_before_unpacking(self) -> None:
         oversized = b"\x00" * (1024 * 1024 + 1)
@@ -142,11 +142,69 @@ class TestMetadataRoundtrip:
         unpackb.assert_not_called()
 
     def test_deeply_nested_payload_rejected(self) -> None:
-        import msgpack
-
-        payload: dict = {"leaf": 1}
+        payload: dict[str, object] = {"leaf": 1}
         for _ in range(100):
             payload = {"k": payload}
 
         with pytest.raises(ValueError, match="nesting exceeds"):
-            decode_metadata(msgpack.packb(payload, use_bin_type=True))
+            decode_metadata(pack_msgpack(payload))
+
+
+class TestSharedNumpyCodec:
+    def test_uses_existing_tagged_numpy_map(self) -> None:
+        array = np.arange(6, dtype=np.float32).reshape(2, 3)
+
+        assert encode_numpy(array) == {
+            "__np__": True,
+            "dtype": "float32",
+            "shape": [2, 3],
+            "data": array.tobytes(),
+        }
+
+        encoded = pack_msgpack({"array": array})
+        decoded = unpack_msgpack(encoded)
+        assert isinstance(decoded, dict)
+        np.testing.assert_array_equal(decoded["array"], array)
+
+    def test_scalar_array_shape_roundtrips_as_zero_dimensional(self) -> None:
+        scalar = np.asarray(3.5, dtype=np.float32)
+
+        decoded = unpack_msgpack(pack_msgpack({"scalar": scalar}))
+
+        assert isinstance(decoded, dict)
+        assert decoded["scalar"].shape == ()
+        assert decoded["scalar"].dtype == np.float32
+        assert decoded["scalar"].item() == pytest.approx(3.5)
+
+    def test_rejects_non_numeric_dtype(self) -> None:
+        tagged = {"__np__": True, "dtype": "|O", "shape": [1], "data": b"x"}
+
+        with pytest.raises(ValueError, match="numeric or bool"):
+            decode_shared_payload(tagged)
+
+        with pytest.raises(ValueError, match="numeric or bool"):
+            encode_numpy(np.asarray(["not numeric"]))
+
+    def test_rejects_shape_dtype_data_length_mismatch(self) -> None:
+        tagged = {"__np__": True, "dtype": "float32", "shape": [2], "data": b"1234"}
+
+        with pytest.raises(ValueError, match="data length"):
+            decode_shared_payload(tagged)
+
+    def test_size_cap_is_checked_before_frombuffer(self) -> None:
+        tagged = {"__np__": True, "dtype": "float32", "shape": [2], "data": b"12345678"}
+        with (
+            patch("physicalai.transport._codec.np.frombuffer") as frombuffer,
+            pytest.raises(ValueError, match="limit"),
+        ):
+            decode_shared_payload(tagged, max_bytes=4)
+
+        frombuffer.assert_not_called()
+
+    def test_nesting_depth_is_bounded(self) -> None:
+        nested: object = "value"
+        for _ in range(4):
+            nested = {"child": nested}
+
+        with pytest.raises(ValueError, match="nesting exceeds the 2-level limit"):
+            decode_shared_payload(nested, max_depth=2)
