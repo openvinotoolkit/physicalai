@@ -6,14 +6,22 @@ from __future__ import annotations
 import os
 import signal
 import subprocess  # noqa: S404  # nosec B404  # ruff: ignore[noqa-comments] - entrypoints use argv with shell disabled.
+import tempfile
+import weakref
 from contextlib import ExitStack, contextmanager, suppress
-from importlib import resources  # nosemgrep  # Python 3.10+ only.
+
+# nosemgrep: python.lang.compatibility.python37.python37-compatibility-importlib2 - Runtime requires Python 3.11+.
+from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ._sources import _copy_tree
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Mapping, Sequence
-    from importlib.resources.abc import Traversable  # nosemgrep  # Python 3.10+ only.
+
+    # nosemgrep: python.lang.compatibility.python37.python37-compatibility-importlib2 - Runtime requires Python 3.11+.
+    from importlib.resources.abc import Traversable
     from types import TracebackType
     from typing import IO, Any, Self
 
@@ -33,7 +41,10 @@ _HOST_INTERPRETER_VARIABLES = frozenset({
 })
 
 # Runs the entrypoint without putting its folder or the working directory on sys.path.
-# argv[1] is a lifeline pipe fd (or "-"); EOF means the host died, so the worker group is killed.
+# argv[1] is a lifeline pipe fd (or "-"). A detached supervisor in the worker's process group
+# holds it and kills the group on EOF: when the host exits, or when the session releases it
+# after the worker exits. Double-forking keeps the supervisor out of the worker's children,
+# so it outlives the worker and cannot be reaped by the worker's own wait calls.
 _BOOTSTRAP = """\
 import sys
 if sys.path[:1] == [""]:
@@ -41,17 +52,31 @@ if sys.path[:1] == [""]:
 import os
 import runpy
 import signal
-import threading
 lifeline = sys.argv[1]
 sys.argv = sys.argv[2:]
-if lifeline != "-":
-    fd = int(lifeline)
-    os.set_inheritable(fd, False)
-    def _watch_host():
+def _supervise(fd):
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, signal.SIG_IGN)
+    os.chdir("/")
+    null = os.open(os.devnull, os.O_RDWR)
+    for stream in (0, 1, 2):
+        os.dup2(null, stream)
+    try:
         while os.read(fd, 1):
             pass
+    finally:
         os.killpg(0, signal.SIGKILL)
-    threading.Thread(target=_watch_host, name="physicalai-isolate-lifeline", daemon=True).start()
+if lifeline != "-":
+    fd = int(lifeline)
+    child = os.fork()
+    if child == 0:
+        try:
+            if os.fork() == 0:
+                _supervise(fd)
+        finally:
+            os._exit(0)
+    os.close(fd)
+    os.waitpid(child, 0)
 runpy.run_path(sys.argv[0], run_name="__main__")
 """
 
@@ -63,8 +88,12 @@ class Session:
     """A running process launched from a prepared environment.
 
     On POSIX the worker runs in its own process group: :meth:`terminate`, :meth:`kill`, and
-    :meth:`close` reach its subprocesses too, and the whole group is killed if the host exits
+    :meth:`close` reach its subprocesses too. Subprocesses the worker leaves behind are killed
+    once the session sees the worker exit, and the whole group is killed if the host exits
     without closing the session. On Windows only the direct child is signalled.
+
+    A session that is garbage-collected without being closed releases its resources, which on
+    POSIX also kills the worker's process group.
     """
 
     def __init__(
@@ -75,7 +104,8 @@ class Session:
     ) -> None:
         self._process = process
         self._command = tuple(command)
-        self._release_entrypoint: Callable[[], None] | None = release_entrypoint
+        # Runs at most once: on exit, close, garbage collection, or interpreter shutdown.
+        self._release = weakref.finalize(self, release_entrypoint)
         self._closed = False
 
     @property
@@ -195,7 +225,9 @@ class Session:
         self._release_resources()
         for stream in (self._process.stdin, self._process.stdout, self._process.stderr):
             if stream is not None:
-                stream.close()
+                # Flushing buffered stdin fails once the worker has exited.
+                with suppress(OSError):
+                    stream.close()
 
     def __enter__(self) -> Self:
         return self
@@ -225,10 +257,7 @@ class Session:
             os.killpg(self._process.pid, sig)
 
     def _release_resources(self) -> None:
-        release = self._release_entrypoint
-        if release is not None:
-            self._release_entrypoint = None
-            release()
+        self._release()
 
 
 def run(
@@ -323,33 +352,53 @@ def start(
     Returns:
         A session exposing process status, streams, and lifecycle methods.
     """
+    _check_launch(prepared, args)
+    child_env = _child_environment(prepared, env)
     resources_stack = ExitStack()
     try:
         script = resources_stack.enter_context(_entrypoint_path(entrypoint))
-        lifeline = None
-        if _POSIX:
-            lifeline, lifeline_write = os.pipe()
-            resources_stack.callback(os.close, lifeline_write)
-        command = _command(prepared, script, args, lifeline)
-        try:
-            process = subprocess.Popen(  # noqa: S603  # nosec B603  # ruff: ignore[noqa-comments] - explicit interpreter and entrypoint argv, no shell.
-                command,
-                cwd=cwd,
-                env=_child_environment(prepared, env),
-                stdin=stdin,
-                stdout=stdout,
-                stderr=stderr,
-                shell=False,
-                pass_fds=() if lifeline is None else (lifeline,),
-                process_group=0 if _POSIX else None,
-            )
-        finally:
-            if lifeline is not None:
-                os.close(lifeline)
+        process, command = _launch(
+            prepared, script, args, resources_stack, cwd=cwd, env=child_env, stdin=stdin, stdout=stdout, stderr=stderr
+        )
     except BaseException:
         resources_stack.close()
         raise
     return Session(process, command, resources_stack.close)
+
+
+def _launch(
+    prepared: PreparedEnvironment,
+    script: Path,
+    args: Sequence[str],
+    resources_stack: ExitStack,
+    *,
+    cwd: str | os.PathLike[str] | None,
+    env: dict[str, str],
+    stdin: int | IO[Any] | None,
+    stdout: int | IO[Any] | None,
+    stderr: int | IO[Any] | None,
+) -> tuple[subprocess.Popen[bytes], list[str]]:
+    lifeline = None
+    if _POSIX:
+        lifeline, lifeline_write = os.pipe()
+        resources_stack.callback(os.close, lifeline_write)
+    try:
+        command = _command(prepared, script, args, lifeline)
+        process = subprocess.Popen(  # noqa: S603  # nosec B603  # ruff: ignore[noqa-comments] - explicit interpreter and entrypoint argv, no shell.
+            command,
+            cwd=cwd,
+            env=env,
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
+            shell=False,
+            pass_fds=() if lifeline is None else (lifeline,),
+            process_group=0 if _POSIX else None,
+        )
+    finally:
+        if lifeline is not None:
+            os.close(lifeline)
+    return process, command
 
 
 @contextmanager
@@ -360,6 +409,14 @@ def _entrypoint_path(
         path = Path(entrypoint).expanduser().resolve()
         _check_entrypoint(path)
         yield path
+        return
+    if entrypoint.is_dir():
+        # resources.as_file() only extracts directories from Python 3.12 on.
+        with tempfile.TemporaryDirectory(prefix="physicalai-isolate-entrypoint-") as temporary:
+            path = Path(temporary).resolve() / "entrypoint"
+            _copy_tree(entrypoint, path)
+            _check_entrypoint(path)
+            yield path
         return
     with resources.as_file(entrypoint) as resource_path:
         path = Path(resource_path).resolve()
@@ -373,18 +430,21 @@ def _check_entrypoint(path: Path) -> None:
         raise FileNotFoundError(msg)
 
 
-def _command(
-    prepared: PreparedEnvironment,
-    script: Path,
-    args: Sequence[str],
-    lifeline: int | None,
-) -> list[str]:
+def _check_launch(prepared: PreparedEnvironment, args: Sequence[str]) -> None:
     if isinstance(args, str) or not all(isinstance(argument, str) for argument in args):
         msg = "Entrypoint arguments must be a sequence of strings."
         raise TypeError(msg)
     if not prepared.python.is_file():
         msg = f"Prepared environment has no Python interpreter at {prepared.python}."
         raise FileNotFoundError(msg)
+
+
+def _command(
+    prepared: PreparedEnvironment,
+    script: Path,
+    args: Sequence[str],
+    lifeline: int | None,
+) -> list[str]:
     lifeline_argument = "-" if lifeline is None else str(lifeline)
     return [str(prepared.python), "-c", _BOOTSTRAP, lifeline_argument, str(script), *args]
 

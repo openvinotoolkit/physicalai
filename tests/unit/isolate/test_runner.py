@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import gc
 import os
 import signal
 import subprocess
 import sys
 import time
+import zipfile
 from contextlib import suppress
 from dataclasses import fields
 from pathlib import Path
@@ -72,8 +74,8 @@ def _fake_popen(
         return child
 
     monkeypatch.setattr("physicalai.isolate._runner.subprocess.Popen", fake_popen)
-    # The fake pid must never reach a real process group.
-    monkeypatch.setattr("physicalai.isolate._runner.os.killpg", lambda pid, sig: None)
+    # The fake pid must never reach a real process group; os.killpg is POSIX-only.
+    monkeypatch.setattr("physicalai.isolate._runner.os.killpg", lambda pid, sig: None, raising=False)
     return calls
 
 
@@ -317,9 +319,14 @@ from pathlib import Path
 from physicalai.isolate import PreparedEnvironment, SyncProfile, start
 prepared = PreparedEnvironment(path=Path(sys.argv[1]), key="b" * 64, profile=SyncProfile())
 pid_file = Path(sys.argv[3])
-start(prepared, sys.argv[2], args=(str(pid_file),), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+session = start(prepared, sys.argv[2], args=(str(pid_file),), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 while not pid_file.exists():
     time.sleep(0.05)
+if sys.argv[4:] == ["after-worker-exit"]:
+    # Reap the worker without telling the session, leaving only its subprocess behind.
+    pid = int(pid_file.read_text(encoding="utf-8").split()[0])
+    os.kill(pid, signal.SIGKILL)
+    os.waitpid(pid, 0)
 os.kill(os.getpid(), signal.SIGKILL)
 """
 
@@ -378,6 +385,126 @@ def test_workers_and_their_subprocesses_exit_when_the_host_is_killed(tmp_path: P
         assert _survivors(pids) == []
     finally:
         _kill(pids)
+
+
+@posix_only
+def test_subprocesses_exit_when_the_host_is_killed_after_their_worker_exited(tmp_path: Path) -> None:
+    prepared = _linked_prepared(tmp_path / "prepared")
+    worker = tmp_path / "worker.py"
+    worker.write_text(_SPAWNING_WORKER, encoding="utf-8")
+    pid_file = tmp_path / "pids"
+
+    host = subprocess.run(
+        [sys.executable, "-c", _HOST, str(prepared.path), str(worker), str(pid_file), "after-worker-exit"],
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert host.returncode == -signal.SIGKILL, host.stderr
+    pids = _read_pids(pid_file)
+
+    try:
+        assert _survivors(pids) == []
+    finally:
+        _kill(pids)
+
+
+_EXITING_WORKER = """\
+import subprocess
+import sys
+from pathlib import Path
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+Path(sys.argv[1]).write_text(f"{child.pid}\\n", encoding="utf-8")
+"""
+
+
+@posix_only
+def test_waiting_for_a_worker_stops_the_subprocesses_it_left_behind(tmp_path: Path) -> None:
+    prepared = _linked_prepared(tmp_path / "prepared")
+    worker = tmp_path / "worker.py"
+    worker.write_text(_EXITING_WORKER, encoding="utf-8")
+    pid_file = tmp_path / "pids"
+    session = start(prepared, worker, args=(str(pid_file),))
+
+    assert session.wait(timeout=10) == 0
+    pids = _read_pids(pid_file)
+
+    try:
+        assert _survivors(pids) == []
+    finally:
+        _kill(pids)
+        session.close()
+
+
+@posix_only
+def test_a_dropped_session_stops_its_worker(tmp_path: Path) -> None:
+    prepared = _linked_prepared(tmp_path / "prepared")
+    worker = tmp_path / "worker.py"
+    worker.write_text(_SPAWNING_WORKER, encoding="utf-8")
+    pid_file = tmp_path / "pids"
+    session = start(prepared, worker, args=(str(pid_file),))
+    pids = _read_pids(pid_file)
+    process = session._process
+
+    try:
+        del session
+        gc.collect()
+        assert process.wait(timeout=10) == -signal.SIGKILL
+        assert _survivors(pids) == []
+    finally:
+        _kill(pids)
+
+
+def test_close_ignores_unflushed_input_for_a_worker_that_already_exited(tmp_path: Path) -> None:
+    prepared = _linked_prepared(tmp_path / "prepared")
+    worker = tmp_path / "worker.py"
+    worker.write_text("", encoding="utf-8")
+    session = start(prepared, worker, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    session.wait(timeout=10)
+    assert session.stdin is not None
+    session.stdin.write(b"x" * 16)
+
+    session.close()
+
+    assert session.stdout is not None
+    assert session.stdout.closed
+
+
+def test_start_rejects_bad_arguments_before_opening_a_lifeline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    prepared = _prepared(tmp_path / "prepared")
+    entrypoint = tmp_path / "worker.py"
+    entrypoint.write_text("pass\n", encoding="utf-8")
+    pipes: list[tuple[int, int]] = []
+    real_pipe = os.pipe
+
+    def tracked_pipe() -> tuple[int, int]:
+        pipes.append(real_pipe())
+        return pipes[-1]
+
+    monkeypatch.setattr("physicalai.isolate._runner.os.pipe", tracked_pipe)
+
+    with pytest.raises(TypeError, match="sequence of strings"):
+        start(prepared, entrypoint, args="--flag")
+    prepared.python.unlink()
+    with pytest.raises(FileNotFoundError, match="no Python interpreter"):
+        start(prepared, entrypoint)
+
+    assert pipes == []
+
+
+def test_folder_entrypoints_can_come_from_a_zip_resource(tmp_path: Path) -> None:
+    prepared = _linked_prepared(tmp_path / "prepared")
+    archive = tmp_path / "package.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("worker/__main__.py", "import helper\nhelper.report()\n")
+        bundle.writestr("worker/helper.py", "def report():\n    print('from zip')\n")
+
+    result = run(prepared, zipfile.Path(archive, "worker/"), capture_output=True)
+
+    assert result.stdout.strip() == b"from zip"
 
 
 @posix_only
