@@ -112,6 +112,7 @@ PolicySource(
     action_queue: ActionQueue | None = None,
     *,
     task: str | None = None,
+    observation_history: ObservationHistorySpec | None = None,
 )
 
 source.reset(*, reset_model: bool = True) -> None
@@ -125,6 +126,8 @@ TeleopSource(
 ```
 
 Omitted `execution` defaults to `SyncExecution`. Omitted `action_queue` defaults to a `ChunkedActionQueue`.
+
+See [observation history](manifest-schema.md#observation-history) for optional collection settings.
 
 `reset()` starts a fresh policy episode without stopping the execution worker. It discards queued, pending, and in-flight actions, clears the last action, and resets model state by default. If inference is already running, reset waits for that model call to finish before resetting model state, while rejecting its stale result. Model or execution reset errors propagate to the caller. Pass `reset_model=False` only when model state should continue across the episode boundary. Custom execution strategies must implement `Execution.reset()` before they can support this operation.
 

@@ -25,6 +25,10 @@ print(manifest.model.runner)
 print(manifest.model.artifacts)
 ```
 
+## Enable observation history
+
+See the [observation history example](../../reference/manifest-schema.md#observation-history) for collection settings and preprocessing.
+
 ## Declare inference callbacks
 
 Callbacks use the same `ComponentSpec` syntax and declaration order as

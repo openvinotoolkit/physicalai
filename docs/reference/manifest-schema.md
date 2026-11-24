@@ -6,7 +6,7 @@ The on-disk manifest is `manifest.json`. YAML is shown here for readability.
 
 ```yaml
 format: policy_package
-version: "1.0"
+version: "1.1"
 policy: {}
 model: {}
 hardware: {}
@@ -14,13 +14,14 @@ hardware: {}
 
 Fields:
 
-| Field      | Type   | Description                               |
-| ---------- | ------ | ----------------------------------------- |
-| `format`   | string | Manifest format, usually `policy_package` |
-| `version`  | string | Manifest schema version                   |
-| `policy`   | object | Policy identity and source metadata       |
-| `model`    | object | Artifacts and inference pipeline          |
-| `hardware` | object | Expected robot and camera metadata        |
+| Field                 | Type           | Description                               |
+| --------------------- | -------------- | ----------------------------------------- |
+| `format`              | string         | Manifest format, usually `policy_package` |
+| `version`             | string         | Manifest schema version                   |
+| `observation_history` | object or null | Optional observation collection settings  |
+| `policy`              | object         | Policy identity and source metadata       |
+| `model`               | object         | Artifacts and inference pipeline          |
+| `hardware`            | object         | Expected robot and camera metadata        |
 
 ## Policy
 
@@ -56,14 +57,29 @@ model:
 
 Fields:
 
-| Field            | Type                  | Description                        |
-| ---------------- | --------------------- | ---------------------------------- |
-| `n_obs_steps`    | integer               | Observation history length         |
-| `artifacts`      | mapping               | Logical artifact name to file path |
-| `runner`         | `ComponentSpec`       | Inference runner                   |
-| `preprocessors`  | list[`ComponentSpec`] | Preprocessing pipeline             |
-| `postprocessors` | list[`ComponentSpec`] | Postprocessing pipeline            |
-| `callbacks`      | list[`ComponentSpec`] | Inference lifecycle callbacks      |
+| Field            | Type                  | Description                                                           |
+| ---------------- | --------------------- | --------------------------------------------------------------------- |
+| `n_obs_steps`    | integer               | Expected observation count (metadata only; does not activate history) |
+| `artifacts`      | mapping               | Logical artifact name to file path                                    |
+| `runner`         | `ComponentSpec`       | Inference runner                                                      |
+| `preprocessors`  | list[`ComponentSpec`] | Preprocessing pipeline                                                |
+| `postprocessors` | list[`ComponentSpec`] | Postprocessing pipeline                                               |
+| `callbacks`      | list[`ComponentSpec`] | Inference lifecycle callbacks                                         |
+
+## Observation History
+
+```yaml
+version: "1.1"
+observation_history:
+  n_obs_steps: 3
+  stride: 2
+model:
+  preprocessors:
+    - type: stack_observation_history
+```
+
+For manifest version 1.1+, pass `observation_history=model.manifest.observation_history` explicitly to `PolicySource`; omission disables collection.
+Declare the history formatter before policy preprocessing; callbacks must accept frame tuples, and remote inference does not support them.
 
 ## Hardware
 
