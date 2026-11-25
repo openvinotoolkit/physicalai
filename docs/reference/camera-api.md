@@ -70,15 +70,23 @@ Camera instances are not thread-safe.
 `read_cameras()` and `async_read_cameras()` read from multiple cameras concurrently:
 
 ```python
-from physicalai.capture import CaptureTimeoutError, read_cameras
+from physicalai.capture import (
+    CaptureSkewError,
+    CaptureTimeoutError,
+    read_cameras,
+)
 
 try:
-    synced = read_cameras(cameras, timeout=1.0)
+    synced = read_cameras(cameras, timeout=1.0, max_skew_ms=25.0)
     print(f"Skew: {synced.max_skew_ms:.2f}ms")
 except CaptureTimeoutError as exc:
     print(f"Read timed out: {exc}")
+except CaptureSkewError as exc:
+    print(f"Timestamp skew exceeded limit: {exc.skew_ms:.1f}ms > {exc.max_skew_ms:.1f}ms")
 ```
 
 - When given an empty mapping (`cameras={}`), both functions return `SyncedFrames(frames={}, max_skew_ms=0.0)`.
 - If one or more cameras do not return a frame within `timeout` seconds, `CaptureTimeoutError` is raised with the set of unresponsive cameras.
 - `timeout` must be positive; non-positive values raise `ValueError`.
+- `max_skew_ms` optionally defines the maximum allowable timestamp difference (in milliseconds) across captured frames. If the measured skew exceeds this threshold, `CaptureSkewError` is raised with `skew_ms` and `max_skew_ms` attributes.
+- `max_skew_ms` must be non-negative; negative values raise `ValueError`. If `None` (default), no skew enforcement is performed.

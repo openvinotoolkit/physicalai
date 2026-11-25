@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from physicalai.capture.errors import CaptureTimeoutError
+from physicalai.capture.errors import CaptureError, CaptureSkewError, CaptureTimeoutError
 from physicalai.capture.frame import Frame
 from physicalai.capture.multi import SyncedFrames, async_read_cameras, read_cameras
 from tests.unit.capture.fake import FakeCamera
@@ -24,7 +24,7 @@ class SlowCamera(FakeCamera):
         super().__init__(**kwargs)
         self._delay_s = delay_s
 
-    def read(self, timeout: float = 2.0) -> Frame:
+    def read(self, timeout: float | None = None) -> Frame:
         time.sleep(self._delay_s)
         return super().read(timeout)
 
@@ -35,6 +35,18 @@ class SlowCamera(FakeCamera):
     async def async_read(self, timeout: float = 2.0) -> Frame:
         await asyncio.sleep(self._delay_s)
         return await super().async_read(timeout)
+
+
+class TimestampedCamera(FakeCamera):
+    """Camera returning frames with a fixed timestamp for skew testing."""
+
+    def __init__(self, timestamp: float = 0.0, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.fixed_timestamp = timestamp
+
+    def _make_frame(self) -> Frame:
+        frame = super()._make_frame()
+        return Frame(data=frame.data, timestamp=self.fixed_timestamp, sequence=frame.sequence)
 
 
 class TestReadCameras:
@@ -141,6 +153,70 @@ class TestReadCameras:
             for cam in cameras.values():
                 cam.disconnect()
 
+    def test_max_skew_within_threshold_passes(self) -> None:
+        cameras = {
+            "c1": TimestampedCamera(timestamp=100.0, device_name="c1"),
+            "c2": TimestampedCamera(timestamp=100.015, device_name="c2"),
+        }
+        for cam in cameras.values():
+            cam.connect()
+        try:
+            synced = read_cameras(cameras, max_skew_ms=20.0)
+            assert synced.max_skew_ms == pytest.approx(15.0)
+            assert len(synced.frames) == 2
+        finally:
+            for cam in cameras.values():
+                cam.disconnect()
+
+    def test_max_skew_exceeded_raises_capture_skew_error(self) -> None:
+        cameras = {
+            "c1": TimestampedCamera(timestamp=100.0, device_name="c1"),
+            "c2": TimestampedCamera(timestamp=100.050, device_name="c2"),
+        }
+        for cam in cameras.values():
+            cam.connect()
+        try:
+            with pytest.raises(CaptureSkewError) as exc_info:
+                read_cameras(cameras, max_skew_ms=20.0)
+            err = exc_info.value
+            assert issubclass(CaptureSkewError, CaptureError)
+            assert err.skew_ms == pytest.approx(50.0)
+            assert err.max_skew_ms == 20.0
+            assert "50.0ms exceeds maximum allowed threshold of 20.0ms" in str(err)
+        finally:
+            for cam in cameras.values():
+                cam.disconnect()
+
+    def test_invalid_max_skew_raises_value_error(self) -> None:
+        cam = FakeCamera()
+        cam.connect()
+        try:
+            with pytest.raises(ValueError, match="max_skew_ms must be non-negative"):
+                read_cameras({"c": cam}, max_skew_ms=-1.0)
+            with pytest.raises(ValueError, match="max_skew_ms must be non-negative"):
+                read_cameras({}, max_skew_ms=-0.1)
+        finally:
+            cam.disconnect()
+
+    def test_max_skew_none_preserves_large_skew(self) -> None:
+        cameras = {
+            "c1": TimestampedCamera(timestamp=100.0, device_name="c1"),
+            "c2": TimestampedCamera(timestamp=102.0, device_name="c2"),
+        }
+        for cam in cameras.values():
+            cam.connect()
+        try:
+            synced = read_cameras(cameras, max_skew_ms=None)
+            assert synced.max_skew_ms == pytest.approx(2000.0)
+        finally:
+            for cam in cameras.values():
+                cam.disconnect()
+
+    def test_empty_cameras_with_valid_max_skew(self) -> None:
+        synced = read_cameras({}, max_skew_ms=10.0)
+        assert synced.frames == {}
+        assert synced.max_skew_ms == 0.0
+
 
 class TestAsyncReadCameras:
     """async_read_cameras() with FakeCamera instances."""
@@ -196,3 +272,52 @@ class TestAsyncReadCameras:
                     cam.disconnect()
 
         asyncio.run(_run())
+
+    def test_async_max_skew_within_threshold_passes(self) -> None:
+        async def _run() -> None:
+            cameras = {
+                "c1": TimestampedCamera(timestamp=50.0, device_name="c1"),
+                "c2": TimestampedCamera(timestamp=50.010, device_name="c2"),
+            }
+            for cam in cameras.values():
+                cam.connect()
+            try:
+                synced = await async_read_cameras(cameras, max_skew_ms=25.0)
+                assert synced.max_skew_ms == pytest.approx(10.0)
+            finally:
+                for cam in cameras.values():
+                    cam.disconnect()
+
+        asyncio.run(_run())
+
+    def test_async_max_skew_exceeded_raises_capture_skew_error(self) -> None:
+        async def _run() -> None:
+            cameras = {
+                "c1": TimestampedCamera(timestamp=50.0, device_name="c1"),
+                "c2": TimestampedCamera(timestamp=50.080, device_name="c2"),
+            }
+            for cam in cameras.values():
+                cam.connect()
+            try:
+                with pytest.raises(CaptureSkewError) as exc_info:
+                    await async_read_cameras(cameras, max_skew_ms=30.0)
+                err = exc_info.value
+                assert issubclass(CaptureSkewError, CaptureError)
+                assert err.skew_ms == pytest.approx(80.0)
+                assert err.max_skew_ms == 30.0
+            finally:
+                for cam in cameras.values():
+                    cam.disconnect()
+
+        asyncio.run(_run())
+
+    def test_async_invalid_max_skew_raises_value_error(self) -> None:
+        cam = FakeCamera()
+        cam.connect()
+        try:
+            with pytest.raises(ValueError, match="max_skew_ms must be non-negative"):
+                asyncio.run(async_read_cameras({"c": cam}, max_skew_ms=-5.0))
+            with pytest.raises(ValueError, match="max_skew_ms must be non-negative"):
+                asyncio.run(async_read_cameras({}, max_skew_ms=-1.0))
+        finally:
+            cam.disconnect()

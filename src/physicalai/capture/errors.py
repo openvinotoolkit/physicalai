@@ -21,6 +21,23 @@ class CaptureTimeoutError(CaptureError):
     """Raised when a read or connect operation exceeds its timeout."""
 
 
+class CaptureSkewError(CaptureError):
+    """Raised when camera timestamp skew exceeds the maximum allowed threshold."""
+
+    def __init__(self, skew_ms: float, max_skew_ms: float) -> None:
+        """Create a capture skew error.
+
+        Args:
+            skew_ms: The actual observed skew across camera frames in milliseconds.
+            max_skew_ms: The maximum allowed skew threshold in milliseconds.
+        """
+        self.skew_ms = skew_ms
+        self.max_skew_ms = max_skew_ms
+        super().__init__(
+            f"Camera timestamp skew of {skew_ms:.1f}ms exceeds maximum allowed threshold of {max_skew_ms:.1f}ms"
+        )
+
+
 class MissingDependencyError(CaptureError):
     """Raised when a camera SDK extra is not installed."""
 

@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from physicalai.capture.errors import CaptureTimeoutError
+from physicalai.capture.errors import CaptureSkewError, CaptureTimeoutError
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Mapping
@@ -38,6 +38,7 @@ def read_cameras(
     timeout: float = 1.0,
     *,
     latest: bool = True,
+    max_skew_ms: float | None = None,
 ) -> SyncedFrames:
     """Read one frame from each camera in parallel.
 
@@ -49,20 +50,29 @@ def read_cameras(
         timeout: Maximum seconds to wait for all cameras.
         latest: If ``True`` (default), use ``read_latest()``.
             If ``False``, use ``read(timeout=timeout)``.
+        max_skew_ms: Maximum allowable timestamp skew across all camera frames
+            in milliseconds. If specified and the measured skew exceeds this
+            threshold, raises :class:`~physicalai.capture.errors.CaptureSkewError`.
+            Defaults to ``None`` (no skew enforcement).
 
     Returns:
         Temporally aligned frames from all cameras.
 
     Raises:
+        CaptureSkewError: Measured skew between frames exceeds ``max_skew_ms``.
         CaptureTimeoutError: One or more cameras did not respond in time.
-        ValueError: If timeout is not positive.
+        ValueError: If timeout is not positive or max_skew_ms is negative.
     """
-    if not cameras:
-        return SyncedFrames(frames={}, max_skew_ms=0.0)
-
     if timeout <= 0:
         msg = f"timeout must be positive, got {timeout}"
         raise ValueError(msg)
+
+    if max_skew_ms is not None and max_skew_ms < 0:
+        msg = f"max_skew_ms must be non-negative, got {max_skew_ms}"
+        raise ValueError(msg)
+
+    if not cameras:
+        return SyncedFrames(frames={}, max_skew_ms=0.0)
 
     frames: dict[str, Frame] = {}
     pool = ThreadPoolExecutor(max_workers=len(cameras))
@@ -91,6 +101,9 @@ def read_cameras(
     timestamps = [f.timestamp for f in frames.values()]
     skew_ms = (max(timestamps) - min(timestamps)) * 1000.0 if timestamps else 0.0
 
+    if max_skew_ms is not None and skew_ms > max_skew_ms:
+        raise CaptureSkewError(skew_ms=skew_ms, max_skew_ms=max_skew_ms)
+
     return SyncedFrames(frames=frames, max_skew_ms=skew_ms)
 
 
@@ -99,6 +112,7 @@ async def async_read_cameras(
     timeout: float = 1.0,  # noqa: ASYNC109
     *,
     latest: bool = True,
+    max_skew_ms: float | None = None,
 ) -> SyncedFrames:
     """Async version of :func:`read_cameras`.
 
@@ -110,20 +124,29 @@ async def async_read_cameras(
         timeout: Maximum seconds to wait for all cameras.
         latest: If ``True`` (default), use ``read_latest()`` (offloaded
             to executor).  If ``False``, use ``async_read(timeout=timeout)``.
+        max_skew_ms: Maximum allowable timestamp skew across all camera frames
+            in milliseconds. If specified and the measured skew exceeds this
+            threshold, raises :class:`~physicalai.capture.errors.CaptureSkewError`.
+            Defaults to ``None`` (no skew enforcement).
 
     Returns:
         Temporally aligned frames from all cameras.
 
     Raises:
+        CaptureSkewError: Measured skew between frames exceeds ``max_skew_ms``.
         CaptureTimeoutError: One or more cameras did not respond in time.
-        ValueError: If timeout is not positive.
+        ValueError: If timeout is not positive or max_skew_ms is negative.
     """
-    if not cameras:
-        return SyncedFrames(frames={}, max_skew_ms=0.0)
-
     if timeout <= 0:
         msg = f"timeout must be positive, got {timeout}"
         raise ValueError(msg)
+
+    if max_skew_ms is not None and max_skew_ms < 0:
+        msg = f"max_skew_ms must be non-negative, got {max_skew_ms}"
+        raise ValueError(msg)
+
+    if not cameras:
+        return SyncedFrames(frames={}, max_skew_ms=0.0)
 
     names = list(cameras.keys())
     loop = asyncio.get_running_loop()
@@ -145,5 +168,8 @@ async def async_read_cameras(
 
     timestamps = [f.timestamp for f in frames.values()]
     skew_ms = (max(timestamps) - min(timestamps)) * 1000.0 if timestamps else 0.0
+
+    if max_skew_ms is not None and skew_ms > max_skew_ms:
+        raise CaptureSkewError(skew_ms=skew_ms, max_skew_ms=max_skew_ms)
 
     return SyncedFrames(frames=frames, max_skew_ms=skew_ms)
