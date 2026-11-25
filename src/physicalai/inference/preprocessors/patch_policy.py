@@ -27,6 +27,9 @@ class PatchPolicyPreprocessor(Preprocessor):
     ``ToFloatTensorPreprocessor``, ``ResizePreprocessor``, and ``StatsNormalizer``
     for model-ready images.
 
+    Named views take precedence. A bare ``images`` array is only a fallback
+    when exactly one camera is configured.
+
     Args:
         camera_names: Camera names in the same order used during training.
         n_obs_steps: Full observation window length; one current frame is also accepted.
@@ -76,19 +79,17 @@ class PatchPolicyPreprocessor(Preprocessor):
             outputs[key] = value
         return outputs
 
-    @staticmethod
-    def _resolve_view(inputs: Mapping[str, Any], camera_name: str) -> np.ndarray:
+    def _resolve_view(self, inputs: Mapping[str, Any], camera_name: str) -> np.ndarray:
         images = inputs.get(IMAGES)
         if isinstance(images, Mapping):
             for key in (camera_name, f"{IMAGES}.{camera_name}", f"observation.{IMAGES}.{camera_name}"):
                 if key in images:
                     return np.asarray(images[key])
-        elif isinstance(images, np.ndarray):
-            return images
-
         for key in (f"{IMAGES}.{camera_name}", f"observation.{IMAGES}.{camera_name}", camera_name):
             if key in inputs:
                 return np.asarray(inputs[key])
+        if isinstance(images, np.ndarray) and len(self._camera_names) == 1:
+            return images
         msg = f"Missing Patch Policy camera {camera_name!r}."
         raise KeyError(msg)
 

@@ -57,6 +57,40 @@ def test_adds_batch_and_temporal_axes_for_single_images() -> None:
     np.testing.assert_equal(result["images.front"].shape, (1, 1, 3, 2, 2))
 
 
+def test_accepts_unnamed_image_for_single_camera() -> None:
+    """The bare Runtime image supplies the sole configured camera."""
+    image = np.ones((3, 2, 2), dtype=np.uint8)
+
+    result = PatchPolicyPreprocessor(["front"])({"images": image})
+
+    np.testing.assert_array_equal(result["images.front"], image[None, None])
+
+
+@pytest.mark.parametrize("camera_names", [["front"], ["front", "wrist"]])
+def test_named_views_take_precedence_over_unnamed_image(camera_names: list[str]) -> None:
+    """Explicit camera keys take precedence regardless of the camera count."""
+    inputs = {"images": np.zeros((3, 2, 2), dtype=np.uint8)}
+    for index, name in enumerate(camera_names, start=1):
+        inputs[f"images.{name}"] = np.full((3, 2, 2), index, dtype=np.uint8)
+
+    result = PatchPolicyPreprocessor(camera_names)(inputs)
+
+    for name in camera_names:
+        key = f"images.{name}"
+        np.testing.assert_array_equal(result[key], inputs[key][None, None])
+
+
+@pytest.mark.parametrize("has_front", [False, True])
+def test_rejects_unnamed_image_for_missing_camera_in_multicamera_policy(*, has_front: bool) -> None:
+    """A bare array cannot fill any missing view in a multi-camera policy."""
+    inputs = {"images": np.zeros((3, 2, 2), dtype=np.uint8)}
+    if has_front:
+        inputs["images.front"] = np.ones((3, 2, 2), dtype=np.uint8)
+
+    with pytest.raises(KeyError, match="wrist" if has_front else "front"):
+        PatchPolicyPreprocessor(["front", "wrist"])(inputs)
+
+
 def test_infers_batched_channels_last_camera_layout() -> None:
     """Raw Runtime camera frames may arrive in BHWC layout."""
     processor = PatchPolicyPreprocessor(["front"])
