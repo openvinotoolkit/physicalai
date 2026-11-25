@@ -251,7 +251,9 @@ class Session:
                 self.kill()
                 self._process.wait()
             if _POSIX:
-                # Signal before releasing the lifeline so the supervisor still pins the PGID.
+                # Usually a no-op: poll() or wait() above already released the lifeline, and the
+                # supervisor kills the group itself. This covers an interrupt that skipped them,
+                # and signals before _release_resources() while the supervisor still pins the PGID.
                 self._signal_group(signal.SIGKILL)
             self._release_resources()
             for stream in (self._process.stdin, self._process.stdout, self._process.stderr):

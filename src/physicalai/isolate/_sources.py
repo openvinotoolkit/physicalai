@@ -109,7 +109,7 @@ class BundledProject(ProjectSource):
         Returns:
             A deterministic tree SHA-256 digest.
         """
-        return {"kind": "bundled", "tree_sha256": _tree_sha256(self.path)}
+        return _bundled_identity(_tree_sha256(self.path))
 
     def provenance(self) -> dict[str, str]:
         """Record the bundled project path alongside its content digest.
@@ -117,7 +117,7 @@ class BundledProject(ProjectSource):
         Returns:
             The bundled project kind, path, and tree SHA-256 digest.
         """
-        return {"kind": "bundled", "path": str(self.path), "tree_sha256": _tree_sha256(self.path)}
+        return _bundled_provenance(self.path, _tree_sha256(self.path))
 
     def materialize(self, destination: Path, *, offline: bool = False) -> None:
         """Copy the bundled project without following symbolic links.
@@ -696,6 +696,15 @@ def _git(
         timeout=600,
     )
     return result.stdout.strip() if capture else ""
+
+
+def _bundled_identity(tree_sha256: str) -> dict[str, str]:
+    # Shared with the post-copy check in _environment, so both build the same cache key.
+    return {"kind": "bundled", "tree_sha256": tree_sha256}
+
+
+def _bundled_provenance(path: Path | Traversable, tree_sha256: str) -> dict[str, str]:
+    return {**_bundled_identity(tree_sha256), "path": str(path)}
 
 
 def _tree_sha256(root: Path | Traversable) -> str:

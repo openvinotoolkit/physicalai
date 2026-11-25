@@ -47,7 +47,7 @@ class SyncProfile:
             if not python or python.startswith("-"):
                 msg = "The Python selector must be a non-empty value that does not start with '-'."
                 raise ValueError(msg)
-            if any(not character.isprintable() or character in "\r\n\t" for character in python):
+            if not python.isprintable():
                 msg = f"The Python selector cannot contain control characters: {python!r}."
                 raise ValueError(msg)
         if isinstance(self.extras, str) or isinstance(self.groups, str):

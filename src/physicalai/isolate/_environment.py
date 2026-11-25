@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from ._sources import BundledProject, _tree_sha256
+from ._sources import BundledProject, ProjectSource, _bundled_identity, _bundled_provenance, _tree_sha256
 from ._types import Environment, SyncProfile
 
 try:
@@ -32,8 +32,6 @@ else:
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
     from typing import Any
-
-    from ._sources import ProjectSource
 
 _MARKER = ".physicalai-isolate.json"
 _MARKER_VERSION = 1
@@ -240,14 +238,11 @@ def _verify_materialized_source(environment: Environment, project: Path, key: st
     if isinstance(environment.source, BundledProject):
         # Hash the materialized copy once instead of re-reading the live source tree twice.
         tree_sha256 = _tree_sha256(project)
-        snapshot = Environment(
-            source=_BundledSnapshot(tree_sha256),  # type: ignore[arg-type]
-            profile=environment.profile,
-        )
+        snapshot = Environment(source=_BundledSnapshot(tree_sha256), profile=environment.profile)
         if snapshot.key() != key:
             msg = "The environment source changed while it was being prepared."
             raise RuntimeError(msg)
-        return {"kind": "bundled", "path": str(environment.source.path), "tree_sha256": tree_sha256}
+        return _bundled_provenance(environment.source.path, tree_sha256)
     if environment.key() != key:
         msg = "The environment source changed while it was being prepared."
         raise RuntimeError(msg)
@@ -255,11 +250,13 @@ def _verify_materialized_source(environment: Environment, project: Path, key: st
 
 
 @dataclass(frozen=True)
-class _BundledSnapshot:
+class _BundledSnapshot(ProjectSource):
+    """The identity of an already materialized bundled project, used only to rebuild its key."""
+
     tree_sha256: str
 
     def identity(self) -> dict[str, str]:
-        return {"kind": "bundled", "tree_sha256": self.tree_sha256}
+        return _bundled_identity(self.tree_sha256)
 
     def provenance(self) -> dict[str, str]:
         return self.identity()
