@@ -32,8 +32,6 @@ from physicalai.inference.constants import (
 from physicalai.runtime.execution.base import Execution, WorkerDiedError
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from physicalai.inference.model import InferenceModel
     from physicalai.runtime._callback_bus import _CallbackBus
     from physicalai.runtime.execution.rtc_queue import RTCActionQueue
@@ -108,8 +106,6 @@ class RTCExecution(Execution):
             ``inference_delay`` until the first steady measurement. If None,
             the duration of the warmup inference is used instead, which is an
             overestimate on backends that compile on first use.
-        clock: Monotonic clock in seconds used to time inference
-            (default ``time.perf_counter``). Injectable for simulated time.
         warmup_inferences: Number of initial inferences treated as warmup.
             The latency tracker is reset after these to discard
             compilation/kernel-build overhead (e.g. OpenVINO first-run).
@@ -129,7 +125,6 @@ class RTCExecution(Execution):
         latency_tracker: RTCLatencyTracker | None = None,
         warmup_inferences: int = 2,
         initial_latency_s: float | None = None,
-        clock: Callable[[], float] | None = None,
     ) -> None:
         self._chunk_size_param = chunk_size
         self._execution_horizon = execution_horizon
@@ -140,7 +135,6 @@ class RTCExecution(Execution):
         self._initial_latency_s = initial_latency_s
         if initial_latency_s is not None:
             self._latency_tracker.seed(initial_latency_s)
-        self._clock = clock or time.perf_counter
         self._threshold_warned = False
         self._warmup_inferences = max(1, warmup_inferences)
 
@@ -541,14 +535,14 @@ class RTCExecution(Execution):
 
             # Run inference (callbacks fire inside model.__call__)
             try:
-                t0 = self._clock()
+                t0 = time.perf_counter()
                 with self._model_lock:
                     with self._obs_lock:
                         if incarnation != self._incarnation:
                             self._cancel_signal_locked(signal, "RTCExecution warmup cancelled by reset")
                             continue
                     outputs = self._model(inputs)
-                    elapsed = self._clock() - t0
+                    elapsed = time.perf_counter() - t0
                 consecutive_errors = 0
             except Exception:
                 with self._obs_lock:

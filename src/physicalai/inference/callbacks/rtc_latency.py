@@ -25,19 +25,20 @@ from physicalai.inference.callbacks.base import Callback
 class RTCLatencyTracker(Callback):
     """Track inference latency for RTC delay computation.
 
-    Measures the duration of each ``model(inputs)`` call via
-    ``on_predict_start`` / ``on_predict_end`` hooks. Exposes
-    ``max_latency_s`` and ``compute_delay(fps)`` for the
-    ``RTCExecution`` to read.
+    ``RTCExecution`` times every inference it runs and records it here
+    (:meth:`record`), so it does not need to be registered as a model
+    callback. As a callback it measures each ``model(inputs)`` call via
+    ``on_predict_start`` / ``on_predict_end``. Exposes ``max_latency_s``
+    and ``compute_delay(fps)`` for the ``RTCExecution`` to read.
 
     Args:
         window_size: Number of recent measurements to retain.
 
     Examples:
         >>> tracker = RTCLatencyTracker()
-        >>> model = InferenceModel("./exports/pi05_rtc", callbacks=[tracker])
-        >>> # After some predictions:
-        >>> delay = tracker.compute_delay(fps=30, chunk_size=50, execution_horizon=10)
+        >>> execution = RTCExecution(fps=30, latency_tracker=tracker)
+        >>> # After some inferences:
+        >>> delay = tracker.compute_delay(fps=30)
     """
 
     def __init__(self, window_size: int = 100) -> None:  # noqa: D107
@@ -92,7 +93,8 @@ class RTCLatencyTracker(Callback):
     def max_latency_s(self) -> float:
         """Worst-case latency in seconds over the sliding window.
 
-        Returns 0.0 if no measurements recorded yet.
+        Returns the seeded estimate (0.0 unless :meth:`seed` or
+        :meth:`on_reset` set one) if no measurement is recorded.
         """
         return max(self._window) if self._window else self._fallback_s
 

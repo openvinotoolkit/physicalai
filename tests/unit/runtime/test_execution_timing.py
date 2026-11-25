@@ -23,6 +23,8 @@ import pytest
 from physicalai.runtime import AsyncExecution, ChunkedActionQueue, RTCActionQueue, RTCExecution
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from physicalai.inference.model import InferenceModel
 
 CHUNK = 20
@@ -332,7 +334,7 @@ class TestRTCAlignment:
 
 
 class _ClockedModel(_RTCModel):
-    """A model whose calls take ``latencies[i]`` seconds on an injected clock, with no real waiting."""
+    """A model whose calls take ``latencies[i]`` seconds on a virtual clock, with no real waiting."""
 
     def __init__(self, latencies: list[float]) -> None:
         super().__init__()
@@ -347,10 +349,31 @@ class _ClockedModel(_RTCModel):
         self.calls += 1
 
 
-def _replan_inputs(model: _ClockedModel, n_replans: int, **kwargs: Any) -> list[dict[str, Any]]:
+class _VirtualTime:
+    """Stands in for the ``time`` module: ``perf_counter`` reads ``clock``, the rest is the real module."""
+
+    def __init__(self, clock: Callable[[], float]) -> None:
+        self.perf_counter = clock
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(time, name)
+
+
+def _use_clock(monkeypatch: pytest.MonkeyPatch, module: str, clock: Callable[[], float]) -> None:
+    monkeypatch.setattr(f"{module}.time", _VirtualTime(clock))
+
+
+_RTC_MODULE = "physicalai.runtime.execution.rtc"
+_TRACKER_MODULE = "physicalai.inference.callbacks.rtc_latency"
+
+
+def _replan_inputs(
+    monkeypatch: pytest.MonkeyPatch, model: _ClockedModel, n_replans: int, **kwargs: Any
+) -> list[dict[str, Any]]:
     """Run warmup plus ``n_replans`` re-plans and return the RTC inputs of each model call."""
+    _use_clock(monkeypatch, _RTC_MODULE, model.clock)
     queue = RTCActionQueue()
-    ex = RTCExecution(chunk_size=CHUNK, fps=30.0, clock=model.clock, **kwargs)
+    ex = RTCExecution(chunk_size=CHUNK, fps=30.0, **kwargs)
     ex.start(cast("InferenceModel", model), queue)
     try:
         ex.warmup(_obs(0))
@@ -368,52 +391,54 @@ def _replan_inputs(model: _ClockedModel, n_replans: int, **kwargs: Any) -> list[
     return model.rtc_inputs
 
 
-class TestRTCLatency:
-    """Finding 4: RTC must tell the model how many actions go out during inference."""
+def _threshold_after_warmup(monkeypatch: pytest.MonkeyPatch, latency_s: float, **kwargs: Any) -> int:
+    model, queue = _ClockedModel([latency_s]), RTCActionQueue()
+    _use_clock(monkeypatch, _RTC_MODULE, model.clock)
+    ex = RTCExecution(chunk_size=CHUNK, fps=30.0, execution_horizon=10, **kwargs)
+    ex.start(cast("InferenceModel", model), queue)
+    try:
+        ex.warmup(_obs(0))
+        return ex.queue_threshold
+    finally:
+        ex.stop()
 
-    def test_delay_is_measured_without_a_tracker_from_the_first_replan(self) -> None:
-        inputs = _replan_inputs(_ClockedModel([0.29]), 3, execution_horizon=10)
+
+class TestRTCLatency:
+    """RTC must tell the model how many actions go out during inference."""
+
+    def test_delay_is_measured_without_a_tracker_from_the_first_replan(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        inputs = _replan_inputs(monkeypatch, _ClockedModel([0.29]), 3, execution_horizon=10)
         assert [int(i["inference_delay"]) for i in inputs[1:4]] == [9, 9, 9]
 
-    def test_cold_start_latency_is_an_estimate_then_forgotten(self) -> None:
+    def test_cold_start_latency_is_an_estimate_then_forgotten(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Warmup takes 5 s (compilation). The first re-plan may only overestimate
         # (clamped to the horizon); once a steady call is measured the 5 s is gone.
-        inputs = _replan_inputs(_ClockedModel([5.0, 0.29]), 3, execution_horizon=10, warmup_inferences=1)
+        inputs = _replan_inputs(monkeypatch, _ClockedModel([5.0, 0.29]), 3, execution_horizon=10, warmup_inferences=1)
         delays = [int(i["inference_delay"]) for i in inputs[1:4]]
         assert delays[0] == 10
         assert delays[1:] == [9, 9]
 
-    def test_initial_latency_overrides_the_cold_start(self) -> None:
+    def test_initial_latency_overrides_the_cold_start(self, monkeypatch: pytest.MonkeyPatch) -> None:
         inputs = _replan_inputs(
-            _ClockedModel([5.0, 2.0, 0.29]), 3, execution_horizon=10, initial_latency_s=0.29,
+            monkeypatch, _ClockedModel([5.0, 2.0, 0.29]), 3, execution_horizon=10, initial_latency_s=0.29
         )
         assert [int(i["inference_delay"]) for i in inputs[1:4]] == [9, 9, 9]
 
-    def test_auto_threshold_tracks_the_delay(self) -> None:
-        model, queue = _ClockedModel([0.29]), RTCActionQueue()
-        ex = RTCExecution(chunk_size=CHUNK, fps=30.0, execution_horizon=10, clock=model.clock)
-        ex.start(cast("InferenceModel", model), queue)
-        try:
-            ex.warmup(_obs(0))
-            assert ex.queue_threshold == 10 + 9
-        finally:
-            ex.stop()
+    def test_auto_threshold_tracks_the_delay(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert _threshold_after_warmup(monkeypatch, 0.29) == 10 + 9
 
-    def test_threshold_shorter_than_the_delay_is_raised(self) -> None:
-        model, queue = _ClockedModel([0.29]), RTCActionQueue()
-        ex = RTCExecution(chunk_size=CHUNK, fps=30.0, execution_horizon=10, queue_threshold=3, clock=model.clock)
-        ex.start(cast("InferenceModel", model), queue)
-        try:
-            ex.warmup(_obs(0))
-            assert ex.queue_threshold == 10
-        finally:
-            ex.stop()
+    def test_threshold_shorter_than_the_delay_is_raised(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert _threshold_after_warmup(monkeypatch, 0.29, queue_threshold=3) == 10
 
-    def test_tracker_keeps_its_estimate_across_a_reset(self) -> None:
+    def test_tracker_keeps_its_estimate_across_a_reset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from physicalai.inference.callbacks import RTCLatencyTracker
 
+        now = [0.1]
+        _use_clock(monkeypatch, _TRACKER_MODULE, lambda: now[0])
         tracker = RTCLatencyTracker()
-        tracker.record(0.3)
+        tracker.on_predict_start({})
+        now[0] += 0.3  # 0.30000000000000004 s: nine ticks plus float error
+        tracker.on_predict_end({})
         assert tracker.compute_delay(30.0) == 9  # exactly nine ticks, not ten
         tracker.on_reset()
         assert tracker.compute_delay(30.0) == 9

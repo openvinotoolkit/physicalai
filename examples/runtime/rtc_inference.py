@@ -154,13 +154,11 @@ def main() -> None:
     args = parser.parse_args()
 
     # ── Load model ──
+    # RTCExecution records every inference latency in this tracker itself;
+    # it is created here only to print the statistics at the end.
     latency_tracker = RTCLatencyTracker(window_size=100)
 
-    model = InferenceModel(
-        args.model,
-        device=args.device,
-        callbacks=[latency_tracker],
-    )
+    model = InferenceModel(args.model, device=args.device)
 
     # ── Build robot & cameras ──
     robot = build_robot(args)
