@@ -16,7 +16,7 @@ import pytest
 
 from physicalai.capture.camera import ColorMode
 from physicalai.capture.discovery import DeviceInfo
-from physicalai.capture.errors import CaptureTimeoutError, NotConnectedError
+from physicalai.capture.errors import CaptureError, CaptureTimeoutError, NotConnectedError
 from physicalai.capture.frame import Frame
 
 
@@ -115,10 +115,30 @@ def test_connect_enables_device_with_serial(realsense_cls: tuple) -> None:
     mock_rs.config.return_value.enable_device.assert_called_once_with("test-serial")
 
 
+def test_connect_only_enables_color_by_default(realsense_cls: tuple) -> None:
+    camera_cls, native = realsense_cls
+    camera = camera_cls(serial_number="123")
+    camera.connect()
+
+    native.config.return_value.enable_stream.assert_called_once_with(
+        native.stream.color, 640, 480, native.format.rgb8, 30
+    )
+    native.align.assert_not_called()
+    native.align.return_value.process.assert_not_called()
+
+
+def test_depth_dimensions_do_not_implicitly_enable_streaming(realsense_cls: tuple) -> None:
+    camera_cls, native = realsense_cls
+    camera = camera_cls(serial_number="123", depth_width=848, depth_height=480)
+    camera.connect()
+    assert native.config.return_value.enable_stream.call_count == 1
+    native.align.assert_not_called()
+
+
 def test_connect_enables_color_and_depth_streams(realsense_cls: tuple) -> None:
     """connect() enables both color and depth streams."""
     camera_cls, mock_rs = realsense_cls
-    camera = camera_cls(serial_number="123")
+    camera = camera_cls(serial_number="123", enable_depth=True)
     camera.connect()
     assert mock_rs.config.return_value.enable_stream.call_count == 2
     mock_rs.config.return_value.enable_stream.assert_any_call(
@@ -135,6 +155,17 @@ def test_connect_enables_color_and_depth_streams(realsense_cls: tuple) -> None:
         mock_rs.format.z16,
         30,
     )
+    mock_rs.align.assert_called_once_with(mock_rs.stream.color)
+    mock_rs.align.return_value.process.assert_called_once_with(
+        mock_rs.pipeline.return_value.wait_for_frames.return_value
+    )
+
+
+def test_connect_uses_requested_depth_dimensions(realsense_cls: tuple) -> None:
+    camera_cls, native = realsense_cls
+    camera = camera_cls(serial_number="123", fps=15, enable_depth=True, depth_width=848, depth_height=480)
+    camera.connect()
+    native.config.return_value.enable_stream.assert_any_call(native.stream.depth, 848, 480, native.format.z16, 15)
 
 
 def test_connect_timeout_raises(realsense_cls: tuple) -> None:
@@ -156,15 +187,17 @@ def test_disconnect_stops_pipeline(realsense_cls: tuple) -> None:
     assert not camera.is_connected
 
 
-def test_read_returns_frame_with_correct_shape_and_dtype(realsense_cls: tuple) -> None:
+@pytest.mark.parametrize("enable_depth", [False, True])
+def test_read_returns_frame_with_correct_shape_and_dtype(realsense_cls: tuple, enable_depth: bool) -> None:
     """read() returns uint8 RGB frame with expected shape."""
-    camera_cls, _ = realsense_cls
-    camera = camera_cls(serial_number="123")
+    camera_cls, native = realsense_cls
+    camera = camera_cls(serial_number="123", enable_depth=enable_depth)
     camera.connect()
     frame = camera.read()
     assert isinstance(frame, Frame)
     assert frame.data.shape == (480, 640, 3)
     assert frame.data.dtype == np.uint8
+    assert native.align.return_value.process.call_count == (2 if enable_depth else 0)
 
 
 def test_read_increments_sequence(realsense_cls: tuple) -> None:
@@ -190,10 +223,11 @@ def test_read_timeout_raises_capture_timeout(realsense_cls: tuple) -> None:
         camera.read()
 
 
-def test_read_latest_returns_new_frame_when_available(realsense_cls: tuple) -> None:
+@pytest.mark.parametrize("enable_depth", [False, True])
+def test_read_latest_returns_new_frame_when_available(realsense_cls: tuple, enable_depth: bool) -> None:
     """read_latest() returns a new frame when poll has data."""
     camera_cls, mock_rs = realsense_cls
-    camera = camera_cls(serial_number="123")
+    camera = camera_cls(serial_number="123", enable_depth=enable_depth)
     camera.connect()
     latest_frameset = mock.MagicMock()
     latest_frameset.get_color_frame.return_value = (
@@ -206,6 +240,7 @@ def test_read_latest_returns_new_frame_when_available(realsense_cls: tuple) -> N
     frame = camera.read_latest()
     assert isinstance(frame, Frame)
     assert frame.sequence == 1
+    assert mock_rs.align.return_value.process.call_count == (2 if enable_depth else 0)
 
 
 def test_read_latest_returns_cached_on_no_new_frame(realsense_cls: tuple) -> None:
@@ -222,7 +257,7 @@ def test_read_latest_returns_cached_on_no_new_frame(realsense_cls: tuple) -> Non
 @pytest.mark.parametrize("method", ["read", "read_latest", "read_rgbd", "connect"])
 def test_cached_latest_reuses_color_conversion(realsense_cls: tuple, method: str) -> None:
     camera_cls, native = realsense_cls
-    camera = camera_cls(serial_number="123", color_mode=ColorMode.GRAY)
+    camera = camera_cls(serial_number="123", color_mode=ColorMode.GRAY, enable_depth=method == "read_rgbd")
     camera.connect()
     pipeline = native.pipeline.return_value
     with mock.patch.object(camera, "_convert_color", wraps=camera._convert_color) as convert:
@@ -250,11 +285,11 @@ def test_cached_latest_reuses_color_conversion(realsense_cls: tuple, method: str
 
 def test_depth_acquisition_invalidates_cached_color(realsense_cls: tuple) -> None:
     camera_cls, native = realsense_cls
-    camera = camera_cls(serial_number="123", color_mode=ColorMode.GRAY)
+    camera = camera_cls(serial_number="123", color_mode=ColorMode.GRAY, enable_depth=True)
     camera.connect()
     first = camera.read()
-    native.pipeline.return_value.wait_for_frames.return_value.get_color_frame.return_value.get_data.return_value = np.full(
-        (2, 2, 3), 84, dtype=np.uint8
+    native.pipeline.return_value.wait_for_frames.return_value.get_color_frame.return_value.get_data.return_value = (
+        np.full((2, 2, 3), 84, dtype=np.uint8)
     )
     depth = camera.read_depth()
     native.pipeline.return_value.poll_for_frames.side_effect = None
@@ -267,14 +302,15 @@ def test_depth_acquisition_invalidates_cached_color(realsense_cls: tuple) -> Non
         convert.assert_called_once()
 
 
-def test_reconnect_discards_converted_cache(realsense_cls: tuple) -> None:
+@pytest.mark.parametrize("enable_depth", [False, True])
+def test_reconnect_discards_converted_cache(realsense_cls: tuple, enable_depth: bool) -> None:
     camera_cls, native = realsense_cls
-    camera = camera_cls(serial_number="123", color_mode=ColorMode.GRAY)
+    camera = camera_cls(serial_number="123", color_mode=ColorMode.GRAY, enable_depth=enable_depth)
     camera.connect()
     first = camera.read()
     camera.disconnect()
-    native.pipeline.return_value.wait_for_frames.return_value.get_color_frame.return_value.get_data.return_value = np.full(
-        (2, 2, 3), 84, dtype=np.uint8
+    native.pipeline.return_value.wait_for_frames.return_value.get_color_frame.return_value.get_data.return_value = (
+        np.full((2, 2, 3), 84, dtype=np.uint8)
     )
     camera.connect()
     native.pipeline.return_value.poll_for_frames.side_effect = None
@@ -282,12 +318,14 @@ def test_reconnect_discards_converted_cache(realsense_cls: tuple) -> None:
     newest = camera.read_latest()
     assert newest is not first
     assert newest.data[0, 0] != first.data[0, 0]
+    assert native.config.return_value.enable_stream.call_count == (4 if enable_depth else 2)
+    assert native.align.call_count == (2 if enable_depth else 0)
 
 
 def test_read_depth_returns_uint16(realsense_cls: tuple) -> None:
     """read_depth() returns uint16 depth frame with expected shape."""
     camera_cls, _ = realsense_cls
-    camera = camera_cls(serial_number="123")
+    camera = camera_cls(serial_number="123", enable_depth=True)
     camera.connect()
     frame = camera.read_depth()
     assert isinstance(frame, Frame)
@@ -298,7 +336,7 @@ def test_read_depth_returns_uint16(realsense_cls: tuple) -> None:
 def test_read_rgbd_single_pipeline_read(realsense_cls: tuple) -> None:
     """read_rgbd() performs exactly one pipeline wait call."""
     camera_cls, mock_rs = realsense_cls
-    camera = camera_cls(serial_number="123")
+    camera = camera_cls(serial_number="123", enable_depth=True)
     camera.connect()
     mock_rs.pipeline.return_value.wait_for_frames.reset_mock()
     camera.read_rgbd()
@@ -308,7 +346,7 @@ def test_read_rgbd_single_pipeline_read(realsense_cls: tuple) -> None:
 def test_read_rgbd_returns_aligned_pair(realsense_cls: tuple) -> None:
     """read_rgbd() returns aligned color/depth Frame tuple."""
     camera_cls, _ = realsense_cls
-    camera = camera_cls(serial_number="123")
+    camera = camera_cls(serial_number="123", enable_depth=True)
     camera.connect()
     color, depth = camera.read_rgbd()
     assert isinstance(color, Frame)
@@ -317,6 +355,30 @@ def test_read_rgbd_returns_aligned_pair(realsense_cls: tuple) -> None:
     assert color.data.dtype == np.uint8
     assert depth.data.shape == (480, 640)
     assert depth.data.dtype == np.uint16
+
+
+@pytest.mark.parametrize("method", ["read_depth", "read_rgbd"])
+def test_depth_reads_require_explicit_opt_in(realsense_cls: tuple, method: str) -> None:
+    camera_cls, native = realsense_cls
+    camera = camera_cls(serial_number="123")
+    camera.connect()
+    native.pipeline.return_value.wait_for_frames.reset_mock()
+
+    with pytest.raises(CaptureError, match="enable_depth=True"):
+        getattr(camera, method)()
+
+    native.pipeline.return_value.wait_for_frames.assert_not_called()
+    native.align.assert_not_called()
+    assert camera.is_connected
+    assert camera.read().data.shape == (480, 640, 3)
+
+
+@pytest.mark.parametrize("method", ["read_depth", "read_rgbd"])
+def test_depth_reads_before_connect_raise_not_connected(realsense_cls: tuple, method: str) -> None:
+    camera_cls, _ = realsense_cls
+    camera = camera_cls(serial_number="123", enable_depth=True)
+    with pytest.raises(NotConnectedError):
+        getattr(camera, method)()
 
 
 def test_discover_returns_device_info_list(realsense_cls: tuple) -> None:
