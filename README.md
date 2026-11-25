@@ -82,11 +82,15 @@ with UVCCamera(device="/dev/video0", width=640, height=480, fps=30) as camera:
 ```python
 from physicalai.capture import RealSenseCamera
 
-with RealSenseCamera(serial_number="123456789", width=640, height=480, fps=30) as camera:
+with RealSenseCamera(serial_number="123456789", width=640, height=480, fps=30, enable_depth=True) as camera:
     rgb, depth = camera.read_rgbd()
     print(rgb.data.shape)    # (480, 640, 3) RGB
     print(depth.data.shape)  # (480, 640) depth in mm
 ```
+
+RealSense captures color only by default. Set `enable_depth=True` when using
+`read_depth()` or `read_rgbd()`; leave it disabled for color-only capture to avoid
+unused depth transfers over USB.
 
 </details>
 

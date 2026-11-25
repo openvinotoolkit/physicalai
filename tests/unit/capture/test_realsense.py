@@ -6,9 +6,13 @@
 
 from __future__ import annotations
 
+import ast
 import builtins
 import importlib
+import json
+import re
 import sys
+from pathlib import Path
 from unittest import mock
 
 import numpy as np
@@ -105,6 +109,41 @@ def test_connect_starts_pipeline(realsense_cls: tuple) -> None:
     camera = camera_cls(serial_number="123")
     camera.connect()
     mock_rs.pipeline.return_value.start.assert_called_once_with(mock_rs.config.return_value)
+
+
+@pytest.mark.parametrize("example", ["README.md", "examples/capture/realsense.ipynb"])
+def test_documented_depth_examples_can_capture_depth(realsense_cls: tuple, example: str) -> None:
+    """Exercise documented constructor settings and depth reads without hardware."""
+    camera_cls, _ = realsense_cls
+    path = Path(__file__).resolve().parents[3] / example
+    document = path.read_text(encoding="utf-8")
+    if path.suffix == ".ipynb":
+        sources = ["".join(cell["source"]) for cell in json.loads(document)["cells"] if cell["cell_type"] == "code"]
+    else:
+        sources = [block for block in re.findall(r"```python\n(.*?)```", document, re.DOTALL) if ".read_rgbd(" in block]
+    assert sources
+    calls = [node for node in ast.walk(ast.parse("\n".join(sources))) if isinstance(node, ast.Call)]
+    constructors = [node for node in calls if isinstance(node.func, ast.Name) and node.func.id == "RealSenseCamera"]
+    assert len(constructors) == 1
+    # Discovery supplies the notebook serial at runtime; all other settings are literals.
+    kwargs = {
+        kw.arg: ast.literal_eval(kw.value)
+        for kw in constructors[0].keywords
+        if kw.arg is not None and kw.arg != "serial_number"
+    }
+    readers = [
+        node.func.attr
+        for node in calls
+        if isinstance(node.func, ast.Attribute) and node.func.attr in {"read_depth", "read_rgbd"}
+    ]
+    assert readers
+    with camera_cls(serial_number="test-serial", **kwargs) as camera:
+        for method in readers:
+            result = getattr(camera, method)()
+            depth = result[1] if method == "read_rgbd" else result
+            assert isinstance(depth, Frame)
+            assert depth.data.shape == (480, 640)
+            assert depth.data.dtype == np.uint16
 
 
 def test_connect_enables_device_with_serial(realsense_cls: tuple) -> None:
