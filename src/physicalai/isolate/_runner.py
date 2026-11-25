@@ -389,7 +389,8 @@ def start(
         stdout: Optional child stdout stream or subprocess stream constant.
         stderr: Optional child stderr stream or subprocess stream constant.
         pass_fds: Optional POSIX file descriptors inherited by the worker (for example, an
-            out-of-band IPC pipe, socketpair, or shared-memory descriptor).
+            out-of-band IPC pipe, socketpair, or shared-memory descriptor). Rejected with
+            :class:`ValueError` on Windows.
         bufsize: Stream buffer size passed to :class:`subprocess.Popen` (``-1`` uses the
             system default; ``0`` selects unbuffered binary streams).
 
@@ -495,6 +496,10 @@ def _check_launch(prepared: PreparedEnvironment, args: Sequence[str], pass_fds: 
     if not all(isinstance(fd, int) and not isinstance(fd, bool) and fd >= 0 for fd in pass_fds):
         msg = "pass_fds must be a sequence of non-negative integer file descriptors."
         raise TypeError(msg)
+    if pass_fds and not _POSIX:
+        # subprocess only asserts this on Windows, and the assertion disappears under -O.
+        msg = "pass_fds is only supported on POSIX."
+        raise ValueError(msg)
     if not prepared.python.is_file():
         msg = f"Prepared environment has no Python interpreter at {prepared.python}."
         raise FileNotFoundError(msg)

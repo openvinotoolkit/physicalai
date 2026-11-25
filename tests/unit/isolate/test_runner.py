@@ -495,6 +495,22 @@ def test_start_rejects_bad_arguments_before_opening_a_lifeline(
     assert pipes == []
 
 
+def test_start_rejects_pass_fds_on_windows(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    prepared = _prepared(tmp_path / "prepared")
+    entrypoint = tmp_path / "worker.py"
+    entrypoint.write_text("pass\n", encoding="utf-8")
+    monkeypatch.setattr("physicalai.isolate._runner._POSIX", False)
+
+    def unexpected_popen(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        pytest.fail("Popen must not run when pass_fds is unsupported.")
+
+    monkeypatch.setattr("physicalai.isolate._runner.subprocess.Popen", unexpected_popen)
+
+    with pytest.raises(ValueError, match="only supported on POSIX"):
+        start(prepared, entrypoint, pass_fds=(3,))
+
+
 def test_folder_entrypoints_can_come_from_a_zip_resource(tmp_path: Path) -> None:
     prepared = _linked_prepared(tmp_path / "prepared")
     archive = tmp_path / "package.zip"
