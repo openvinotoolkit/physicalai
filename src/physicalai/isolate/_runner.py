@@ -55,12 +55,6 @@ import signal
 lifeline = sys.argv[1]
 sys.argv = sys.argv[2:]
 def _supervise(fd):
-    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sig, signal.SIG_IGN)
-    os.chdir("/")
-    null = os.open(os.devnull, os.O_RDWR)
-    for stream in (0, 1, 2):
-        os.dup2(null, stream)
     try:
         while os.read(fd, 1):
             pass
@@ -71,6 +65,37 @@ if lifeline != "-":
     child = os.fork()
     if child == 0:
         try:
+            # Detach before the second fork so waitpid() guarantees signals and stdio are set.
+            if fd < 3:
+                import fcntl
+                new_fd = fcntl.fcntl(fd, fcntl.F_DUPFD, 3)
+                os.close(fd)
+                fd = new_fd
+            for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+                signal.signal(sig, signal.SIG_IGN)
+            os.chdir("/")
+            null = os.open(os.devnull, os.O_RDWR)
+            for stream in (0, 1, 2):
+                os.dup2(null, stream)
+            if null > 2:
+                os.close(null)
+            # Close any extra descriptors passed via pass_fds so the supervisor does not pin them open.
+            max_fd = os.sysconf("SC_OPEN_MAX") if hasattr(os, "sysconf") else 4096
+            if max_fd < 0 or max_fd > 65536:
+                try:
+                    fds = [int(name) for name in os.listdir("/proc/self/fd")]
+                except OSError:
+                    fds = list(range(3, 65536))
+                for extra in fds:
+                    if extra >= 3 and extra != fd:
+                        try:
+                            os.close(extra)
+                        except OSError:
+                            pass
+            else:
+                if fd > 3:
+                    os.closerange(3, fd)
+                os.closerange(fd + 1, max(max_fd, fd + 1))
             if os.fork() == 0:
                 _supervise(fd)
         finally:
@@ -106,6 +131,7 @@ class Session:
         self._command = tuple(command)
         # Runs at most once: on exit, close, garbage collection, or interpreter shutdown.
         self._release = weakref.finalize(self, release_entrypoint)
+        self._group_killed = False
         self._closed = False
 
     @property
@@ -204,30 +230,35 @@ class Session:
 
         Closes the child's stdin pipe so it can exit on its own, then sends SIGTERM, then
         SIGKILL, waiting up to *timeout* seconds after each of the first two steps.
+
+        Args:
+            timeout: Maximum seconds to wait after closing stdin and after sending SIGTERM.
         """
         if self._closed:
             return
         self._closed = True
-        running = self.poll() is None
-        if running and self._process.stdin is not None:
-            with suppress(OSError):
-                self._process.stdin.close()
-            running = not self._exited_within(timeout)
-        if running:
-            self.terminate()
-            running = not self._exited_within(timeout)
-        if running:
-            self.kill()
-            self.wait()
-        if _POSIX:
-            # Remove subprocesses the worker left behind; the group ID stays reserved while any live.
-            self._signal_group(signal.SIGKILL)
-        self._release_resources()
-        for stream in (self._process.stdin, self._process.stdout, self._process.stderr):
-            if stream is not None:
-                # Flushing buffered stdin fails once the worker has exited.
+        try:
+            running = self.poll() is None
+            if running and self._process.stdin is not None:
                 with suppress(OSError):
-                    stream.close()
+                    self._process.stdin.close()
+                running = not self._exited_within(timeout)
+            if running:
+                self.terminate()
+                running = not self._exited_within(timeout)
+        finally:
+            if self._process.poll() is None:
+                self.kill()
+                self._process.wait()
+            if _POSIX:
+                # Signal before releasing the lifeline so the supervisor still pins the PGID.
+                self._signal_group(signal.SIGKILL)
+            self._release_resources()
+            for stream in (self._process.stdin, self._process.stdout, self._process.stderr):
+                if stream is not None:
+                    # Flushing buffered stdin fails once the worker has exited.
+                    with suppress(OSError):
+                        stream.close()
 
     def __enter__(self) -> Self:
         return self
@@ -239,11 +270,13 @@ class Session:
         traceback: TracebackType | None,
     ) -> None:
         del exc_value, traceback
-        if _POSIX and exc_type is not None and issubclass(exc_type, KeyboardInterrupt) and self.poll() is None:
-            # The worker's own process group does not receive the terminal's Ctrl+C.
-            self._signal_group(signal.SIGINT)
-            self._exited_within(_GRACE_SECONDS)
-        self.close()
+        try:
+            if _POSIX and exc_type is not None and issubclass(exc_type, KeyboardInterrupt) and self.poll() is None:
+                # The worker's own process group does not receive the terminal's Ctrl+C.
+                self._signal_group(signal.SIGINT)
+                self._exited_within(_GRACE_SECONDS)
+        finally:
+            self.close()
 
     def _exited_within(self, timeout: float) -> bool:
         try:
@@ -253,6 +286,11 @@ class Session:
         return True
 
     def _signal_group(self, sig: int) -> None:
+        # Once the lifeline closes or SIGKILL hits the group, the supervisor exits and the OS may reuse this PGID.
+        if self._group_killed or not self._release.alive:
+            return
+        if sig == signal.SIGKILL:
+            self._group_killed = True
         with suppress(ProcessLookupError):
             os.killpg(self._process.pid, sig)
 
@@ -331,6 +369,8 @@ def start(
     stdin: int | IO[Any] | None = None,
     stdout: int | IO[Any] | None = None,
     stderr: int | IO[Any] | None = None,
+    pass_fds: Sequence[int] = (),
+    bufsize: int = -1,
 ) -> Session:
     """Start an entrypoint and return a controllable process session.
 
@@ -348,17 +388,31 @@ def start(
         stdin: Optional child stdin stream or subprocess stream constant.
         stdout: Optional child stdout stream or subprocess stream constant.
         stderr: Optional child stderr stream or subprocess stream constant.
+        pass_fds: Optional POSIX file descriptors inherited by the worker (for example, an
+            out-of-band IPC pipe, socketpair, or shared-memory descriptor).
+        bufsize: Stream buffer size passed to :class:`subprocess.Popen` (``-1`` uses the
+            system default; ``0`` selects unbuffered binary streams).
 
     Returns:
         A session exposing process status, streams, and lifecycle methods.
     """
-    _check_launch(prepared, args)
+    _check_launch(prepared, args, pass_fds)
     child_env = _child_environment(prepared, env)
     resources_stack = ExitStack()
     try:
         script = resources_stack.enter_context(_entrypoint_path(entrypoint))
         process, command = _launch(
-            prepared, script, args, resources_stack, cwd=cwd, env=child_env, stdin=stdin, stdout=stdout, stderr=stderr
+            prepared,
+            script,
+            args,
+            resources_stack,
+            cwd=cwd,
+            env=child_env,
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
+            pass_fds=tuple(pass_fds),
+            bufsize=bufsize,
         )
     except BaseException:
         resources_stack.close()
@@ -377,6 +431,8 @@ def _launch(
     stdin: int | IO[Any] | None,
     stdout: int | IO[Any] | None,
     stderr: int | IO[Any] | None,
+    pass_fds: tuple[int, ...] = (),
+    bufsize: int = -1,
 ) -> tuple[subprocess.Popen[bytes], list[str]]:
     lifeline = None
     if _POSIX:
@@ -384,15 +440,17 @@ def _launch(
         resources_stack.callback(os.close, lifeline_write)
     try:
         command = _command(prepared, script, args, lifeline)
+        forwarded_fds = pass_fds if lifeline is None else (lifeline, *pass_fds)
         process = subprocess.Popen(  # noqa: S603  # nosec B603  # ruff: ignore[noqa-comments] - explicit interpreter and entrypoint argv, no shell.
             command,
+            bufsize=bufsize,
             cwd=cwd,
             env=env,
             stdin=stdin,
             stdout=stdout,
             stderr=stderr,
             shell=False,
-            pass_fds=() if lifeline is None else (lifeline,),
+            pass_fds=forwarded_fds,
             process_group=0 if _POSIX else None,
         )
     finally:
@@ -414,7 +472,7 @@ def _entrypoint_path(
         # resources.as_file() only extracts directories from Python 3.12 on.
         with tempfile.TemporaryDirectory(prefix="physicalai-isolate-entrypoint-") as temporary:
             path = Path(temporary).resolve() / "entrypoint"
-            _copy_tree(entrypoint, path)
+            _copy_tree(entrypoint, path, label="Entrypoint")
             _check_entrypoint(path)
             yield path
         return
@@ -430,9 +488,12 @@ def _check_entrypoint(path: Path) -> None:
         raise FileNotFoundError(msg)
 
 
-def _check_launch(prepared: PreparedEnvironment, args: Sequence[str]) -> None:
+def _check_launch(prepared: PreparedEnvironment, args: Sequence[str], pass_fds: Sequence[int] = ()) -> None:
     if isinstance(args, str) or not all(isinstance(argument, str) for argument in args):
         msg = "Entrypoint arguments must be a sequence of strings."
+        raise TypeError(msg)
+    if not all(isinstance(fd, int) and not isinstance(fd, bool) and fd >= 0 for fd in pass_fds):
+        msg = "pass_fds must be a sequence of non-negative integer file descriptors."
         raise TypeError(msg)
     if not prepared.python.is_file():
         msg = f"Prepared environment has no Python interpreter at {prepared.python}."

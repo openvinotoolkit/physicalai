@@ -85,7 +85,7 @@ def _launch(prepared: PreparedEnvironment, entrypoint: Path, kwargs: dict[str, A
 
 
 def _process_options() -> dict[str, Any]:
-    return {"shell": False, "process_group": 0 if os.name == "posix" else None}
+    return {"bufsize": -1, "shell": False, "process_group": 0 if os.name == "posix" else None}
 
 
 def test_run_passes_the_entrypoint_and_arguments_as_argv(
@@ -590,3 +590,139 @@ def test_ctrl_c_in_the_host_is_forwarded_to_the_worker(tmp_path: Path) -> None:
         raise KeyboardInterrupt
 
     assert session.returncode == 0
+
+
+@posix_only
+def test_released_session_does_not_signal_process_group_again(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    prepared = _prepared(tmp_path / "prepared")
+    entrypoint = tmp_path / "worker.py"
+    entrypoint.write_text("pass\n", encoding="utf-8")
+    _fake_popen(monkeypatch, _FakeChild())
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr("physicalai.isolate._runner.os.killpg", lambda pid, sig: signals.append((pid, sig)))
+
+    session = start(prepared, entrypoint)
+    assert session.wait() == 0
+    session.terminate()
+    session.kill()
+    session.close()
+
+    assert signals == []
+
+
+@posix_only
+def test_worker_survives_when_host_has_closed_standard_descriptor(tmp_path: Path) -> None:
+    prepared = _linked_prepared(tmp_path / "prepared")
+    worker = tmp_path / "worker.py"
+    worker.write_text("print('ok')\n", encoding="utf-8")
+    host = (
+        "import os, sys\n"
+        "from pathlib import Path\n"
+        "from physicalai.isolate import PreparedEnvironment, SyncProfile, run\n"
+        "os.close(0)\n"
+        "prepared = PreparedEnvironment(path=Path(sys.argv[1]), key='b' * 64, profile=SyncProfile())\n"
+        "result = run(prepared, sys.argv[2], capture_output=True, timeout=10)\n"
+        "sys.stdout.buffer.write(result.stdout)\n"
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", host, str(prepared.path), str(worker)],
+        capture_output=True,
+        timeout=30,
+        check=True,
+    )
+
+    assert completed.stdout == b"ok\n"
+
+
+@posix_only
+def test_second_ctrl_c_during_exit_still_kills_worker_and_closes_streams(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    prepared = _linked_prepared(tmp_path / "prepared")
+    worker = tmp_path / "worker.py"
+    worker.write_text(_SPAWNING_WORKER, encoding="utf-8")
+    pid_file = tmp_path / "pids"
+    session = start(prepared, worker, args=(str(pid_file),), stdout=subprocess.PIPE)
+    pids = _read_pids(pid_file)
+    original_exited = session._exited_within
+    calls = 0
+
+    def interrupt_grace_wait(timeout: float) -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise KeyboardInterrupt
+        return original_exited(timeout)
+
+    monkeypatch.setattr(session, "_exited_within", interrupt_grace_wait)
+
+    try:
+        with pytest.raises(KeyboardInterrupt), session:
+            raise KeyboardInterrupt
+        assert session.stdout is not None
+        assert session.stdout.closed
+        assert _survivors(pids) == []
+    finally:
+        _kill(pids)
+
+
+@posix_only
+def test_second_ctrl_c_during_close_still_kills_worker_and_closes_streams(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    prepared = _linked_prepared(tmp_path / "prepared")
+    worker = tmp_path / "worker.py"
+    worker.write_text(_SPAWNING_WORKER, encoding="utf-8")
+    pid_file = tmp_path / "pids"
+    session = start(prepared, worker, args=(str(pid_file),), stdout=subprocess.PIPE)
+    pids = _read_pids(pid_file)
+
+    def interrupt_grace_wait(timeout: float) -> bool:
+        del timeout
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(session, "_exited_within", interrupt_grace_wait)
+
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            session.close(timeout=2)
+        assert session.stdout is not None
+        assert session.stdout.closed
+        assert _survivors(pids) == []
+    finally:
+        _kill(pids)
+
+
+@posix_only
+def test_start_forwards_pass_fds_without_supervisor_holding_them_open(tmp_path: Path) -> None:
+    prepared = _linked_prepared(tmp_path / "prepared")
+    worker = tmp_path / "worker.py"
+    worker.write_text(
+        "import os, sys\n"
+        "fd = int(sys.argv[1])\n"
+        "os.write(fd, b'hello-ipc')\n"
+        "os.close(fd)\n",
+        encoding="utf-8",
+    )
+    read_fd, write_fd = os.pipe()
+    try:
+        session = start(prepared, worker, args=(str(write_fd),), pass_fds=(write_fd,), bufsize=0)
+        os.close(write_fd)
+        write_fd = -1
+        # Reading until EOF before session.wait() verifies the supervisor did not keep write_fd open.
+        chunks: list[bytes] = []
+        while chunk := os.read(read_fd, 64):
+            chunks.append(chunk)
+        assert b"".join(chunks) == b"hello-ipc"
+        assert session.wait(timeout=10) == 0
+    finally:
+        os.close(read_fd)
+        if write_fd >= 0:
+            os.close(write_fd)
+
