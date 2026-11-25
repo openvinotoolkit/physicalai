@@ -189,6 +189,7 @@ class RobotRuntime:
         self._last_run_reason: RunReason | None = None
         self._initial_state: RobotObservation | None = None
         self._cycle_start = 0.0
+        self._next_cycle_start: float | None = None
         self._next_substep = 0
 
     @property
@@ -467,7 +468,14 @@ class RobotRuntime:
         robot_state, camera_frames = self._read_observation(read_cameras=new_cycle)
 
         if new_cycle:
-            self._cycle_start = loop_start
+            # Cycles keep a fixed schedule: a late wake-up (macOS oversleeps by a few ms) shortens the
+            # next sleep instead of lengthening every cycle. After an overrun, or a wake-up a whole tick
+            # late, the schedule restarts from now instead of running catch-up ticks back to back.
+            scheduled = self._next_cycle_start
+            if scheduled is None or loop_start - scheduled >= tick_period:
+                scheduled = loop_start
+            self._cycle_start = scheduled
+            self._next_cycle_start = None
             self._next_substep = 0
             self._interpolator.add(self._action_source.update(robot_state, camera_frames, step))
 
@@ -481,11 +489,14 @@ class RobotRuntime:
         self._bus.invoke_on_action_sent(action=action, step=step)
 
         # Deadlines hang off the cycle start so a slow tick borrows time from the rest of its cycle.
-        if self._interpolator.needs_new_action():
+        cycle_done = self._interpolator.needs_new_action()
+        if cycle_done:
             deadline = self._cycle_start + cycle_period
         else:
             deadline = self._cycle_start + self._next_substep * tick_period
         elapsed, sleep_time = self._tick_sleep(loop_start, deadline)
+        if cycle_done and sleep_time > 0:
+            self._next_cycle_start = deadline
         self._bus.emit_tick(
             TickEvent(
                 session_id=self._session_id,
@@ -546,6 +557,7 @@ class RobotRuntime:
         self._initial_state = None
         self._interpolator.reset()
         self._cycle_start = 0.0
+        self._next_cycle_start = None
         self._next_substep = 0
 
     @staticmethod
