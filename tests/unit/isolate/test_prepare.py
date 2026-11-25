@@ -271,6 +271,76 @@ def test_prepare_ignores_host_uv_settings_that_change_the_sync(
     assert env["UV_CACHE_DIR"] == str(tmp_path / "uv-cache")
 
 
+def test_prepare_strips_extra_uv_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    for name in ("UV_NO_GROUP", "UV_NO_INSTALL_WORKSPACE", "UV_NO_SOURCES_PACKAGE", "UV_OFFLINE", "UV_CONFIG_FILE"):
+        monkeypatch.setenv(name, "1")
+    records: list[tuple[list[str], dict[str, str]]] = []
+    monkeypatch.setattr("physicalai.isolate._environment.subprocess.run", _recording_uv(records))
+    environment = Environment(source=BundledProject(_bundled_project(tmp_path / "project")))
+
+    prepare(environment, provider=UvProvider(cache_dir=tmp_path / "cache", uv=sys.executable))
+
+    [(_, env)] = records
+    assert {"UV_NO_GROUP", "UV_NO_INSTALL_WORKSPACE", "UV_NO_SOURCES_PACKAGE", "UV_OFFLINE", "UV_CONFIG_FILE"}.isdisjoint(
+        env,
+    )
+
+
+def test_prepare_records_materialized_provenance_even_if_source_changes_during_sync(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project = _bundled_project(tmp_path / "project")
+    environment = Environment(source=BundledProject(project))
+    original_tree = environment.source.identity()["tree_sha256"]
+
+    def mutating_uv(command: list[str], *, cwd: Path, env: dict[str, str], check: bool, shell: bool) -> None:
+        del command, cwd, check, shell
+        (project / "worker.py").write_text("VALUE = 999\n", encoding="utf-8")
+        python = Path(env["UV_PROJECT_ENVIRONMENT"]) / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        python.parent.mkdir(parents=True, exist_ok=True)
+        python.write_bytes(b"prepared interpreter")
+
+    monkeypatch.setattr("physicalai.isolate._environment.subprocess.run", mutating_uv)
+
+    prepared = prepare(environment, provider=UvProvider(cache_dir=tmp_path / "cache", uv=sys.executable))
+    marker = _environment._read_marker(prepared.path / _environment._MARKER)
+
+    assert marker is not None
+    assert marker["source"] == {"kind": "bundled", "path": str(project), "tree_sha256": original_tree}
+    assert (prepared.project / "worker.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+
+
+def test_remove_cache_path_clears_readonly_files(tmp_path: Path) -> None:
+    root = tmp_path / "cache-entry"
+    pack_dir = root / "project" / ".git" / "objects" / "pack"
+    pack_dir.mkdir(parents=True)
+    readonly = pack_dir / "pack-123.idx"
+    readonly.write_bytes(b"pack")
+    readonly.chmod(0o444)
+
+    _environment._remove_cache_path(root)
+
+    assert not root.exists()
+
+
+def test_prepare_rejects_regular_file_as_cache_dir(tmp_path: Path) -> None:
+    cache_file = tmp_path / "not-a-dir"
+    cache_file.write_text("file", encoding="utf-8")
+    environment = Environment(source=BundledProject(_bundled_project(tmp_path / "project")))
+
+    with pytest.raises(ValueError, match="must be a directory"):
+        prepare(environment, provider=UvProvider(cache_dir=cache_file, uv=sys.executable))
+
+
+def test_sync_profile_rejects_control_characters_in_python_selector() -> None:
+    with pytest.raises(ValueError, match="control characters"):
+        SyncProfile(python="3.12\n--evil")
+
+
 @dataclass(frozen=True)
 class _DuckTypedProject:
     """A source that provides only the methods Environment requires."""

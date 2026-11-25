@@ -371,3 +371,65 @@ def test_bundled_project_skips_caches_and_local_environments(tmp_path: Path) -> 
 
     assert source.identity() == identity
     assert sorted(path.name for path in copied.iterdir()) == ["pyproject.toml", "worker.py"]
+
+
+def test_published_to_bundled_tree_pinned_patches_keep_identity_and_differ_in_provenance(tmp_path: Path) -> None:
+    patch_bytes = b"diff --git a/model.py b/model.py\n"
+    patch_dir = tmp_path / "patches"
+    patch_dir.mkdir()
+    (patch_dir / "0001-enable.patch").write_bytes(patch_bytes)
+    published = PublishedPatches(
+        repository=_REPOSITORY,
+        revision=_REVISION,
+        directory="patches/gr00t",
+        files=(PatchFile("0001-enable.patch", hashlib.sha256(patch_bytes).hexdigest()),),
+        tree=_TREE,
+        license="Apache-2.0",
+    )
+    bundled = BundledPatches(patch_dir, tree=_TREE, license="Apache-2.0")
+    from_published = GitProject("https://github.com/NVIDIA/Isaac-GR00T.git", _REVISION, patches=published)
+    from_bundled = GitProject("https://github.com/NVIDIA/Isaac-GR00T.git", _REVISION, patches=bundled)
+
+    assert from_published.identity() == from_bundled.identity()
+    assert from_published.provenance() != from_bundled.provenance()
+    assert from_bundled.provenance()["patches"][0]["directory"] == str(patch_dir)
+    assert from_bundled.provenance()["patches"][0]["license"] == "Apache-2.0"
+
+
+def test_patch_license_metadata_does_not_change_unpinned_identity(tmp_path: Path) -> None:
+    patch_dir = tmp_path / "patches"
+    patch_dir.mkdir()
+    (patch_dir / "0001-enable.patch").write_bytes(b"diff --git a/a b/a\n")
+    without_license = BundledPatches(patch_dir)
+    with_license = BundledPatches(patch_dir, license="Apache-2.0")
+
+    assert without_license.identity() == with_license.identity()
+    assert without_license.provenance()["license"] is None
+    assert with_license.provenance()["license"] == "Apache-2.0"
+
+
+@pytest.mark.parametrize(
+    "bad_url",
+    [
+        "https://raw.githubusercontent.com:8443/org/repo/rev/a.patch",
+        "https://user:pass@raw.githubusercontent.com/org/repo/rev/a.patch",
+        "https://raw.githubusercontent.com/org/repo/\ra.patch",
+    ],
+)
+def test_check_download_url_rejects_ports_credentials_and_control_characters(bad_url: str) -> None:
+    with pytest.raises(ValueError, match="unpinned location|whitespace or control characters"):
+        _sources._check_download_url(bad_url)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX executable mode bits")
+def test_bundled_project_materialize_preserves_executable_bits(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    script = project / "run.sh"
+    script.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+    script.chmod(0o755)
+    copied = tmp_path / "copy"
+
+    BundledProject(project).materialize(copied)
+
+    assert os.access(copied / "run.sh", os.X_OK)

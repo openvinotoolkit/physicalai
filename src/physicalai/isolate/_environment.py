@@ -8,12 +8,16 @@ import errno
 import json
 import os
 import shutil
+import stat
 import subprocess  # noqa: S404  # nosec B404  # ruff: ignore[noqa-comments] - uv uses fixed argv with shell disabled.
 import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
+
+from ._sources import BundledProject, _tree_sha256
+from ._types import Environment, SyncProfile
 
 try:
     import fcntl as _fcntl
@@ -26,24 +30,29 @@ else:
     _msvcrt = None
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Callable, Generator
+    from typing import Any
 
     from ._sources import ProjectSource
-    from ._types import Environment, SyncProfile
 
 _MARKER = ".physicalai-isolate.json"
 _MARKER_VERSION = 1
 # Host uv settings that contradict the sync command or change the environment outside its cache key.
 _UV_OVERRIDES = frozenset({
+    "UV_CONFIG_FILE",
     "UV_DEV",
     "UV_FROZEN",
     "UV_LOCKED",
     "UV_NO_DEFAULT_GROUPS",
     "UV_NO_DEV",
     "UV_NO_EDITABLE",
+    "UV_NO_GROUP",
     "UV_NO_INSTALL_LOCAL",
     "UV_NO_INSTALL_PROJECT",
+    "UV_NO_INSTALL_WORKSPACE",
     "UV_NO_SOURCES",
+    "UV_NO_SOURCES_PACKAGE",
+    "UV_OFFLINE",
     "UV_PYTHON",
     "VIRTUAL_ENV",
 })
@@ -85,6 +94,10 @@ class Provider(Protocol):
     def prepare(self, environment: Environment, *, offline: bool = False) -> PreparedEnvironment:
         """Materialize and prepare *environment*.
 
+        Args:
+            environment: Project source and sync profile to prepare.
+            offline: Prevent network access during preparation.
+
         Returns:
             The synchronized environment.
         """
@@ -92,7 +105,13 @@ class Provider(Protocol):
 
 @dataclass(frozen=True)
 class UvProvider:
-    """Prepare locked Python projects with the ``uv`` command-line tool."""
+    """Prepare locked Python projects with the ``uv`` command-line tool.
+
+    Attributes:
+        cache_dir: Optional directory storing prepared environments. Defaults to
+            ``PHYSICALAI_ISOLATE_CACHE`` or ``$XDG_CACHE_HOME/physicalai/isolate``.
+        uv: Optional explicit path or command name for the ``uv`` executable.
+    """
 
     cache_dir: Path | None = None
     uv: str | Path | None = None
@@ -117,10 +136,10 @@ class UvProvider:
         """
         # The configured cache root may be a symbolic link; entries inside it may not.
         cache_root = _cache_root(self.cache_dir)
-        cache_root.mkdir(parents=True, exist_ok=True)
-        if not cache_root.is_dir():
+        if cache_root.exists() and not cache_root.is_dir():
             msg = f"Environment cache must be a directory: {cache_root}."
             raise ValueError(msg)
+        cache_root.mkdir(parents=True, exist_ok=True)
 
         key = environment.key()
         root = cache_root / key
@@ -161,7 +180,7 @@ def prepare(
         offline: Prevent network access while materializing and synchronizing.
 
     Returns:
-        The prepared environment and its content key.
+        The prepared environment.
     """
     selected_provider = UvProvider() if provider is None else provider
     return selected_provider.prepare(environment, offline=offline)
@@ -194,14 +213,12 @@ def _build_environment(
     project = root / "project"
     _materialize_once(environment.source, project, offline=offline)
     _validate_project(project)
-    if environment.key() != key:
-        msg = "The environment source changed while it was being prepared."
-        raise RuntimeError(msg)
+    source_provenance = _verify_materialized_source(environment, project, key)
 
     # Duck-typed sources only need identity(), materialize(), and provenance().
     verify_lock = getattr(environment.source, "verify_lock", False) is True
     command = _sync_command(uv, project, environment.profile, offline=offline, verify_lock=verify_lock)
-    child_env = {key: value for key, value in os.environ.items() if key.upper() not in _UV_OVERRIDES}
+    child_env = {name: value for name, value in os.environ.items() if name.upper() not in _UV_OVERRIDES}
     child_env["UV_PROJECT_ENVIRONMENT"] = str(root / "venv")
     subprocess.run(  # noqa: S603  # nosec B603  # ruff: ignore[noqa-comments] - fixed uv subcommand, no shell.
         command,
@@ -214,8 +231,42 @@ def _build_environment(
     if not prepared.venv.is_dir() or not prepared.python.is_file():
         msg = f"uv did not create a Python environment at {prepared.venv}."
         raise RuntimeError(msg)
-    _write_marker(root, environment, key)
+    _write_marker(root, environment, key, source_provenance)
     return prepared
+
+
+def _verify_materialized_source(environment: Environment, project: Path, key: str) -> dict[str, Any]:
+    if isinstance(environment.source, BundledProject):
+        # Hash the materialized copy once instead of re-reading the live source tree twice.
+        tree_sha256 = _tree_sha256(project)
+        snapshot = Environment(
+            source=_BundledSnapshot(tree_sha256),  # type: ignore[arg-type]
+            profile=environment.profile,
+        )
+        if snapshot.key() != key:
+            msg = "The environment source changed while it was being prepared."
+            raise RuntimeError(msg)
+        return {"kind": "bundled", "path": str(environment.source.path), "tree_sha256": tree_sha256}
+    if environment.key() != key:
+        msg = "The environment source changed while it was being prepared."
+        raise RuntimeError(msg)
+    return environment.source.provenance()
+
+
+@dataclass(frozen=True)
+class _BundledSnapshot:
+    tree_sha256: str
+
+    def identity(self) -> dict[str, str]:
+        return {"kind": "bundled", "tree_sha256": self.tree_sha256}
+
+    def provenance(self) -> dict[str, str]:
+        return self.identity()
+
+    @staticmethod
+    def materialize(destination: Path, *, offline: bool = False) -> None:
+        del destination, offline
+        raise NotImplementedError
 
 
 def _cache_root(configured: Path | None) -> Path:
@@ -302,12 +353,12 @@ def _read_marker(path: Path) -> dict[str, object] | None:
     return marker if isinstance(marker, dict) else None
 
 
-def _write_marker(root: Path, environment: Environment, key: str) -> None:
+def _write_marker(root: Path, environment: Environment, key: str, source_provenance: dict[str, Any]) -> None:
     marker = {
         "format_version": _MARKER_VERSION,
         "key": key,
         "profile": environment.profile.identity(),
-        "source": environment.source.provenance(),
+        "source": source_provenance,
     }
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=root, delete=False) as file:
         json.dump(marker, file, sort_keys=True)
@@ -316,14 +367,29 @@ def _write_marker(root: Path, environment: Environment, key: str) -> None:
     temporary.replace(root / _MARKER)
 
 
+def _handle_remove_readonly(func: Callable[[str], object], path: str, exc_info: object) -> None:
+    exc = exc_info[1] if isinstance(exc_info, tuple) else exc_info
+    if not isinstance(exc, PermissionError):
+        raise exc if isinstance(exc, BaseException) else PermissionError(path)
+    Path(path).chmod(stat.S_IWRITE | stat.S_IREAD)
+    func(path)
+
+
 def _remove_cache_path(path: Path) -> None:
     if path.is_symlink():
         msg = f"Refusing to remove a symbolic-link cache path: {path}."
         raise ValueError(msg)
     if path.is_dir():
-        shutil.rmtree(path)
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(path, onexc=_handle_remove_readonly)
+        else:
+            shutil.rmtree(path, onerror=_handle_remove_readonly)
     elif path.exists():
-        path.unlink()
+        try:
+            path.unlink()
+        except PermissionError:
+            path.chmod(stat.S_IWRITE | stat.S_IREAD)
+            path.unlink()
 
 
 @contextlib.contextmanager

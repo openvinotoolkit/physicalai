@@ -29,6 +29,7 @@ _PATCH_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,254}")
 _PATH_PART_RE = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 _DOWNLOAD_TIMEOUT_SECONDS = 60
 _MAX_PATCH_BYTES = 16 * 1024 * 1024
+_HASH_CHUNK_BYTES = 256 * 1024
 _GITHUB_REPOSITORY_PARTS = 2
 _GIT_IDENTITY = {
     "GIT_AUTHOR_NAME": "physicalai-isolate",
@@ -92,7 +93,11 @@ class ProjectSource(ABC):
 
 @dataclass(frozen=True)
 class BundledProject(ProjectSource):
-    """A uv project shipped with the calling distribution."""
+    """A uv project shipped with the calling distribution.
+
+    Attributes:
+        path: Directory or package resource containing ``pyproject.toml`` and ``uv.lock``.
+    """
 
     verify_lock: ClassVar[bool] = True
 
@@ -106,27 +111,20 @@ class BundledProject(ProjectSource):
         """
         return {"kind": "bundled", "tree_sha256": _tree_sha256(self.path)}
 
-    def lock(self) -> bytes:
-        """Read the bundled ``uv.lock`` file.
+    def provenance(self) -> dict[str, str]:
+        """Record the bundled project path alongside its content digest.
 
         Returns:
-            The raw lockfile bytes.
-
-        Raises:
-            FileNotFoundError: If the project has no lockfile.
-            ValueError: If the lockfile is a symbolic link.
+            The bundled project kind, path, and tree SHA-256 digest.
         """
-        lock = self.path.joinpath("uv.lock")
-        if isinstance(lock, Path) and lock.is_symlink():
-            msg = f"Bundled project lockfile cannot be a symbolic link: {lock}."
-            raise ValueError(msg)
-        if not lock.is_file():
-            msg = f"Bundled project {self.path} does not include uv.lock."
-            raise FileNotFoundError(msg)
-        return lock.read_bytes()
+        return {"kind": "bundled", "path": str(self.path), "tree_sha256": _tree_sha256(self.path)}
 
     def materialize(self, destination: Path, *, offline: bool = False) -> None:
         """Copy the bundled project without following symbolic links.
+
+        Args:
+            destination: Target directory to create.
+            offline: Ignored because bundled files are already local.
 
         Raises:
             FileExistsError: If the destination already exists.
@@ -159,7 +157,12 @@ class PatchFile:
 
 @dataclass(frozen=True)
 class PatchSeries(ABC):
-    """An ordered set of patches applied to a Git project."""
+    """An ordered set of patches applied to a Git project.
+
+    Attributes:
+        tree: Optional full lowercase Git tree ID expected after applying the series.
+        license: Optional SPDX or license note recorded in provenance.
+    """
 
     tree: str | None = field(default=None, kw_only=True)
     license: str | None = field(default=None, kw_only=True)
@@ -171,6 +174,14 @@ class PatchSeries(ABC):
         Returns:
             Patch-source identity and any immutable pins.
         """
+
+    def provenance(self) -> dict[str, Any]:
+        """Return provenance details suitable for the prepared-environment marker.
+
+        Returns:
+            The patch identity plus any origin metadata.
+        """
+        return self.identity()
 
     @abstractmethod
     def patches(self) -> list[tuple[str, bytes]]:
@@ -208,18 +219,24 @@ class BundledPatches(PatchSeries):
                 raise ValueError(msg)
 
     def identity(self) -> dict[str, Any]:
-        """Identify the ordered patch contents, expected tree, and license.
+        """Identify the ordered patch contents and expected tree.
 
         Returns:
-            Patch names and SHA-256 digests, plus tree and license pins.
-
+            Patch names and SHA-256 digests, plus tree pin.
         """
         return {
             "kind": "bundled",
             "files": [{"name": name, "sha256": hashlib.sha256(data).hexdigest()} for name, data in self.patches()],
             "tree": self.tree,
-            "license": self.license,
         }
+
+    def provenance(self) -> dict[str, Any]:
+        """Record the bundled patch directory, digests, tree pin, and license.
+
+        Returns:
+            Patch origin, digests, tree pin, and license metadata.
+        """
+        return {**self.identity(), "directory": str(self.directory), "license": self.license}
 
     def patches(self) -> list[tuple[str, bytes]]:
         """Read patch files in name order or the explicit order supplied.
@@ -295,7 +312,7 @@ class PublishedPatches(PatchSeries):
         """Return immutable pins that determine the resulting source tree.
 
         Returns:
-            Repository, revision, directory, patch digests, tree, and license.
+            Repository, revision, directory, patch digests, and tree pin.
         """
         return {
             "kind": "published",
@@ -304,8 +321,15 @@ class PublishedPatches(PatchSeries):
             "directory": self.directory,
             "files": [{"name": patch.name, "sha256": patch.sha256} for patch in self.files],
             "tree": self.tree,
-            "license": self.license,
         }
+
+    def provenance(self) -> dict[str, Any]:
+        """Record immutable pins and optional license metadata.
+
+        Returns:
+            Published patch pins plus license metadata.
+        """
+        return {**self.identity(), "license": self.license}
 
     def patches(self) -> list[tuple[str, bytes]]:
         """Read and verify all files in application order.
@@ -330,6 +354,9 @@ class PublishedPatches(PatchSeries):
     def read(self, patch: PatchFile) -> bytes:
         """Read a mirror copy or download the pinned file, then verify its digest.
 
+        Args:
+            patch: Patch filename and expected SHA-256 digest.
+
         Returns:
             The verified patch bytes.
 
@@ -337,7 +364,11 @@ class PublishedPatches(PatchSeries):
             ValueError: If the file is oversized or its digest does not match its pin.
         """
         local = _mirror_path(self.mirror, patch.name) if self.mirror is not None else None
-        data = local.read_bytes() if local is not None and local.is_file() else _download(self.url(patch))
+        if local is not None and local.is_file():
+            with local.open("rb") as handle:
+                data = handle.read(_MAX_PATCH_BYTES + 1)
+        else:
+            data = _download(self.url(patch))
         if len(data) > _MAX_PATCH_BYTES:
             msg = f"Patch {patch.name} exceeded the {_MAX_PATCH_BYTES}-byte limit."
             raise ValueError(msg)
@@ -396,16 +427,16 @@ class GitProject(ProjectSource):
         return {"kind": "git", "revision": self.revision, "patches": [layer.identity() for layer in layers]}
 
     def provenance(self) -> dict[str, Any]:
-        """Record the repository and pins for each patch layer.
+        """Record the repository and provenance for each patch layer.
 
         Returns:
-            Repository URL, commit, and patch identities.
+            Repository URL, commit, and patch layer provenance.
         """
         return {
             "kind": "git",
             "repository": self.repository,
             "revision": self.revision,
-            "patches": [layer.identity() for layer in self.layers],
+            "patches": [layer.provenance() for layer in self.layers],
         }
 
     def materialize(self, destination: Path, *, offline: bool = False) -> None:
@@ -566,8 +597,21 @@ def _mirror_path(mirror: Path | Traversable, name: str) -> Path | Traversable:
 
 
 def _check_download_url(url: str) -> None:
-    parsed = urlsplit(url)
-    if parsed.scheme != "https" or parsed.hostname != "raw.githubusercontent.com":
+    _reject_unsafe_characters(url, "Patch download")
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError as exc:
+        msg = f"Refusing to download from an unpinned location: {url}."
+        raise ValueError(msg) from exc
+    invalid = (
+        parsed.scheme != "https"
+        or parsed.hostname != "raw.githubusercontent.com"
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in {None, 443}
+    )
+    if invalid:
         msg = f"Refusing to download from an unpinned location: {url}."
         raise ValueError(msg)
 
@@ -663,6 +707,28 @@ def _tree_sha256(root: Path | Traversable) -> str:
         raise FileNotFoundError(msg)
 
     digest = hashlib.sha256()
+    buffer = bytearray(_HASH_CHUNK_BYTES)
+    view = memoryview(buffer)
+
+    def _hash_file(path: Path | Traversable, relative: str) -> None:
+        digest.update(b"F\0")
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        if isinstance(path, Path):
+            expected_size = os.lstat(path).st_size
+            digest.update(expected_size.to_bytes(8, byteorder="big"))
+            total = 0
+            with path.open("rb") as handle:
+                while count := handle.readinto(buffer):
+                    digest.update(view[:count])
+                    total += count
+            if total != expected_size:
+                msg = f"Bundled project file changed while hashing: {path}."
+                raise RuntimeError(msg)
+            return
+        data = path.read_bytes()
+        digest.update(len(data).to_bytes(8, byteorder="big"))
+        digest.update(data)
 
     def visit(path: Path | Traversable, relative: str) -> None:
         if isinstance(path, Path) and path.is_symlink():
@@ -681,12 +747,7 @@ def _tree_sha256(root: Path | Traversable) -> str:
         if not path.is_file():
             msg = f"Bundled project contains a special file: {path}."
             raise ValueError(msg)
-        data = path.read_bytes()
-        digest.update(b"F\0")
-        digest.update(relative.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(len(data).to_bytes(8, byteorder="big"))
-        digest.update(data)
+        _hash_file(path, relative)
 
     visit(root, "")
     return digest.hexdigest()
@@ -696,9 +757,9 @@ def _ignored_project_name(name: str) -> bool:
     return name in _IGNORED_PROJECT_NAMES or name.endswith(_IGNORED_PROJECT_SUFFIXES)
 
 
-def _copy_tree(source: Path | Traversable, destination: Path) -> None:
+def _copy_tree(source: Path | Traversable, destination: Path, *, label: str = "Bundled project") -> None:
     if isinstance(source, Path) and source.is_symlink():
-        msg = f"Bundled project cannot be a symbolic link: {source}."
+        msg = f"{label} cannot be a symbolic link: {source}."
         raise ValueError(msg)
     if source.is_dir():
         destination.mkdir(parents=True, exist_ok=True)
@@ -706,18 +767,21 @@ def _copy_tree(source: Path | Traversable, destination: Path) -> None:
             if _ignored_project_name(child.name):
                 continue
             if not child.name or child.name in {".", ".."} or "/" in child.name or "\\" in child.name:
-                msg = f"Invalid bundled project path component {child.name!r}."
+                msg = f"Invalid {label.lower()} path component {child.name!r}."
                 raise ValueError(msg)
-            _copy_tree(child, destination / child.name)
+            _copy_tree(child, destination / child.name, label=label)
         return
     if not source.is_file():
-        msg = f"Bundled project resource is not a file or directory: {source}."
+        msg = f"{label} resource is not a file or directory: {source}."
         raise FileNotFoundError(msg)
-    if isinstance(source, Path) and source.is_symlink():
-        msg = f"Bundled project contains a symbolic link: {source}."
-        raise ValueError(msg)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_bytes(source.read_bytes())
+    if isinstance(source, Path):
+        # shutil.copyfile uses kernel zero-copy (copy_file_range/sendfile/fcopyfile) where supported.
+        shutil.copyfile(source, destination, follow_symlinks=False)
+        shutil.copymode(source, destination, follow_symlinks=False)
+        return
+    with source.open("rb") as src, destination.open("wb") as dst:
+        shutil.copyfileobj(src, dst)
 
 
 __all__ = [
