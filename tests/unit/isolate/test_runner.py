@@ -813,6 +813,28 @@ def test_external_interpreter_paths_expand_the_home_directory(monkeypatch: pytes
 
 
 @posix_only
+def test_relative_external_interpreters_do_not_follow_the_session_cwd(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A relative interpreter is fixed against the host's directory, and its venv symlink is kept."""
+    host = tmp_path / "host"
+    (host / "venv" / "bin").mkdir(parents=True)
+    (host / "venv" / "bin" / "python").symlink_to(sys.executable)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    entrypoint = tmp_path / "worker.py"
+    entrypoint.write_text("import sys\nprint(sys.executable)\n", encoding="utf-8")
+    monkeypatch.chdir(host)
+
+    interpreter = ExternalInterpreter(Path("venv/bin/python"))
+    result = run(interpreter, entrypoint, cwd=elsewhere, capture_output=True)
+
+    assert interpreter.python == host / "venv" / "bin" / "python"
+    assert result.stdout.decode().strip() == str(host / "venv" / "bin" / "python")
+
+
+@posix_only
 def test_close_stops_the_subprocesses_of_an_external_interpreter_worker(tmp_path: Path) -> None:
     worker = tmp_path / "worker.py"
     worker.write_text(_SPAWNING_WORKER, encoding="utf-8")

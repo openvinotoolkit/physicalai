@@ -120,14 +120,17 @@ class ExternalInterpreter:
     including ``PYTHONPATH`` and ``VIRTUAL_ENV``, and imports whatever the interpreter can.
 
     Attributes:
-        python: Path to the Python executable. ``~`` is expanded.
+        python: Path to the Python executable. ``~`` is expanded, and a relative path is made
+            absolute against the current directory, so a session's ``cwd`` does not change it.
     """
 
     python: Path
 
     def __post_init__(self) -> None:
-        """Store the interpreter as an expanded path."""
-        object.__setattr__(self, "python", Path(self.python).expanduser())
+        """Store the interpreter as an absolute path."""
+        # absolute(), not resolve(): following a venv's bin/python symlink would run the base
+        # interpreter without the venv.
+        object.__setattr__(self, "python", Path(self.python).expanduser().absolute())
 
 
 class Session:
