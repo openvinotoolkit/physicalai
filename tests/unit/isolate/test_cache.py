@@ -107,6 +107,35 @@ def test_prepare_rejects_invalid_labels_before_preparing(
     assert not cache.exists()
 
 
+def test_prepare_passes_labels_only_to_callers_that_give_them(tmp_path: Path) -> None:
+    """Providers written before labels existed keep working when no labels are given."""
+    environment = Environment(BundledProject(_bundled_project(tmp_path / "project")))
+    prepared = PreparedEnvironment(path=tmp_path / "env", key="a" * 64, profile=environment.profile)
+    calls: list[dict[str, object]] = []
+
+    class ProviderWithoutLabels:
+        def prepare(self, environment: Environment, *, offline: bool = False) -> PreparedEnvironment:
+            del environment
+            calls.append({"offline": offline})
+            return prepared
+
+    class ProviderWithLabels:
+        def prepare(
+            self,
+            environment: Environment,
+            *,
+            offline: bool = False,
+            labels: object = None,
+        ) -> PreparedEnvironment:
+            del environment
+            calls.append({"offline": offline, "labels": labels})
+            return prepared
+
+    assert prepare(environment, provider=ProviderWithoutLabels(), offline=True) is prepared  # type: ignore[arg-type]
+    assert prepare(environment, provider=ProviderWithLabels(), labels={"owner": "studio"}) is prepared  # type: ignore[arg-type]
+    assert calls == [{"offline": True}, {"offline": False, "labels": {"owner": "studio"}}]
+
+
 def test_environments_prepared_before_labels_are_reused_and_can_be_labelled(
     tmp_path: Path,
     uv_calls: list[list[str]],

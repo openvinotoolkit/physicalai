@@ -115,6 +115,8 @@ class Provider(Protocol):
             environment: Project source and sync profile to prepare.
             offline: Prevent network access during preparation.
             labels: Metadata to record with the environment. ``None`` keeps recorded labels.
+                :func:`prepare` passes it only when the caller gives labels, so a provider
+                without label support still works for callers that do not use them.
 
         Returns:
             The synchronized environment.
@@ -219,6 +221,9 @@ def prepare(
         The prepared environment.
     """
     selected_provider = UvProvider() if provider is None else provider
+    if labels is None:
+        # Providers written before labels existed accept only environment and offline.
+        return selected_provider.prepare(environment, offline=offline)
     return selected_provider.prepare(environment, offline=offline, labels=labels)
 
 
@@ -253,7 +258,8 @@ def remove_prepared(prepared: PreparedEnvironment, *, cache_dir: Path | None = N
 
     Removal waits for any preparation of the same key to finish. Sessions already started from
     the environment are not stopped, so remove only environments that are no longer in use.
-    Removing an environment that is already gone does nothing.
+    Removing an environment that is already gone does nothing. The key's small ``.<key>.lock``
+    file stays in the cache, since another process may be waiting on it.
 
     Args:
         prepared: Environment returned by :func:`prepare` or :func:`list_prepared`.
