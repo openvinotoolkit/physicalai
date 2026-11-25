@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import os
 import shutil
+import stat
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -325,6 +326,57 @@ def test_remove_cache_path_clears_readonly_files(tmp_path: Path) -> None:
     _environment._remove_cache_path(root)
 
     assert not root.exists()
+
+
+@pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0, reason="needs POSIX permission checks")
+def test_remove_cache_path_leaves_symlink_targets_and_directory_modes_alone(tmp_path: Path) -> None:
+    """On POSIX a read-only directory blocks removal; cleanup must not chmod its way around it."""
+    outside = tmp_path / "base-interpreter"
+    outside.write_text("#!/bin/sh\n", encoding="utf-8")
+    outside.chmod(0o755)
+    bin_dir = tmp_path / "cache-entry" / "venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "python").symlink_to(outside)
+    bin_dir.chmod(0o555)
+
+    try:
+        with pytest.raises(PermissionError):
+            _environment._remove_cache_path(tmp_path / "cache-entry")
+
+        assert stat.S_IMODE(outside.stat().st_mode) == 0o755
+        assert stat.S_IMODE(bin_dir.stat().st_mode) == 0o555
+    finally:
+        bin_dir.chmod(0o755)
+
+
+def test_readonly_handler_clears_readonly_files_on_windows(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(_environment, "_WINDOWS", True)
+    readonly = tmp_path / "pack-123.idx"
+    readonly.write_bytes(b"pack")
+    readonly.chmod(0o444)
+    removed: list[str] = []
+
+    _environment._handle_remove_readonly(removed.append, str(readonly), PermissionError(str(readonly)))
+
+    assert removed == [str(readonly)]
+    assert os.access(readonly, os.W_OK)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="creating symbolic links may need privileges on Windows")
+def test_readonly_handler_never_follows_symlinks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(_environment, "_WINDOWS", True)
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"x")
+    outside.chmod(0o444)
+    link = tmp_path / "link"
+    link.symlink_to(outside)
+    error = PermissionError(str(link))
+
+    with pytest.raises(PermissionError) as raised:
+        _environment._handle_remove_readonly(os.unlink, str(link), error)
+
+    assert raised.value is error
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o444
 
 
 def test_prepare_rejects_regular_file_as_cache_dir(tmp_path: Path) -> None:

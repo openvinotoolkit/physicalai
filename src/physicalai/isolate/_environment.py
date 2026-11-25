@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 
 _MARKER = ".physicalai-isolate.json"
 _MARKER_VERSION = 1
+_WINDOWS = os.name == "nt"
 # Host uv settings that contradict the sync command or change the environment outside its cache key.
 _UV_OVERRIDES = frozenset({
     "UV_CONFIG_FILE",
@@ -368,10 +369,13 @@ def _write_marker(root: Path, environment: Environment, key: str, source_provena
 
 
 def _handle_remove_readonly(func: Callable[[str], object], path: str, exc_info: object) -> None:
+    # Windows refuses to delete read-only files such as Git packfiles. Elsewhere the parent
+    # directory's permissions decide, so clearing the file's mode would not help. Never follow a
+    # symbolic link: its target may live outside the cache.
     exc = exc_info[1] if isinstance(exc_info, tuple) else exc_info
-    if not isinstance(exc, PermissionError):
+    if not _WINDOWS or not isinstance(exc, PermissionError) or Path(path).is_symlink():
         raise exc if isinstance(exc, BaseException) else PermissionError(path)
-    Path(path).chmod(stat.S_IWRITE | stat.S_IREAD)
+    Path(path).chmod(stat.S_IWRITE)
     func(path)
 
 
@@ -388,7 +392,9 @@ def _remove_cache_path(path: Path) -> None:
         try:
             path.unlink()
         except PermissionError:
-            path.chmod(stat.S_IWRITE | stat.S_IREAD)
+            if not _WINDOWS:
+                raise
+            path.chmod(stat.S_IWRITE)
             path.unlink()
 
 
