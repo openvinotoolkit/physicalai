@@ -16,16 +16,18 @@ import pytest
 from loguru import logger
 
 from physicalai.inference.adapters import RuntimeAdapter
-from physicalai.inference.manifest import ComponentSpec, Manifest, ModelSpec
+from physicalai.inference.manifest import ComponentSpec, Manifest, ModelSpec, ObservationHistorySpec
 from physicalai.inference.model import InferenceModel
 from physicalai.inference.postprocessors.action_normalizer import ActionNormalizer
 from physicalai.inference.postprocessors.base import Postprocessor
 from physicalai.inference.preprocessors.base import Preprocessor
+from physicalai.inference.preprocessors.observation_history import StackObservationHistory
 from physicalai.inference.runners import (
     InferenceRunner,
     SinglePass,
     get_runner,
 )
+from physicalai.runtime.action_sources.observation_history import ObservationHistory
 
 
 class TestAdapter(RuntimeAdapter):
@@ -820,6 +822,129 @@ class _ClampPostprocessor(Postprocessor):
 
 
 class TestPipelineWiring:
+    @pytest.mark.usefixtures("_patch_adapter")
+    @pytest.mark.parametrize("has_history", [False, True], ids=["no-history", "history"])
+    @pytest.mark.parametrize("override_processors", [False, True], ids=["manifest", "caller"])
+    @pytest.mark.parametrize(
+        "processor_types",
+        [
+            pytest.param((), id="empty"),
+            pytest.param((_RecordInputs, _AddKeyPreprocessor), id="no-stacker"),
+            pytest.param((StackObservationHistory, _RecordInputs, _AddKeyPreprocessor), id="stacker-front"),
+            pytest.param((_RecordInputs, StackObservationHistory, _AddKeyPreprocessor), id="stacker-middle"),
+            pytest.param(
+                (_RecordInputs, StackObservationHistory, _AddKeyPreprocessor, StackObservationHistory),
+                id="duplicate-stackers",
+            ),
+        ],
+    )
+    def test_history_does_not_change_configured_preprocessors(
+        self,
+        tmp_path: Path,
+        mock_adapter: MagicMock,
+        has_history: bool,
+        override_processors: bool,
+        processor_types: tuple[type[Preprocessor], ...],
+    ) -> None:
+        export_dir = _make_export_dir(tmp_path)
+        manifest_path = export_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["version"] = "1.1"
+        if has_history:
+            manifest["observation_history"] = {"n_obs_steps": 2}
+        manifest_types = (_AddKeyPreprocessor,) if override_processors else processor_types
+        manifest["model"]["preprocessors"] = [
+            {"class_path": f"{processor_type.__module__}.{processor_type.__name__}"}
+            for processor_type in manifest_types
+        ]
+        manifest_path.write_text(json.dumps(manifest))
+        processors: list[Preprocessor] = [processor_type() for processor_type in processor_types]
+        original_processors = processors.copy()
+
+        model = InferenceModel(export_dir, preprocessors=processors if override_processors else None)
+
+        expected_types = list(processor_types)
+        assert [type(processor) for processor in model.preprocessors] == expected_types
+        if override_processors:
+            assert processors == original_processors
+            assert model.preprocessors is processors
+
+        inputs = {
+            "state": np.zeros((1, 2, 4) if has_history else (1, 4), dtype=np.float32),
+            "images": np.zeros((1, 2, 3, 4, 4) if has_history else (1, 3, 4, 4), dtype=np.float32),
+        }
+        model(inputs)
+
+        adapter_inputs = mock_adapter.predict.call_args.args[0]
+        for key, value in inputs.items():
+            assert adapter_inputs[key] is value
+
+        if has_history:
+            selected = {
+                "state": (np.zeros((1, 4), dtype=np.float32), np.ones((1, 4), dtype=np.float32)),
+                "images": (np.zeros((1, 3, 4, 4), dtype=np.float32), np.ones((1, 3, 4, 4), dtype=np.float32)),
+            }
+            model(selected)
+            adapter_inputs = mock_adapter.predict.call_args.args[0]
+            for key, frames in selected.items():
+                if StackObservationHistory in processor_types:
+                    np.testing.assert_array_equal(adapter_inputs[key], np.stack(frames, axis=1))
+                else:
+                    assert adapter_inputs[key] is frames
+
+    @pytest.mark.usefixtures("_patch_adapter")
+    @pytest.mark.parametrize("override_processors", [False, True], ids=["manifest", "caller"])
+    def test_history_without_stacker_supplies_unformatted_inputs(
+        self,
+        tmp_path: Path,
+        mock_adapter: MagicMock,
+        override_processors: bool,
+    ) -> None:
+        export_dir = _make_export_dir(tmp_path)
+        manifest_path = export_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["version"] = "1.1"
+        manifest["observation_history"] = {
+            "n_obs_steps": 3,
+            "stride": 2,
+        }
+        processor_types = (_RecordInputs, _ScalePreprocessor, _AddKeyPreprocessor)
+        manifest["model"]["preprocessors"] = [
+            ComponentSpec.from_class(processor_type).model_dump(exclude_defaults=True)
+            for processor_type in processor_types
+        ]
+        manifest_path.write_text(json.dumps(manifest))
+        processors: list[Preprocessor] = [processor_type() for processor_type in processor_types]
+        model = InferenceModel(export_dir, preprocessors=processors if override_processors else None)
+
+        assert [type(processor) for processor in model.preprocessors] == list(processor_types)
+        if override_processors:
+            assert model.preprocessors is processors
+
+        history = ObservationHistory(ObservationHistorySpec(n_obs_steps=3, stride=2))
+        for value in range(5):
+            inputs = history.window(
+                {
+                    "state": np.full((1, 4), value, dtype=np.float32),
+                    "images": np.full((1, 3, 4, 4), value, dtype=np.float32),
+                    "task": ["current task"],
+                },
+                record=True,
+                camera_names=("top",),
+                stack=False,
+            )
+        model(inputs)
+
+        processor = model.preprocessors[0]
+        assert isinstance(processor, _RecordInputs)
+        assert processor.seen is inputs
+        adapter_inputs = mock_adapter.predict.call_args.args[0]
+        for key in ("state", "images"):
+            assert isinstance(adapter_inputs[key], tuple)
+            assert adapter_inputs[key] is inputs[key]
+            assert [int(frame.flat[0]) for frame in adapter_inputs[key]] == [0, 2, 4]
+        assert inputs["task"] == ["current task"]
+
     def test_empty_processors_is_noop(
         self,
         mock_export_dir_no_queue: Path,

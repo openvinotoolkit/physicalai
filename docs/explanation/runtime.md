@@ -56,14 +56,13 @@ Stopping is not the same as shutting down. It ends the control loop, but the rob
 
 ## Execution Modes
 
-> **Preview:** `RemoteExecution` is a planned API.
-
 | Mode               | Where inference runs | Use                                |
 | ------------------ | -------------------- | ---------------------------------- |
 | `SyncExecution()`  | runtime thread       | simple deployments and debugging   |
 | `AsyncExecution()` | worker thread        | avoid blocking the control loop    |
 | `RTCExecution()`   | worker thread        | real-time chunking for RTC exports |
-| `RemoteExecution`  | remote server        | planned API                        |
+
+For remote inference, use `RemoteInferenceModel` with `SyncExecution`, `AsyncExecution`, or `RTCExecution`. `RemoteInferenceModel` sends inference requests to a remote server; the execution mode controls when and how those requests are scheduled. See [Run Inference Remotely](../how-to/runtime/run-inference-remotely.md).
 
 ## Product Workflows
 
