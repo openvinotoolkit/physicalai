@@ -20,10 +20,11 @@ FPS = 30.0
 class _LateClock:
     """Fake ``time`` module: every sleep wakes ``oversleep_s`` late, every tick costs ``work_s``."""
 
-    def __init__(self, *, oversleep_s: float, work_s: float) -> None:
+    def __init__(self, *, oversleep_s: float, work_s: float, late_sleeps: dict[int, float] | None = None) -> None:
         self.now = 100.0
         self.oversleep_s = oversleep_s
         self.work_s = work_s
+        self.late_sleeps = late_sleeps or {}  # sleep call index -> extra lateness
         self.sleeps: list[float] = []
 
     def perf_counter(self) -> float:
@@ -33,8 +34,8 @@ class _LateClock:
         return self.now
 
     def sleep(self, seconds: float) -> None:
+        self.now += seconds + self.oversleep_s + self.late_sleeps.get(len(self.sleeps), 0.0)
         self.sleeps.append(seconds)
-        self.now += seconds + self.oversleep_s
 
 
 def _run(clock: _LateClock, *, cycles: int, multiplier: int = 1, stall: dict[int, float] | None = None) -> list[float]:
@@ -72,7 +73,18 @@ def test_late_wakeups_do_not_slow_the_loop(multiplier: int) -> None:
     assert hz == pytest.approx(FPS, rel=0.005), f"loop ran at {hz:.2f} Hz"
 
 
-def test_a_stalled_tick_restarts_the_schedule_instead_of_bursting() -> None:
+def test_one_late_wakeup_does_not_shift_later_ticks() -> None:
+    # Main re-anchored every cycle at the late wake-up, so every later tick moved by 10 ms.
+    clock = _LateClock(oversleep_s=0.0, work_s=0.002, late_sleeps={20: 0.010})
+    starts = np.array(_run(clock, cycles=60))
+
+    grid = starts[0] + np.arange(len(starts)) / FPS
+    assert starts[21] - grid[21] == pytest.approx(0.010, abs=1e-9)  # the late tick itself
+    assert np.abs(starts[22:] - grid[22:]).max() < 1e-9
+
+
+def test_a_stalled_tick_never_causes_catch_up_ticks() -> None:
+    """Main never ran catch-up ticks either; this guards that the fixed schedule did not add them."""
     clock = _LateClock(oversleep_s=0.003, work_s=0.002)
     starts = _run(clock, cycles=60, stall={20: 0.2})
 
