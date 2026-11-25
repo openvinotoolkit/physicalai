@@ -36,6 +36,20 @@ def test_usbfs_memory_is_host_context(inventory: Inventory, memory: int | None, 
     assert not report.has_errors
 
 
+@pytest.mark.parametrize("platform,label", [("darwin", "macOS"), ("win32", "Windows")])
+def test_future_platform_reports_do_not_show_linux_settings(inventory: Inventory, platform: str, label: str) -> None:
+    report = Report(inventory, [], platform=platform)
+    text = render_report(report, ansi=True)
+    assert f"\x1b[1mUSB connection diagnostics ({label})\x1b[0m" in text
+    assert "usbcore" not in text and "usbfs" not in text and "Linux" not in text
+
+
+def test_platform_label_is_terminal_safe(inventory: Inventory) -> None:
+    text = render_report(Report(inventory, [], platform="other\x1b[31m\n"))
+    assert "\x1b" not in text
+    assert r"other\u001b[31m\u000a" in text
+
+
 def test_tree_only_shows_relevant_branches(inventory: Inventory) -> None:
     text = render_report(Report(inventory, assess(inventory)), tree=True)
     assert "Controller" in text and "Inner hub" in text

@@ -55,7 +55,7 @@ The public models are dataclasses exported from `physicalai.diagnostics`:
 
 | Model       | Main fields                                                                                                                                                            |
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Report`    | `schema_version` (1), `platform` (`linux`), `collected_at` (UTC), `inventory`, `findings`, `selected_device_id`, `selected_endpoint`                                   |
+| `Report`    | `schema_version` (1), `platform` (OS identifier; currently `linux`), `collected_at` (UTC), `inventory`, `findings`, `selected_device_id`, `selected_endpoint`               |
 | `Inventory` | `devices`, `errors` (collection failures), `notes` (limitations), `usbfs_memory_mb` (system-wide transfer-memory ceiling)                                              |
 | `Device`    | `id`, `name`, `kind` (`controller`, `hub`, `device`), `parent_id`, `speed_mbps`, USB vendor/product IDs, reported `serial`, `root_hub`, `video_interface`, `endpoints` |
 | `Endpoint`  | `path`, `kind` (`video`, `serial`), `role` (`capture`, `metadata`, `unknown`), `readable`, `writable`, `aliases`, `query_error`                                        |
@@ -73,7 +73,8 @@ usbfs transfer-memory ceiling in MB, `0` means unlimited, and `None` (JSON `null
 means unavailable. Missing, unreadable, or invalid values add an inventory note,
 not an error. This additive schema-version-1 field defaults to `None` when omitted
 and remains in selected-device reports because it applies to the host, not one
-device. Consumers should tolerate additional report fields.
+device. This field is Linux-specific; other platforms leave it unset and do not
+display a usbfs setting. Consumers should tolerate additional report fields.
 
 The value is not current memory use, a bandwidth measurement, or evidence that
 capture will fail. It applies to usbfs/libusb transfers, not native kernel V4L2
@@ -91,6 +92,9 @@ USB location IDs and endpoint numbers are snapshot handles, not persistent devic
 identities. `unique_aliases()` prefers an unambiguous device-bound alias when udev
 claims and a unique serial support it, otherwise a port-bound path. A symlink winner
 alone does not establish `by-id` uniqueness. No path or serial authenticates a device.
+`resolve()` rejects a `by-id` selector for a known duplicate vendor/product/serial
+identity even when only the winning symlink was collected. Direct endpoints, device
+IDs, and unambiguous `by-path` selectors remain available.
 
 The report includes all USB topology nodes as context, but camera/serial checks only;
 non-USB cameras, network robots, camera modes, streaming, process ownership, and system
@@ -101,3 +105,23 @@ logs are outside scope. A 480 Mb/s camera is not automatically faulty. See
 redaction. Treat device names and paths as untrusted display text (escape them in the
 UI), and review reports before sharing. The terminal renderer escapes control characters
 and defaults to plain text; the CLI opts into ANSI styling only for interactive terminals.
+
+## Platform boundary
+
+Linux is the only implemented collector. Windows and macOS remain unsupported;
+accepting their OS identifiers in a report does not enable collection on those hosts.
+
+OS-specific enumeration and queries belong in a collector module such as `linux.py`.
+`collect_inventory()` selects and lazily imports the collector, whose `collect()`
+method returns an `Inventory` with no live handles. A future platform adds its own
+collector and dispatch branch without changing the assessment or CLI flow. Populate
+the shared device, endpoint, and topology fields with available evidence and record
+collection limitations in `notes` or `errors`; leave Linux-only usbfs data unset.
+The current alias verification rules describe Linux udev `by-id`/`by-path` aliases;
+another collector should omit aliases unless their uniqueness can be established.
+
+`diagnose()` records the host OS identifier in `Report.platform`. The renderer uses
+that field rather than the machine displaying the report, and only shows usbfs
+settings for Linux reports. Pure checks and report models do not import OS APIs.
+The command remains focused on hardware diagnostics; no general software or
+environment-check framework is introduced.

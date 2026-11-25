@@ -10,14 +10,13 @@ import unicodedata
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
+from physicalai.diagnostics.constants import USB2_HIGH_SPEED_MBPS, USB3_SUPER_SPEED_MBPS
+
 if TYPE_CHECKING:
     from physicalai.diagnostics.models import Device, Endpoint, Inventory, Report
 
-_USB2_HIGH_SPEED = 480
-_USB3_SUPER_SPEED = 5000
 _LINK_RATE = re.compile(r"\b\d+(?:\.\d+)? Mb/s(?: \(USB (?:2|3\.x)\))?")
 _HEADINGS = frozenset({
-    "USB connection diagnostics (Linux)",
     "USB connections",
     "Connection notes",
     "Collection limitations",
@@ -30,12 +29,12 @@ def _style(text: str) -> str:
     def link(match: re.Match[str]) -> str:
         value = match.group()
         speed = float(value.split()[0])
-        code = "1;33" if speed == _USB2_HIGH_SPEED else "1;36" if speed >= _USB3_SUPER_SPEED else "1"
+        code = "1;33" if speed == USB2_HIGH_SPEED_MBPS else "1;36" if speed >= USB3_SUPER_SPEED_MBPS else "1"
         return f"\x1b[{code}m{value}\x1b[0m"
 
     lines = []
     for raw_line in text.split("\n"):
-        if raw_line in _HEADINGS or raw_line.startswith("Device "):
+        if raw_line in _HEADINGS or raw_line.startswith(("Device ", "USB connection diagnostics (")):
             lines.append(f"\x1b[1m{raw_line}\x1b[0m")
             continue
         line = _LINK_RATE.sub(link, raw_line)
@@ -56,9 +55,9 @@ def _speed(device: Device) -> str:
         return "unknown"
     suffix = (
         " (USB 2)"
-        if device.speed_mbps == _USB2_HIGH_SPEED
+        if device.speed_mbps == USB2_HIGH_SPEED_MBPS
         else " (USB 3.x)"
-        if device.speed_mbps >= _USB3_SUPER_SPEED
+        if device.speed_mbps >= USB3_SUPER_SPEED_MBPS
         else ""
     )
     return f"{device.speed_mbps:g} Mb/s{suffix}"
@@ -171,7 +170,8 @@ def render_report(report: Report, *, tree: bool = False, ansi: bool = False) -> 
     inventory = report.inventory
     devices = [d for d in inventory.devices if d.relevant]
     selected = next((d for d in inventory.devices if d.id == report.selected_device_id), None)
-    lines = ["USB connection diagnostics (Linux)", ""]
+    platform = {"linux": "Linux", "darwin": "macOS", "win32": "Windows"}.get(report.platform, report.platform)
+    lines = [f"USB connection diagnostics ({_safe(platform)})", ""]
     if selected is not None:
         lines.extend(_details(report, selected))
     if tree:
@@ -183,14 +183,15 @@ def render_report(report: Report, *, tree: bool = False, ansi: bool = False) -> 
         lines.extend("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip() for row in rows)
     if not devices and selected is None:
         lines.append("No USB camera/serial endpoints found. Check collection limitations and device connections.")
-    memory = inventory.usbfs_memory_mb
-    limit = "unavailable" if memory is None else "unlimited (0)" if memory == 0 else f"{memory} MB"
-    lines.extend([
-        "",
-        f"Host USB transfer memory: usbcore.usbfs_memory_mb = {limit} (system-wide)",
-        "  Applies to usbfs/libusb transfers, not USB bandwidth; camera backend use is unknown.",
-        "  Troubleshooting: https://github.com/openvinotoolkit/physicalai/blob/main/docs/how-to/cli/doctor.md#usb-transfer-memory",
-    ])
+    if report.platform == "linux":
+        memory = inventory.usbfs_memory_mb
+        limit = "unavailable" if memory is None else "unlimited (0)" if memory == 0 else f"{memory} MB"
+        lines.extend([
+            "",
+            f"Host USB transfer memory: usbcore.usbfs_memory_mb = {limit} (system-wide)",
+            "  Applies to usbfs/libusb transfers, not USB bandwidth; camera backend use is unknown.",
+            "  Troubleshooting: https://github.com/openvinotoolkit/physicalai/blob/main/docs/how-to/cli/doctor.md#usb-transfer-memory",
+        ])
     if report.findings:
         lines.extend(["", "Connection notes"])
         for finding in report.findings:

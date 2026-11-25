@@ -45,14 +45,16 @@ def diagnose(selector: str | None = None) -> Report:
         Unsupported hosts raise ``NotImplementedError``; missing, ambiguous, or
         stale selectors raise ``ValueError``.
     """
+    platform = sys.platform
     inventory = collect_inventory()
     findings = assess(inventory)
     if selector is None:
-        return Report(inventory, findings)
+        return Report(inventory, findings, platform=platform)
     device, endpoint = inventory.resolve(selector)
     return Report(
         inventory,
         [f for f in findings if device.id in f.devices or f.hub_id == device.id],
         selected_device_id=device.id,
         selected_endpoint=endpoint.path if endpoint else None,
+        platform=platform,
     )

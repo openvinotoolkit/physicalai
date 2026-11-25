@@ -111,6 +111,32 @@ def test_colliding_alias_is_rejected_even_for_the_symlink_winner(inventory: Inve
         inventory.resolve("/dev/v4l/by-id/usb-camera-SN0001-video-index0")
 
 
+@pytest.mark.parametrize("claimed", [False, True])
+def test_duplicate_identity_rejects_by_id_with_only_winner_alias(inventory: Inventory, claimed: bool) -> None:
+    loser, loser_endpoint = inventory.resolve("/dev/video0")
+    winner, winner_endpoint = inventory.resolve("/dev/video2")
+    assert loser_endpoint is not None and winner_endpoint is not None
+    loser_endpoint.aliases = [a for a in loser_endpoint.aliases if "/by-id/" not in a.path]
+    shared = winner_endpoint.aliases[0]
+    shared.claimed = claimed
+
+    with pytest.raises(ValueError, match="duplicate device identity"):
+        inventory.resolve(shared.path)
+
+    assert shared not in inventory.unique_aliases(winner, winner_endpoint)
+    for device, endpoint, port in ((loser, loser_endpoint, "1.1"), (winner, winner_endpoint, "1.2")):
+        assert inventory.resolve(device.id) == (device, None)
+        assert inventory.resolve(endpoint.path) == (device, endpoint)
+        assert inventory.resolve(f"/dev/v4l/by-path/port-{port}") == (device, endpoint)
+
+
+def test_unique_by_id_identity_still_resolves(inventory: Inventory) -> None:
+    device, endpoint = inventory.resolve("/dev/video2")
+    assert endpoint is not None
+    inventory.devices = [d for d in inventory.devices if d.id != "1-1.1.1"]
+    assert inventory.resolve(endpoint.aliases[0].path) == (device, endpoint)
+
+
 @pytest.mark.parametrize("selector", ["missing", "/dev/video999"])
 def test_missing_selector_is_rejected(inventory: Inventory, selector: str) -> None:
     with pytest.raises(ValueError, match="matches 0 endpoints"):
@@ -212,6 +238,20 @@ def test_selected_api_retains_topology_but_limits_findings(
     assert all("1-1.1.1" in f.devices for f in report.findings)
     assert not report.has_errors
     assert diagnose("/dev/ttyUSB9").has_errors
+
+
+@pytest.mark.parametrize("platform", ["darwin", "win32"])
+@pytest.mark.parametrize("selector", [None, "/dev/video0"])
+def test_api_preserves_platform_for_a_future_collector(
+    inventory: Inventory, monkeypatch: pytest.MonkeyPatch, platform: str, selector: str | None
+) -> None:
+    # Fake only collection: platform dispatch remains Linux-only in production.
+    monkeypatch.setattr(api.sys, "platform", platform)
+    monkeypatch.setattr(api, "collect_inventory", lambda: inventory)
+    report = diagnose(selector)
+    assert report.platform == platform
+    assert report.to_dict()["platform"] == platform
+    assert TypeAdapter(Report).validate_python(report.to_dict()).platform == platform
 
 
 @pytest.mark.parametrize("memory", [None, 0, 16, 256])

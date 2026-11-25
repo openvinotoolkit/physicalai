@@ -3,6 +3,8 @@
 Use `pai doctor` to check USB cameras and serial adapters before starting Runtime.
 It does not connect robots, load plugins, change camera settings, or start streams.
 `physicalai` and `pai` are equivalent commands. USB diagnostics currently support Linux.
+The current scope is hardware connection diagnostics, not general software or environment checks.
+Windows and macOS collection are not implemented.
 
 ```bash
 pai doctor

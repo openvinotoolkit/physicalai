@@ -127,7 +127,21 @@ class Inventory:
         ):
             msg = f"Alias {selector!r} no longer points to {endpoint.path}; inspect the endpoint directly."
             raise ValueError(msg)
+        if selector != endpoint.path and "/by-id/" in selector and self._duplicate_identity(device):
+            msg = f"Alias {selector!r} has a duplicate device identity; use a device ID, endpoint, or by-path selector."
+            raise ValueError(msg)
         return device, endpoint
+
+    def _duplicate_identity(self, device: Device) -> bool:
+        return (
+            bool(device.serial)
+            and sum(
+                (d.vendor_id, d.product_id, d.serial) == (device.vendor_id, device.product_id, device.serial)
+                for d in self.devices
+                if d.kind == "device"
+            )
+            > 1
+        )
 
     def unique_aliases(self, device: Device, endpoint: Endpoint) -> list[Alias]:
         """Return usable aliases, preferring unique device identity over a port.
@@ -135,18 +149,14 @@ class Inventory:
         A symlink winner alone cannot establish by-id uniqueness. Port paths bind
         a slot, not a physical unit; neither kind of alias authenticates a device.
         """
-        same_serial = sum(
-            (d.vendor_id, d.product_id, d.serial) == (device.vendor_id, device.product_id, device.serial)
-            for d in self.devices
-            if d.kind == "device"
-        )
+        duplicate_identity = self._duplicate_identity(device)
         result = []
         for alias in endpoint.aliases:
             claimants = sum(alias.path == a.path for d in self.devices for ep in d.endpoints for a in ep.aliases)
             device_bound = "/by-id/" in alias.path
             if alias.target != endpoint.path or claimants != 1:
                 continue
-            if device_bound and (not alias.claimed or not device.serial or same_serial != 1):
+            if device_bound and (not alias.claimed or not device.serial or duplicate_identity):
                 continue
             result.append(alias)
         return sorted(result, key=lambda a: ("/by-id/" not in a.path, a.path))
@@ -165,7 +175,7 @@ class Report:
     findings: list[Finding]
     selected_device_id: str | None = None
     selected_endpoint: str | None = None
-    platform: Literal["linux"] = field(default="linux", init=False)
+    platform: str = field(default="linux", kw_only=True)
     collected_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     schema_version: Literal[1] = field(default=1, init=False)
 

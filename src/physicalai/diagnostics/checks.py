@@ -9,12 +9,11 @@ import math
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
+from physicalai.diagnostics.constants import USB2_HIGH_SPEED_MBPS
 from physicalai.diagnostics.models import Finding
 
 if TYPE_CHECKING:
     from physicalai.diagnostics.models import Device, Inventory
-
-_USB2_HIGH_SPEED = 480
 
 
 def assess(inventory: Inventory) -> list[Finding]:
@@ -119,7 +118,7 @@ def _shared_links(inventory: Inventory, relevant: list[Device]) -> list[Finding]
     return [
         Finding(
             "shared_usb_link",
-            "warning" if hub.speed_mbps is not None and hub.speed_mbps <= _USB2_HIGH_SPEED else "info",
+            "warning" if hub.speed_mbps is not None and hub.speed_mbps <= USB2_HIGH_SPEED_MBPS else "info",
             sorted(ids),
             f"{len(ids)} cameras share a {hub.speed_mbps:g} Mb/s hub uplink ({hub.id})."
             if hub.speed_mbps is not None
