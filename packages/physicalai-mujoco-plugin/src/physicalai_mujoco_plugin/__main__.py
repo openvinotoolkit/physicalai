@@ -872,6 +872,10 @@ def _ready_addresses(
     show its cameras. So is a requested browser viewer that did not start (viser failed to import,
     bind or build its scene): Studio embeds it.
 
+    Without HTTP (``--no-http``), neither the HTTP server nor camera streams are available, and the
+    owner's browser viewer cannot be verified. In that case, ``http_url`` and ``viewer_url`` are
+    ``None`` and ``cameras`` is empty.
+
     Args:
         args: The ``start`` arguments.
         status: The event writer, for the ``cameras`` phase.
@@ -880,11 +884,11 @@ def _ready_addresses(
         viewer_url: The configured viewer URL; ``None`` without a viewer.
 
     Returns:
-        ``http_url`` and ``viewer_url`` (``None`` when disabled) and ``cameras``.
+        ``http_url`` and ``viewer_url`` (``None`` when disabled or unverified) and ``cameras``.
     """
     if args.no_http:
         status.phase("cameras")
-        return {"http_url": None, "viewer_url": viewer_url, "cameras": []}
+        return {"http_url": None, "viewer_url": None, "cameras": []}
     host = _LOOPBACK_FOR_WILDCARD.get(args.http_host, args.http_host)
     root = _http_json(host, http_port, "/")
     if root is None or root.get("service") != owner_name:
