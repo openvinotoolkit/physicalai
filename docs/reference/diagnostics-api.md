@@ -55,7 +55,7 @@ The public models are dataclasses exported from `physicalai.diagnostics`:
 
 | Model       | Main fields                                                                                                                                                            |
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Report`    | `schema_version` (1), `platform` (OS identifier; currently `linux`), `collected_at` (UTC), `inventory`, `findings`, `selected_device_id`, `selected_endpoint`               |
+| `Report`    | `schema_version` (1), `platform` (OS identifier; currently `linux`), `collected_at` (UTC), `inventory`, `findings`, `selected_device_id`, `selected_endpoint`          |
 | `Inventory` | `devices`, `errors` (collection failures), `notes` (limitations), `usbfs_memory_mb` (system-wide transfer-memory ceiling)                                              |
 | `Device`    | `id`, `name`, `kind` (`controller`, `hub`, `device`), `parent_id`, `speed_mbps`, USB vendor/product IDs, reported `serial`, `root_hub`, `video_interface`, `endpoints` |
 | `Endpoint`  | `path`, `kind` (`video`, `serial`), `role` (`capture`, `metadata`, `unknown`), `readable`, `writable`, `aliases`, `query_error`                                        |
@@ -75,6 +75,9 @@ not an error. This additive schema-version-1 field defaults to `None` when omitt
 and remains in selected-device reports because it applies to the host, not one
 device. This field is Linux-specific; other platforms leave it unset and do not
 display a usbfs setting. Consumers should tolerate additional report fields.
+The terminal renderer only shows the usbfs section for unknown values or values
+below 128 MB, including unlimited (`0`). This display heuristic does not affect
+collection, assessment, or JSON/API data and does not establish a healthy limit.
 
 The value is not current memory use, a bandwidth measurement, or evidence that
 capture will fail. It applies to usbfs/libusb transfers, not native kernel V4L2

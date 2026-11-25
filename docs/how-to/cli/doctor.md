@@ -54,7 +54,6 @@ for outstanding usbfs transfers**, read from
 usbfs users, not a per-camera allowance, memory-usage measurement, or USB bandwidth
 limit. Increasing it does not reserve that amount of memory immediately. A value
 of `0` means unlimited; `unavailable` means doctor could not read a valid value.
-An unavailable value is a collection limitation, not a failing exit status.
 
 This setting matters for camera SDKs that stream through **usbfs/libusb**. It does
 not govern video buffers managed by a native kernel V4L2 driver. For example,
@@ -86,7 +85,7 @@ echo 256 | sudo tee /sys/module/usbcore/parameters/usbfs_memory_mb
 ```
 
 Stop and restart the camera stream in Studio or Runtime, then repeat the same
-resolution, FPS, streams, and camera count. Re-run `pai doctor` to confirm the
+resolution, FPS, streams, and camera count. Re-run `pai doctor --json` to confirm the
 setting. Only the manual setting change requires administrator permission;
 do not run Studio or Runtime as root.
 

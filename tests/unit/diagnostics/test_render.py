@@ -22,7 +22,7 @@ def test_default_output_is_compact_and_relevant(inventory: Inventory) -> None:
     assert len(text.splitlines()) < 25
 
 
-@pytest.mark.parametrize("memory,label", [(16, "16 MB"), (256, "256 MB"), (0, "unlimited (0)"), (None, "unavailable")])
+@pytest.mark.parametrize("memory,label", [(16, "16 MB"), (127, "127 MB"), (0, "unlimited (0)"), (None, "unavailable")])
 @pytest.mark.parametrize("view", ["overview", "tree", "selected"])
 def test_usbfs_memory_is_host_context(inventory: Inventory, memory: int | None, label: str, view: str) -> None:
     inventory.usbfs_memory_mb = memory
@@ -34,6 +34,21 @@ def test_usbfs_memory_is_host_context(inventory: Inventory, memory: int | None, 
     assert "doctor.md#usb-transfer-memory" in text
     assert "WARNING" not in text and "ERROR" not in text
     assert not report.has_errors
+
+
+@pytest.mark.parametrize("memory", [128, 256])
+@pytest.mark.parametrize("view", ["overview", "tree", "selected"])
+def test_usbfs_memory_at_or_above_cutoff_is_hidden(inventory: Inventory, memory: int, view: str) -> None:
+    inventory.usbfs_memory_mb = memory
+    report = Report(inventory, [], selected_device_id="1-1.1.1" if view == "selected" else None)
+    text = render_report(report, tree=view == "tree")
+    assert "Host USB transfer memory" not in text
+    assert "usbcore.usbfs_memory_mb" not in text
+    assert "camera backend use is unknown" not in text
+    assert "doctor.md#usb-transfer-memory" not in text
+    serialized_inventory = report.to_dict()["inventory"]
+    assert isinstance(serialized_inventory, dict)
+    assert serialized_inventory["usbfs_memory_mb"] == memory
 
 
 @pytest.mark.parametrize("platform,label", [("darwin", "macOS"), ("win32", "Windows")])

@@ -15,6 +15,8 @@ from physicalai.diagnostics.constants import USB2_HIGH_SPEED_MBPS, USB3_SUPER_SP
 if TYPE_CHECKING:
     from physicalai.diagnostics.models import Device, Endpoint, Inventory, Report
 
+# Keep routine output compact; this cutoff does not establish a healthy limit.
+_USBFS_MEMORY_DISPLAY_THRESHOLD_MB = 128
 _LINK_RATE = re.compile(r"\b\d+(?:\.\d+)? Mb/s(?: \(USB (?:2|3\.x)\))?")
 _HEADINGS = frozenset({
     "USB connections",
@@ -183,8 +185,8 @@ def render_report(report: Report, *, tree: bool = False, ansi: bool = False) -> 
         lines.extend("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip() for row in rows)
     if not devices and selected is None:
         lines.append("No USB camera/serial endpoints found. Check collection limitations and device connections.")
-    if report.platform == "linux":
-        memory = inventory.usbfs_memory_mb
+    memory = inventory.usbfs_memory_mb
+    if report.platform == "linux" and (memory is None or memory < _USBFS_MEMORY_DISPLAY_THRESHOLD_MB):
         limit = "unavailable" if memory is None else "unlimited (0)" if memory == 0 else f"{memory} MB"
         lines.extend([
             "",
