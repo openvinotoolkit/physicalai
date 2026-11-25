@@ -892,12 +892,21 @@ class TestStatusJson:
             logger.remove(sink)
         assert any("Press Ctrl+C to stop the simulation" in line for line in lines) is says_how_to_stop
 
-    def test_without_http_there_are_no_streams_and_the_viewer_url_is_the_configured_one(self) -> None:
+    def test_without_http_there_are_no_streams_and_viewer_url_is_none(self) -> None:
+        """Without HTTP the viewer cannot be verified from the owner, so viewer_url is None."""
         launch = _launch(["--status-json", "--no-http", "--viser-port", "9191"])
         assert launch.events[:-1] == PHASES
         ready = launch.events[-1]
-        assert (ready["http_url"], ready["viewer_url"], ready["cameras"]) == (None, "http://127.0.0.1:9191", [])
+        assert (ready["http_url"], ready["viewer_url"], ready["cameras"]) == (None, None, [])
         launch.http_json.assert_not_called()
+
+    def test_browser_viewer_reports_actual_bound_port_from_owner(self) -> None:
+        """When viser binds an alternate port, the owner's HTTP endpoint publishes the actual bound URL."""
+        launch = _launch(["--status-json"], root={**ROOT, "viewer_url": "http://127.0.0.1:9091"})
+        assert launch.exit_code is None
+        ready = launch.events[-1]
+        assert ready["event"] == "ready"
+        assert ready["viewer_url"] == "http://127.0.0.1:9091"
 
     @pytest.mark.parametrize("root", [None, {**ROOT, "service": "other-sim"}])
     def test_requested_http_that_does_not_answer_is_an_error_and_stops_the_owner(self, root) -> None:
