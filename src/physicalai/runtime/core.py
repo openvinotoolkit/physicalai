@@ -11,7 +11,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, Self
+from typing import TYPE_CHECKING, Literal, NoReturn, Protocol, Self
 
 import numpy as np
 
@@ -47,6 +47,36 @@ _RETURN_SKIP_TOLERANCE = 0.1
 
 RunReason = Literal["stop_requested", "duration_elapsed", "interrupted", "error"]
 """Why a :meth:`RobotRuntime.run` call ended."""
+
+
+class _Breaker:
+    """Decide when one failing source (robot reads, robot sends or a camera) should stop the run.
+
+    The breaker opens once the source has kept failing for ``timeout_s`` and a
+    success closes it again. An open breaker never retries on its own: the
+    runtime stops the run as soon as it sees one.
+
+    Args:
+        timeout_s: How long the source may keep failing before the breaker opens.
+    """
+
+    def __init__(self, timeout_s: float = _MAX_FAILURE_S) -> None:
+        self.timeout_s = timeout_s
+        # Last success, or the first failure if the source never succeeded.
+        self.window_start: float | None = None
+        self.is_open = False
+
+    def record_success(self) -> None:
+        """Close the breaker and restart the failure window."""
+        self.window_start = time.perf_counter()
+        self.is_open = False
+
+    def record_failure(self) -> None:
+        """Open the breaker once the source has kept failing for ``timeout_s``."""
+        now = time.perf_counter()
+        if self.window_start is None:
+            self.window_start = now
+        self.is_open = now - self.window_start >= self.timeout_s
 
 
 def _unwrap_runtime_document(document: dict[str, Any], *, target: type) -> dict[str, Any]:
@@ -175,9 +205,7 @@ class RobotRuntime:
         self._run_lock = threading.Lock()
         self._last_robot_obs: RobotObservation | None = None
         self._last_camera_frames: dict[str, Frame] = {}
-        # Last success per source ("observation", "send", "camera:<name>"), so one
-        # source recovering never hides another that keeps failing.
-        self._last_success: dict[str, float] = {}
+        self._breakers = self._new_breakers()
         self._stale_obs_ticks: int = 0
         self._transient_errors: int = 0
         self._session_id: str = ""
@@ -538,7 +566,7 @@ class RobotRuntime:
         self._session_id = uuid.uuid4().hex[:8]
         self._last_robot_obs = None
         self._last_camera_frames = {}
-        self._last_success = {}
+        self._breakers = self._new_breakers()
         self._stale_obs_ticks = 0
         self._transient_errors = 0
         self._last_tick_stale = False
@@ -576,29 +604,16 @@ class RobotRuntime:
 
         if robot_obs is None:
             if self._last_robot_obs is None:
-                self._bus.emit_lifecycle(
-                    LifecycleEvent(
-                        session_id=self._session_id,
-                        timestamp=time.time(),
-                        event="connection_lost",
-                        metadata={"error": str(last_robot_error)},
-                    )
+                self._connection_lost(
+                    "Robot observation failed and no stale observation available",
+                    last_robot_error,
                 )
-                msg = "Robot observation failed and no stale observation available"
-                raise ConnectionError(msg) from last_robot_error
 
             self._stale_obs_ticks += 1
-            if self._failing_for("observation") >= _MAX_FAILURE_S:
-                self._bus.emit_lifecycle(
-                    LifecycleEvent(
-                        session_id=self._session_id,
-                        timestamp=time.time(),
-                        event="connection_lost",
-                        metadata={"error": str(last_robot_error)},
-                    )
-                )
-                msg = f"Robot observations kept failing for {_MAX_FAILURE_S}s"
-                raise ConnectionError(msg) from last_robot_error
+            breaker = self._breakers["observation"]
+            breaker.record_failure()
+            if breaker.is_open:
+                self._connection_lost(f"Robot observations kept failing for {breaker.timeout_s}s", last_robot_error)
 
             self._bus.emit_lifecycle(
                 LifecycleEvent(
@@ -610,7 +625,7 @@ class RobotRuntime:
             )
             return self._last_robot_obs, True
 
-        self._succeeded("observation")
+        self._breakers["observation"].record_success()
         self._last_robot_obs = robot_obs
         return robot_obs, False
 
@@ -624,17 +639,10 @@ class RobotRuntime:
                 stale_frame = self._last_camera_frames.get(name)
                 if stale_frame is None:
                     raise
-                if self._failing_for(source) >= _MAX_FAILURE_S:
-                    self._bus.emit_lifecycle(
-                        LifecycleEvent(
-                            session_id=self._session_id,
-                            timestamp=time.time(),
-                            event="connection_lost",
-                            metadata={"error": str(exc), "source": source},
-                        )
-                    )
-                    msg = f"Camera {name!r} kept failing for {_MAX_FAILURE_S}s"
-                    raise ConnectionError(msg) from exc
+                breaker = self._breakers[source]
+                breaker.record_failure()
+                if breaker.is_open:
+                    self._connection_lost(f"Camera {name!r} kept failing for {breaker.timeout_s}s", exc, source=source)
                 logger.warning(
                     "Camera %s read failed — using stale frame: %s",
                     name,
@@ -644,7 +652,7 @@ class RobotRuntime:
             else:
                 camera_frames[name] = frame
                 self._last_camera_frames[name] = frame
-                self._succeeded(source)
+                self._breakers[source].record_success()
         return camera_frames
 
     def _read_observation(self, *, read_cameras: bool = True) -> tuple[RobotObservation, dict[str, Frame]]:
@@ -677,21 +685,14 @@ class RobotRuntime:
                 if attempt + 1 < _MAX_SEND_RETRIES:
                     time.sleep(_RETRY_BACKOFF_S)
             else:
-                self._succeeded("send")
+                self._breakers["send"].record_success()
                 return
 
         self._transient_errors += 1
-        if self._failing_for("send") >= _MAX_FAILURE_S:
-            self._bus.emit_lifecycle(
-                LifecycleEvent(
-                    session_id=self._session_id,
-                    timestamp=time.time(),
-                    event="connection_lost",
-                    metadata={"error": str(last_error), "source": "send"},
-                )
-            )
-            msg = f"Robot sends kept failing for {_MAX_FAILURE_S}s"
-            raise ConnectionError(msg) from last_error
+        breaker = self._breakers["send"]
+        breaker.record_failure()
+        if breaker.is_open:
+            self._connection_lost(f"Robot sends kept failing for {breaker.timeout_s}s", last_error, source="send")
         self._bus.emit_lifecycle(
             LifecycleEvent(
                 session_id=self._session_id,
@@ -706,13 +707,33 @@ class RobotRuntime:
             last_error,
         )
 
-    def _failing_for(self, source: str) -> float:
-        """Return the seconds since *source* last succeeded, or since it first failed if it never has."""
-        now = time.perf_counter()
-        return now - self._last_success.setdefault(source, now)
+    def _new_breakers(self) -> dict[str, _Breaker]:
+        """Build one breaker per source, so one source recovering never hides another that keeps failing.
 
-    def _succeeded(self, source: str) -> None:
-        self._last_success[source] = time.perf_counter()
+        Returns:
+            Breakers keyed by ``"observation"``, ``"send"`` and ``"camera:<name>"``.
+        """
+        sources = ["observation", "send", *(f"camera:{name}" for name in self._cameras)]
+        return {source: _Breaker() for source in sources}
+
+    def _connection_lost(self, message: str, error: BaseException | None, *, source: str | None = None) -> NoReturn:
+        """Emit ``connection_lost`` and stop the run with a ``ConnectionError``.
+
+        Raises:
+            ConnectionError: Always, chained to *error*.
+        """
+        metadata = {"error": str(error)}
+        if source is not None:
+            metadata["source"] = source
+        self._bus.emit_lifecycle(
+            LifecycleEvent(
+                session_id=self._session_id,
+                timestamp=time.time(),
+                event="connection_lost",
+                metadata=metadata,
+            )
+        )
+        raise ConnectionError(message) from error
 
     def _disconnect_and_log_errors(self) -> None:
         """Release action-source resources, logging rather than raising on failure.

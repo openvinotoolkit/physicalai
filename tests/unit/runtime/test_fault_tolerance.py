@@ -17,6 +17,7 @@ from physicalai.runtime.core import (
     _MAX_FAILURE_S,
     _MAX_OBS_RETRIES,
     _MAX_SEND_RETRIES,
+    _Breaker,
 )
 
 
@@ -72,6 +73,80 @@ def _make_runtime(
     )
 
 
+class TestBreaker:
+    """The open/closed decision for one source, without a runtime around it."""
+
+    def test_starts_closed(self) -> None:
+        breaker = _Breaker()
+
+        assert not breaker.is_open
+        assert breaker.window_start is None
+
+    def test_failing_under_the_timeout_stays_closed(self) -> None:
+        breaker = _Breaker(timeout_s=1.0)
+
+        with patch("physicalai.runtime.core.time") as mock_time:
+            mock_time.perf_counter.return_value = 0.0
+            breaker.record_success()
+            mock_time.perf_counter.return_value = 0.9
+            breaker.record_failure()
+
+        assert not breaker.is_open
+
+    def test_opens_once_failing_for_the_timeout(self) -> None:
+        breaker = _Breaker(timeout_s=1.0)
+
+        with patch("physicalai.runtime.core.time") as mock_time:
+            mock_time.perf_counter.return_value = 0.0
+            breaker.record_success()
+            mock_time.perf_counter.return_value = 1.0
+            breaker.record_failure()
+
+        assert breaker.is_open
+
+    def test_success_closes_and_restarts_the_window(self) -> None:
+        breaker = _Breaker(timeout_s=1.0)
+
+        with patch("physicalai.runtime.core.time") as mock_time:
+            mock_time.perf_counter.return_value = 0.0
+            breaker.record_success()
+            mock_time.perf_counter.return_value = 1.0
+            breaker.record_failure()
+            assert breaker.is_open
+
+            breaker.record_success()
+            assert not breaker.is_open
+
+            mock_time.perf_counter.return_value = 1.9
+            breaker.record_failure()
+
+        assert not breaker.is_open
+
+    def test_window_starts_at_first_failure_when_never_succeeded(self) -> None:
+        breaker = _Breaker(timeout_s=1.0)
+
+        with patch("physicalai.runtime.core.time") as mock_time:
+            mock_time.perf_counter.return_value = 5.0
+            breaker.record_failure()
+            assert not breaker.is_open
+            assert breaker.window_start == 5.0
+
+            mock_time.perf_counter.return_value = 6.0
+            breaker.record_failure()
+
+        assert breaker.is_open
+
+    def test_reads_the_clock_once_per_record(self) -> None:
+        breaker = _Breaker()
+
+        with patch("physicalai.runtime.core.time") as mock_time:
+            mock_time.perf_counter.return_value = 0.0
+            breaker.record_success()
+            breaker.record_failure()
+
+        assert mock_time.perf_counter.call_count == 2
+
+
 class TestResilientObserve:
     def test_transient_observe_error_retries_then_succeeds(self) -> None:
         obs = _make_obs()
@@ -113,7 +188,7 @@ class TestResilientObserve:
 
         rt = _make_runtime(robot=robot, fps=10.0)
         rt._last_robot_obs = _make_obs()
-        rt._last_success["observation"] = 0.0
+        rt._breakers["observation"].window_start = 0.0
 
         with patch("physicalai.runtime.core.time") as mock_time:
             mock_time.sleep = MagicMock()
@@ -188,7 +263,7 @@ class TestResilientObserveCameras:
 
         rt = _make_runtime(cameras={"cam0": camera}, callbacks=(callback,))
         rt._last_camera_frames["cam0"] = stale_frame
-        rt._last_success["camera:cam0"] = 0.0
+        rt._breakers["camera:cam0"].window_start = 0.0
 
         with patch("physicalai.runtime.core.time") as mock_time:
             mock_time.sleep = MagicMock()
@@ -257,7 +332,7 @@ class TestResilientSend:
         robot.send_action.side_effect = OSError("USB gone")
 
         rt = _make_runtime(robot=robot)
-        rt._last_success["send"] = 0.0
+        rt._breakers["send"].window_start = 0.0
 
         with patch("physicalai.runtime.core.time") as mock_time:
             mock_time.sleep = MagicMock()
@@ -307,13 +382,56 @@ class TestFailureLimitsPerSource:
         assert stopped_at == _MAX_FAILURE_S
         assert rt._stale_obs_ticks == 0
 
+    @pytest.mark.parametrize(
+        ("source", "message", "metadata"),
+        [
+            ("observation", "Robot observations kept failing for 3.0s", {"error": "down"}),
+            ("send", "Robot sends kept failing for 3.0s", {"error": "down", "source": "send"}),
+        ],
+    )
+    def test_stop_keeps_its_message_and_event(self, source: str, message: str, metadata: dict[str, str]) -> None:
+        robot = _make_mock_robot()
+        robot.get_observation.side_effect = ConnectionError("down")
+        robot.send_action.side_effect = ConnectionError("down")
+        events: list[LifecycleEvent] = []
+        callback = MagicMock()
+        callback.on_lifecycle.side_effect = events.append
+
+        rt = _make_runtime(robot=robot, callbacks=(callback,))
+        rt._last_robot_obs = _make_obs()
+        rt._breakers[source].window_start = 0.0
+
+        with patch("physicalai.runtime.core.time") as mock_time:
+            mock_time.sleep = MagicMock()
+            mock_time.perf_counter.return_value = _MAX_FAILURE_S
+            mock_time.time.return_value = 0.0
+            with pytest.raises(ConnectionError) as exc_info:
+                if source == "observation":
+                    rt._read_observation()
+                else:
+                    rt._resilient_send(np.zeros(3, dtype=np.float32))
+
+        assert str(exc_info.value) == message
+        assert events[-1].event == "connection_lost"
+        assert events[-1].metadata == metadata
+
+    def test_each_source_has_its_own_breaker(self) -> None:
+        rt = _make_runtime(cameras={"cam0": MagicMock(), "cam1": MagicMock()})
+
+        assert set(rt._breakers) == {"observation", "send", "camera:cam0", "camera:cam1"}
+        assert len({id(breaker) for breaker in rt._breakers.values()}) == len(rt._breakers)
+
     def test_new_session_forgets_old_failures(self) -> None:
-        rt = _make_runtime()
-        rt._last_success = {"observation": 0.0, "send": 0.0, "camera:cam0": 0.0}
+        rt = _make_runtime(cameras={"cam0": MagicMock()})
+        for breaker in rt._breakers.values():
+            breaker.window_start = 0.0
+            breaker.is_open = True
 
         rt._reset_session()
 
-        assert rt._last_success == {}
+        assert set(rt._breakers) == {"observation", "send", "camera:cam0"}
+        assert all(breaker.window_start is None for breaker in rt._breakers.values())
+        assert not any(breaker.is_open for breaker in rt._breakers.values())
 
 
 class TestRunReturnsStepsWithFaults:
