@@ -270,6 +270,34 @@ def test_remove_prepared_refuses_symbolic_links(tmp_path: Path, uv_calls: list[l
 
     assert link.is_symlink()
     assert prepared.python.is_file()
+    assert not (cache / f".{link.name}.lock").exists()
+
+
+def test_remove_prepared_hides_an_environment_it_could_not_finish_removing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    uv_calls: list[list[str]],
+) -> None:
+    """A removal that fails partway, such as on a file in use on Windows, never leaves an entry that looks complete."""
+    cache = tmp_path / "cache"
+    environment = Environment(BundledProject(_bundled_project(tmp_path / "project")))
+    provider = UvProvider(cache_dir=cache, uv=sys.executable)
+    prepared = prepare(environment, provider=provider)
+
+    def rmtree_in_use(path: Path, **kwargs: object) -> None:
+        del kwargs
+        msg = f"In use: {path}"
+        raise PermissionError(msg)
+
+    with monkeypatch.context() as patch, pytest.raises(PermissionError):
+        patch.setattr(_environment.shutil, "rmtree", rmtree_in_use)
+        remove_prepared(prepared, cache_dir=cache)
+
+    assert prepared.python.is_file()
+    assert list_prepared(cache_dir=cache) == []
+    assert prepare(environment, provider=provider) == prepared
+    assert len(uv_calls) == 2
+    assert list_prepared(cache_dir=cache) == [prepared]
 
 
 def test_remove_prepared_holds_the_preparation_lock(

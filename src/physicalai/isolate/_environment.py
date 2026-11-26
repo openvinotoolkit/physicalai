@@ -261,6 +261,10 @@ def remove_prepared(prepared: PreparedEnvironment, *, cache_dir: Path | None = N
     Removing an environment that is already gone does nothing. The key's small ``.<key>.lock``
     file stays in the cache, since another process may be waiting on it.
 
+    The environment's marker is removed first, so an environment whose removal fails partway,
+    such as on a file in use on Windows, is no longer listed or reused; preparing it again
+    rebuilds it.
+
     Args:
         prepared: Environment returned by :func:`prepare` or :func:`list_prepared`.
         cache_dir: Cache that holds the environment, as passed to :class:`UvProvider`.
@@ -276,7 +280,17 @@ def remove_prepared(prepared: PreparedEnvironment, *, cache_dir: Path | None = N
     if not cache_root.is_dir():
         return
     root = cache_root / prepared.key
+    # Checked before taking the lock too, so rejecting a link leaves no lock file behind.
+    if root.is_symlink():
+        msg = f"Refusing to remove a symbolic-link cache path: {root}."
+        raise ValueError(msg)
     with _exclusive(cache_root / f".{prepared.key}.lock"):
+        # Preparation writes the marker last, so removal deletes it first: an entry that is only
+        # partly removed never looks complete to list_prepared() or prepare().
+        if not root.is_symlink() and root.is_dir():
+            marker = root / _MARKER
+            if not marker.is_symlink():
+                marker.unlink(missing_ok=True)
         _remove_cache_path(root)
 
 
