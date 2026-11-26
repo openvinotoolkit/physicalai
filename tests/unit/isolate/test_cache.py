@@ -215,6 +215,22 @@ def test_list_prepared_reports_only_complete_cache_entries(tmp_path: Path, uv_ca
     assert listed["6" * 64].labels == {}
 
 
+def test_list_prepared_matches_a_profile_given_in_any_order(tmp_path: Path, uv_calls: list[list[str]]) -> None:
+    del uv_calls
+    cache = tmp_path / "cache"
+    profile = SyncProfile(extras=("xpu", "cpu"), groups=("worker", "dev"))
+    prepared = prepare(
+        Environment(BundledProject(_bundled_project(tmp_path / "project")), profile),
+        provider=UvProvider(cache_dir=cache, uv=sys.executable),
+    )
+
+    assert profile == SyncProfile(extras=("cpu", "xpu"), groups=("dev", "worker"))
+    assert (profile.extras, profile.groups) == (("cpu", "xpu"), ("dev", "worker"))
+    [listed] = list_prepared(cache_dir=cache)
+    assert listed == prepared
+    assert listed.profile == prepared.profile
+
+
 def test_list_prepared_reads_the_default_cache(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

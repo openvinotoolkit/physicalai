@@ -21,8 +21,8 @@ class SyncProfile:
 
     Attributes:
         python: Python version or interpreter selector passed to ``uv sync``.
-        extras: Project extras enabled by this profile.
-        groups: Dependency groups enabled by this profile.
+        extras: Project extras enabled by this profile, sorted.
+        groups: Dependency groups enabled by this profile, sorted.
         no_default_groups: Whether to exclude the project's default dependency groups.
     """
 
@@ -32,7 +32,7 @@ class SyncProfile:
     no_default_groups: bool = False
 
     def __post_init__(self) -> None:
-        """Normalize sequences and reject invalid uv selectors.
+        """Sort extras and dependency groups and reject invalid uv selectors.
 
         Raises:
             TypeError: If a selector collection or flag has the wrong type.
@@ -59,8 +59,6 @@ class SyncProfile:
         except TypeError as exc:
             msg = "Extras and dependency groups must be iterable sequences of names."
             raise TypeError(msg) from exc
-        object.__setattr__(self, "extras", extras)
-        object.__setattr__(self, "groups", groups)
         for values, label in ((extras, "extra"), (groups, "dependency group")):
             for value in values:
                 if not isinstance(value, str) or _PROFILE_ITEM_RE.fullmatch(value) is None:
@@ -69,6 +67,10 @@ class SyncProfile:
             if len(values) != len(set(values)):
                 msg = f"A sync profile cannot repeat a {label}."
                 raise ValueError(msg)
+        # Sorted like identity(), so profiles that select the same extras and groups compare equal,
+        # including one rebuilt from a cache marker by list_prepared().
+        object.__setattr__(self, "extras", tuple(sorted(extras)))
+        object.__setattr__(self, "groups", tuple(sorted(groups)))
         if not isinstance(self.no_default_groups, bool):
             msg = "no_default_groups must be a boolean."
             raise TypeError(msg)
