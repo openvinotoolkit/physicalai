@@ -38,19 +38,25 @@ class _LateClock:
         self.sleeps.append(seconds)
 
 
-def _run(clock: _LateClock, *, cycles: int, multiplier: int = 1, stall: dict[int, float] | None = None) -> list[float]:
-    """Run ``cycles`` control cycles and return the fake time at the start of every tick."""
-    starts: list[float] = []
+def _run(clock: _LateClock, *, cycles: int, multiplier: int = 1, stall: dict[int, float] | None = None) -> np.ndarray:
+    """Run ``cycles`` control cycles and return the fake time of every command sent to the robot.
+
+    ``stall`` maps a loop tick index to extra time spent reading that tick's observation.
+    """
+    sends: list[float] = []
+    reads = 0
     stall = stall or {}
     robot = MagicMock()
     robot.joint_names = ["a", "b"]
 
     def observe() -> FakeRobotObservation:
-        starts.append(clock.now)
-        clock.now += clock.work_s + stall.get(len(starts) - 2, 0.0)  # key: loop tick index
+        nonlocal reads
+        clock.now += clock.work_s + stall.get(reads - 1, 0.0)  # read 0 is the initial state, before the loop
+        reads += 1
         return FakeRobotObservation(joint_positions=np.zeros(2))
 
     robot.get_observation.side_effect = observe
+    robot.send_action.side_effect = lambda *_a, **_k: sends.append(clock.now)
     runtime = RobotRuntime(
         robot=robot,
         action_source=FakeActionSource(),
@@ -60,35 +66,41 @@ def _run(clock: _LateClock, *, cycles: int, multiplier: int = 1, stall: dict[int
     runtime._connected = True  # noqa: SLF001
     with patch("physicalai.runtime.core.time", clock):
         runtime.run(duration_s=cycles / FPS)
-    return starts[1:]  # the first observation is the initial-state read before the loop
+    return np.array(sends)
 
 
 @pytest.mark.parametrize("multiplier", [1, 3])
-def test_late_wakeups_do_not_slow_the_loop(multiplier: int) -> None:
+def test_late_wakeups_do_not_slow_the_commands(multiplier: int) -> None:
     clock = _LateClock(oversleep_s=0.003, work_s=0.002)
-    starts = _run(clock, cycles=300, multiplier=multiplier)
+    sends = _run(clock, cycles=300, multiplier=multiplier)
 
-    cycle_starts = starts[::multiplier]
-    hz = (len(cycle_starts) - 1) / (cycle_starts[-1] - cycle_starts[0])
-    assert hz == pytest.approx(FPS, rel=0.005), f"loop ran at {hz:.2f} Hz"
+    cycle_sends = sends[::multiplier]
+    hz = (len(cycle_sends) - 1) / (cycle_sends[-1] - cycle_sends[0])
+    assert hz == pytest.approx(FPS, rel=0.005), f"commands went out at {hz:.2f} Hz"
 
 
-def test_one_late_wakeup_does_not_shift_later_ticks() -> None:
-    # Main re-anchored every cycle at the late wake-up, so every later tick moved by 10 ms.
+def test_one_late_wakeup_does_not_shift_later_commands() -> None:
+    # Main re-anchored every cycle at the late wake-up, so every later command moved by 10 ms.
     clock = _LateClock(oversleep_s=0.0, work_s=0.002, late_sleeps={20: 0.010})
-    starts = np.array(_run(clock, cycles=60))
+    sends = _run(clock, cycles=60)
 
-    grid = starts[0] + np.arange(len(starts)) / FPS
-    assert starts[21] - grid[21] == pytest.approx(0.010, abs=1e-9)  # the late tick itself
-    assert np.abs(starts[22:] - grid[22:]).max() < 1e-9
+    grid = sends[0] + np.arange(len(sends)) / FPS
+    assert sends[21] - grid[21] == pytest.approx(0.010, abs=1e-9)  # the late command itself
+    assert np.abs(sends[22:] - grid[22:]).max() < 1e-9
 
 
-def test_a_stalled_tick_never_causes_catch_up_ticks() -> None:
-    """Main never ran catch-up ticks either; this guards that the fixed schedule did not add them."""
+def test_a_stalled_tick_is_followed_by_one_overdue_command_then_the_normal_cadence() -> None:
+    """What the schedule guarantees after an overrun; main behaved the same, this guards it.
+
+    The command after a stalled tick is already overdue, so it goes out as soon as its own tick's
+    work is done (2 ms here). There is no burst beyond that one: from then on commands are a full
+    period apart again.
+    """
     clock = _LateClock(oversleep_s=0.003, work_s=0.002)
-    starts = _run(clock, cycles=60, stall={20: 0.2})
+    sends = _run(clock, cycles=60, stall={20: 0.2})
 
-    gaps = np.diff(starts)
-    assert gaps[20] == pytest.approx(0.2 + 0.002, abs=1e-9)  # the stalled tick itself
-    # No catch-up: every tick after the stall still gets most of a period.
-    assert gaps[21:].min() > 0.9 / FPS
+    gaps = np.diff(sends)
+    assert gaps[19] > 0.2  # the stalled tick's command
+    assert gaps[20] == pytest.approx(clock.work_s, abs=1e-9)  # the one overdue command
+    others = np.delete(gaps, [19, 20])
+    assert others.min() > 0.9 / FPS
