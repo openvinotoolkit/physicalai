@@ -74,9 +74,14 @@ def test_late_wakeups_do_not_slow_the_commands(multiplier: int) -> None:
     clock = _LateClock(oversleep_s=0.003, work_s=0.002)
     sends = _run(clock, cycles=300, multiplier=multiplier)
 
-    cycle_sends = sends[::multiplier]
-    hz = (len(cycle_sends) - 1) / (cycle_sends[-1] - cycle_sends[0])
-    assert hz == pytest.approx(FPS, rel=0.005), f"commands went out at {hz:.2f} Hz"
+    # Every command, interpolated ones included, sits on the control-tick grid (fps * multiplier).
+    # The first command is sent before the schedule starts, so the grid starts at the second one.
+    tick_period = 1 / (FPS * multiplier)
+    grid = sends[1] + np.arange(len(sends) - 1) * tick_period
+    assert len(sends) == 1 + 299 * multiplier  # the first action completes at once, then full cycles
+    hz = (len(sends) - 2) / (sends[-1] - sends[1])
+    assert hz == pytest.approx(FPS * multiplier, rel=0.005), f"commands went out at {hz:.2f} Hz"
+    assert np.abs(sends[1:] - grid).max() < 1e-9
 
 
 def test_one_late_wakeup_does_not_shift_later_commands() -> None:
