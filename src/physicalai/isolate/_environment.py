@@ -440,7 +440,10 @@ def _cached_environment(root: Path, environment: Environment, key: str) -> Prepa
 
 
 def _listed_environment(root: Path) -> PreparedEnvironment | None:
-    marker = _complete_entry_marker(root, root.name)
+    try:
+        marker = _complete_entry_marker(root, root.name)
+    except UnicodeDecodeError:
+        return None
     if marker is None:
         return None
     profile = _profile_from_identity(marker.get("profile"))
