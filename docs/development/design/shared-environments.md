@@ -184,7 +184,7 @@ for entry in list_prepared():                                # complete entries,
         remove_prepared(entry)
 ```
 
-Labels are string metadata, not identity: they do not change the cache key or equality, and preparing again with new labels replaces them without rebuilding. Preparing without labels keeps the recorded ones, so an application that reuses another's environment does not erase its labels. An application lists only entries carrying its own labels and never removes anything else.
+Labels are string metadata, not identity: they do not change the cache key or equality. Preparing again with new labels replaces all of them without rebuilding, so labels describe the last application that labelled an environment, not every application that uses it; they are not reference counts. If two applications label the same environment, only the last one finds its labels on it. Preparing without labels keeps the recorded ones, so an application that reuses another's environment does not erase its labels. An application lists only entries carrying its own labels and never removes anything else.
 
 `list_prepared` skips entries that are still being prepared or were interrupted. `remove_prepared` takes the same per-key lock as preparation, so it never removes an environment mid-build, but it does not stop sessions already running from it.
 
