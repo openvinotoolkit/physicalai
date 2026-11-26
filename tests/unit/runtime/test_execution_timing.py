@@ -593,6 +593,73 @@ class TestRTCLatency:
             ex.stop()
         assert tracker.max_latency_s == pytest.approx(0.05)
 
+    @pytest.mark.parametrize(("prep_s", "merge_s", "expected_s"), [(0.1, 0.0, 0.39), (0.0, 0.2, 0.49)], ids=["preparation", "merge"])
+    def test_delay_includes_the_worker_preparation_and_the_merge(
+        self, monkeypatch: pytest.MonkeyPatch, prep_s: float, merge_s: float, expected_s: float
+    ) -> None:
+        """Model time is 0.29 s; reading the queue or merging the chunk takes extra (virtual) time."""
+        model = _ClockedModel([0.29])
+
+        class _SlowQueue(RTCActionQueue):
+            def snapshot_left_over(self, from_index: int | None = None) -> tuple[int, np.ndarray | None]:
+                model.now += prep_s
+                return super().snapshot_left_over(from_index)
+
+            def merge(self, *args: Any, **kwargs: Any) -> None:
+                model.now += merge_s
+                super().merge(*args, **kwargs)
+
+        _use_clock(monkeypatch, _RTC_MODULE, model.clock)
+        queue = _SlowQueue()
+        ex = RTCExecution(chunk_size=CHUNK * 3, fps=30.0, execution_horizon=10, warmup_inferences=1)
+        model.chunk_size = CHUNK
+        ex.start(cast("InferenceModel", model), queue)
+        try:
+            ex.warmup(_obs(0))
+            _tick_until(ex, queue, 3)
+        finally:
+            ex.stop()
+        window = list(ex._latency_tracker._window)  # noqa: SLF001
+        assert window == pytest.approx([expected_s, expected_s])
+
+    def test_a_shared_tracker_still_samples_other_predictions(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Only the execution's own model calls skip the callback hooks, not the tracker's other uses."""
+        from physicalai.inference.callbacks import RTCLatencyTracker
+
+        tracker = RTCLatencyTracker()
+        model = _ClockedModel([0.29], tracker=tracker)
+        _use_clock(monkeypatch, _TRACKER_MODULE, model.clock)
+
+        def predict_elsewhere(seconds: float) -> None:
+            tracker.on_predict_start({})
+            model.now += seconds
+            tracker.on_predict_end({})
+
+        _use_clock(monkeypatch, _RTC_MODULE, model.clock)
+        ex = RTCExecution(chunk_size=CHUNK, fps=30.0, execution_horizon=10, latency_tracker=tracker, warmup_inferences=1)
+        predict_elsewhere(0.05)  # before start()
+        assert list(tracker._window) == pytest.approx([0.05])  # noqa: SLF001
+        queue = RTCActionQueue()
+        ex.start(cast("InferenceModel", model), queue)
+        try:
+            ex.warmup(_obs(0))
+            _tick_until(ex, queue, 3)
+        finally:
+            ex.stop()
+        assert list(tracker._window) == pytest.approx([0.29, 0.29])  # noqa: SLF001  warmup seeded, two re-plans recorded once
+        predict_elsewhere(0.07)  # after stop()
+        assert list(tracker._window)[-1] == pytest.approx(0.07)  # noqa: SLF001
+
+    @pytest.mark.parametrize("fps", [float("nan"), float("inf"), 0.0, -30.0])
+    def test_fps_must_be_finite_and_positive(self, fps: float) -> None:
+        with pytest.raises(ValueError, match="fps"):
+            RTCExecution(fps=fps)
+
+    def test_a_huge_latency_saturates_instead_of_overflowing(self) -> None:
+        ex = RTCExecution(chunk_size=CHUNK, fps=30.0, execution_horizon=10, initial_latency_s=1e308)
+        assert ex.queue_threshold == ex.chunk_size
+        assert ex._latency_tracker.compute_delay(30.0) >= ex.chunk_size  # noqa: SLF001
+
     def test_tracker_keeps_its_estimate_across_a_reset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from physicalai.inference.callbacks import RTCLatencyTracker
 

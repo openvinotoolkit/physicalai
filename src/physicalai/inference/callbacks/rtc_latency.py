@@ -10,15 +10,23 @@ exposes the worst-case value for computing ``inference_delay``.
 from __future__ import annotations
 
 import math
+import threading
 import time
 from collections import deque
-from typing import Any
+from contextlib import contextmanager
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from typing_extensions import override
 
 from physicalai.config import export_config
 from physicalai.inference.callbacks.base import Callback
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+# Larger delays mean "longer than any chunk"; saturating avoids converting inf or 1e308 to an int.
+_MAX_DELAY_TICKS = 1_000_000
 
 
 @export_config(class_path="physicalai.inference.callbacks.RTCLatencyTracker")
@@ -46,17 +54,27 @@ class RTCLatencyTracker(Callback):
         self._start_time: float = 0.0
         # Estimate used while the window is empty (start of a run, after a reset).
         self._fallback_s: float = 0.0
-        # Set by RTCExecution, which then records every inference itself.
-        self._external: bool = False
+        # Per thread: inside skip_callbacks() the model-callback hooks do nothing.
+        self._skipping = threading.local()
 
-    def record_externally(self) -> None:
-        """Make :meth:`record` the only way samples arrive.
+    @contextmanager
+    def skip_callbacks(self) -> Iterator[None]:
+        """Ignore the model-callback hooks for calls made inside this block, on this thread.
 
-        ``RTCExecution`` calls this on the tracker it uses. The model-callback
-        hooks then do nothing, so a tracker that is also registered with the
-        model (the older wiring) still gets one sample per inference.
+        ``RTCExecution`` wraps its own model calls in this block and records
+        them with :meth:`record`, so a tracker that is also registered with the
+        model (the older wiring) gets one sample per inference. Other calls,
+        before ``start()``, after ``stop()`` or from other threads, are still
+        sampled through the hooks.
         """
-        self._external = True
+        self._skipping.active = True
+        try:
+            yield
+        finally:
+            self._skipping.active = False
+
+    def _skip(self) -> bool:
+        return getattr(self._skipping, "active", False)
 
     def record(self, elapsed_s: float) -> None:
         """Add one measured latency, for callers that time the call themselves.
@@ -79,15 +97,15 @@ class RTCLatencyTracker(Callback):
 
     @override
     def on_predict_start(self, inputs: dict[str, Any]) -> None:
-        """Record prediction start time (unless an execution records instead)."""
-        if self._external:
+        """Record prediction start time (not inside :meth:`skip_callbacks`)."""
+        if self._skip():
             return
         self._start_time = time.perf_counter()
 
     @override
     def on_predict_end(self, outputs: dict[str, Any]) -> None:
-        """Record prediction duration (unless an execution records instead)."""
-        if self._external:
+        """Record prediction duration (not inside :meth:`skip_callbacks`)."""
+        if self._skip():
             return
         elapsed = time.perf_counter() - self._start_time
         self._window.append(elapsed)
@@ -142,10 +160,14 @@ class RTCLatencyTracker(Callback):
         Returns:
             Integer delay (number of action steps consumed during inference).
         """
-        if self.max_latency_s <= 0:
+        ticks = self.max_latency_s * fps
+        if not ticks > 0:
             return 0
+        if not ticks < _MAX_DELAY_TICKS:
+            # Saturate instead of overflowing; callers clamp it to the chunk.
+            return _MAX_DELAY_TICKS
         # The epsilon keeps a latency of exactly n ticks from rounding up to n + 1.
-        return math.ceil(self.max_latency_s * fps - 1e-6)
+        return math.ceil(ticks - 1e-6)
 
     @override
     def __repr__(self) -> str:

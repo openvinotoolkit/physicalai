@@ -102,9 +102,10 @@ class RTCExecution(Execution):
         latency_tracker: Tracker holding the measured inference latency. If
             None, the execution creates one. The execution records every
             inference itself, timed from the moment the observation is
-            published to the moment the chunk is in the queue (worker wake-up
-            and input preparation included). A tracker passed here ignores its
-            model-callback hooks, so each inference is recorded once.
+            published to the moment the chunk is in the queue (worker wake-up,
+            input preparation and the merge included). If the tracker is also
+            registered as a model callback, its hooks skip this execution's own
+            model calls, so each inference is recorded once.
         initial_latency_s: Expected inference latency in seconds (finite, not
             negative), used for ``inference_delay`` until the first steady
             measurement. If None,
@@ -171,9 +172,6 @@ class RTCExecution(Execution):
         self._session_id: str = ""
 
         self._validate_tuning()
-        # This execution is the tracker's only recorder: a tracker also
-        # registered as a model callback would otherwise count each call twice.
-        self._latency_tracker.record_externally()
         if initial_latency_s is not None:
             self._latency_tracker.seed(initial_latency_s)
 
@@ -189,8 +187,8 @@ class RTCExecution(Execution):
         if self._max_guidance_weight < 0:
             msg = f"RTC max_guidance_weight must be non-negative, got {self._max_guidance_weight}."
             raise ValueError(msg)
-        if self._fps <= 0:
-            msg = f"RTC fps must be positive, got {self._fps}."
+        if not (math.isfinite(self._fps) and self._fps > 0):
+            msg = f"RTC fps must be positive and finite, got {self._fps}."
             raise ValueError(msg)
         if self._chunk_size_param is not None and self._chunk_size_param <= 0:
             msg = f"RTC chunk_size must be positive, got {self._chunk_size_param}."
@@ -577,7 +575,10 @@ class RTCExecution(Execution):
                         if incarnation != self._incarnation:
                             self._cancel_signal_locked(signal, "RTCExecution warmup cancelled by reset")
                             continue
-                    outputs = self._model(inputs)
+                    # This execution records the call itself (after the merge), so a
+                    # tracker that is also a model callback must not sample it too.
+                    with self._latency_tracker.skip_callbacks():
+                        outputs = self._model(inputs)
                     elapsed = time.perf_counter() - t0
                 consecutive_errors = 0
             except Exception:
@@ -665,12 +666,16 @@ class RTCExecution(Execution):
                 raw_actions = raw_actions[0]
             processed_actions = raw_actions
 
-            self._inference_count += 1
-            self._lifetime_inferences += 1
-            # From the observation's publication to the chunk being usable: the
-            # worker's poll and the input preparation delay the chunk as much as
-            # the model does, so they belong in the delay.
+            self._rtc_queue.merge(
+                raw_actions,
+                processed_actions,
+                action_index_before_inference=action_index_before,
+            )
+            # From the observation's publication to the chunk being in the queue:
+            # the worker's poll, the input preparation and the merge delay the
+            # chunk as much as the model does, so they belong in the delay.
             latency = time.perf_counter() - published_at
+            self._lifetime_inferences += 1
             if self._lifetime_inferences <= self._warmup_inferences:
                 # Cold-start inferences are slow (compilation), so they must not
                 # stay in the worst-case window. They still give an estimate:
@@ -686,12 +691,9 @@ class RTCExecution(Execution):
                 )
             else:
                 self._latency_tracker.record(latency)
-
-            self._rtc_queue.merge(
-                raw_actions,
-                processed_actions,
-                action_index_before_inference=action_index_before,
-            )
+            # Counted only once the chunk is installed, so a caller that sees the
+            # count go up can pop from the new chunk.
+            self._inference_count += 1
             # maybe_request() kept publishing while this chunk was in flight.
             # Those samples predate the merge and are stale by the time the
             # queue drains again; keeping one would make the next chunk plan
