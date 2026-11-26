@@ -24,40 +24,44 @@
       "release-type": "simple",
       "package-name": "physicalai",
       "changelog-path": "CHANGELOG.md",
-      "exclude-paths": ["packages/*"],
+      "exclude-paths": [
+        "packages/*",
+        "plugins/physicalai-studio-plugin/*",
+        "plugins/robots/*"
+      ],
       "include-component-in-tag": false
     },
-    "packages/physicalai-studio-plugin": {
+    "plugins/physicalai-studio-plugin": {
       "release-type": "python",
       "package-name": "physicalai-studio-plugin",
       "changelog-path": "CHANGELOG.md"
     },
-    "packages/physicalai-rebot-b601-plugin": {
+    "plugins/robots/physicalai-rebot-b601-plugin": {
       "release-type": "python",
       "package-name": "physicalai-rebot-b601-plugin",
       "changelog-path": "CHANGELOG.md"
     },
-    "packages/physicalai-lerobot-plugin": {
+    "plugins/robots/physicalai-lerobot-plugin": {
       "release-type": "python",
       "package-name": "physicalai-lerobot-plugin",
       "changelog-path": "CHANGELOG.md"
     },
-    "packages/physicalai-stararm-plugin": {
+    "plugins/robots/physicalai-stararm-plugin": {
       "release-type": "python",
       "package-name": "physicalai-stararm-plugin",
       "changelog-path": "CHANGELOG.md"
     },
-    "packages/physicalai-mujoco-plugin": {
+    "plugins/robots/physicalai-mujoco-plugin": {
       "release-type": "python",
       "package-name": "physicalai-mujoco-plugin",
       "changelog-path": "CHANGELOG.md"
     },
-    "packages/physicalai-so101-plugin": {
+    "plugins/robots/physicalai-so101-plugin": {
       "release-type": "python",
       "package-name": "physicalai-so101-plugin",
       "changelog-path": "CHANGELOG.md"
     },
-    "packages/physicalai-trossen-plugin": {
+    "plugins/robots/physicalai-trossen-plugin": {
       "release-type": "python",
       "package-name": "physicalai-trossen-plugin",
       "changelog-path": "CHANGELOG.md"
