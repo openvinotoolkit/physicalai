@@ -140,6 +140,21 @@ class TestHandles:
         _ticks(robot, 100)
         assert robot.get_observation().joint_positions[index] == pytest.approx(moved[index], abs=1.0)
 
+    def test_teleoperation_stops_an_action_still_easing_in(self, robot: MuJoCoRobot) -> None:
+        held = robot.get_observation().joint_positions.copy()
+        index = robot.joint_names.index("left_joint_1")
+        moved = held.copy()
+        moved[index] += 20.0
+        robot.send_action(held)
+        time.sleep(0.2)
+        robot.send_action(moved)  # eased in over about the gap between the two actions
+        assert robot._ease is not None  # noqa: SLF001
+        robot._submit_command(SetTeleopCommand(mouse=True))  # noqa: SLF001
+        _ticks(robot, 60)
+        assert robot._ease is None  # noqa: SLF001
+        # Where the first ticks of the ease got to, far short of the action.
+        assert robot.get_observation().joint_positions[index] == pytest.approx(held[index], abs=5.0)
+
     def test_joint_targets_move_no_faster_than_the_speed_limit(self, robot: MuJoCoRobot) -> None:
         robot._submit_command(SetTeleopCommand(mouse=True))  # noqa: SLF001
         _ticks(robot, 2)

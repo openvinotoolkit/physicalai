@@ -454,6 +454,21 @@ def test_a_headset_taking_the_arms_ends_the_episode(conveyor_robot: MuJoCoRobot)
     assert not _book(robot).info().supported
 
 
+def test_teleoperation_switches_off_an_autopilot_that_drives_and_keeps_it_off(conveyor_robot: MuJoCoRobot) -> None:
+    robot = conveyor_robot
+    automation = robot._automation  # noqa: SLF001
+    for command, mode in [
+        (SetAutopilotCommand(mode="drive"), "drive"),
+        (SetTeleopCommand(mouse=True), "off"),  # the handles take the arm
+        (SetAutopilotCommand(mode="drive"), "off"),  # refused while they drive it
+        (SetTeleopCommand(mouse=False), "off"),
+        (SetAutopilotCommand(mode="drive"), "drive"),
+    ]:
+        robot._commands.put(command)  # noqa: SLF001
+        robot.get_observation()
+        assert automation.autopilot.mode == mode, command
+
+
 def test_a_scene_reset_of_its_own_ends_the_episode(conveyor_robot: MuJoCoRobot) -> None:
     robot = conveyor_robot
     episode = _ready(robot)

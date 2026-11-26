@@ -857,6 +857,7 @@ class MuJoCoRobot(OperatorControls):
         self._report_teleop()
         if not self._teleop.drives:
             return
+        self._ease = None  # an action eased in before teleoperation took over stops where it got to
         from physicalai_mujoco_plugin.xr import robot_controllers  # noqa: PLC0415
 
         controllers = robot_controllers(sample, self._teleop.view) if sample is not None else None
@@ -866,7 +867,8 @@ class MuJoCoRobot(OperatorControls):
         """Tell the episode book when teleoperation starts or stops driving the arms.
 
         Starting ends an autopilot episode in progress and gives the scene settings back, like any other
-        change to the scene; while it drives, no episode may start.
+        change to the scene, and switches off an autopilot that drives the arm; while it drives, no
+        episode may start and the autopilot may not drive.
         """
         driving = self._teleop is not None and self._teleop.drives
         if driving == self._teleop_reported or self._automation is None:
@@ -876,6 +878,9 @@ class MuJoCoRobot(OperatorControls):
             from physicalai_mujoco_plugin.autopilot import TELEOP_REASON  # noqa: PLC0415
 
             self._automation.end_episode_now(TELEOP_REASON)
+            if self._automation.autopilot.mode == "drive":
+                logger.info("Teleoperation takes the arms: the autopilot stops driving")
+                self._automation.set_autopilot("off")
         self._automation.book.set_teleop(driving)
 
     def _update_bases(self) -> None:

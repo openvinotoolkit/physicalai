@@ -251,7 +251,10 @@ class OperatorControls:
         elif isinstance(command, cmd.HomeCommand):
             self._go_home()
         elif isinstance(command, cmd.SetAutopilotCommand):
-            self._automation.set_autopilot(command.mode)  # type: ignore[union-attr]
+            if command.mode == "drive" and self._teleop is not None and self._teleop.drives:
+                logger.warning("Teleoperation drives the arms; switch it off before the autopilot drives")
+            else:
+                self._automation.set_autopilot(command.mode)  # type: ignore[union-attr]
         elif isinstance(command, cmd.SetObjectPoseCommand) and sim is not None:
             self._objects.set_pose(
                 sim.model, sim.data, command.joint, command.position, command.wxyz, hold=command.hold

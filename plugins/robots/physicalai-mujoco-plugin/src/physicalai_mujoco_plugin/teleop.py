@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 
     import mujoco
 
-    from physicalai_mujoco_plugin.channels import ArmChannels
+    from physicalai_mujoco_plugin.channels import ArmChannels, Channel
     from physicalai_mujoco_plugin.compose import RobotBinding
     from physicalai_mujoco_plugin.profiles import EndEffector, RobotProfile
 
@@ -147,7 +147,7 @@ class TeleopArm:
     dirty: bool = False
     """The target moved since the IK last solved it."""
     released: bool = False
-    """The input just let go: an unreachable target goes back to where the gripper got to."""
+    """The input just let go: an unreachable target goes back to the closest pose the arm reaches, where it stops."""
     written: np.ndarray | None = None
     """Joint targets this arm wrote last tick; anything else means something else moved the arm."""
 
@@ -189,10 +189,11 @@ def _gripper(model: mujoco.MjModel, channels: ArmChannels, effector: EndEffector
     """Return the end effector's gripper channel (``EndEffector.gripper``) and its closed and open targets.
 
     The targets are the ends of the channel's joint range, or, for a tendon, of its actuator's
-    control range in model units.
+    control range in model units (``ctrl = ctrl_per_unit * gear * target``, as the channels write it).
 
     Returns:
-        The gripper; ``None`` without one, or when the channel has no range to close and open over.
+        The gripper; ``None`` without one, when the channel does not track a position, or when it has
+        no range to close and open over.
     """
     if effector.gripper is None:
         return None
@@ -202,13 +203,22 @@ def _gripper(model: mujoco.MjModel, channels: ArmChannels, effector: EndEffector
         return None
     index = channels.names.index(name)
     member = channels.channels[index].first
+    if not _tracks_position(channels, channels.channels[index]):
+        return None
+    factor = member.ctrl_per_unit * member.gear
     if member.range is not None:
         low, high = member.range
-    elif model.actuator_ctrllimited[member.actuator_id] and member.ctrl_per_unit > 0:
-        low, high = (float(v) / member.ctrl_per_unit for v in model.actuator_ctrlrange[member.actuator_id])
+    elif model.actuator_ctrllimited[member.actuator_id] and factor != 0:
+        low, high = sorted(float(v) / factor for v in model.actuator_ctrlrange[member.actuator_id])
     else:
         return None
     return Gripper(index, low, high) if effector.gripper_opens_up else Gripper(index, high, low)
+
+
+def _tracks_position(channels: ArmChannels, channel: Channel) -> bool:
+    """Return whether *channel*'s target is a position: not a raw ``ctrl`` or a raw torque."""
+    kind = channel.first.kind
+    return kind in {"position", "velocity"} or (kind == "torque" and channels.torque_mode == "pd")
 
 
 def _posture_error(arm: TeleopArm, q: np.ndarray) -> np.ndarray:
@@ -238,7 +248,9 @@ def build_arms(
     """Return one teleoperated arm per robot and end effector whose joints all have channels.
 
     An arm's side comes from its robot's prefix or its end effector's name; failing that, the first
-    of two arms is the left one, and a robot with one arm answers both controllers.
+    of two arms is the left one, and a robot with one arm answers both controllers. An arm with a
+    joint whose channel does not track a position (raw ``ctrl``, raw torque) is left out: the IK
+    writes joint angles.
 
     Returns:
         The arms, in anchor order and then end-effector order.
@@ -246,12 +258,15 @@ def build_arms(
     found: list[tuple[RobotBinding, ArmChannels, EndEffector, int | None, int, list[int]]] = []
     for binding, arm_channels in zip(bindings, channels, strict=True):
         by_joint = {channel.first.joint for channel in arm_channels.channels}
+        untracked = {
+            channel.first.joint for channel in arm_channels.channels if not _tracks_position(arm_channels, channel)
+        }
         for effector in profile.end_effectors:
             site, body = _effector_ids(model, binding.prefix, effector)
             if body < 0:
                 continue  # a custom model without the profile's end effector
             chain = [joint for joint in _chain(model, body) if model.joint(joint).name in by_joint]
-            if chain:
+            if chain and not any(model.joint(joint).name in untracked for joint in chain):
                 found.append((binding, arm_channels, effector, site, body, chain))
     arms: list[TeleopArm] = []
     for index, (binding, arm_channels, effector, site, body, chain) in enumerate(found):
@@ -470,7 +485,7 @@ class Teleop:
         arm.dirty = True
 
     def _solve_target(self, arm: TeleopArm, current: np.ndarray) -> None:
-        """Solve the IK for the arm's target; a released target the arm cannot reach goes back to the gripper."""
+        """Solve the IK for the target; a released one the arm cannot reach goes to the closest pose it reaches."""
         arm.goal, error, angle = self._solve(arm, current, arm.target_pos, arm.target_rot)
         arm.reached = error <= REACHED_POSITION_M and angle <= REACHED_ANGLE_RAD
         if arm.released and not arm.reached:
