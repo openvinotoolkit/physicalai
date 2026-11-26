@@ -53,7 +53,13 @@ action_source:
       class_path: physicalai.runtime.RTCActionQueue
 ```
 
-Use this mode for exports that expect real-time chunking inputs.
+Use this mode for exports that expect real-time chunking inputs (`prev_chunk_left_over`, `inference_delay`, `max_guidance_weight` and `execution_horizon`).
+
+An RTC export also runs under `SyncExecution` and `AsyncExecution` if its graph takes all four inputs and its manifest declares a fixed `(chunk_size, action_dim)` shape for `prev_chunk_left_over` among its input features that matches the graph, as Studio exports do. Otherwise a warning at load says why nothing is filled in. `InferenceModel` then adds the inputs `RTCExecution` sends for a first chunk to every observation, before the callbacks and preprocessors: no previous chunk, a guidance weight of 1e-8, horizon 1 and delay 0. It logs this once.
+
+The first-chunk inputs are added only when the observation has none of the four RTC inputs. A callback or preprocessor that adds RTC values only when they are missing finds the first-chunk values already there; create the model with `InferenceModel(..., fill_rtc_inputs=False)` to keep such a hook in charge.
+
+`RTCExecution.start()` refuses a local model whose graph takes none of the RTC inputs, because it would drop them and run every chunk unguided. Re-export the policy with RTC enabled, or pick another mode. When the graph takes only some of them, or when it cannot tell (for example with `RemoteInferenceModel`), it logs a warning and starts.
 
 ## Remote Inference
 

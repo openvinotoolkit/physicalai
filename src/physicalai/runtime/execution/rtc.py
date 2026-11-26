@@ -38,6 +38,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+class RTCCapabilityError(ValueError):
+    """``RTCExecution.start()`` refused the model before any worker started: its graph takes no RTC inputs."""
+
+
 _NOT_STARTED = "start() must be called before this method"
 _IDLE_SLEEP_S: float = 0.005
 _ERROR_RETRY_DELAY_S: float = 0.5
@@ -232,6 +237,8 @@ class RTCExecution(Execution):
             RuntimeError: If the previous worker is still inside the model after
                 a short grace period. Running anyway would put two threads
                 through one ``InferenceModel``, which is not synchronised.
+            RTCCapabilityError: If the model's graph takes none of the RTC inputs.
+                Raised before any worker starts.
             ValueError: If the resolved chunk size does not admit the configured
                 execution horizon.
         """  # noqa: DOC502 — raised by the delegated _await_previous_worker(), but callers see it here.
@@ -245,6 +252,19 @@ class RTCExecution(Execution):
         # Before model/queue bindings are changed, refuse to run two workers
         # through the same unsynchronised model.
         self._await_previous_worker()
+
+        # A graph without RTC inputs would drop them and run every chunk unguided.
+        rtc_inputs = getattr(model, "rtc_inputs", None)
+        if rtc_inputs == ():
+            msg = (
+                "This export takes no RTC inputs, so RTC guidance would be dropped. Re-export it with RTC"
+                " enabled, or run it with SyncExecution or AsyncExecution."
+            )
+            raise RTCCapabilityError(msg)
+        if rtc_inputs is None:
+            logger.warning("Cannot tell whether this model takes RTC inputs; RTC guidance may be dropped.")
+        elif isinstance(rtc_inputs, tuple) and len(rtc_inputs) < 4:  # noqa: PLR2004
+            logger.warning("This model takes only some RTC inputs (%s); the others are dropped.", ", ".join(rtc_inputs))
 
         self._model = model
         self._rtc_queue = action_queue

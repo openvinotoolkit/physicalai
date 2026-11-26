@@ -74,6 +74,29 @@ class RuntimeAdapter(ABC):
             List of output tensor names
         """
 
+    @property
+    def input_dtypes(self) -> dict[str, np.dtype]:
+        """Get the element type each named model input declares, where the backend reports one.
+
+        :class:`~physicalai.inference.model.InferenceModel` casts each input to
+        it before calling :meth:`predict`. The default declares none.
+
+        Returns:
+            Mapping from input name to NumPy dtype.
+        """
+        return {}
+
+    @property
+    def input_shapes(self) -> dict[str, tuple[int | None, ...]]:
+        """Get the shape each named model input declares, where the backend reports one.
+
+        ``None`` marks a dimension the graph leaves open. The default declares none.
+
+        Returns:
+            Mapping from input name to shape.
+        """
+        return {}
+
     def close(self) -> None:  # noqa: B027  # Optional hook with a no-op default.
         """Release resources such as worker processes or device memory.
 

@@ -18,6 +18,7 @@ from physicalai.runtime.action_sources.base import ActionSource
 from physicalai.runtime.events import MetricsEvent
 from physicalai.runtime.execution.base import Execution
 from physicalai.runtime.execution.queue import ChunkedActionQueue
+from physicalai.runtime.execution.rtc import RTCCapabilityError
 from physicalai.runtime.execution.sync import SyncExecution
 from physicalai.runtime.smoothers import LerpSmoother
 
@@ -97,7 +98,16 @@ class PolicySource(ActionSource):
             self._bus = bus
             self._session_id = session_id
             self._execution.set_bus(bus, session_id)
-            self._execution.start(self._model, self._action_queue)
+            try:
+                self._execution.start(self._model, self._action_queue)
+            except RTCCapabilityError as rejected:
+                # RTC refused this model before any worker ran, so release it as disconnect() would.
+                # Other failures may leave a worker inside the model, so they leave it alone, as before.
+                try:
+                    self._close_model()
+                except Exception as close_error:  # noqa: BLE001  # Keep the rejection as the error raised.
+                    rejected.add_note(f"Closing the model also failed: {close_error!r}")
+                raise
             try:
                 if self._supports_reset:
                     self._execution.reset(reset_model=True)
@@ -222,9 +232,12 @@ class PolicySource(ActionSource):
                 self._connected = False
                 if self._history is not None:
                     self._history.reset()
-                close_model = getattr(type(self._model), "close", None)
-                if close_model is not None:
-                    close_model(self._model)
+                self._close_model()
+
+    def _close_model(self) -> None:
+        close_model = getattr(type(self._model), "close", None)
+        if close_model is not None:
+            close_model(self._model)
 
     def _to_model_input(self, robot_obs: RobotObservation, camera_frames: Mapping[str, Frame]) -> dict[str, Any]:
         """Assemble model input dict from observation and camera frames.
