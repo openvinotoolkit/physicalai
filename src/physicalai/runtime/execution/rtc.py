@@ -144,8 +144,8 @@ class RTCExecution(Execution):
         self._rtc_queue: RTCActionQueue | None = None
         self._model: InferenceModel | None = None
 
-        # Discovered/inferred state
-        self._chunk_size: int = 50
+        # Discovered/inferred state: the configured size until start() resolves one
+        self._chunk_size: int = chunk_size if chunk_size is not None else 50
         self._chunk_size_discovered: int = 0
 
         # Thread state
@@ -262,9 +262,11 @@ class RTCExecution(Execution):
         if self._queue_threshold_param < floor:
             self._threshold_warned = True
             logger.warning(
-                "RTC queue_threshold %d is shorter than the inference delay (%d actions): "
-                "the queue would run dry and the robot would stutter. Using %d.",
+                "RTC queue_threshold %d is below the %d this inference delay needs "
+                "(delay %d actions + 2: one for the action popped on the request tick, one for a chunk "
+                "that lands just after the pop it was due for); the queue would run dry. Using %d.",
                 self._queue_threshold_param,
+                floor,
                 delay,
                 floor,
             )
@@ -302,7 +304,8 @@ class RTCExecution(Execution):
         self._model = model
         self._rtc_queue = action_queue
 
-        # Infer chunk_size
+        # Infer chunk_size afresh: a restart may bring a model with another size.
+        self._chunk_size_discovered = 0
         if self._chunk_size_param is not None:
             self._chunk_size = self._chunk_size_param
         else:
@@ -447,8 +450,9 @@ class RTCExecution(Execution):
             self._obs_slot = None
             self._cancel_warmup_locked("RTCExecution warmup cancelled by reset")
             # Episode boundary: the old measurements become the fallback estimate
-            # only, so a fresh measurement replaces a stale worst case.
-            self._latency_tracker.on_reset()
+            # only, so a fresh measurement replaces a stale worst case. A call
+            # being timed through the tracker's callback hooks is left alone.
+            self._latency_tracker.reset_window()
         if reset_model:
             with self._model_lock:
                 self._model.reset()
@@ -676,6 +680,7 @@ class RTCExecution(Execution):
             # chunk as much as the model does, so they belong in the delay.
             latency = time.perf_counter() - published_at
             self._lifetime_inferences += 1
+            warmup_done = 0
             if self._lifetime_inferences <= self._warmup_inferences:
                 # Cold-start inferences are slow (compilation), so they must not
                 # stay in the worst-case window. They still give an estimate:
@@ -683,12 +688,7 @@ class RTCExecution(Execution):
                 self._latency_tracker.seed(
                     self._initial_latency_s if self._initial_latency_s is not None else latency,
                 )
-                logger.info(
-                    "Warmup inference %d/%d complete (%.2fs) — latency estimate seeded",
-                    self._lifetime_inferences,
-                    self._warmup_inferences,
-                    elapsed,
-                )
+                warmup_done = self._lifetime_inferences
             else:
                 self._latency_tracker.record(latency)
             # Counted only once the chunk is installed, so a caller that sees the
@@ -702,7 +702,16 @@ class RTCExecution(Execution):
                 self._obs_slot = None
             if signal is not None:
                 signal.event.set()
-            return processed_actions
+        # Logged after the lock is released: a slow log handler must not hold up
+        # maybe_request() on the control thread.
+        if warmup_done:
+            logger.info(
+                "Warmup inference %d/%d complete (%.2fs) — latency estimate seeded",
+                warmup_done,
+                self._warmup_inferences,
+                elapsed,
+            )
+        return processed_actions
 
     def _cancel_warmup_locked(self, message: str) -> None:
         signal = self._warmup_signal

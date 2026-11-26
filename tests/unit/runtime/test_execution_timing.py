@@ -656,9 +656,99 @@ class TestRTCLatency:
             RTCExecution(fps=fps)
 
     def test_a_huge_latency_saturates_instead_of_overflowing(self) -> None:
-        ex = RTCExecution(chunk_size=CHUNK, fps=30.0, execution_horizon=10, initial_latency_s=1e308)
-        assert ex.queue_threshold == ex.chunk_size
-        assert ex._latency_tracker.compute_delay(30.0) >= ex.chunk_size  # noqa: SLF001
+        ex = RTCExecution(chunk_size=20, fps=30.0, execution_horizon=10, initial_latency_s=1e308)
+        assert ex.queue_threshold == 20
+        assert ex._latency_tracker.compute_delay(30.0) == 1_000_000  # noqa: SLF001
+
+    def test_the_threshold_cap_follows_the_configured_then_the_resolved_chunk_size(self) -> None:
+        assert RTCExecution(chunk_size=20, execution_horizon=5, initial_latency_s=1e308).queue_threshold == 20
+        assert RTCExecution(execution_horizon=5, initial_latency_s=1e308).queue_threshold == 50  # nothing resolved yet
+        ex = RTCExecution(execution_horizon=5, initial_latency_s=1e308)
+        first, second = _RTCModel(), _RTCModel()
+        second.chunk_size = 40
+        second.release.set()
+        ex.start(cast("InferenceModel", first), RTCActionQueue())
+        try:
+            ex.warmup(_obs(0))
+            assert ex.queue_threshold == CHUNK
+        finally:
+            ex.stop()
+        ex.start(cast("InferenceModel", second), RTCActionQueue())  # a model with another chunk size
+        try:
+            assert ex.queue_threshold == 40
+        finally:
+            ex.stop()
+
+    def test_nested_skip_scopes_keep_the_outer_one(self) -> None:
+        from physicalai.inference.callbacks import RTCLatencyTracker
+
+        tracker = RTCLatencyTracker()
+        with tracker.skip_callbacks():
+            with tracker.skip_callbacks():
+                pass
+            tracker.on_predict_start({})
+            tracker.on_predict_end({})
+            assert len(tracker._window) == 0  # noqa: SLF001
+        tracker.on_predict_start({})
+        tracker.on_predict_end({})
+        assert len(tracker._window) == 1  # noqa: SLF001
+
+    def test_an_execution_reset_does_not_cut_a_shared_trackers_timed_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from physicalai.inference.callbacks import RTCLatencyTracker
+
+        now = [1000.0]
+        _use_clock(monkeypatch, _TRACKER_MODULE, lambda: now[0])
+        tracker = RTCLatencyTracker()
+        ex = RTCExecution(chunk_size=CHUNK, execution_horizon=5, latency_tracker=tracker)
+        ex.start(cast("InferenceModel", _RTCModel()), RTCActionQueue())
+        try:
+            tracker.on_predict_start({})  # another caller's prediction, timed through the hooks
+            ex.reset(reset_model=False)
+            now[0] += 0.2
+            tracker.on_predict_end({})
+        finally:
+            ex.stop()
+        assert tracker.max_latency_s == pytest.approx(0.2)
+
+    def test_the_warmup_log_does_not_hold_up_the_control_thread(self) -> None:
+        """A log handler that blocks on the warmup message must not block maybe_request()."""
+        logger = logging.getLogger("physicalai.runtime.execution.rtc")
+        blocked, release = threading.Event(), threading.Event()
+
+        class _BlockingHandler(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                if "Warmup inference 2/" in record.getMessage():
+                    blocked.set()
+                    release.wait(timeout=5.0)
+
+        handler = _BlockingHandler(level=logging.INFO)
+        old_level = logger.level
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        model, queue = _RTCModel(), RTCActionQueue()
+        model.release.set()
+        # A huge first estimate caps the threshold at the chunk, so every tick publishes under the lock.
+        ex = RTCExecution(chunk_size=CHUNK, execution_horizon=5, initial_latency_s=10.0)
+        ex.start(cast("InferenceModel", model), queue)
+        try:
+            ex.warmup(_obs(0))
+            deadline = time.monotonic() + 5.0
+            tick = 0
+            while not blocked.is_set():
+                assert time.monotonic() < deadline, "the second inference never logged"
+                ex.maybe_request(_obs(tick))
+                queue.pop()
+                tick += 1
+                time.sleep(0.001)
+            publisher = threading.Thread(target=ex.maybe_request, args=(_obs(tick),), daemon=True)
+            publisher.start()
+            publisher.join(timeout=1.0)
+            assert not publisher.is_alive(), "maybe_request() waited for the log handler"
+        finally:
+            release.set()
+            ex.stop()
+            logger.removeHandler(handler)
+            logger.setLevel(old_level)
 
     def test_tracker_keeps_its_estimate_across_a_reset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from physicalai.inference.callbacks import RTCLatencyTracker

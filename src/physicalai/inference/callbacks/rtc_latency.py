@@ -67,11 +67,12 @@ class RTCLatencyTracker(Callback):
         before ``start()``, after ``stop()`` or from other threads, are still
         sampled through the hooks.
         """
+        previous = self._skip()
         self._skipping.active = True
         try:
             yield
         finally:
-            self._skipping.active = False
+            self._skipping.active = previous
 
     def _skip(self) -> bool:
         return getattr(self._skipping, "active", False)
@@ -117,10 +118,18 @@ class RTCLatencyTracker(Callback):
         A reset happens at every episode boundary. Forgetting the latency there
         would make the first re-plan of each episode assume zero delay.
         """
+        self.reset_window()
+        self._start_time = 0.0
+
+    def reset_window(self) -> None:
+        """Forget the measurements but keep their worst case as the estimate.
+
+        Unlike :meth:`on_reset`, a call being timed through the callback hooks
+        keeps its start time, so it still records its own duration.
+        """
         if self._window:
             self._fallback_s = max(self._window)
         self._window.clear()
-        self._start_time = 0.0
 
     @property
     def max_latency_s(self) -> float:
