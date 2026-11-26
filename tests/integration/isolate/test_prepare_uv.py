@@ -14,7 +14,16 @@ from pathlib import Path
 
 import pytest
 
-from physicalai.isolate import BundledProject, Environment, ProjectSource, SyncProfile, UvProvider, prepare
+from physicalai.isolate import (
+    BundledProject,
+    Environment,
+    ProjectSource,
+    SyncProfile,
+    UvProvider,
+    list_prepared,
+    prepare,
+    remove_prepared,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -43,6 +52,20 @@ def test_prepare_syncs_a_project_whose_lock_is_current(tmp_path: Path) -> None:
 
     assert prepared.python.is_file()
 
+
+
+def test_labelled_environments_are_listed_and_removed(tmp_path: Path) -> None:
+    environment = Environment(BundledProject(_locked_project(tmp_path / "project")), SyncProfile(python=sys.executable))
+    cache = tmp_path / "cache"
+
+    prepared = prepare(environment, provider=UvProvider(cache_dir=cache), offline=True, labels={"owner": "test"})
+    (listed,) = list_prepared(cache_dir=cache)
+
+    assert listed == prepared
+    assert listed.labels == {"owner": "test"}
+    assert listed.python.is_file()
+    remove_prepared(listed, cache_dir=cache)
+    assert list_prepared(cache_dir=cache) == []
 
 def test_prepare_rejects_a_lock_that_is_out_of_date(tmp_path: Path) -> None:
     project = _locked_project(tmp_path / "project")

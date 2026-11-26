@@ -9,6 +9,7 @@ import subprocess  # noqa: S404  # nosec B404  # ruff: ignore[noqa-comments] - e
 import tempfile
 import weakref
 from contextlib import ExitStack, contextmanager, suppress
+from dataclasses import dataclass
 
 # nosemgrep: python.lang.compatibility.python37.python37-compatibility-importlib2 - Runtime requires Python 3.11+.
 from importlib import resources
@@ -109,8 +110,42 @@ _POSIX = os.name == "posix"
 _GRACE_SECONDS = 5.0
 
 
+@dataclass(frozen=True, init=False)
+class ExternalInterpreter:
+    """A Python interpreter managed outside isolate, such as a user's own virtual environment.
+
+    Pass it to :func:`run` or :func:`start` in place of a prepared environment. The entrypoint
+    runs the same way, in its own process group with the host lifeline and :meth:`Session.close`,
+    but isolate does not choose its packages: the child gets the host environment unchanged,
+    including ``PYTHONPATH`` and ``VIRTUAL_ENV``, and imports whatever the interpreter can.
+
+    Attributes:
+        python: Absolute path to the Python executable.
+    """
+
+    python: Path
+
+    def __init__(self, python: str | os.PathLike[str]) -> None:
+        """Store the interpreter as an absolute path.
+
+        Args:
+            python: Path to the Python executable, such as ``sys.executable`` or a command-line
+                value. ``~`` is expanded, and a relative path is made absolute against the current
+                directory, so a session's ``cwd`` does not change it.
+
+        Raises:
+            ValueError: If the path is empty.
+        """
+        if not os.fspath(python):
+            msg = "External interpreter path cannot be empty."
+            raise ValueError(msg)
+        # absolute(), not resolve(): following a venv's bin/python symlink would run the base
+        # interpreter without the venv.
+        object.__setattr__(self, "python", Path(python).expanduser().absolute())
+
+
 class Session:
-    """A running process launched from a prepared environment.
+    """A running process launched by :func:`start` or :func:`run`.
 
     On POSIX the worker runs in its own process group: :meth:`terminate`, :meth:`kill`, and
     :meth:`close` reach its subprocesses too. Subprocesses the worker leaves behind are killed
@@ -301,7 +336,7 @@ class Session:
 
 
 def run(
-    prepared: PreparedEnvironment,
+    prepared: PreparedEnvironment | ExternalInterpreter,
     entrypoint: str | os.PathLike[str] | Traversable,
     args: Sequence[str] = (),
     *,
@@ -312,22 +347,23 @@ def run(
     input_data: bytes | None = None,
     capture_output: bool = False,
 ) -> subprocess.CompletedProcess[bytes]:
-    """Run a Python entrypoint to completion in a prepared environment.
+    """Run a Python entrypoint to completion in a prepared environment or external interpreter.
 
-    Only the entrypoint's own code is importable: a single script, or a folder with
-    ``__main__.py`` whose modules sit inside that folder.
+    From a prepared environment, only the entrypoint's own code and the environment's packages
+    are importable: a single script, or a folder with ``__main__.py`` whose modules sit inside it.
 
     Args:
-        prepared: Environment returned by :func:`physicalai.isolate.prepare`.
+        prepared: Environment returned by :func:`physicalai.isolate.prepare`, or an
+            :class:`ExternalInterpreter`.
         entrypoint: Script, folder with ``__main__.py``, or importlib resource executed for this run.
         args: Arguments forwarded as individual argv items after the entrypoint.
         check: Raise :class:`subprocess.CalledProcessError` for a non-zero status.
         timeout: Maximum seconds to wait for completion; on expiry the worker and its
             subprocesses are killed and :class:`subprocess.TimeoutExpired` is raised.
         cwd: Optional child working directory.
-        env: Base child environment, defaulting to the host environment. Python path variables
-            such as ``PYTHONPATH`` are removed even when set here, and the prepared environment
-            is activated.
+        env: Base child environment, defaulting to the host environment. For a prepared
+            environment, Python path variables such as ``PYTHONPATH`` are removed even when set
+            here, and the environment is activated; an external interpreter gets it unchanged.
         input_data: Bytes sent to the child's stdin.
         capture_output: Capture stdout and stderr in the completed-process result.
 
@@ -362,7 +398,7 @@ def run(
 
 
 def start(
-    prepared: PreparedEnvironment,
+    prepared: PreparedEnvironment | ExternalInterpreter,
     entrypoint: str | os.PathLike[str] | Traversable,
     args: Sequence[str] = (),
     *,
@@ -376,17 +412,18 @@ def start(
 ) -> Session:
     """Start an entrypoint and return a controllable process session.
 
-    Only the entrypoint's own code is importable: a single script, or a folder with
-    ``__main__.py`` whose modules sit inside that folder.
+    From a prepared environment, only the entrypoint's own code and the environment's packages
+    are importable: a single script, or a folder with ``__main__.py`` whose modules sit inside it.
 
     Args:
-        prepared: Environment returned by :func:`physicalai.isolate.prepare`.
+        prepared: Environment returned by :func:`physicalai.isolate.prepare`, or an
+            :class:`ExternalInterpreter`.
         entrypoint: Script, folder with ``__main__.py``, or importlib resource executed for this session.
         args: Arguments forwarded as individual argv items after the entrypoint.
         cwd: Optional child working directory.
-        env: Base child environment, defaulting to the host environment. Python path variables
-            such as ``PYTHONPATH`` are removed even when set here, and the prepared environment
-            is activated.
+        env: Base child environment, defaulting to the host environment. For a prepared
+            environment, Python path variables such as ``PYTHONPATH`` are removed even when set
+            here, and the environment is activated; an external interpreter gets it unchanged.
         stdin: Optional child stdin stream or subprocess stream constant.
         stdout: Optional child stdout stream or subprocess stream constant.
         stderr: Optional child stderr stream or subprocess stream constant.
@@ -424,7 +461,7 @@ def start(
 
 
 def _launch(
-    prepared: PreparedEnvironment,
+    prepared: PreparedEnvironment | ExternalInterpreter,
     script: Path,
     args: Sequence[str],
     resources_stack: ExitStack,
@@ -491,7 +528,11 @@ def _check_entrypoint(path: Path) -> None:
         raise FileNotFoundError(msg)
 
 
-def _check_launch(prepared: PreparedEnvironment, args: Sequence[str], pass_fds: Sequence[int] = ()) -> None:
+def _check_launch(
+    prepared: PreparedEnvironment | ExternalInterpreter,
+    args: Sequence[str],
+    pass_fds: Sequence[int] = (),
+) -> None:
     if isinstance(args, str) or not all(isinstance(argument, str) for argument in args):
         msg = "Entrypoint arguments must be a sequence of strings."
         raise TypeError(msg)
@@ -503,12 +544,13 @@ def _check_launch(prepared: PreparedEnvironment, args: Sequence[str], pass_fds: 
         msg = "pass_fds is only supported on POSIX."
         raise ValueError(msg)
     if not prepared.python.is_file():
-        msg = f"Prepared environment has no Python interpreter at {prepared.python}."
+        owner = "External interpreter" if isinstance(prepared, ExternalInterpreter) else "Prepared environment"
+        msg = f"{owner} has no Python interpreter at {prepared.python}."
         raise FileNotFoundError(msg)
 
 
 def _command(
-    prepared: PreparedEnvironment,
+    prepared: PreparedEnvironment | ExternalInterpreter,
     script: Path,
     args: Sequence[str],
     lifeline: int | None,
@@ -517,8 +559,14 @@ def _command(
     return [str(prepared.python), "-c", _BOOTSTRAP, lifeline_argument, str(script), *args]
 
 
-def _child_environment(prepared: PreparedEnvironment, env: Mapping[str, str] | None) -> dict[str, str]:
+def _child_environment(
+    prepared: PreparedEnvironment | ExternalInterpreter,
+    env: Mapping[str, str] | None,
+) -> dict[str, str]:
     base = os.environ if env is None else env
+    if isinstance(prepared, ExternalInterpreter):
+        # The caller manages this interpreter, so its environment is theirs to set.
+        return dict(base)
     child = {key: value for key, value in base.items() if _variable_name(key) not in _HOST_INTERPRETER_VARIABLES}
     path_key = next((key for key in child if _variable_name(key) == "PATH"), "PATH")
     search_path = child.get(path_key, os.defpath)
@@ -532,4 +580,4 @@ def _variable_name(key: str) -> str:
     return key.upper() if os.name == "nt" else key
 
 
-__all__ = ["Session", "run", "start"]
+__all__ = ["ExternalInterpreter", "Session", "run", "start"]

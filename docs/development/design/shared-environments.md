@@ -161,6 +161,8 @@ One prepared environment may back several sessions over time. `run` waits for a 
 
 **Do not** put the worker script on the Environment declaration. Plugins already use different entrypoints on the same environment (train vs export vs infer). Those paths live next to the engine or adapter and are passed at launch.
 
+`ExternalInterpreter(python)` stands in for a prepared environment in `run` and `start` when the caller manages the interpreter, such as a user's own virtual environment chosen with Studio's `--interpreter`. The session behaves the same (bootstrap, process group, lifeline, `close()`), but isolate passes the environment through unchanged, including `PYTHONPATH`, so the child imports whatever that interpreter can.
+
 ### 4.3 Identity and provenance
 
 Preparation keys the cache by everything that determines **contents**: source identity, Python version, sync extras/profiles, and related pins.
@@ -170,6 +172,21 @@ For a Git checkout with patches, when the last patch series pins the resulting G
 **Provenance** still records where each layer came from (which repository or plugin directory), for audits and package metadata. Identity answers “same bytes?”; provenance answers “from where?”
 
 A bundled project's `uv.lock` must be current with its `pyproject.toml` (`uv sync --locked`); a stale lock fails preparation. A Git project's lock is installed as is (`uv sync --frozen`): it cannot be fixed without pinning another commit, and checking it reads every locked package, including other platforms' path wheels that a checkout may hold only as Git LFS pointers.
+
+### 4.4 Cache listing and removal
+
+Applications share one cache (`PHYSICALAI_ISOLATE_CACHE`, by default `~/.cache/physicalai/isolate`), so each records its own metadata as **labels** when it prepares an environment:
+
+```python
+prepared = prepare(env, labels={"framework": "lerobot", "accelerator": "cuda"})
+for entry in list_prepared():                                # complete entries, with their labels
+    if entry.labels.get("framework") == "lerobot" and entry.key not in current_keys:
+        remove_prepared(entry)
+```
+
+Labels are string metadata, not identity: they do not change the cache key or equality. Preparing again with new labels replaces all of them without rebuilding, so labels describe the last application that labelled an environment, not every application that uses it; they are not reference counts. If two applications label the same environment, only the last one finds its labels on it. Preparing without labels keeps the recorded ones, so an application that reuses another's environment does not erase its labels. An application lists only entries carrying its own labels and never removes anything else.
+
+`list_prepared` skips entries that are still being prepared or were interrupted. `remove_prepared` takes the same per-key lock as preparation, so it never removes an environment mid-build, but it does not stop sessions already running from it.
 
 ## 5. Declaring where code comes from
 

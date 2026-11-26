@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from physicalai.isolate import Environment, PreparedEnvironment, SyncProfile, run, start
+from physicalai.isolate import Environment, ExternalInterpreter, PreparedEnvironment, SyncProfile, run, start
 from physicalai.isolate._runner import _BOOTSTRAP
 
 posix_only = pytest.mark.skipif(os.name != "posix", reason="worker process groups are POSIX-only")
@@ -742,3 +742,117 @@ def test_start_forwards_pass_fds_without_supervisor_holding_them_open(tmp_path: 
         if write_fd >= 0:
             os.close(write_fd)
 
+
+def test_external_interpreters_keep_the_host_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The caller manages an external interpreter, so isolate leaves its environment alone."""
+    interpreter = ExternalInterpreter(Path(sys.executable))
+    host_packages = tmp_path / "host-packages"
+    host_packages.mkdir()
+    (host_packages / "host_only_module.py").write_text("", encoding="utf-8")
+    entrypoint = tmp_path / "worker.py"
+    entrypoint.write_text(
+        "import importlib.util\n"
+        "import os\n"
+        "print(importlib.util.find_spec('host_only_module') is not None)\n"
+        "print(os.environ['VIRTUAL_ENV'])\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PYTHONPATH", str(host_packages))
+    monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "host-venv"))
+
+    result = run(interpreter, entrypoint, capture_output=True)
+    session = start(interpreter, entrypoint, stdout=subprocess.PIPE)
+    stdout, _ = session.communicate(timeout=10)
+    explicit = run(
+        interpreter,
+        entrypoint,
+        env={**os.environ, "VIRTUAL_ENV": str(tmp_path / "explicit-venv")},
+        capture_output=True,
+    )
+
+    assert result.stdout == f"True\n{tmp_path / 'host-venv'}\n".encode()
+    assert stdout == result.stdout
+    assert explicit.stdout == f"True\n{tmp_path / 'explicit-venv'}\n".encode()
+    assert session.args[0] == sys.executable
+
+
+def test_external_interpreters_run_entrypoints_like_prepared_environments(tmp_path: Path) -> None:
+    """Entrypoints still run through the bootstrap: files next to a script are not importable."""
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    (plugin / "runtime.py").write_text("", encoding="utf-8")
+    entrypoint = plugin / "_worker.py"
+    entrypoint.write_text(
+        "import importlib.util\n"
+        "import sys\n"
+        "print(importlib.util.find_spec('runtime') is None, __file__, sys.argv)\n",
+        encoding="utf-8",
+    )
+
+    result = run(ExternalInterpreter(Path(sys.executable)), entrypoint, args=("a",), capture_output=True)
+
+    script = entrypoint.resolve()
+    assert result.stdout == f"True {script} {[str(script), 'a']}\n".encode()
+
+
+def test_external_interpreters_must_exist(tmp_path: Path) -> None:
+    entrypoint = tmp_path / "worker.py"
+    entrypoint.write_text("", encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError, match="External interpreter has no Python interpreter"):
+        start(ExternalInterpreter(tmp_path / "missing" / "python"), entrypoint)
+
+
+def test_external_interpreter_paths_expand_the_home_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    assert ExternalInterpreter("~/venv/bin/python").python == tmp_path / "venv" / "bin" / "python"
+
+
+def test_external_interpreters_accept_strings_and_reject_an_empty_path() -> None:
+    interpreter = ExternalInterpreter(sys.executable)
+
+    assert interpreter.python == Path(sys.executable).absolute()
+    assert interpreter == ExternalInterpreter(Path(sys.executable))
+    with pytest.raises(ValueError, match="cannot be empty"):
+        ExternalInterpreter("")
+
+
+@posix_only
+def test_relative_external_interpreters_do_not_follow_the_session_cwd(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A relative interpreter is fixed against the host's directory, and its venv symlink is kept."""
+    host = tmp_path / "host"
+    (host / "venv" / "bin").mkdir(parents=True)
+    (host / "venv" / "bin" / "python").symlink_to(sys.executable)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    entrypoint = tmp_path / "worker.py"
+    entrypoint.write_text("import sys\nprint(sys.executable)\n", encoding="utf-8")
+    monkeypatch.chdir(host)
+
+    interpreter = ExternalInterpreter(Path("venv/bin/python"))
+    result = run(interpreter, entrypoint, cwd=elsewhere, capture_output=True)
+
+    assert interpreter.python == host / "venv" / "bin" / "python"
+    assert result.stdout.decode().strip() == str(host / "venv" / "bin" / "python")
+
+
+@posix_only
+def test_close_stops_the_subprocesses_of_an_external_interpreter_worker(tmp_path: Path) -> None:
+    worker = tmp_path / "worker.py"
+    worker.write_text(_SPAWNING_WORKER, encoding="utf-8")
+    pid_file = tmp_path / "pids"
+    session = start(ExternalInterpreter(Path(sys.executable)), worker, args=(str(pid_file),))
+    pids = _read_pids(pid_file)
+
+    try:
+        session.close(timeout=2)
+        assert _survivors(pids) == []
+    finally:
+        _kill(pids)
