@@ -809,7 +809,16 @@ def test_external_interpreters_must_exist(tmp_path: Path) -> None:
 def test_external_interpreter_paths_expand_the_home_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
 
-    assert ExternalInterpreter("~/venv/bin/python").python == tmp_path / "venv" / "bin" / "python"  # type: ignore[arg-type]
+    assert ExternalInterpreter("~/venv/bin/python").python == tmp_path / "venv" / "bin" / "python"
+
+
+def test_external_interpreters_accept_strings_and_reject_an_empty_path() -> None:
+    interpreter = ExternalInterpreter(sys.executable)
+
+    assert interpreter.python == Path(sys.executable).absolute()
+    assert interpreter == ExternalInterpreter(Path(sys.executable))
+    with pytest.raises(ValueError, match="cannot be empty"):
+        ExternalInterpreter("")
 
 
 @posix_only

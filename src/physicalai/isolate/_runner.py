@@ -110,7 +110,7 @@ _POSIX = os.name == "posix"
 _GRACE_SECONDS = 5.0
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class ExternalInterpreter:
     """A Python interpreter managed outside isolate, such as a user's own virtual environment.
 
@@ -120,17 +120,28 @@ class ExternalInterpreter:
     including ``PYTHONPATH`` and ``VIRTUAL_ENV``, and imports whatever the interpreter can.
 
     Attributes:
-        python: Path to the Python executable. ``~`` is expanded, and a relative path is made
-            absolute against the current directory, so a session's ``cwd`` does not change it.
+        python: Absolute path to the Python executable.
     """
 
     python: Path
 
-    def __post_init__(self) -> None:
-        """Store the interpreter as an absolute path."""
+    def __init__(self, python: str | os.PathLike[str]) -> None:
+        """Store the interpreter as an absolute path.
+
+        Args:
+            python: Path to the Python executable, such as ``sys.executable`` or a command-line
+                value. ``~`` is expanded, and a relative path is made absolute against the current
+                directory, so a session's ``cwd`` does not change it.
+
+        Raises:
+            ValueError: If the path is empty.
+        """
+        if not os.fspath(python):
+            msg = "External interpreter path cannot be empty."
+            raise ValueError(msg)
         # absolute(), not resolve(): following a venv's bin/python symlink would run the base
         # interpreter without the venv.
-        object.__setattr__(self, "python", Path(self.python).expanduser().absolute())
+        object.__setattr__(self, "python", Path(python).expanduser().absolute())
 
 
 class Session:
