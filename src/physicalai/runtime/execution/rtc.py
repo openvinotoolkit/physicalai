@@ -139,6 +139,7 @@ class RTCExecution(Execution):
         self._latency_tracker = latency_tracker if latency_tracker is not None else RTCLatencyTracker()
         self._initial_latency_s = initial_latency_s
         self._threshold_warned = False
+        self._chunk_warned = False
         self._warmup_inferences = max(1, warmup_inferences)
 
         self._rtc_queue: RTCActionQueue | None = None
@@ -234,31 +235,41 @@ class RTCExecution(Execution):
         inference latency and robot control rate of the loop.
         """
         delay = self._latency_tracker.compute_delay(self._fps)
-        chunk_size = self.chunk_size
         if self._queue_threshold_param is not None:
-            return max(self._queue_threshold_param, self._threshold_floor(delay, chunk_size))
-        # Never above the chunk size: a cold-start latency estimate can be huge.
-        return min(self._execution_horizon + delay, chunk_size)
+            return max(self._queue_threshold_param, self._threshold_floor(delay))
+        return self._execution_horizon + delay
 
     @staticmethod
-    def _threshold_floor(delay: int, chunk_size: int) -> int:
-        """Lowest threshold that keeps the queue from running dry.
+    def _threshold_floor(delay: int) -> int:
+        """Lowest hand-set threshold for one inference, if the latency stays within ``delay``.
 
         The request goes out when fewer than the threshold are queued, before
         that tick's pop. ``delay`` actions cover the measured latency; one
         more tick absorbs a result that lands just after a pop it was due for.
+        This covers one delivery only: back-to-back inferences also need the
+        trimmed chunk to cover the next one (see ``_warn_about_timing``).
 
         Returns:
-            ``delay + 2``, at most the chunk size.
+            ``delay + 2``.
         """
-        return min(delay + 2, chunk_size)
+        return delay + 2
 
-    def _warn_if_threshold_raised(self) -> None:
-        """Warn once that a hand-set ``queue_threshold`` was raised (worker thread only)."""
+    def _warn_about_timing(self) -> None:
+        """Warn once per problem when the timing cannot keep the queue fed (worker thread only)."""
+        delay = self._latency_tracker.compute_delay(self._fps)
+        if not self._chunk_warned and self.chunk_size < 2 * (delay + 1):
+            self._chunk_warned = True
+            logger.warning(
+                "RTC chunk_size %d is too short for an inference delay of %d actions: after the %d actions "
+                "sent during an inference are trimmed, the rest cannot cover the next inference, so "
+                "back-to-back inferences will run the queue dry. Use a longer chunk or a faster model.",
+                self.chunk_size,
+                delay,
+                delay + 1,
+            )
         if self._threshold_warned or self._queue_threshold_param is None:
             return
-        delay = self._latency_tracker.compute_delay(self._fps)
-        floor = self._threshold_floor(delay, self.chunk_size)
+        floor = self._threshold_floor(delay)
         if self._queue_threshold_param < floor:
             self._threshold_warned = True
             logger.warning(
@@ -301,6 +312,12 @@ class RTCExecution(Execution):
         # through the same unsynchronised model.
         self._await_previous_worker()
 
+        if self._model is not None and model is not self._model:
+            # Another model: its first calls compile again, so they are warmup
+            # again, and the old model's latency says nothing about this one.
+            self._lifetime_inferences = 0
+            if self._initial_latency_s is not None:
+                self._latency_tracker.seed(self._initial_latency_s)
         self._model = model
         self._rtc_queue = action_queue
 
@@ -551,8 +568,8 @@ class RTCExecution(Execution):
         consecutive_errors = 0
 
         while not stop_event.is_set():
-            # Only re-infer when queue is running low
-            if not self._rtc_queue.below_threshold(self.queue_threshold):
+            # Only re-infer when queue is running low, or when warmup() asks for a chunk.
+            if self._warmup_signal is None and not self._rtc_queue.below_threshold(self.queue_threshold):
                 time.sleep(_IDLE_SLEEP_S)
                 continue
 
@@ -619,7 +636,7 @@ class RTCExecution(Execution):
             )
             if processed_actions is None:
                 continue
-            self._warn_if_threshold_raised()
+            self._warn_about_timing()
 
             # Emit inference event so callbacks (e.g. RerunCallback) can
             # plot predicted future actions.

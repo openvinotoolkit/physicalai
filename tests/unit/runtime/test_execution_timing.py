@@ -85,7 +85,7 @@ class _RTCModel:
         self.rtc_inputs.append({k: np.array(v) for k, v in inputs.items() if k != "state"})
         self._gate()
         tick = float(np.asarray(inputs["state"]).reshape(-1)[0])
-        return {"action": (tick + np.arange(CHUNK, dtype=np.float32))[None, :, None].repeat(2, axis=2)}
+        return {"action": (tick + np.arange(self.chunk_size, dtype=np.float32))[None, :, None].repeat(2, axis=2)}
 
     def reset(self) -> None:
         pass
@@ -657,27 +657,116 @@ class TestRTCLatency:
 
     def test_a_huge_latency_saturates_instead_of_overflowing(self) -> None:
         ex = RTCExecution(chunk_size=20, fps=30.0, execution_horizon=10, initial_latency_s=1e308)
-        assert ex.queue_threshold == 20
         assert ex._latency_tracker.compute_delay(30.0) == 1_000_000  # noqa: SLF001
+        assert ex.queue_threshold == 10 + 1_000_000  # no cap: as on main, a huge estimate means "always re-plan"
 
-    def test_the_threshold_cap_follows_the_configured_then_the_resolved_chunk_size(self) -> None:
-        assert RTCExecution(chunk_size=20, execution_horizon=5, initial_latency_s=1e308).queue_threshold == 20
-        assert RTCExecution(execution_horizon=5, initial_latency_s=1e308).queue_threshold == 50  # nothing resolved yet
-        ex = RTCExecution(execution_horizon=5, initial_latency_s=1e308)
-        first, second = _RTCModel(), _RTCModel()
-        second.chunk_size = 40
-        second.release.set()
-        ex.start(cast("InferenceModel", first), RTCActionQueue())
+    @pytest.mark.parametrize("queue_threshold", [None, 5], ids=["automatic", "hand-set"])
+    def test_warmup_is_served_even_when_the_queue_is_full(self, queue_threshold: int | None) -> None:
+        model, queue = _RTCModel(), RTCActionQueue()
+        queue.push_chunk(np.zeros((CHUNK, 2), dtype=np.float32))  # a full queue: not below any threshold
+        ex = RTCExecution(chunk_size=CHUNK, execution_horizon=5, queue_threshold=queue_threshold, initial_latency_s=0.0)
+        ex.start(cast("InferenceModel", model), queue)
+        try:
+            done = threading.Event()
+            threading.Thread(target=lambda: (ex.warmup(_obs(0)), done.set()), daemon=True).start()
+            assert done.wait(timeout=2.0), "warmup waited for the queue to drain"
+        finally:
+            ex.stop()
+
+    def test_another_model_on_restart_warms_up_again(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        first, second = _ClockedModel([0.05]), _ClockedModel([5.0, 0.05])  # the new model compiles on its first call
+        clock = {"model": first}
+        _use_clock(monkeypatch, _RTC_MODULE, lambda: clock["model"].now)
+        queue = RTCActionQueue()
+        ex = RTCExecution(chunk_size=CHUNK, fps=30.0, execution_horizon=5, initial_latency_s=0.05, warmup_inferences=1)
+        ex.start(cast("InferenceModel", first), queue)
         try:
             ex.warmup(_obs(0))
-            assert ex.queue_threshold == CHUNK
+            _tick_until(ex, queue, 2)
         finally:
             ex.stop()
-        ex.start(cast("InferenceModel", second), RTCActionQueue())  # a model with another chunk size
+        clock["model"] = second
+        queue.clear()
+        ex.start(cast("InferenceModel", second), queue)
         try:
-            assert ex.queue_threshold == 40
+            ex.warmup(_obs(0))
+            _tick_until(ex, queue, 2)
         finally:
             ex.stop()
+        assert ex._latency_tracker.max_latency_s == pytest.approx(0.05)  # noqa: SLF001  the 5 s compile was warmup
+        assert [int(i["inference_delay"]) for i in second.rtc_inputs[1:]] == [2]
+
+    def test_the_same_model_on_restart_does_not_warm_up_again(self) -> None:
+        model, queue = _RTCModel(), RTCActionQueue()
+        model.release.set()
+        ex = RTCExecution(chunk_size=CHUNK, execution_horizon=5, warmup_inferences=1)
+        for _ in range(2):
+            ex.start(cast("InferenceModel", model), queue)
+            try:
+                queue.clear()
+                ex.warmup(_obs(0))
+            finally:
+                ex.stop()
+        assert ex._lifetime_inferences == 2  # noqa: SLF001  counted on, not reset
+
+    @pytest.mark.parametrize(("chunk", "warns"), [(30, False), (20, True)])
+    def test_two_deliveries_in_a_row_just_after_the_due_pop(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, chunk: int, *, warns: bool
+    ) -> None:
+        """Latency 0.33 s = delay 10. A 30-action chunk feeds two back-to-back late deliveries; a 20-action one cannot, and says so."""
+        model, queue = _ClockedModel([0.33], gated=True), RTCActionQueue()
+        model.chunk_size = chunk
+        _use_clock(monkeypatch, _RTC_MODULE, model.clock)
+        ex = RTCExecution(chunk_size=chunk, fps=30.0, execution_horizon=5, queue_threshold=3, warmup_inferences=1)
+        ex.start(cast("InferenceModel", model), queue)
+        sent: list[np.ndarray | None] = []
+        try:
+            with caplog.at_level(logging.WARNING):
+                ex.warmup(_obs(0))
+                deadline = time.monotonic() + 10.0
+                tick, request_tick, delivered = 0, -1, 1
+                while delivered < 3 and time.monotonic() < deadline:
+                    ex.maybe_request(_obs(tick))
+                    if request_tick < 0 and queue.below_threshold(ex.queue_threshold):
+                        assert model.entered.wait(timeout=2.0)
+                        model.entered.clear()
+                        request_tick = tick
+                    sent.append(queue.pop())
+                    if request_tick >= 0 and tick == request_tick + 10:  # just after the pop it was due for
+                        model.release.set()
+                        assert _wait_for(lambda d=delivered: ex.inference_count == d + 1)
+                        delivered += 1
+                        request_tick = -1
+                    tick += 1
+                assert delivered == 3
+        finally:
+            model.release.set()
+            ex.stop()
+        chunk_warnings = [r for r in caplog.records if "too short" in r.getMessage()]
+        assert bool(chunk_warnings) is warns
+        holds = [i for i, a in enumerate(sent) if a is None]
+        assert bool(holds) is warns  # the warning is for a real problem: the 20-action chunk runs dry
+
+    def test_a_zero_window_is_rejected(self) -> None:
+        from physicalai.inference.callbacks import RTCLatencyTracker
+
+        with pytest.raises(ValueError, match="window_size"):
+            RTCLatencyTracker(window_size=0)
+
+    def test_the_tracker_can_be_copied_and_pickled(self) -> None:
+        import copy
+        import pickle
+
+        from physicalai.inference.callbacks import RTCLatencyTracker
+
+        tracker = RTCLatencyTracker()
+        tracker.record(0.3)
+        for clone in (copy.deepcopy(tracker), pickle.loads(pickle.dumps(tracker))):  # noqa: S301
+            assert clone.max_latency_s == pytest.approx(0.3)
+            with clone.skip_callbacks():
+                clone.on_predict_start({})
+                clone.on_predict_end({})
+            assert len(clone._window) == 1  # noqa: SLF001
 
     def test_nested_skip_scopes_keep_the_outer_one(self) -> None:
         from physicalai.inference.callbacks import RTCLatencyTracker

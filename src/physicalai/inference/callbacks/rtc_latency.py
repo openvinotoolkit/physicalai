@@ -50,6 +50,10 @@ class RTCLatencyTracker(Callback):
     """
 
     def __init__(self, window_size: int = 100) -> None:  # noqa: D107
+        if window_size < 1:
+            # An empty window would keep a seeded (cold-start) estimate forever.
+            msg = f"RTCLatencyTracker window_size must be at least 1, got {window_size}."
+            raise ValueError(msg)
         self._window: deque[float] = deque(maxlen=window_size)
         self._start_time: float = 0.0
         # Estimate used while the window is empty (start of a run, after a reset).
@@ -76,6 +80,21 @@ class RTCLatencyTracker(Callback):
 
     def _skip(self) -> bool:
         return getattr(self._skipping, "active", False)
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Copy or pickle without the per-thread skip flag, which is transient.
+
+        Returns:
+            The instance state without ``_skipping``.
+        """
+        state = self.__dict__.copy()
+        del state["_skipping"]
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore, with a fresh per-thread skip flag."""
+        self.__dict__.update(state)
+        self._skipping = threading.local()
 
     def record(self, elapsed_s: float) -> None:
         """Add one measured latency, for callers that time the call themselves.
