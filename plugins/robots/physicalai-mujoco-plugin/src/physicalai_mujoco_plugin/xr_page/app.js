@@ -410,7 +410,7 @@ function drawMeshes(viewProjection, matrices, seeThrough) {
   gl.disable(gl.BLEND);
 }
 
-// Camera panels: the first camera in the middle, the others on its sides, above the robot.
+// Camera panels: the first camera in the middle, the others on its sides (left, right, left...), above the robot.
 function layout(place) {
   const rx = -place.az, rz = place.ax; // right of ahead
   const panels = [];
@@ -420,7 +420,7 @@ function layout(place) {
   };
   if (cameras.length) put(cameras[0], 1.4, 0, 0.3, 0.9);
   const rest = cameras.slice(1);
-  rest.forEach((name, index) => put(name, 1.3, (index - (rest.length - 1) / 2) * 1.5, 0.3, 0.5));
+  rest.forEach((name, index) => put(name, 1.3, (index % 2 ? 1 : -1) * (0.75 + Math.floor(index / 2) * 0.6), 0.3, 0.5));
   return panels;
 }
 
