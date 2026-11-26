@@ -65,6 +65,26 @@ and leaves the existing stream running.
 
 Camera instances are not thread-safe.
 
+## RealSense Depth Capture
+
+`RealSenseCamera` streams color only by default. Set `enable_depth=True` when
+constructing the camera to enable depth streaming and alignment to color:
+
+```python
+from physicalai.capture import RealSenseCamera
+
+with RealSenseCamera(serial_number="<serial>", enable_depth=True) as camera:
+    color, depth = camera.read_rgbd()
+```
+
+The same option works with `create_camera("realsense", ...)` and camera YAML
+recipes (`init_args.enable_depth: true`). Existing callers of `read_depth()` or
+`read_rgbd()` must opt in; these methods raise `CaptureError` when depth is disabled.
+`read()` and `read_latest()` continue to return color frames in both modes.
+`depth_width` and `depth_height` only configure an enabled depth stream; supplying
+dimensions alone does not enable depth. Color-only capture does not create an
+alignment processor or transfer unused depth frames over USB.
+
 ## Multi-Camera Synchronisation
 
 `read_cameras()` and `async_read_cameras()` read from multiple cameras concurrently:

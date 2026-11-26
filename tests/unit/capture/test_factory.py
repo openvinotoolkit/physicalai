@@ -33,6 +33,12 @@ class TestCreateCamera:
         assert cam._camera["class_path"] == _SHAREABLE_CLASS_PATHS["uvc"]  # type: ignore[attr-defined]
         assert cam._service_name == "physicalai/camera/UVCCamera/0/frame"  # type: ignore[attr-defined]
 
+    @pytest.mark.parametrize("enable_depth", [False, True])
+    def test_shared_realsense_preserves_depth_opt_in(self, enable_depth: bool) -> None:
+        cam = create_camera("realsense", shared=True, serial_number="SN123", enable_depth=enable_depth)
+        assert cam._camera is not None  # type: ignore[attr-defined]
+        assert cam._camera["init_args"]["enable_depth"] is enable_depth  # type: ignore[attr-defined]
+
     def test_shared_ip_derives_service_name_from_url_not_credentials(self) -> None:
         cam = create_camera(
             "ip",
@@ -65,7 +71,6 @@ class TestShareableClassPaths:
             pytest.skip(f"{token} driver is not installed: {exc}")
         assert isinstance(driver, type)
         assert resolve_public_class_path(driver) == class_path
-
 
 
 class TestDiscoverAll:

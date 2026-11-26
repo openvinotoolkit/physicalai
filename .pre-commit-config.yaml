@@ -17,9 +17,9 @@ repos:
     hooks:
       - id: ruff-check
         args: [--fix, --unsafe-fixes]
-        files: ^(src|packages/[^/]+/src)/
+        files: ^(src|plugins/physicalai-studio-plugin/src|plugins/(robots)/[^/]+/src)/
       - id: ruff-format
-        files: ^(src|packages/[^/]+/src)/
+        files: ^(src|plugins/physicalai-studio-plugin/src|plugins/(robots)/[^/]+/src)/
 
   - repo: https://github.com/astral-sh/uv-pre-commit
     rev: "0.9.7"

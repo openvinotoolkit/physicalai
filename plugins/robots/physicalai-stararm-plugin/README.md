@@ -1,0 +1,80 @@
+# PhysicalAI Star Arm Plugin
+
+Fashion Star Arm 102 plugin for [PhysicalAI](https://github.com/openvinotoolkit/physicalai). This package provides Star Arm 102-LD/102-HD leaders and a Star Arm 102-FL follower, and registers all variants with [Physical AI Studio](https://github.com/open-edge-platform/physical-ai-studio).
+
+[![PyPI version](https://img.shields.io/pypi/v/physicalai-stararm-plugin.svg)](https://pypi.org/project/physicalai-stararm-plugin/)
+[![Python versions](https://img.shields.io/pypi/pyversions/physicalai-stararm-plugin.svg)](https://pypi.org/project/physicalai-stararm-plugin/)
+
+## Features
+
+- Star Arm 102-LD leader driver (`StarArm102LDLeader`) for read-only teleoperation input
+- Star Arm 102-HD leader driver (`StarArm102HDLeader`) with passive mode (default) and optional assist mode for hold/action commands
+- Star Arm 102-FL follower driver (`StarArm102FLFollower`) for position control
+- Studio catalog plugin entries for LD leader, HD leader, and FL follower
+- Bundled `stararm102` URDF package
+
+## Follower profiles
+
+Star Arm leaders default to `follower_profile=None`, which preserves their native
+joint frame. Set `follower_profile="b601"` when controlling a reBot B601 to emit
+LeRobot-compatible actions: the profile applies directions
+`[-1, -1, 1, 1, 1, -1, -6]` and clips to the B601 public limits, including a
+`-270..0` degree gripper range.
+
+The native default is suitable when a Star Arm leader controls a Star Arm 102-FL
+follower.
+
+## Installation
+
+```bash
+uv add physicalai-stararm-plugin
+```
+
+## Quick start
+
+```python
+from physicalai.robot import connect
+from physicalai_stararm_plugin import StarArm102FLFollower
+
+robot = StarArm102FLFollower(port="/dev/ttyUSB1", baudrate=1_000_000)
+
+with connect(robot) as arm:
+    obs = arm.get_observation()
+    arm.send_action(obs.joint_positions)
+```
+
+## Run with the PhysicalAI CLI
+
+```bash
+uv run physicalai run --config plugins/robots/physicalai-stararm-plugin/examples/runtime/teleop-hd-to-fl.yaml
+uv run physicalai run --config plugins/robots/physicalai-stararm-plugin/examples/runtime/teleop-ld-to-fl.yaml
+uv run physicalai run --config plugins/robots/physicalai-stararm-plugin/examples/runtime/read-joints-hd.yaml
+uv run physicalai run --config plugins/robots/physicalai-stararm-plugin/examples/runtime/read-joints-ld.yaml
+uv run physicalai run --config plugins/robots/physicalai-stararm-plugin/examples/runtime/read-joints-fl.yaml
+uv run physicalai run --config plugins/robots/physicalai-stararm-plugin/examples/runtime/move-joints-fl.yaml
+uv run physicalai run --config plugins/robots/physicalai-stararm-plugin/examples/runtime/hold-hd.yaml
+uv run physicalai run --config plugins/robots/physicalai-stararm-plugin/examples/runtime/policy-follow-hd.yaml
+```
+
+## Zero-pose calibration
+
+`StarArm102HDLeader.set_zero_position()` (also on the LD leader) stores the arm's current pose as
+every servo's origin. Physical AI Studio runs it from its calibration step when you add a Star Arm
+leader: move the leader into the same rest pose as the follower with the gripper closed, then set
+zero.
+
+## URDF
+
+```python
+from physicalai_stararm_plugin import get_urdf_path
+
+urdf_dir = get_urdf_path()
+hd_urdf = urdf_dir / "stararm102" / "urdf" / "stararm102_hd_description.urdf"
+```
+
+## Development
+
+```bash
+uv sync
+uv run pytest plugins/robots/physicalai-stararm-plugin/tests/
+```

@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 @export_config(class_path="physicalai.capture.RealSenseCamera")
 class RealSenseCamera(DepthMixin, Camera):
-    """RealSense color and depth camera."""
+    """RealSense color camera with opt-in aligned depth capture."""
 
     def __init__(
         self,
@@ -32,15 +32,32 @@ class RealSenseCamera(DepthMixin, Camera):
         width: int = 640,
         height: int = 480,
         color_mode: ColorMode = ColorMode.RGB,
+        enable_depth: bool = False,
         depth_width: int | None = None,
         depth_height: int | None = None,
     ) -> None:
+        """Configure color capture and optional depth streaming.
+
+        Args:
+            serial_number: Serial number of the camera to open.
+            fps: Requested frame rate for enabled streams.
+            width: Color stream width in pixels.
+            height: Color stream height in pixels.
+            color_mode: Output color format.
+            enable_depth: Stream depth and align it to color when True. Leave
+                False for color-only capture to avoid unused USB transfers.
+            depth_width: Depth stream width; defaults to the color width.
+                Only used when enable_depth is True.
+            depth_height: Depth stream height; defaults to the color height.
+                Only used when enable_depth is True.
+        """
         super().__init__(color_mode=color_mode)
         self._serial_number = serial_number
         self._fps = fps
         self._width = width
         self._height = height
         self._color_mode = color_mode
+        self._enable_depth = enable_depth
         self._depth_width = width if depth_width is None else depth_width
         self._depth_height = height if depth_height is None else depth_height
         self._connected = False
@@ -65,19 +82,19 @@ class RealSenseCamera(DepthMixin, Camera):
         config_factory = rs_any.config
         stream = rs_any.stream
         frame_format = rs_any.format
-        align_factory = rs_any.align
 
         self._pipeline = pipeline_factory()
         self._config = config_factory()
         self._config.enable_device(self._serial_number)
         self._config.enable_stream(stream.color, self._width, self._height, frame_format.rgb8, self._fps)
-        self._config.enable_stream(
-            stream.depth,
-            self._depth_width,
-            self._depth_height,
-            frame_format.z16,
-            self._fps,
-        )
+        if self._enable_depth:
+            self._config.enable_stream(
+                stream.depth,
+                self._depth_width,
+                self._depth_height,
+                frame_format.z16,
+                self._fps,
+            )
 
         try:
             self._pipeline.start(self._config)
@@ -87,7 +104,7 @@ class RealSenseCamera(DepthMixin, Camera):
             msg = "Failed to start RealSense pipeline"
             raise CaptureError(msg) from err
 
-        self._align = align_factory(stream.color)
+        self._align = rs_any.align(stream.color) if self._enable_depth else None
         timeout_ms = int(timeout * 1000)
         try:
             first_frameset = self._pipeline.wait_for_frames(timeout_ms)
@@ -96,7 +113,7 @@ class RealSenseCamera(DepthMixin, Camera):
             msg = f"Timed out waiting for first frame after {timeout}s"
             raise CaptureTimeoutError(msg) from err
 
-        self._last_frameset = self._align.process(first_frameset)
+        self._last_frameset = self._align.process(first_frameset) if self._align is not None else first_frameset
         self._latest_color_frame = None
         self._connected = True
         self._sequence = 0
@@ -130,7 +147,7 @@ class RealSenseCamera(DepthMixin, Camera):
         return f"realsense:{self._serial_number}"
 
     def read(self, timeout: float = 2.0) -> Frame:
-        """Read the next aligned color frame.
+        """Read the next color frame.
 
         Returns:
             Captured color frame.
@@ -140,7 +157,7 @@ class RealSenseCamera(DepthMixin, Camera):
             CaptureTimeoutError: If no frame arrives before timeout.
             CaptureError: If color frame extraction fails.
         """
-        if not self._connected or self._pipeline is None or self._align is None:
+        if not self._connected or self._pipeline is None:
             raise NotConnectedError
 
         timeout_ms = int(timeout * 1000)
@@ -150,7 +167,8 @@ class RealSenseCamera(DepthMixin, Camera):
             msg = f"Timed out waiting for frame after {timeout_ms}ms"
             raise CaptureTimeoutError(msg) from err
 
-        frameset = self._align.process(frameset)
+        if self._align is not None:
+            frameset = self._align.process(frameset)
         color_frame = frameset.get_color_frame()
         if not color_frame:
             msg = "No color frame available"
@@ -165,7 +183,7 @@ class RealSenseCamera(DepthMixin, Camera):
         return self._latest_color_frame
 
     def read_latest(self) -> Frame:
-        """Read the freshest aligned color frame without blocking.
+        """Read the freshest color frame without blocking.
 
         Returns:
             Newest available color frame.
@@ -174,7 +192,7 @@ class RealSenseCamera(DepthMixin, Camera):
             NotConnectedError: If camera is not connected.
             CaptureError: If no frame data is available.
         """
-        if not self._connected or self._pipeline is None or self._align is None:
+        if not self._connected or self._pipeline is None:
             raise NotConnectedError
 
         latest_frameset = None
@@ -185,7 +203,8 @@ class RealSenseCamera(DepthMixin, Camera):
             latest_frameset = frameset
 
         if latest_frameset is not None:
-            latest_frameset = self._align.process(latest_frameset)
+            if self._align is not None:
+                latest_frameset = self._align.process(latest_frameset)
             color_frame = latest_frameset.get_color_frame()
             if not color_frame:
                 msg = "No color frame available"
@@ -222,10 +241,13 @@ class RealSenseCamera(DepthMixin, Camera):
         Raises:
             NotConnectedError: If camera is not connected.
             CaptureTimeoutError: If no frame arrives before timeout.
-            CaptureError: If depth frame extraction fails.
+            CaptureError: If depth capture is disabled or frame extraction fails.
         """
-        if not self._connected or self._pipeline is None or self._align is None:
+        if not self._connected or self._pipeline is None:
             raise NotConnectedError
+        if self._align is None:
+            msg = "Depth capture is disabled; construct RealSenseCamera with enable_depth=True."
+            raise CaptureError(msg)
 
         try:
             frameset = self._pipeline.wait_for_frames(5000)
@@ -255,10 +277,13 @@ class RealSenseCamera(DepthMixin, Camera):
         Raises:
             NotConnectedError: If camera is not connected.
             CaptureTimeoutError: If no frame arrives before timeout.
-            CaptureError: If color or depth extraction fails.
+            CaptureError: If depth capture is disabled or frame extraction fails.
         """
-        if not self._connected or self._pipeline is None or self._align is None:
+        if not self._connected or self._pipeline is None:
             raise NotConnectedError
+        if self._align is None:
+            msg = "Depth capture is disabled; construct RealSenseCamera with enable_depth=True."
+            raise CaptureError(msg)
 
         try:
             frameset = self._pipeline.wait_for_frames(5000)
