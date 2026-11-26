@@ -39,8 +39,8 @@ jobs:
           # {"release_created":"true","tag_name":"v0.1.2"}
           #
           # release-please output for physicalai-studio-plugin:
-          # {"packages/physicalai-studio-plugin--release_created":"true",
-          #  "packages/physicalai-studio-plugin--tag_name":"physicalai-studio-plugin-v0.1.1"}
+          # {"plugins/physicalai-studio-plugin--release_created":"true",
+          #  "plugins/physicalai-studio-plugin--tag_name":"physicalai-studio-plugin-v0.1.1"}
           #
           # Normalize release-please outputs into matrix entries consumed by
           # downstream jobs and keep only released packages.

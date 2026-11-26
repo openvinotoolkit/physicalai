@@ -44,10 +44,13 @@ jobs:
             test:
               - src/**
               - tests/**
-              - packages/**/src/**
-              - packages/**/tests/**
-              - packages/**/urdf/**
-              - packages/**/pyproject.toml
+              - plugins/physicalai-studio-plugin/src/**
+              - plugins/physicalai-studio-plugin/tests/**
+              - plugins/physicalai-studio-plugin/pyproject.toml
+              - plugins/robots/**/src/**
+              - plugins/robots/**/tests/**
+              - plugins/robots/**/urdf/**
+              - plugins/robots/**/pyproject.toml
               - .gitattributes
               - pyproject.toml
               - uv.lock
@@ -104,12 +107,12 @@ jobs:
           # The LeRobot plugin is intentionally excluded from the default UV
           # workspace in pyproject.toml so regular `uv sync` does not pull in
           # heavy torch/CUDA dependencies. This test job still runs
-          # `packages/*/tests`, so we install LeRobot + the plugin explicitly.
+          # `plugins/robots/*/tests`, so we install LeRobot + the plugin explicitly.
           # `--no-deps` keeps the workspace's editable studio plugin instead of
           # replacing it with an older published SDK. LeRobot is pinned so a new
           # release cannot break main between commits; bump it with the plugin.
           uv pip install --python .venv/bin/python "lerobot==0.7.0" pytest-anyio
-          uv pip install --python .venv/bin/python --no-deps -e packages/physicalai-lerobot-plugin
+          uv pip install --python .venv/bin/python --no-deps -e plugins/robots/physicalai-lerobot-plugin
 
       # The MuJoCo plugin downloads its robot models from MuJoCo Menagerie. The
       # plugin pins the mujoco-menagerie version, which fixes every model file,
@@ -118,7 +121,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/menagerie-cache
-          key: menagerie-${{ runner.os }}-${{ hashFiles('packages/physicalai-mujoco-plugin/pyproject.toml', 'packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/profiles/*.py') }}
+          key: menagerie-${{ runner.os }}-${{ hashFiles('plugins/robots/physicalai-mujoco-plugin/pyproject.toml', 'plugins/robots/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/profiles/*.py') }}
           restore-keys: |
             menagerie-${{ runner.os }}-
 
@@ -130,13 +133,13 @@ jobs:
       - name: Run python unit tests
         env:
           MENAGERIE_CACHE_DIR: ${{ runner.temp }}/menagerie-cache
-        run: uv run pytest --import-mode=importlib tests/unit packages/*/tests
+        run: uv run pytest --import-mode=importlib tests/unit plugins/physicalai-studio-plugin/tests plugins/robots/*/tests
 
       # Every supported MuJoCo robot profile in its default scene, and every arm's reach (no rendering), on the cached models.
       - name: Run MuJoCo profile smoke matrix and reachability checks
         env:
           MENAGERIE_CACHE_DIR: ${{ runner.temp }}/menagerie-cache
-        run: uv run pytest --import-mode=importlib -m mujoco_smoke packages/physicalai-mujoco-plugin/tests
+        run: uv run pytest --import-mode=importlib -m mujoco_smoke plugins/robots/physicalai-mujoco-plugin/tests
 
   required-check:
     name: Required Check library

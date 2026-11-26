@@ -132,6 +132,16 @@ class TestRealSenseCameraConfig:
             "fps": 30,
         }
 
+    @pytest.mark.parametrize("enable_depth", [False, True])
+    def test_depth_opt_in_round_trip(self, mock_pyrealsense2: MagicMock, enable_depth: bool) -> None:
+        from physicalai.capture.cameras.realsense import RealSenseCamera
+
+        camera = RealSenseCamera(serial_number="SN123", enable_depth=enable_depth, depth_width=848, depth_height=480)
+        wire = _assert_construction_round_trip(camera)
+        assert wire["init_args"]["enable_depth"] is enable_depth
+        assert wire["init_args"]["depth_width"] == 848
+        assert wire["init_args"]["depth_height"] == 480
+
 
 @pytest.fixture
 def mock_pypylon() -> Generator[None, None, None]:

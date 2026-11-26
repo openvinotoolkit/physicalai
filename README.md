@@ -82,11 +82,15 @@ with UVCCamera(device="/dev/video0", width=640, height=480, fps=30) as camera:
 ```python
 from physicalai.capture import RealSenseCamera
 
-with RealSenseCamera(serial_number="123456789", width=640, height=480, fps=30) as camera:
+with RealSenseCamera(serial_number="123456789", width=640, height=480, fps=30, enable_depth=True) as camera:
     rgb, depth = camera.read_rgbd()
     print(rgb.data.shape)    # (480, 640, 3) RGB
     print(depth.data.shape)  # (480, 640) depth in mm
 ```
+
+RealSense captures color only by default. Set `enable_depth=True` when using
+`read_depth()` or `read_rgbd()`; leave it disabled for color-only capture to avoid
+unused depth transfers over USB.
 
 </details>
 
@@ -169,15 +173,15 @@ Robots implement a Protocol-based interface. Any class with `connect()`, `discon
 
 More robots ship as first-party plugins. Each plugin README covers setup and usage. Install them with the `plugin-*` extras (see [Installation](#installation)); the LeRobot plugin is installed manually with `pip install physicalai-lerobot-plugin`.
 
-| Plugin                                                        | Robots                                                                                                               |
-| ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| [MuJoCo](packages/physicalai-mujoco-plugin/README.md)         | Simulated single-arm and bimanual SO-101 and other MuJoCo Menagerie robots, with a browser viewer and camera streams |
-| [SO-101](packages/physicalai-so101-plugin/README.md)          | Single-arm and bimanual SO-101 drivers, Studio catalog, and URDF assets                                              |
-| [reBot B601](packages/physicalai-rebot-b601-plugin/README.md) | Seeed reBot B601-DM / B601-RS followers                                                                              |
-| [Star Arm](packages/physicalai-stararm-plugin/README.md)      | Fashion Star Arm 102 leaders and a follower                                                                          |
-| [LeRobot](packages/physicalai-lerobot-plugin/README.md)       | Robots and teleoperators from LeRobot configs                                                                        |
+| Plugin                                                              | Robots                                                                                                               |
+| ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| [MuJoCo](plugins/robots/physicalai-mujoco-plugin/README.md)         | Simulated single-arm and bimanual SO-101 and other MuJoCo Menagerie robots, with a browser viewer and camera streams |
+| [SO-101](plugins/robots/physicalai-so101-plugin/README.md)          | Single-arm and bimanual SO-101 drivers, Studio catalog, and URDF assets                                              |
+| [reBot B601](plugins/robots/physicalai-rebot-b601-plugin/README.md) | Seeed reBot B601-DM / B601-RS followers                                                                              |
+| [Star Arm](plugins/robots/physicalai-stararm-plugin/README.md)      | Fashion Star Arm 102 leaders and a follower                                                                          |
+| [LeRobot](plugins/robots/physicalai-lerobot-plugin/README.md)       | Robots and teleoperators from LeRobot configs                                                                        |
 
-To add your own robot to Physical AI Studio, see the [Studio plugin](packages/physicalai-studio-plugin/README.md).
+To add your own robot to Physical AI Studio, see the [Studio plugin](plugins/physicalai-studio-plugin/README.md).
 
 ```python
 from physicalai_so101_plugin import SO101
