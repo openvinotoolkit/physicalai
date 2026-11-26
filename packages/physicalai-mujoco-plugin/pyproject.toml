@@ -28,7 +28,8 @@ dependencies = [
     "opencv-python-headless>=4.10",
     # 0.0.x with no stability promise, and the viser sync reaches into
     # ViserMujocoScene internals; pin the patch range deliberately.
-    "mjviser>=0.0.14,<0.1",
+    # 0.0.17 requires mujoco-core 4, which overlaps the mujoco 3 module files.
+    "mjviser>=0.0.14,<0.0.17",
 ]
 
 [project.optional-dependencies]
