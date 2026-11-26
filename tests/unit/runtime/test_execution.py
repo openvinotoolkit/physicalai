@@ -686,7 +686,7 @@ class TestRTCExecutionObsSlot:
             ex.start(model, queue)
             try:
                 with ex._obs_lock:  # noqa: SLF001
-                    ex._obs_slot = ({"state": np.zeros(3, dtype=np.float32)}, ex._incarnation, None, None)  # noqa: SLF001
+                    ex._obs_slot = ({"state": np.zeros(3, dtype=np.float32)}, ex._incarnation, None, None, time.perf_counter())  # noqa: SLF001
                 assert entered.wait(timeout=5.0)
 
                 publisher = threading.Thread(
@@ -752,7 +752,7 @@ class TestRTCExecutionObsSlot:
         worker = ex._thread  # noqa: SLF001
         with ex._obs_lock:  # noqa: SLF001
             observation = {"state": np.zeros(3, dtype=np.float32)}
-            ex._obs_slot = (observation, ex._incarnation, None, None)  # noqa: SLF001
+            ex._obs_slot = (observation, ex._incarnation, None, None, time.perf_counter())  # noqa: SLF001
         assert entered.wait(timeout=5.0)
 
         reset_done = threading.Event()
@@ -789,7 +789,7 @@ class TestRTCExecutionObsSlot:
         try:
             with ex._obs_lock:  # noqa: SLF001
                 observation = {"state": np.zeros(3, dtype=np.float32)}
-                ex._obs_slot = (observation, ex._incarnation, None, None)  # noqa: SLF001
+                ex._obs_slot = (observation, ex._incarnation, None, None, time.perf_counter())  # noqa: SLF001
             deadline = time.monotonic() + 5.0
             while ex._obs_slot is not None and time.monotonic() < deadline:  # noqa: SLF001
                 time.sleep(0.001)
@@ -1280,7 +1280,7 @@ class TestRestartAfterStop:
         ex._death_cause = RuntimeError("died previously")  # noqa: SLF001
         with ex._obs_lock:  # noqa: SLF001
             stale = {"state": np.full(3, 99.0, dtype=np.float32)}
-            ex._obs_slot = (stale, ex._incarnation, None, None)  # noqa: SLF001
+            ex._obs_slot = (stale, ex._incarnation, None, None, time.perf_counter())  # noqa: SLF001
 
         ex.start(model, queue)
         try:
@@ -1417,7 +1417,7 @@ class TestStopTimeoutStraggler:
             model.side_effect = blocking
             ex.start(model, queue)
             with ex._obs_lock:  # noqa: SLF001
-                ex._obs_slot = (dict(obs), ex._incarnation, None, None)  # noqa: SLF001
+                ex._obs_slot = (dict(obs), ex._incarnation, None, None, time.perf_counter())  # noqa: SLF001
 
         assert entered.wait(timeout=5.0), "worker never entered inference"
         straggler = ex._thread  # noqa: SLF001

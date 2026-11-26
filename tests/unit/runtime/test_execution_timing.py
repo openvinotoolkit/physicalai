@@ -287,27 +287,68 @@ class TestAsyncThresholdShorterThanLatency:
         assert not _dry_warnings(caplog)
 
 
+class _GatedQueue(RTCActionQueue):
+    """An RTC queue whose worker-side reads wait for ``release`` once ``armed``.
+
+    The control thread (the test) is never held. This fixes the order of the
+    worker's queue snapshot against the control thread's pop: the test
+    publishes, lets the worker reach the snapshot, pops, then releases it.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.control = threading.current_thread()
+        self.armed = False
+        self.reached = threading.Event()
+        self.release = threading.Event()
+
+    def _gate(self) -> None:
+        if self.armed and threading.current_thread() is not self.control:
+            self.reached.set()
+            assert self.release.wait(timeout=5.0), "test never released the worker"
+
+    def get_left_over(self) -> np.ndarray | None:
+        self._gate()
+        return super().get_left_over()
+
+    def get_action_index(self) -> int:
+        self._gate()
+        return super().get_action_index()
+
+    def snapshot_left_over(self, from_index: int | None = None) -> tuple[int, np.ndarray | None]:
+        self._gate()
+        return super().snapshot_left_over(from_index)
+
+
 class TestRTCAlignment:
     def _run_until_second_chunk(self, **kwargs: Any) -> tuple[_RTCModel, RTCActionQueue, int, int]:
-        model, queue = _RTCModel(), RTCActionQueue()
+        """Warm up, then tick until the worker takes a request; the worker reads the queue after that tick's pop."""
+        model, queue = _RTCModel(), _GatedQueue()
         ex = RTCExecution(chunk_size=CHUNK, fps=30.0, **kwargs)
         ex.start(cast("InferenceModel", model), queue)
         try:
             ex.warmup(_obs(0))
-            tick = 0
-            request_tick = -1
-            while not model.entered.is_set():
+            queue.armed = True
+            deadline = time.monotonic() + 5.0
+            tick, request_tick = 0, -1
+            while request_tick < 0:
+                assert time.monotonic() < deadline, "the worker never took a request"
                 ex.maybe_request(_obs(tick))
-                queue.pop()
-                request_tick = tick
+                if queue.below_threshold(ex.queue_threshold):
+                    assert queue.reached.wait(timeout=2.0), "the worker did not reach its queue snapshot"
+                    request_tick = tick
+                queue.pop()  # this tick's action goes out before the worker reads the queue
                 tick += 1
-                model.entered.wait(timeout=0.05)
+            queue.release.set()
+            assert model.entered.wait(timeout=2.0)
             for _ in range(3):
                 queue.pop()
                 tick += 1
             model.release.set()
             assert _wait_for(lambda: ex.inference_count == 2)
         finally:
+            queue.release.set()
+            model.release.set()
             ex.stop()
         return model, queue, tick, request_tick
 
@@ -334,12 +375,17 @@ class TestRTCAlignment:
 
 
 class _ClockedModel(_RTCModel):
-    """A model whose calls take ``latencies[i]`` seconds on a virtual clock, with no real waiting."""
+    """A model whose calls take ``latencies[i]`` seconds on a virtual clock, with no real waiting.
 
-    def __init__(self, latencies: list[float]) -> None:
+    With ``gated``, each call after the first also waits for ``release`` (and sets ``entered``).
+    """
+
+    def __init__(self, latencies: list[float], *, gated: bool = False, tracker: Any = None) -> None:
         super().__init__()
         self.now = 0.0
         self._latencies = latencies
+        self._gated = gated
+        self.tracker = tracker  # called as a model callback, like InferenceModel does
 
     def clock(self) -> float:
         return self.now
@@ -347,6 +393,22 @@ class _ClockedModel(_RTCModel):
     def _gate(self) -> None:
         self.now += self._latencies[min(self.calls, len(self._latencies) - 1)]
         self.calls += 1
+        if self._gated and self.calls > 1:
+            self.entered.set()
+            assert self.release.wait(timeout=5.0)
+            self.release.clear()
+
+    def __call__(self, inputs: dict[str, Any]) -> dict[str, np.ndarray]:
+        if self.tracker is not None:
+            self.tracker.on_predict_start(inputs)
+        out = super().__call__(inputs)
+        if self.tracker is not None:
+            self.tracker.on_predict_end(out)
+        return out
+
+    def reset(self) -> None:
+        if self.tracker is not None:
+            self.tracker.on_reset()
 
 
 class _VirtualTime:
@@ -367,6 +429,20 @@ _RTC_MODULE = "physicalai.runtime.execution.rtc"
 _TRACKER_MODULE = "physicalai.inference.callbacks.rtc_latency"
 
 
+def _tick_until(ex: RTCExecution, queue: RTCActionQueue, n_inferences: int, tick: int = 0) -> int:
+    """Tick (publish, wait for a taken request, pop) until ``n_inferences`` are done; return the next tick."""
+    deadline = time.monotonic() + 10.0
+    while ex.inference_count < n_inferences:
+        assert time.monotonic() < deadline, f"stuck at {ex.inference_count} of {n_inferences} inferences"
+        before = ex.inference_count
+        ex.maybe_request(_obs(tick))
+        if queue.below_threshold(ex.queue_threshold):
+            assert _wait_for(lambda before=before: ex.inference_count > before)
+        queue.pop()
+        tick += 1
+    return tick
+
+
 def _replan_inputs(
     monkeypatch: pytest.MonkeyPatch, model: _ClockedModel, n_replans: int, **kwargs: Any
 ) -> list[dict[str, Any]]:
@@ -377,17 +453,9 @@ def _replan_inputs(
     ex.start(cast("InferenceModel", model), queue)
     try:
         ex.warmup(_obs(0))
-        tick = 0
-        while ex.inference_count < 1 + n_replans and tick < 2000:
-            before = ex.inference_count
-            ex.maybe_request(_obs(tick))
-            if queue.below_threshold(ex.queue_threshold):
-                assert _wait_for(lambda before=before: ex.inference_count > before)
-            queue.pop()
-            tick += 1
+        _tick_until(ex, queue, 1 + n_replans)
     finally:
         ex.stop()
-    assert ex.inference_count >= 1 + n_replans
     return model.rtc_inputs
 
 
@@ -424,11 +492,106 @@ class TestRTCLatency:
         )
         assert [int(i["inference_delay"]) for i in inputs[1:4]] == [9, 9, 9]
 
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), -0.1])
+    def test_initial_latency_must_be_finite_and_not_negative(self, value: float) -> None:
+        with pytest.raises(ValueError, match="initial_latency_s"):
+            RTCExecution(initial_latency_s=value)
+
     def test_auto_threshold_tracks_the_delay(self, monkeypatch: pytest.MonkeyPatch) -> None:
         assert _threshold_after_warmup(monkeypatch, 0.29) == 10 + 9
 
     def test_threshold_shorter_than_the_delay_is_raised(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        assert _threshold_after_warmup(monkeypatch, 0.29, queue_threshold=3) == 10
+        # delay 9 plus one tick for a result that lands just after the pop it was due for
+        assert _threshold_after_warmup(monkeypatch, 0.29, queue_threshold=3) == 11
+
+    def test_reading_the_threshold_logs_nothing_and_the_worker_warns_once(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        model, queue = _ClockedModel([0.29]), RTCActionQueue()
+        _use_clock(monkeypatch, _RTC_MODULE, model.clock)
+        ex = RTCExecution(chunk_size=CHUNK, fps=30.0, execution_horizon=10, queue_threshold=3)
+        ex.start(cast("InferenceModel", model), queue)
+        try:
+            with caplog.at_level(logging.WARNING):
+                ex.warmup(_obs(0))
+                assert _wait_for(lambda: len(caplog.records) == 1)  # the worker warns after its merge
+                for _ in range(5):
+                    assert ex.queue_threshold == 11
+                assert len(caplog.records) == 1  # the getter is on the control path: it never logs
+                _tick_until(ex, queue, 3)
+        finally:
+            ex.stop()
+        raised = [r for r in caplog.records if "queue_threshold 3" in r.getMessage()]
+        assert len(raised) == 1
+        assert raised[0].threadName != threading.current_thread().name
+
+    @pytest.mark.parametrize("pop_before_delivery", [False, True], ids=["before-due-pop", "after-due-pop"])
+    def test_hand_set_threshold_never_runs_dry_around_the_due_tick(
+        self, monkeypatch: pytest.MonkeyPatch, *, pop_before_delivery: bool
+    ) -> None:
+        """The chunk measured at 9 ticks lands before, or just after, the pop of the ninth tick after the request."""
+        model, queue = _ClockedModel([0.3], gated=True), RTCActionQueue()
+        _use_clock(monkeypatch, _RTC_MODULE, model.clock)
+        ex = RTCExecution(chunk_size=CHUNK, fps=30.0, execution_horizon=10, queue_threshold=3, warmup_inferences=1)
+        ex.start(cast("InferenceModel", model), queue)
+        sent: list[np.ndarray | None] = []
+        try:
+            ex.warmup(_obs(0))
+            deadline = time.monotonic() + 5.0
+            tick = 0
+            while not model.entered.is_set():
+                assert time.monotonic() < deadline, "no re-plan was requested"
+                ex.maybe_request(_obs(tick))
+                if queue.below_threshold(ex.queue_threshold):
+                    assert model.entered.wait(timeout=2.0)
+                sent.append(queue.pop())
+                tick += 1
+            for _ in range(8):  # ticks request+1 .. request+8
+                sent.append(queue.pop())
+                tick += 1
+            if pop_before_delivery:  # the result lands just after the pop of tick request+9
+                sent.append(queue.pop())
+                tick += 1
+            model.release.set()
+            assert _wait_for(lambda: ex.inference_count == 2)
+            for _ in range(3):
+                sent.append(queue.pop())
+                tick += 1
+        finally:
+            model.release.set()
+            ex.stop()
+        assert all(a is not None for a in sent), "the queue ran dry: the robot held its last action"
+        assert [float(a[0]) for a in sent] == [float(t) for t in range(tick)]
+
+    def test_the_old_wiring_records_each_inference_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A tracker registered as a model callback and passed to RTCExecution (the older example)."""
+        from physicalai.inference.callbacks import RTCLatencyTracker
+
+        tracker = RTCLatencyTracker()
+        model = _ClockedModel([0.29], tracker=tracker)
+        _use_clock(monkeypatch, _TRACKER_MODULE, model.clock)
+        _replan_inputs(monkeypatch, model, 4, execution_horizon=10, latency_tracker=tracker, warmup_inferences=1)
+        assert len(tracker._window) == 4  # noqa: SLF001  one per re-plan, the warmup only seeds
+
+    def test_reset_keeps_the_old_worst_case_only_as_a_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from physicalai.inference.callbacks import RTCLatencyTracker
+
+        tracker = RTCLatencyTracker()
+        model, queue = _ClockedModel([0.8, 0.8, 0.8, 0.05]), RTCActionQueue()
+        _use_clock(monkeypatch, _RTC_MODULE, model.clock)
+        ex = RTCExecution(chunk_size=CHUNK * 3, fps=30.0, execution_horizon=10, latency_tracker=tracker, warmup_inferences=1)
+        model.chunk_size = CHUNK
+        ex.start(cast("InferenceModel", model), queue)
+        try:
+            ex.warmup(_obs(0))
+            tick = _tick_until(ex, queue, 3)
+            assert tracker.max_latency_s == pytest.approx(0.8)
+            ex.reset()  # episode boundary
+            assert tracker.max_latency_s == pytest.approx(0.8)  # still the estimate until a new measurement
+            _tick_until(ex, queue, 4, tick)
+        finally:
+            ex.stop()
+        assert tracker.max_latency_s == pytest.approx(0.05)
 
     def test_tracker_keeps_its_estimate_across_a_reset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from physicalai.inference.callbacks import RTCLatencyTracker

@@ -158,7 +158,7 @@ def main() -> None:
     # it is created here only to print the statistics at the end.
     latency_tracker = RTCLatencyTracker(window_size=100)
 
-    model = InferenceModel(args.model, device=args.device)
+    model = InferenceModel(args.model, device=args.device, callbacks=[])
 
     # ── Build robot & cameras ──
     robot = build_robot(args)

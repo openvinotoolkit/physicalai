@@ -46,6 +46,17 @@ class RTCLatencyTracker(Callback):
         self._start_time: float = 0.0
         # Estimate used while the window is empty (start of a run, after a reset).
         self._fallback_s: float = 0.0
+        # Set by RTCExecution, which then records every inference itself.
+        self._external: bool = False
+
+    def record_externally(self) -> None:
+        """Make :meth:`record` the only way samples arrive.
+
+        ``RTCExecution`` calls this on the tracker it uses. The model-callback
+        hooks then do nothing, so a tracker that is also registered with the
+        model (the older wiring) still gets one sample per inference.
+        """
+        self._external = True
 
     def record(self, elapsed_s: float) -> None:
         """Add one measured latency, for callers that time the call themselves.
@@ -68,12 +79,16 @@ class RTCLatencyTracker(Callback):
 
     @override
     def on_predict_start(self, inputs: dict[str, Any]) -> None:
-        """Record prediction start time."""
+        """Record prediction start time (unless an execution records instead)."""
+        if self._external:
+            return
         self._start_time = time.perf_counter()
 
     @override
     def on_predict_end(self, outputs: dict[str, Any]) -> None:
-        """Record prediction duration."""
+        """Record prediction duration (unless an execution records instead)."""
+        if self._external:
+            return
         elapsed = time.perf_counter() - self._start_time
         self._window.append(elapsed)
 
