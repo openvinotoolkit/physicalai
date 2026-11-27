@@ -18,6 +18,75 @@
 - Add the `task_index` preprocessor, which maps a `task` prompt to the index a
   multi-task export without a language model (such as a multi-task ACT) takes.
 
+## [0.5.0](https://github.com/openvinotoolkit/physicalai/compare/v0.4.0...v0.5.0) (2026-11-27)
+
+
+### ✨ Features
+
+* Add `physicalai doctor` command ([#467](https://github.com/openvinotoolkit/physicalai/issues/467)) ([7eefefa](https://github.com/openvinotoolkit/physicalai/commit/7eefefac17ae90a86d8c0a70ab8d3dfa597b42de))
+* **inference:** add a noise preprocessor for flow-matching exports ([#455](https://github.com/openvinotoolkit/physicalai/issues/455)) ([8381d43](https://github.com/openvinotoolkit/physicalai/commit/8381d439c2660d357b4b9d633f28ea7e7ed42c81))
+* **inference:** add a task_index preprocessor for multi-task exports without a language model ([#477](https://github.com/openvinotoolkit/physicalai/issues/477)) ([e089a02](https://github.com/openvinotoolkit/physicalai/commit/e089a021ab527da1f119bbf3fe888dd14705b1fc))
+* **inference:** add VLA-JEPA preprocessor ([#441](https://github.com/openvinotoolkit/physicalai/issues/441)) ([b6b846a](https://github.com/openvinotoolkit/physicalai/commit/b6b846ae9ea37d77b55dc032eba16a3a2427cc37))
+* **isolate:** manage the environment cache and run external interpreters ([#490](https://github.com/openvinotoolkit/physicalai/issues/490)) ([d08efb7](https://github.com/openvinotoolkit/physicalai/commit/d08efb735c76fcd8ec954c9a54a44897484ff766))
+* **isolate:** prepare and run locked Python environments for workers ([#479](https://github.com/openvinotoolkit/physicalai/issues/479)) ([30dd715](https://github.com/openvinotoolkit/physicalai/commit/30dd715582477605b7a32563f886e636cbae8e51))
+* **mujoco:** add the OpenArm v2 twin and the OpenArm Cell scene ([#435](https://github.com/openvinotoolkit/physicalai/issues/435)) ([761e832](https://github.com/openvinotoolkit/physicalai/commit/761e8324f5a4937b55dc603bdfce0bcd6b68f8da))
+* **mujoco:** serve the autopilot contract and drop the Studio recorder ([#473](https://github.com/openvinotoolkit/physicalai/issues/473)) ([bbb24c7](https://github.com/openvinotoolkit/physicalai/commit/bbb24c7e07e4cdf6d8f7011e73316fa8c7802462))
+* observation history policy source ([#453](https://github.com/openvinotoolkit/physicalai/issues/453)) ([a23c9a0](https://github.com/openvinotoolkit/physicalai/commit/a23c9a024f6f6541f685dd84f6a9cd420f5269be))
+* **studio-plugin:** add the autopilot contract ([#472](https://github.com/openvinotoolkit/physicalai/issues/472)) ([cd997b5](https://github.com/openvinotoolkit/physicalai/commit/cd997b5379a47ad9f1c4859d17814c33e02a5608))
+
+
+### 🐛 Bug Fixes
+
+* **capture:** handle timeouts properly in read_cameras and support empty cameras ([#458](https://github.com/openvinotoolkit/physicalai/issues/458)) ([493edb8](https://github.com/openvinotoolkit/physicalai/commit/493edb87223e8dd505d0fa1f58065b3aaa52e82d))
+* **capture:** make RealSense depth streaming opt-in ([#488](https://github.com/openvinotoolkit/physicalai/issues/488)) ([92ebb85](https://github.com/openvinotoolkit/physicalai/commit/92ebb85ab135baca95e80ddfbdda460c200fff16))
+* **inference:** accept a single camera in MolmoAct2 and reject a missing one ([#450](https://github.com/openvinotoolkit/physicalai/issues/450)) ([c116787](https://github.com/openvinotoolkit/physicalai/commit/c116787bc79c1a1214c03539c217ffe726419663))
+* **inference:** load the model artifact the manifest declares ([#396](https://github.com/openvinotoolkit/physicalai/issues/396)) ([bcbb924](https://github.com/openvinotoolkit/physicalai/commit/bcbb92458803ef6bd0492301577178a071c65c92))
+* **mujoco:** cap mjviser to avoid conflicting MuJoCo packages ([#489](https://github.com/openvinotoolkit/physicalai/issues/489)) ([6fe5d0f](https://github.com/openvinotoolkit/physicalai/commit/6fe5d0f0a81c62c90055d3bc93ea83f584874052))
+* **rebot-b601:** time the RS gripper's stall checks instead of counting commands ([#454](https://github.com/openvinotoolkit/physicalai/issues/454)) ([dceb16b](https://github.com/openvinotoolkit/physicalai/commit/dceb16bbcc88ad5b494b0727e69e3b4ec1fd5bf8))
+* **runtime:** keep Async running at threshold 0 and warn on a dry queue ([#465](https://github.com/openvinotoolkit/physicalai/issues/465)) ([6a720a3](https://github.com/openvinotoolkit/physicalai/commit/6a720a3f12dd4765dd00fa900cb5e48747711788))
+* **runtime:** report every RTC worker error as WorkerDiedError ([#448](https://github.com/openvinotoolkit/physicalai/issues/448)) ([6461af1](https://github.com/openvinotoolkit/physicalai/commit/6461af18b131541459351fd9433e3883838e2d41))
+* **transport:** disable TCP listeners on non-owner robot sessions ([#456](https://github.com/openvinotoolkit/physicalai/issues/456)) ([b4461cc](https://github.com/openvinotoolkit/physicalai/commit/b4461cc03adacad5a9d37bb1b2cbae31f4e7e0b3))
+
+
+### 🚀 Performance Improvements
+
+* **so101:** reduce bus traffic for so101 writes ([#474](https://github.com/openvinotoolkit/physicalai/issues/474)) ([6c4952d](https://github.com/openvinotoolkit/physicalai/commit/6c4952d798d00f0594057339da55b1bc9461a45f))
+
+
+### ♻️ Code Refactoring
+
+* **runtime:** remove unused Zenoh observer scaffolding ([#463](https://github.com/openvinotoolkit/physicalai/issues/463)) ([37a940c](https://github.com/openvinotoolkit/physicalai/commit/37a940c3b0c43ca9746f260e6e47a83651558db5))
+
+
+### 📚 Documentation
+
+* add robot plugin information ([#499](https://github.com/openvinotoolkit/physicalai/issues/499)) ([5440c3f](https://github.com/openvinotoolkit/physicalai/commit/5440c3f1b6d8bc6b1a0e2538616171f20ece80cb))
+* correct remote inference execution guidance ([#485](https://github.com/openvinotoolkit/physicalai/issues/485)) ([c4942c6](https://github.com/openvinotoolkit/physicalai/commit/c4942c6712b89132a3a94cce7b86efcf0d01d47e))
+
+
+### 👷 CI/CD
+
+* auto-add pai-board issues to Physical AI project ([#462](https://github.com/openvinotoolkit/physicalai/issues/462)) ([2b5e232](https://github.com/openvinotoolkit/physicalai/commit/2b5e23212940c160a2e9f0498888d77b441a26fd))
+* Automerge configuration for renovate bot PRs ([#452](https://github.com/openvinotoolkit/physicalai/issues/452)) ([ed33556](https://github.com/openvinotoolkit/physicalai/commit/ed33556c73c02a7ec8fddfa2eea4778a68223ee8))
+* fix PAI board archive for cross-org issues ([#471](https://github.com/openvinotoolkit/physicalai/issues/471)) ([ac438c0](https://github.com/openvinotoolkit/physicalai/commit/ac438c08058a8a0a72c5f74140aabbccfe06a265))
+
+
+### 🔧 Chores
+
+* **deps:** bump transformers to 5.22.0 ([#444](https://github.com/openvinotoolkit/physicalai/issues/444)) ([ad2b0be](https://github.com/openvinotoolkit/physicalai/commit/ad2b0be09010d0295a7e91e183f6e73dbb823fbf))
+* **deps:** lock file maintenance ([#449](https://github.com/openvinotoolkit/physicalai/issues/449)) ([fba2633](https://github.com/openvinotoolkit/physicalai/commit/fba2633a8a8b64ac28805f01ec2e6f66ee6fbfb0))
+* **deps:** lock file maintenance ([#457](https://github.com/openvinotoolkit/physicalai/issues/457)) ([0ec06e9](https://github.com/openvinotoolkit/physicalai/commit/0ec06e9f38ac69170f391cf8343d83f7c6081668))
+* **deps:** lock file maintenance ([#460](https://github.com/openvinotoolkit/physicalai/issues/460)) ([e3dd944](https://github.com/openvinotoolkit/physicalai/commit/e3dd9445a188f99c30afd92077b22a927c16b2bb))
+* **deps:** lock file maintenance ([#483](https://github.com/openvinotoolkit/physicalai/issues/483)) ([8877973](https://github.com/openvinotoolkit/physicalai/commit/8877973b9045dcc10d5657c4a954da09dc8039c4))
+* **deps:** update github actions ([#459](https://github.com/openvinotoolkit/physicalai/issues/459)) ([c4c9454](https://github.com/openvinotoolkit/physicalai/commit/c4c94545c98e66c955eec013395732206987289a))
+* **main:** release physicalai-lerobot-plugin 0.4.1 ([#386](https://github.com/openvinotoolkit/physicalai/issues/386)) ([c354d75](https://github.com/openvinotoolkit/physicalai/commit/c354d751b17951b1c7f4922b67f5abb8c388cedf))
+* **main:** release physicalai-mujoco-plugin 0.6.0 ([#432](https://github.com/openvinotoolkit/physicalai/issues/432)) ([e149595](https://github.com/openvinotoolkit/physicalai/commit/e1495954644a6aede43eb3ec3ed04c5545221389))
+* **main:** release physicalai-rebot-b601-plugin 0.9.1 ([#464](https://github.com/openvinotoolkit/physicalai/issues/464)) ([13dae12](https://github.com/openvinotoolkit/physicalai/commit/13dae122eb89d5c83c5e8f019581078f078a356f))
+* **main:** release physicalai-studio-plugin 0.6.0 ([#476](https://github.com/openvinotoolkit/physicalai/issues/476)) ([c1e112d](https://github.com/openvinotoolkit/physicalai/commit/c1e112dbd19bd4b4cb62a7bca56ce2dbbcf2bba9))
+* **main:** release physicalai-trossen-plugin 0.3.0 ([#383](https://github.com/openvinotoolkit/physicalai/issues/383)) ([605304d](https://github.com/openvinotoolkit/physicalai/commit/605304d1859c598ab397fd6cc7560a0105da7a1e))
+* more explicit pathlib enforcement ([#466](https://github.com/openvinotoolkit/physicalai/issues/466)) ([f492294](https://github.com/openvinotoolkit/physicalai/commit/f49229439d2c20f6ba07c58d3c15ec44f9ff13af))
+* move robot plugins into `./plugins/robots` ([#484](https://github.com/openvinotoolkit/physicalai/issues/484)) ([c2535de](https://github.com/openvinotoolkit/physicalai/commit/c2535de38a38950f4ad0f4b73178ba53429efa16))
+
 ## [0.4.0](https://github.com/openvinotoolkit/physicalai/compare/v0.3.0...v0.4.0) (2026-11-06)
 
 
