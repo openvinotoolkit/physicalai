@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/openvinotoolkit/physicalai/compare/physicalai-stararm-plugin-v0.5.0...physicalai-stararm-plugin-v0.5.1) (2026-11-27)
+
+
+### 🔧 Chores
+
+* move robot plugins into `./plugins/robots` ([#484](https://github.com/openvinotoolkit/physicalai/issues/484)) ([c2535de](https://github.com/openvinotoolkit/physicalai/commit/c2535de38a38950f4ad0f4b73178ba53429efa16))
+
 ## [0.5.0](https://github.com/openvinotoolkit/physicalai/compare/physicalai-stararm-plugin-v0.4.0...physicalai-stararm-plugin-v0.5.0) (2026-11-05)
 
 
