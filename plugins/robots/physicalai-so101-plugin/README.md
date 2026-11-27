@@ -74,6 +74,87 @@ compatibility review. Policies and consumers must expect the selected mixed
 body-degree/gripper-percentage units; normalized policies/previews are not
 automatically converted.
 
+## Noninteractive setup
+
+`SO101SetupSession` owns diagnostics, single-motor ID/baudrate assignment, and
+EEPROM calibration without LeRobot motor imports. It is separate from the
+deployment driver: **setup never enables torque or commands a position**, even
+for followers. Support the arm throughout setup and disconnect; disabling torque
+can let it fall under gravity.
+
+```python
+from physicalai_so101_plugin import SO101SetupSession
+
+session = SO101SetupSession("/dev/ttyACM0", role="follower")
+try:
+    session.connect()  # Opens the port only; missing motors are allowed.
+    for name, servo_id in session.servo_ids.items():
+        print(name, servo_id, session.ping(name))  # Actual model or None.
+    session.disable_torque()  # Required before asking a user to move the arm.
+    # An application now asks the user to support and center the arm.
+    offsets = session.set_half_turn_homings()
+    positions = session.read_positions()  # Already-homed signed ticks.
+finally:
+    session.disconnect()  # Best-effort torque off, then close; never hold position.
+```
+
+The API does not prompt, record ranges, persist application data, or implement
+websocket events. Keep one session for diagnostics, calibration, and preview.
+Each hardware operation is serialized with an internal reentrant lock, including
+multi-register writes and disconnect. Async applications must also shield and
+drain `asyncio.to_thread()` work before accepting another logical transaction or
+closing the session: cancelling an await does not stop its hardware thread.
+
+- **Single-motor setup:** physically connect ONLY the named STS3215, then call
+  `setup_motor(name)`. Discovery checks all eight supported baudrates and rejects
+  multiple or ambiguous responders before mutation. Duplicate physical IDs
+  cannot always be detected. The expected model is 777 and canonical IDs are 1–6.
+- **Destructive homing:** `set_half_turn_homings()` clears previous homing offsets
+  and limits, selects angle-feedback position mode, and centers around tick 2047.
+  Previous EEPROM calibration can be lost even if a later step fails. Offsets
+  outside ±2047 produce a centering error rather than wrapping. No rollback is
+  promised after EEPROM or ID/baudrate writes.
+- **Range recording:** record returned positions directly; do not subtract the
+  hardware homing offset again. Reject negative or out-of-encoder-range samples.
+  Every joint needs an ordered, nonzero range within 0–4095.
+- **Calibration:** `read_calibration()` inspects hardware without changing cache;
+  `load_calibration(calibration)` validates/caches without EEPROM writes;
+  `write_calibration(calibration)` writes and verifies before publishing cache.
+  `clear_calibration()` invalidates only software state. Setup accepts exactly
+  the canonical IDs and `drive_mode=0`; inverted imports are not supported.
+- **Configuration and preview:** `configure_motors()` applies role-specific
+  settings with torque off. `read_positions(normalized=True)` requires validated
+  cached calibration and returns body joints in [-100, 100], gripper in [0, 100].
+  Verification remains manually movable, including on followers.
+- **Errors:** invalid arguments raise `ValueError`; permission failures retain
+  `PermissionError`; device/communication failures raise `ConnectionError`;
+  servo-status and read-back failures raise `RuntimeError` with operation context.
+  Voltage reads return raw 0.1 V units and raise on failure; zero is real data,
+  not a placeholder for a missing motor.
+
+Construction and `connect()` do not change existing torque state. An application
+must explicitly release a complete arm after diagnostics and before manual
+instructions. Setup operations release the motors they mutate. EEPROM unlocks
+are explicit and relocked on completion, with best-effort relocking on failures.
+The private receiver uses monotonic deadlines, bounded buffers and serial write
+timeouts rather than globally patching SDK receive loops.
+
+### Release and hardware validation
+
+This API must be published (or pinned to a reviewed immutable artifact) before
+Studio depends on it. Current source requires Runtime >=0.4; Studio deployments
+still using Runtime 0.3 need either a tested setup-only backport or coordinated
+Runtime/library dependency alignment. Do not lower that minimum just to resolve
+the lock: current bimanual/catalog code relies on newer Runtime types. Release
+versions and changelogs are managed by hatch-vcs and release-please.
+
+Automated tests use fake devices. Supervised, explicit opt-in hardware acceptance
+is still required: absent motors; isolated nondefault IDs/baudrates; chain reprobe;
+leader/follower voltage; torque-off homing and recording; calibration persistence
+after power cycle; skipped-calibration preview; repeated nonzero-offset homing;
+and disconnect during streaming/setup. Broadcast discovery latency and firmware
+ID/baudrate acknowledgement behavior must be checked on supported hardware.
+
 ## URDF assets
 
 This package vendors the `Simulation/SO101` directory from
