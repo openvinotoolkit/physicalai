@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import socket
 import sys
+import time
 from concurrent.futures import Future
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -15,6 +17,8 @@ from physicalai.runtime.callbacks.gpu_stats import GpuDeviceStats, GpuStatsSampl
 from physicalai.runtime.callbacks.system_monitor import LocalSystemMonitor, SystemStats, SystemStatsSample
 from physicalai.runtime.events import InferenceEvent, LifecycleEvent, MetricsEvent, TickEvent
 from tests.unit.runtime.conftest import FakeRobotObservation
+
+_VIEWER_ANSWERS = "physicalai.runtime.callbacks.rerun._viewer_answers"
 
 
 @pytest.fixture()
@@ -266,11 +270,13 @@ class TestRerunCallbackLifecycle:
         self, make_callback: Any, mock_rerun: MagicMock, connect_addr: str | None, expected_url: str
     ) -> None:
         cb = make_callback(mode="connect", connect_addr=connect_addr)
-        cb.on_lifecycle(_lifecycle_start())
+        with patch(_VIEWER_ANSWERS, return_value=True) as probe:
+            cb.on_lifecycle(_lifecycle_start())
 
         mock_rerun.connect_grpc.assert_called_once_with(url=expected_url)
         mock_rerun.spawn.assert_not_called()
         mock_rerun.save.assert_not_called()
+        probe.assert_called_once_with(expected_url)
 
     def test_lifecycle_marker_logged(self, make_callback: Any, mock_rerun: MagicMock) -> None:
         cb = make_callback()
@@ -945,3 +951,105 @@ class TestRerunCallbackLifecycleMarker:
         log_calls = mock_rerun.log.call_args_list
         lifecycle_calls = [c for c in log_calls if "runtime/lifecycle/shutdown" in str(c.args[0])]
         assert len(lifecycle_calls) == 1
+
+
+def _closed_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+@pytest.mark.usefixtures("_patch_rerun")
+class TestRerunCallbackConnectPreflight:
+    """rr.connect_grpc waits 5 s on a closed port, and rr.log then blocks once the SDK's queue is full."""
+
+    def test_closed_port_logs_nothing_and_does_not_stall_start_up(
+        self, make_callback: Any, mock_rerun: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        port = _closed_port()
+        cb = make_callback(mode="connect", connect_addr=f"127.0.0.1:{port}", image_decimation=1)
+
+        started = time.perf_counter()
+        cb.on_lifecycle(_lifecycle_start())
+        assert time.perf_counter() - started < 1.0
+        assert f"No Rerun viewer at rerun+http://127.0.0.1:{port}/proxy" in caplog.text
+
+        cb.on_tick(_tick(step=0, camera_frames={"top": _fake_frame()}))
+        cb.on_inference(_inference())
+        cb.on_lifecycle(LifecycleEvent(session_id="sess-1", timestamp=2000.0, event="shutdown", metadata={}))
+        mock_rerun.init.assert_not_called()
+        mock_rerun.connect_grpc.assert_not_called()
+        mock_rerun.log.assert_not_called()
+        mock_rerun.send_columns.assert_not_called()
+
+        # The next session tries again and connects once a viewer listens.
+        with socket.socket() as viewer:
+            viewer.bind(("127.0.0.1", port))
+            viewer.listen()
+            cb.on_lifecycle(_lifecycle_start(session_id="sess-2"))
+        mock_rerun.connect_grpc.assert_called_once_with(url=f"rerun+http://127.0.0.1:{port}/proxy")
+        cb.on_tick(_tick(step=0))
+        assert any(c.args[0] == "robot/joints" for c in mock_rerun.log.call_args_list)
+
+    def test_listening_port_connects(self, make_callback: Any, mock_rerun: MagicMock) -> None:
+        with socket.socket() as viewer:
+            viewer.bind(("127.0.0.1", 0))
+            viewer.listen()
+            port = viewer.getsockname()[1]
+            cb = make_callback(mode="connect", connect_addr=f"localhost:{port}")
+            cb.on_lifecycle(_lifecycle_start())
+
+        mock_rerun.connect_grpc.assert_called_once_with(url=f"rerun+http://localhost:{port}/proxy")
+
+    @pytest.mark.parametrize(
+        "url", ["rerun+http://example.com/proxy", "rerun://10.0.0.1/proxy", "rerun+https://example.com:9800/proxy"]
+    )
+    def test_probe_skips_implicit_ports_and_named_hosts(self, url: str) -> None:
+        from physicalai.runtime.callbacks.rerun import _viewer_answers
+
+        with patch("physicalai.runtime.callbacks.rerun.socket.getaddrinfo") as resolve:
+            assert _viewer_answers(url)
+        resolve.assert_not_called()  # no DNS, no connect: the SDK connects as before
+
+    def test_probe_refused_localhost_is_fast(self) -> None:
+        from physicalai.runtime.callbacks.rerun import _viewer_answers
+
+        started = time.perf_counter()
+        assert not _viewer_answers(f"rerun+http://localhost:{_closed_port()}/proxy")
+        assert time.perf_counter() - started < 0.5
+
+    def test_probe_has_one_budget_for_all_addresses(self) -> None:
+        from physicalai.runtime.callbacks.rerun import _viewer_answers
+
+        timeouts: list[float] = []
+
+        class _Silent:
+            """A socket whose connect waits out its whole timeout, like a dropped SYN."""
+
+            def __init__(self, *_: Any) -> None:
+                self._timeout = 0.0
+
+            def __enter__(self) -> _Silent:
+                return self
+
+            def __exit__(self, *_: object) -> None: ...
+
+            def settimeout(self, value: float) -> None:
+                timeouts.append(value)
+                self._timeout = value
+
+            def connect_ex(self, _addr: object) -> int:
+                time.sleep(self._timeout)
+                return 60
+
+        started = time.perf_counter()
+        with patch("physicalai.runtime.callbacks.rerun.socket.socket", _Silent):
+            assert not _viewer_answers("rerun+http://localhost:9876/proxy")  # 127.0.0.1, then ::1
+        assert time.perf_counter() - started < 0.6
+        assert sum(timeouts) <= 0.5 + 1e-3
+
+    def test_spawn_and_save_are_not_probed(self, make_callback: Any) -> None:
+        with patch(_VIEWER_ANSWERS) as probe:
+            make_callback(mode="spawn").on_lifecycle(_lifecycle_start())
+            make_callback(mode="save", save_path="/tmp/out.rrd").on_lifecycle(_lifecycle_start())
+        probe.assert_not_called()
