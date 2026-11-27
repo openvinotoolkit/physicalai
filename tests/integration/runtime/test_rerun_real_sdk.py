@@ -25,9 +25,11 @@ from physicalai.capture.frame import Frame
 from physicalai.runtime import RerunCallback
 from physicalai.runtime.events import LifecycleEvent, MetricsEvent, TickEvent
 
-with socket.socket() as s:  # a port nothing listens on
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
+# Bound for the whole run but never listening: connects are refused and no other
+# process can take the port meanwhile.
+held = socket.socket()
+held.bind(("127.0.0.1", 0))
+port = held.getsockname()[1]
 
 class State:
     joint_positions = np.zeros(6)
@@ -64,12 +66,54 @@ def test_no_viewer_running_does_not_stall_the_hooks() -> None:
         proc = subprocess.run(  # noqa: S603
             [sys.executable, "-c", _SCRIPT, "300"], env=env, capture_output=True, text=True, timeout=20, check=False
         )
-        out = proc.stdout
     except subprocess.TimeoutExpired as exc:
-        out = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
-    lines = out.strip().splitlines()
-    result = json.loads(lines[-1]) if lines else {"ticks": 0}
+        progress = (exc.stdout.decode() if isinstance(exc.stdout, bytes) else exc.stdout or "").strip().splitlines()
+        pytest.fail(f"still running after 20 s; last progress: {progress[-1:] or 'none'}")
+        raise  # unreachable: pytest.fail raises
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    result = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert "start_s" in result, proc.stderr[-2000:]  # the final summary, not a progress line
 
-    assert result["ticks"] == 300, f"stopped after {result['ticks']} of 300 ticks"
+    assert result["ticks"] == 300
     assert result["start_s"] < 1.0
     assert result["max_tick_s"] < 0.2
+
+
+@pytest.mark.integration
+def test_no_viewer_leaves_an_unrelated_recording_alone() -> None:
+    import socket
+
+    import numpy as np
+    import rerun as rr
+
+    from physicalai.runtime import RerunCallback
+    from physicalai.runtime.events import LifecycleEvent, MetricsEvent, TickEvent
+
+    other = rr.RecordingStream("unrelated-app")
+    memory = rr.memory_recording(recording=other)
+    previous = rr.get_global_data_recording()
+    rr.set_global_data_recording(other)
+    try:
+        other.flush()
+        before = memory.num_msgs()
+        with socket.socket() as held:  # bound, never listening
+            held.bind(("127.0.0.1", 0))
+            cb = RerunCallback(mode="connect", connect_addr=f"127.0.0.1:{held.getsockname()[1]}")
+            cb.on_lifecycle(LifecycleEvent("s", 0.0, "start", {"fps": 30}))
+
+        class State:
+            joint_positions = np.zeros(6)
+
+        cb.on_tick(
+            TickEvent(
+                session_id="s", step=0, timestamp=0.0, robot_state=State(), camera_frames={},  # type: ignore[arg-type]
+                action_sent=np.zeros(6), loop_duration_s=0.0, sleep_time_s=0.0, stale_obs=False, source_updated=True,
+            )
+        )
+        cb.on_metrics(MetricsEvent("s", 0, 0.0, {"queue_remaining": 1.0}))
+        cb.on_lifecycle(LifecycleEvent("s", 1.0, "shutdown", {}))
+        cb.close()
+        other.flush()
+        assert memory.num_msgs() == before
+    finally:
+        rr.set_global_data_recording(previous)  # type: ignore[arg-type]

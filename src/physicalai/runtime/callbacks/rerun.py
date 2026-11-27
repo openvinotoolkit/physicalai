@@ -10,6 +10,7 @@ import ipaddress
 import logging
 import socket
 import time
+import types
 from collections import deque
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlsplit
@@ -54,6 +55,15 @@ def _connect_port(addr: str) -> int:
     return port
 
 
+class _MetricsHook:
+    """``on_metrics``: skipped on an instance without a viewer; on the class, main's static ``on_metrics(event)``."""
+
+    def __get__(self, obj: object, objtype: type | None = None) -> Any:  # noqa: ANN401
+        if obj is None:
+            return objtype._log_metrics  # type: ignore[union-attr]  # noqa: SLF001
+        return types.MethodType(type(obj)._on_metrics_checked, obj)  # type: ignore[attr-defined]  # noqa: SLF001
+
+
 @export_config(class_path="physicalai.runtime.RerunCallback")
 class RerunCallback:
     """In-process Rerun logging for runtime visualization.
@@ -92,8 +102,10 @@ class RerunCallback:
       launch one. A numeric or ``localhost`` address is probed first (0.5 s
       in total, no DNS), since ``rr.connect_grpc`` waits 5 s on a closed port
       and ``rr.log`` then blocks once the SDK's send queue is full. If nothing
-      answers, the callback logs nothing until the next session start, which
-      tries again. Named hosts and URLs without a port are not probed.
+      answers, the callback logs nothing that session and probes again at the
+      next start. The probe runs before the first initialization only; once
+      connected, later starts do not probe. Named hosts and URLs without a
+      valid port are not probed.
     - ``"save"`` — write to ``save_path``; ``connect_addr`` is unused.
     """
 
@@ -192,7 +204,7 @@ class RerunCallback:
             self._source_ticks += 1
 
     @staticmethod
-    def on_metrics(event: MetricsEvent) -> None:
+    def _log_metrics(event: MetricsEvent) -> None:
         """Log source-owned live values (currently just queue depth).
 
         Not every action source emits this (e.g. ``TeleopSource`` never does)
@@ -206,6 +218,12 @@ class RerunCallback:
         rr.set_time("step", sequence=event.step)
         rr.set_time("wall", timestamp=event.timestamp)
         rr.log("queue/remaining", rr.Scalars(float(queue_remaining)))
+
+    def _on_metrics_checked(self, event: MetricsEvent) -> None:
+        if not self._viewer_missing:
+            self._log_metrics(event)
+
+    on_metrics = _MetricsHook()
 
     def on_inference(self, event: InferenceEvent) -> None:  # noqa: D102
         import numpy as np  # noqa: PLC0415
@@ -511,16 +529,19 @@ class RerunCallback:
 def _viewer_answers(url: str) -> bool:
     """Probe a numeric or ``localhost`` viewer address within 0.5 s in total, without DNS.
 
+    Each address gets an equal share of what is left of the budget, so a stalled
+    127.0.0.1 still leaves ::1 at least half of it.
+
     Returns:
-        False if every address refused or the budget ran out, or the URL is invalid. True if
-        one answered, or the host is a name other than ``localhost`` or the URL has no port
-        (not probed; the SDK connects as before).
+        False if every address refused or timed out. True if one answered, or if the URL is
+        not probed: no port, an invalid port, or a host name other than ``localhost`` (the
+        SDK then connects, or reports the bad address, as before).
     """
     try:
         parts = urlsplit(url)
         host, port = parts.hostname, parts.port
     except ValueError:
-        return False
+        return True
     if port is None or host is None:
         return True
     if host == "localhost":
@@ -531,19 +552,22 @@ def _viewer_answers(url: str) -> bool:
         except ValueError:
             return True
         hosts = [host]
-    deadline = time.monotonic() + _CONNECT_PREFLIGHT_S
+    addrs = []
     for candidate in hosts:
         try:
-            for family, kind, proto, _, addr in socket.getaddrinfo(
-                candidate, port, type=socket.SOCK_STREAM, flags=socket.AI_NUMERICHOST
-            ):
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return False
-                with socket.socket(family, kind, proto) as sock:
-                    sock.settimeout(remaining)
-                    if sock.connect_ex(addr) == 0:
-                        return True
+            addrs += socket.getaddrinfo(candidate, port, type=socket.SOCK_STREAM, flags=socket.AI_NUMERICHOST)
+        except OSError:
+            continue
+    deadline = time.monotonic() + _CONNECT_PREFLIGHT_S
+    for i, (family, kind, proto, _, addr) in enumerate(addrs):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        try:
+            with socket.socket(family, kind, proto) as sock:
+                sock.settimeout(remaining / (len(addrs) - i))
+                if sock.connect_ex(addr) == 0:
+                    return True
         except OSError:
             continue
     return False

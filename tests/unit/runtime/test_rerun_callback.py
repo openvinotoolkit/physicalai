@@ -953,6 +953,29 @@ class TestRerunCallbackLifecycleMarker:
         assert len(lifecycle_calls) == 1
 
 
+def _silent_socket(timeouts: list[float]) -> Any:
+    class _Silent:
+        """A socket whose connect waits out its whole timeout, like a dropped SYN."""
+
+        def __init__(self, *_: Any) -> None:
+            self._timeout = 0.0
+
+        def __enter__(self) -> _Silent:
+            return self
+
+        def __exit__(self, *_: object) -> None: ...
+
+        def settimeout(self, value: float) -> None:
+            timeouts.append(value)
+            self._timeout = value
+
+        def connect_ex(self, _addr: object) -> int:
+            time.sleep(self._timeout)
+            return 60
+
+    return _Silent
+
+
 def _closed_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -975,6 +998,7 @@ class TestRerunCallbackConnectPreflight:
         assert f"No Rerun viewer at rerun+http://127.0.0.1:{port}/proxy" in caplog.text
 
         cb.on_tick(_tick(step=0, camera_frames={"top": _fake_frame()}))
+        cb.on_metrics(_metrics(step=0))
         cb.on_inference(_inference())
         cb.on_lifecycle(LifecycleEvent(session_id="sess-1", timestamp=2000.0, event="shutdown", metadata={}))
         mock_rerun.init.assert_not_called()
@@ -1022,31 +1046,51 @@ class TestRerunCallbackConnectPreflight:
         from physicalai.runtime.callbacks.rerun import _viewer_answers
 
         timeouts: list[float] = []
-
-        class _Silent:
-            """A socket whose connect waits out its whole timeout, like a dropped SYN."""
-
-            def __init__(self, *_: Any) -> None:
-                self._timeout = 0.0
-
-            def __enter__(self) -> _Silent:
-                return self
-
-            def __exit__(self, *_: object) -> None: ...
-
-            def settimeout(self, value: float) -> None:
-                timeouts.append(value)
-                self._timeout = value
-
-            def connect_ex(self, _addr: object) -> int:
-                time.sleep(self._timeout)
-                return 60
-
         started = time.perf_counter()
-        with patch("physicalai.runtime.callbacks.rerun.socket.socket", _Silent):
+        with patch("physicalai.runtime.callbacks.rerun.socket.socket", _silent_socket(timeouts)):
             assert not _viewer_answers("rerun+http://localhost:9876/proxy")  # 127.0.0.1, then ::1
         assert time.perf_counter() - started < 0.6
+        assert len(timeouts) == 2
         assert sum(timeouts) <= 0.5 + 1e-3
+
+    def test_a_stalled_ipv4_localhost_still_finds_an_ipv6_viewer(self) -> None:
+        from physicalai.runtime.callbacks.rerun import _viewer_answers
+
+        viewer = socket.socket(socket.AF_INET6)
+        try:
+            viewer.bind(("::1", 0))
+        except OSError:
+            viewer.close()
+            pytest.skip("no IPv6 loopback")
+        real_socket = socket.socket
+        timeouts: list[float] = []
+        silent = _silent_socket(timeouts)
+
+        def ipv4_stalls(family: int = socket.AF_INET, *args: Any) -> Any:
+            return silent() if family == socket.AF_INET else real_socket(family, *args)
+
+        with viewer:
+            viewer.listen()
+            port = viewer.getsockname()[1]
+            with patch("physicalai.runtime.callbacks.rerun.socket.socket", ipv4_stalls):
+                assert _viewer_answers(f"rerun+http://localhost:{port}/proxy")
+        assert timeouts and timeouts[0] <= 0.25 + 1e-3  # IPv4 got half the budget, not all of it
+
+    def test_an_invalid_port_reaches_the_sdk_error_as_on_main(
+        self, make_callback: Any, mock_rerun: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        cb = make_callback(mode="connect", connect_addr="127.0.0.1:bad")
+        cb.on_lifecycle(_lifecycle_start())
+
+        assert "No Rerun viewer" not in caplog.text
+        mock_rerun.connect_grpc.assert_called_once_with(url="rerun+http://127.0.0.1:bad/proxy")
+
+    def test_on_metrics_still_works_on_the_class(self, make_callback: Any, mock_rerun: MagicMock) -> None:
+        from physicalai.runtime import RerunCallback
+
+        RerunCallback.on_metrics(_metrics(step=1))  # main's staticmethod call form
+
+        assert any(c.args[0] == "queue/remaining" for c in mock_rerun.log.call_args_list)
 
     def test_spawn_and_save_are_not_probed(self, make_callback: Any) -> None:
         with patch(_VIEWER_ANSWERS) as probe:
