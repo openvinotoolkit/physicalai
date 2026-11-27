@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.2](https://github.com/openvinotoolkit/physicalai/compare/physicalai-rebot-b601-plugin-v0.9.1...physicalai-rebot-b601-plugin-v0.9.2) (2026-11-27)
+
+
+### 🔧 Chores
+
+* move robot plugins into `./plugins/robots` ([#484](https://github.com/openvinotoolkit/physicalai/issues/484)) ([c2535de](https://github.com/openvinotoolkit/physicalai/commit/c2535de38a38950f4ad0f4b73178ba53429efa16))
+
 ## [0.9.1](https://github.com/openvinotoolkit/physicalai/compare/physicalai-rebot-b601-plugin-v0.9.0...physicalai-rebot-b601-plugin-v0.9.1) (2026-11-19)
 
 
