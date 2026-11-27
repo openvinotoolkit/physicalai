@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import platform
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 from loguru import logger
 
 from physicalai.inference.adapters.base import RuntimeAdapter
@@ -16,10 +18,11 @@ from physicalai.inference.adapters.registry import adapter_registry
 if TYPE_CHECKING:
     from pathlib import Path
 
-    import numpy as np
     import openvino
 
 _ARM_MACHINES = frozenset({"arm64", "aarch64"})
+# OpenVINO element types with a native NumPy dtype, by type name.
+_NATIVE_ELEMENT_TYPES = {"f16": np.float16, "f32": np.float32, "f64": np.float64, "i64": np.int64, "i32": np.int32}
 _PRECISION_HINT = "INFERENCE_PRECISION_HINT"
 _logged_arm_f32 = False
 
@@ -76,6 +79,8 @@ class OpenVINOAdapter(RuntimeAdapter):
         super().__init__(device, **kwargs)
         self.compiled_model: openvino.CompiledModel | None = None
         self._input_names: list[str] = []
+        self._input_dtypes: dict[str, np.dtype] = {}
+        self._input_shapes: dict[str, tuple[int | None, ...]] = {}
         self._output_names: list[str] = []
 
     def load(self, model_path: Path) -> None:
@@ -137,6 +142,20 @@ class OpenVINOAdapter(RuntimeAdapter):
         # It's important to use the original model here, since compilation step adds extra auto-generated names
         self._input_names = [input_node.any_name for input_node in model.inputs]
         self._output_names = [output_node.any_name for output_node in self.compiled_model.outputs]
+        # Only element types NumPy holds natively: OpenVINO reports BF16 as float16 storage, for example.
+        self._input_dtypes = {
+            input_node.any_name: np.dtype(_NATIVE_ELEMENT_TYPES[input_node.get_element_type().get_type_name()])
+            for input_node in model.inputs
+            if input_node.get_element_type().get_type_name() in _NATIVE_ELEMENT_TYPES
+        }
+        self._input_shapes = {}
+        for input_node in model.inputs:
+            shape = input_node.get_partial_shape()
+            if shape.rank.is_static:
+                with contextlib.suppress(TypeError, RuntimeError):  # a shape OpenVINO cannot list
+                    self._input_shapes[input_node.any_name] = tuple(
+                        dim.get_length() if dim.is_static else None for dim in shape
+                    )
 
     def predict(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         """Run inference with OpenVINO.
@@ -178,6 +197,24 @@ class OpenVINOAdapter(RuntimeAdapter):
             List of input names
         """
         return self._input_names
+
+    @property
+    def input_dtypes(self) -> dict[str, np.dtype]:
+        """Get the element type each model input declares.
+
+        Returns:
+            Mapping from input name to NumPy dtype, for inputs with a static type.
+        """
+        return self._input_dtypes
+
+    @property
+    def input_shapes(self) -> dict[str, tuple[int | None, ...]]:
+        """Get the shape each model input declares; ``None`` marks a dynamic dimension.
+
+        Returns:
+            Mapping from input name to shape, for inputs with a static rank.
+        """
+        return self._input_shapes
 
     @property
     def output_names(self) -> list[str]:

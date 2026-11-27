@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import time
 from collections import deque
@@ -18,7 +19,14 @@ from physicalai.config import export_config
 from physicalai.inference.adapters import adapter_registry, get_adapter
 from physicalai.inference.callbacks.base import Callback
 from physicalai.inference.component_factory import instantiate_component, resolve_artifact
-from physicalai.inference.constants import ACTION, IMAGES
+from physicalai.inference.constants import (
+    ACTION,
+    IMAGES,
+    PREV_CHUNK_LEFT_OVER,
+    RTC_EXECUTION_HORIZON,
+    RTC_INFERENCE_DELAY,
+    RTC_MAX_GUIDANCE_WEIGHT,
+)
 from physicalai.inference.data.features import InferenceFeature, InferenceFeatureType
 from physicalai.inference.manifest import ComponentSpec, Manifest
 from physicalai.inference.postprocessors.base import Postprocessor
@@ -34,6 +42,9 @@ if TYPE_CHECKING:
 # Policy names from the manifest are used to construct filesystem paths.
 # Restrict to safe characters to prevent "../" traversal attacks.
 _SAFE_POLICY_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.\-]*$", re.ASCII)
+
+# Inputs an RTC (real-time chunking) export takes besides the observation.
+_RTC_INPUTS = (PREV_CHUNK_LEFT_OVER, RTC_INFERENCE_DELAY, RTC_MAX_GUIDANCE_WEIGHT, RTC_EXECUTION_HORIZON)
 
 
 def _is_safe_policy_name(name: str) -> bool:
@@ -54,6 +65,47 @@ def _training_camera_order(features: list[InferenceFeature]) -> list[str]:
         if feature.ftype == InferenceFeatureType.VISUAL and feature.name.startswith(prefix)
     ]
     return names if len(names) > 1 else []
+
+
+_FLOATS = frozenset({np.dtype(np.float16), np.dtype(np.float32), np.dtype(np.float64)})
+_INTS = frozenset({np.dtype(np.int32), np.dtype(np.int64)})
+# Largest RTC first-chunk tail filled in (elements); a pi05 tail is 50 x 32.
+_MAX_FIRST_CHUNK_ELEMENTS = 1 << 20
+
+
+def _as_graph_input(name: str, value: Any, dtype: np.dtype | None, *, declares_dtypes: bool) -> Any:  # noqa: ANN401
+    """Return ``value`` as the graph takes it.
+
+    Only for adapters that declare input types (the built-in OpenVINO and ONNX
+    Runtime adapters); others get ``value`` unchanged, as before. ONNX Runtime
+    rejects NumPy scalars such as ``np.int64(0)``, so scalars become rank-0
+    arrays. A float16, float32 or float64 array becomes the one of these the
+    graph declares (manifest stats turn float32 inputs into float64), and int64
+    and int32 convert into each other. Anything else is left to the backend.
+
+    Raises:
+        ValueError: If a value does not fit the declared type (overflow).
+    """
+    if not declares_dtypes:
+        return value
+    if isinstance(value, np.generic):
+        value = np.asarray(value)
+    if dtype is None or not isinstance(value, np.ndarray) or value.dtype == dtype:
+        return value
+    if value.dtype in _FLOATS and dtype in _FLOATS:
+        with np.errstate(over="ignore"):  # overflow is checked just below
+            cast = value.astype(dtype)
+        if not np.array_equal(np.isfinite(cast), np.isfinite(value)):
+            msg = f"Input '{name}' has {value.dtype} values outside the range of the graph's {dtype}"
+            raise ValueError(msg)
+        return cast
+    if value.dtype in _INTS and dtype in _INTS:
+        info = np.iinfo(dtype)
+        if value.size and (value.min() < info.min or value.max() > info.max):
+            msg = f"Input '{name}' has {value.dtype} values outside the range of the graph's {dtype}"
+            raise ValueError(msg)
+        return value.astype(dtype)
+    return value
 
 
 def _with_keys_in_order(mapping: dict[str, Any], keys: list[str]) -> dict[str, Any]:
@@ -106,6 +158,8 @@ class InferenceModel:
         preprocessors: list[Preprocessor] | None = None,
         postprocessors: list[Postprocessor] | None = None,
         callbacks: list[Callback] | None = None,
+        *,
+        fill_rtc_inputs: bool = True,
         **adapter_kwargs: Any,  # noqa: ANN401
     ) -> None:
         """Initialize InferenceModel with optional auto-detection.
@@ -126,6 +180,11 @@ class InferenceModel:
                 under ``model.callbacks`` are loaded from the manifest.  An
                 explicitly supplied list, including an empty list, takes
                 precedence over manifest callbacks.
+            fill_rtc_inputs: Give an export that takes all four RTC inputs the
+                values ``RTCExecution`` sends for a first chunk when a call has
+                none of them, so it runs under sync and async execution. Set it
+                to ``False`` when a callback or preprocessor supplies the RTC
+                inputs itself; calls then reach the hooks exactly as they are.
             **adapter_kwargs: Backend-specific configuration options
 
         Raises:
@@ -190,6 +249,8 @@ class InferenceModel:
         self.output_features: list[InferenceFeature] = self._load_features(self.manifest.model.output_features)
         self._camera_order = _training_camera_order(self.input_features)
         self._warned_camera_mismatch = False
+        self._rtc_first_chunk = self._plan_first_chunk() if fill_rtc_inputs else None
+        self._logged_rtc_first_chunk = False
 
         self.callbacks: list[Callback] = (
             callbacks if callbacks is not None else self._load_callbacks(self.manifest.model.callbacks)
@@ -213,6 +274,19 @@ class InferenceModel:
             self.chunk_size,
             time.monotonic() - load_started,
         )
+
+    @property
+    def rtc_inputs(self) -> tuple[str, ...] | None:
+        """The RTC inputs the graph takes, or ``None`` when that is unknown.
+
+        Unknown when the adapter does not name its inputs or there is no local
+        adapter (a remote model). ``RTCExecution`` refuses a graph that takes
+        none of them, since it would drop them and run every chunk unguided.
+        """
+        graph_inputs = getattr(getattr(self, "adapter", None), "input_names", None)
+        if not graph_inputs:
+            return None
+        return tuple(name for name in _RTC_INPUTS if name in graph_inputs)
 
     @property
     def chunk_size(self) -> int:
@@ -290,8 +364,18 @@ class InferenceModel:
     def __call__(self, inputs: dict[str, np.ndarray | list[str]]) -> dict[str, np.ndarray]:
         """Run the full inference pipeline and return model outputs.
 
-        Pipeline: callbacks(start) → preprocessors → _prepare_inputs →
-        runner → postprocessors → callbacks(end).
+        Pipeline: RTC first-chunk inputs → callbacks(start) → preprocessors →
+        _prepare_inputs → runner → postprocessors → callbacks(end).
+
+        An RTC capable export called without RTC inputs, as sync and async
+        execution call it, gets the inputs ``RTCExecution`` sends for a first
+        chunk: no previous chunk, guidance weight 1e-8, horizon 1, delay 0.
+        They go through the whole pipeline, as RTC's own do. This happens only
+        when none of the four RTC inputs is in ``inputs`` and the manifest
+        declares the shape of ``prev_chunk_left_over``. A pipeline that supplies
+        its own RTC values must therefore put them in ``inputs``: a callback or
+        preprocessor that adds them only when they are missing sees the
+        first-chunk values already there.
 
         This is the generic inference API — it returns the full output
         dict without assuming any domain-specific keys.
@@ -302,6 +386,7 @@ class InferenceModel:
         Returns:
             Model outputs after runner execution and postprocessing.
         """
+        inputs = self._add_rtc_first_chunk_inputs(inputs)
         for callback in self.callbacks:
             modified = callback.on_predict_start(inputs)
             if modified is not None:
@@ -437,6 +522,77 @@ class InferenceModel:
         """Close the model when the context manager exits."""
         self.close()
 
+    def _plan_first_chunk(self) -> tuple[tuple[int, ...], np.dtype, np.dtype] | None:
+        """Return the RTC first-chunk tail shape and the tail and weight dtypes, or ``None`` to fill nothing.
+
+        Only an export that takes all four RTC inputs gets one, and only when its
+        manifest declares a positive ``(chunk_size, action_dim)`` shape for
+        ``prev_chunk_left_over`` that fits what the graph declares and is not
+        unreasonably large. Floats follow the graph's declared float type.
+        """
+        if self.rtc_inputs != _RTC_INPUTS:
+            return None
+        feature = next((f for f in self.input_features if f.name == PREV_CHUNK_LEFT_OVER), None)
+        shape = (1, *feature.shape) if feature is not None else ()
+        graph_shapes = getattr(self.adapter, "input_shapes", None)
+        graph_shapes = graph_shapes if isinstance(graph_shapes, dict) else {}
+        reason = None
+        if len(shape) != 3 or not all(isinstance(size, int) and size > 0 for size in shape):  # noqa: PLR2004
+            reason = f"the manifest declares no fixed (chunk_size, action_dim) shape for it (got {list(shape[1:])})"
+        elif math.prod(shape) > _MAX_FIRST_CHUNK_ELEMENTS:  # Python ints: no wraparound
+            reason = f"its declared shape {list(shape)} is larger than {_MAX_FIRST_CHUNK_ELEMENTS} elements"
+        else:
+            expected = {PREV_CHUNK_LEFT_OVER: shape, **dict.fromkeys(_RTC_INPUTS[1:], ())}
+            for name, generated in expected.items():
+                declared = graph_shapes.get(name)
+                if declared is not None and (
+                    len(declared) != len(generated)
+                    or any(want is not None and want != got for want, got in zip(declared, generated, strict=True))
+                ):
+                    reason = f"the graph declares {name} as {list(declared)}, not {list(generated)}"
+                    break
+        if reason is not None:
+            logger.warning(
+                "This export takes RTC inputs but they cannot be filled in for sync or async execution: {}. It runs"
+                " with RTCExecution or with RTC inputs in the observation.",
+                reason,
+            )
+            return None
+        dtypes = getattr(self.adapter, "input_dtypes", None)
+        dtypes = dtypes if isinstance(dtypes, dict) else {}
+
+        def float_type(name: str) -> np.dtype:
+            declared = dtypes.get(name)
+            return declared if isinstance(declared, np.dtype) and declared in _FLOATS else np.dtype(np.float32)
+
+        return shape, float_type(PREV_CHUNK_LEFT_OVER), float_type(RTC_MAX_GUIDANCE_WEIGHT)
+
+    def _add_rtc_first_chunk_inputs(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        """Add what ``RTCExecution`` sends for a first chunk when an RTC export gets no RTC inputs.
+
+        Never raises: inputs that still do not fit fail later, where the graph
+        inputs are checked.
+
+        Returns:
+            ``inputs`` itself, or a shallow copy with the four RTC inputs added.
+        """
+        if self._rtc_first_chunk is None or any(name in inputs for name in _RTC_INPUTS):
+            return inputs
+        if not self._logged_rtc_first_chunk:
+            logger.info(
+                "This export takes RTC inputs and the observation has none (sync or async execution); using what"
+                " RTCExecution sends for a first chunk: no previous chunk, guidance weight 1e-8."
+            )
+            self._logged_rtc_first_chunk = True
+        shape, tail_dtype, weight_dtype = self._rtc_first_chunk
+        return {
+            **inputs,
+            PREV_CHUNK_LEFT_OVER: np.zeros(shape, dtype=tail_dtype),
+            RTC_INFERENCE_DELAY: np.int64(0),
+            RTC_MAX_GUIDANCE_WEIGHT: weight_dtype.type(1e-8),
+            RTC_EXECUTION_HORIZON: np.int64(1),
+        }
+
     def _order_cameras(self, inputs: dict[str, Any]) -> dict[str, Any]:
         """Put the observation's cameras in the order the policy was trained on.
 
@@ -478,7 +634,12 @@ class InferenceModel:
 
         Flattens nested dicts using dot notation (e.g., ``{"obs": {"image": x}}``
         becomes ``{"obs.image": x}``), then filters to only the keys the adapter
-        expects.
+        expects. Only the four RTC inputs are converted, and only for adapters
+        that declare input types: NumPy scalars become rank-0 arrays, a float
+        array becomes the float16, float32 or float64 the graph declares (stats in
+        float64 would otherwise turn the float32 tail into float64, which ONNX
+        Runtime rejects), and int64 and int32 convert into each other when the
+        values fit. Every other input reaches the adapter unchanged.
 
         Args:
             inputs: Input dict mapping names to arrays. Values
@@ -496,6 +657,8 @@ class InferenceModel:
         expected = self.adapter.input_names
 
         if expected:
+            declared = getattr(self.adapter, "input_dtypes", None)
+            dtypes: dict[str, np.dtype] = declared if isinstance(declared, dict) else {}
             flat_inputs: dict[str, np.ndarray] = {}
             for key, value in inputs.items():
                 if isinstance(value, dict):
@@ -517,7 +680,10 @@ class InferenceModel:
             filtered: dict[str, np.ndarray] = {}
             for k in expected:
                 if k in flat_inputs:
-                    filtered[k] = flat_inputs[k]
+                    value = flat_inputs[k]
+                    if k in _RTC_INPUTS:
+                        value = _as_graph_input(k, value, dtypes.get(k), declares_dtypes=bool(dtypes))
+                    filtered[k] = value
                 else:
                     msg = f"Expected input '{k}' not found in inputs.\nAvailable keys: {list(flat_inputs.keys())}"
                     raise KeyError(msg)

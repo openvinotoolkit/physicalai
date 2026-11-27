@@ -7,14 +7,28 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
+import numpy as np
+
 from physicalai.inference.adapters.base import RuntimeAdapter
 from physicalai.inference.adapters.registry import adapter_registry
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    import numpy as np
     import onnxruntime
+
+# ONNX Runtime input types that have a NumPy dtype.
+_ORT_TENSOR_TYPES = {
+    "tensor(float)": np.float32,
+    "tensor(double)": np.float64,
+    "tensor(float16)": np.float16,
+    "tensor(int64)": np.int64,
+    "tensor(int32)": np.int32,
+    "tensor(int16)": np.int16,
+    "tensor(int8)": np.int8,
+    "tensor(uint8)": np.uint8,
+    "tensor(bool)": np.bool_,
+}
 
 
 @adapter_registry.register("onnx", extensions=(".onnx",))
@@ -40,6 +54,8 @@ class ONNXAdapter(RuntimeAdapter):
         super().__init__(device, **kwargs)
         self.session: onnxruntime.InferenceSession | None = None
         self._input_names: list[str] = []
+        self._input_dtypes: dict[str, np.dtype] = {}
+        self._input_shapes: dict[str, tuple[int | None, ...]] = {}
         self._output_names: list[str] = []
 
     def load(self, model_path: Path) -> None:
@@ -70,6 +86,16 @@ class ONNXAdapter(RuntimeAdapter):
 
         # Cache input/output names
         self._input_names = [input_meta.name for input_meta in self.session.get_inputs()]
+        self._input_dtypes = {
+            input_meta.name: np.dtype(_ORT_TENSOR_TYPES[input_meta.type])
+            for input_meta in self.session.get_inputs()
+            if input_meta.type in _ORT_TENSOR_TYPES
+        }
+        self._input_shapes = {
+            input_meta.name: tuple(size if isinstance(size, int) else None for size in input_meta.shape)
+            for input_meta in self.session.get_inputs()
+            if isinstance(input_meta.shape, (list, tuple))
+        }
         self._output_names = [output_meta.name for output_meta in self.session.get_outputs()]
 
     def predict(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
@@ -127,6 +153,24 @@ class ONNXAdapter(RuntimeAdapter):
             List of input names
         """
         return self._input_names
+
+    @property
+    def input_dtypes(self) -> dict[str, np.dtype]:
+        """Get the element type each model input declares.
+
+        Returns:
+            Mapping from input name to NumPy dtype, for tensor types NumPy has.
+        """
+        return self._input_dtypes
+
+    @property
+    def input_shapes(self) -> dict[str, tuple[int | None, ...]]:
+        """Get the shape each model input declares; ``None`` marks a symbolic dimension.
+
+        Returns:
+            Mapping from input name to shape.
+        """
+        return self._input_shapes
 
     @property
     def output_names(self) -> list[str]:
