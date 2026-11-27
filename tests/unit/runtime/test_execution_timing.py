@@ -14,6 +14,7 @@ import logging
 import re
 import threading
 import time
+from collections import deque
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -23,7 +24,7 @@ import pytest
 from physicalai.runtime import AsyncExecution, ChunkedActionQueue, RTCActionQueue, RTCExecution
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     from physicalai.inference.model import InferenceModel
 
@@ -853,3 +854,64 @@ class TestRTCLatency:
         assert tracker.compute_delay(30.0) == 9
         tracker.seed(0.1)
         assert tracker.compute_delay(30.0) == 3
+
+    @pytest.mark.parametrize(
+        "read",
+        [
+            lambda t: t.max_latency_s,
+            lambda t: t.compute_delay(30.0),
+            lambda t: t.percentile_s(95.0),
+            lambda t: t.reset_window(),
+        ],
+        ids=["max_latency_s", "compute_delay", "percentile_s", "reset_window"],
+    )
+    def test_the_worker_cannot_change_the_window_while_the_control_thread_reads_it(
+        self, read: Callable[[Any], object]
+    ) -> None:
+        """A record() from another thread waits until a read of the window is over, instead of breaking it."""
+        from physicalai.inference.callbacks import RTCLatencyTracker
+
+        tracker = RTCLatencyTracker()
+        recorded = threading.Event()
+        writer = threading.Thread(target=lambda: (tracker.record(0.9), recorded.set()), daemon=True)
+
+        class _Window(deque):
+            """Starts the writer halfway through the first iteration and gives it time to append."""
+
+            def __iter__(self) -> Iterator[float]:
+                it = super().__iter__()
+                yield next(it)
+                if not writer.is_alive() and not recorded.is_set():
+                    writer.start()
+                    recorded.wait(timeout=0.05)  # without the lock the append lands here
+                yield from it  # a deque changed mid-iteration raises RuntimeError
+
+        tracker._window = _Window([0.1, 0.2, 0.3], maxlen=100)  # noqa: SLF001
+        read(tracker)
+        writer.join(timeout=2.0)
+        assert recorded.is_set()
+        assert tracker.max_latency_s == pytest.approx(0.9)
+
+    @pytest.mark.parametrize("new_model", [False, True], ids=["same-model", "another-model"])
+    def test_a_restart_warns_again_about_the_timing(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, *, new_model: bool
+    ) -> None:
+        """Latency 0.4 s = delay 12: a 20-action chunk is too short and threshold 3 too low, in every run."""
+        models = [_ClockedModel([0.4]), _ClockedModel([0.4])]
+        current = {"model": models[0]}
+        _use_clock(monkeypatch, _RTC_MODULE, lambda: current["model"].now)
+        queue = RTCActionQueue()
+        ex = RTCExecution(chunk_size=CHUNK, fps=30.0, execution_horizon=10, queue_threshold=3, initial_latency_s=0.4)
+        with caplog.at_level(logging.WARNING):
+            for run in range(2):
+                current["model"] = models[run if new_model else 0]
+                queue.clear()
+                ex.start(cast("InferenceModel", current["model"]), queue)
+                try:
+                    ex.warmup(_obs(0))
+                    assert _wait_for(lambda run=run: len(caplog.records) == 2 * (run + 1))
+                finally:
+                    ex.stop()
+        messages = [r.getMessage() for r in caplog.records]
+        assert sum("too short" in m for m in messages) == 2
+        assert sum("queue_threshold 3" in m for m in messages) == 2

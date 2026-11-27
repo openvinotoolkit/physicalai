@@ -111,9 +111,12 @@ class RTCExecution(Execution):
             measurement. If None,
             the duration of the warmup inference is used instead, which is an
             overestimate on backends that compile on first use.
-        warmup_inferences: Number of initial inferences treated as warmup.
-            The latency tracker is reset after these to discard
-            compilation/kernel-build overhead (e.g. OpenVINO first-run).
+        warmup_inferences: Number of initial inferences treated as warmup,
+            counted again after a model change. Each one only seeds the latency
+            estimate (with ``initial_latency_s`` if set, else its own duration)
+            and is never kept in the measurement window, so compilation or
+            kernel-build time (e.g. OpenVINO first run) does not stay in the
+            worst case. Every later inference is measured and recorded.
 
     Raises:
         ValueError: If a tuning value is outside its allowed range. Values that
@@ -341,6 +344,9 @@ class RTCExecution(Execution):
         # by this start(), and its in-flight chunk is discarded.
         self._stop_event = threading.Event()
         self._inference_count = 0
+        # Warn again for this run: the model, and with it the latency, may differ.
+        self._threshold_warned = False
+        self._chunk_warned = False
         # A death from the previous run must not fail this one, and a stale
         # observation must not be inferred on as if it were current.
         self._death_cause = None
