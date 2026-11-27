@@ -1,7 +1,7 @@
 {
   ".": "0.4.0",
   "plugins/physicalai-studio-plugin": "0.6.0",
-  "plugins/robots/physicalai-rebot-b601-plugin": "0.9.1",
+  "plugins/robots/physicalai-rebot-b601-plugin": "0.9.2",
   "plugins/robots/physicalai-lerobot-plugin": "0.4.1",
   "plugins/robots/physicalai-stararm-plugin": "0.5.0",
   "plugins/robots/physicalai-mujoco-plugin": "0.6.0",
