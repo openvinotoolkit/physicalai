@@ -6,7 +6,11 @@
 from __future__ import annotations
 
 import colorsys
+import ipaddress
 import logging
+import socket
+import time
+import types
 from collections import deque
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlsplit
@@ -27,6 +31,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_RERUN_PORT = 9876
+_CONNECT_PREFLIGHT_S = 0.5
 
 
 def _connect_port(addr: str) -> int:
@@ -48,6 +53,15 @@ def _connect_port(addr: str) -> int:
     if port is None:
         raise ValueError(msg)
     return port
+
+
+class _MetricsHook:
+    """``on_metrics``: skipped on an instance without a viewer; on the class, main's static ``on_metrics(event)``."""
+
+    def __get__(self, obj: object, objtype: type | None = None) -> Any:  # noqa: ANN401
+        if obj is None:
+            return objtype._log_metrics  # type: ignore[union-attr]  # noqa: SLF001
+        return types.MethodType(type(obj)._on_metrics_checked, obj)  # type: ignore[attr-defined]  # noqa: SLF001
 
 
 @export_config(class_path="physicalai.runtime.RerunCallback")
@@ -85,7 +99,13 @@ class RerunCallback:
     - ``"connect"`` — stream to an already-running viewer/gRPC server at
       ``connect_addr`` (``"host:port"`` or a full ``rerun(+http|+https)://host:port/proxy``
       URL). Use this for remote viewers or when you don't want the SDK to
-      launch one.
+      launch one. A numeric or ``localhost`` address is probed first (0.5 s
+      in total, no DNS), since ``rr.connect_grpc`` waits 5 s on a closed port
+      and ``rr.log`` then blocks once the SDK's send queue is full. If nothing
+      answers, the callback logs nothing that session and probes again at the
+      next start. The probe runs before the first initialization only; once
+      connected, later starts do not probe. Named hosts and URLs without a
+      valid port are not probed.
     - ``"save"`` — write to ``save_path``; ``connect_addr`` is unused.
     """
 
@@ -134,6 +154,7 @@ class RerunCallback:
         self._system_stats_rows = ""
         self._latency_stats_rows = ""
         self._gpu_stats_rows = ""
+        self._viewer_missing = False
 
     def on_lifecycle(self, event: LifecycleEvent) -> None:  # noqa: D102
         if event.event == "start":
@@ -145,11 +166,14 @@ class RerunCallback:
             self._latencies.clear()
             if not self._initialized:
                 self._init_rerun(event.session_id, event.metadata)
-        self._log_lifecycle_marker(event)
+        if not self._viewer_missing:
+            self._log_lifecycle_marker(event)
 
     def on_tick(self, event: TickEvent) -> None:  # noqa: D102
         import rerun as rr  # noqa: PLC0415
 
+        if self._viewer_missing:
+            return
         self._last_step = event.step
         rr.set_time("step", sequence=event.step)
         rr.set_time("wall", timestamp=event.timestamp)
@@ -180,7 +204,7 @@ class RerunCallback:
             self._source_ticks += 1
 
     @staticmethod
-    def on_metrics(event: MetricsEvent) -> None:
+    def _log_metrics(event: MetricsEvent) -> None:
         """Log source-owned live values (currently just queue depth).
 
         Not every action source emits this (e.g. ``TeleopSource`` never does)
@@ -195,10 +219,18 @@ class RerunCallback:
         rr.set_time("wall", timestamp=event.timestamp)
         rr.log("queue/remaining", rr.Scalars(float(queue_remaining)))
 
+    def _on_metrics_checked(self, event: MetricsEvent) -> None:
+        if not self._viewer_missing:
+            self._log_metrics(event)
+
+    on_metrics = _MetricsHook()
+
     def on_inference(self, event: InferenceEvent) -> None:  # noqa: D102
         import numpy as np  # noqa: PLC0415
         import rerun as rr  # noqa: PLC0415
 
+        if self._viewer_missing:
+            return
         horizon = event.chunk.shape[0]
         n_joints = event.chunk.shape[1]
         start_step = self._last_step + 1
@@ -249,6 +281,11 @@ class RerunCallback:
     def _init_rerun(self, session_id: str, metadata: dict[str, Any]) -> None:
         import rerun as rr  # noqa: PLC0415
 
+        url = self._connect_url()
+        self._viewer_missing = self._mode == "connect" and not _viewer_answers(url)
+        if self._viewer_missing:
+            logger.warning("No Rerun viewer at %s; Rerun logging is off until the next session", url)
+            return
         rr.init(application_id=self._application_id, recording_id=session_id)
         if self._mode == "spawn":
             # The SDK hardcodes 127.0.0.1:9876 when spawning; pass the configured
@@ -257,14 +294,6 @@ class RerunCallback:
         elif self._mode == "save" and self._save_path is not None:
             rr.save(self._save_path)
         elif self._mode == "connect":
-            # Rerun 0.22+ uses gRPC. A bare "host:port" is wrapped into the
-            # canonical rerun+http://host:port/proxy URL.
-            addr = self._connect_addr or f"127.0.0.1:{_DEFAULT_RERUN_PORT}"
-            url = (
-                addr
-                if addr.startswith(("rerun://", "rerun+http://", "rerun+https://"))
-                else f"rerun+http://{addr}/proxy"
-            )
             rr.connect_grpc(url=url)
 
         self._fps = metadata.get("fps", 30)
@@ -282,6 +311,17 @@ class RerunCallback:
             The configured port, or Rerun's default when ``connect_addr`` is unset.
         """
         return _DEFAULT_RERUN_PORT if self._connect_addr is None else _connect_port(self._connect_addr)
+
+    def _connect_url(self) -> str:
+        """Rerun 0.22+ uses gRPC; a bare ``host:port`` becomes ``rerun+http://host:port/proxy``.
+
+        Returns:
+            The gRPC URL to connect to.
+        """
+        addr = self._connect_addr or f"127.0.0.1:{_DEFAULT_RERUN_PORT}"
+        return (
+            addr if addr.startswith(("rerun://", "rerun+http://", "rerun+https://")) else f"rerun+http://{addr}/proxy"
+        )
 
     @staticmethod
     def _generate_joint_colors(n: int) -> list[list[int]]:
@@ -484,6 +524,53 @@ class RerunCallback:
             f"### GPU\n\n{header}{gpu}"
         )
         rr.log("runtime/monitoring", rr.TextDocument(md, media_type=rr.MediaType.MARKDOWN))
+
+
+def _viewer_answers(url: str) -> bool:
+    """Probe a numeric or ``localhost`` viewer address within 0.5 s in total, without DNS.
+
+    Each address gets an equal share of what is left of the budget, so a stalled
+    127.0.0.1 still leaves ::1 at least half of it.
+
+    Returns:
+        False if every address refused or timed out. True if one answered, or if the URL is
+        not probed: no port, an invalid port, or a host name other than ``localhost`` (the
+        SDK then connects, or reports the bad address, as before).
+    """
+    try:
+        parts = urlsplit(url)
+        host, port = parts.hostname, parts.port
+    except ValueError:
+        return True
+    if port is None or host is None:
+        return True
+    if host == "localhost":
+        hosts = ["127.0.0.1", "::1"]
+    else:
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            return True
+        hosts = [host]
+    addrs = []
+    for candidate in hosts:
+        try:
+            addrs += socket.getaddrinfo(candidate, port, type=socket.SOCK_STREAM, flags=socket.AI_NUMERICHOST)
+        except OSError:
+            continue
+    deadline = time.monotonic() + _CONNECT_PREFLIGHT_S
+    for i, (family, kind, proto, _, addr) in enumerate(addrs):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        try:
+            with socket.socket(family, kind, proto) as sock:
+                sock.settimeout(remaining / (len(addrs) - i))
+                if sock.connect_ex(addr) == 0:
+                    return True
+        except OSError:
+            continue
+    return False
 
 
 def _format_gpu_stats(sample: GpuStatsSample) -> str:
