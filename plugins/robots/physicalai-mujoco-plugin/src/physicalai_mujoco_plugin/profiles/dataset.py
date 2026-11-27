@@ -67,8 +67,8 @@ ALOHA_PROFILE = RobotProfile(
     default_scene="single_pick_place",
     # Menagerie's gripper sites, between the finger tips of each arm, with +x out of the fingers.
     end_effectors=(
-        EndEffector(site="left/gripper", axis=(1.0, 0.0, 0.0)),
-        EndEffector(site="right/gripper", axis=(1.0, 0.0, 0.0)),
+        EndEffector(site="left/gripper", axis=(1.0, 0.0, 0.0), gripper="left_gripper"),
+        EndEffector(site="right/gripper", axis=(1.0, 0.0, 0.0), gripper="right_gripper"),
     ),
     reach=0.656,
 )
@@ -81,7 +81,7 @@ SO_ARM100_PROFILE = RobotProfile(
     channels=_renamed(_SO_ARM_NAMES, ("Rotation", "Pitch", "Elbow", "Wrist_Pitch", "Wrist_Roll", "Jaw")),
     default_scene="single_pick_place",
     customize=partial(_turn_base, body="Base", quat=(_HALF_SQRT2, 0.0, 0.0, _HALF_SQRT2)),
-    end_effectors=(EndEffector(body="Fixed_Jaw", pos=(0.0, -0.105, 0.0), axis=(0.0, -1.0, 0.0)),),
+    end_effectors=(EndEffector(body="Fixed_Jaw", pos=(0.0, -0.105, 0.0), axis=(0.0, -1.0, 0.0), gripper="gripper"),),
     reach=0.362,
 )
 
@@ -94,7 +94,16 @@ KOCH_PROFILE = RobotProfile(
     channels=_renamed(_SO_ARM_NAMES, ("base_rotation", "pitch", "elbow", "wrist_pitch", "wrist_roll", "gripper")),
     default_scene="single_pick_place",
     customize=partial(_turn_base, body="base_link", quat=(0.0, 0.0, 0.0, 1.0)),
-    end_effectors=(EndEffector(body="gripper_static_finger", pos=(-0.067, 0.007, 0.0), axis=(-1.0, 0.0, 0.0)),),
+    # The jaw opens toward the lower end of its range.
+    end_effectors=(
+        EndEffector(
+            body="gripper_static_finger",
+            pos=(-0.067, 0.007, 0.0),
+            axis=(-1.0, 0.0, 0.0),
+            gripper="gripper",
+            gripper_opens_up=False,
+        ),
+    ),
     reach=0.221,
 )
 PIPER_PROFILE = RobotProfile(
@@ -104,7 +113,7 @@ PIPER_PROFILE = RobotProfile(
     menagerie_entry="piper",
     tier="dataset",
     default_scene="single_pick_place",
-    end_effectors=(EndEffector(body="link6", pos=(0.0, 0.0, 0.138)),),
+    end_effectors=(EndEffector(body="link6", pos=(0.0, 0.0, 0.138), gripper="gripper"),),
     reach=0.570,
 )
 # Self-collision pairs Franka disables for its arms (franka_description 2.9.0,
@@ -213,7 +222,7 @@ FRANKA_PANDA_PROFILE = RobotProfile(
     tier="dataset",
     default_scene="single_pick_place",
     customize=customize_franka_panda,
-    end_effectors=(EndEffector(body="hand", pos=(0.0, 0.0, 0.110)),),
+    end_effectors=(EndEffector(body="hand", pos=(0.0, 0.0, 0.110), gripper="actuator8"),),
     reach=0.849,
 )
 XARM7_PROFILE = RobotProfile(
@@ -223,7 +232,8 @@ XARM7_PROFILE = RobotProfile(
     menagerie_entry="xarm7",
     tier="dataset",
     default_scene="single_pick_place",
-    end_effectors=(EndEffector(site="link_tcp"),),
+    # The gripper's tendon closes the linkage as it lengthens: 0 is open.
+    end_effectors=(EndEffector(site="link_tcp", gripper="gripper", gripper_opens_up=False),),
     reach=0.779,
 )
 KINOVA_GEN3_PROFILE = RobotProfile(

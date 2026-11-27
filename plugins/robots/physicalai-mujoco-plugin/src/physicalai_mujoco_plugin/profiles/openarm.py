@@ -100,7 +100,13 @@ OPENARM_PROFILE = RobotProfile(
     customize=customize_openarm,
     default_scene="openarm_cell",
     end_effectors=tuple(
-        EndEffector(body=f"openarm_{side}_ee_base_link", pos=_FINGER_TIP, axis=(0.0, 0.0, -1.0))
+        EndEffector(
+            body=f"openarm_{side}_ee_base_link",
+            pos=_FINGER_TIP,
+            axis=(0.0, 0.0, -1.0),
+            gripper=f"{side}_gripper",
+            gripper_opens_up=side == "left",  # the right finger joint opens toward -45 degrees
+        )
         for side in OPENARM_SIDES
     ),
 )
