@@ -10,9 +10,11 @@ exposes the worst-case value for computing ``inference_delay``.
 from __future__ import annotations
 
 import math
+import threading
 import time
 from collections import deque
-from typing import Any
+from contextlib import contextmanager
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from typing_extensions import override
@@ -20,59 +22,167 @@ from typing_extensions import override
 from physicalai.config import export_config
 from physicalai.inference.callbacks.base import Callback
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+# Larger delays mean "longer than any chunk"; saturating avoids converting inf or 1e308 to an int.
+_MAX_DELAY_TICKS = 1_000_000
+
 
 @export_config(class_path="physicalai.inference.callbacks.RTCLatencyTracker")
 class RTCLatencyTracker(Callback):
     """Track inference latency for RTC delay computation.
 
-    Measures the duration of each ``model(inputs)`` call via
-    ``on_predict_start`` / ``on_predict_end`` hooks. Exposes
-    ``max_latency_s`` and ``compute_delay(fps)`` for the
-    ``RTCExecution`` to read.
+    ``RTCExecution`` times every inference it runs and records it here
+    (:meth:`record`), so it does not need to be registered as a model
+    callback. As a callback it measures each ``model(inputs)`` call via
+    ``on_predict_start`` / ``on_predict_end``. Exposes ``max_latency_s``
+    and ``compute_delay(fps)`` for the ``RTCExecution`` to read.
 
     Args:
         window_size: Number of recent measurements to retain.
 
     Examples:
         >>> tracker = RTCLatencyTracker()
-        >>> model = InferenceModel("./exports/pi05_rtc", callbacks=[tracker])
-        >>> # After some predictions:
-        >>> delay = tracker.compute_delay(fps=30, chunk_size=50, execution_horizon=10)
+        >>> execution = RTCExecution(fps=30, latency_tracker=tracker)
+        >>> # After some inferences:
+        >>> delay = tracker.compute_delay(fps=30)
     """
 
     def __init__(self, window_size: int = 100) -> None:  # noqa: D107
+        if window_size < 1:
+            # An empty window would keep a seeded (cold-start) estimate forever.
+            msg = f"RTCLatencyTracker window_size must be at least 1, got {window_size}."
+            raise ValueError(msg)
         self._window: deque[float] = deque(maxlen=window_size)
         self._start_time: float = 0.0
+        # Estimate used while the window is empty (start of a run, after a reset).
+        self._fallback_s: float = 0.0
+        # Per thread: inside skip_callbacks() the model-callback hooks do nothing.
+        self._skipping = threading.local()
+        # The RTC worker records while the control thread reads the delay. Held
+        # only around the window and the estimate, never across a model call.
+        self._lock = threading.Lock()
+
+    @contextmanager
+    def skip_callbacks(self) -> Iterator[None]:
+        """Ignore the model-callback hooks for calls made inside this block, on this thread.
+
+        ``RTCExecution`` wraps its own model calls in this block and records
+        them with :meth:`record`, so a tracker that is also registered with the
+        model (the older wiring) gets one sample per inference. Other calls,
+        before ``start()``, after ``stop()`` or from other threads, are still
+        sampled through the hooks.
+        """
+        previous = self._skip()
+        self._skipping.active = True
+        try:
+            yield
+        finally:
+            self._skipping.active = previous
+
+    def _skip(self) -> bool:
+        return getattr(self._skipping, "active", False)
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Copy or pickle without the per-thread skip flag and the lock, which are transient.
+
+        Returns:
+            The instance state without ``_skipping`` and ``_lock``.
+        """
+        with self._lock:
+            state = self.__dict__.copy()
+            state["_window"] = state["_window"].copy()
+        del state["_skipping"]
+        del state["_lock"]
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore, with a fresh per-thread skip flag and lock."""
+        self.__dict__.update(state)
+        self._skipping = threading.local()
+        self._lock = threading.Lock()
+
+    def record(self, elapsed_s: float) -> None:
+        """Add one measured latency, for callers that time the call themselves.
+
+        ``RTCExecution`` times every inference it runs and records it here, so
+        the tracker works without being registered as a model callback.
+        """
+        if elapsed_s > 0:
+            with self._lock:
+                self._window.append(float(elapsed_s))
+
+    def seed(self, latency_s: float) -> None:
+        """Drop the measurements and use ``latency_s`` until a new one arrives.
+
+        Used for cold-start inferences: their duration (model compilation,
+        kernel builds) must not stay in the worst-case window, but it is a
+        better estimate of the delay than zero.
+        """
+        fallback_s = max(float(latency_s), 0.0)
+        with self._lock:
+            self._window.clear()
+            self._fallback_s = fallback_s
 
     @override
     def on_predict_start(self, inputs: dict[str, Any]) -> None:
-        """Record prediction start time."""
-        self._start_time = time.perf_counter()
+        """Record prediction start time (not inside :meth:`skip_callbacks`)."""
+        if self._skip():
+            return
+        start_time = time.perf_counter()
+        with self._lock:
+            self._start_time = start_time
 
     @override
     def on_predict_end(self, outputs: dict[str, Any]) -> None:
-        """Record prediction duration."""
-        elapsed = time.perf_counter() - self._start_time
-        self._window.append(elapsed)
+        """Record prediction duration (not inside :meth:`skip_callbacks`)."""
+        if self._skip():
+            return
+        now = time.perf_counter()
+        with self._lock:
+            self._window.append(now - self._start_time)
 
     @override
     def on_reset(self) -> None:
-        """Clear recorded latencies."""
+        """Clear recorded latencies, keeping the worst one as the estimate.
+
+        A reset happens at every episode boundary. Forgetting the latency there
+        would make the first re-plan of each episode assume zero delay.
+        """
+        with self._lock:
+            self._reset_window_locked()
+            self._start_time = 0.0
+
+    def reset_window(self) -> None:
+        """Forget the measurements but keep their worst case as the estimate.
+
+        Unlike :meth:`on_reset`, a call being timed through the callback hooks
+        keeps its start time, so it still records its own duration.
+        """
+        with self._lock:
+            self._reset_window_locked()
+
+    def _reset_window_locked(self) -> None:
+        if self._window:
+            self._fallback_s = max(self._window)
         self._window.clear()
-        self._start_time = 0.0
 
     @property
     def max_latency_s(self) -> float:
         """Worst-case latency in seconds over the sliding window.
 
-        Returns 0.0 if no measurements recorded yet.
+        Returns the seeded estimate (0.0 unless :meth:`seed` or
+        :meth:`on_reset` set one) if no measurement is recorded.
         """
-        return max(self._window) if self._window else 0.0
+        with self._lock:
+            return max(self._window) if self._window else self._fallback_s
 
     @property
     def latest_latency_s(self) -> float:
         """Most recent inference latency in seconds."""
-        return self._window[-1] if self._window else 0.0
+        with self._lock:
+            return self._window[-1] if self._window else 0.0
 
     def percentile_s(self, q: float) -> float:
         """Compute a percentile of recorded latencies.
@@ -83,9 +193,11 @@ class RTCLatencyTracker(Callback):
         Returns:
             The q-th percentile in seconds, or 0.0 if empty.
         """
-        if not self._window:
+        with self._lock:
+            window = list(self._window)
+        if not window:
             return 0.0
-        return float(np.percentile(np.array(self._window), q))
+        return float(np.percentile(np.array(window), q))
 
     def compute_delay(self, fps: float) -> int:
         """Compute integer delay for the RTC model input.
@@ -98,16 +210,20 @@ class RTCLatencyTracker(Callback):
         Returns:
             Integer delay (number of action steps consumed during inference).
         """
-        if self.max_latency_s <= 0:
+        ticks = self.max_latency_s * fps
+        if not ticks > 0:
             return 0
-        return math.ceil(self.max_latency_s * fps)
+        if not ticks < _MAX_DELAY_TICKS:
+            # Saturate instead of overflowing; callers clamp it to the chunk.
+            return _MAX_DELAY_TICKS
+        # The epsilon keeps a latency of exactly n ticks from rounding up to n + 1.
+        return math.ceil(ticks - 1e-6)
 
     @override
     def __repr__(self) -> str:
         """Return string representation."""
+        with self._lock:
+            samples = len(self._window)
         return (
-            f"RTCLatencyTracker("
-            f"max={self.max_latency_s:.3f}s, "
-            f"latest={self.latest_latency_s:.3f}s, "
-            f"samples={len(self._window)})"
+            f"RTCLatencyTracker(max={self.max_latency_s:.3f}s, latest={self.latest_latency_s:.3f}s, samples={samples})"
         )
