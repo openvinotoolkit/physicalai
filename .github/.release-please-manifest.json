@@ -5,6 +5,6 @@
   "plugins/robots/physicalai-lerobot-plugin": "0.4.1",
   "plugins/robots/physicalai-stararm-plugin": "0.5.0",
   "plugins/robots/physicalai-mujoco-plugin": "0.6.0",
-  "plugins/robots/physicalai-trossen-plugin": "0.3.0",
+  "plugins/robots/physicalai-trossen-plugin": "0.3.1",
   "plugins/robots/physicalai-so101-plugin": "0.3.0"
 }
