@@ -78,8 +78,14 @@ class RuntimeAdapter(ABC):
     def input_dtypes(self) -> dict[str, np.dtype]:
         """Get the element type each named model input declares, where the backend reports one.
 
-        :class:`~physicalai.inference.model.InferenceModel` casts each input to
-        it before calling :meth:`predict`. The default declares none.
+        :class:`~physicalai.inference.model.InferenceModel` converts only the
+        four RTC inputs (``prev_chunk_left_over``, ``inference_delay``,
+        ``max_guidance_weight``, ``execution_horizon``), and only when this
+        mapping is not empty: a NumPy scalar becomes a rank-0 array, a float16,
+        float32 or float64 array becomes the float type declared here, and int64
+        and int32 convert into each other when the values fit. Every other input,
+        such as ``state``, reaches :meth:`predict` unchanged, so its dtype must
+        already match the graph. The default declares none.
 
         Returns:
             Mapping from input name to NumPy dtype.
