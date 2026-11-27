@@ -3,11 +3,12 @@
 
 from __future__ import annotations
 
+import errno
 import socket
 import sys
 import time
 from concurrent.futures import Future
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -17,6 +18,9 @@ from physicalai.runtime.callbacks.gpu_stats import GpuDeviceStats, GpuStatsSampl
 from physicalai.runtime.callbacks.system_monitor import LocalSystemMonitor, SystemStats, SystemStatsSample
 from physicalai.runtime.events import InferenceEvent, LifecycleEvent, MetricsEvent, TickEvent
 from tests.unit.runtime.conftest import FakeRobotObservation
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 _VIEWER_ANSWERS = "physicalai.runtime.callbacks.rerun._viewer_answers"
 
@@ -953,9 +957,41 @@ class TestRerunCallbackLifecycleMarker:
         assert len(lifecycle_calls) == 1
 
 
-def _silent_socket(timeouts: list[float]) -> Any:
+class _FakeClock:
+    """Stands in for ``time`` in the rerun module: ``monotonic`` reads ``now``, the rest is the real module."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def __getattr__(self, name: str) -> Any:  # noqa: ANN401
+        return getattr(time, name)
+
+
+@pytest.fixture()
+def fake_clock() -> Iterator[_FakeClock]:
+    clock = _FakeClock()
+    with patch("physicalai.runtime.callbacks.rerun.time", clock):
+        yield clock
+
+
+@pytest.fixture()
+def closed_port() -> Iterator[socket.socket]:
+    """A loopback socket bound for the whole test but not listening, so no viewer answers on its port.
+
+    Linux refuses the connect; macOS drops it, and the probe gives up when its budget runs out.
+    Holding the socket keeps another process from taking the port; ``listen()`` on it makes it a viewer.
+    """
+    with socket.socket() as reserved:
+        reserved.bind(("127.0.0.1", 0))
+        yield reserved
+
+
+def _silent_socket(timeouts: list[float], clock: _FakeClock) -> Any:
     class _Silent:
-        """A socket whose connect waits out its whole timeout, like a dropped SYN."""
+        """A socket whose connect waits out its whole timeout on the fake clock, like a dropped SYN."""
 
         def __init__(self, *_: Any) -> None:
             self._timeout = 0.0
@@ -970,16 +1006,10 @@ def _silent_socket(timeouts: list[float]) -> Any:
             self._timeout = value
 
         def connect_ex(self, _addr: object) -> int:
-            time.sleep(self._timeout)
-            return 60
+            clock.now += self._timeout
+            return errno.ETIMEDOUT
 
     return _Silent
-
-
-def _closed_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
 
 
 @pytest.mark.usefixtures("_patch_rerun")
@@ -987,14 +1017,17 @@ class TestRerunCallbackConnectPreflight:
     """rr.connect_grpc waits 5 s on a closed port, and rr.log then blocks once the SDK's queue is full."""
 
     def test_closed_port_logs_nothing_and_does_not_stall_start_up(
-        self, make_callback: Any, mock_rerun: MagicMock, caplog: pytest.LogCaptureFixture
+        self,
+        make_callback: Any,
+        mock_rerun: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+        closed_port: socket.socket,
     ) -> None:
-        port = _closed_port()
+        port = closed_port.getsockname()[1]
         cb = make_callback(mode="connect", connect_addr=f"127.0.0.1:{port}", image_decimation=1)
 
-        started = time.perf_counter()
-        cb.on_lifecycle(_lifecycle_start())
-        assert time.perf_counter() - started < 1.0
+        with patch("physicalai.runtime.callbacks.rerun._CONNECT_PREFLIGHT_S", 0.05):  # macOS waits it out
+            cb.on_lifecycle(_lifecycle_start())
         assert f"No Rerun viewer at rerun+http://127.0.0.1:{port}/proxy" in caplog.text
 
         cb.on_tick(_tick(step=0, camera_frames={"top": _fake_frame()}))
@@ -1007,10 +1040,8 @@ class TestRerunCallbackConnectPreflight:
         mock_rerun.send_columns.assert_not_called()
 
         # The next session tries again and connects once a viewer listens.
-        with socket.socket() as viewer:
-            viewer.bind(("127.0.0.1", port))
-            viewer.listen()
-            cb.on_lifecycle(_lifecycle_start(session_id="sess-2"))
+        closed_port.listen()
+        cb.on_lifecycle(_lifecycle_start(session_id="sess-2"))
         mock_rerun.connect_grpc.assert_called_once_with(url=f"rerun+http://127.0.0.1:{port}/proxy")
         cb.on_tick(_tick(step=0))
         assert any(c.args[0] == "robot/joints" for c in mock_rerun.log.call_args_list)
@@ -1035,25 +1066,41 @@ class TestRerunCallbackConnectPreflight:
             assert _viewer_answers(url)
         resolve.assert_not_called()  # no DNS, no connect: the SDK connects as before
 
-    def test_probe_refused_localhost_is_fast(self) -> None:
-        from physicalai.runtime.callbacks.rerun import _viewer_answers
-
-        started = time.perf_counter()
-        assert not _viewer_answers(f"rerun+http://localhost:{_closed_port()}/proxy")
-        assert time.perf_counter() - started < 0.5
-
-    def test_probe_has_one_budget_for_all_addresses(self) -> None:
+    def test_a_refused_address_costs_none_of_the_budget(self, fake_clock: _FakeClock) -> None:
+        """127.0.0.1 refuses at once, so ::1 gets all that is left of the 0.5 s, not half of it."""
         from physicalai.runtime.callbacks.rerun import _viewer_answers
 
         timeouts: list[float] = []
-        started = time.perf_counter()
-        with patch("physicalai.runtime.callbacks.rerun.socket.socket", _silent_socket(timeouts)):
-            assert not _viewer_answers("rerun+http://localhost:9876/proxy")  # 127.0.0.1, then ::1
-        assert time.perf_counter() - started < 0.6
-        assert len(timeouts) == 2
-        assert sum(timeouts) <= 0.5 + 1e-3
 
-    def test_a_stalled_ipv4_localhost_still_finds_an_ipv6_viewer(self) -> None:
+        class _Refusing:
+            def __init__(self, *_: Any) -> None: ...
+
+            def __enter__(self) -> _Refusing:
+                return self
+
+            def __exit__(self, *_: object) -> None: ...
+
+            def settimeout(self, value: float) -> None:
+                timeouts.append(value)
+
+            def connect_ex(self, _addr: object) -> int:  # noqa: PLR6301
+                return errno.ECONNREFUSED
+
+        with patch("physicalai.runtime.callbacks.rerun.socket.socket", _Refusing):
+            assert not _viewer_answers("rerun+http://localhost:9876/proxy")
+        assert timeouts == pytest.approx([0.25, 0.5])
+
+    def test_probe_has_one_budget_for_all_addresses(self, fake_clock: _FakeClock) -> None:
+        from physicalai.runtime.callbacks.rerun import _viewer_answers
+
+        timeouts: list[float] = []
+        started = fake_clock.now
+        with patch("physicalai.runtime.callbacks.rerun.socket.socket", _silent_socket(timeouts, fake_clock)):
+            assert not _viewer_answers("rerun+http://localhost:9876/proxy")  # 127.0.0.1, then ::1
+        assert timeouts == pytest.approx([0.25, 0.25])
+        assert fake_clock.now - started == pytest.approx(0.5)
+
+    def test_a_stalled_ipv4_localhost_still_finds_an_ipv6_viewer(self, fake_clock: _FakeClock) -> None:
         from physicalai.runtime.callbacks.rerun import _viewer_answers
 
         viewer = socket.socket(socket.AF_INET6)
@@ -1064,7 +1111,7 @@ class TestRerunCallbackConnectPreflight:
             pytest.skip("no IPv6 loopback")
         real_socket = socket.socket
         timeouts: list[float] = []
-        silent = _silent_socket(timeouts)
+        silent = _silent_socket(timeouts, fake_clock)
 
         def ipv4_stalls(family: int = socket.AF_INET, *args: Any) -> Any:
             return silent() if family == socket.AF_INET else real_socket(family, *args)
@@ -1074,7 +1121,7 @@ class TestRerunCallbackConnectPreflight:
             port = viewer.getsockname()[1]
             with patch("physicalai.runtime.callbacks.rerun.socket.socket", ipv4_stalls):
                 assert _viewer_answers(f"rerun+http://localhost:{port}/proxy")
-        assert timeouts and timeouts[0] <= 0.25 + 1e-3  # IPv4 got half the budget, not all of it
+        assert timeouts == pytest.approx([0.25])  # IPv4 got half the budget, not all of it
 
     def test_an_invalid_port_reaches_the_sdk_error_as_on_main(
         self, make_callback: Any, mock_rerun: MagicMock, caplog: pytest.LogCaptureFixture
