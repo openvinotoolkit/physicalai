@@ -18,6 +18,7 @@ class FrameHeader(ctypes.Structure):
     """Binary protocol header prepended to each transport payload."""
 
     _pack_ = 1
+    _layout_ = "ms"
     _fields_ = [
         ("version", ctypes.c_uint8),
         ("channels", ctypes.c_uint8),
